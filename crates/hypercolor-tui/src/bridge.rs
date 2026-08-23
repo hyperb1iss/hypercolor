@@ -223,23 +223,12 @@ async fn refresh_for_event(
             refresh_effects(client, action_tx).await;
         }
         // High-frequency zone mutations: coalesce into one scene refetch.
-        "effect_control_changed"
-        | "effect_layer_added"
-        | "effect_layer_removed"
-        | "zone_changed" => {
+        "effect_control_changed" | "zone_changed" | "layer_stack_changed" => {
             *scene_refetch_deadline = Some(tokio::time::Instant::now() + SCENE_REFETCH_COALESCE);
         }
         "active_scene_changed" => {
-            if let Some(next_state) =
-                merge_active_scene_into_daemon_state(latest_daemon_state.as_ref(), event)
-            {
-                *latest_daemon_state = Some(next_state.clone());
-                let _ = action_tx.send(Action::DaemonStateUpdated(Box::new(next_state)));
-            } else {
-                *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
-            }
-            // The event carries no groups; pull the zone list and refresh
-            // the saved-scene list (covers create/rename ripple effects).
+            // The event carries no zones; pull the canonical live document and
+            // refresh the saved-scene list for create or rename ripple effects.
             refresh_active_scene(client, action_tx).await;
             refresh_scenes(client, action_tx).await;
         }
@@ -315,7 +304,7 @@ async fn refresh_scenes(client: &DaemonClient, action_tx: &mpsc::UnboundedSender
 async fn refresh_active_scene(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
     match client.get_active_scene().await {
         Ok(scene) => {
-            let _ = action_tx.send(Action::ActiveSceneUpdated(scene.map(Arc::new)));
+            let _ = action_tx.send(Action::ActiveSceneUpdated(Arc::new(scene)));
         }
         Err(error) => {
             tracing::debug!(%error, "Failed to refresh active scene");
@@ -376,8 +365,6 @@ fn merge_metrics_into_daemon_state(
         brightness: 100,
         fps_target: 0.0,
         fps_actual: 0.0,
-        scene_name: None,
-        scene_snapshot_locked: false,
         device_count: 0,
         total_leds: 0,
     });
@@ -387,7 +374,7 @@ fn merge_metrics_into_daemon_state(
         .and_then(json_f32)
         .unwrap_or(next.fps_target);
     next.fps_actual = fps
-        .get("actual")
+        .get("delivered")
         .and_then(json_f32)
         .unwrap_or(next.fps_actual);
     next.device_count = data
@@ -402,37 +389,6 @@ fn merge_metrics_into_daemon_state(
         .and_then(serde_json::Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or(next.total_leds);
-
-    Some(next)
-}
-
-fn merge_active_scene_into_daemon_state(
-    current: Option<&DaemonState>,
-    event: &serde_json::Value,
-) -> Option<DaemonState> {
-    let data = event.get("data").unwrap_or(event);
-    let scene_name = data
-        .get("current_name")
-        .or_else(|| data.get("scene_name"))
-        .and_then(serde_json::Value::as_str)?
-        .to_owned();
-    let snapshot_locked = data
-        .get("current_snapshot_locked")
-        .or_else(|| data.get("snapshot_locked"))
-        .and_then(serde_json::Value::as_bool)?;
-
-    let mut next = current.cloned().unwrap_or(DaemonState {
-        running: true,
-        brightness: 100,
-        fps_target: 0.0,
-        fps_actual: 0.0,
-        scene_name: None,
-        scene_snapshot_locked: false,
-        device_count: 0,
-        total_leds: 0,
-    });
-    next.scene_name = Some(scene_name);
-    next.scene_snapshot_locked = snapshot_locked;
 
     Some(next)
 }

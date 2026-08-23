@@ -67,7 +67,7 @@ graph TD
 The render loop runs on a dedicated thread with adaptive FPS tiers. Each frame:
 
 1. Samples input sources such as audio, screen, keyboard, MIDI, and sensors.
-2. Captures the active scene, render groups, and live control state.
+2. Captures the active scene, render zones, and live control state.
 3. Renders each producer at its own cadence.
 4. Uses SparkleFlinger to latch the newest producer surfaces and compose one
    canonical RGBA canvas.
@@ -99,10 +99,12 @@ graph TD
         WINP[hypercolor-windows-input]
         WHLP[hypercolor-windows-helper]
         PFS[hypercolor-platform-fs]
+        PER[hypercolor-persistence]
     end
 
     subgraph Drivers
         DAPI[hypercolor-driver-api]
+        DS[hypercolor-driver-support]
         DBI[hypercolor-driver-builtin]
         HUE[hypercolor-driver-hue]
         NL[hypercolor-driver-nanoleaf]
@@ -129,15 +131,17 @@ graph TD
     T --> HAL
     T --> CORE
     HAL --> CORE
-    T & CORE --> DAPI
-    DAPI --> HUE
-    DAPI --> NL
-    DAPI --> WLED
-    DAPI --> GOV
+    PER --> CORE
+    T --> DAPI
+    DAPI & PER --> DS
+    DAPI & DS --> HUE
+    DAPI & DS --> NL
+    DAPI & DS --> WLED
+    DAPI & DS --> GOV
     ORS & DAPI --> ORD
-    DAPI & CORE --> DBI
+    DAPI & DS & CORE --> DBI
     DAPI --> NET
-    CORE & HAL & DAPI & NET & PFS --> D
+    CORE & HAL & DAPI & DS & NET & PFS --> D
     LEXT --> D
     LEXT --> TUI
     DBI -.->|optional| D
@@ -153,9 +157,14 @@ Key rules:
 
 - `hypercolor-types` is pure shared vocabulary; it has no other internal deps.
 - `hypercolor-hal` depends on `hypercolor-types`, not on `hypercolor-core`.
-- Network and hardware drivers depend on `hypercolor-driver-api`.
+- Network and hardware drivers depend on the traits and types in
+  `hypercolor-driver-api`. Native network drivers use
+  `hypercolor-driver-support` for concrete host services.
 - `hypercolor-driver-builtin` aggregates the optional driver crates behind
   feature flags.
+- `hypercolor-persistence` owns the durable write path and the process-wide
+  flush registry, so every store that must survive shutdown writes through it.
+  It sits below both the engine and the driver crates.
 - `hypercolor-leptos-ext` depends on no other internal crate.
 - The Platform subgraph crates isolate unsafe platform calls; `hypercolor-core`
   and the daemon consume them behind target and feature gates, so those edges

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
-use hypercolor_core::scene::SceneManager;
+use hypercolor_core::bus::{DisplayZoneOutputRoute, DisplayZoneViewport};
+use hypercolor_core::scene::ScenePlanSnapshot;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
@@ -10,15 +10,16 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
-use crate::session::OutputPowerState;
+use crate::output_power::OutputPowerState;
 
 use super::RenderThreadState;
 use super::scene_dependency::SceneDependencyKey;
-use super::scene_state::RenderSceneState;
-use crate::display_output::{DISPLAY_FACE_DEFAULT_FPS, capped_group_direct_display_target_fps};
+use super::scene_state::{RenderSceneState, TransitionFrame};
+use crate::display_output::{DISPLAY_FACE_DEFAULT_FPS, capped_zone_direct_display_target_fps};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {
+    pub epoch: u64,
     pub from_scene: Option<SceneId>,
     pub to_scene: Option<SceneId>,
     pub progress: f32,
@@ -29,6 +30,7 @@ pub(crate) struct SceneTransitionSnapshot {
 impl Default for SceneTransitionSnapshot {
     fn default() -> Self {
         Self {
+            epoch: 0,
             from_scene: None,
             to_scene: None,
             progress: 0.0,
@@ -47,25 +49,25 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub active_scene_id: Option<SceneId>,
     pub active_scene_name: Option<String>,
     pub active_transition: Option<SceneTransitionSnapshot>,
-    pub active_render_groups: Arc<[Zone]>,
-    pub active_render_groups_revision: u64,
+    pub resolved_zones: Arc<[Zone]>,
+    pub resolved_zones_revision: u64,
     pub zone_layout_preview_generation: u64,
-    pub active_render_group_count: u32,
-    pub active_display_group_target_fps: HashMap<ZoneId, u32>,
-    pub active_display_group_output_routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
-    pub active_display_group_descriptors: HashMap<ZoneId, DisplayDescriptor>,
+    pub active_render_zone_count: u32,
+    pub active_display_zone_target_fps: HashMap<ZoneId, u32>,
+    pub active_display_zone_output_routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
+    pub active_display_zone_descriptors: HashMap<ZoneId, DisplayDescriptor>,
     pub unassigned_behavior: UnassignedBehavior,
     pub device_registry_generation: u64,
 }
 
 impl SceneRuntimeSnapshot {
-    pub(crate) fn active_render_group_count(&self) -> u32 {
-        self.active_render_group_count
+    pub(crate) fn active_render_zone_count(&self) -> u32 {
+        self.active_render_zone_count
     }
 
     pub(crate) fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
         scene_dependency_key(
-            self.active_render_groups_revision,
+            self.resolved_zones_revision,
             dependency_generation,
             self.device_registry_generation,
             self.zone_layout_preview_generation,
@@ -110,10 +112,10 @@ pub(crate) struct RenderLoopSnapshot {
 }
 
 #[derive(Debug, Clone, Default)]
-struct CachedDisplayGroupTargetMetadata {
+struct CachedDisplayZoneTargetMetadata {
     dependency_key: SceneDependencyKey,
     target_fps: HashMap<ZoneId, u32>,
-    output_routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
+    output_routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,38 +127,38 @@ struct CachedEffectDemand {
 
 #[derive(Debug, Default)]
 pub(crate) struct SceneSnapshotCache {
-    cached_display_group_target_metadata: Option<CachedDisplayGroupTargetMetadata>,
+    cached_display_zone_target_metadata: Option<CachedDisplayZoneTargetMetadata>,
     cached_effect_demand: Option<CachedEffectDemand>,
 }
 
 impl SceneSnapshotCache {
     pub const fn new() -> Self {
         Self {
-            cached_display_group_target_metadata: None,
+            cached_display_zone_target_metadata: None,
             cached_effect_demand: None,
         }
     }
 
-    pub(crate) fn cached_display_group_target_metadata(
+    pub(crate) fn cached_display_zone_target_metadata(
         &self,
         dependency_key: SceneDependencyKey,
     ) -> Option<(
         HashMap<ZoneId, u32>,
-        HashMap<ZoneId, DisplayGroupOutputRoute>,
+        HashMap<ZoneId, DisplayZoneOutputRoute>,
     )> {
-        self.cached_display_group_target_metadata
+        self.cached_display_zone_target_metadata
             .as_ref()
             .filter(|cache| cache.dependency_key == dependency_key)
             .map(|cache| (cache.target_fps.clone(), cache.output_routes.clone()))
     }
 
-    pub(crate) fn cache_display_group_target_metadata(
+    pub(crate) fn cache_display_zone_target_metadata(
         &mut self,
         dependency_key: SceneDependencyKey,
         target_fps: &HashMap<ZoneId, u32>,
-        output_routes: &HashMap<ZoneId, DisplayGroupOutputRoute>,
+        output_routes: &HashMap<ZoneId, DisplayZoneOutputRoute>,
     ) {
-        self.cached_display_group_target_metadata = Some(CachedDisplayGroupTargetMetadata {
+        self.cached_display_zone_target_metadata = Some(CachedDisplayZoneTargetMetadata {
             dependency_key,
             target_fps: target_fps.clone(),
             output_routes: output_routes.clone(),
@@ -193,11 +195,12 @@ impl SceneSnapshotCache {
 pub(crate) async fn build_frame_scene_snapshot(
     state: &RenderThreadState,
     scene_snapshot_cache: &mut SceneSnapshotCache,
-    render_scene_state: &RenderSceneState,
+    render_scene_state: &mut RenderSceneState,
     delta_secs: f32,
 ) -> FrameSceneSnapshot {
     let scene_runtime =
-        current_scene_runtime_snapshot(state, scene_snapshot_cache, delta_secs).await;
+        current_scene_runtime_snapshot(state, scene_snapshot_cache, render_scene_state, delta_secs)
+            .await;
     let effect_scene = current_effect_scene_snapshot(
         state,
         scene_snapshot_cache,
@@ -241,132 +244,110 @@ pub(crate) async fn refresh_effect_scene_snapshot(
 async fn current_scene_runtime_snapshot(
     state: &RenderThreadState,
     scene_snapshot_cache: &mut SceneSnapshotCache,
+    render_scene_state: &mut RenderSceneState,
     delta_secs: f32,
 ) -> SceneRuntimeSnapshot {
-    let transitioning = {
-        let manager = state.scene_manager.read().await;
-        manager.is_transitioning()
-    };
-
-    if transitioning {
-        // RENDER-LOCAL WRITER (Spec 76 §2.3). Transition progress
-        // advances every frame and belongs to the render thread, not to
-        // any commit — routing it through the commit path would mint a
-        // scene revision per frame and invalidate every in-flight
-        // candidate.
-        //
-        // It moves no state a commit means to own, but the reverse
-        // direction has a window: a candidate cloned before a tick and
-        // swapped in after it rewinds transition progress by the
-        // clone-to-commit delta, and can transiently resurrect a
-        // transition that completed inside that delta. The next tick
-        // re-advances it, so the effect is bounded by one frame and
-        // self-correcting. §6.1 closes it outright by moving progress
-        // into `FrameState` and out of the manager the commit installs.
-        let mut manager = state.scene_manager.write().await;
-        manager.tick_transition(delta_secs);
-        return snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await;
-    }
-
-    let manager = state.scene_manager.read().await;
-    snapshot_scene_runtime(state, scene_snapshot_cache, &manager).await
+    let plan = state.scene_plan.load();
+    let transition_frame = render_scene_state
+        .frame_state_mut()
+        .reconcile(plan.transition.as_ref(), delta_secs);
+    snapshot_scene_runtime(state, scene_snapshot_cache, &plan, transition_frame).await
 }
 
 async fn snapshot_scene_runtime(
     state: &RenderThreadState,
     scene_snapshot_cache: &mut SceneSnapshotCache,
-    manager: &SceneManager,
+    plan: &ScenePlanSnapshot,
+    transition_frame: Option<TransitionFrame>,
 ) -> SceneRuntimeSnapshot {
-    let active_scene_id = manager.active_scene_id().copied();
-    let mut active_render_groups = manager.active_render_groups();
-    let active_render_groups_revision = manager.active_render_groups_revision();
+    let active_scene_id = plan.active_scene_id;
+    let mut resolved_zones = Arc::clone(&plan.zones);
+    let resolved_zones_revision = plan.zones_revision;
     let zone_layout_preview_generation = if let Some(scene_id) = active_scene_id {
         let (generation, overrides) = state
             .zone_layout_previews
             .scene_overrides_with_generation(scene_id)
             .await;
-        active_render_groups = apply_zone_layout_previews(active_render_groups, &overrides);
+        resolved_zones = apply_zone_layout_previews(resolved_zones, &overrides);
         generation
     } else {
         state.zone_layout_previews.generation()
     };
-    let active_scene_name = manager.active_scene().map(|scene| scene.name.clone());
-    let unassigned_behavior = manager
-        .active_scene()
-        .map(|scene| scene.unassigned_behavior.clone())
-        .unwrap_or_default();
+    let active_scene_name = plan.active_scene_name.clone();
+    let unassigned_behavior = plan.unassigned_behavior.clone();
     let device_registry_generation = state.device_registry.generation();
-    let (active_display_group_target_fps, active_display_group_output_routes) =
-        snapshot_display_group_target_metadata(
+    let (active_display_zone_target_fps, active_display_zone_output_routes) =
+        snapshot_display_zone_target_metadata(
             &state.device_registry,
             scene_snapshot_cache,
-            active_render_groups_revision,
-            active_render_groups.as_ref(),
+            resolved_zones_revision,
+            resolved_zones.as_ref(),
             state.face_fps_cap,
         )
         .await;
-    let active_display_group_descriptors = display_descriptors_for_groups(
-        &active_display_group_target_fps,
-        &active_display_group_output_routes,
+    let active_display_zone_descriptors = display_descriptors_for_zones(
+        &active_display_zone_target_fps,
+        &active_display_zone_output_routes,
     );
-    let active_render_group_count = u32::try_from(
-        active_render_groups
+    let active_render_zone_count = u32::try_from(
+        resolved_zones
             .iter()
-            .filter(|group| group_has_enabled_layer(group))
+            .filter(|zone| zone_has_enabled_layer(zone))
             .count(),
     )
     .unwrap_or(u32::MAX);
     SceneRuntimeSnapshot {
         active_scene_id,
         active_scene_name,
-        active_transition: manager
-            .active_transition()
-            .map(|transition| SceneTransitionSnapshot {
+        active_transition: plan.transition.as_ref().zip(transition_frame).map(
+            |(transition, frame)| SceneTransitionSnapshot {
+                epoch: transition.epoch,
                 from_scene: Some(transition.from_scene),
                 to_scene: Some(transition.to_scene),
-                progress: transition.progress,
-                eased_progress: transition.eased_progress(),
+                progress: frame.progress,
+                eased_progress: frame.eased_progress,
                 color_interpolation: transition.spec.color_interpolation.clone(),
-            }),
-        active_render_groups,
-        active_render_groups_revision,
+            },
+        ),
+        resolved_zones,
+        resolved_zones_revision,
         zone_layout_preview_generation,
-        active_render_group_count,
-        active_display_group_target_fps,
-        active_display_group_output_routes,
-        active_display_group_descriptors,
+        active_render_zone_count,
+        active_display_zone_target_fps,
+        active_display_zone_output_routes,
+        active_display_zone_descriptors,
         unassigned_behavior,
         device_registry_generation,
     }
 }
 
 pub(super) fn apply_zone_layout_previews(
-    active_render_groups: Arc<[Zone]>,
+    resolved_zones: Arc<[Zone]>,
     overrides: &HashMap<ZoneId, SpatialLayout>,
 ) -> Arc<[Zone]> {
     if overrides.is_empty() {
-        return active_render_groups;
+        return resolved_zones;
     }
 
     let mut changed = false;
-    let groups = active_render_groups
+    let zones = resolved_zones
         .iter()
         .cloned()
-        .map(|mut group| {
-            if let Some(layout) = overrides.get(&group.id)
-                && group.layout != *layout
+        .map(|mut zone| {
+            if let Some(layout) = overrides.get(&zone.id)
+                && zone.layout != *layout
             {
-                group.layout = layout.clone();
+                zone.layout = layout.clone();
                 changed = true;
             }
-            group
+            zone
         })
         .collect::<Vec<_>>();
 
     if changed {
-        groups.into()
+        zones.into()
     } else {
-        active_render_groups
+        resolved_zones
     }
 }
 
@@ -383,14 +364,14 @@ fn combine_scene_dependency_generation(
 }
 
 pub(super) fn scene_dependency_key(
-    active_render_groups_revision: u64,
+    resolved_zones_revision: u64,
     registry_generation: u64,
     device_registry_generation: u64,
     zone_layout_preview_generation: u64,
     unassigned_behavior: &UnassignedBehavior,
 ) -> SceneDependencyKey {
     SceneDependencyKey::new(
-        active_render_groups_revision,
+        resolved_zones_revision,
         combine_scene_dependency_generation(
             registry_generation,
             device_registry_generation,
@@ -404,26 +385,25 @@ fn unassigned_behavior_generation(unassigned_behavior: &UnassignedBehavior) -> u
     match unassigned_behavior {
         UnassignedBehavior::Off => 0,
         UnassignedBehavior::Hold => 1,
-        UnassignedBehavior::Fallback(group_id) => {
-            let raw = group_id.0.as_u128();
+        UnassignedBehavior::Fallback(zone_id) => {
+            let raw = zone_id.0.as_u128();
             2 ^ ((raw >> 64) as u64) ^ (raw as u64)
         }
     }
 }
 
-pub(super) async fn snapshot_display_group_target_metadata(
+pub(super) async fn snapshot_display_zone_target_metadata(
     device_registry: &hypercolor_core::device::DeviceRegistry,
     scene_snapshot_cache: &mut SceneSnapshotCache,
-    groups_revision: u64,
-    groups: &[Zone],
+    zones_revision: u64,
+    zones: &[Zone],
     face_fps_cap: u32,
 ) -> (
     HashMap<ZoneId, u32>,
-    HashMap<ZoneId, DisplayGroupOutputRoute>,
+    HashMap<ZoneId, DisplayZoneOutputRoute>,
 ) {
-    let dependency_key = SceneDependencyKey::new(groups_revision, device_registry.generation());
-    if let Some(cached) = scene_snapshot_cache.cached_display_group_target_metadata(dependency_key)
-    {
+    let dependency_key = SceneDependencyKey::new(zones_revision, device_registry.generation());
+    if let Some(cached) = scene_snapshot_cache.cached_display_zone_target_metadata(dependency_key) {
         return cached;
     }
 
@@ -437,38 +417,38 @@ pub(super) async fn snapshot_display_group_target_metadata(
                 tracked.info.id,
                 (
                     tracked.info.capabilities.max_fps,
-                    display_group_output_route_for_device(
+                    display_zone_output_route_for_device(
                         &tracked.info,
                         tracked.user_settings.brightness,
                     ),
                 ),
             )
         })
-        .collect::<HashMap<DeviceId, (u32, Option<DisplayGroupOutputRoute>)>>();
+        .collect::<HashMap<DeviceId, (u32, Option<DisplayZoneOutputRoute>)>>();
 
-    let target_fps = groups
+    let target_fps = zones
         .iter()
-        .filter_map(|group| {
-            let target = group.display_target.as_ref()?;
+        .filter_map(|zone| {
+            let target = zone.display_target.as_ref()?;
             let device_max_fps = display_devices
                 .get(&target.device_id)
                 .map(|(max_fps, _)| *max_fps)
                 .unwrap_or(0);
             Some((
-                group.id,
-                capped_group_direct_display_target_fps(device_max_fps, face_fps_cap),
+                zone.id,
+                capped_zone_direct_display_target_fps(device_max_fps, face_fps_cap),
             ))
         })
         .collect();
-    let output_routes = groups
+    let output_routes = zones
         .iter()
-        .filter_map(|group| {
-            let target = group.display_target.as_ref()?;
+        .filter_map(|zone| {
+            let target = zone.display_target.as_ref()?;
             let route = display_devices.get(&target.device_id)?.1.clone()?;
-            Some((group.id, route))
+            Some((zone.id, route))
         })
         .collect();
-    scene_snapshot_cache.cache_display_group_target_metadata(
+    scene_snapshot_cache.cache_display_zone_target_metadata(
         dependency_key,
         &target_fps,
         &output_routes,
@@ -476,10 +456,10 @@ pub(super) async fn snapshot_display_group_target_metadata(
     (target_fps, output_routes)
 }
 
-fn display_group_output_route_for_device(
+fn display_zone_output_route_for_device(
     info: &DeviceInfo,
     brightness: f32,
-) -> Option<DisplayGroupOutputRoute> {
+) -> Option<DisplayZoneOutputRoute> {
     let resolution_geometry = info
         .capabilities
         .display_resolution
@@ -487,14 +467,14 @@ fn display_group_output_route_for_device(
     let (width, height, circular, frame_format) =
         display_target_geometry_for_device(&info.segments).or(resolution_geometry)?;
 
-    Some(DisplayGroupOutputRoute {
+    Some(DisplayZoneOutputRoute {
         device_id: info.id,
         width,
         height,
         circular,
         brightness: brightness.clamp(0.0, 1.0),
         frame_format,
-        viewport: default_display_group_viewport(),
+        viewport: default_display_zone_viewport(),
     })
 }
 
@@ -516,13 +496,13 @@ fn display_target_geometry_for_device(
     })
 }
 
-/// Build the per-group display descriptors handed to face renderers at
+/// Build the per-zone display descriptors handed to face renderers at
 /// load. Pixel format maps the transport: raw RGB stays `Rgb`; JPEG
 /// transports apply 4:2:0 chroma subsampling, surfaced as `Yuv420` so
 /// face authors can avoid one-pixel colored hairlines.
-pub(super) fn display_descriptors_for_groups(
+pub(super) fn display_descriptors_for_zones(
     target_fps: &HashMap<ZoneId, u32>,
-    routes: &HashMap<ZoneId, DisplayGroupOutputRoute>,
+    routes: &HashMap<ZoneId, DisplayZoneOutputRoute>,
 ) -> HashMap<ZoneId, DisplayDescriptor> {
     routes
         .iter()
@@ -550,8 +530,8 @@ pub(super) fn display_descriptors_for_groups(
         .collect()
 }
 
-fn default_display_group_viewport() -> DisplayGroupViewport {
-    DisplayGroupViewport {
+fn default_display_zone_viewport() -> DisplayZoneViewport {
+    DisplayZoneViewport {
         position: NormalizedPosition::new(0.5, 0.5),
         size: NormalizedPosition::new(1.0, 1.0),
         rotation: 0.0,
@@ -584,12 +564,12 @@ async fn current_effect_scene_snapshot(
     let mut media_input_active = false;
     let mut network_input_active = false;
 
-    for group in scene_runtime.active_render_groups.iter() {
-        if !group.enabled {
+    for zone in scene_runtime.resolved_zones.iter() {
+        if !zone.enabled {
             continue;
         }
 
-        for layer in group.effective_layers() {
+        for layer in &zone.layers {
             if !layer.enabled {
                 continue;
             }
@@ -635,12 +615,8 @@ fn effect_has_tag(tags: &[String], expected: &str) -> bool {
     tags.iter().any(|tag| tag.eq_ignore_ascii_case(expected))
 }
 
-fn group_has_enabled_layer(group: &Zone) -> bool {
-    group.enabled
-        && group
-            .effective_layers()
-            .into_iter()
-            .any(|layer| layer.enabled)
+fn zone_has_enabled_layer(zone: &Zone) -> bool {
+    zone.enabled && zone.layers.iter().any(|layer| layer.enabled)
 }
 
 async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
@@ -662,7 +638,7 @@ mod tests {
     use uuid::Uuid;
 
     use hypercolor_core::asset::AssetLibrary;
-    use hypercolor_core::bus::{DisplayGroupOutputRoute, HypercolorBus};
+    use hypercolor_core::bus::{DisplayZoneOutputRoute, HypercolorBus};
     use hypercolor_core::device::{BackendManager, DeviceRegistry};
     use hypercolor_core::effect::{EffectEntry, EffectRegistry};
     use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -679,59 +655,58 @@ mod tests {
         EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
     };
     use hypercolor_types::layer::{
-        LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+        BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
     };
     use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use hypercolor_types::viewport::ViewportRect;
 
-    use super::{default_display_group_viewport, display_descriptors_for_groups};
-    use crate::device_settings::DeviceSettingsStore;
+    use super::{default_display_zone_viewport, display_descriptors_for_zones};
     use crate::display_output::DISPLAY_FACE_DEFAULT_FPS;
+    use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
     use crate::preview_runtime::PreviewRuntime;
     use crate::render_thread::{CanvasDims, RenderThreadState};
     use crate::scene_transactions::SceneTransactionQueue;
-    use crate::session::OutputPowerState;
     use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
     use hypercolor_types::display::DisplayPixelFormat;
 
     use super::{
         EffectDemand, FrameSceneSnapshot, SceneDependencyKey, SceneRuntimeSnapshot,
         SceneSnapshotCache, build_frame_scene_snapshot, current_effect_scene_snapshot,
-        refresh_effect_scene_snapshot, render_loop_snapshot,
-        snapshot_display_group_target_metadata, snapshot_scene_runtime,
+        refresh_effect_scene_snapshot, render_loop_snapshot, snapshot_display_zone_target_metadata,
+        snapshot_scene_runtime,
     };
     use crate::render_thread::scene_state::RenderSceneState;
 
     #[test]
-    fn scene_snapshot_cache_caches_display_group_target_metadata_by_dependency_key() {
+    fn scene_snapshot_cache_caches_display_zone_target_metadata_by_dependency_key() {
         let mut scheduler = SceneSnapshotCache::new();
-        let group_id = ZoneId::new();
-        let target_fps = std::collections::HashMap::from([(group_id, 30)]);
+        let zone_id = ZoneId::new();
+        let target_fps = std::collections::HashMap::from([(zone_id, 30)]);
         let output_routes = std::collections::HashMap::new();
         let dependency_key = SceneDependencyKey::new(1, 7);
 
         assert!(
             scheduler
-                .cached_display_group_target_metadata(dependency_key)
+                .cached_display_zone_target_metadata(dependency_key)
                 .is_none()
         );
 
-        scheduler.cache_display_group_target_metadata(dependency_key, &target_fps, &output_routes);
+        scheduler.cache_display_zone_target_metadata(dependency_key, &target_fps, &output_routes);
 
         assert_eq!(
-            scheduler.cached_display_group_target_metadata(dependency_key),
+            scheduler.cached_display_zone_target_metadata(dependency_key),
             Some((target_fps.clone(), output_routes.clone()))
         );
         assert!(
             scheduler
-                .cached_display_group_target_metadata(SceneDependencyKey::new(2, 7))
+                .cached_display_zone_target_metadata(SceneDependencyKey::new(2, 7))
                 .is_none()
         );
         assert!(
             scheduler
-                .cached_display_group_target_metadata(SceneDependencyKey::new(1, 8))
+                .cached_display_zone_target_metadata(SceneDependencyKey::new(1, 8))
                 .is_none()
         );
     }
@@ -788,7 +763,6 @@ mod tests {
             zones: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         }
     }
@@ -819,15 +793,11 @@ mod tests {
         }
     }
 
-    fn sample_group(effect_id: EffectId) -> Zone {
+    fn sample_zone(effect_id: EffectId) -> Zone {
         Zone {
             id: ZoneId::new(),
-            name: "Test Group".into(),
+            name: "Test Zone".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,
@@ -883,6 +853,12 @@ mod tests {
     fn minimal_render_thread_state(registry: EffectRegistry) -> RenderThreadState {
         let (_, power_state) = watch::channel(OutputPowerState::default());
         let event_bus = Arc::new(HypercolorBus::new());
+        let scene_manager = crate::domain::scene::SceneService::with_temporary_store(
+            SceneManager::with_default(),
+            Arc::clone(&event_bus),
+        )
+        .expect("temporary scene store should open");
+        let scene_plan = scene_manager.plan_reader();
         let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
         let asset_dir = asset_tempdir.path().join("assets");
         RenderThreadState {
@@ -890,7 +866,9 @@ mod tests {
             asset_library: Arc::new(RwLock::new(
                 AssetLibrary::open(asset_dir).expect("test asset library should open"),
             )),
-            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(sample_layout()))),
+            spatial_engine: crate::domain::spatial::SpatialService::new(SpatialEngine::new(
+                sample_layout(),
+            )),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
             device_registry: DeviceRegistry::new(),
             performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -901,13 +879,11 @@ mod tests {
                 crate::zone_layout_preview::ZoneLayoutPreviewStore::default(),
             ),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-            scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+            scene_manager,
+            scene_plan,
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
-            device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-                "device-settings.json",
-            )))),
             scene_transactions: SceneTransactionQueue::default(),
             screen_capture_configured: false,
             canvas_dims: CanvasDims::new(320, 200),
@@ -923,7 +899,7 @@ mod tests {
     async fn build_frame_scene_snapshot_carries_render_loop_and_scene_state_values() {
         let state = minimal_render_thread_state(EffectRegistry::default());
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let render_scene_state = RenderSceneState::new(
+        let mut render_scene_state = RenderSceneState::new(
             SpatialEngine::new(SpatialLayout {
                 canvas_width: 512,
                 canvas_height: 288,
@@ -933,9 +909,13 @@ mod tests {
         );
         let expected_loop_snapshot = render_loop_snapshot(&state).await;
 
-        let snapshot =
-            build_frame_scene_snapshot(&state, &mut scene_snapshot_cache, &render_scene_state, 0.0)
-                .await;
+        let snapshot = build_frame_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &mut render_scene_state,
+            0.0,
+        )
+        .await;
 
         assert_eq!(snapshot.frame_token, expected_loop_snapshot.frame_token);
         assert_eq!(snapshot.elapsed_ms, expected_loop_snapshot.elapsed_ms);
@@ -950,11 +930,16 @@ mod tests {
     async fn configured_capture_without_a_consumer_stays_idle() {
         let state = minimal_render_thread_state(EffectRegistry::default());
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let render_scene_state = RenderSceneState::new(SpatialEngine::new(sample_layout()), true);
+        let mut render_scene_state =
+            RenderSceneState::new(SpatialEngine::new(sample_layout()), true);
 
-        let snapshot =
-            build_frame_scene_snapshot(&state, &mut scene_snapshot_cache, &render_scene_state, 0.0)
-                .await;
+        let snapshot = build_frame_scene_snapshot(
+            &state,
+            &mut scene_snapshot_cache,
+            &mut render_scene_state,
+            0.0,
+        )
+        .await;
 
         assert!(!snapshot.effect_demand.effect_running);
         assert!(!snapshot.effect_demand.screen_capture_active);
@@ -976,25 +961,25 @@ mod tests {
                 .await
         );
 
-        let mut group = sample_group(EffectId::from(Uuid::now_v7()));
-        group.role = ZoneRole::Display;
-        group.display_target = Some(DisplayFaceTarget::new(device_id));
-        let group_id = group.id;
+        let mut zone = sample_zone(EffectId::from(Uuid::now_v7()));
+        zone.role = ZoneRole::Display;
+        zone.display_target = Some(DisplayFaceTarget::new(device_id));
+        let zone_id = zone.id;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let (target_fps, output_routes) = snapshot_display_group_target_metadata(
+        let (target_fps, output_routes) = snapshot_display_zone_target_metadata(
             &state.device_registry,
             &mut scene_snapshot_cache,
             11,
-            &[group],
+            &[zone],
             30,
         )
         .await;
 
-        assert_eq!(target_fps.get(&group_id), Some(&30));
+        assert_eq!(target_fps.get(&zone_id), Some(&30));
         let route = output_routes
-            .get(&group_id)
-            .expect("display group should get a fallback output route");
+            .get(&zone_id)
+            .expect("display zone should get a fallback output route");
         assert_eq!(route.device_id, device_id);
         assert_eq!(route.width, 320);
         assert_eq!(route.height, 320);
@@ -1006,21 +991,21 @@ mod tests {
     #[test]
     fn display_descriptors_map_routes_to_shared_derivation() {
         let zone_id = ZoneId::new();
-        let route = DisplayGroupOutputRoute {
+        let route = DisplayZoneOutputRoute {
             device_id: DeviceId::new(),
             width: 960,
             height: 160,
             circular: false,
             brightness: 1.0,
             frame_format: DisplayFrameFormat::Rgb,
-            viewport: default_display_group_viewport(),
+            viewport: default_display_zone_viewport(),
         };
         let mut routes = HashMap::new();
         routes.insert(zone_id, route);
         let mut fps = HashMap::new();
         fps.insert(zone_id, 60);
 
-        let descriptors = display_descriptors_for_groups(&fps, &routes);
+        let descriptors = display_descriptors_for_zones(&fps, &routes);
         let descriptor = descriptors
             .get(&zone_id)
             .expect("display route should yield a descriptor");
@@ -1037,19 +1022,19 @@ mod tests {
     #[test]
     fn display_descriptors_mark_jpeg_routes_as_chroma_subsampled() {
         let zone_id = ZoneId::new();
-        let route = DisplayGroupOutputRoute {
+        let route = DisplayZoneOutputRoute {
             device_id: DeviceId::new(),
             width: 480,
             height: 480,
             circular: true,
             brightness: 1.0,
             frame_format: DisplayFrameFormat::Jpeg,
-            viewport: default_display_group_viewport(),
+            viewport: default_display_zone_viewport(),
         };
         let mut routes = HashMap::new();
         routes.insert(zone_id, route);
 
-        let descriptors = display_descriptors_for_groups(&HashMap::new(), &routes);
+        let descriptors = display_descriptors_for_zones(&HashMap::new(), &routes);
         let descriptor = descriptors
             .get(&zone_id)
             .expect("display route should yield a descriptor");
@@ -1075,32 +1060,46 @@ mod tests {
         preview_layout.canvas_width = 640;
         preview_layout.canvas_height = 360;
 
-        let (scene_id, group_id) = {
-            let mut manager = state.scene_manager.write().await;
-            manager
-                .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
-                .expect("test scene should accept a primary group");
-            let scene = manager
+        let (scene_id, zone_id) = {
+            let mut mutation = state.scene_manager.begin_mutation().await;
+            let zone = mutation
+                .upsert_primary_zone(
+                    &metadata,
+                    HashMap::new(),
+                    None,
+                    sample_layout(),
+                    hypercolor_types::event::ChangeTrigger::System,
+                    None,
+                )
+                .expect("test scene should accept a primary zone");
+            let scene = mutation
+                .scenes()
                 .active_scene()
                 .expect("default scene should be active");
-            let group = scene.groups.first().expect("primary group should exist");
-            (scene.id, group.id)
+            let scene_id = scene.id;
+            let zone_id = zone.id;
+            state
+                .scene_manager
+                .commit_mutation(mutation)
+                .await
+                .expect("test scene should commit");
+            (scene_id, zone_id)
         };
         state
             .zone_layout_previews
             .set(
                 ZoneLayoutPreviewOwner::new(),
                 scene_id,
-                group_id,
+                zone_id,
                 preview_layout.clone(),
             )
             .await;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let manager = state.scene_manager.read().await;
-        let snapshot = snapshot_scene_runtime(&state, &mut scene_snapshot_cache, &manager).await;
+        let plan = state.scene_plan.load();
+        let snapshot = snapshot_scene_runtime(&state, &mut scene_snapshot_cache, &plan, None).await;
 
-        assert_eq!(snapshot.active_render_groups[0].layout, preview_layout);
+        assert_eq!(snapshot.resolved_zones[0].layout, preview_layout);
         assert_eq!(
             snapshot.zone_layout_preview_generation,
             state.zone_layout_previews.generation()
@@ -1117,13 +1116,13 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![sample_group(effect_id)].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![sample_zone(effect_id)].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_render_zone_count: 1,
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1155,15 +1154,14 @@ mod tests {
     async fn screen_region_layers_request_screen_capture_when_configured() {
         let effect_id = EffectId::from(Uuid::now_v7());
         let state = minimal_render_thread_state(EffectRegistry::default());
-        let mut group = sample_group(effect_id);
-        group.effect_id = None;
-        group.layers = vec![SceneLayer {
+        let mut zone = sample_zone(effect_id);
+        zone.layers = vec![SceneLayer {
             id: SceneLayerId::new(),
             name: Some("Screen".into()),
             source: LayerSource::ScreenRegion {
                 viewport: ViewportRect::full(),
             },
-            blend: LayerBlendMode::Replace,
+            blend: BlendMode::Replace,
             opacity: 1.0,
             transform: LayerTransform::default(),
             adjust: LayerAdjust::default(),
@@ -1174,13 +1172,13 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![group].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![zone].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_render_zone_count: 1,
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1208,13 +1206,13 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![sample_group(effect_id)].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![sample_zone(effect_id)].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_render_zone_count: 1,
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1232,6 +1230,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn free_form_tags_do_not_create_interaction_capture_demand() {
+        let effect_id = EffectId::from(Uuid::now_v7());
+        let mut entry = sample_entry(effect_id, false, false);
+        entry.metadata.tags = ["interactive", "input", "mouse", "keyboard"]
+            .map(ToOwned::to_owned)
+            .into();
+        let mut registry = EffectRegistry::default();
+        registry.register(entry);
+        let state = minimal_render_thread_state(registry);
+        let scene_runtime = SceneRuntimeSnapshot {
+            active_scene_id: None,
+            active_scene_name: None,
+            active_transition: None,
+            resolved_zones: vec![sample_zone(effect_id)].into(),
+            resolved_zones_revision: 7,
+            zone_layout_preview_generation: 0,
+            active_render_zone_count: 1,
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
+            unassigned_behavior: UnassignedBehavior::default(),
+            device_registry_generation: 0,
+        };
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+
+        let snapshot =
+            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
+                .await;
+
+        assert!(snapshot.demand.effect_running);
+        assert!(!snapshot.demand.interaction_capture_active);
+    }
+
+    #[tokio::test]
     async fn refresh_effect_scene_snapshot_picks_up_mid_frame_registry_changes() {
         let effect_id = EffectId::from(Uuid::now_v7());
         let mut registry = EffectRegistry::default();
@@ -1241,13 +1273,13 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            active_render_groups: vec![sample_group(effect_id)].into(),
-            active_render_groups_revision: 7,
+            resolved_zones: vec![sample_zone(effect_id)].into(),
+            resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_render_zone_count: 1,
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };

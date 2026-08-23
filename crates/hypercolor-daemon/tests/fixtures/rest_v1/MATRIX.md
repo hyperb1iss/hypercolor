@@ -5,7 +5,8 @@ This describes what the Hypercolor daemon's `/api/v1` surface emits. Under Spec
 deliberate shape change updates this document, the enforcing suite, and every
 in-repo client in the same PR, while an unintended byte shift still fails CI.
 
-The enforcing suite is `crates/hypercolor-daemon/tests/rest_v1_compat_tests.rs`.
+The enforcing suite is
+`crates/hypercolor-daemon/tests/rest_wire_contract_tests.rs`.
 This document and that file are edited together. A row here without a test there
 is a claim, not a fence.
 
@@ -51,7 +52,7 @@ error factory, one body shape, and one place a status is decided.
 
 ```json
 {
-  "error": { "code": "not_found", "message": "scene not found: …" },
+  "error": { "code": "scene_not_found", "message": "scene not found: …" },
   "meta": { "api_version": "1.0", "request_id": "req_…", "timestamp": "…" }
 }
 ```
@@ -134,7 +135,8 @@ page in production. The API fallback resolves first, so the SPA never sees an
 API path, and `/api/v1/openapi.json` plus the Swagger mount keep their exact
 routes. Pinned by `api_tests.rs::the_spa_fallback_never_answers_for_a_deleted_api_route`
 and `::an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui`; the
-deletion fences in `rest_v1_compat_tests.rs::renamed_routes_leave_nothing_behind`
+deletion fences in `rest_wire_contract_tests.rs` under the two
+`deleted_*_routes_leave_nothing_behind` tests
 assert the envelope rather than the status alone for the same reason.
 
 Paths outside `/api/v1` still belong to the SPA, which is what makes
@@ -142,36 +144,24 @@ client-side routing work; `/health` has no sub-paths to protect.
 
 ---
 
-## 2. Frozen list endpoints and the fabricated pagination block
+## 2. Canonical list responses
 
-Five list endpoints share one deliberate lie. Each returns **every** row in
-`items` while reporting a `limit` of 50 and `has_more: false`. Four take no
-query extractor at all, and the fifth (`/api/v1/effects`, see below) names no
-paging arguments, so `?offset=` and `?limit=` are silently discarded on every
-row.
+Every collection uses `ListResponse<T>`. Complete collections omit `page`;
+collections that accept `offset` and `limit` include a real `PageInfo`.
 
 ```json
 {
   "data": {
     "items": [ ],
-    "pagination": { "offset": 0, "limit": 50, "total": 2, "has_more": false }
+    "total": 2
   },
   "meta": { }
 }
 ```
 
-| Method | Path | Items key | `offset` | `limit` | `total` | `has_more` | Query params |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| GET | `/api/v1/effects` | `items` | `0` | `50` | count **after** filtering | `false` | honored (below) |
-| GET | `/api/v1/scenes` | `items` | `0` | `50` | real count **after** ephemeral scenes are filtered out | `false` | ignored |
-| GET | `/api/v1/library/favorites` | `items` | `0` | `50` | real count | `false` | ignored |
-| GET | `/api/v1/library/presets` | `items` | `0` | `50` | real count | `false` | ignored |
-| GET | `/api/v1/library/playlists` | `items` | `0` | `50` | real count | `false` | ignored |
-
-Consequence worth stating plainly: with more than fifty rows registered, a v1
-client sees `total > limit` alongside `has_more: false`, and every row is in the
-payload anyway. Spec 76 wave 3.3 fixes pagination on canonical routes only; the
-block above stays exactly as written on v1.
+The complete collections are effects, effect presets, scenes, assets,
+favorites, saved presets, and playlists. `total` counts the rows after any
+server-side filtering.
 
 `GET /api/v1/effects` is the one row that reads its query string (Spec 78
 wave 78.0a). It honors `category`, `audio_reactive`, `screen_reactive`,
@@ -183,38 +173,21 @@ an empty list. Summaries carry **no** `controls` or `presets` key unless
 `include` asked for it, so the default shape is byte-identical to the pre-78.0
 payload. Pinned by `tests/effect_catalog_tests.rs`.
 
-The scene list has a second frozen quirk: the daemon's default scene is
+The scene list has one notable semantic: the daemon's default scene is
 `Ephemeral`, and the filter runs before the count, so a freshly started daemon
 reports `total: 0` from `/api/v1/scenes` even though a scene is active.
 
-The `Pagination` struct itself lives in `hypercolor-types::api::common` and is
-shared by honest and fabricated callers alike, so it cannot be redefined to suit
-either one:
-
-```rust
-pub struct Pagination { pub offset: usize, pub limit: usize, pub total: usize, pub has_more: bool }
-```
-
-### 2.1 Endpoints that really paginate
+### 2.1 Paged endpoints
 
 Three endpoints honor `offset`/`limit` and compute `has_more` from the real
-total. They are frozen too, because a refactor that flattens all pagination into
-one shape would break these in the opposite direction.
+total. Their `page` object carries only `offset`, `limit`, and `has_more`; the
+collection-wide count remains the top-level `total`.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
 | GET | `/api/v1/devices` | Slices by `offset`/`limit`, `has_more = offset + limit < total` |
 | GET | `/api/v1/layouts` | Same |
 | GET | `/api/v1/attachments/templates` | Same |
-
-### 2.2 A third pagination dialect
-
-One more endpoint self-describes with `limit == total` rather than the
-hardcoded 50, which is a distinct shape from both groups above.
-
-| Method | Path | Block |
-| --- | --- | --- |
-| GET | `/api/v1/effects/{id}/presets` | `offset: 0, limit: total, total, has_more: false` |
 
 ---
 
@@ -260,7 +233,7 @@ the same effective power state directly.
 | PUT | `/api/v1/config/keys/{key}` | **The value itself** as the JSON body; `?live=` (default `true`) gates the live apply | `200`, enveloped `{key, value, live, requires_restart, pending_restart, path}` | The body is typed JSON, so `true` is boolean and `"hello"` is a string. Returns `500 internal_error` when no `ConfigManager` is wired |
 | DELETE | `/api/v1/config/keys/{key}` | `?live=` (default `true`) | `200`, same mutation body, `value` carrying the restored default | |
 | POST | `/api/v1/config/reset` | No body; `?live=` (default `true`) | `200`, mutation body with `key` and `value` null | Whole-config reset only; the `drivers` map, unmodeled sections, and the include list survive |
-| GET | `/api/v1/config/schema` | Empty | `200`, enveloped list of `{pattern, apply, redaction, has_validator}` | The key registry as clients read it; `apply` is `{kind, section?}` |
+| GET | `/api/v1/config/schema` | Empty | `200`, enveloped list of `{pattern, apply, redaction, has_validator, protection}` | The key registry as clients read it; `apply` is `{kind, section?}` |
 
 ---
 
@@ -386,8 +359,8 @@ through `tower::oneshot`.
 Named so the gaps are explicit rather than assumed covered:
 
 - Per-route payload field lists. This matrix pins envelopes, pagination,
-  error shapes, headers, status codes, and legacy routing. Individual `data`
-  payloads are pinned only where a projection depends on them.
+  error shapes, headers, status codes, and deleted-route behavior. Individual
+  `data` payloads are pinned only where a projection depends on them.
 - Binary and streaming routes beyond noting that they bypass the envelope.
 - The WebSocket protocol. Binary tags and byte layouts are pinned separately by
   Spec 76 wave 0.8.

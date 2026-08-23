@@ -227,7 +227,7 @@ fn should_toggle_window(event: &TrayIconEvent) -> bool {
 fn tooltip_for(state: &AppState) -> String {
     if state.connected {
         let effect_label = state
-            .current_effect
+            .active_effect
             .as_ref()
             .map_or("No effect", |effect| effect.name.as_str());
         match &state.active_scene_name {

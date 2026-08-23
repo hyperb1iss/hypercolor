@@ -235,7 +235,9 @@ jobs:
           cache-on-failure: "false"
 
       - name: Check formatting
-        run: cargo fmt --all --check
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path crates/hypercolor-ui/Cargo.toml --check
 
       - name: Test local build fabric
         run: |
@@ -583,7 +585,7 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers --test-threads=1
+          --features builtin-drivers,persistence-test-hooks --test-threads=1
 
       - name: Run daemon doc tests
         if: matrix.suite == 'daemon'
@@ -797,7 +799,7 @@ jobs:
       - name: Run daemon input and capture integration tests
         run: >-
           cargo nextest run --locked -p hypercolor-daemon --no-default-features
-          --features builtin-drivers --test-threads=1
+          --features builtin-drivers,persistence-test-hooks --test-threads=1
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
@@ -1238,7 +1240,7 @@ jobs:
 
       - name: Install Zola
         run: |
-          ZOLA_VERSION="0.22.1"
+          ZOLA_VERSION="0.23.3"
           curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
             | tar xz -C /usr/local/bin
 

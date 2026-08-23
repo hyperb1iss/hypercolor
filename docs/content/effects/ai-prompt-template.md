@@ -9,9 +9,9 @@ A coding model will happily write a canvas animation. Left to its defaults it wr
 
 Every constraint below prevents a specific class of generic output. Keep them. The point is not a clever prompt, it is a prompt that fits the [SDK](@/effects/setup.md) and the [color science of real LEDs](@/effects/color-science.md) at the same time.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Pair this with the live engine. If you have the [MCP server](@/api/mcp.md) connected, an agent can read the current state, build the effect, install it, and apply it to your rig in one loop. The prompt produces the code; MCP closes the feedback cycle on real hardware.
-{% end %}
+{% </callout> %}
 
 ## The prompt template
 
@@ -84,9 +84,9 @@ Pick a few of these when you want tighter output. Each targets a habit models fa
 - "Prefer `globalCompositeOperation = 'lighter'` for overlapping glow elements."
 - "Include a trails toggle that uses semi-transparent `fillRect` instead of clearing the canvas each frame."
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Naming a palette beats describing colors. The SDK ships a registry of named palettes (SilkCircuit, Aurora, Cyberpunk, Vaporwave, Fire, Ice, Viridis, and more) that interpolate in Oklab, so they hold their chroma on hardware where hand-mixed HSL gradients turn to mud. Tell the model `Palette: Aurora` or expose a `paletteControl` rather than asking it to invent hex values. The full list lives in the [palette reference](@/effects/palettes.md).
-{% end %}
+{% </callout> %}
 
 ## Seed the prompt with an existing effect
 
@@ -103,7 +103,7 @@ copy its visuals.
 Stateful canvas effects like `lava-lamp` and `fiberflies` are good seeds: they show the factory pattern (a zero-argument setup function that returns the per-frame draw), real palette sampling, and an idle life that holds up in silence.
 
 <!-- effect gallery tile: lava-lamp -->
-{{ img(path="img/effects/lava-lamp.webp", alt="Lava Lamp, a stateful canvas effect that makes a good prompt seed") }}
+{{< img path="img/effects/lava-lamp.webp" alt="Lava Lamp, a stateful canvas effect that makes a good prompt seed" />}}
 
 ## A worked example
 
@@ -179,9 +179,9 @@ Before you ship, walk the effect through these. Models pass the build and fail h
 - Is any vivid color keeping at least one RGB channel near zero, so it reads as a color and not as bright white?
 - Does it hold up at the canvas sizes and on the hardware shapes you actually care about?
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The most common model failure is mapping a binary beat straight to brightness, which strobes harshly on real LEDs. The fix is in the prompt: route beat energy into motion, drive brightness from the decaying `beatPulse` / `onsetPulse` envelopes, and gate by `beatConfidence` so non-rhythmic audio stays calm. The full audio surface is documented in the [audio API reference](@/effects/audio.md).
-{% end %}
+{% </callout> %}
 
 ## Pair with the effect reviewer
 

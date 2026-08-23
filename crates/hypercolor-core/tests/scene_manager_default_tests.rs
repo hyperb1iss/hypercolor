@@ -2,18 +2,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hypercolor_core::scene::{SceneManager, make_scene};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
-    ControlBinding, ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
+    ControlBinding, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{
-    DisplayFaceBlendMode, DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -53,7 +51,6 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -87,13 +84,57 @@ fn media_layer() -> SceneLayer {
             asset_id: hypercolor_types::asset::AssetId::new(),
             playback: MediaPlayback::default(),
         },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
         bindings: Vec::new(),
         enabled: true,
     }
+}
+
+fn effect_layer(
+    effect_id: EffectId,
+    controls: HashMap<String, ControlValue>,
+    preset_id: Option<PresetId>,
+) -> SceneLayer {
+    SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        controls,
+        HashMap::new(),
+        preset_id,
+    )
+}
+
+fn zone_effect_id(zone: &Zone) -> Option<EffectId> {
+    zone.layers.iter().find_map(|layer| match layer.source {
+        LayerSource::Effect { effect_id, .. } => Some(effect_id),
+        _ => None,
+    })
+}
+
+fn zone_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => Some(controls),
+        _ => None,
+    })
+}
+
+fn zone_bindings(zone: &Zone) -> Option<&HashMap<String, ControlBinding>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect {
+            control_bindings, ..
+        } => Some(control_bindings),
+        _ => None,
+    })
+}
+
+fn zone_preset_id(zone: &Zone) -> Option<PresetId> {
+    zone.layers.iter().find_map(|layer| match layer.source {
+        LayerSource::Effect { preset_id, .. } => preset_id,
+        _ => None,
+    })
 }
 
 #[test]
@@ -109,7 +150,7 @@ fn with_default_installs_default_scene_as_ephemeral() {
     assert_eq!(scene.kind, SceneKind::Ephemeral);
     assert_eq!(scene.name, "Default");
     let primary = scene
-        .primary_group()
+        .primary_zone()
         .expect("default scene should seed a primary zone");
     assert_eq!(primary.name, "Default zone");
     assert_eq!(primary.layout.id, "default");
@@ -137,13 +178,13 @@ fn deactivate_below_default_is_noop() {
 }
 
 #[test]
-fn upsert_primary_group_creates_when_absent() {
+fn upsert_primary_zone_creates_when_absent() {
     let mut manager = SceneManager::with_default();
     let effect = sample_effect("Aurora");
     let controls = HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]);
 
-    let group = manager
-        .upsert_primary_group(
+    let zone = manager
+        .upsert_primary_zone(
             &effect,
             controls.clone(),
             None,
@@ -152,31 +193,31 @@ fn upsert_primary_group_creates_when_absent() {
         .expect("primary upsert should succeed")
         .clone();
 
-    assert_eq!(group.role, ZoneRole::Primary);
-    assert_eq!(group.effect_id, Some(effect.id));
-    assert_eq!(group.controls, controls);
-    assert_eq!(group.layout.id, "layout-zone_primary");
-    let [layer] = group.layers.as_slice() else {
+    assert_eq!(zone.role, ZoneRole::Primary);
+    assert_eq!(zone_effect_id(&zone), Some(effect.id));
+    assert_eq!(zone_controls(&zone), Some(&controls));
+    assert_eq!(zone.layout.id, "layout-zone_primary");
+    let [layer] = zone.layers.as_slice() else {
         panic!("a new primary zone should persist one effect layer");
     };
-    assert_ne!(layer.id.as_uuid(), group.id.0);
+    assert_ne!(layer.id.as_uuid(), zone.id.0);
     assert_eq!(
         manager
             .active_scene()
             .expect("default scene should remain active")
-            .groups
+            .zones
             .len(),
         1
     );
 }
 
 #[test]
-fn upsert_primary_group_updates_effect_id_when_present() {
+fn upsert_primary_zone_updates_effect_id_when_present() {
     let mut manager = SceneManager::with_default();
     let first_effect = sample_effect("Aurora");
     let second_effect = sample_effect("Sunset");
-    let first_group_id = manager
-        .upsert_primary_group(
+    let first_zone_id = manager
+        .upsert_primary_zone(
             &first_effect,
             HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]),
             None,
@@ -193,15 +234,23 @@ fn upsert_primary_group_updates_effect_id_when_present() {
         deadband: 0.0,
         smoothing: 0.5,
     };
-    assert!(
-        manager
-            .set_group_control_binding(first_group_id, "speed".to_owned(), binding)
-            .is_some(),
-        "binding should attach to the existing primary group"
-    );
+    let mut scene = manager
+        .active_scene()
+        .expect("default scene should remain active")
+        .clone();
+    let LayerSource::Effect {
+        control_bindings, ..
+    } = &mut scene.zones[0].layers[0].source
+    else {
+        panic!("primary zone should contain an effect layer");
+    };
+    control_bindings.insert("speed".to_owned(), binding);
+    manager
+        .update(scene)
+        .expect("bound scene fixture should remain valid");
 
-    let updated_group = manager
-        .upsert_primary_group(
+    let updated_zone = manager
+        .upsert_primary_zone(
             &second_effect,
             HashMap::from([("speed".to_owned(), ControlValue::Float(0.8))]),
             None,
@@ -210,28 +259,28 @@ fn upsert_primary_group_updates_effect_id_when_present() {
         .expect("second primary upsert should succeed")
         .clone();
 
-    assert_eq!(updated_group.id, first_group_id);
-    assert_eq!(updated_group.effect_id, Some(second_effect.id));
-    assert!(updated_group.control_bindings.is_empty());
-    assert_eq!(updated_group.layout.id, "layout-zone_b");
+    assert_eq!(updated_zone.id, first_zone_id);
+    assert_eq!(zone_effect_id(&updated_zone), Some(second_effect.id));
+    assert!(zone_bindings(&updated_zone).is_some_and(HashMap::is_empty));
+    assert_eq!(updated_zone.layout.id, "layout-zone_b");
     assert_eq!(
         manager
             .active_scene()
             .expect("default scene should remain active")
-            .groups
+            .zones
             .len(),
         1
     );
 }
 
 #[test]
-fn upsert_display_group_uniqueness_per_device() {
+fn upsert_display_zone_uniqueness_per_device() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
     let first_effect = sample_effect("Monitor");
     let second_effect = sample_effect("Clock");
-    let first_group_id = manager
-        .upsert_display_group(
+    let first_zone_id = manager
+        .upsert_display_zone(
             device_id,
             "Pump LCD",
             &first_effect,
@@ -241,8 +290,8 @@ fn upsert_display_group_uniqueness_per_device() {
         .expect("first display upsert should succeed")
         .id;
 
-    let updated_group = manager
-        .upsert_display_group(
+    let updated_zone = manager
+        .upsert_display_zone(
             device_id,
             "Pump LCD",
             &second_effect,
@@ -252,40 +301,39 @@ fn upsert_display_group_uniqueness_per_device() {
         .expect("second display upsert should succeed")
         .clone();
 
-    assert_eq!(updated_group.id, first_group_id);
-    assert_eq!(updated_group.role, ZoneRole::Display);
-    assert_eq!(updated_group.effect_id, Some(second_effect.id));
-    assert_eq!(updated_group.layout.id, "layout-display_b");
+    assert_eq!(updated_zone.id, first_zone_id);
+    assert_eq!(updated_zone.role, ZoneRole::Display);
+    assert_eq!(zone_effect_id(&updated_zone), Some(second_effect.id));
+    assert_eq!(updated_zone.layout.id, "layout-display_b");
     assert_eq!(
         manager
             .active_scene()
             .expect("default scene should remain active")
-            .groups
+            .zones
             .iter()
-            .filter(|group| group.role == ZoneRole::Display)
+            .filter(|zone| zone.role == ZoneRole::Display)
             .count(),
         1
     );
 }
 
 #[test]
-fn ensure_display_group_surface_creates_empty_screen_surface() {
+fn ensure_display_zone_surface_creates_empty_screen_surface() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
-    let group = manager
-        .ensure_display_group_surface(device_id, "Push 2", sample_layout("push-display"))
+    let zone = manager
+        .ensure_display_zone_surface(device_id, "Push 2", sample_layout("push-display"))
         .expect("display surface sync should succeed")
         .clone();
 
-    assert_eq!(group.name, "Push 2");
-    assert_eq!(group.role, ZoneRole::Display);
-    assert_eq!(group.effect_id, None);
-    assert!(group.layers.is_empty());
-    assert!(group.effective_layers().is_empty());
-    assert_eq!(group.layout.id, "layout-push-display");
+    assert_eq!(zone.name, "Push 2");
+    assert_eq!(zone.role, ZoneRole::Display);
+    assert_eq!(zone_effect_id(&zone), None);
+    assert!(zone.layers.is_empty());
+    assert!(zone.layers.clone().is_empty());
+    assert_eq!(zone.layout.id, "layout-push-display");
     assert_eq!(
-        group
-            .display_target
+        zone.display_target
             .as_ref()
             .expect("display target should be present")
             .device_id,
@@ -295,26 +343,22 @@ fn ensure_display_group_surface_creates_empty_screen_surface() {
         manager
             .active_scene()
             .expect("default scene should remain active")
-            .groups_revision,
+            .zones_revision,
         1
     );
 }
 
 #[test]
-fn ensure_display_group_surface_repairs_replace_seed_on_faceless_group() {
+fn ensure_display_zone_surface_repairs_replace_seed_on_faceless_zone() {
     let device_id = DeviceId::new();
     let mut scene = make_scene("Desk");
     let scene_id = scene.id;
     let mut stale_target = DisplayFaceTarget::new(device_id);
-    stale_target.blend_mode = DisplayFaceBlendMode::Replace;
-    scene.groups = vec![Zone {
+    stale_target.blend_mode = BlendMode::Replace;
+    scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Pump LCD".to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: sample_layout("display"),
         brightness: 1.0,
@@ -331,37 +375,33 @@ fn ensure_display_group_surface_repairs_replace_seed_on_faceless_group() {
         .activate(&scene_id, None)
         .expect("scene should activate");
 
-    let group = manager
-        .ensure_display_group_surface(device_id, "Pump LCD", sample_layout("display"))
+    let zone = manager
+        .ensure_display_zone_surface(device_id, "Pump LCD", sample_layout("display"))
         .expect("display surface sync should succeed")
         .clone();
 
     // The Replace seed on a face-less screen came from older builds; a
-    // face-less group cannot carry a deliberate composition choice, so
+    // face-less zone cannot carry a deliberate composition choice, so
     // sync normalizes it back to the blended default.
-    let target = group
+    let target = zone
         .display_target
         .expect("display target should remain bound");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert_eq!(target.blend_mode, BlendMode::Alpha);
 }
 
 #[test]
-fn ensure_display_group_surface_preserves_deliberate_replace_with_face() {
+fn ensure_display_zone_surface_preserves_deliberate_replace_with_face() {
     let device_id = DeviceId::new();
     let effect = sample_effect("Clock");
     let mut scene = make_scene("Desk");
     let scene_id = scene.id;
     let mut replace_target = DisplayFaceTarget::new(device_id);
-    replace_target.blend_mode = DisplayFaceBlendMode::Replace;
-    scene.groups = vec![Zone {
+    replace_target.blend_mode = BlendMode::Replace;
+    scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Pump LCD".to_owned(),
         description: None,
-        effect_id: Some(effect.id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
+        layers: vec![effect_layer(effect.id, HashMap::new(), None)],
         layout: sample_layout("display"),
         brightness: 1.0,
         enabled: true,
@@ -377,30 +417,30 @@ fn ensure_display_group_surface_preserves_deliberate_replace_with_face() {
         .activate(&scene_id, None)
         .expect("scene should activate");
 
-    let group = manager
-        .ensure_display_group_surface(device_id, "Pump LCD", sample_layout("display"))
+    let zone = manager
+        .ensure_display_zone_surface(device_id, "Pump LCD", sample_layout("display"))
         .expect("display surface sync should succeed")
         .clone();
 
-    // Replace on a group that carries a face is a composition the user
+    // Replace on a zone that carries a face is a composition the user
     // could have chosen through the panel; sync must not override it.
-    let target = group
+    let target = zone
         .display_target
         .expect("display target should remain bound");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert_eq!(target.blend_mode, BlendMode::Replace);
 }
 
 #[test]
-fn upsert_display_group_reuses_empty_screen_surface() {
+fn upsert_display_zone_reuses_empty_screen_surface() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
-    let group_id = manager
-        .ensure_display_group_surface(device_id, "Push 2", sample_layout("push-display"))
+    let zone_id = manager
+        .ensure_display_zone_surface(device_id, "Push 2", sample_layout("push-display"))
         .expect("display surface sync should succeed")
         .id;
     let effect = sample_effect("Clock");
     let updated = manager
-        .upsert_display_group(
+        .upsert_display_zone(
             device_id,
             "Push 2",
             &effect,
@@ -410,29 +450,29 @@ fn upsert_display_group_reuses_empty_screen_surface() {
         .expect("face assignment should reuse synced surface")
         .clone();
 
-    assert_eq!(updated.id, group_id);
-    assert_eq!(updated.effect_id, Some(effect.id));
-    assert_eq!(updated.effective_layers().len(), 1);
+    assert_eq!(updated.id, zone_id);
+    assert_eq!(zone_effect_id(&updated), Some(effect.id));
+    assert_eq!(updated.layers.clone().len(), 1);
     assert_eq!(updated.layout.id, "layout-push-face");
     assert_eq!(
         manager
             .active_scene()
             .expect("default scene should remain active")
-            .groups
+            .zones
             .iter()
-            .filter(|group| group.role == ZoneRole::Display)
+            .filter(|zone| zone.role == ZoneRole::Display)
             .count(),
         1
     );
 }
 
 #[test]
-fn clear_display_group_assignment_preserves_screen_surface() {
+fn clear_display_zone_assignment_preserves_screen_surface() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
     let effect = sample_effect("Clock");
-    let group_id = manager
-        .upsert_display_group(
+    let zone_id = manager
+        .upsert_display_zone(
             device_id,
             "Pump LCD",
             &effect,
@@ -443,16 +483,15 @@ fn clear_display_group_assignment_preserves_screen_surface() {
         .id;
 
     let cleared = manager
-        .clear_display_group_assignment(device_id, "Pump LCD", sample_layout("surface"))
+        .clear_display_zone_assignment(device_id, "Pump LCD", sample_layout("surface"))
         .expect("face assignment should clear into a surface shell")
         .clone();
 
-    assert_eq!(cleared.id, group_id);
+    assert_eq!(cleared.id, zone_id);
     assert_eq!(cleared.role, ZoneRole::Display);
-    assert_eq!(cleared.effect_id, None);
-    assert!(cleared.controls.is_empty());
+    assert_eq!(zone_effect_id(&cleared), None);
     assert!(cleared.layers.is_empty());
-    assert!(cleared.effective_layers().is_empty());
+    assert!(cleared.layers.clone().is_empty());
     assert_eq!(cleared.layout.id, "layout-surface");
     assert_eq!(
         cleared
@@ -465,19 +504,21 @@ fn clear_display_group_assignment_preserves_screen_surface() {
 }
 
 #[test]
-fn default_display_face_materializes_a_real_layer_beside_media() {
+fn default_display_face_preserves_an_authored_effect_layer_beside_media() {
     let device_id = DeviceId::new();
     let effect = sample_effect("Clock");
-    let group_id = ZoneId::new();
-    let group = Zone {
-        id: group_id,
+    let zone_id = ZoneId::new();
+    let authored_effect_layer = effect_layer(
+        effect.id,
+        HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]),
+        None,
+    );
+    let authored_effect_layer_id = authored_effect_layer.id;
+    let zone = Zone {
+        id: zone_id,
         name: "Pump LCD".to_owned(),
         description: None,
-        effect_id: Some(effect.id),
-        controls: HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: vec![media_layer()],
+        layers: vec![authored_effect_layer, media_layer()],
         layout: sample_layout("display"),
         brightness: 1.0,
         enabled: true,
@@ -489,11 +530,12 @@ fn default_display_face_materializes_a_real_layer_beside_media() {
     };
 
     let mut manager = SceneManager::with_default();
-    manager.set_default_display_group(group);
+    manager.set_default_display_zone(zone);
     let layers = manager
-        .default_display_group_for(device_id)
-        .expect("display group should install")
-        .effective_layers();
+        .default_display_zone_for(device_id)
+        .expect("display zone should install")
+        .layers
+        .clone();
 
     assert_eq!(layers.len(), 2);
     let LayerSource::Effect {
@@ -502,30 +544,26 @@ fn default_display_face_materializes_a_real_layer_beside_media() {
         ..
     } = &layers[0].source
     else {
-        panic!("legacy face should appear before media layers");
+        panic!("authored face should appear before media layers");
     };
     assert_eq!(*effect_id, effect.id);
-    assert_ne!(layers[0].id.as_uuid(), group_id.0);
+    assert_eq!(layers[0].id, authored_effect_layer_id);
     assert_eq!(controls.get("speed"), Some(&ControlValue::Float(0.5)));
     assert!(matches!(layers[1].source, LayerSource::Media { .. }));
 }
 
 #[test]
-fn inserting_layer_materializes_legacy_display_face_before_media() {
+fn inserting_layer_preserves_authored_display_face_before_media() {
     let device_id = DeviceId::new();
     let effect = sample_effect("Clock");
     let mut scene = make_scene("Desk");
     let scene_id = scene.id;
-    let group_id = ZoneId::new();
-    scene.groups = vec![Zone {
-        id: group_id,
+    let zone_id = ZoneId::new();
+    scene.zones = vec![Zone {
+        id: zone_id,
         name: "Pump LCD".to_owned(),
         description: None,
-        effect_id: Some(effect.id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: vec![media_layer()],
+        layers: vec![effect_layer(effect.id, HashMap::new(), None), media_layer()],
         layout: sample_layout("display"),
         brightness: 1.0,
         enabled: true,
@@ -542,8 +580,8 @@ fn inserting_layer_materializes_legacy_display_face_before_media() {
         .expect("scene should activate");
 
     let updated = manager
-        .insert_scene_group_layer(scene_id, group_id, media_layer(), None, None)
-        .expect("media insert should preserve legacy face")
+        .insert_zone_layer(scene_id, zone_id, media_layer(), None, None)
+        .expect("media insert should preserve authored face")
         .0
         .clone();
 
@@ -564,12 +602,12 @@ fn inserting_layer_materializes_legacy_display_face_before_media() {
 }
 
 #[test]
-fn patch_display_group_target_preserves_opacity_for_effect_blends_and_normalizes_replace() {
+fn patch_display_zone_target_preserves_opacity_for_effect_blends_and_normalizes_replace() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
     let effect = sample_effect("Monitor");
-    let group_id = manager
-        .upsert_display_group(
+    let zone_id = manager
+        .upsert_display_zone(
             device_id,
             "Pump LCD",
             &effect,
@@ -579,84 +617,51 @@ fn patch_display_group_target_preserves_opacity_for_effect_blends_and_normalizes
         .expect("display upsert should succeed")
         .id;
 
-    let screen_group = manager
-        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Screen), Some(0.42))
+    let screen_zone = manager
+        .patch_display_zone_target(zone_id, Some(BlendMode::Screen), Some(0.42))
         .expect("screen patch should update the display target");
-    let screen_target = screen_group
+    let screen_target = screen_zone
         .display_target
         .clone()
         .expect("display target should remain present");
     assert_eq!(screen_target.device_id, device_id);
-    assert_eq!(screen_target.blend_mode, DisplayFaceBlendMode::Screen);
+    assert_eq!(screen_target.blend_mode, BlendMode::Screen);
     assert!((screen_target.opacity - 0.42).abs() < f32::EPSILON);
 
-    let replace_group = manager
-        .patch_display_group_target(group_id, Some(DisplayFaceBlendMode::Replace), Some(0.08))
+    let replace_zone = manager
+        .patch_display_zone_target(zone_id, Some(BlendMode::Replace), Some(0.08))
         .expect("replace patch should update the display target");
-    let replace_target = replace_group
+    let replace_target = replace_zone
         .display_target
         .clone()
         .expect("display target should remain present");
     assert_eq!(replace_target.device_id, device_id);
-    assert_eq!(replace_target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert_eq!(replace_target.blend_mode, BlendMode::Replace);
     assert!((replace_target.opacity - 1.0).abs() < f32::EPSILON);
 }
 
 #[test]
-fn remove_display_group_is_idempotent() {
-    let mut manager = SceneManager::with_default();
-    let device_id = DeviceId::new();
-    let effect = sample_effect("Monitor");
-    manager
-        .upsert_display_group(
-            device_id,
-            "Pump LCD",
-            &effect,
-            HashMap::new(),
-            sample_layout("display"),
-        )
-        .expect("display upsert should succeed");
-
-    assert_eq!(
-        manager
-            .remove_display_group(device_id)
-            .expect("first removal should succeed"),
-        true
-    );
-    assert_eq!(
-        manager
-            .remove_display_group(device_id)
-            .expect("second removal should succeed"),
-        false
-    );
-}
-
-#[test]
-fn remove_display_groups_for_device_prunes_named_scenes_too() {
+fn remove_display_zones_for_device_prunes_named_scenes_too() {
     let mut manager = SceneManager::with_default();
     let device_id = DeviceId::new();
     let other_device_id = DeviceId::new();
     let effect = sample_effect("Monitor");
     manager
-        .upsert_display_group(
+        .upsert_display_zone(
             device_id,
             "Pump LCD",
             &effect,
             HashMap::new(),
             sample_layout("default-display"),
         )
-        .expect("default display group should be created");
+        .expect("default display zone should be created");
 
     let mut named_scene = make_scene("Desk");
-    named_scene.groups = vec![
+    named_scene.zones = vec![
         Zone {
             id: ZoneId::new(),
             name: "Desk Face".to_owned(),
             description: None,
-            effect_id: Some(effect.id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: Vec::new(),
             layout: sample_layout("named-display"),
             brightness: 1.0,
@@ -671,10 +676,6 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
             id: ZoneId::new(),
             name: "Other Face".to_owned(),
             description: None,
-            effect_id: Some(effect.id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: Vec::new(),
             layout: sample_layout("other-display"),
             brightness: 1.0,
@@ -691,43 +692,43 @@ fn remove_display_groups_for_device_prunes_named_scenes_too() {
         .create(named_scene)
         .expect("named scene should be created");
 
-    let removed_groups = manager.remove_display_groups_for_device(device_id);
-    assert_eq!(removed_groups.len(), 2);
+    let removed_zones = manager.remove_display_zones_for_device(device_id);
+    assert_eq!(removed_zones.len(), 2);
     assert!(
-        removed_groups
+        removed_zones
             .iter()
             .any(|(scene_id, _)| *scene_id == SceneId::DEFAULT),
-        "default scene display group should be removed"
+        "default scene display zone should be removed"
     );
     assert!(
-        removed_groups
+        removed_zones
             .iter()
             .any(|(scene_id, _)| *scene_id == named_scene_id),
-        "named scene display group should be removed"
+        "named scene display zone should be removed"
     );
 
     let default_scene = manager
         .active_scene()
         .expect("default scene should stay active");
-    assert!(default_scene.display_group_for(device_id).is_none());
+    assert!(default_scene.display_zone_for(device_id).is_none());
 
     let named_scene = manager
         .get(&named_scene_id)
         .expect("named scene should still exist");
-    assert!(named_scene.display_group_for(device_id).is_none());
+    assert!(named_scene.display_zone_for(device_id).is_none());
     assert!(
-        named_scene.display_group_for(other_device_id).is_some(),
-        "unrelated display group should be preserved"
+        named_scene.display_zone_for(other_device_id).is_some(),
+        "unrelated display zone should be preserved"
     );
 }
 
 #[test]
-fn patch_group_controls_missing_group_returns_none() {
+fn patch_zone_controls_missing_zone_returns_none() {
     let mut manager = SceneManager::with_default();
 
     assert!(
         manager
-            .patch_group_controls(
+            .patch_zone_controls(
                 ZoneId::new(),
                 HashMap::from([("speed".to_owned(), ControlValue::Float(0.9))]),
             )
@@ -736,12 +737,12 @@ fn patch_group_controls_missing_group_returns_none() {
 }
 
 #[test]
-fn control_derivations_preserve_selected_preset_provenance() {
+fn control_patches_preserve_selected_preset_provenance() {
     let mut manager = SceneManager::with_default();
     let effect = sample_effect("Aurora");
     let preset_id = PresetId::new();
-    let group_id = manager
-        .upsert_primary_group(
+    let zone_id = manager
+        .upsert_primary_zone(
             &effect,
             HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]),
             Some(preset_id),
@@ -751,39 +752,25 @@ fn control_derivations_preserve_selected_preset_provenance() {
         .id;
 
     let patched = manager
-        .patch_group_controls(
-            group_id,
+        .patch_zone_controls(
+            zone_id,
             HashMap::from([("speed".to_owned(), ControlValue::Float(0.9))]),
         )
         .expect("control patch should succeed");
-    assert_eq!(patched.preset_id, Some(preset_id));
-
-    let binding = ControlBinding {
-        sensor: "cpu_temp".to_owned(),
-        sensor_min: 30.0,
-        sensor_max: 100.0,
-        target_min: 0.0,
-        target_max: 1.0,
-        deadband: 0.0,
-        smoothing: 0.5,
-    };
-    let bound = manager
-        .set_group_control_binding(group_id, "speed".to_owned(), binding)
-        .expect("binding should succeed");
-    assert_eq!(bound.preset_id, Some(preset_id));
+    assert_eq!(zone_preset_id(patched), Some(preset_id));
 }
 
 #[test]
-fn sync_primary_group_layout_refreshes_primary_but_leaves_display_untouched() {
+fn sync_primary_zone_layout_refreshes_primary_but_leaves_display_untouched() {
     let mut manager = SceneManager::with_default();
     let effect = sample_effect("Aurora");
     manager
-        .upsert_primary_group(&effect, HashMap::new(), None, sample_layout("zone_stale"))
+        .upsert_primary_zone(&effect, HashMap::new(), None, sample_layout("zone_stale"))
         .expect("primary upsert should succeed");
     let device_id = DeviceId::new();
     let display_effect = sample_effect("Clock Face");
     manager
-        .upsert_display_group(
+        .upsert_display_zone(
             device_id,
             "Pump LCD",
             &display_effect,
@@ -791,17 +778,17 @@ fn sync_primary_group_layout_refreshes_primary_but_leaves_display_untouched() {
             sample_layout("display_stale"),
         )
         .expect("display upsert should succeed");
-    let revision_before = manager.active_render_groups_revision();
+    let revision_before = manager.resolved_zones_revision();
 
     let next_layout = sample_layout("zone_fresh");
-    let changed = manager.sync_primary_group_layout(&next_layout);
+    let changed = manager.sync_primary_zone_layout(&next_layout);
 
     assert!(changed, "layout swap should be reported as changed");
     let primary_layout_id = manager
         .active_scene()
         .expect("default scene should remain active")
-        .primary_group()
-        .expect("primary group should exist")
+        .primary_zone()
+        .expect("primary zone should exist")
         .layout
         .id
         .clone();
@@ -809,36 +796,36 @@ fn sync_primary_group_layout_refreshes_primary_but_leaves_display_untouched() {
     let display_layout_id = manager
         .active_scene()
         .expect("default scene should remain active")
-        .display_group_for(device_id)
-        .expect("display group should exist")
+        .display_zone_for(device_id)
+        .expect("display zone should exist")
         .layout
         .id
         .clone();
     assert_eq!(
         display_layout_id, "layout-display_stale",
-        "display groups own their own layouts and must not be rewritten"
+        "display zones own their own layouts and must not be rewritten"
     );
     assert!(
-        manager.active_render_groups_revision() > revision_before,
+        manager.resolved_zones_revision() > revision_before,
         "zone revision should bump when the primary layout changes"
     );
 }
 
 #[test]
-fn sync_primary_group_layout_is_noop_when_layout_already_matches() {
+fn sync_primary_zone_layout_is_noop_when_layout_already_matches() {
     let mut manager = SceneManager::with_default();
     let effect = sample_effect("Aurora");
     let layout = sample_layout("zone_steady");
     manager
-        .upsert_primary_group(&effect, HashMap::new(), None, layout.clone())
+        .upsert_primary_zone(&effect, HashMap::new(), None, layout.clone())
         .expect("primary upsert should succeed");
-    let revision_before = manager.active_render_groups_revision();
+    let revision_before = manager.resolved_zones_revision();
 
-    let changed = manager.sync_primary_group_layout(&layout);
+    let changed = manager.sync_primary_zone_layout(&layout);
 
     assert!(!changed, "matching layout should not report change");
     assert_eq!(
-        manager.active_render_groups_revision(),
+        manager.resolved_zones_revision(),
         revision_before,
         "zone revision should not move when nothing changed"
     );
@@ -847,17 +834,14 @@ fn sync_primary_group_layout_is_noop_when_layout_already_matches() {
 #[test]
 fn primary_layout_candidate_does_not_mutate_live_scene() {
     let manager = SceneManager::with_default_layout(sample_layout("current"));
-    let live_revision = manager.active_render_groups_revision();
+    let live_revision = manager.resolved_zones_revision();
     let next_layout = sample_layout("candidate");
 
-    let (candidate_groups, candidate_revision) =
-        manager.active_render_groups_for_primary_layout(&next_layout);
+    let (candidate_zones, candidate_revision) =
+        manager.resolved_zones_for_primary_layout(&next_layout);
 
     assert_eq!(candidate_revision, live_revision + 1);
-    assert_eq!(candidate_groups[0].layout, next_layout);
-    assert_eq!(manager.active_render_groups_revision(), live_revision);
-    assert_eq!(
-        manager.active_render_groups()[0].layout.id,
-        "layout-current"
-    );
+    assert_eq!(candidate_zones[0].layout, next_layout);
+    assert_eq!(manager.resolved_zones_revision(), live_revision);
+    assert_eq!(manager.resolved_zones()[0].layout.id, "layout-current");
 }

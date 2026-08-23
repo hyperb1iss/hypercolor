@@ -1,5 +1,7 @@
 //! Corsair NXP/CUE RGB packet encoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
@@ -8,8 +10,7 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceFeat
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-    TransferType,
+    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 
 use super::types::{
@@ -251,12 +252,12 @@ impl Protocol for CorsairNxpProtocol {
         NXP_RESPONSE_TIMEOUT
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         if !self.config.supports_direct() {
             return Vec::new();
         }
 
-        vec![ProtocolZone {
+        vec![SegmentInfo {
             name: self.config.class.zone_name().to_owned(),
             led_count: u32::try_from(self.config.led_count).unwrap_or(u32::MAX),
             topology: self.config.topology.hint(),

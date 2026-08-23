@@ -4,12 +4,12 @@ use hypercolor_hal::drivers::asus::smbus::{
     AURA_GPU_MAGIC, AuraSmBusProtocol, ENE_ADDRESS_REGISTER, ENE_APPLY_VAL, ENE_BLOCK_WRITE_LIMIT,
     ENE_BLOCK_WRITE_REGISTER, ENE_DRAM_COLOR_APPLY_REGISTER, ENE_DRAM_I2C_ADDRESS_REGISTER,
     ENE_DRAM_SLOT_INDEX_REGISTER, ENE_OPERATION_DELAY, ENE_READ_REGISTER, ENE_SAVE_VAL,
-    EneSmBusOperation, decode_ene_transaction, encode_ene_transaction, ene_byte_swap,
-    ene_direct_color_writes, ene_dram_remap_sequence, ene_permute_color, ene_read_register_range,
-    ene_write_register, ene_write_register_block, lookup_ene_firmware_variant, simple_gpu_magic,
-    supports_mode_14,
+    decode_ene_transaction, encode_ene_transaction, ene_byte_swap, ene_direct_color_writes,
+    ene_dram_remap_sequence, ene_permute_color, ene_read_register_range, ene_write_register,
+    ene_write_register_block, lookup_ene_firmware_variant, simple_gpu_magic, supports_mode_14,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
+use hypercolor_hal::transport::smbus::SmBusOperation;
 
 #[test]
 fn byte_swap_matches_ene_indirect_addressing() {
@@ -55,26 +55,26 @@ fn read_register_range_emits_indirect_address_then_read_pairs() {
 
     assert_eq!(
         operations[0],
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: 0x0010,
         }
     );
     assert_eq!(
         operations[1],
-        EneSmBusOperation::Delay {
+        SmBusOperation::Delay {
             duration: ENE_OPERATION_DELAY,
         }
     );
     assert_eq!(
         operations[2],
-        EneSmBusOperation::ReadByteData {
+        SmBusOperation::ReadByteData {
             register: ENE_READ_REGISTER,
         }
     );
     assert_eq!(
         operations[3],
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: 0x0110,
         }
@@ -87,20 +87,20 @@ fn write_register_emits_indirect_address_then_write() {
     assert_eq!(operations.len(), 3);
     assert_eq!(
         operations[0],
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: 0x2080,
         }
     );
     assert_eq!(
         operations[1],
-        EneSmBusOperation::Delay {
+        SmBusOperation::Delay {
             duration: Duration::from_millis(1),
         }
     );
     assert_eq!(
         operations[2],
-        EneSmBusOperation::WriteByteData {
+        SmBusOperation::WriteByteData {
             register: 0x01,
             value: 0x01,
         }
@@ -114,35 +114,35 @@ fn block_write_chunks_payloads_at_three_bytes() {
 
     assert_eq!(
         operations[0],
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: 0x0081,
         }
     );
     assert_eq!(
         operations[2],
-        EneSmBusOperation::WriteBlockData {
+        SmBusOperation::WriteBlockData {
             register: ENE_BLOCK_WRITE_REGISTER,
             data: vec![1, 2, 3],
         }
     );
     assert_eq!(
         operations[3],
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: 0x0381,
         }
     );
     assert_eq!(
         operations[5],
-        EneSmBusOperation::WriteBlockData {
+        SmBusOperation::WriteBlockData {
             register: ENE_BLOCK_WRITE_REGISTER,
             data: vec![4, 5, 6],
         }
     );
     assert_eq!(
         operations[8],
-        EneSmBusOperation::WriteBlockData {
+        SmBusOperation::WriteBlockData {
             register: ENE_BLOCK_WRITE_REGISTER,
             data: vec![7],
         }
@@ -157,14 +157,14 @@ fn direct_color_writes_use_rbg_payloads() {
     assert_eq!(operations.len(), 6);
     assert_eq!(
         operations[2],
-        EneSmBusOperation::WriteBlockData {
+        SmBusOperation::WriteBlockData {
             register: ENE_BLOCK_WRITE_REGISTER,
             data: vec![0x10, 0x30, 0x20],
         }
     );
     assert_eq!(
         operations[5],
-        EneSmBusOperation::WriteBlockData {
+        SmBusOperation::WriteBlockData {
             register: ENE_BLOCK_WRITE_REGISTER,
             data: vec![0xAA, 0xCC, 0xBB],
         }
@@ -192,28 +192,28 @@ fn dram_remap_sequence_programs_slot_then_shifted_address() {
     assert_eq!(operations.len(), 6);
     assert_eq!(
         operations[0],
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: ene_byte_swap(ENE_DRAM_SLOT_INDEX_REGISTER),
         }
     );
     assert_eq!(
         operations[2],
-        EneSmBusOperation::WriteByteData {
+        SmBusOperation::WriteByteData {
             register: 0x01,
             value: 3,
         }
     );
     assert_eq!(
         operations[3],
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: ene_byte_swap(ENE_DRAM_I2C_ADDRESS_REGISTER),
         }
     );
     assert_eq!(
         operations[5],
-        EneSmBusOperation::WriteByteData {
+        SmBusOperation::WriteByteData {
             register: 0x01,
             value: 0x72,
         }
@@ -239,17 +239,17 @@ fn block_write_limit_matches_smbus_cap() {
 #[test]
 fn transaction_codec_round_trips_operations() {
     let operations = vec![
-        EneSmBusOperation::WriteWordData {
+        SmBusOperation::WriteWordData {
             register: ENE_ADDRESS_REGISTER,
             value: 0x2080,
         },
-        EneSmBusOperation::Delay {
+        SmBusOperation::Delay {
             duration: ENE_OPERATION_DELAY,
         },
-        EneSmBusOperation::ReadByteData {
+        SmBusOperation::ReadByteData {
             register: ENE_READ_REGISTER,
         },
-        EneSmBusOperation::WriteBlockData {
+        SmBusOperation::WriteBlockData {
             register: ENE_BLOCK_WRITE_REGISTER,
             data: vec![1, 2, 3],
         },
@@ -447,10 +447,10 @@ fn smbus_protocol_frame_encoding_reasserts_direct_mode_and_appends_dram_apply_la
     assert_eq!(operations, expected);
 }
 
-fn count_delays(operations: &[EneSmBusOperation]) -> usize {
+fn count_delays(operations: &[SmBusOperation]) -> usize {
     operations
         .iter()
-        .filter(|operation| matches!(operation, EneSmBusOperation::Delay { .. }))
+        .filter(|operation| matches!(operation, SmBusOperation::Delay { .. }))
         .count()
 }
 

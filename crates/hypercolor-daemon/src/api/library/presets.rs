@@ -7,17 +7,15 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
 use hypercolor_types::library::{EffectPreset, PresetId};
 
-use crate::api::AppState;
-use crate::api::control_values::json_to_control_value;
-use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 
-use super::{normalize_tags, resolve_preset_id, store_error_to_response, unix_epoch_ms};
+use super::{normalize_tags, resolve_preset_id, store_error, unix_epoch_ms};
 
 // Wire contracts live in hypercolor-types::api::library — shared with
 // the web UI and the TUI.
@@ -29,17 +27,13 @@ pub use hypercolor_types::api::library::{
 
 /// `GET /api/v1/library/presets` — list all saved presets.
 pub async fn list_presets(State(state): State<Arc<AppState>>) -> Response {
-    let items = state.library_store.list_presets().await;
+    let items = state.library_store().list_presets().await;
     let total = items.len();
 
-    ApiResponse::ok(PresetListResponse {
+    envelope::ok(PresetListResponse {
         items,
-        pagination: crate::api::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("preset count fits in u64"),
+        page: None,
     })
 }
 
@@ -49,11 +43,11 @@ pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    let Some(preset) = state.library_store.get_preset(preset_id).await else {
+    let Some(preset) = state.library_store().get_preset(preset_id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    ApiResponse::ok(preset)
+    envelope::ok(preset)
 }
 
 /// `POST /api/v1/library/presets` — create a new saved preset.
@@ -65,12 +59,9 @@ pub async fn create_preset(
         return DomainError::validation("Preset name must not be empty").into_response();
     }
 
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
-        };
-        effect
+    let _admission = state.domains.effects.admit_current().await;
+    let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
+        return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
 
     let controls = match parse_preset_controls(&effect, body.controls.as_ref()) {
@@ -96,8 +87,8 @@ pub async fn create_preset(
         updated_at_ms: now,
     };
 
-    if let Err(error) = state.library_store.insert_preset(preset.clone()).await {
-        return store_error_to_response(&error);
+    if let Err(error) = state.library_store().insert_preset(preset.clone()).await {
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -107,7 +98,7 @@ pub async fn create_preset(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::created(preset)
+    envelope::created(preset)
 }
 
 /// `PUT /api/v1/library/presets/{id}` — update an existing preset.
@@ -123,16 +114,13 @@ pub async fn update_preset(
         return DomainError::validation("Preset name must not be empty").into_response();
     }
 
-    let Some(existing) = state.library_store.get_preset(preset_id).await else {
+    let Some(existing) = state.library_store().get_preset(preset_id).await else {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
-        };
-        effect
+    let _admission = state.domains.effects.admit_current().await;
+    let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
+        return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
 
     let controls = match parse_preset_controls(&effect, body.controls.as_ref()) {
@@ -157,8 +145,8 @@ pub async fn update_preset(
         updated_at_ms: unix_epoch_ms(),
     };
 
-    if let Err(error) = state.library_store.update_preset(preset.clone()).await {
-        return store_error_to_response(&error);
+    if let Err(error) = state.library_store().update_preset(preset.clone()).await {
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -168,7 +156,7 @@ pub async fn update_preset(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::ok(preset)
+    envelope::ok(preset)
 }
 
 /// `DELETE /api/v1/library/presets/{id}` — remove a preset.
@@ -177,9 +165,9 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
     };
 
-    let removed = match state.library_store.remove_preset(preset_id).await {
+    let removed = match state.library_store().remove_preset(preset_id).await {
         Ok(removed) => removed,
-        Err(error) => return store_error_to_response(&error),
+        Err(error) => return store_error(&error).into_response(),
     };
     if !removed {
         return DomainError::not_found(ResourceKind::Preset, &id).into_response();
@@ -192,7 +180,7 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
             kind: LibraryChangeKind::Removed,
         });
 
-    ApiResponse::ok(DeletePresetResponse {
+    envelope::ok(DeletePresetResponse {
         id: preset_id.to_string(),
         deleted: true,
     })
@@ -214,15 +202,11 @@ fn parse_preset_controls(
     let mut normalized = HashMap::new();
     let mut rejected = Vec::new();
     for (name, raw_value) in control_map {
-        let Some(parsed) = json_to_control_value(raw_value) else {
-            rejected.push(format!("{name} (unsupported JSON shape)"));
-            continue;
-        };
         let Some(definition) = effect.control_by_id(name) else {
             rejected.push(format!("{name} (unknown control)"));
             continue;
         };
-        match definition.validate_value(&parsed) {
+        match definition.admit_effect_json(raw_value) {
             Ok(validated) => {
                 normalized.insert(name.clone(), validated);
             }
@@ -234,5 +218,79 @@ fn parse_preset_controls(
         Ok(normalized)
     } else {
         Err(rejected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::effect::{
+        ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+        EffectSource,
+    };
+
+    use super::parse_preset_controls;
+
+    fn metadata() -> EffectMetadata {
+        EffectMetadata {
+            id: EffectId::new(uuid::Uuid::now_v7()),
+            name: "preset fixture".to_owned(),
+            author: "test".to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            category: EffectCategory::Ambient,
+            tags: Vec::new(),
+            controls: vec![ControlDefinition {
+                id: "accent".to_owned(),
+                name: "Accent".to_owned(),
+                kind: ControlKind::Color,
+                control_type: ControlType::ColorPicker,
+                default_value: ControlValue::linear_color([1.0, 1.0, 1.0, 1.0]),
+                min: None,
+                max: None,
+                step: None,
+                labels: Vec::new(),
+                group: None,
+                tooltip: None,
+                aspect_lock: None,
+                preview_source: None,
+                binding: None,
+            }],
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Native {
+                path: "fixture".into(),
+            },
+            license: None,
+        }
+    }
+
+    #[test]
+    fn preset_controls_admit_schema_confirmed_rgba_arrays() {
+        let payload = serde_json::json!({
+            "accent": [0.125, 0.25, 0.5, 1.0],
+        });
+
+        let controls = parse_preset_controls(&metadata(), Some(&payload))
+            .expect("schema-confirmed color should be admitted");
+
+        assert_eq!(
+            controls.get("accent"),
+            Some(&ControlValue::linear_color([0.125, 0.25, 0.5, 1.0]))
+        );
+    }
+
+    #[test]
+    fn preset_controls_reject_unknown_control_ids() {
+        let payload = serde_json::json!({
+            "missing": 0.5,
+        });
+
+        let rejected = parse_preset_controls(&metadata(), Some(&payload))
+            .expect_err("unknown controls must be rejected");
+
+        assert_eq!(rejected, vec!["missing (unknown control)"]);
     }
 }

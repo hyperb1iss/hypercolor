@@ -26,13 +26,11 @@ use hypercolor_types::api::scene::{
     PatchControlsRequest, PatchZoneRequest, ReorderLayersRequest, ReplaceLayerRequest,
     ScenePatchRequest, ZoneLayoutRequest, ZoneMemberId,
 };
-use hypercolor_types::effect::ControlValue;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
-use crate::domain::scene::SceneTarget;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::scene_tree::{
     AssignMembers, ClearScene, PatchLayerControls, PatchScene, ReplaceLayer, TreeWritten,
     ZoneWritten,
@@ -45,10 +43,10 @@ use axum::Json;
 
 /// `GET /api/v1/scene` — the full live document.
 pub async fn get_scene(State(state): State<Arc<AppState>>) -> Response {
-    match scene_tree::read_document(state.as_ref()).await {
+    match scene_tree::read_document(&state.domains.scene_tree).await {
         Ok(document) => {
             let revision = document.revision;
-            with_revision(ApiResponse::ok(document), revision)
+            with_revision(envelope::ok(document), revision)
         }
         Err(error) => error.into_response(),
     }
@@ -66,13 +64,12 @@ pub async fn patch_scene(
     };
     tree_response(
         scene_tree::patch_scene(
-            state.as_ref(),
+            &state.domains.scene_tree,
             PatchScene {
                 name: body.name,
                 unassigned_behavior: body.unassigned_behavior,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -80,9 +77,7 @@ pub async fn patch_scene(
 
 /// `POST /api/v1/scene/deactivate` — return to the default scene.
 pub async fn deactivate_scene(State(state): State<Arc<AppState>>) -> Response {
-    if let Err(error) =
-        crate::domain::scene::deactivate_scene(state.as_ref(), MutationContext::api()).await
-    {
+    if let Err(error) = crate::domain::scene::deactivate_scene(&state.domains.scene_library).await {
         return error.into_response();
     }
     get_scene(State(state)).await
@@ -101,12 +96,11 @@ pub async fn clear_scene(
     let zone = body.and_then(|Json(body)| body.zone);
     tree_response(
         scene_tree::clear_scene(
-            state.as_ref(),
+            &state.domains.scene_tree,
             ClearScene {
                 zone,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -139,21 +133,19 @@ pub async fn create_zone(
     };
 
     let canvas = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let layout = spatial.layout();
         (layout.canvas_width, layout.canvas_height)
     };
 
     let created = crate::domain::zone::create_zone(
-        state.as_ref(),
+        &state.domains.scene,
         crate::domain::zone::CreateZone {
-            target: SceneTarget::Active,
             name: body.name,
             color: body.color,
             fallback_canvas: canvas,
             expected_revision: expected,
         },
-        MutationContext::api(),
     )
     .await;
 
@@ -163,7 +155,7 @@ pub async fn create_zone(
             with_revision(
                 (
                     StatusCode::CREATED,
-                    ApiResponse::ok(scene_tree::zone_resource(&written.zone)),
+                    envelope::ok(scene_tree::zone_resource(&written.zone)),
                 )
                     .into_response(),
                 revision,
@@ -179,8 +171,8 @@ pub async fn get_zone(State(state): State<Arc<AppState>>, Path(zone): Path<Strin
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    match scene_tree::read_zone(state.as_ref(), zone_id).await {
-        Ok((resource, revision)) => with_revision(ApiResponse::ok(resource), revision),
+    match scene_tree::read_zone(&state.domains.scene_tree, zone_id).await {
+        Ok((resource, revision)) => with_revision(envelope::ok(resource), revision),
         Err(error) => error.into_response(),
     }
 }
@@ -199,9 +191,8 @@ pub async fn patch_zone(
 
     zone_written_response(
         crate::domain::zone::update_zone(
-            state.as_ref(),
+            &state.domains.scene,
             crate::domain::zone::UpdateZone {
-                target: SceneTarget::Active,
                 zone_id,
                 patch: hypercolor_core::scene::ZoneMetaPatch {
                     name: body.name,
@@ -213,7 +204,6 @@ pub async fn patch_zone(
                 },
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -231,13 +221,11 @@ pub async fn delete_zone(
     };
 
     if let Err(error) = crate::domain::zone::delete_zone(
-        state.as_ref(),
+        &state.domains.scene,
         crate::domain::zone::DeleteZone {
-            target: SceneTarget::Active,
             zone_id,
             expected_revision: expected,
         },
-        MutationContext::api(),
     )
     .await
     {
@@ -264,11 +252,10 @@ pub async fn put_zone_layout(
 
     written_response(
         scene_tree::set_zone_layout(
-            state.as_ref(),
+            &state.domains.scene_tree,
             zone_id,
             body.placements,
             expected,
-            MutationContext::api(),
         )
         .await,
     )
@@ -292,13 +279,12 @@ pub async fn assign_members(
 
     written_response(
         scene_tree::assign_members(
-            state.as_ref(),
+            &state.domains.scene_tree,
             AssignMembers {
                 zone_id,
                 request: body,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -321,11 +307,10 @@ pub async fn unassign_member(
 
     written_response(
         scene_tree::unassign_member(
-            state.as_ref(),
+            &state.domains.scene_tree,
             zone_id,
             &ZoneMemberId(member),
             expected,
-            MutationContext::api(),
         )
         .await,
     )
@@ -339,11 +324,11 @@ pub async fn list_layers(State(state): State<Arc<AppState>>, Path(zone): Path<St
         Ok(zone_id) => zone_id,
         Err(error) => return error.into_response(),
     };
-    match scene_tree::read_zone(state.as_ref(), zone_id).await {
+    match scene_tree::read_zone(&state.domains.scene_tree, zone_id).await {
         Ok((resource, revision)) => {
             let total = resource.layers.len() as u64;
             with_revision(
-                ApiResponse::ok(ListResponse {
+                envelope::ok(ListResponse {
                     items: resource.layers,
                     total,
                     page: None,
@@ -366,20 +351,13 @@ pub async fn create_layer(
         Ok(parts) => parts,
         Err(error) => return error.into_response(),
     };
-    let layer = match build_layer(state.as_ref(), body).await {
+    let layer = match build_layer(body) {
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
-    let inserted = crate::domain::layer::insert_layer(
-        state.as_ref(),
-        SceneTarget::Active,
-        zone_id,
-        layer,
-        None,
-        expected,
-        MutationContext::api(),
-    )
-    .await;
+    let inserted =
+        crate::domain::layer::insert_layer(&state.domains.effects, zone_id, layer, None, expected)
+            .await;
 
     match inserted {
         Ok(Ok(written)) => {
@@ -387,7 +365,7 @@ pub async fn create_layer(
             with_revision(
                 (
                     StatusCode::CREATED,
-                    ApiResponse::ok(scene_tree::zone_resource(written.zone())),
+                    envelope::ok(scene_tree::zone_resource(&written.zone)),
                 )
                     .into_response(),
                 revision,
@@ -411,15 +389,8 @@ pub async fn reorder_layers(
     };
 
     layer_stack_response(
-        crate::domain::layer::reorder_layers(
-            state.as_ref(),
-            SceneTarget::Active,
-            zone_id,
-            body.order,
-            expected,
-            MutationContext::api(),
-        )
-        .await,
+        crate::domain::layer::reorder_layers(&state.domains.scene, zone_id, body.order, expected)
+            .await,
         zone_id,
     )
 }
@@ -446,20 +417,19 @@ pub async fn replace_layer(
         Ok(expected) => expected,
         Err(error) => return error.into_response(),
     };
-    let replacement = match build_layer(state.as_ref(), body).await {
+    let replacement = match build_layer(body.into()) {
         Ok(layer) => layer,
         Err(error) => return error.into_response(),
     };
     written_response(
         scene_tree::replace_layer(
-            state.as_ref(),
+            &state.domains.scene_tree,
             ReplaceLayer {
                 zone_id,
                 layer_id,
                 layer: replacement,
                 expected_revision: expected,
             },
-            MutationContext::api(),
         )
         .await,
     )
@@ -481,15 +451,7 @@ pub async fn delete_layer(
     };
 
     layer_stack_response(
-        crate::domain::layer::remove_layer(
-            state.as_ref(),
-            SceneTarget::Active,
-            zone_id,
-            layer_id,
-            expected,
-            MutationContext::api(),
-        )
-        .await,
+        crate::domain::layer::remove_layer(&state.domains.scene, zone_id, layer_id, expected).await,
         zone_id,
     )
 }
@@ -510,10 +472,10 @@ pub async fn patch_layer_controls(
         Err(error) => return error.into_response(),
     };
 
-    let values: HashMap<String, ControlValue> = body.values.into_iter().collect();
+    let values = body.values.into_iter().collect::<HashMap<_, _>>();
     written_response(
         scene_tree::patch_layer_controls(
-            state.as_ref(),
+            &state.domains.scene_tree,
             PatchLayerControls {
                 zone_id,
                 layer_id,
@@ -533,7 +495,7 @@ fn tree_response(result: Result<TreeWritten, DomainError>) -> Response {
     match result {
         Ok(written) => {
             let revision = written.document.revision;
-            with_revision(ApiResponse::ok(written.document), revision)
+            with_revision(envelope::ok(written.document), revision)
         }
         Err(error) => error.into_response(),
     }
@@ -541,7 +503,7 @@ fn tree_response(result: Result<TreeWritten, DomainError>) -> Response {
 
 fn written_response(result: Result<ZoneWritten, DomainError>) -> Response {
     match result {
-        Ok(written) => with_revision(ApiResponse::ok(written.zone), written.revision),
+        Ok(written) => with_revision(envelope::ok(written.zone), written.revision),
         Err(error) => error.into_response(),
     }
 }
@@ -551,7 +513,7 @@ fn zone_written_response(
 ) -> Response {
     match result {
         Ok(written) => with_revision(
-            ApiResponse::ok(scene_tree::zone_resource(&written.zone)),
+            envelope::ok(scene_tree::zone_resource(&written.zone)),
             written.commit.revision(),
         ),
         Err(error) => error.into_response(),
@@ -566,7 +528,7 @@ fn layer_stack_response(
         Ok(Ok(written)) => {
             let revision = written.commit.revision();
             with_revision(
-                ApiResponse::ok(scene_tree::zone_resource(written.zone())),
+                envelope::ok(scene_tree::zone_resource(&written.zone)),
                 revision,
             )
         }
@@ -628,15 +590,7 @@ fn parse_layer_id(raw: &str) -> Result<SceneLayerId, DomainError> {
 
 /// Turn a creation request into a validated layer carrying a freshly
 /// minted id (Spec 78 §1.4).
-#[allow(
-    clippy::unused_async,
-    reason = "the layer factory stays async so effect-registry normalization can land without churning every call site"
-)]
-async fn build_layer(
-    state: &AppState,
-    request: CreateLayerRequest,
-) -> Result<SceneLayer, DomainError> {
-    let _ = state;
+fn build_layer(request: CreateLayerRequest) -> Result<SceneLayer, DomainError> {
     let layer = SceneLayer {
         id: SceneLayerId::new(),
         name: request.name,

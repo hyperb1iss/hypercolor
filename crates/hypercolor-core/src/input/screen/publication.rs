@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -18,6 +19,19 @@ use super::{
     PlatformGpuApi, PlatformGpuSurface, ScreenByteLease, ScreenExactResource, ScreenPlanError,
     ScreenPlanGeneration, ScreenResourceKind, ScreenResourceLifetime,
 };
+
+static NEXT_SCREEN_CONSUMER_BRANCH_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_screen_consumer_branch_id() -> ScreenConsumerBranchId {
+    let identity = NEXT_SCREEN_CONSUMER_BRANCH_ID
+        .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .expect("screen consumer branch identity space exhausted");
+    ScreenConsumerBranchId(
+        NonZeroU64::new(identity).expect("screen consumer branch identities start at one"),
+    )
+}
 
 /// Selector used by a consumer before capture-source resolution.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1346,7 +1360,7 @@ pub enum ScreenSceneCutPolicy {
     /// Never reset smoothing based on scene content.
     #[default]
     Disabled,
-    /// Reset when mean absolute channel delta reaches the threshold.
+    /// Reset when mean absolute channel delta exceeds the threshold.
     MeanAbsoluteDelta {
         /// Canonical finite scene-change threshold.
         threshold: ScreenProfileScalar,
@@ -1359,6 +1373,11 @@ pub enum ScreenSmoothingPolicy {
     /// Publish every processed sample without temporal smoothing.
     #[default]
     Disabled,
+    /// Hold the committed sample until history resets.
+    Frozen {
+        /// Rule that resets history across discontinuous scenes.
+        scene_cut: ScreenSceneCutPolicy,
+    },
     /// Apply exponential smoothing with optional scene-cut resets.
     Exponential {
         /// Time constant controlling the smoothing response.
@@ -2499,9 +2518,6 @@ pub struct ScreenPhysicalReductionDescriptor {
     color_pipeline: ResolvedScreenColorPipeline,
 }
 
-/// Canonical sharing key for physical reduction work.
-pub type ScreenPhysicalReductionKey = ScreenPhysicalReductionDescriptor;
-
 impl ScreenPhysicalReductionDescriptor {
     /// Exact source epoch fenced by this reduction.
     #[must_use]
@@ -2709,9 +2725,28 @@ impl PartialOrd for ResolvedScreenPublicationDescriptor {
     }
 }
 
+/// Stable identity owned by one exact screen consumer registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScreenConsumerBranchId(NonZeroU64);
+
+impl ScreenConsumerBranchId {
+    /// Construct an identity supplied by a registration authority.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    /// Opaque numeric identity.
+    #[must_use]
+    pub const fn get(self) -> NonZeroU64 {
+        self.0
+    }
+}
+
 /// One unresolved consumer request and its independent scheduling cadence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredScreenBranchDemand {
+    consumer_branch_id: ScreenConsumerBranchId,
     request: ScreenPublicationRequest,
     requested_hz: NonZeroU32,
 }
@@ -2719,11 +2754,28 @@ pub struct RegisteredScreenBranchDemand {
 impl RegisteredScreenBranchDemand {
     /// Register a logical request at a non-zero cadence.
     #[must_use]
-    pub const fn new(request: ScreenPublicationRequest, requested_hz: NonZeroU32) -> Self {
+    pub fn new(request: ScreenPublicationRequest, requested_hz: NonZeroU32) -> Self {
+        Self::with_id(next_screen_consumer_branch_id(), request, requested_hz)
+    }
+
+    /// Register with an identity owned by an external registration authority.
+    #[must_use]
+    pub const fn with_id(
+        consumer_branch_id: ScreenConsumerBranchId,
+        request: ScreenPublicationRequest,
+        requested_hz: NonZeroU32,
+    ) -> Self {
         Self {
+            consumer_branch_id,
             request,
             requested_hz,
         }
+    }
+
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
     }
 
     /// Logical request retained by the registration.
@@ -2777,6 +2829,7 @@ impl RegisteredScreenBranchDemand {
         capabilities: ScreenExecutorColorCapabilities,
     ) -> Result<ResolvedScreenBranchDemand, ScreenPublicationError> {
         Ok(ResolvedScreenBranchDemand {
+            consumer_branch_id: self.consumer_branch_id,
             descriptor: self
                 .request
                 .resolve_with_executor_capabilities(source, capabilities)?,
@@ -2788,11 +2841,18 @@ impl RegisteredScreenBranchDemand {
 /// One independently resolved publication and its scheduling cadence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedScreenBranchDemand {
+    consumer_branch_id: ScreenConsumerBranchId,
     descriptor: ResolvedScreenPublicationDescriptor,
     requested_hz: NonZeroU32,
 }
 
 impl ResolvedScreenBranchDemand {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
     /// Full byte-equivalence descriptor.
     #[must_use]
     pub const fn descriptor(&self) -> &ResolvedScreenPublicationDescriptor {
@@ -2805,8 +2865,14 @@ impl ResolvedScreenBranchDemand {
         self.requested_hz
     }
 
-    pub(crate) fn into_parts(self) -> (ResolvedScreenPublicationDescriptor, NonZeroU32) {
-        (self.descriptor, self.requested_hz)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ScreenConsumerBranchId,
+        ResolvedScreenPublicationDescriptor,
+        NonZeroU32,
+    ) {
+        (self.consumer_branch_id, self.descriptor, self.requested_hz)
     }
 }
 

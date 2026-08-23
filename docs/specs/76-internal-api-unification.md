@@ -188,7 +188,7 @@ pub async fn commit_scene(state: &AppState, m: SceneMutation)
                                             // SceneCommit carries CommitDurability for post-admission state.
 ```
 
-Dropping an uncommitted `SceneMutation` discards a local candidate — nothing to roll back. The 49 open-coded rollback/admit/save/publish rituals collapse into `commit_scene`; `controls_version`/`groups_revision` bumps live inside intent methods. Phase 6 re-points commit at the widened frame-boundary transaction without changing callers.
+Dropping an uncommitted `SceneMutation` discards a local candidate. The 49 open-coded rollback/admit/save/publish rituals collapse into `commit_scene`; internal zone and control revisions live inside intent methods. Phase 6 re-points commit at the widened frame-boundary transaction without changing callers.
 
 **Commit ordering:** a commit generation is assigned at admission, under the CAS lock. Plan publication and pending events route through one ordered commit sequencer, so two commits that admit in sequence can never publish in reverse order after their async persistence completes out of order. Events are stamped with the commit generation; a superseded commit's events are dropped by the sequencer. Event ordering and persistence durability (`CommitDurability`) are separate axes.
 
@@ -210,8 +210,9 @@ pub struct ConfigSources { pub file: Option<PathBuf>, pub cli: CliOverrides, pub
 pub struct LoadedConfig { pub boot: BootConfig, pub manager: ConfigManager }
 
 impl ConfigManager {
-    pub async fn load(sources: ConfigSources) -> Result<LoadedConfig, ConfigError>;
+    pub fn load_with_sources(sources: ConfigSources) -> Result<LoadedConfig, ConfigError>;
     // parse → migrate → normalize (INCLUDING builtin driver-entry seeding) → overlay cli/env → validate
+    // shipped synchronous: nothing in the pipeline awaits (core/src/config/sources.rs:201)
 }
 ```
 
@@ -299,7 +300,7 @@ All routes adopt these at the C1 flip — the fabricated `pagination` blocks and
 
 - `apply` vs `activate` is a real semantic split and both stay: `apply` = layer a thing onto current state (effects, layouts, profiles, presets); `activate` = switch the exclusive current (scenes, playlists). Documented, not renamed.
 - `current` → `active`: routes RENAME (`/effects/current/*` is deleted, not aliased).
-- Scene render groups are `zones` in every path and message; `/groups/` paths are deleted, not aliased.
+- Scene render zones are `zones` in every path and message; `/groups/` paths are deleted, not aliased.
 - Path params: `{id}` for the resource's own id; children as `{zone_id}`-style.
 
 ### 4.5 Unified `ControlValue` — canonical semantic contract
@@ -372,7 +373,7 @@ pub struct Subscription<T: WsTopic> { pub key: T::Key, pub config: T::Config }  
 - A topic owns its complete tag set (preview topics legitimately span several tags); a compile-time assertion enforces **unique wire-tag ownership** across topics and against the `reserved` list. Every tag and byte layout is pinned by golden fixtures — rewritten deliberately in the same PR whenever a layout intentionally changes. The hand-written spectrum header is replaced by `SpectrumFrame::encode` (layout already proven equal by test).
 - Subscribe and unsubscribe carry an array of selectors: a topic, its key when keyed, and that subscription's config patch. Config travelling with its selector is what makes a patch for a topic the request never named unrepresentable rather than merely refused.
 - Keyed subscriptions unify `display_preview` (was 1-per-connection with a tri-state target field) and `interactive_preview` (was a bespoke session protocol) into N-concurrent keyed subscriptions, replacing the old message forms outright. Keying display preview means its frames carry the device id, so it leaves the passive preview-canvas family for the identity-prefixed layout interactive preview already used.
-- Cadence: one internal `Cadence` type speaking `fps` only — `interval_ms` is deleted with both in-repo clients updated in the same PR. No handshake versioning, no dual-accept. **Still open after 3.2c:** integer fps cannot express the sub-1-fps cadences `interval_ms` allows (the TUI asks for 2000 ms), so the collapse needs a cadence type that can, or a decided floor.
+- Cadence: one internal `Cadence` type speaking `fps` only — `interval_ms` is deleted with both in-repo clients updated in the same PR. No handshake versioning, no dual-accept. **Resolved:** `Cadence(f64)` (`leptos-ext/src/ws/registry.rs:438`) carries fractional fps with `METRICS_FPS_MIN = 0.1` (`:430`) as the decided floor, and `MetricsConfig` speaks `fps` (`:483`).
 - Adding a topic = one `define_ws_topics!` entry + one relay registration.
 
 ---
@@ -418,11 +419,14 @@ pub struct ControlDeltaBatch<'a> {
     pub changes: &'a [(ControlId, ControlValue)],
 }
 // renderer contract (replaces set_control):
-fn initialize_controls(&mut self, revision: SetRevision, controls: &ControlSet) -> Result<(), ControlError>;
+fn initialize_controls(&mut self, controls: &ControlSet) -> Result<(), ControlError>;
     // REQUIRED before the first frame after create/rebuild — the snapshot-first baseline (today's sync_layer_state replay, made contractual)
+    // shipped without the separate revision argument: ControlSet carries set_revision (core/src/effect/traits.rs:241)
 fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> Result<(), ControlError>;
     // ATOMIC: all-or-nothing. Failure = renderer invalidation + snapshot replay via initialize_controls, never partial application.
 ```
+
+Control application is fallible in the shipped contract: both methods return `anyhow::Result` (`core/src/effect/traits.rs:241,263`) and the error path is load-bearing at `core/src/effect/pool.rs:596-610`.
 
 The slot's `ControlSet` is authoritative; renderers receive **changed resolved values in ordered atomic batches** (matching today's change-gated dispatch at `pool.rs:471`; `resolution_seq` orders sensor-driven changes that don't bump the authoritative revision) and may keep compiled typed fields as derived caches — never as authoritative storage. `ControlSet` does not ride in `FrameInput` (that would create a second authority and per-frame map interpretation at 60fps). The EffectSlot mirror-diffing, in-place registry-metadata mutation, and write-only renderer state die. Depends on the ControlValue unification (§4.5 → wave 2.0).
 
@@ -483,7 +487,7 @@ pub trait DeviceBackendFactory: Send + Sync {
 
 ### 7.4 Hygiene
 
-`hypercolor-driver-api` = traits + types only; new `hypercolor-driver-support` = credentials, mdns, control-surface builders, pairing plumbing. Four dead `hypercolor-core` deps deleted. `ProtocolZone` deleted (`Protocol::zones() -> Vec<ZoneInfo>`; 4 byte-identical converters die). `DevicePlugin` deleted. `health_check` **deleted** (decided; `DeviceStateMachine::on_comm_error` is the future home if ever needed). `GoveeConfig` → govee crate via `DriverConfigProvider`; `PortableIdentityClaim` carries a driver-supplied namespace.
+`hypercolor-driver-api` = traits + types only; new `hypercolor-driver-support` = credentials, mdns, control-surface builders, pairing plumbing. Four dead `hypercolor-core` deps deleted. `ProtocolZone` deleted (`Protocol::zones() -> Vec<ZoneInfo>`; 4 byte-identical converters die). `DevicePlugin` deleted. The driver-boundary `health_check` is **deleted** (decided; `DeviceStateMachine::on_comm_error` is the future home if ever needed). This clause never covered the REST `health_check` handler at `daemon/src/api/system.rs:297`, which is an unrelated liveness route and stays. `GoveeConfig` → govee crate via `DriverConfigProvider`; `PortableIdentityClaim` carries a driver-supplied namespace.
 
 ---
 
@@ -526,14 +530,14 @@ pub trait DeviceBackendFactory: Send + Sync {
 
 **Wave C1 — the compat-ectomy** (after 2.3a/4.1 merge; before or interleaved with Phase 3; each an atomic PR with all in-repo clients updated in-PR)
 C1a **Error-surface flip**: every route renders the canonical `DomainError` envelope; delete `domain::legacy`, `into_v1_response`, and `ApiError` entirely; rewrite the matrix tests to pin canonical shapes; unblocks wave 2.2's nine deferred helpers (bespoke 404 prose normalizes, `ResourceKind::Driver` exists).
-C1b **Naming flip**: `current`→`active`, `groups`→`zones`, `/config/get|set`→resource routes — old routes deleted, not aliased. The REST half shipped in C1b; the WS half (the `render_group_changed` event name and the `group_id`/`group_name`/`groups_revision` event fields) shipped in wave 3.2c, which owned that surface. Persisted scene files keep `groups`: C1c landed without that migration, so the rename rides Phase 5.1's scene-schema bump alongside the legacy Zone codec deletion.
+C1b **Naming flip**: `current` to `active`, `groups` to `zones`, and `/config/get|set` to resource routes. Old routes were deleted, not aliased. The REST half shipped in C1b. Wave 3.2c replaced the WS `render_group_changed` event and its group-named fields. Phase 5.1 completed the persisted scene-schema migration, so scene files now serialize `zones` and `zones_revision` without legacy aliases.
 C1c **Persisted-legacy deletion**: delete core's `migrate_config` (schema ≤3 path) and driver-inventory's legacy runtime-state import entry (already completed on the only install); update `types::control`'s keep-raw doc paragraph; schema bumps + release notes where shapes require it. (The legacy Zone codec deletes in 5.1, where its consumers restructure.)
 C1d **Deprecated-surface deletion**: migrate remaining callers off `hypercolor-color`'s `compat.rs` and delete it; delete the TS `audio/helpers` color re-export.
 
 **Phase 3 — contract rollout** (after 2)
-3.1 Worker(s): grow `types::api` to full coverage **in per-domain batches**, daemon + UI + TUI mirrors deleted in the same PR per batch. **Shipped:** layouts+displays+assets (#202) and devices+scenes (#204, ahead of Spec 78 §7.3's gate — accepted churn named there). **In flight:** effects+library, rescoped mid-flight to Spec 78 Appendix A survivors. **Remaining:** drivers+system, either side of the 78 waves. Batches extend Spec 78's 78.1 contracts and never redefine a type it ships.
-3.2 Fable: `define_ws_topics!` registry + codec/tag contracts. Worker: promote WS types to leptos-ext, migrate subscribes, keyed subscriptions replacing the old message forms outright (clients in the same PRs) — split extraction / topics / clients into separate PRs. **Shipped:** 3.2a extraction, 3.2b daemon adoption, 3.2c the keyed wire with every client, the WS half of C1b's naming flip, and the deletion of the daemon's embedded `/preview` page (a fourth WS client that also shadowed the UI's own route). `interval_ms`→`Cadence` is the one §5 item 3.2c left open, for the reason recorded there.
-3.3 Worker: honest pagination everywhere + registration-helper OpenAPI catalog (142-entry table dies). **Resequenced: executes after wave 78.5**, implemented per Spec 78 §7.2 (`utoipa-axum` OpenApiRouter) — the catalog is born against Appendix A's 81 paths, never the pre-78 surface.
+3.1 Worker(s): grow `types::api` to full coverage **in per-domain batches**, daemon + UI + TUI mirrors deleted in the same PR per batch. **Complete.** layouts+displays+assets (#202), devices+scenes (#204, ahead of Spec 78 §7.3's gate — accepted churn named there), effects+library (rescoped mid-flight to Spec 78 Appendix A survivors), and drivers+system (0a1508aa7, 73f2daba3, 5b4cc3a2c, adef5ef34). Batches extend Spec 78's 78.1 contracts and never redefine a type it ships.
+3.2 Fable: `define_ws_topics!` registry + codec/tag contracts. Worker: promote WS types to leptos-ext, migrate subscribes, keyed subscriptions replacing the old message forms outright (clients in the same PRs) — split extraction / topics / clients into separate PRs. **Shipped:** 3.2a extraction, 3.2b daemon adoption, 3.2c the keyed wire with every client, the WS half of C1b's naming flip, and the deletion of the daemon's embedded `/preview` page (a fourth WS client that also shadowed the UI's own route). `interval_ms`→`Cadence` landed with it.
+3.3 Worker: honest pagination everywhere + registration-helper OpenAPI catalog (142-entry table dies). **Shipped** after wave 78.5, implemented per Spec 78 §7.2: `OpenApiRouter` at `api/mod.rs:130-150`, `ApiDoc` at `api/openapi.rs:15-44`, and `ListResponse<T>`/`PageInfo` at `types/src/api/envelope.rs:67,80`. The catalog was born against Appendix A's 82 paths, never the pre-78 surface.
 
 **Phase 4 — config** (after 0.9)
 4.1 Fable: `ConfigSources`/`LoadedConfig`, Boot/Live types, descriptor macro + completeness design.
@@ -550,8 +554,8 @@ C1d **Deprecated-surface deletion**: migrate remaining callers off `hypercolor-c
 6.2 Worker: output data-plane split **including display lanes**; `&self` backend handles land here with §7.1.
 6.3 Worker: manager idiom conversions (SceneManager first) + private-sink events.
 6.4 Worker: domain contexts; God structs shrink; service receivers narrow.
-6.5a Worker: `BusLanes`/`WatchLane` + `OutputPower` + worker-handle triple.
-6.5b Worker: `ControlSet` authority + `apply_control` delta migration (12 renderer impls). Depends on 2.0.
+6.5a Worker: `BusLanes`/`WatchLane` + `OutputPower` + the display worker handle (`display_output/worker.rs:61`, `DisplayWorkerHandle`; the spec's "worker-handle triple" named a grouping that does not exist in the tree).
+6.5b Worker: `ControlSet` authority + `apply_control` delta migration (13 production renderer impls, including `MockEffectRenderer` at `core/src/device/mock.rs:433`, plus 7 test impls). Depends on 2.0.
 
 **Phase 7 — drivers** (after 0; 7.1-7.2 after 6.2's `&self` conversion)
 7.1 Fable: `DriverModule`/`OutputBinding`/`DeviceBackendFactory` + `DeviceError`/`DriverError` finals.
@@ -559,6 +563,41 @@ C1d **Deprecated-surface deletion**: migrate remaining callers off `hypercolor-c
 7.3 Worker: discovery collapse; `adopt_device`; fingerprint constructor.
 7.4 Worker: typed errors boundary-wide; substring classifiers die; retry consolidation.
 7.5 Worker: driver-api/support split; `ProtocolZone` deletion; vendor eviction from types.
+
+**Wave verdicts** (audited against the tree at 2026-08-22; phases 4-7 carried no status
+annotations before this pass).
+
+| Wave | Verdict | Note |
+| --- | --- | --- |
+| 0.x, 1.x, 2.x | Shipped | |
+| C1a, C1b, C1c, C1d | Shipped | |
+| 3.1, 3.2, 3.3 | Shipped | 3.3's doc text was stale, not the work |
+| 4.1 | Partial | `subscribe(LiveSection)` and `desired_boot()` are absent |
+| 4.2, 4.3 | Shipped | |
+| 4.4 | Partial | asset index and driver credential store never register with `flush_all`; the asset tier resolves to the config dir, not data |
+| 5.1 | Partial | four of five evictions never started; `RenderSurfacePool` needs a ruling (below) |
+| 5.2 | Partial | no generic `Rect<T>` against nine bespoke rects; `canvas::ColorFormat` is a dead third authority; audio configs still doubled |
+| 6.1 | Partial | per-frame locks remain (`render_thread/pipeline_driver.rs:28`, `scene_snapshot.rs:549,623`, `frame_executor.rs:544,817,826`, `frame_throttle.rs:42,67,119,135,225`); the zero-lock claim at `render_thread.rs:255-256` is stale |
+| 6.2 | Shipped | |
+| 6.3 | Partial | private sinks not done (`domain/scene.rs:110,254`); `EffectRegistry` and `InputManager` unconverted |
+| 6.4 | Partial | `AppState` still carries 52 fields |
+| 6.5a, 6.5b | Shipped | |
+| 7.1, 7.2, 7.3, 7.4, 7.5 | Shipped | |
+
+**Open rulings** — three §8.2 questions the audit could not settle without the owner:
+
+1. **5.1 surface-pool eviction is not implementable as written.** `RenderSurfacePool`
+   (`types/canvas.rs:1043`) is consumed by core at `core/src/input/screen/mod.rs:169,986,1614`,
+   so moving it "to the daemon" inverts the dependency graph. Needs a different destination or a
+   different eviction.
+2. **§5's metrics mirrors and the CLAUDE.md telemetry carve-out disagree.** The spec calls the
+   mirrors drift; the carve-out declares diagnostic telemetry deliberately daemon-local with
+   tolerant client subsets. The UI holds 28 WS message types (`ui/src/ws/messages.rs`) and a
+   28-field tolerant subset (`ui/src/api/device_metrics.rs:12`) of the daemon's 40-plus-field
+   shape (`daemon/src/device_metrics.rs:21`). One of the two documents is wrong.
+3. **§5.2's audio-config merge contradicts a doc that calls the split intentional.**
+   `types/src/audio.rs:157-161` states the boot and live audio projections are deliberately
+   separate. Either the merge lands and that doc changes, or the merge is struck.
 
 Dependency graph: 0 → everything; **1.1 → 2.0** (the canonical ControlValue's color variants need `hypercolor-color`'s types — the crate skeleton lands before wave 2.0 compiles); 2.0 → {2.4, 3.1, 6.5b}; 2.1 → 4.3 (canonical config routes need the response contracts and adapter shims); {2.1, 2.3a} → 4.4 (`DomainError`/`CommitDurability` in the persistence primitives); **2.0 → 4.4's device-settings batch** (the ControlValue content migration lands before the path relocation — one store never migrates content and location in the same release without combined upgrade/crash-restart/rollback/both-path fixtures); 2 → {3, 6}; 3 → 5; 6.2 → 7.1/7.2. Phase 1 runs fully parallel to the 2→3 track; Phase 4's 4.1–4.2 run parallel, 4.3–4.4 wait on their Phase-2 edges. Every wave is an atomic-commit PR from a lane worktree, sized for single-PR review.
 

@@ -3,12 +3,19 @@ use std::sync::Arc;
 use axum::body::{Body, to_bytes};
 use axum::extract::ws::Message;
 use axum::http::{Request, StatusCode};
-use hypercolor_daemon::api::AppState;
 use hypercolor_daemon::api::local::TrustedLocalApi;
+use hypercolor_daemon::app_state::AppState;
+use tempfile::TempDir;
+
+fn isolated_api() -> (TrustedLocalApi, TempDir) {
+    let tempdir = TempDir::new().expect("trusted local state directory should be created");
+    let state = AppState::new_with_data_dir(tempdir.path().to_path_buf());
+    (TrustedLocalApi::new(Arc::new(state)), tempdir)
+}
 
 #[tokio::test]
 async fn public_trusted_local_http_surface_executes_the_daemon_router() {
-    let api = TrustedLocalApi::new(Arc::new(AppState::new()));
+    let (api, _tempdir) = isolated_api();
     let response = api
         .execute(
             Request::builder()
@@ -30,7 +37,7 @@ async fn public_trusted_local_http_surface_executes_the_daemon_router() {
 
 #[tokio::test]
 async fn public_trusted_local_websocket_surface_joins_its_session() {
-    let api = TrustedLocalApi::new(Arc::new(AppState::new()));
+    let (api, _tempdir) = isolated_api();
     let mut socket = api
         .open_websocket("/api/v1/ws")
         .expect("canonical trusted local websocket path should open");

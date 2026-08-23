@@ -78,6 +78,185 @@ def test_ws_protocol_constants_match_manifest() -> None:
     }
 
 
+_FIELD_WIDTHS = {"u8": 1, "u16_le": 2, "u32_le": 4, "f32_le": 4, "u64_le": 8, "uuid": 16}
+_FIELD_STRUCTS = {"u8": "<B", "u16_le": "<H", "u32_le": "<I", "f32_le": "<f", "u64_le": "<Q"}
+
+
+def _manifest_prefix(layout: list[Any]) -> tuple[dict[str, int], dict[str, str], int]:
+    offsets: dict[str, int] = {}
+    types: dict[str, str] = {}
+    offset = 0
+    for field_type, field_name in layout:
+        types[field_name] = field_type
+        offsets[field_name] = offset
+        width = _FIELD_WIDTHS.get(field_type)
+        if width is None:
+            break
+        offset += width
+    return offsets, types, offset
+
+
+def _pack_frame(layout: Mapping[str, Any], values: Mapping[str, Any], trailer: bytes) -> bytes:
+    """Build a frame straight from the generated layout, field by field."""
+    size = int(layout["prefix_len"])
+    frame = bytearray(size)
+    for name, offset in layout["offsets"].items():
+        if name not in values:
+            continue
+        field_type = layout["types"][name]
+        if field_type == "uuid":
+            frame[offset : offset + 16] = values[name].bytes
+            continue
+        struct.pack_into(_FIELD_STRUCTS[field_type], frame, offset, values[name])
+    return bytes(frame) + trailer
+
+
+def test_binary_frame_layouts_match_the_manifest() -> None:
+    manifest = _expect_dict(msgspec.json.decode(PROTOCOL_MANIFEST.read_bytes()))
+    frames = {
+        name: definition
+        for name, definition in manifest.items()
+        if name.endswith("_frame") and isinstance(definition, dict)
+    }
+
+    assert set(ws_protocol.BINARY_FRAME_LAYOUTS) == set(frames)
+
+    for name, definition in frames.items():
+        offsets, types, span = _manifest_prefix(_expect_list(definition["layout"]))
+        generated = ws_protocol.BINARY_FRAME_LAYOUTS[name]
+        declared = next(
+            definition[key]
+            for key in ("header_len", "prefix_len", "fixed_header_len")
+            if key in definition
+        )
+
+        assert generated["prefix_len"] == span, name
+        assert generated["prefix_len"] == declared, name
+        assert _thaw_json(generated["offsets"]) == offsets, name
+        assert _thaw_json(generated["types"]) == types, name
+
+
+def test_binary_message_layouts_match_the_manifest() -> None:
+    manifest = _expect_dict(msgspec.json.decode(PROTOCOL_MANIFEST.read_bytes()))
+    inline = {
+        str(message["name"]): _expect_list(message["layout"])
+        for message in _expect_list(manifest["binary_messages"])
+        if isinstance(message["layout"], list)
+    }
+
+    assert set(ws_protocol.BINARY_MESSAGE_LAYOUTS) == set(inline)
+
+    for name, layout in inline.items():
+        offsets, types, span = _manifest_prefix(layout)
+        generated = ws_protocol.BINARY_MESSAGE_LAYOUTS[name]
+
+        assert generated["prefix_len"] == span, name
+        assert _thaw_json(generated["offsets"]) == offsets, name
+        assert _thaw_json(generated["types"]) == types, name
+
+
+def test_canvas_parser_reads_every_field_at_its_manifest_offset() -> None:
+    layout = ws_protocol.BINARY_FRAME_LAYOUTS["wide_preview_frame"]
+    payload = _pack_frame(
+        layout,
+        {
+            "tag": ws_protocol.BINARY_MESSAGE_TAGS["wide_preview"],
+            "channel_tag": ws_protocol.BINARY_MESSAGE_TAGS["canvas"],
+            "frame_number": 4242,
+            "timestamp_ms": 77,
+            "width": 2,
+            "height": 1,
+            "format": 1,
+        },
+        bytes(2 * 1 * 4),
+    )
+
+    frame = HypercolorEventStream._decode_binary(payload)
+
+    assert isinstance(frame, CanvasData)
+    assert frame.frame_number == 4242
+    assert frame.timestamp_ms == 77
+    assert (frame.width, frame.height) == (2, 1)
+    assert frame.format == "rgba"
+    assert frame.channel == "canvas"
+
+
+def test_compact_canvas_parser_reads_the_manifest_offsets() -> None:
+    layout = ws_protocol.BINARY_FRAME_LAYOUTS["preview_frame"]
+    payload = _pack_frame(
+        layout,
+        {
+            "tag": ws_protocol.BINARY_MESSAGE_TAGS["screen_canvas"],
+            "frame_number": 9,
+            "timestamp_ms": 11,
+            "width": 1,
+            "height": 1,
+            "format": 0,
+        },
+        bytes(3),
+    )
+
+    frame = HypercolorEventStream._decode_binary(payload)
+
+    assert isinstance(frame, CanvasData)
+    assert frame.channel == "screen_canvas"
+    assert frame.format == "rgb"
+    assert frame.frame_number == 9
+
+
+def test_extended_screen_zones_parser_reads_the_manifest_offsets() -> None:
+    layout = ws_protocol.BINARY_FRAME_LAYOUTS["extended_screen_zones_frame"]
+    payload = _pack_frame(
+        layout,
+        {
+            "tag": ws_protocol.BINARY_MESSAGE_TAGS["extended_screen_zones"],
+            "frame_number": 3,
+            "timestamp_ms": 4,
+            "source_width": 3840,
+            "source_height": 2160,
+            "grid_cols": 2,
+            "grid_rows": 1,
+            "letterbox_top": 5,
+            "letterbox_bottom": 6,
+            "letterbox_left": 7,
+            "letterbox_right": 8,
+        },
+        bytes(2 * 1 * 3),
+    )
+
+    frame = HypercolorEventStream._decode_binary(payload)
+
+    assert isinstance(frame, ScreenZonesData)
+    assert (frame.source_width, frame.source_height) == (3840, 2160)
+    assert (frame.grid_cols, frame.grid_rows) == (2, 1)
+    assert frame.letterbox == (5, 6, 7, 8)
+
+
+def test_display_preview_parser_reads_the_manifest_offsets() -> None:
+    layout = ws_protocol.BINARY_FRAME_LAYOUTS["wide_display_preview_frame"]
+    device_id = b"pump-lcd"
+    payload = _pack_frame(
+        layout,
+        {
+            "tag": ws_protocol.BINARY_MESSAGE_TAGS["wide_display_preview"],
+            "device_id_len": len(device_id),
+            "frame_number": 12,
+            "timestamp_ms": 13,
+            "width": 1,
+            "height": 1,
+            "format": 2,
+        },
+        device_id + b"\xff\xd8\xff",
+    )
+
+    frame = HypercolorEventStream._decode_binary(payload)
+
+    assert isinstance(frame, DisplayPreviewData)
+    assert frame.device_id == "pump-lcd"
+    assert frame.format == "jpeg"
+    assert frame.frame_number == 12
+
+
 def test_ws_protocol_field_defaults_distinguish_absent_from_null() -> None:
     timed_input = _expect_mapping(ws_protocol.JSON_PAYLOAD_CONTRACTS["timed_input_event_v1"])
     required_fields = _expect_tuple(timed_input["required_fields"])
@@ -108,15 +287,14 @@ def test_ws_protocol_generator_round_trips_non_bmp_strings() -> None:
     assert ast.literal_eval(quote(value)) == value
 
 
-def test_preview_transport_negotiates_the_v2_byte_ledger() -> None:
-    assert websocket_module._PREVIEW_TRANSPORT_CAPABILITY.startswith("preview_transport_v2:")
+def test_preview_transport_uses_the_manifest_byte_ledger() -> None:
     assert websocket_module._PREVIEW_TRANSPORT_LIMITS["reassembly"] > 0
     assert websocket_module._PREVIEW_TRANSPORT_LIMITS["sender"] > 0
     assert "chunks" not in websocket_module._PREVIEW_TRANSPORT_LIMITS
 
 
 @pytest.mark.asyncio
-async def test_subscribe_advertises_preview_transport_v2(
+async def test_subscribe_uses_the_lockstep_preview_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sent: list[dict[str, Any]] = []
@@ -128,45 +306,15 @@ async def test_subscribe_advertises_preview_transport_v2(
         _stream: HypercolorEventStream,
         _expected: type[SubscribedMessage] | type[UnsubscribedMessage],
     ) -> SubscribedMessage:
-        return SubscribedMessage([], websocket_module._PREVIEW_TRANSPORT_CAPABILITY)
+        return SubscribedMessage([])
 
     monkeypatch.setattr(HypercolorEventStream, "_send_json", capture)
     monkeypatch.setattr(HypercolorEventStream, "_wait_for_subscription_ack", acknowledge)
     stream = HypercolorEventStream(_TestClient())
 
-    acknowledgment = await stream.subscribe("screen_zones")
+    await stream.subscribe("screen_zones")
 
-    assert sent[0]["preview_transport"] == websocket_module._PREVIEW_TRANSPORT_CAPABILITY
-    assert sent[0]["preview_transport"].startswith("preview_transport_v2:")
-    assert acknowledgment.preview_transport == websocket_module._PREVIEW_TRANSPORT_CAPABILITY
-
-
-@pytest.mark.asyncio
-async def test_preview_reconfiguration_does_not_renegotiate_transport(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sent: list[dict[str, Any]] = []
-
-    async def capture(_stream: HypercolorEventStream, payload: dict[str, Any]) -> None:
-        sent.append(payload)
-
-    async def acknowledge(
-        _stream: HypercolorEventStream,
-        _expected: type[SubscribedMessage] | type[UnsubscribedMessage],
-    ) -> SubscribedMessage:
-        return SubscribedMessage([], websocket_module._PREVIEW_TRANSPORT_CAPABILITY)
-
-    monkeypatch.setattr(HypercolorEventStream, "_send_json", capture)
-    monkeypatch.setattr(HypercolorEventStream, "_wait_for_subscription_ack", acknowledge)
-    stream = HypercolorEventStream(_TestClient())
-
-    await stream.open_interactive_preview("main", fps=30, width=320, height=180)
-    await stream.open_interactive_preview("main", fps=15, width=640, height=360)
-    await stream.subscribe("canvas")
-
-    assert sent[0]["preview_transport"] == websocket_module._PREVIEW_TRANSPORT_CAPABILITY
-    assert "preview_transport" not in sent[1]
-    assert "preview_transport" not in sent[2]
+    assert sent == [{"type": "subscribe", "topics": [{"topic": "screen_zones"}]}]
 
 
 def test_decode_hello_message() -> None:
@@ -373,13 +521,16 @@ def test_interactive_preview_rejects_truncated_raw_payloads(
 
 def test_subscribed_ack_is_a_distinct_public_message() -> None:
     message = HypercolorEventStream._decode_json(
-        '{"type":"subscribed","preview_transport":"preview_transport_v1",'
-        '"topics":[{"topic":"events"}]}'
+        msgspec.json.encode(
+            {
+                "type": "subscribed",
+                "topics": [{"topic": "events"}],
+            }
+        ).decode()
     )
 
     assert isinstance(message, SubscribedMessage)
     assert message.topics == [ActiveSubscription(topic="events")]
-    assert message.preview_transport == "preview_transport_v1"
 
 
 def _expect_dict(value: Any) -> dict[str, Any]:

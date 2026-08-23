@@ -1,14 +1,16 @@
+use super::preview_policy::{
+    PreviewSurfaceDemandLane, PreviewSurfaceRequestContext, preview_surface_request,
+    requires_cpu_sampling_canvas, requires_published_surface,
+};
 use super::{
-    PreviewSurfaceDemandLane, PreviewSurfaceRequest, PreviewSurfaceRequestContext,
-    apply_native_copy_failure_policy, effective_render_group_layer_count,
-    native_copy_failure_retains_last_frame, preview_surface_request,
-    producer_frame_requires_composition_for_preview, render_group_requires_full_composition,
-    requires_cpu_sampling_canvas, requires_published_surface, synchronize_screen_plan_generation,
+    PreviewSurfaceRequest, apply_native_copy_failure_policy, effective_render_zone_layer_count,
+    native_copy_failure_retains_last_frame, producer_frame_requires_composition_for_preview,
+    render_zone_requires_full_composition, synchronize_screen_plan_generation,
 };
 use std::sync::Arc;
 
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -21,9 +23,9 @@ use crate::render_thread::sparkleflinger::SparkleFlinger;
 use hypercolor_types::config::RenderAccelerationMode;
 
 #[test]
-fn render_group_layer_count_adds_transition_base_once() {
-    assert_eq!(effective_render_group_layer_count(1, 4), 4);
-    assert_eq!(effective_render_group_layer_count(2, 4), 5);
+fn render_zone_layer_count_adds_transition_base_once() {
+    assert_eq!(effective_render_zone_layer_count(1, 4), 4);
+    assert_eq!(effective_render_zone_layer_count(2, 4), 5);
 }
 
 #[test]
@@ -121,7 +123,6 @@ fn composer_requires_cpu_sampling_canvas_for_gaussian_gpu_sampling_plan() {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     });
 
@@ -131,7 +132,7 @@ fn composer_requires_cpu_sampling_canvas_for_gaussian_gpu_sampling_plan() {
 }
 
 #[test]
-fn render_group_full_composition_is_required_when_sparkleflinger_owns_led_sampling() {
+fn render_zone_full_composition_is_required_when_sparkleflinger_owns_led_sampling() {
     let strategy = LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(SpatialLayout {
         id: "layout".into(),
         name: "Layout".into(),
@@ -141,14 +142,13 @@ fn render_group_full_composition_is_required_when_sparkleflinger_owns_led_sampli
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }));
-    assert!(render_group_requires_full_composition(false, &strategy));
+    assert!(render_zone_requires_full_composition(false, &strategy));
 }
 
 #[test]
-fn render_group_presampled_leds_can_bypass_full_composition_without_transition() {
+fn render_zone_presampled_leds_can_bypass_full_composition_without_transition() {
     let strategy = LedSamplingStrategy::PreSampled(Arc::new(SpatialLayout {
         id: "layout".into(),
         name: "Layout".into(),
@@ -158,11 +158,10 @@ fn render_group_presampled_leds_can_bypass_full_composition_without_transition()
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }));
-    assert!(!render_group_requires_full_composition(false, &strategy));
-    assert!(render_group_requires_full_composition(true, &strategy));
+    assert!(!render_zone_requires_full_composition(false, &strategy));
+    assert!(render_zone_requires_full_composition(true, &strategy));
 }
 
 #[test]

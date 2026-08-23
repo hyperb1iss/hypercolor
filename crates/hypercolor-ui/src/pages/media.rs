@@ -225,7 +225,8 @@ pub fn MediaPage() -> impl IntoView {
                     <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
                         {move || {
                             let total = total_count.get();
-                            let shown = filtered_media.get().len();
+                            let shown = u64::try_from(filtered_media.get().len())
+                                .expect("media item count fits in u64");
                             if shown == total {
                                 format!("{total} files")
                             } else {
@@ -282,7 +283,7 @@ pub fn MediaPage() -> impl IntoView {
                                     <EmptyState
                                         icon=LuTriangleAlert
                                         title="Media library unavailable"
-                                        hint=error
+                                            hint=error.to_string()
                                     />
                                 }.into_any(),
                                 Some(Ok(_)) => {

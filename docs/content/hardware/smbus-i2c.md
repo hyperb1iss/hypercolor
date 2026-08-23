@@ -8,7 +8,7 @@ ASUS Aura motherboard headers, GPU lighting zones, and RGB DRAM all communicate 
 
 On Linux the setup requires two things that USB devices do not: the `i2c-dev` kernel module must be loaded, and the udev rules must be installed. Once those are in place, discovery is automatic. Both prerequisites are Linux-only; the [Windows section](#windows-and-macos) below covers the PawnIO path.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ---
 
@@ -65,9 +65,9 @@ just udev-install
 
 This copies the rules file to `/etc/udev/rules.d/`, reloads udev, and triggers a re-evaluation for existing nodes. If you have already run `just udev-install` for USB device access, the SMBus rule is already installed; both USB and SMBus rules live in the same file.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 I²C bus nodes are on-chip and cannot be replugged, so a udev trigger is sufficient, no reboot required. If permissions are still denied after running `just udev-install`, log out and back in so `systemd-logind` can replay the session ACL.
-{% end %}
+{% </callout> %}
 
 ### 3. ACPI resource override (some boards)
 
@@ -125,9 +125,9 @@ ASUS solves this with a **remap hub at address `0x77`**. When the hub is present
 
 If the hub is absent, Hypercolor falls back to probing the known address pool directly (`0x70`-`0x76`, `0x78`-`0x7F`, `0x4F`, `0x66`, `0x67`, `0x39`-`0x3D`) and discovers whatever is already reachable.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 DRAM lighting requires the remap hub at `0x77`. If another tool holds the hub or the bus during startup, Hypercolor cannot program the slot mappings and may miss some or all DRAM sticks. Stop Aura Sync and OpenRGB before starting the Hypercolor daemon.
-{% end %}
+{% </callout> %}
 
 ---
 

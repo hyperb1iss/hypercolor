@@ -129,9 +129,9 @@ impl SceneCommit {
 
 /// One ordered publication chain for scene commits.
 ///
-/// Lives in `AppState` so every transport shares it. The inner lock is
-/// a `std::sync::Mutex` held only for bookkeeping — never across an
-/// await, never across a publish.
+/// Owned by the scene service so every transport shares one sequence.
+/// The inner lock is a `std::sync::Mutex` held only for bookkeeping,
+/// never across an await or publish.
 #[derive(Debug, Default)]
 pub struct SceneCommitSequencer {
     state: Mutex<SequencerState>,
@@ -165,7 +165,7 @@ impl SceneCommitSequencer {
     ///
     /// Callers hold the scene write lock across this call, which is
     /// what makes admission order and revision order the same order.
-    pub(super) fn admit(self: &Arc<Self>, bus: Arc<HypercolorBus>) -> CommitTicket {
+    pub(crate) fn admit(self: &Arc<Self>, bus: Arc<HypercolorBus>) -> CommitTicket {
         let generation = {
             let mut state = self.locked();
             state.revision = state
@@ -244,7 +244,7 @@ impl CommitTicket {
 
     /// Release the slot, publishing `events` once every older
     /// generation has released too.
-    pub(super) fn release(mut self, events: Vec<HypercolorEvent>) {
+    pub(crate) fn release(mut self, events: Vec<HypercolorEvent>) {
         self.released = true;
         self.sequencer.fill(self.generation, events, &self.bus);
     }
@@ -386,37 +386,12 @@ mod tests {
         assert!(drain(&mut events).is_empty());
     }
 
-    /// The daemon builds five `AppState`s over one `DaemonState`, all
-    /// sharing the scene manager by `Arc`. Giving any of them its own
-    /// sequencer hands it a private revision counter and a private
-    /// publication chain over shared state, so the compare-and-swap
-    /// stops seeing competing commits and two chains publish in
-    /// arbitrary order relative to each other.
-    ///
-    /// The property is structural rather than observable —
-    /// reproducing it behaviorally means booting real subsystems, which
-    /// segfaults on teardown — so it is pinned against the sources:
-    /// every mint is accounted for by name, and `from_daemon_state`
-    /// must clone rather than mint.
-    ///
-    /// There are two legitimate mints, not one, and each is a root with
-    /// nothing to clone from: `DaemonState` owns the daemon's, and
-    /// `AppState::new_with_data_dir` is the standalone constructor for
-    /// tests and embedders. A third is a bug, and so is any mint that
-    /// appears inside a constructor which was handed one.
+    /// Commit order belongs to `SceneService`; no holder may carry a
+    /// second sequencer beside the owning scene lock.
     #[test]
     fn every_commit_sequencer_mint_is_accounted_for() {
-        // Every place a struct field is given a sequencer, keyed by
-        // whether it mints a fresh one or shares an existing one. Two
-        // roots may mint, because they have nothing to clone from.
-        const EXPECTED: [(&str, &str); 3] = [
-            ("api/mod.rs", "mint"),          // AppState::new_with_data_dir
-            ("api/mod.rs", "clone"),         // AppState::from_daemon_state
-            ("startup/services.rs", "mint"), // DaemonState
-        ];
-
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut found: Vec<(String, &str)> = Vec::new();
+        let mut found = Vec::new();
         let mut pending = vec![src.clone()];
         while let Some(dir) = pending.pop() {
             for entry in std::fs::read_dir(&dir).expect("source directory reads") {
@@ -433,34 +408,20 @@ mod tests {
                     .expect("paths are under src")
                     .to_string_lossy()
                     .replace('\\', "/");
-                for line in std::fs::read_to_string(&path)
-                    .expect("source file reads")
-                    .lines()
+                if relative != "domain/commit.rs"
+                    && std::fs::read_to_string(&path)
+                        .expect("source file reads")
+                        .contains("commits: Arc<SceneCommitSequencer>")
                 {
-                    // Field declarations carry a type, not a value.
-                    if !line.contains("scene_commits:") || line.contains("pub scene_commits:") {
-                        continue;
-                    }
-                    let kind = if line.contains("Arc::clone") {
-                        "clone"
-                    } else {
-                        "mint"
-                    };
-                    found.push((relative.clone(), kind));
+                    found.push(relative);
                 }
             }
         }
         found.sort();
-
-        let mut expected = EXPECTED
-            .iter()
-            .map(|(file, kind)| ((*file).to_owned(), *kind))
-            .collect::<Vec<_>>();
-        expected.sort();
         assert_eq!(
-            found, expected,
-            "every sequencer must come from one of the two roots or be cloned; \
-             a new mint means some holder has its own chain over shared scene state"
+            found,
+            vec!["domain/scene.rs".to_owned()],
+            "only SceneService may own the commit sequencer"
         );
     }
 

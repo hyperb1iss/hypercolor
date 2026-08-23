@@ -11,7 +11,7 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
 use hypercolor_leptos_ext::events::Input;
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 
 use crate::api;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
@@ -56,7 +56,7 @@ pub fn ScreenCompositionSection(
 
     // Local composition state, seeded from the server and pushed back
     // optimistically so the select and slider track the drag.
-    let (blend_mode, set_blend_mode) = signal(DisplayFaceBlendMode::Alpha);
+    let (blend_mode, set_blend_mode) = signal(BlendMode::Alpha);
     let (opacity, set_opacity) = signal(1.0_f32);
     Effect::new(move |_| {
         let target = face.get().and_then(|face| face.zone.display_target);
@@ -64,35 +64,33 @@ pub fn ScreenCompositionSection(
             set_blend_mode.set(target.blend_mode);
             set_opacity.set(target.opacity.clamp(0.0, 1.0));
         } else {
-            set_blend_mode.set(DisplayFaceBlendMode::Alpha);
+            set_blend_mode.set(BlendMode::Alpha);
             set_opacity.set(1.0);
         }
     });
 
-    let commit = Callback::new(
-        move |(mode, amount): (Option<DisplayFaceBlendMode>, Option<f32>)| {
-            let Some(device_id) = display_device_id.get_untracked() else {
-                return;
-            };
-            let refresh_scene = studio.refresh_scene;
-            spawn_local(async move {
-                match api::update_display_face_composition(&device_id, mode, amount).await {
-                    Ok(_) => {
-                        set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
-                        refresh_scene.run(());
-                    }
-                    Err(error) => {
-                        set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
-                        toasts::toast_error(&format!("Face composition update failed: {error}"));
-                    }
+    let commit = Callback::new(move |(mode, amount): (Option<BlendMode>, Option<f32>)| {
+        let Some(device_id) = display_device_id.get_untracked() else {
+            return;
+        };
+        let refresh_scene = studio.refresh_scene;
+        spawn_local(async move {
+            match api::update_display_face_composition(&device_id, mode, amount).await {
+                Ok(_) => {
+                    set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+                    refresh_scene.run(());
                 }
-            });
-        },
-    );
+                Err(error) => {
+                    set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+                    toasts::toast_error(&format!("Face composition update failed: {error}"));
+                }
+            }
+        });
+    });
 
     let commit_opacity = leptos_use::use_debounce_fn(
         move || {
-            if !blend_mode.get_untracked().blends_with_effect() {
+            if !blend_mode.get_untracked().blends_with_base() {
                 return;
             }
             commit.run((None, Some(opacity.get_untracked())));
@@ -111,7 +109,7 @@ pub fn ScreenCompositionSection(
     let on_blend_change = Callback::new(move |value: String| {
         let mode = parse_face_blend(&value);
         set_blend_mode.set(mode);
-        let amount = if mode.blends_with_effect() {
+        let amount = if mode.blends_with_base() {
             opacity.get_untracked()
         } else {
             1.0
@@ -156,7 +154,7 @@ pub fn ScreenCompositionSection(
                         </p>
                     </div>
 
-                    <Show when=move || blend_mode.get().blends_with_effect()>
+                    <Show when=move || blend_mode.get().blends_with_base()>
                         <label class="grid grid-cols-[88px_1fr_44px] items-center gap-2 text-[10px] font-mono uppercase tracking-wide text-fg-tertiary/75">
                             <span>"Blend amount"</span>
                             <input

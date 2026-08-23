@@ -30,7 +30,7 @@ use crate::display_preview_state::use_display_preview_subscription;
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 use crate::toasts;
-use crate::ws::messages::group_has_degraded_layer;
+use crate::ws::messages::zone_has_degraded_layer;
 
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use super::zone_controls::unassigned_behavior_label;
@@ -87,7 +87,7 @@ fn SurfaceStage() -> impl IntoView {
     Effect::new(move |_| {
         let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {
             (Some(scene), Some(zone)) => {
-                let key = hidden_outputs_storage_key(&scene.id, &zone);
+                let key = hidden_outputs_storage_key(&scene.id.to_string(), &zone);
                 studio
                     .hidden_outputs
                     .with(|map| map.get(&key).cloned().unwrap_or_default())
@@ -115,8 +115,9 @@ fn SurfaceStage() -> impl IntoView {
         else {
             return false;
         };
-        ws.layer_health
-            .with(|map| group_has_degraded_layer(map, &scene.id, &surface.id, &surface.layer_ids))
+        ws.layer_health.with(|map| {
+            zone_has_degraded_layer(map, &scene.id.to_string(), &surface.id, &surface.layer_ids)
+        })
     });
 
     // A Light keeps the canvas live, so it reserves the same preview
@@ -506,7 +507,7 @@ fn UnassignedStage() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            match api::zones::update_unassigned_behavior(&behavior, Some(scene.revision)).await {
+            match api::zones::update_unassigned_behavior(&behavior, scene.revision).await {
                 Ok(ZoneOutcome::Applied(_)) => {
                     toasts::toast_success("Unassigned-lights policy updated");
                     studio.refresh_scene.run(());

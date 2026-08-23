@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use hypercolor_core::types::canvas::{BYTES_PER_PIXEL, PublishedSurfaceStorageIdentity};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, PublishedSurfaceStorageIdentity};
 use wgpu::util::DeviceExt;
 
 use super::super::{CompositionAdjust, CompositionPlan, CompositionTransform};

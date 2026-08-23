@@ -1,5 +1,7 @@
 use hypercolor_types::canvas::srgb_to_linear;
-use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, GradientStop};
+use hypercolor_ui::api::layers::control_patch_request;
 use hypercolor_ui::api::{
     ComponentBinding, DisplayFaceResponse, DisplayFaceScope, PairDeviceRequest,
     SetDisplayFaceRequest,
@@ -9,7 +11,7 @@ use hypercolor_ui::control_value_json::{
 };
 use hypercolor_ui::display_utils::display_preview_shell_url;
 use hypercolor_ui::optimistic_controls::{
-    apply_raw_control_updates, merge_control_values, raw_control_updates_payload,
+    apply_raw_control_updates, merge_control_values, normalize_raw_control_updates,
 };
 use hypercolor_ui::style_utils::category_style;
 
@@ -38,7 +40,7 @@ fn dropdown_control(id: &str) -> ControlDefinition {
         min: None,
         max: None,
         step: None,
-        labels: vec!["a".to_owned(), "b".to_owned()],
+        labels: vec!["high".to_owned(), "low".to_owned()],
         group: None,
         tooltip: None,
         aspect_lock: None,
@@ -53,7 +55,35 @@ fn color_control(id: &str) -> ControlDefinition {
         name: id.to_owned(),
         kind: ControlKind::Color,
         control_type: ControlType::ColorPicker,
-        default_value: ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+        default_value: ControlValue::linear_color([0.0, 0.0, 0.0, 1.0]),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: None,
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }
+}
+
+fn gradient_control(id: &str) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        kind: ControlKind::Other("gradient".to_owned()),
+        control_type: ControlType::GradientEditor,
+        default_value: ControlValue::Gradient(vec![
+            GradientStop {
+                position: 0.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            GradientStop {
+                position: 1.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ]),
         min: None,
         max: None,
         step: None,
@@ -141,7 +171,7 @@ fn set_display_face_request_skips_empty_controls() {
     let payload = serde_json::to_value(SetDisplayFaceRequest {
         effect_id: "face-1".to_owned(),
         controls: std::collections::HashMap::new(),
-        blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
+        blend_mode: Some(hypercolor_types::layer::BlendMode::Replace),
         opacity: Some(1.0),
         scope: hypercolor_ui::api::DisplayFaceScope::Default,
     })
@@ -166,7 +196,7 @@ fn set_display_face_request_serializes_present_controls() {
             "accent".to_owned(),
             ControlValue::Float(0.75),
         )]),
-        blend_mode: Some(hypercolor_types::scene::DisplayFaceBlendMode::Replace),
+        blend_mode: Some(hypercolor_types::layer::BlendMode::Replace),
         opacity: Some(1.0),
         scope: hypercolor_ui::api::DisplayFaceScope::Scene,
     })
@@ -176,7 +206,7 @@ fn set_display_face_request_serializes_present_controls() {
         payload,
         serde_json::json!({
             "effect_id": "face-2",
-            "controls": { "accent": { "float": 0.75 } },
+            "controls": { "accent": { "kind": "float", "value": 0.75 } },
             "blend_mode": "replace",
             "opacity": 1.0,
             "scope": "scene"
@@ -197,11 +227,11 @@ fn json_to_control_value_maps_primitive_types() {
     let controls: Vec<ControlDefinition> = Vec::new();
     assert_eq!(
         json_to_control_value("flag", &controls, &serde_json::json!(true)),
-        Some(ControlValue::Boolean(true))
+        Some(ControlValue::Bool(true))
     );
     assert_eq!(
         json_to_control_value("count", &controls, &serde_json::json!(7)),
-        Some(ControlValue::Integer(7))
+        Some(ControlValue::Int(7))
     );
     let Some(ControlValue::Float(v)) =
         json_to_control_value("alpha", &controls, &serde_json::json!(0.25))
@@ -220,15 +250,15 @@ fn json_to_control_value_uses_control_type_for_strings() {
         Some(ControlValue::Enum("high".to_owned()))
     );
 
-    let Some(ControlValue::Color(color)) =
+    let Some(ControlValue::ColorLinear(color)) =
         json_to_control_value("accent", &controls, &serde_json::json!("#ff80c0"))
     else {
         panic!("hex string should convert to Color for color-picker control");
     };
-    assert!((color[0] - 1.0).abs() < 1e-6);
-    assert!((color[1] - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
-    assert!((color[2] - srgb_to_linear(192.0 / 255.0)).abs() < 1e-6);
-    assert!((color[3] - 1.0).abs() < 1e-6);
+    assert!((color.r - 1.0).abs() < 1e-6);
+    assert!((color.g - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
+    assert!((color.b - srgb_to_linear(192.0 / 255.0)).abs() < 1e-6);
+    assert!((color.a - 1.0).abs() < 1e-6);
 
     // Unknown control id falls back to Text.
     assert_eq!(
@@ -239,18 +269,42 @@ fn json_to_control_value_uses_control_type_for_strings() {
 
 #[test]
 fn json_to_control_value_accepts_rgba_arrays() {
-    let controls: Vec<ControlDefinition> = Vec::new();
-    let Some(ControlValue::Color(color)) = json_to_control_value(
+    let controls = vec![color_control("accent")];
+    let Some(ControlValue::ColorLinear(color)) = json_to_control_value(
         "accent",
         &controls,
         &serde_json::json!([1.0, 0.5, 0.25, 1.0]),
     ) else {
         panic!("four-element array should convert to Color");
     };
-    assert!((color[0] - 1.0).abs() < 1e-6);
-    assert!((color[1] - 0.5).abs() < 1e-6);
-    assert!((color[2] - 0.25).abs() < 1e-6);
-    assert!((color[3] - 1.0).abs() < 1e-6);
+    assert!((color.r - 1.0).abs() < 1e-6);
+    assert!((color.g - 0.5).abs() < 1e-6);
+    assert!((color.b - 0.25).abs() < 1e-6);
+    assert!((color.a - 1.0).abs() < 1e-6);
+    assert_eq!(
+        json_to_control_value(
+            "unknown",
+            &controls,
+            &serde_json::json!([1.0, 0.5, 0.25, 1.0]),
+        ),
+        None,
+        "a bare four-number array needs a color control definition"
+    );
+}
+
+#[test]
+fn gradient_control_round_trips_between_ui_state_and_effect_json() {
+    let raw = serde_json::json!([
+        {"pos": 0.0, "color": [1.0, 0.0, 0.0, 1.0]},
+        {"pos": 0.5, "color": [0.5, 0.25, 0.75, 1.0]},
+        {"pos": 1.0, "color": [0.0, 0.0, 1.0, 1.0]}
+    ]);
+    let controls = vec![gradient_control("palette")];
+    let value = json_to_control_value("palette", &controls, &raw)
+        .expect("valid gradient edit should enter UI state");
+    let values = std::collections::HashMap::from([("palette".to_owned(), value)]);
+
+    assert_eq!(controls_to_json(&values).get("palette"), Some(&raw));
 }
 
 #[test]
@@ -266,12 +320,12 @@ fn json_to_control_value_rejects_malformed_input() {
 fn controls_to_json_serializes_typed_values_for_api_payloads() {
     let values = std::collections::HashMap::from([
         ("speed".to_owned(), ControlValue::Float(0.75)),
-        ("count".to_owned(), ControlValue::Integer(7)),
-        ("enabled".to_owned(), ControlValue::Boolean(true)),
+        ("count".to_owned(), ControlValue::Int(7)),
+        ("enabled".to_owned(), ControlValue::Bool(true)),
         ("mode".to_owned(), ControlValue::Enum("high".to_owned())),
         (
             "accent".to_owned(),
-            ControlValue::Color([
+            ControlValue::linear_color([
                 srgb_to_linear(128.0 / 255.0),
                 srgb_to_linear(255.0 / 255.0),
                 srgb_to_linear(234.0 / 255.0),
@@ -286,7 +340,10 @@ fn controls_to_json_serializes_typed_values_for_api_payloads() {
     assert_eq!(json.get("count"), Some(&serde_json::json!(7)));
     assert_eq!(json.get("enabled"), Some(&serde_json::json!(true)));
     assert_eq!(json.get("mode"), Some(&serde_json::json!("high")));
-    assert_eq!(json.get("accent"), Some(&serde_json::json!("#80ffea")));
+    assert_eq!(
+        json.get("accent"),
+        Some(&serde_json::json!([0.21586053, 1.0, 0.82278585, 1.0]))
+    );
 }
 
 #[test]
@@ -304,32 +361,46 @@ fn optimistic_control_updates_apply_raw_values() {
         values.get("mode"),
         Some(&ControlValue::Enum("high".to_owned()))
     );
-    let Some(ControlValue::Color(color)) = values.get("accent") else {
+    let Some(ControlValue::ColorLinear(color)) = values.get("accent") else {
         panic!("accent should be converted to a color");
     };
-    assert!((color[1] - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
+    assert!((color.g - srgb_to_linear(128.0 / 255.0)).abs() < 1e-6);
 }
 
 #[test]
-fn optimistic_control_helpers_merge_and_payload_pending_updates() {
+fn live_color_edit_stays_typed_through_the_patch_request() {
+    let controls = vec![color_control("accent")];
+    let raw = serde_json::json!([0.25, 0.5, 0.75, 1.0]);
+    let admitted = normalize_raw_control_updates(&controls, &[("accent".to_owned(), raw.clone())]);
+
+    assert!(matches!(
+        admitted.get("accent"),
+        Some(ControlValue::ColorLinear(_))
+    ));
+    let request = control_patch_request(&admitted, Vec::new());
+    assert_eq!(
+        serde_json::to_value(request).expect("patch request should serialize")["values"]["accent"],
+        serde_json::json!({"kind": "color_linear", "value": {
+            "r": 0.25, "g": 0.5, "b": 0.75, "a": 1.0
+        }})
+    );
+}
+
+#[test]
+fn preference_restore_reuses_canonical_color_values_without_json_reparsing() {
     let mut values = std::collections::HashMap::from([(
-        "mode".to_owned(),
-        ControlValue::Enum("low".to_owned()),
+        "accent".to_owned(),
+        ControlValue::linear_color([0.125, 0.25, 0.5, 1.0]),
     )]);
-    let next = std::collections::HashMap::from([(
-        "mode".to_owned(),
-        ControlValue::Enum("high".to_owned()),
-    )]);
+    let next = std::collections::HashMap::from([("speed".to_owned(), ControlValue::Float(0.75))]);
 
     merge_control_values(&mut values, &next);
 
-    assert_eq!(values, next);
-
-    let payload = raw_control_updates_payload(std::collections::HashMap::from([(
-        "mode".to_owned(),
-        serde_json::json!("high"),
-    )]));
-    assert_eq!(payload, serde_json::json!({ "mode": "high" }));
+    let request = control_patch_request(&values, Vec::new());
+    let serialized = serde_json::to_value(request).expect("patch request should serialize");
+    assert_eq!(serialized["values"]["accent"]["kind"], "color_linear");
+    assert_eq!(serialized["values"]["accent"]["value"]["r"], 0.125);
+    assert_eq!(serialized["values"]["speed"]["value"], 0.75);
 }
 
 #[test]
@@ -439,8 +510,9 @@ fn display_face_response_decodes_the_daemon_shape() {
         wire["zone"]["display_target"]["device_id"]
     );
     // The zone's patched control survives the tolerant decode.
-    assert!(
-        decoded.zone.controls.contains_key("label"),
-        "zone controls should carry the fixture's label control"
-    );
+    assert!(matches!(
+        &decoded.zone.layers[0].source,
+        hypercolor_types::layer::LayerSource::Effect { controls, .. }
+            if controls.contains_key("label")
+    ));
 }

@@ -8,13 +8,13 @@ use std::f32::consts::{PI, TAU};
 
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, SpatialLayout, StripDirection};
 
-#[path = "layout_geometry/groups.rs"]
-mod groups;
+#[path = "layout_geometry/compounds.rs"]
+mod compounds;
 
-pub use groups::{
-    AlignAnchor, AlignAxis, CompoundBounds, align_group, compound_bounding_box, distribute_group,
-    group_centroid, mirror_group, pack_group, rotate_group, scale_group, translate_group,
-    translate_zones,
+pub use compounds::{
+    AlignAnchor, AlignAxis, CompoundBounds, align_compound, compound_bounding_box,
+    compound_centroid, distribute_compound, mirror_compound, pack_compound, rotate_compound,
+    scale_compound, translate_compound, translate_zones,
 };
 #[path = "layout_geometry/defaults.rs"]
 mod defaults;

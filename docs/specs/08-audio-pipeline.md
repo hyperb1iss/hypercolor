@@ -20,7 +20,7 @@
 pub struct AudioData {
     // ─── Level & Shape ──────────────────────────────────────
     /// Overall audio level (RMS of 200 bins, normalized 0.0-1.0).
-    /// Maps to Lightscript `engine.audio.level`.
+    /// Maps to Lightscript `engine.audio.levelLinear`.
     pub level: f32,
 
     /// Audio density -- spectral flatness (0.0 = pure tone, 1.0 = white noise).
@@ -126,7 +126,8 @@ pub struct AudioData {
 
 | Rust Field             | Lightscript JS Path               | JS Type            | Notes                          |
 | ---------------------- | --------------------------------- | ------------------ | ------------------------------ |
-| `level`                | `engine.audio.level`              | `number`           | 0.0-1.0                        |
+| `level`                | `engine.audio.levelLinear`        | `number`           | 0.0-1.0                        |
+| derived dB             | `engine.audio.levelDb`            | `number`           | -100.0-0.0                     |
 | `density`              | `engine.audio.density`            | `number`           | 0.0-1.0, spectral flatness     |
 | `width`                | `engine.audio.width`              | `number`           | 0.0-1.0, stereo correlation    |
 | `freq`                 | `engine.audio.freq`               | `Int8Array(200)`   | Scaled to -128..127 for compat |

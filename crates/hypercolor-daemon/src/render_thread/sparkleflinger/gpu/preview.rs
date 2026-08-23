@@ -2,7 +2,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_core::types::canvas::{
+use hypercolor_types::canvas::{
     BYTES_PER_PIXEL, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
 

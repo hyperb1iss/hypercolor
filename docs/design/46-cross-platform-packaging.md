@@ -741,7 +741,8 @@ Tray menu item: **"Export Diagnostics"** → produces a zip at `~/Desktop/hyperc
 - Authorized status data from `/api/v1/system`
 - Output of `/api/v1/diagnose`
 - Sanitized config (`hypercolor.toml` with API keys redacted)
-- `device-settings.json`, `runtime-state.json`, `layouts.json`, `profiles.json`
+- Machine-local `device-settings.json` and `runtime-state.json` from the state directory
+- User-authored `layouts.json` and `profiles.json` from the data directory
 - Platform info (`OS version`, `CPU`, `RAM`, GPU model)
 - Hypercolor version
 

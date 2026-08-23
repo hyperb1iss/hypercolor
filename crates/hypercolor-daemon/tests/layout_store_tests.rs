@@ -41,7 +41,6 @@ fn sample_layout() -> SpatialLayout {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -57,14 +56,12 @@ fn load_returns_empty_map_when_file_is_missing() {
 }
 
 #[test]
-fn save_and_load_roundtrip_preserves_layouts() {
+fn load_restores_a_serialized_layout_fixture() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let path = tempdir.path().join("layouts.json");
     let layout = sample_layout();
-    let mut store = HashMap::new();
-    store.insert(layout.id.clone(), layout.clone());
-
-    layout_store::save(&path, &store).expect("save should succeed");
+    let payload = serde_json::to_vec_pretty(&[&layout]).expect("fixture should serialize");
+    std::fs::write(&path, payload).expect("fixture should write");
     let loaded = layout_store::load(&path).expect("load should succeed");
     let restored = loaded
         .get(&layout.id)
@@ -88,7 +85,6 @@ fn ensure_default_layout_inserts_missing_default_entry_once() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let mut store = HashMap::new();

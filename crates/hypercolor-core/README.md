@@ -32,8 +32,8 @@ optionally `hypercolor-linux-gpu-interop` (feature `servo-gpu-import`).
 
 **Device layer**
 
-- `device::traits::DeviceBackend` — hardware communication trait: `discover`,
-  `connect`, `write_colors`, `disconnect`.
+- `hypercolor_driver_api::DeviceBackend` is the hardware communication trait
+  for discovery, connection, frame delivery, and disconnection.
 - `device::manager::BackendManager` — device registry and frame dispatch.
 - `device::state_machine` — per-device lifecycle state machine.
 
@@ -46,7 +46,7 @@ optionally `hypercolor-linux-gpu-interop` (feature `servo-gpu-import`).
 - `effect::traits::EffectRenderOutput` — bridges CPU `Canvas` and GPU
   `ImportedEffectFrame` outputs.
 - `effect::registry::EffectRegistry` — catalog of all known effects.
-- `effect::pool::EffectPool` — manages active renderer instances per render group.
+- `effect::pool::EffectPool` — manages active renderer instances per render zone.
 - `effect::servo::renderer::ServoRenderer` — HTML/Canvas renderer via Servo
   (feature-gated, see below).
 

@@ -29,8 +29,7 @@ use tokio::sync::{Mutex, watch};
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
 const MINIMAL_TOML: &str = "schema_version = 5\n";
 
-static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static PATH_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct TestConfigDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
@@ -41,7 +40,7 @@ struct TestConfigDirGuard {
 
 impl TestConfigDirGuard {
     async fn new() -> Self {
-        let lock = CONFIG_DIR_LOCK.lock().await;
+        let lock = PATH_OVERRIDE_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let config_dir = dir.path().join("config");
         ConfigManager::set_config_dir_override(Some(config_dir.clone()));
@@ -64,18 +63,26 @@ struct TestDataDirGuard {
     _dir: tempfile::TempDir,
     #[allow(dead_code)]
     data_dir: PathBuf,
+    _config_dir: PathBuf,
+    _state_dir: PathBuf,
 }
 
 impl TestDataDirGuard {
     async fn new() -> Self {
-        let lock = DATA_DIR_LOCK.lock().await;
+        let lock = PATH_OVERRIDE_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let data_dir = dir.path().join("data");
+        let config_dir = dir.path().join("config");
+        let state_dir = dir.path().join("state");
         ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        ConfigManager::set_config_dir_override(Some(config_dir.clone()));
+        ConfigManager::set_state_dir_override(Some(state_dir.clone()));
         Self {
             _lock: lock,
             _dir: dir,
             data_dir,
+            _config_dir: config_dir,
+            _state_dir: state_dir,
         }
     }
 }
@@ -83,6 +90,8 @@ impl TestDataDirGuard {
 impl Drop for TestDataDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_config_dir_override(None);
+        ConfigManager::set_state_dir_override(None);
     }
 }
 
@@ -184,15 +193,15 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     // Verify initial state — all subsystems created but not started
     assert!(state.device_registry.is_empty().await);
     {
-        let scenes = state.scene_manager.read().await;
+        let scenes = state.scene_manager.snapshot().await;
         assert_eq!(scenes.scene_count(), 1);
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
-        assert_eq!(scenes.active_render_groups().len(), 1);
+        assert_eq!(scenes.resolved_zones().len(), 1);
     }
     {
         let loop_guard = state.render_loop.read().await;
@@ -219,9 +228,9 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
 
     // Verify scene-backed runtime state returns to the default zone.
     {
-        let scenes = state.scene_manager.read().await;
+        let scenes = state.scene_manager.snapshot().await;
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
-        assert_eq!(scenes.active_render_groups().len(), 1);
+        assert_eq!(scenes.resolved_zones().len(), 1);
     }
 }
 
@@ -235,7 +244,7 @@ async fn daemon_shutdown_publishes_events() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     let mut rx = state.event_bus.subscribe_all();
 
@@ -292,7 +301,7 @@ async fn daemon_double_shutdown_is_safe() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     state.start().await.expect("start");
     state.shutdown().await.expect("first shutdown");
@@ -304,7 +313,6 @@ async fn daemon_double_shutdown_is_safe() {
 
 #[tokio::test]
 async fn daemon_start_rolls_back_partial_startup() {
-    let _config_guard = TestConfigDirGuard::new().await;
     let _data_guard = TestDataDirGuard::new().await;
     let mut config = default_config();
     config.audio.enabled = false;
@@ -323,7 +331,7 @@ async fn daemon_start_rolls_back_partial_startup() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     let shutdowns = Arc::new(AtomicUsize::new(0));
     state.register_lifecycle_extension(Arc::new(FailingStartupExtension {
@@ -352,7 +360,7 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         config_manager_for(&config, temp.path()),
     )
     .expect("initialization should succeed");
-    *state.input_manager.lock().await = test_input_manager();
+    *state.input_manager().lock().await = test_input_manager();
 
     let effect_id = {
         let registry = state.effect_registry.read().await;
@@ -366,10 +374,10 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         &state.runtime_state_path,
         serde_json::to_string_pretty(&serde_json::json!({
             "active_scene_id": hypercolor_types::scene::SceneId::DEFAULT.to_string(),
-            "default_scene_groups": [],
+            "default_scene_zones": [],
             "active_effect_id": effect_id,
             "control_values": {
-                "speed": { "float": 7.0 }
+                "speed": { "kind": "float", "value": 7.0 }
             }
         }))
         .expect("runtime snapshot json should serialize"),
@@ -381,13 +389,13 @@ async fn removed_runtime_effect_fields_are_rejected_on_startup() {
         .await
         .expect("start should ignore invalid runtime state");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     let primary = scenes
         .active_scene()
-        .and_then(|scene| scene.primary_group())
+        .and_then(|scene| scene.primary_zone())
         .expect("startup should keep the seeded Default zone");
     assert!(
-        primary.effect_id.is_none() && primary.controls.is_empty(),
+        primary.layers.is_empty(),
         "startup should not hydrate removed runtime fields"
     );
     drop(scenes);
@@ -437,23 +445,10 @@ async fn config_loading_all_sub_configs_have_defaults() {
     assert!(config.drivers["hue"].enabled);
     assert!(config.drivers["nanoleaf"].enabled);
 
-    // Feature flags default to false
-    assert!(!config.features.wasm_plugins);
-    assert!(!config.features.hue_entertainment);
-    assert!(!config.features.midi_input);
-
     assert_eq!(
         config.effect_engine.compositor_acceleration_mode,
         RenderAccelerationMode::Auto
     );
-
-    // TUI config defaults
-    assert_eq!(config.tui.theme, "silkcircuit");
-    assert_eq!(config.tui.preview_fps, 15);
-
-    // D-Bus config defaults
-    assert!(config.dbus.enabled);
-    assert_eq!(config.dbus.bus_name, "tech.hyperbliss.hypercolor1");
 }
 
 #[tokio::test]
@@ -494,7 +489,6 @@ wasm_plugins = true
     assert_eq!(config.daemon.port, 8888);
     assert!(!config.audio.enabled);
     assert_eq!(config.audio.fft_size, 2048);
-    assert!(config.features.wasm_plugins);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -552,14 +546,14 @@ async fn api_state_default_scene_starts_with_default_zone() {
 
     // Verify the default scene is active with a selectable Default zone.
     {
-        let scenes = state.scene_manager.read().await;
+        let scenes = state.scene_manager.snapshot().await;
         assert!(scenes.active_scene_id().is_some_and(SceneId::is_default));
-        assert_eq!(scenes.active_render_groups().len(), 1);
+        assert_eq!(scenes.resolved_zones().len(), 1);
     }
 }
 
 #[tokio::test]
-async fn api_state_scene_manager_accessible_through_rwlock() {
+async fn daemon_scene_service_returns_owned_snapshots() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
@@ -569,22 +563,14 @@ async fn api_state_scene_manager_accessible_through_rwlock() {
     )
     .expect("initialization should succeed");
 
-    // Write lock: create a scene
-    {
-        let mut scenes = state.scene_manager.write().await;
-        let scene = hypercolor_core::scene::make_scene("Test Scene");
-        scenes.create(scene).expect("create scene");
-    }
+    let mut snapshot = state.scene_manager.snapshot().await;
+    snapshot
+        .create(hypercolor_core::scene::make_scene("Detached Scene"))
+        .expect("owned snapshot should remain mutable");
 
-    // Read lock: verify scene exists
-    {
-        let scenes = state.scene_manager.read().await;
-        assert_eq!(scenes.scene_count(), 2);
-        let listed = scenes.list();
-        assert_eq!(listed.len(), 2);
-        assert!(listed.iter().any(|scene| scene.id.is_default()));
-        assert!(listed.iter().any(|scene| scene.name == "Test Scene"));
-    }
+    let current = state.scene_manager.snapshot().await;
+    assert_eq!(current.scene_count(), 1);
+    assert!(current.list().iter().all(|scene| scene.id.is_default()));
 }
 
 #[tokio::test]

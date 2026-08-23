@@ -5,7 +5,7 @@ use leptos_icons::Icon;
 use serde_json::json;
 
 use hypercolor_leptos_ext::events::Change;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 pub(super) fn render_text_input(
     name: String,

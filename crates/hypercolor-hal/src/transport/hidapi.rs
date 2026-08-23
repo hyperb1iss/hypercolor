@@ -4,7 +4,6 @@
 //! interfaces directly, which keeps input devices such as mice and keyboards
 //! usable while Hypercolor sends lighting commands.
 
-use std::cmp::min;
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,7 +14,7 @@ use hidapi::{HidApi, HidDevice};
 use tracing::{debug, trace};
 
 use crate::registry::HidRawReportMode;
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError, format_hex_preview};
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -736,11 +735,19 @@ fn report_mode_payload_includes_report_id(report_mode: HidRawReportMode) -> bool
 
 fn map_hidapi_error(error: &hidapi::HidError) -> TransportError {
     let detail = error.to_string();
-    if detail.to_ascii_lowercase().contains("permission") {
-        return TransportError::PermissionDenied { detail };
-    }
+    let hidapi::HidError::IoError { error } = error else {
+        return TransportError::IoError { detail };
+    };
 
-    TransportError::IoError { detail }
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
+        std::io::ErrorKind::NotFound => TransportError::NotFound { detail },
+        std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::UnexpectedEof
+        | std::io::ErrorKind::NotConnected => TransportError::Disconnected { detail },
+        _ => TransportError::IoError { detail },
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -783,23 +790,29 @@ fn normalize_usb_path(path: &str) -> Option<String> {
     Some(format!("{bus}-{ports}"))
 }
 
-fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
-    let preview_len = min(bytes.len(), max_bytes);
-    let mut rendered = bytes
-        .iter()
-        .take(preview_len)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if bytes.len() > preview_len {
-        use std::fmt::Write;
-        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
-    }
+    #[test]
+    fn hidapi_classification_uses_io_kind_not_message() {
+        let misleading = hidapi::HidError::HidApiError {
+            message: "permission denied and device not found".to_owned(),
+        };
+        assert!(matches!(
+            map_hidapi_error(&misleading),
+            TransportError::IoError { .. }
+        ));
 
-    if rendered.is_empty() {
-        "<empty>".to_owned()
-    } else {
-        rendered
+        let permission = hidapi::HidError::IoError {
+            error: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "harmless display text",
+            ),
+        };
+        assert!(matches!(
+            map_hidapi_error(&permission),
+            TransportError::PermissionDenied { .. }
+        ));
     }
 }

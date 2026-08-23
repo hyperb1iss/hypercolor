@@ -189,11 +189,11 @@ fn dynamic_action_for_menu_id(id: &str) -> Option<MenuAction> {
 }
 
 fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
-    let effect_label = match &state.current_effect {
+    let effect_label = match &state.active_effect {
         Some(effect) => format!("\u{25b6} {}", effect.name),
         None => "No effect active".to_owned(),
     };
-    entries.push(item("current_effect", effect_label, false));
+    entries.push(item("active_effect", effect_label, false));
 
     if let Some(scene_name) = &state.active_scene_name {
         let scene_suffix = if state.scene_snapshot_locked {
@@ -202,7 +202,7 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
             ""
         };
         entries.push(item(
-            "current_scene",
+            "active_scene",
             format!("Scene: {scene_name}{scene_suffix}"),
             false,
         ));
@@ -257,7 +257,7 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
         entries.push(item(ids::PAUSE_OUTPUT, "Pause", true));
     }
 
-    if state.current_effect.is_some() {
+    if state.active_effect.is_some() {
         entries.push(item(ids::STOP_EFFECT, "Stop Effect", true));
     }
 

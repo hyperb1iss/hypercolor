@@ -9,11 +9,11 @@ Hypercolor's HTML effect format is a straight superset of LightScript's. A self-
 
 This is the lowest-level authoring path. You give up typed controls, palette sampling, the structured `AudioData` surface, and most of the SDK's authoring ergonomics. Reach for it when porting an existing LightScript effect, for one-file oddities, and for effects that must travel without a workspace. For greenfield work, [TypeScript effects](@/effects/typescript-effects.md) are almost always the better call.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 **Catalog, not counts.** Hypercolor ships 11 native built-in effects plus a large library of SDK-authored HTML effects. The catalog grows, so browse the live registry with `hypercolor effects list` or the web UI rather than trusting any fixed number.
-{% end %}
+{% </callout> %}
 
-{{ img(path="img/ui/effects.webp", alt="Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="Hypercolor effects browser" />}}
 
 ## The minimum viable effect
 
@@ -75,9 +75,9 @@ Three things are hard requirements:
 2. **A `<title>`.** The title becomes the catalog display name. Missing it raises `MISSING_TITLE`.
 3. **At least one `<script>` tag.** The daemon loads the HTML and runs the script in a Servo rendering context; with no script there is nothing to animate. Missing it raises `MISSING_SCRIPT`.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The `<meta name="hypercolor-version" content="1">` tag is **strongly recommended but not a hard error.** Omit it and the validator emits a `MISSING_VERSION` warning rather than failing the file. Keep it in every effect anyway: it pins the wire format and identifies the file as a Hypercolor effect for future format migrations.
-{% end %}
+{% </callout> %}
 
 ## Metadata meta tags
 
@@ -97,9 +97,9 @@ The parser reads these from anywhere in the document, though `<head>` is the con
 
 Attribute order does not matter, and quoting can be single or double. The parser is deliberately lenient: it has no full DOM dependency, it strips HTML comments before scanning (so a commented-out `<meta>` is ignored), and it tolerates the loose `name`/`content` form alongside the bare-attribute form.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Audio reactivity is opt-in by an **explicit** `audio-reactive="true"` tag. The parser does not infer it from `engine.audio` references in your script, because the bundled SDK runtime always carries audio scaffolding. If your lights are not reacting to sound, the missing meta tag is the usual culprit.
-{% end %}
+{% </callout> %}
 
 ## Controls as meta tags
 
@@ -167,7 +167,8 @@ Effects that declare `audio-reactive="true"` get a runtime audio surface injecte
 ```javascript
 const audio = window.engine?.audio;
 if (audio) {
-  const level = audio.level;     // 0-1 RMS
+  const level = audio.levelLinear; // 0-1 RMS
+  const levelDb = audio.levelDb;   // -100 to 0 dB
   const bass = audio.bass;       // 0-1
   const beat = audio.beat;       // 0 or 1 this frame
   const beatPulse = audio.beatPulse;
@@ -197,9 +198,9 @@ bunx hypercolor validate ./my-effect.html --json      # machine-readable output
 
 It checks the render surface, title, and script (hard errors), then reports warnings for a missing version tag, missing description or publisher, out-of-range control defaults, and external script or link tags that would break self-containment. Keep everything inline; a reference to an outside CDN raises `EXTERNAL_ASSET_REFERENCE`.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The `bunx hypercolor` commands run inside a scaffolded workspace, resolving the SDK from npm by default (or a local `file:` override); see [Setup & workspace](@/effects/setup.md) for the install story.
-{% end %}
+{% </callout> %}
 
 ## Installing raw HTML
 

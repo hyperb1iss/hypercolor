@@ -3,9 +3,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use reqwest::Url;
+use tracing::debug;
+
+use crate::config::paths::cache_dir;
+use crate::effect::lightscript::control_js_literal;
 
 /// Whether an effect should receive `engine.audio.*` updates each frame.
 pub(in crate::effect::servo) fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
@@ -24,12 +29,20 @@ pub(in crate::effect::servo) fn effect_is_audio_reactive(metadata: &EffectMetada
 }
 
 /// Prepare an HTML file with a runtime control preamble injected into `<head>`.
+///
+/// A session that did not ask for engine globals loads its page verbatim, so
+/// no preamble is built and no temporary file is written.
 pub(in crate::effect::servo) fn prepare_runtime_html_source(
     original_path: &Path,
     controls: &HashMap<String, ControlValue>,
     host_driven_animation: bool,
     display_descriptor: Option<&DisplayDescriptor>,
+    inject_engine_globals: bool,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
+    if !inject_engine_globals {
+        return Ok((original_path.to_path_buf(), None));
+    }
+
     let html = std::fs::read_to_string(original_path).with_context(|| {
         format!(
             "failed to read HTML effect file while preparing runtime source: {}",
@@ -38,7 +51,7 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
     })?;
 
     let preamble =
-        build_control_preamble_script(controls, host_driven_animation, display_descriptor);
+        build_control_preamble_script(controls, host_driven_animation, display_descriptor)?;
     let base_tag = original_path
         .parent()
         .and_then(|parent| Url::from_directory_path(parent).ok())
@@ -46,10 +59,7 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
     let injected_block = format!("{base_tag}<script>\n{preamble}\n</script>\n");
     let runtime_html = inject_runtime_head_block(&html, &injected_block);
 
-    let cache_root = dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("hypercolor")
-        .join("servo-runtime");
+    let cache_root = cache_dir().join("servo-runtime");
     std::fs::create_dir_all(&cache_root).with_context(|| {
         format!(
             "failed to create Servo runtime cache directory: {}",
@@ -68,11 +78,22 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
     Ok((runtime_path.clone(), Some(runtime_path)))
 }
 
+/// Remove a temporary runtime HTML file once its page is done with.
+pub(in crate::effect::servo) fn cleanup_runtime_html_path(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        debug!(
+            path = %path.display(),
+            %error,
+            "Failed to remove temporary runtime HTML source"
+        );
+    }
+}
+
 fn build_control_preamble_script(
     controls: &HashMap<String, ControlValue>,
     host_driven_animation: bool,
     display_descriptor: Option<&DisplayDescriptor>,
-) -> String {
+) -> Result<String> {
     let mut sorted_controls: Vec<_> = controls.iter().collect();
     sorted_controls.sort_by_key(|(name, _)| *name);
 
@@ -99,14 +120,16 @@ fn build_control_preamble_script(
     script.push_str("  }\n");
     for (name, value) in sorted_controls {
         let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
+        let value_literal = control_js_literal(value)
+            .with_context(|| format!("control '{name}' cannot enter the effect runtime"))?;
         let _ = writeln!(
             script,
             "  if (typeof globalThis[{key_literal}] === 'undefined') globalThis[{key_literal}] = {};",
-            value.to_js_literal()
+            value_literal
         );
     }
     script.push_str("})();");
-    script
+    Ok(script)
 }
 
 fn inject_runtime_head_block(html: &str, block: &str) -> String {
@@ -139,14 +162,20 @@ mod tests {
     fn control_preamble_assigns_all_defaults() {
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(42.0));
-        controls.insert("enabled".to_owned(), ControlValue::Boolean(true));
+        controls.insert("enabled".to_owned(), ControlValue::Bool(true));
         controls.insert("color".to_owned(), ControlValue::Text("#00ffaa".to_owned()));
+        controls.insert(
+            "overlay".to_owned(),
+            ControlValue::linear_color([0.25, 0.5, 0.75, 1.0]),
+        );
 
-        let script = build_control_preamble_script(&controls, false, None);
+        let script = build_control_preamble_script(&controls, false, None)
+            .expect("valid controls should build a preamble");
 
         assert!(script.contains("globalThis[\"speed\"] = 42"));
         assert!(script.contains("globalThis[\"enabled\"] = true"));
         assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
+        assert!(script.contains("globalThis[\"overlay\"] = [0.25,0.5,0.75,1.0]"));
         assert!(script.contains("window.__hypercolorCaptureMode = true"));
         assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = false"));
         assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));
@@ -155,10 +184,23 @@ mod tests {
     }
 
     #[test]
+    fn control_preamble_rejects_effect_integer_overflow() {
+        let controls = HashMap::from([(
+            "count".to_owned(),
+            ControlValue::Int(i64::from(i32::MAX) + 1),
+        )]);
+
+        let error = build_control_preamble_script(&controls, false, None)
+            .expect_err("out-of-range controls must not enter JavaScript");
+        assert!(error.to_string().contains("control 'count'"));
+    }
+
+    #[test]
     fn control_preamble_marks_host_driven_animation_before_effect_script_runs() {
         let controls = HashMap::new();
 
-        let script = build_control_preamble_script(&controls, true, None);
+        let script = build_control_preamble_script(&controls, true, None)
+            .expect("valid controls should build a preamble");
 
         assert!(script.contains("window.__hypercolorHostDrivenAnimation = true"));
         assert!(script.contains("globalThis.__hypercolorHostDrivenAnimation = true"));
@@ -195,7 +237,7 @@ mod tests {
 
         let controls = HashMap::new();
         let (runtime_path, runtime_html_path) =
-            prepare_runtime_html_source(&html_path, &controls, true, None)
+            prepare_runtime_html_source(&html_path, &controls, true, None, true)
                 .expect("runtime html should build");
 
         assert_ne!(runtime_path, html_path);
@@ -232,7 +274,7 @@ mod tests {
         );
         let controls = HashMap::new();
         let (runtime_path, _) =
-            prepare_runtime_html_source(&html_path, &controls, true, Some(&descriptor))
+            prepare_runtime_html_source(&html_path, &controls, true, Some(&descriptor), true)
                 .expect("runtime html should build");
 
         let runtime_html =
@@ -258,12 +300,37 @@ mod tests {
             .expect("html write should work");
 
         let controls = HashMap::new();
-        let (runtime_path, _) = prepare_runtime_html_source(&html_path, &controls, false, None)
-            .expect("runtime html should build");
+        let (runtime_path, _) =
+            prepare_runtime_html_source(&html_path, &controls, false, None, true)
+                .expect("runtime html should build");
 
         let runtime_html =
             std::fs::read_to_string(&runtime_path).expect("runtime html should be readable");
         assert!(!runtime_html.contains("window.hypercolor.display"));
+    }
+
+    #[test]
+    fn prepare_runtime_html_source_loads_verbatim_without_engine_globals() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let html_path = temp.path().join("page.html");
+        let source = "<html><head></head><body></body></html>";
+        std::fs::write(&html_path, source).expect("html write should work");
+
+        let mut controls = HashMap::new();
+        controls.insert("speed".to_owned(), ControlValue::Float(0.5));
+        let (runtime_path, cleanup_path) =
+            prepare_runtime_html_source(&html_path, &controls, true, None, false)
+                .expect("verbatim load should succeed");
+
+        assert_eq!(runtime_path, html_path);
+        assert!(
+            cleanup_path.is_none(),
+            "a verbatim load writes no temporary runtime file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&runtime_path).expect("source should be readable"),
+            source
+        );
     }
 
     #[test]

@@ -258,6 +258,16 @@ fn resolve(
         .expect("test publication request resolves")
 }
 
+fn resolve_independent(
+    template: &RegisteredScreenBranchDemand,
+    source: &ResolvedScreenSource,
+) -> ResolvedScreenBranchDemand {
+    resolve(
+        &RegisteredScreenBranchDemand::new(template.request().clone(), template.requested_hz()),
+        source,
+    )
+}
+
 fn exact_surface_demand(
     source: &ResolvedScreenSource,
     width: u32,
@@ -1511,7 +1521,7 @@ fn complete_source_and_output_fields_prevent_false_sharing() {
     demands.extend(
         source_variants
             .iter()
-            .map(|source| resolve(&base_request, source)),
+            .map(|source| resolve_independent(&base_request, source)),
     );
     demands.push(resolve(
         &registered(
@@ -2354,7 +2364,7 @@ fn worker_tokens_are_candidate_transaction_source_and_nonce_bound() {
         60,
     );
     let demand_a = resolve(&request, &source_a);
-    let demand_b = resolve(&request, &source_b);
+    let demand_b = resolve_independent(&request, &source_b);
     let graph = ScreenInputGraphGeneration::new(1);
     let capacity = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
 
@@ -3511,6 +3521,313 @@ fn matching_lease_observation_couples_branch_to_one_generation() {
 }
 
 #[test]
+fn screen_branch_observer_preserves_continuity_for_retained_route() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let registration = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        30,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let observer = registration.observer(&hub);
+    let initial_plan = commit_demands(&mut builder, [resolve(&registration, &source)], None)
+        .expect("initial registration route commits");
+    let initial = observer.snapshot();
+    let initial_revision = initial
+        .branch_revision()
+        .expect("committed registration has a route revision");
+    assert_eq!(initial.plan_generation(), initial_plan.generation());
+    assert_eq!(
+        initial
+            .lease()
+            .expect("committed registration has an exact lease")
+            .descriptor(),
+        initial_plan.branches()[0].descriptor()
+    );
+    assert_eq!(builder.committed_state().route_catalog().len(), 1);
+    drop(initial);
+
+    let faster = RegisteredScreenBranchDemand::with_id(
+        registration.consumer_branch_id(),
+        registration.request().clone(),
+        non_zero(60),
+    );
+    let faster_plan =
+        commit_demands(&mut builder, [resolve(&faster, &source)], None).expect("cadence commits");
+    let retained = observer.snapshot();
+    assert!(faster_plan.generation() > initial_plan.generation());
+    assert_eq!(retained.plan_generation(), faster_plan.generation());
+    assert_eq!(retained.branch_revision(), Some(initial_revision));
+    assert_eq!(
+        retained
+            .lease()
+            .expect("retained registration remains routed")
+            .descriptor(),
+        faster_plan.branches()[0].descriptor()
+    );
+}
+
+#[test]
+fn screen_branch_observer_revisions_change_only_with_their_routes() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let surface = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        60,
+    );
+    let zones = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Zones {
+            columns: non_zero(4),
+            rows: non_zero(3),
+        },
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        30,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let surface_observer = surface.observer(&hub);
+    let zones_observer = zones.observer(&hub);
+    commit_demands(
+        &mut builder,
+        [resolve(&surface, &source), resolve(&zones, &source)],
+        None,
+    )
+    .expect("independent registration routes commit");
+    let surface_revision = surface_observer
+        .snapshot()
+        .branch_revision()
+        .expect("surface route has a revision");
+    let zones_revision = zones_observer
+        .snapshot()
+        .branch_revision()
+        .expect("zones route has a revision");
+
+    let changed_shape = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::bounded(
+            Some(non_zero(8)),
+            Some(non_zero(5)),
+            ScreenUpscalePolicy::Never,
+        ),
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        60,
+    );
+    let changed_surface = RegisteredScreenBranchDemand::with_id(
+        surface.consumer_branch_id(),
+        changed_shape.request().clone(),
+        changed_shape.requested_hz(),
+    );
+    let changed_plan = commit_demands(
+        &mut builder,
+        [resolve(&changed_surface, &source), resolve(&zones, &source)],
+        None,
+    )
+    .expect("one registration changes its exact route");
+    let changed_surface = surface_observer.snapshot();
+    let retained_zones = zones_observer.snapshot();
+    assert_eq!(
+        changed_surface
+            .branch_revision()
+            .expect("changed route remains active")
+            .get(),
+        changed_plan.generation().get()
+    );
+    assert_ne!(changed_surface.branch_revision(), Some(surface_revision));
+    assert_eq!(retained_zones.branch_revision(), Some(zones_revision));
+}
+
+#[test]
+fn screen_branch_observer_sees_live_capture_profile_commit() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let requested = ScreenProcessingProfile::default();
+    let initial_config = CaptureConfig::default();
+    let initial_profile = initial_config
+        .exact_processing_profile(&requested)
+        .expect("default capture controls derive an exact profile");
+    let registration = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        Arc::new(initial_profile),
+        60,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let observer = registration.observer(&hub);
+    commit_demands(&mut builder, [resolve(&registration, &source)], None)
+        .expect("initial configured profile commits");
+    let initial_revision = observer
+        .snapshot()
+        .branch_revision()
+        .expect("initial configured route has a revision");
+
+    let changed_config = CaptureConfig {
+        smoothing_alpha: 0.0,
+        scene_cut_threshold: 765.0,
+        letterbox_enabled: true,
+        letterbox_threshold: 0.05,
+        ..initial_config
+    };
+    let changed_profile = changed_config
+        .exact_processing_profile(&requested)
+        .expect("changed capture controls derive an exact profile");
+    let request = registration.request();
+    let changed = RegisteredScreenBranchDemand::with_id(
+        registration.consumer_branch_id(),
+        ScreenPublicationRequest::new(
+            request.selector().clone(),
+            request.kind(),
+            request.executor().clone(),
+            request.extent(),
+            request.aspect(),
+            Arc::new(changed_profile.clone()),
+        ),
+        registration.requested_hz(),
+    );
+    let changed_plan = commit_demands(&mut builder, [resolve(&changed, &source)], None)
+        .expect("changed configured profile commits");
+    let observed = observer.snapshot();
+
+    assert_ne!(observed.branch_revision(), Some(initial_revision));
+    assert_eq!(
+        observed
+            .branch_revision()
+            .expect("changed configured route has a revision")
+            .get(),
+        changed_plan.generation().get()
+    );
+    assert_eq!(
+        observed
+            .lease()
+            .expect("changed configured route remains leased")
+            .descriptor()
+            .processing_profile()
+            .as_ref(),
+        &changed_profile
+    );
+}
+
+#[tokio::test]
+async fn screen_branch_observer_notifies_plan_swaps() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let registration = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        30,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let mut observer = registration.observer(&hub);
+    assert!(observer.snapshot().lease().is_none());
+
+    let initial_plan = commit_demands(&mut builder, [resolve(&registration, &source)], None)
+        .expect("initial observer route commits");
+    let initial = tokio::time::timeout(Duration::from_secs(1), observer.changed())
+        .await
+        .expect("initial plan notification arrives")
+        .expect("hub remains available");
+    assert_eq!(initial.plan_generation(), initial_plan.generation());
+    assert!(initial.lease().is_some());
+
+    let faster = RegisteredScreenBranchDemand::with_id(
+        registration.consumer_branch_id(),
+        registration.request().clone(),
+        non_zero(60),
+    );
+    let faster_plan =
+        commit_demands(&mut builder, [resolve(&faster, &source)], None).expect("cadence commits");
+    let faster = tokio::time::timeout(Duration::from_secs(1), observer.changed())
+        .await
+        .expect("replacement plan notification arrives")
+        .expect("hub remains available");
+    assert_eq!(faster.plan_generation(), faster_plan.generation());
+    assert!(faster.lease().is_some());
+}
+
+#[test]
+fn screen_branch_observer_reports_removed_routes_without_pinning_retirement() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let registration = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        60,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let observer = registration.observer(&hub);
+    commit_demands(&mut builder, [resolve(&registration, &source)], None)
+        .expect("observer route commits");
+    assert!(observer.snapshot().lease().is_some());
+
+    let empty = commit_demands(&mut builder, [], None).expect("registration removal commits");
+    let removed = observer.snapshot();
+    assert_eq!(removed.plan_generation(), empty.generation());
+    assert!(removed.branch_revision().is_none());
+    assert!(removed.lease().is_none());
+    assert_eq!(hub.pending_retired_bytes(), 0);
+}
+
+#[test]
+fn duplicate_screen_consumer_branch_identity_is_rejected() {
+    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 16, 9);
+    let surface = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Surface,
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        60,
+    );
+    let zones_template = registered(
+        ScreenSourceSelector::Configured,
+        ScreenPublicationKind::Zones {
+            columns: non_zero(4),
+            rows: non_zero(3),
+        },
+        ScreenExtentRequest::Native,
+        ScreenAspectPolicy::Contain,
+        default_profile(),
+        30,
+    );
+    let zones = RegisteredScreenBranchDemand::with_id(
+        surface.consumer_branch_id(),
+        zones_template.request().clone(),
+        zones_template.requested_hz(),
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    assert!(matches!(
+        commit_demands(
+            &mut builder,
+            [resolve(&surface, &source), resolve(&zones, &source)],
+            None,
+        ),
+        Err(ScreenPlanError::DuplicateConsumerBranchId {
+            consumer_branch_id,
+        }) if consumer_branch_id == surface.consumer_branch_id()
+    ));
+    assert!(builder.current().branches().is_empty());
+}
+
+#[test]
 fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
     let old_demand = resolve(
@@ -3679,7 +3996,7 @@ fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
             &second_zone_metadata,
         )
         .expect("newer staged publication supersedes its receipt");
-    assert!(new_receipt.publication().publication_epoch().get() > 0);
+    assert!(new_receipt.publication().branch_sequence().get() > 0);
     assert!(new_receipt.publication().native_sequence().get() > 0);
     let failure = old_lease
         .stage(&new, &hub)

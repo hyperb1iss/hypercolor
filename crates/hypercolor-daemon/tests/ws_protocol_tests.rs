@@ -22,8 +22,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use axum::extract::ws::Message;
+use hypercolor_daemon::api;
 use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_leptos_ext::ws::TimedInputEventPayload;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
@@ -100,8 +101,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
         modified: std::time::SystemTime::now(),
         state: hypercolor_types::effect::EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -370,20 +370,23 @@ async fn hello_handshake_names_the_scene_but_not_its_contents() {
     let effect = insert_test_effect(&state, "Aurora").await;
     let preset_id = PresetId::stable("calm");
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(
-                &effect,
-                std::collections::HashMap::new(),
-                Some(preset_id),
-                layout,
-            )
-            .expect("hello test should install a primary group");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &effect,
+            std::collections::HashMap::new(),
+            Some(preset_id),
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("hello test should install a primary zone");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("hello test scene should commit");
 
     let addr = spawn_test_daemon_with_state(state).await;
     let mut stream = ws_connect(addr)
@@ -457,6 +460,10 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
             last_transport_started_sequence: 64,
             last_transport_completed_sequence: 64,
             last_transport_failed_sequence: 0,
+            display_queue_generation: Some(10),
+            display_transport_started: 32,
+            display_transport_completed: 32,
+            display_transport_failed: 0,
         }],
     }));
     let addr = spawn_test_daemon_with_state(state).await;
@@ -469,7 +476,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "topics": [{ "topic": "device_metrics", "config": { "interval_ms": 100 } }]
+            "topics": [{ "topic": "device_metrics", "config": { "fps": 10.0 } }]
         })
         .to_string(),
     )
@@ -481,7 +488,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         .expect("device_metrics subscribed ack");
     let subscribed = subscription_map(&ack);
     assert_eq!(
-        subscribed["device_metrics"]["interval_ms"], 100,
+        subscribed["device_metrics"]["fps"], 10.0,
         "the ack echoes the live device_metrics config"
     );
 
@@ -496,6 +503,13 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     assert_eq!(message["data"]["items"][0]["transport_completed"], 64);
     assert_eq!(message["data"]["items"][0]["coalesced_target_cadence"], 1);
     assert_eq!(message["data"]["items"][0]["payload_bps_estimate"], 2_048);
+    assert_eq!(message["data"]["items"][0]["display_queue_generation"], 10);
+    assert_eq!(message["data"]["items"][0]["display_transport_started"], 32);
+    assert_eq!(
+        message["data"]["items"][0]["display_transport_completed"],
+        32
+    );
+    assert_eq!(message["data"]["items"][0]["display_transport_failed"], 0);
 }
 
 #[tokio::test]
@@ -507,7 +521,7 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     snapshot.polled_at_ms = 8_901;
     let (_sensor_tx, sensor_rx) = tokio::sync::watch::channel(Arc::new(snapshot));
     state
-        .input_manager
+        .input_manager()
         .lock()
         .await
         .set_sensor_snapshot_receiver(sensor_rx);

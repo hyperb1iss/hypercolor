@@ -1,5 +1,7 @@
 //! Pure Dygma Focus protocol encoder/decoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -11,8 +13,7 @@ use hypercolor_types::device::{
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-    TransferType,
+    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 
 const TOTAL_LEDS: usize = 176;
@@ -313,31 +314,31 @@ impl Protocol for DygmaProtocol {
         Duration::from_secs(2)
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let color_format = self.color_mode().device_color_format();
         vec![
-            ProtocolZone {
+            SegmentInfo {
                 name: "Left Keys".to_owned(),
                 led_count: LEFT_KEYS,
                 topology: DeviceTopologyHint::Custom,
                 color_format,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Right Keys".to_owned(),
                 led_count: RIGHT_KEYS,
                 topology: DeviceTopologyHint::Custom,
                 color_format,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Left Underglow".to_owned(),
                 led_count: LEFT_UNDERGLOW,
                 topology: DeviceTopologyHint::Strip,
                 color_format,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Right Underglow".to_owned(),
                 led_count: RIGHT_UNDERGLOW,
                 topology: DeviceTopologyHint::Strip,

@@ -860,10 +860,11 @@ Verify:
 - Fault-injection tests cover readiness timeout, late readiness, panic/exit after
   readiness, partial graph startup, repeated stop, and replacement.
 - No test can observe a worker publishing after its source was removed.
-- Every production `InputSource` implementation (audio, browser, evdev,
-  interaction, media, net, generic screen, Wayland screen, Windows screen, and
-  Windows host) publishes a T01 status handle and cannot report live after its
-  worker exits.
+- Every production `InputSource` implementation (audio, evdev, interaction,
+  media, net, generic screen, Wayland screen, Windows screen, and Windows host)
+  publishes a T01 status handle and cannot report live after its worker exits.
+- Browser child health is registry-owned and exposed only through exact child
+  route diagnostics; browser children do not enter the sampled manager graph.
 
 #### T07 - Canonicalize host events and bound browser/evdev ingestion
 
@@ -1051,18 +1052,17 @@ Implementation:
   daemon `merge` plus preview `browser` for one minor version; a freshly created
   config uses the new defaults. All three variants remain valid for both consumer
   classes.
-- Keep one manager-owned `BrowserInputSource`, but make it own an immutable,
-  lock-free connection registry instead of publishing only a union. An interactive
-  WebSocket attach creates a unique browser slot addressed by structured
-  `(server_connection_incarnation, client_preview_id)` identity. Its opaque source
-  incarnation is distinct from manager-local slot ids and from its diagnostic
-  string. Attach/detach must not mutate the manager's top-level source graph or put
-  `InputManager` on the WebSocket injection path.
-- Stop publishing a destructive union as the browser source's routable data plane.
-  The top-level source remains the registry lifecycle/status owner; addressable
-  child slots carry held state, motion, and independent bounded event histories.
-  Any compatibility aggregate is derived non-destructively with its own cursors
-  and can never drain or starve a child consumer.
+- Keep one immutable, lock-free browser connection registry outside the sampled
+  manager graph. An interactive WebSocket attach creates a unique browser child
+  slot addressed by structured `(server_connection_incarnation,
+  client_preview_id)` identity. Its opaque source incarnation is distinct from
+  manager-local slot ids and from its diagnostic string. Attach/detach never
+  mutates the manager's source graph or puts `InputManager` on the WebSocket
+  injection path.
+- Publish only addressable child slots. Each child carries coherent held state,
+  motion, an independent bounded event history, and the registry's always-live
+  health handle. There is no browser union, aggregate fallback, or sampled
+  browser owner.
 - Resolve source sets exactly: `host` selects every eligible non-browser
   interaction slot; preview `browser` selects only that preview's child;
   preview `merge` selects host plus that child. Daemon `browser` selects only an

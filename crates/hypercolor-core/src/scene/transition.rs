@@ -1,203 +1,52 @@
-//! Transition engine — cross-fade blending between scene states.
-//!
-//! Manages the runtime state of an in-progress transition, advancing
-//! progress on each tick and blending zone assignments between the
-//! outgoing and incoming scenes using perceptual Oklab interpolation.
+//! Immutable scene transition plans and color interpolation.
 
-use std::collections::HashMap;
+use hypercolor_types::canvas::{LinearRgba, Oklab};
+use hypercolor_types::scene::{ColorInterpolation, SceneId, TransitionSpec};
 
-use crate::types::canvas::{LinearRgba, Oklab};
-use crate::types::scene::{ColorInterpolation, SceneId, TransitionSpec, ZoneAssignment};
+// ── TransitionPlan ─────────────────────────────────────────────────────
 
-// ── TransitionState ────────────────────────────────────────────────────
-
-/// Runtime state for an in-progress scene transition.
-///
-/// Created when a scene switch begins. The `tick()` method advances
-/// progress each frame using wall-clock delta time. Blended zone
-/// assignments can be retrieved via `blend()` at any point during
-/// the transition.
+/// Commit-stable instructions for a render-local scene transition.
 #[derive(Debug, Clone)]
-pub struct TransitionState {
+pub struct TransitionPlan {
+    /// Stable activation identity used to reconcile render-local progress.
+    pub epoch: u64,
     /// Scene being transitioned away from.
     pub from_scene: SceneId,
-
     /// Scene being transitioned toward.
     pub to_scene: SceneId,
-
-    /// The transition specification (duration, easing, color space).
+    /// Authored duration, easing, and color-space policy.
     pub spec: TransitionSpec,
-
-    /// Current linear progress in `[0.0, 1.0]`.
-    pub progress: f32,
-
-    /// Zone assignments from the outgoing scene, keyed by zone name.
-    from_assignments: HashMap<String, ZoneAssignment>,
-
-    /// Zone assignments from the incoming scene, keyed by zone name.
-    to_assignments: HashMap<String, ZoneAssignment>,
 }
 
-impl TransitionState {
-    /// Create a new transition between two scene states.
-    ///
-    /// If `duration_ms` is zero the transition starts already complete.
+impl TransitionPlan {
+    /// Create one immutable activation plan.
     #[must_use]
-    pub fn new(
-        from_scene: SceneId,
-        to_scene: SceneId,
-        spec: TransitionSpec,
-        from_assignments: Vec<ZoneAssignment>,
-        to_assignments: Vec<ZoneAssignment>,
-    ) -> Self {
-        let from_map: HashMap<String, ZoneAssignment> = from_assignments
-            .into_iter()
-            .map(|za| (za.zone_name.clone(), za))
-            .collect();
-
-        let to_map: HashMap<String, ZoneAssignment> = to_assignments
-            .into_iter()
-            .map(|za| (za.zone_name.clone(), za))
-            .collect();
-
-        let progress = if spec.duration_ms == 0 { 1.0 } else { 0.0 };
-
+    pub fn new(epoch: u64, from_scene: SceneId, to_scene: SceneId, spec: TransitionSpec) -> Self {
         Self {
+            epoch,
             from_scene,
             to_scene,
             spec,
-            progress,
-            from_assignments: from_map,
-            to_assignments: to_map,
         }
     }
 
-    /// Advance the transition by `delta_secs` seconds of wall-clock time.
-    ///
-    /// Progress is clamped to `[0.0, 1.0]`. Once complete, further
-    /// ticks are no-ops.
-    pub fn tick(&mut self, delta_secs: f32) {
-        if self.is_complete() {
-            return;
+    /// Return the stable identity used by render-local frame state.
+    #[must_use]
+    pub const fn identity(&self) -> TransitionIdentity {
+        TransitionIdentity {
+            epoch: self.epoch,
+            from_scene: self.from_scene,
+            to_scene: self.to_scene,
         }
-
-        if self.spec.duration_ms == 0 {
-            self.progress = 1.0;
-            return;
-        }
-
-        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let duration_secs = self.spec.duration_ms as f64 / 1000.0;
-
-        // Avoid precision loss: compute in f64, convert result back.
-        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let increment = (f64::from(delta_secs) / duration_secs) as f32;
-
-        self.progress = (self.progress + increment).clamp(0.0, 1.0);
-    }
-
-    /// Returns `true` when the transition has reached or exceeded completion.
-    #[must_use]
-    pub fn is_complete(&self) -> bool {
-        self.progress >= 1.0
-    }
-
-    /// The eased progress value, applying the transition's easing function
-    /// to the raw linear progress.
-    #[must_use]
-    pub fn eased_progress(&self) -> f32 {
-        self.spec.easing.apply(self.progress)
-    }
-
-    /// Blend the from/to zone assignments at the current eased progress.
-    ///
-    /// Returns a merged list of [`ZoneAssignment`]s. Zones present in
-    /// only one side are included at full weight for their side.
-    /// Brightness values are linearly interpolated; effect names and
-    /// parameters come from the `to` side once progress crosses 0.5.
-    #[must_use]
-    pub fn blend(&self) -> Vec<ZoneAssignment> {
-        let t = self.eased_progress();
-
-        // Collect all zone names from both sides.
-        let mut all_zones: Vec<&String> = self
-            .from_assignments
-            .keys()
-            .chain(self.to_assignments.keys())
-            .collect();
-        all_zones.sort();
-        all_zones.dedup();
-
-        all_zones
-            .into_iter()
-            .map(|zone_name| {
-                match (
-                    self.from_assignments.get(zone_name),
-                    self.to_assignments.get(zone_name),
-                ) {
-                    (Some(from), Some(to)) => {
-                        blend_zone_assignment(from, to, t, &self.spec.color_interpolation)
-                    }
-                    (Some(from), None) => {
-                        // Zone only in outgoing scene — fade brightness toward 0.
-                        let mut blended = from.clone();
-                        let from_b = from.brightness.unwrap_or(1.0);
-                        blended.brightness = Some(from_b * (1.0 - t));
-                        blended
-                    }
-                    (None, Some(to)) => {
-                        // Zone only in incoming scene — fade brightness from 0.
-                        let mut blended = to.clone();
-                        let to_b = to.brightness.unwrap_or(1.0);
-                        blended.brightness = Some(to_b * t);
-                        blended
-                    }
-                    (None, None) => {
-                        // Unreachable — zone came from one of the two maps.
-                        // Return a neutral assignment to satisfy the compiler.
-                        ZoneAssignment {
-                            zone_name: zone_name.clone(),
-                            effect_name: String::from("static"),
-                            parameters: HashMap::new(),
-                            brightness: Some(0.0),
-                        }
-                    }
-                }
-            })
-            .collect()
     }
 }
 
-// ── Blending Helpers ────────────────────────────────────────────────────
-
-/// Blend two zone assignments at progress `t`.
-///
-/// Brightness is linearly interpolated. Effect name and parameters
-/// switch from `from` to `to` once `t` crosses 0.5 (prevents jarring
-/// mid-transition effect swaps at the halfway point).
-fn blend_zone_assignment(
-    from: &ZoneAssignment,
-    to: &ZoneAssignment,
-    t: f32,
-    _color_interp: &ColorInterpolation,
-) -> ZoneAssignment {
-    let from_b = from.brightness.unwrap_or(1.0);
-    let to_b = to.brightness.unwrap_or(1.0);
-    let blended_brightness = lerp(from_b, to_b, t);
-
-    // Effect name and parameters swap at the midpoint.
-    let (effect_name, parameters) = if t < 0.5 {
-        (from.effect_name.clone(), from.parameters.clone())
-    } else {
-        (to.effect_name.clone(), to.parameters.clone())
-    };
-
-    ZoneAssignment {
-        zone_name: from.zone_name.clone(),
-        effect_name,
-        parameters,
-        brightness: Some(blended_brightness),
-    }
+/// Identity of one admitted scene activation transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TransitionIdentity {
+    pub epoch: u64,
+    pub from_scene: SceneId,
+    pub to_scene: SceneId,
 }
 
 /// Scalar linear interpolation.

@@ -3,20 +3,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::scene::{ZoneMetaPatch, default_primary_group};
-use hypercolor_daemon::api::AppState;
+use hypercolor_core::scene::{ZoneMetaPatch, default_primary_zone};
+use hypercolor_daemon::app_state::AppState;
+use hypercolor_daemon::domain::DomainError;
 use hypercolor_daemon::domain::layer::{insert_layer, remove_layer, reorder_layers};
-use hypercolor_daemon::domain::scene::SceneTarget;
 use hypercolor_daemon::domain::zone::{
     CreateZone, DeleteZone, UpdateZone, create_zone, delete_zone, update_zone,
 };
-use hypercolor_daemon::domain::{DomainError, MutationContext};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode,
-    ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
+    ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 
 fn isolated_state() -> (Arc<AppState>, tempfile::TempDir) {
@@ -33,7 +32,7 @@ fn color_layer(id: SceneLayerId, channel: usize) -> SceneLayer {
         id,
         name: None,
         source: LayerSource::ColorFill { rgba },
-        blend: LayerBlendMode::Replace,
+        blend: BlendMode::Replace,
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
@@ -42,7 +41,7 @@ fn color_layer(id: SceneLayerId, channel: usize) -> SceneLayer {
     }
 }
 
-async fn scene_template(
+fn scene_template(
     state: &AppState,
     id: SceneId,
     name: &str,
@@ -50,17 +49,13 @@ async fn scene_template(
     layer_ids: [SceneLayerId; 2],
     mutation_mode: SceneMutationMode,
 ) -> Scene {
-    let layout = state.spatial_engine.read().await.layout().as_ref().clone();
-    let mut primary = default_primary_group(layout.clone());
+    let layout = state.spatial_engine.snapshot().layout().as_ref().clone();
+    let mut primary = default_primary_zone(layout.clone());
     primary.name = format!("{name} primary");
     let zone = Zone {
         id: zone_id,
         name: format!("{name} shared zone"),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![color_layer(layer_ids[0], 0), color_layer(layer_ids[1], 1)],
         layout,
         brightness: 1.0,
@@ -75,10 +70,8 @@ async fn scene_template(
         id,
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: vec![primary, zone],
-        groups_revision: 0,
+        zones: vec![primary, zone],
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 1000,
             easing: EasingFunction::Linear,
@@ -127,8 +120,7 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         shared_zone_id,
         shared_layer_ids,
         SceneMutationMode::Live,
-    )
-    .await;
+    );
     let scene_b = scene_template(
         &state,
         scene_b_id,
@@ -136,89 +128,93 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
         shared_zone_id,
         shared_layer_ids,
         SceneMutationMode::Live,
-    )
-    .await;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create(scene_a.clone())
-            .expect("scene A should create");
-        manager.create(scene_b).expect("scene B should create");
-        manager
-            .activate(&scene_a_id, None)
-            .expect("scene A should activate");
-    }
+    );
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene_a.clone())
+        .expect("scene A should create");
+    mutation
+        .create_scene(scene_b)
+        .expect("scene B should create");
+    mutation
+        .activate(
+            scene_a_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("scene A should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("scene A should commit");
 
     let create = CreateZone {
-        target: SceneTarget::Active,
         name: "candidate zone".to_owned(),
         color: None,
         fallback_canvas: (640, 480),
-        expected_revision: Some(state.scene_commits.revision()),
+        expected_revision: None,
     };
     let update = UpdateZone {
-        target: SceneTarget::Active,
         zone_id: shared_zone_id,
         patch: rename_patch("candidate zone renamed"),
         expected_revision: None,
     };
     let delete = DeleteZone {
-        target: SceneTarget::Active,
         zone_id: shared_zone_id,
         expected_revision: None,
     };
     let inserted_layer_id = SceneLayerId::new();
     let inserted_layer = color_layer(inserted_layer_id, 2);
 
-    state
-        .scene_manager
-        .write()
-        .await
-        .activate(&scene_b_id, None)
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .activate(
+            scene_b_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
         .expect("scene B should activate before candidates are opened");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("scene B should commit");
 
-    let created = create_zone(&state, create, MutationContext::api())
+    let created = create_zone(&state.domains.scene, create)
         .await
         .expect("zone creation should follow scene B");
-    let updated = update_zone(&state, update, MutationContext::api())
+    let updated = update_zone(&state.domains.scene, update)
         .await
         .expect("zone update should follow scene B");
     assert_eq!(updated.zone.name, "candidate zone renamed");
 
     let inserted = insert_layer(
-        &state,
-        SceneTarget::Active,
+        &state.domains.effects,
         shared_zone_id,
         inserted_layer,
         None,
         None,
-        MutationContext::api(),
     )
     .await
     .expect("layer insertion should follow scene B")
     .expect("layer insertion should be admitted");
     assert!(
         inserted
-            .zone()
+            .zone
             .layers
             .iter()
             .any(|layer| layer.id == inserted_layer_id)
     );
 
     let reordered = reorder_layers(
-        &state,
-        SceneTarget::Active,
+        &state.domains.scene,
         shared_zone_id,
         vec![inserted_layer_id, shared_layer_ids[1], shared_layer_ids[0]],
         None,
-        MutationContext::api(),
     )
     .await
     .expect("layer reorder should follow scene B")
     .expect("layer reorder should be admitted");
     assert_eq!(
         reordered
-            .zone()
+            .zone
             .layers
             .iter()
             .map(|layer| layer.id)
@@ -227,38 +223,36 @@ async fn active_targets_follow_the_candidate_scene_for_every_deferred_service() 
     );
 
     let removed = remove_layer(
-        &state,
-        SceneTarget::Active,
+        &state.domains.scene,
         shared_zone_id,
         shared_layer_ids[1],
         None,
-        MutationContext::api(),
     )
     .await
     .expect("layer deletion should follow scene B")
     .expect("layer deletion should be admitted");
     assert!(
         removed
-            .zone()
+            .zone
             .layers
             .iter()
             .all(|layer| layer.id != shared_layer_ids[1])
     );
 
-    delete_zone(&state, delete, MutationContext::api())
+    delete_zone(&state.domains.scene, delete)
         .await
         .expect("zone deletion should follow scene B");
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(
         manager.get(&scene_a_id),
         Some(&scene_a),
         "commands created while A was active must never mutate stale A"
     );
     let scene_b = manager.get(&scene_b_id).expect("scene B should remain");
-    assert!(scene_b.groups.iter().any(|zone| zone.id == created.zone.id));
+    assert!(scene_b.zones.iter().any(|zone| zone.id == created.zone.id));
     assert!(
-        scene_b.groups.iter().all(|zone| zone.id != shared_zone_id),
+        scene_b.zones.iter().all(|zone| zone.id != shared_zone_id),
         "the shared custom zone should be deleted only from active B"
     );
 }
@@ -276,94 +270,80 @@ async fn active_targets_refuse_every_deferred_service_in_snapshot_mode() {
         zone_id,
         layer_ids,
         SceneMutationMode::Snapshot,
-    )
-    .await;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create(scene.clone())
-            .expect("snapshot scene should create");
-        manager
-            .activate(&scene_id, None)
-            .expect("snapshot scene should activate");
-    }
-    let revision = state.scene_commits.revision();
+    );
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene.clone())
+        .expect("snapshot scene should create");
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("snapshot scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("snapshot scene should commit");
+    let revision = state.scene_manager.revision();
 
     assert_conflict(
         create_zone(
-            &state,
+            &state.domains.scene,
             CreateZone {
-                target: SceneTarget::Active,
                 name: "blocked".to_owned(),
                 color: None,
                 fallback_canvas: (640, 480),
                 expected_revision: Some(revision),
             },
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
         update_zone(
-            &state,
+            &state.domains.scene,
             UpdateZone {
-                target: SceneTarget::Active,
                 zone_id,
                 patch: rename_patch("blocked"),
                 expected_revision: Some(revision),
             },
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
         delete_zone(
-            &state,
+            &state.domains.scene,
             DeleteZone {
-                target: SceneTarget::Active,
                 zone_id,
                 expected_revision: Some(revision),
             },
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
         insert_layer(
-            &state,
-            SceneTarget::Active,
+            &state.domains.effects,
             zone_id,
             color_layer(SceneLayerId::new(), 2),
             None,
             Some(revision),
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
         reorder_layers(
-            &state,
-            SceneTarget::Active,
+            &state.domains.scene,
             zone_id,
             layer_ids.into_iter().rev().collect(),
             Some(revision),
-            MutationContext::api(),
         )
         .await,
     );
     assert_conflict(
-        remove_layer(
-            &state,
-            SceneTarget::Active,
-            zone_id,
-            layer_ids[0],
-            Some(revision),
-            MutationContext::api(),
-        )
-        .await,
+        remove_layer(&state.domains.scene, zone_id, layer_ids[0], Some(revision)).await,
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(manager.get(&scene_id), Some(&scene));
-    assert_eq!(state.scene_commits.revision(), revision);
+    assert_eq!(state.scene_manager.revision(), revision);
 }

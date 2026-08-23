@@ -47,7 +47,6 @@ interface EffectSummary {
     id: string
     name: string
     category: string
-    source: string | null
     runnable: boolean | null
 }
 
@@ -259,9 +258,7 @@ async function main(): Promise<void> {
     const facesByName = new Map<string, EffectSummary>()
     for (const effect of effects.items) {
         if (effect.category !== 'display' || effect.runnable === false) continue
-        // Prefer bundled entries over user-dir duplicates.
-        const existing = facesByName.get(effect.name)
-        if (!existing || effect.source !== 'user') facesByName.set(effect.name, effect)
+        if (!facesByName.has(effect.name)) facesByName.set(effect.name, effect)
     }
     let faces = [...facesByName.values()].sort((a, b) => a.name.localeCompare(b.name))
     if (opts.faceFilter) {

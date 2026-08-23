@@ -8,9 +8,9 @@ Studio is a two-column Leptos workspace built from shared app-wide state plus a 
 
 If you want the runtime wire protocol and the daemon REST surface behind these contracts, read the [zone API and concurrency](@/studio/zone-api-and-concurrency.md) page next. For the user-facing tour, start at the [Studio overview](@/studio/overview.md).
 
-{% callout(type="info") %}
-This is a developer reference. The canonical wire type is `hypercolor_types::api::scene::SceneDocument`. The UI currently projects that document into a compatibility view model for existing components, so local adapter names are not additional REST contracts.
-{% end %}
+{% <callout type="info"> %}
+This is a developer reference. The canonical wire type is `hypercolor_types::api::scene::SceneDocument`. The UI stores that document directly in its shared scene memo. Local surface helpers derive presentation state without creating another REST contract.
+{% </callout> %}
 
 ## The state map
 
@@ -26,7 +26,7 @@ Studio reads from three app-root contexts and owns one of its own. The rule of t
 
 ### Shared state at the app root
 
-The live scene is one resource for the whole app. `api::fetch_active_scene` reads the canonical `SceneDocument` from `GET /api/v1/scene`, then `active_scene_projection` converts its embedded `ZoneResource` values into the UI's `LiveSceneView` view model. `provide_scene_contexts()` in `zones.rs` exposes that projection as one shared memo on both `ZonesContext` and `ScenesContext`. The projection is not a second wire response and carries the document's single `revision`.
+The live scene is one resource for the whole app. `api::fetch_active_scene` reads the canonical `SceneDocument` from `GET /api/v1/scene`. `provide_scene_contexts()` in `zones.rs` exposes that document as one shared memo on both `ZonesContext` and `ScenesContext`. Derived memos build surface lists and presentation state from the same document and its single `revision`.
 
 WebSocket scene events are freshness hints for the REST snapshot. Structural scene events refetch `GET /scene`; control-only events do not force a whole-document fetch at slider frequency. `EffectControlChanged` identifies the affected zone and real layer for consumers that update control state directly. `daemon_resource` also reads `connection_generation`, so a socket reconnect performs a fresh REST read instead of assuming missed events will be replayed.
 
@@ -72,7 +72,7 @@ if let Some(zone_id) = selected_led_zone {
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `selected_surface_id` | `RwSignal<Option<String>>` | The selected surface; the single selection source the tree owns and the Stage reads |
-| `active_scene` | `Signal<Option<LiveSceneView>>` | Re-exposed UI projection of the shared `SceneDocument` |
+| `active_scene` | `Signal<Option<SceneDocument>>` | Re-exposed shared active-scene document |
 | `refresh_scene` | `Callback<()>` | Re-fetch the shared active scene after a zone mutation |
 | `composition_open` | `RwSignal<bool>` | Whether the composition slide-over (effect and layer editing) is open |
 | `hidden_outputs` | `RwSignal<HashMap<String, HashSet<String>>>` | Per-`(scene, zone)` hidden-output sets, client UI state only |
@@ -87,7 +87,7 @@ Two details are easy to get wrong. The hidden-output state is keyed `(scene_id, 
 
 Surface selection is the spine of the page. `selected_surface_id` lives in `StudioContext`, the zone tree writes it, and three effects in `StudioPage` react to it.
 
-{% mermaid() %}
+{% <mermaid> %}
 flowchart TD
     A[active_scene memo] --> B[Selection-guard effect]
     B --> C[selected_surface_id]
@@ -97,7 +97,7 @@ flowchart TD
     D --> G[EffectsContext.apply_target + focused_zone]
     E --> H[LayerPanel in the slide-over]
     F --> I[Stage canvas]
-{% end %}
+{% </mermaid> %}
 
 The selection-guard effect keeps `selected_surface_id` pointing at a still-present surface. When the live scene changes it defaults to the first non-Display zone, so Studio always opens on a Light:
 
@@ -130,11 +130,11 @@ Studio passes a `surface_label`, which tells the panel to show the selected surf
 
 One display detail worth knowing when you read the code: layers are authored bottom-to-top, but the row list is reversed for display so "Top" reads first. The Top/Bottom stack markers only show with more than one layer.
 
-### LayoutWorkspace and the two providers
+### LayoutWorkspace and its provider
 
-`LayoutWorkspace`/`LayoutCanvas` (`components/layout_builder.rs`, `components/layout_canvas.rs`) is the single spatial editor, and Studio's Stage is its only mount today.
+`LayoutWorkspace` and `LayoutCanvas` (`components/layout_builder.rs`, `components/layout_canvas.rs`) form the single spatial editor. Studio's Stage is its only mount.
 
-The provider is the seam. Studio's Stage wraps the editor in `ZoneLayoutProvider`, which loads the selected zone's own `Zone.layout` and persists it through the per-zone layout API. A second provider, `LayoutEditorProvider`, still exists in `layout_builder.rs` and scopes the editor to the standalone layouts library, but no page mounts it.
+`ZoneLayoutProvider` is the ownership seam. Studio's Stage wraps the editor in this provider, which loads the selected zone's own `Zone.layout` and persists it through the per-zone layout API.
 
 ```rust
 <ZoneLayoutProvider
@@ -154,9 +154,9 @@ The provider is the seam. Studio's Stage wraps the editor in `ZoneLayoutProvider
 
 The provider reloads the canvas on a **zone signature**, not on every scene refetch. The signature is the zone id plus its sorted output-id set, so a placement-only change (including this canvas's own saved edits) leaves the signature unchanged. That is what stops an unrelated scene refetch from clobbering in-flight canvas edits.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The drag and resize hot path is deliberately non-reactive. A single requestAnimationFrame scheduler paints positions directly to cached DOM elements, and the layout signal is written once on `mouseup`. Live drag preview goes to the daemon over the outbound WebSocket as JSON messages typed `zone_layout_preview` and `zone_layout_preview_clear` (sent by `send_zone_layout_preview` / `send_zone_layout_preview_clear` in `ws/preview.rs`), throttled to `PREVIEW_PUSH_INTERVAL_MS = 75.0`. It is not a REST route and does not touch the global `SpatialEngine`. See [zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the full hot path.
-{% end %}
+{% </callout> %}
 
 ## Optimistic concurrency
 
@@ -185,7 +185,7 @@ Live control editing is separate. `patch_layer_controls` sends `PatchControlsReq
 
 ### Layout saves
 
-`ZoneLayoutProvider::save` carries the scene revision as its optional precondition and handles `ZoneOutcome::Stale` the same way: clear the preview, tell the user the scene changed, and refetch. Its API adapter keeps a local scene id parameter only for compatibility; the wire target is `PUT /scene/zones/{zone}/layout`.
+`ZoneLayoutProvider::save` passes the scene revision to `api::zones::update_zone_layout(zone_id, layout, revision)` and handles `ZoneOutcome::Stale` the same way: clear the preview, tell the user the scene changed, and refetch. The wire target is `PUT /scene/zones/{zone}/layout`.
 
 The save updates member placements while the daemon preserves member identity and topology. Membership changes use `/scene/zones/{zone}/members`, not the layout write. Full route semantics are on the [zone API and concurrency](@/studio/zone-api-and-concurrency.md) page.
 
@@ -203,7 +203,7 @@ pub fn zone_crud_ready(&self) -> bool {
 
 `+ New zone` and the zone rows need all three, because a user who can create a zone but cannot render it or move outputs into it would have an unusable zone. The unassigned-lights policy editor gates separately on `scene-unassigned-behavior-write`.
 
-{{ img(path="img/ui/studio.webp", alt="The Hypercolor Studio workspace") }}
+{{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
 
 ## Where to read next
 

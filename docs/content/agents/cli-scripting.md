@@ -9,9 +9,9 @@ The `hypercolor` CLI is the second way an agent drives the daemon, alongside the
 
 The CLI talks to the daemon over its REST API on `:9420`. It does not touch hardware directly, so every command an agent runs goes through the same shared engine state as the web UI and MCP. A change made on the command line is instantly visible everywhere else.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 This is the command-driven sibling of the MCP path. If your agent runtime supports MCP, the [tool reference](@/agents/tools-reference.md) gives a typed, schema-validated surface. Reach for the CLI when you want shell scripting, piping into `jq`, exit-code branching, or coverage of commands MCP does not expose (effect rescan, scene snapshots, layouts, driver controls). For the full human-facing command tree, see the [CLI reference](@/api/cli.md).
-{% end %}
+{% </callout> %}
 
 ## The agent contract: JSON in, exit codes out 🎯
 
@@ -81,22 +81,22 @@ export HYPERCOLOR_PORT=9420
 hypercolor status -j
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 A local agent on the same machine as the daemon needs **no** API key. Loopback requests bypass authentication entirely. A token is only required when the daemon is reached from a non-loopback address, in which case set `HYPERCOLOR_API_KEY` and the CLI sends it as `Authorization: Bearer <token>`. The [REST API reference](@/api/rest.md) covers the remote-access auth model.
-{% end %}
+{% </callout> %}
 
 ## State-first workflow
 
 The reliable pattern for an agent is read, then act, then verify. Never guess the current state; query it. Never assume an effect name; search for it. After a mutation, read back to confirm the daemon applied what you intended.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
 A[Read state: hypercolor status -j] --> B[Discover: effects list / devices list]
 B --> C[Act: effects activate / brightness set / scenes activate]
 C --> D[Verify: status -j, branch on exit code]
 D -->|drifted| B
 D -->|matches intent| E[Done]
-{% end %}
+{% </mermaid> %}
 
 ### 1. Read the live state
 
@@ -142,9 +142,9 @@ hypercolor brightness set 35
 hypercolor scenes activate "evening"
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Scenes are whole-rig configurations, not per-device groupings. A scene captures the full lighting setup and swaps it in atomically. Zones are flexible partitions of the render canvas within a scene. Keep the two distinct when an agent reasons about "change the lighting": a scene switch changes everything, a zone change is scoped.
-{% end %}
+{% </callout> %}
 
 ### 4. Verify
 

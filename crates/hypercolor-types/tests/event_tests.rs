@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{ConnectionType, DeviceOrigin};
 use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
-    EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
-    FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
+    EffectRef, EffectStopReason, EventCategory, EventPriority, FrameData, FrameTiming,
+    HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
     MacosDaemonHandoverPhaseEvent, MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent,
     MacosDaemonOwnerRecoveryRequiredEvent, PointerScrollPhase, PointerScrollUnit,
     SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
@@ -106,26 +107,11 @@ fn effect_events_have_effect_category() {
         HypercolorEvent::EffectControlChanged {
             effect_id: "rainbow".into(),
             control_id: "speed".into(),
-            old_value: EventControlValue::Number(0.5),
-            new_value: EventControlValue::Number(0.8),
+            old_value: ControlValue::Float(0.5),
+            new_value: ControlValue::Float(0.8),
             zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             trigger: ChangeTrigger::Api,
-        },
-        HypercolorEvent::EffectLayerAdded {
-            layer_id: "l1".into(),
-            effect: EffectRef {
-                id: "fire".into(),
-                name: "Fire".into(),
-                engine: "wgpu".into(),
-            },
-            index: 0,
-            blend_mode: "add".into(),
-            opacity: 1.0,
-        },
-        HypercolorEvent::EffectLayerRemoved {
-            layer_id: "l1".into(),
-            effect_id: "fire".into(),
         },
         HypercolorEvent::EffectError {
             effect_id: "broken".into(),
@@ -155,8 +141,8 @@ fn effect_control_changed_requires_zone_and_layer_identity() {
     let event = HypercolorEvent::EffectControlChanged {
         effect_id: "rainbow".into(),
         control_id: "speed".into(),
-        old_value: EventControlValue::Number(0.5),
-        new_value: EventControlValue::Number(0.8),
+        old_value: ControlValue::Float(0.5),
+        new_value: ControlValue::Float(0.8),
         zone_id: ZoneId::new(),
         layer_id: SceneLayerId::new(),
         trigger: ChangeTrigger::Api,
@@ -540,29 +526,34 @@ fn input_event_received_round_trips_through_json() {
 }
 
 #[test]
-fn input_event_received_accepts_prior_event_only_payload() {
-    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:legacy","key":"a","state":"repeated"}}}"#;
-    let restored: HypercolorEvent = serde_json::from_str(json).expect("deserialize legacy event");
-    let HypercolorEvent::InputEventReceived { event } = restored else {
-        panic!("expected input event");
+fn input_event_received_serializes_ordinary_repeat_count() {
+    let event = HypercolorEvent::InputEventReceived {
+        event: TimedInputEvent {
+            event: InputEvent::Key {
+                source_id: "host:keyboard".into(),
+                key: "a".into(),
+                state: InputButtonState::Pressed,
+            },
+            at_ms: 1,
+            seq: 2,
+            physical_code: None,
+            repeat_count: 1,
+        },
     };
 
-    assert_eq!(event.at_ms, 0);
-    assert_eq!(event.seq, 0);
-    assert_eq!(event.physical_code, None);
-    assert_eq!(event.repeat_count, 1);
-    assert!(matches!(
-        event.event,
-        InputEvent::Key {
-            state: InputButtonState::Repeated,
-            ..
-        }
-    ));
+    let value = serde_json::to_value(event).expect("serialize input event");
+    assert_eq!(value["data"]["repeat_count"], 1);
+}
+
+#[test]
+fn input_event_received_rejects_event_only_payload() {
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"}}}"#;
+    serde_json::from_str::<HypercolorEvent>(json).expect_err("timed input fields must be present");
 }
 
 #[test]
 fn input_event_received_rejects_zero_repeat_count() {
-    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"},"repeat_count":0}}"#;
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"},"at_ms":1,"seq":2,"repeat_count":0}}"#;
     let error = serde_json::from_str::<HypercolorEvent>(json)
         .expect_err("zero repeat multiplicity must be rejected");
 
@@ -1058,32 +1049,6 @@ fn serde_tagged_format() {
     assert_eq!(value["data"]["pid"], 42);
 }
 
-// ── ControlValue Tests ──────────────────────────────────────────────────
-
-#[test]
-fn control_value_number_roundtrip() {
-    let val = EventControlValue::Number(0.75);
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::Number(0.75));
-}
-
-#[test]
-fn control_value_boolean_roundtrip() {
-    let val = EventControlValue::Boolean(true);
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::Boolean(true));
-}
-
-#[test]
-fn control_value_string_roundtrip() {
-    let val = EventControlValue::String("rainbow".into());
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::String("rainbow".into()));
-}
-
 // ── FrameData Tests ─────────────────────────────────────────────────────
 
 #[test]
@@ -1289,16 +1254,6 @@ fn mouse_input_events_round_trip_through_json() {
     let json = serde_json::to_string(&timed).expect("serialize timed event");
     let restored: TimedInputEvent = serde_json::from_str(&json).expect("deserialize timed event");
     assert_eq!(restored, timed);
-
-    let wheel = InputEvent::MouseWheel {
-        source_id: "host:/dev/input/event4".into(),
-        delta_hi_res: -240,
-    };
-    let json = serde_json::to_string(&wheel).expect("serialize wheel");
-    assert!(json.contains("\"kind\":\"mouse_wheel\""));
-    let restored: InputEvent = serde_json::from_str(&json).expect("deserialize wheel");
-    assert_eq!(restored, wheel);
-    assert_eq!(restored.source_id(), "host:/dev/input/event4");
 }
 
 #[test]
@@ -1331,10 +1286,7 @@ fn pointer_scroll_phase_defaults_to_none() {
 }
 
 #[test]
-fn timed_input_event_seq_defaults_to_zero_when_absent() {
-    let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5}"#;
-    let restored: TimedInputEvent = serde_json::from_str(json).expect("deserialize without seq");
-    assert_eq!(restored.seq, 0);
-    assert_eq!(restored.physical_code, None);
-    assert_eq!(restored.repeat_count, 1);
+fn timed_input_event_rejects_an_absent_sequence() {
+    let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5,"repeat_count":1}"#;
+    serde_json::from_str::<TimedInputEvent>(json).expect_err("seq must be present");
 }

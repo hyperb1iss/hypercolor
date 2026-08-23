@@ -1,6 +1,5 @@
 //! Composite USB MIDI + bulk transport used by Ableton Push 2-class devices.
 
-use std::fmt::Write as _;
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +24,9 @@ use tracing::warn;
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
-use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
+use crate::transport::{
+    Transport, TransportError, format_hex_preview, spawn_blocking_transport_io,
+};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const PUSH2_MIDI_SHORT_PACKET_SPACING: Duration = Duration::from_micros(500);
@@ -990,26 +991,6 @@ fn lock_mutex<'a, T>(
     })
 }
 
-fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
-    let preview_len = bytes.len().min(max_bytes);
-    let mut rendered = bytes
-        .iter()
-        .take(preview_len)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if bytes.len() > preview_len {
-        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
-    }
-
-    if rendered.is_empty() {
-        "<empty>".to_owned()
-    } else {
-        rendered
-    }
-}
-
 fn map_midi_init_error(error: InitError) -> TransportError {
     TransportError::IoError {
         detail: error.to_string(),
@@ -1054,7 +1035,7 @@ fn map_transfer_error(error: TransferError, timeout: Duration) -> TransportError
         TransferError::Cancelled => TransportError::Timeout {
             timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
         },
-        TransferError::Disconnected => TransportError::NotFound {
+        TransferError::Disconnected => TransportError::Disconnected {
             detail: error.to_string(),
         },
         TransferError::Fault

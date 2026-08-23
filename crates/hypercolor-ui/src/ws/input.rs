@@ -25,9 +25,6 @@ pub enum InputInjectEdge {
         nx: f32,
         ny: f32,
     },
-    Wheel {
-        delta_hi_res: i32,
-    },
     Scroll {
         delta_x_q16_16: i64,
         delta_y_q16_16: i64,

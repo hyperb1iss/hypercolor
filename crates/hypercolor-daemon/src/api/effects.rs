@@ -5,6 +5,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
@@ -13,251 +14,45 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use tokio::fs;
 use tracing::{info, warn};
 
-use hypercolor_core::bus::CanvasFrame;
 use hypercolor_core::effect::{
-    EffectRegistry, HtmlControlKind, ParsedHtmlEffectMetadata, load_html_effect_file,
-    parse_html_effect_metadata,
+    HtmlControlKind, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
 };
-use hypercolor_core::engine::RenderLoopState;
-use hypercolor_types::api::output::OutputPowerMode;
 use hypercolor_types::api::scene::{
     ApplyEffectRequest as SceneApplyEffectRequest, ApplyEffectResponse as SceneApplyEffectResponse,
     TransitionType,
 };
-use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
-use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
-};
-use hypercolor_types::event::{EffectRef, FrameData, HypercolorEvent, ZoneColors};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::Zone;
-use hypercolor_types::session::OffOutputBehavior;
-use hypercolor_types::spatial::SpatialLayout;
 
-use crate::api::AppState;
-use crate::api::control_values::json_to_control_value;
-use crate::api::envelope::ApiResponse;
-use crate::discovery;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain;
 // One definition of the source spelling, shared with the `source`
 // catalog filter: a second one here would let a listing narrow on values
 // the payload never reports.
 use crate::domain::effect::RequestedTransition;
-use crate::domain::effect::effect_source_kind as source_kind;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
-use crate::session::set_output_stopped;
+use crate::resource_summary::{
+    EffectListIncludes, effect_cover_image_path, effect_cover_image_url, effect_summary,
+    html_effect_source_path, is_runnable_source,
+};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
 const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
-const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
-
-pub(crate) async fn invalidate_active_render_groups_after_effect_registry_update(state: &AppState) {
-    if let Err(error) = domain::effect::invalidate_active_zones(state).await {
-        warn!(%error, "Failed to refresh active zones after an effect registry update");
-    }
-}
-
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
 pub use hypercolor_types::api::effects::{
     EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
-    EffectPresetOrigin, EffectPresetSummary, EffectSummary, InstalledEffectResponse,
-    RescanResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectSourceKind, EffectSummary,
+    InstalledEffectResponse, RescanResponse,
 };
 
 struct ResolvedEffectPreset {
     id: PresetId,
     controls: HashMap<String, ControlValue>,
-}
-
-/// Bring output back to running so a freshly applied effect is visible.
-///
-/// Reports whether output is running once the attempt settles, which is
-/// the post-commit outcome the apply response carries (Spec 78 §2.3).
-pub(crate) async fn wake_output_for_effect_start(state: &AppState) -> bool {
-    if output_is_running(state).await {
-        return true;
-    }
-    crate::domain::output::set_power(state, OutputPowerMode::Running).await;
-    output_is_running(state).await
-}
-
-async fn output_is_running(state: &AppState) -> bool {
-    let sleeping = state.power_state.borrow().sleeping();
-    !sleeping && state.render_loop.read().await.state() != RenderLoopState::Paused
-}
-
-pub(crate) fn schedule_network_output_reconnect(state: &AppState) {
-    schedule_output_reconnect(state, true);
-}
-
-pub(crate) fn schedule_all_output_reconnect(state: &AppState) {
-    schedule_output_reconnect(state, false);
-}
-
-fn schedule_output_reconnect(state: &AppState, network_only: bool) {
-    let Some(config_manager) = state.config_manager.as_ref() else {
-        return;
-    };
-    let config_guard = config_manager.get();
-    let config = Arc::clone(&*config_guard);
-    let target_ids = network_only.then(|| {
-        state
-            .driver_registry
-            .discovery_drivers()
-            .into_iter()
-            .filter_map(|driver| {
-                let descriptor = driver.module_descriptor();
-                let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
-                    || descriptor
-                        .transports
-                        .contains(&DriverTransportKind::Network);
-                is_network_driver.then_some(descriptor.id)
-            })
-            .collect::<Vec<_>>()
-    });
-    if target_ids.as_ref().is_some_and(Vec::is_empty) {
-        return;
-    }
-    let targets = match discovery::resolve_targets(
-        target_ids.as_deref(),
-        &config,
-        state.driver_registry.as_ref(),
-    ) {
-        Ok(targets) => targets,
-        Err(error) => {
-            warn!(%error, network_only, "Skipping reconnect scan after output release");
-            return;
-        }
-    };
-    if targets.is_empty() {
-        return;
-    }
-
-    discovery::schedule_discovery_scan(
-        super::discovery_runtime(state),
-        Arc::clone(&state.driver_registry),
-        Arc::clone(&state.driver_host),
-        config,
-        targets,
-        discovery::default_timeout(),
-    );
-}
-
-pub(crate) async fn quiesce_output_after_effect_stop(state: &AppState) -> usize {
-    let _transition_guard = state.output_power_transition.lock().await;
-    {
-        let mut render_loop = state.render_loop.write().await;
-        render_loop.pause();
-    }
-
-    set_output_stopped(&state.power_state, &state.event_bus);
-
-    let runtime = super::discovery_runtime(state);
-    let released_network_devices = discovery::release_renderable_network_devices(&runtime).await;
-
-    publish_static_output_snapshot(state, [0, 0, 0]).await;
-    state.performance.write().await.clear_frame_timings();
-    released_network_devices
-}
-
-pub(crate) async fn publish_static_output_snapshot(state: &AppState, color: [u8; 3]) {
-    let (layout, canvas, mut zones) = {
-        let spatial = state.spatial_engine.read().await;
-        let layout = spatial.layout();
-        let Ok(mut canvas) = Canvas::try_new(layout.canvas_width, layout.canvas_height).inspect_err(
-            |error| {
-                warn!(%error, "Static output canvas allocation failed; preserving the last published output");
-            },
-        ) else {
-            return;
-        };
-        canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
-        let Ok(zones) = spatial.try_sample(&canvas).inspect_err(|error| {
-            warn!(%error, "Static output sampling failed; preserving the last published output");
-        }) else {
-            return;
-        };
-        (layout, canvas, zones)
-    };
-    let frame_number = next_black_frame_number(state);
-    let elapsed_ms = elapsed_ms_u32(state);
-
-    let write_stats = {
-        let mut backend_manager = state.backend_manager.lock().await;
-        let unassigned_outputs = backend_manager.unassigned_output_zones(layout.as_ref());
-        if unassigned_outputs.is_empty() {
-            backend_manager.write_frame(&zones, layout.as_ref()).await
-        } else {
-            zones.extend(unassigned_outputs.iter().map(|output| ZoneColors {
-                zone_id: output.id.clone(),
-                colors: vec![
-                    color;
-                    usize::try_from(output.topology.led_count()).unwrap_or_default()
-                ],
-            }));
-            let mut static_layout = layout.as_ref().clone();
-            static_layout.zones.extend(unassigned_outputs);
-            backend_manager.write_frame(&zones, &static_layout).await
-        }
-    };
-    if !write_stats.errors.is_empty() {
-        warn!(
-            error_count = write_stats.errors.len(),
-            "One-shot static frame encountered output errors while quiescing effect output"
-        );
-    }
-
-    let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
-    let group_frame = hypercolor_core::bus::DisplayGroupFrame::Canvas(canvas_frame.clone());
-    let (_, display_group_targets) = state.event_bus.display_group_targets_snapshot();
-    for group_id in display_group_targets.keys().copied() {
-        state
-            .event_bus
-            .group_canvas_sender(group_id)
-            .send_replace(group_frame.clone());
-    }
-    state
-        .event_bus
-        .frame_sender()
-        .send_replace(FrameData::new(zones, frame_number, elapsed_ms));
-    state
-        .event_bus
-        .scene_canvas_sender()
-        .send_replace(canvas_frame.clone());
-    state.event_bus.canvas_sender().send_replace(canvas_frame);
-    state
-        .preview_runtime
-        .record_canvas_publication(frame_number, elapsed_ms);
-}
-
-pub(crate) async fn reconcile_static_output_hold(state: &AppState) -> bool {
-    let _transition_guard = state.output_power_transition.lock().await;
-    let output_power = *state.power_state.borrow();
-    if !output_power.sleeping()
-        || output_power.effective_off_output_behavior() != OffOutputBehavior::Static
-    {
-        return false;
-    }
-
-    publish_static_output_snapshot(state, output_power.effective_off_output_color()).await;
-    true
-}
-
-fn next_black_frame_number(state: &AppState) -> u32 {
-    state
-        .event_bus
-        .frame_receiver()
-        .borrow()
-        .frame_number
-        .saturating_add(1)
-}
-
-fn elapsed_ms_u32(state: &AppState) -> u32 {
-    u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX)
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -268,14 +63,12 @@ fn elapsed_ms_u32(state: &AppState) -> u32 {
 /// a comma-separated list of expansions (`controls`, `presets`) that add
 /// optional fields to each summary.
 ///
-/// Parameters this type does not name stay ignored, which keeps the v1
-/// contract for the paging arguments the fabricated pagination block
-/// has always discarded.
+/// Parameters this type does not name stay ignored.
 #[derive(Debug, Clone, Default, serde::Deserialize, utoipa::IntoParams)]
 pub struct EffectListQuery {
     /// Exact effect category.
     #[serde(default)]
-    pub category: Option<String>,
+    pub category: Option<EffectCategory>,
     /// Declared audio reactivity.
     #[serde(default)]
     pub audio_reactive: Option<bool>,
@@ -285,9 +78,9 @@ pub struct EffectListQuery {
     /// Declared input reactivity.
     #[serde(default)]
     pub input_reactive: Option<bool>,
-    /// Rendering source: `native`, `html`, or `shader`.
+    /// Rendering implementation.
     #[serde(default)]
-    pub source: Option<String>,
+    pub source: Option<EffectSourceKind>,
     /// Case-insensitive substring over name, description, author, tags.
     #[serde(default)]
     pub q: Option<String>,
@@ -296,152 +89,64 @@ pub struct EffectListQuery {
     pub include: Option<String>,
 }
 
-/// Which summary expansions a listing asked for.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct EffectListIncludes {
-    controls: bool,
-    presets: bool,
-}
-
-impl EffectListIncludes {
-    fn parse(raw: Option<&str>) -> Result<Self, DomainError> {
-        let mut includes = Self::default();
-        for token in raw.unwrap_or_default().split(',') {
-            match token.trim() {
-                "" => {}
-                "controls" => includes.controls = true,
-                "presets" => includes.presets = true,
-                other => {
-                    return Err(DomainError::validation_field(
-                        "include",
-                        format!("unknown expansion '{other}'; expected controls or presets"),
-                    ));
-                }
-            }
-        }
-        Ok(includes)
-    }
-}
-
 /// `GET /api/v1/effects` — the effect catalog, narrowed server-side.
-#[utoipa::path(
-    get,
-    path = "/api/v1/effects",
-    params(EffectListQuery),
-    responses(
-        (
-            status = 200,
-            description = "Effect catalog",
-            body = crate::api::envelope::ApiResponse<EffectListResponse>
-        ),
-        (
-            status = 422,
-            description = "A filter or expansion named a value that does not exist",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn list_effects(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<EffectListQuery>,
+    query: Result<Query<EffectListQuery>, QueryRejection>,
 ) -> Response {
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => {
+            return DomainError::validation(error.body_text()).into_response();
+        }
+    };
     let includes = match EffectListIncludes::parse(query.include.as_deref()) {
         Ok(includes) => includes,
         Err(error) => return error.into_response(),
     };
-    let catalog_query = match domain::effect::EffectCatalogQuery::parse(
-        query.category.as_deref(),
-        query.source.as_deref(),
-        query.q.as_deref(),
-    ) {
-        Ok(parsed) => domain::effect::EffectCatalogQuery {
-            audio_reactive: query.audio_reactive,
-            screen_reactive: query.screen_reactive,
-            input_reactive: query.input_reactive,
-            ..parsed
-        },
-        Err(error) => return error.into_response(),
-    };
+    let catalog_query =
+        match domain::effect::EffectCatalogQuery::parse(None, None, query.q.as_deref()) {
+            Ok(parsed) => domain::effect::EffectCatalogQuery {
+                category: query.category,
+                audio_reactive: query.audio_reactive,
+                screen_reactive: query.screen_reactive,
+                input_reactive: query.input_reactive,
+                source: query.source.map(|source| source.as_str().to_owned()),
+                ..parsed
+            },
+            Err(error) => return error.into_response(),
+        };
 
-    let items: Vec<EffectSummary> = domain::effect::list_catalog(state.as_ref(), &catalog_query)
-        .await
-        .into_iter()
-        .map(|meta| effect_summary(&meta, includes))
-        .collect();
+    let items: Vec<EffectSummary> =
+        domain::effect::list_catalog(&state.domains.effects, &catalog_query)
+            .await
+            .into_iter()
+            .map(|meta| effect_summary(&meta, includes))
+            .collect();
 
     let total = items.len();
-    ApiResponse::ok(EffectListResponse {
+    envelope::ok(EffectListResponse {
         items,
-        pagination: super::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("effect count fits in u64"),
+        page: None,
     })
 }
 
-fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> EffectSummary {
-    EffectSummary {
-        id: meta.id.to_string(),
-        name: meta.name.clone(),
-        description: meta.description.clone(),
-        author: meta.author.clone(),
-        category: format!("{}", meta.category),
-        source: source_kind(&meta.source).to_owned(),
-        runnable: is_runnable_source(&meta.source),
-        tags: meta.tags.clone(),
-        version: meta.version.clone(),
-        audio_reactive: meta.audio_reactive,
-        input_reactive: meta.input_reactive,
-        capabilities: EffectCapabilitySet {
-            audio_reactive: meta.audio_reactive,
-            screen_reactive: meta.screen_reactive,
-            input_reactive: meta.input_reactive,
-        },
-        cover_image_url: effect_cover_image_url(meta),
-        controls: includes.controls.then(|| meta.controls.clone()),
-        presets: includes.presets.then(|| meta.presets.clone()),
-    }
-}
-
 /// `GET /api/v1/effects/{id}` — Get a single effect's metadata.
-#[utoipa::path(
-    get,
-    path = "/api/v1/effects/{id}",
-    params(("id" = String, Path, description = "Effect id or name")),
-    responses(
-        (
-            status = 200,
-            description = "Effect detail",
-            body = crate::api::envelope::ApiResponse<EffectDetailResponse>
-        ),
-        (
-            status = 404,
-            description = "Effect was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let registry = state.effect_registry.read().await;
-
-    let Some(meta) = resolve_effect_metadata(&registry, &id) else {
+    let Some(meta) = state.domains.effects.resolve_metadata(&id).await else {
         return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
-    drop(registry);
 
     let cover_image_url = effect_cover_image_url(&meta);
 
-    ApiResponse::ok(EffectDetailResponse {
+    envelope::ok(EffectDetailResponse {
         id: meta.id.to_string(),
         name: meta.name,
         description: meta.description,
         author: meta.author,
-        category: format!("{}", meta.category),
-        source: source_kind(&meta.source).to_owned(),
+        category: meta.category,
+        source: EffectSourceKind::from(&meta.source),
         runnable: is_runnable_source(&meta.source),
         tags: meta.tags,
         version: meta.version,
@@ -453,46 +158,20 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 }
 
 /// `GET /api/v1/effects/{id}/presets` lists bundled and saved presets.
-#[utoipa::path(
-    get,
-    path = "/api/v1/effects/{id}/presets",
-    params(("id" = String, Path, description = "Effect id or name")),
-    responses(
-        (
-            status = 200,
-            description = "Unified effect preset stack",
-            body = crate::api::envelope::ApiResponse<EffectPresetListResponse>
-        ),
-        (
-            status = 404,
-            description = "Effect was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "effects"
-)]
 pub async fn list_effect_presets(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let metadata = {
-        let registry = state.effect_registry.read().await;
-        let Some(metadata) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        metadata
+    let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
     let items = effect_preset_stack(state.as_ref(), &metadata).await;
     let total = items.len();
 
-    ApiResponse::ok(EffectPresetListResponse {
+    envelope::ok(EffectPresetListResponse {
         items,
-        pagination: super::devices::Pagination {
-            offset: 0,
-            limit: total,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("effect preset count fits in u64"),
+        page: None,
     })
 }
 
@@ -530,19 +209,15 @@ pub async fn apply_effect(
 
     // Validate before the scene commit or output wake so a refusal leaves
     // the rig unchanged.
-    let metadata = {
-        let registry = state.effect_registry.read().await;
-        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        meta
+    let Some(metadata) = state.domains.effects.resolve_for_mutation(&id).await else {
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
 
     info!(
         requested = %id,
         effect_id = %metadata.id,
         effect = %metadata.name,
-        source = source_kind(&metadata.source),
+        source = EffectSourceKind::from(&metadata.source).as_str(),
         "Applying effect via API"
     );
     if metadata.category == EffectCategory::Display {
@@ -561,7 +236,7 @@ pub async fn apply_effect(
             else {
                 if let Some(saved) =
                     state
-                        .library_store
+                        .library_store()
                         .list_presets()
                         .await
                         .into_iter()
@@ -584,30 +259,22 @@ pub async fn apply_effect(
 
     // Explicit controls win; otherwise the preset seeds the layer.
     let requested_controls = request.controls.unwrap_or_default();
-    let (normalized_controls, dropped_controls) = if requested_controls.is_empty()
+    let controls = if requested_controls.is_empty()
         && let Some(preset) = resolved_preset.as_ref()
     {
-        normalize_control_values(&metadata, &preset.controls)
+        preset.controls.clone()
     } else {
-        let owned: HashMap<String, ControlValue> = requested_controls.into_iter().collect();
-        normalize_control_values(&metadata, &owned)
+        requested_controls.into_iter().collect()
     };
-    if !dropped_controls.is_empty() {
-        return DomainError::validation_details(
-            "one or more control values were rejected",
-            serde_json::json!({ "rejected": dropped_controls }),
-        )
-        .into_response();
-    }
-    let control_count = normalized_controls.len();
+    let control_count = controls.len();
 
     // Commit before waking output. A wake failure rides in the 200 because
     // the scene mutation is already real.
     let applied = match domain::effect::apply_effect(
-        state.as_ref(),
+        &state.domains.effects,
         domain::effect::ApplyEffect {
             effect: metadata.clone(),
-            controls: normalized_controls,
+            controls,
             preset_id: resolved_preset.as_ref().map(|preset| preset.id),
             target_zone: request.zone,
             expected_revision,
@@ -639,7 +306,7 @@ pub async fn apply_effect(
     );
 
     let revision = applied.commit.revision();
-    let mut response = ApiResponse::ok(SceneApplyEffectResponse {
+    let mut response = envelope::ok(SceneApplyEffectResponse {
         zone: crate::domain::scene_tree::zone_resource(&applied.zone),
         transition: TransitionType::Cut,
         output: applied.output,
@@ -655,12 +322,8 @@ pub async fn get_effect_cover(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let metadata = {
-        let registry = state.effect_registry.read().await;
-        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
-            return DomainError::not_found(ResourceKind::Effect, &id).into_response();
-        };
-        meta
+    let Some(metadata) = state.domains.effects.resolve_metadata(&id).await else {
+        return DomainError::not_found(ResourceKind::Effect, &id).into_response();
     };
 
     effect_cover_image_response(&metadata, EffectCoverCache::Catalog).await
@@ -668,14 +331,10 @@ pub async fn get_effect_cover(
 
 /// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
 pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
-    let report = {
-        let mut registry = state.effect_registry.write().await;
-        registry.rescan()
+    let report = match state.domains.effects.rescan_registry().await {
+        Ok(report) => report,
+        Err(error) => return error.into_response(),
     };
-
-    if report.added > 0 || report.removed > 0 || report.updated > 0 {
-        invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
-    }
 
     info!(
         added = report.added,
@@ -684,15 +343,7 @@ pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
         "Manual effect rescan completed"
     );
 
-    state.event_bus.publish(
-        hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
-            added: report.added,
-            removed: report.removed,
-            updated: report.updated,
-        },
-    );
-
-    ApiResponse::ok(RescanResponse {
+    envelope::ok(RescanResponse {
         added: report.added,
         removed: report.removed,
         updated: report.updated,
@@ -732,14 +383,6 @@ pub async fn install_effect(
     };
 
     let install_dir = user_effects_install_dir(state.as_ref());
-    if let Err(error) = fs::create_dir_all(&install_dir).await {
-        return DomainError::Internal(anyhow::anyhow!(
-            "Failed to create user effects directory '{}': {error}",
-            install_dir.display()
-        ))
-        .into_response();
-    }
-
     let preferred_stem = file_name
         .as_deref()
         .and_then(uploaded_file_stem)
@@ -751,82 +394,30 @@ pub async fn install_effect(
     // so existing assignments follow the update instead of a `-2` clone
     // appearing beside the original.
     let installed_path = install_dir.join(format!("{preferred_stem}.html"));
-    let replacing = installed_path.exists();
-
-    if let Err(error) = fs::write(&installed_path, html.as_bytes()).await {
-        return DomainError::Internal(anyhow::anyhow!(
-            "Failed to write uploaded effect to '{}': {error}",
-            installed_path.display()
-        ))
-        .into_response();
-    }
-
-    let entry = match load_html_effect_file(&installed_path) {
-        Ok(Some(entry)) => entry,
-        Ok(None) => {
-            let _ = fs::remove_file(&installed_path).await;
-            return DomainError::validation(
-                "Uploaded effect is not supported by this daemon build.",
-            )
-            .into_response();
-        }
-        Err(error) => {
-            let _ = fs::remove_file(&installed_path).await;
-            return DomainError::Internal(anyhow::anyhow!(
-                "Failed to register uploaded effect '{}': {}",
-                error.path.display(),
-                error.message
-            ))
-            .into_response();
-        }
+    let installed = match state
+        .domains
+        .effects
+        .install_registry_file(&installed_path, &html)
+        .await
+    {
+        Ok(installed) => installed,
+        Err(error) => return error.into_response(),
     };
-
-    let (added, updated) = {
-        let mut registry = state.effect_registry.write().await;
-        let replaced = registry.register(entry.clone()).is_some();
-        if replaced { (0, 1) } else { (1, 0) }
-    };
-
-    invalidate_active_render_groups_after_effect_registry_update(state.as_ref()).await;
-
-    state
-        .event_bus
-        .publish(HypercolorEvent::EffectRegistryUpdated {
-            added,
-            removed: 0,
-            updated,
-        });
 
     info!(
-        effect = %entry.metadata.name,
-        path = %entry.source_path.display(),
-        replaced_existing = replacing,
+        effect = %installed.metadata.name,
+        path = %installed.source_path.display(),
+        replaced_existing = installed.replaced_existing,
         "Installed uploaded effect"
     );
 
-    ApiResponse::created(InstalledEffectResponse {
-        id: entry.metadata.id.to_string(),
-        name: entry.metadata.name,
-        source: "user".to_owned(),
-        path: entry.source_path.display().to_string(),
-        controls: entry.metadata.controls.len(),
-        presets: entry.metadata.presets.len(),
+    envelope::created(InstalledEffectResponse {
+        id: installed.metadata.id.to_string(),
+        name: installed.metadata.name,
+        path: installed.source_path.display().to_string(),
+        controls: installed.metadata.controls.len(),
+        presets: installed.metadata.presets.len(),
     })
-}
-
-pub(crate) fn resolve_effect_metadata(
-    registry: &EffectRegistry,
-    id_or_name: &str,
-) -> Option<EffectMetadata> {
-    if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
-        let effect_id = EffectId::new(uuid);
-        return registry.get(&effect_id).map(|entry| entry.metadata.clone());
-    }
-
-    registry
-        .iter()
-        .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
-        .map(|(_, entry)| entry.metadata.clone())
 }
 
 async fn effect_preset_stack(
@@ -849,7 +440,7 @@ async fn effect_preset_stack(
         .collect::<Vec<_>>();
 
     let mut saved = state
-        .library_store
+        .library_store()
         .list_presets()
         .await
         .into_iter()
@@ -880,7 +471,7 @@ async fn resolve_effect_preset(
     metadata: &EffectMetadata,
     id_or_name: &str,
 ) -> Option<ResolvedEffectPreset> {
-    let saved = state.library_store.list_presets().await;
+    let saved = state.library_store().list_presets().await;
     if let Ok(id) = id_or_name.parse::<PresetId>() {
         if let Some(preset) = metadata.presets.iter().find(|preset| preset.id == id) {
             return Some(ResolvedEffectPreset {
@@ -915,99 +506,6 @@ async fn resolve_effect_preset(
         })
 }
 
-pub(crate) async fn active_primary_group(state: &AppState) -> Option<Zone> {
-    let scene_manager = state.scene_manager.read().await;
-    scene_manager.active_scene()?.primary_group().cloned()
-}
-
-pub(crate) async fn active_primary_effect(state: &AppState) -> Option<(Zone, EffectMetadata)> {
-    let group = active_primary_group(state).await?;
-    let effect_id = group.effect_id?;
-    let registry = state.effect_registry.read().await;
-    let metadata = registry.get(&effect_id)?.metadata.clone();
-    Some((group, metadata))
-}
-
-pub(crate) async fn active_effect_metadata(state: &AppState) -> Option<EffectMetadata> {
-    active_primary_effect(state)
-        .await
-        .map(|(_, metadata)| metadata)
-}
-
-pub(crate) fn normalize_control_payload(
-    metadata: &EffectMetadata,
-    raw_controls: &serde_json::Map<String, serde_json::Value>,
-) -> (HashMap<String, ControlValue>, Vec<String>) {
-    let mut normalized = HashMap::new();
-    let mut rejected = Vec::new();
-
-    for (name, value) in raw_controls {
-        let Some(parsed) = json_to_control_value(value) else {
-            rejected.push(format!("{name} (unsupported JSON shape)"));
-            continue;
-        };
-
-        let result = metadata.control_by_id(name).map_or_else(
-            || Ok(parsed.clone()),
-            |control| control.validate_value(&parsed),
-        );
-        match result {
-            Ok(control_value) => {
-                normalized.insert(name.clone(), control_value);
-            }
-            Err(error) => rejected.push(format!("{name} ({error})")),
-        }
-    }
-
-    (normalized, rejected)
-}
-
-pub(crate) fn normalize_control_values(
-    metadata: &EffectMetadata,
-    control_values: &HashMap<String, ControlValue>,
-) -> (HashMap<String, ControlValue>, Vec<String>) {
-    let mut normalized = HashMap::new();
-    let mut rejected = Vec::new();
-
-    for (name, value) in control_values {
-        let result = metadata.control_by_id(name).map_or_else(
-            || Ok(value.clone()),
-            |control| control.validate_value(value),
-        );
-        match result {
-            Ok(control_value) => {
-                normalized.insert(name.clone(), control_value);
-            }
-            Err(error) => rejected.push(format!("{name} ({error})")),
-        }
-    }
-
-    (normalized, rejected)
-}
-
-pub(crate) fn default_control_values(metadata: &EffectMetadata) -> HashMap<String, ControlValue> {
-    metadata
-        .controls
-        .iter()
-        .map(|control| {
-            (
-                control.control_id().to_owned(),
-                control.default_value.clone(),
-            )
-        })
-        .collect()
-}
-
-/// Resolve the full device-output roster as a [`SpatialLayout`] — every
-/// discovered device output with default placement. This is the canonical
-/// source for a fresh `Primary` zone (§5.2): a new scene's Default zone,
-/// the lazily created `effects/apply` `Primary`, and `Primary` recovery
-/// all seed from it.
-pub(crate) async fn resolve_full_scope_layout(state: &AppState) -> SpatialLayout {
-    let spatial = state.spatial_engine.read().await;
-    spatial.layout().as_ref().clone()
-}
-
 fn log_effect_apply_completion(
     previous_effect: Option<&str>,
     effect_name: &str,
@@ -1031,14 +529,6 @@ fn log_effect_apply_completion(
             dropped_controls = ?dropped_controls,
             "Ignored unsupported control value payloads"
         );
-    }
-}
-
-pub(crate) fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
-    EffectRef {
-        id: metadata.id.to_string(),
-        name: metadata.name.clone(),
-        engine: "servo".to_owned(),
     }
 }
 
@@ -1068,13 +558,6 @@ async fn effect_cover_image_response(
         },
     );
     (headers, cover.bytes).into_response()
-}
-
-fn effect_cover_image_url(metadata: &EffectMetadata) -> Option<String> {
-    if effect_cover_image_path(metadata).is_none() && html_effect_source_path(metadata).is_none() {
-        return None;
-    }
-    Some(format!("/api/v1/effects/{}/cover", metadata.id))
 }
 
 struct EffectCover {
@@ -1127,65 +610,6 @@ async fn effect_inline_cover(metadata: &EffectMetadata) -> Option<EffectCover> {
             );
             None
         }
-    }
-}
-
-fn html_effect_source_path(metadata: &EffectMetadata) -> Option<&PathBuf> {
-    match &metadata.source {
-        EffectSource::Html { path } => Some(path),
-        EffectSource::Native { .. } | EffectSource::Shader { .. } => None,
-    }
-}
-
-fn effect_cover_image_path(metadata: &EffectMetadata) -> Option<PathBuf> {
-    let root = hypercolor_core::effect::bundled_screenshots_root();
-    effect_cover_slugs(metadata)
-        .into_iter()
-        .map(|slug| root.join(slug).join(EFFECT_COVER_FILE_NAME))
-        .find(|path| path.is_file())
-}
-
-fn effect_cover_slugs(metadata: &EffectMetadata) -> Vec<String> {
-    let mut slugs = Vec::new();
-    if let Some(stem) = metadata.source.source_stem() {
-        push_cover_slug(&mut slugs, stem);
-    }
-    push_cover_slug(&mut slugs, &metadata.name);
-    slugs
-}
-
-fn push_cover_slug(slugs: &mut Vec<String>, value: &str) {
-    let slug = cover_slug(value);
-    if !slug.is_empty() && !slugs.iter().any(|existing| existing == &slug) {
-        slugs.push(slug);
-    }
-}
-
-fn cover_slug(value: &str) -> String {
-    let mut slug = String::new();
-    let mut last_was_separator = false;
-
-    for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-            last_was_separator = false;
-        } else if !slug.is_empty() && !last_was_separator {
-            slug.push('-');
-            last_was_separator = true;
-        }
-    }
-
-    if last_was_separator {
-        let _ = slug.pop();
-    }
-    slug
-}
-
-fn is_runnable_source(source: &EffectSource) -> bool {
-    match source {
-        EffectSource::Native { .. } => true,
-        EffectSource::Html { .. } => cfg!(feature = "servo"),
-        EffectSource::Shader { .. } => false,
     }
 }
 
@@ -1338,15 +762,7 @@ fn validate_preset_json(html: &str, parsed: &ParsedHtmlEffectMetadata, errors: &
 }
 
 fn user_effects_install_dir(state: &AppState) -> PathBuf {
-    state
-        .runtime_state_path
-        .parent()
-        .map(|dir| dir.join("effects").join("user"))
-        .unwrap_or_else(|| {
-            hypercolor_core::config::ConfigManager::data_dir()
-                .join("effects")
-                .join("user")
-        })
+    state.data_dir.join("effects").join("user")
 }
 
 fn uploaded_file_stem(file_name: &str) -> Option<&str> {

@@ -25,10 +25,10 @@ use crate::input::input_mono_ms;
 use crate::input::traits::{InputData, InputSource, InteractionData, MotionAggregate, PointerMode};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{
-    LegacyWheelProjector, SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle,
-    SourceStatusReporter, classify_source_resource_scan,
+    SourceIssue, SourceKind, SourceResourceScanHealth, SourceStatusHandle, SourceStatusReporter,
+    classify_source_resource_scan,
 };
-use crate::types::event::{
+use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
 };
 
@@ -157,7 +157,6 @@ struct SharedState {
     motion: MotionAggregate,
     pointer_present: bool,
     device_status: Vec<DeviceOpenStatus>,
-    legacy_wheel_projectors: BTreeMap<String, LegacyWheelProjector>,
 }
 
 impl SharedState {
@@ -186,7 +185,6 @@ impl SharedState {
         self.motion = MotionAggregate::default();
         self.pointer_present = false;
         self.device_status.clear();
-        self.legacy_wheel_projectors.clear();
     }
 }
 
@@ -961,29 +959,6 @@ fn fold_scroll(
         },
         event_limit,
     );
-
-    let legacy_delta = state
-        .legacy_wheel_projectors
-        .entry(source_id.to_owned())
-        .or_default()
-        .project(delta_y_q16_16);
-    if legacy_delta == 0 {
-        return;
-    }
-    push_event(
-        state,
-        TimedInputEvent {
-            event: InputEvent::MouseWheel {
-                source_id: source_id.to_owned(),
-                delta_hi_res: legacy_delta,
-            },
-            at_ms,
-            seq: 0,
-            physical_code: Some("evdev:legacy-wheel-shadow".to_owned()),
-            repeat_count: 1,
-        },
-        event_limit,
-    );
 }
 
 fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {
@@ -1044,7 +1019,6 @@ fn synthesize_releases_at(
     event_limit: usize,
     at_ms: u64,
 ) {
-    state.legacy_wheel_projectors.remove(source_id);
     if let Some(keys) = state.pressed_keys.remove(source_id) {
         for key in keys {
             push_event(
@@ -1325,7 +1299,7 @@ mod tests {
     }
 
     #[test]
-    fn high_resolution_vertical_scroll_emits_exact_event_then_shadow() {
+    fn high_resolution_vertical_scroll_emits_exact_event() {
         let mut state = SharedState::default();
         let mut device = event_state("mouse", false, true);
 
@@ -1337,7 +1311,7 @@ mod tests {
             DEFAULT_EVENT_LIMIT,
         );
 
-        assert_eq!(state.events.len(), 2);
+        assert_eq!(state.events.len(), 1);
         assert!(matches!(
             &state.events[0].event,
             InputEvent::PointerScroll {
@@ -1347,17 +1321,10 @@ mod tests {
                 ..
             } if *delta_y_q16_16 == -30 * crate::input::Q16_16_SCALE
         ));
-        assert!(matches!(
-            &state.events[1].event,
-            InputEvent::MouseWheel {
-                delta_hi_res: -30,
-                ..
-            }
-        ));
     }
 
     #[test]
-    fn high_resolution_horizontal_scroll_never_projects_to_legacy_wheel() {
+    fn high_resolution_horizontal_scroll_preserves_exact_axis() {
         let mut state = SharedState::default();
         let mut device = event_state("mouse", false, true);
 

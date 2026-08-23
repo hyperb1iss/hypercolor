@@ -15,8 +15,9 @@ use hypercolor_driver_wled::{
     resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
     wled_device_control_surface, wled_driver_control_surface,
 };
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
-    ApplyImpact, ControlAccess, ControlChange, ControlSurfaceEvent, ControlValue, ControlValueMap,
+    ApplyImpact, ControlAccess, ControlChange, ControlSurfaceEvent, ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
@@ -57,7 +58,7 @@ fn tracked_wled_device(ip: &str, hostname: &str, name: &str) -> DriverTrackedDev
             ("ip".to_owned(), ip.to_owned()),
             ("hostname".to_owned(), hostname.to_owned()),
         ]),
-        fingerprint: Some(DeviceFingerprint(format!("net:{hostname}"))),
+        fingerprint: Some(DeviceFingerprint::from_persisted(format!("net:{hostname}"))),
         current_state: DeviceState::Known,
     }
 }
@@ -161,7 +162,7 @@ async fn runtime_snapshot_preserves_cached_targets_without_tracked_devices() {
         )]),
     );
 
-    let cache = WledDriverModule::new(false)
+    let cache = WledDriverModule::new()
         .runtime_cache()
         .expect("WLED should expose runtime cache")
         .snapshot(&host)
@@ -211,7 +212,7 @@ fn forgetting_wled_device_removes_only_matching_inventory() {
         ),
     ]);
 
-    let updated = WledDriverModule::new(false)
+    let updated = WledDriverModule::new()
         .runtime_cache()
         .expect("WLED should expose runtime cache")
         .forget_device(&cache, &forgotten)
@@ -231,7 +232,7 @@ fn forgetting_wled_device_removes_only_matching_inventory() {
 
 #[test]
 fn wled_module_advertises_control_surface_capability() {
-    let descriptor = WledDriverModule::new(false).module_descriptor();
+    let descriptor = WledDriverModule::new().module_descriptor();
 
     assert!(descriptor.capabilities.controls);
     assert!(descriptor.capabilities.discovery);
@@ -239,7 +240,7 @@ fn wled_module_advertises_control_surface_capability() {
     assert!(descriptor.capabilities.presentation);
     assert!(descriptor.capabilities.runtime_cache);
 
-    let presentation = WledDriverModule::new(false)
+    let presentation = WledDriverModule::new()
         .presentation()
         .expect("WLED should expose presentation metadata")
         .presentation();
@@ -253,7 +254,7 @@ fn wled_module_advertises_control_surface_capability() {
 
 #[test]
 fn wled_config_validation_rejects_non_routable_known_ips() {
-    let module = WledDriverModule::new(false);
+    let module = WledDriverModule::new();
     let mut config = module
         .config()
         .expect("WLED should expose config provider")
@@ -290,7 +291,9 @@ fn wled_driver_control_surface_exposes_typed_config_fields() {
     }));
     assert_eq!(
         surface.values["known_ips"],
-        ControlValue::List(vec![ControlValue::IpAddress("10.0.0.2".to_owned())])
+        ControlValue::List(vec![
+            ControlValue::ip("10.0.0.2").expect("fixture IP should be valid")
+        ])
     );
     assert_eq!(
         surface.values["default_protocol"],
@@ -300,7 +303,7 @@ fn wled_driver_control_surface_exposes_typed_config_fields() {
         surface.values["realtime_http_enabled"],
         ControlValue::Bool(false)
     );
-    assert_eq!(surface.values["dedup_threshold"], ControlValue::Integer(7));
+    assert_eq!(surface.values["dedup_threshold"], ControlValue::Int(7));
 
     let changed = wled_driver_control_surface(&WledConfig {
         dedup_threshold: 8,
@@ -322,16 +325,13 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
     let driver_values = ControlValueMap::from([
         (
             "default_protocol".to_owned(),
-            ControlValue::String("e131".to_owned()),
+            ControlValue::Text("e131".to_owned()),
         ),
-        ("dedup_threshold".to_owned(), ControlValue::Integer(9)),
+        ("dedup_threshold".to_owned(), ControlValue::Int(9)),
     ]);
     let device_values = ControlValueMap::from([
-        (
-            "protocol".to_owned(),
-            ControlValue::String("ddp".to_owned()),
-        ),
-        ("dedup_threshold".to_owned(), ControlValue::Integer(3)),
+        ("protocol".to_owned(), ControlValue::Text("ddp".to_owned())),
+        ("dedup_threshold".to_owned(), ControlValue::Int(3)),
     ]);
 
     let surface = wled_device_control_surface(&device, &driver_values, &device_values);
@@ -373,18 +373,18 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
     assert!(!surface.values.contains_key("dedup_threshold"));
     assert_eq!(
         surface.values["ip"],
-        ControlValue::IpAddress("10.0.0.5".to_owned())
+        ControlValue::ip("10.0.0.5").expect("fixture IP should be valid")
     );
     assert_eq!(
         surface.values["hostname"],
-        ControlValue::String("desk.local".to_owned())
+        ControlValue::Text("desk.local".to_owned())
     );
     assert_eq!(
         surface.values["firmware_version"],
-        ControlValue::String("0.15.0".to_owned())
+        ControlValue::Text("0.15.0".to_owned())
     );
-    assert_eq!(surface.values["led_count"], ControlValue::Integer(60));
-    assert_eq!(surface.values["max_fps"], ControlValue::Integer(55));
+    assert_eq!(surface.values["led_count"], ControlValue::Int(60));
+    assert_eq!(surface.values["max_fps"], ControlValue::Int(55));
     assert_eq!(surface.values["rgbw"], ControlValue::Bool(true));
 }
 
@@ -392,7 +392,7 @@ fn wled_device_control_surface_exposes_tracked_metadata() {
 async fn wled_device_apply_persists_values_without_running_host_impacts() {
     let tracked = tracked_wled_device("10.0.0.5", "desk.local", "Desk Strip");
     let host = TestControlHost::default();
-    let driver = WledDriverModule::new(false);
+    let driver = WledDriverModule::new();
     let device = TrackedDeviceCtx {
         device_id: tracked.info.id,
         info: &tracked.info,

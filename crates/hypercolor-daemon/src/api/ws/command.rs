@@ -13,8 +13,8 @@ use tower::ServiceExt;
 
 use super::cache::cached_command_router;
 use super::protocol::{ServerMessage, WsProtocolError};
-use crate::api::AppState;
 use crate::api::security::RequestAuthContext;
+use crate::app_state::AppState;
 
 /// Maximum WebSocket command response body we buffer before relaying to the client.
 /// Guards against memory exhaustion from crafted or runaway handler responses.

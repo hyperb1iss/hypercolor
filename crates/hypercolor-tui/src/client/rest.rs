@@ -1,13 +1,11 @@
 //! REST client for the Hypercolor daemon HTTP API.
 
-use std::collections::HashMap;
-
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use hypercolor_types::api::controls::InvokeControlActionRequest;
-use hypercolor_types::api::devices::{
-    DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
+use hypercolor_types::api::controls::{
+    ControlSurfaceListQuery, ControlSurfaceListResponse, InvokeControlActionRequest,
 };
+use hypercolor_types::api::devices::DeviceSummary as ApiDeviceSummary;
 use hypercolor_types::api::effects::{
     EffectDetailResponse, EffectListResponse as ApiEffectListResponse,
     EffectSummary as ApiEffectSummary,
@@ -16,27 +14,27 @@ use hypercolor_types::api::envelope::ApiErrorBody;
 use hypercolor_types::api::library::{AddFavoriteRequest, FavoriteListResponse};
 use hypercolor_types::api::scene::{
     ApplyEffectRequest, PatchControlsRequest, PatchZoneRequest, ReplaceLayerRequest, SceneDocument,
-    ZoneResource,
 };
-use hypercolor_types::api::scenes::SceneListResponse as ApiSceneListResponse;
+use hypercolor_types::api::scenes::{
+    ActivateSceneRequest, SceneListResponse as ApiSceneListResponse,
+};
+use hypercolor_types::api::system::SystemResource;
+use hypercolor_types::api::{ApiResponse, ListResponse};
 use hypercolor_types::controls::{
-    ApplyControlChangesRequest, ApplyControlChangesResponse, ControlActionResult,
-    ControlSurfaceDocument, ControlValueMap,
+    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
 use hypercolor_types::effect::{
     ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
-    ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
+    PresetTemplate as ApiPresetTemplate,
 };
 use hypercolor_types::layer::{LayerSource, SceneLayer};
-use hypercolor_types::scene::{SceneMutationMode, ZoneRole};
-use hypercolor_types::viewport::ViewportRect;
+use hypercolor_types::scene::ZoneRole;
 use reqwest::StatusCode;
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::state::{
-    ActiveScene, CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary,
-    EffectSummary, PresetTemplate, SceneSummary, SimulatedDisplaySummary, ZoneSummary,
+    CanvasFrame, ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary,
+    PresetTemplate, SceneSummary, SimulatedDisplaySummary,
 };
 
 /// HTTP client for the daemon REST API.
@@ -67,21 +65,23 @@ impl DaemonClient {
 
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
-        let system = self.get_data::<SystemResponse>("/system").await?;
+        let system = self.get_data::<SystemResource>("/system").await?;
         let status = system
             .status
             .context("System status requires daemon read access")?;
 
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
         let device_count = status.device_count as u32;
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let fps_target = status.render_loop.target_fps as f32;
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let fps_actual = status.render_loop.actual_fps as f32;
 
         Ok(DaemonState {
             running: status.running,
             brightness: status.global_brightness,
-            fps_target: status.render_loop.target_fps,
-            fps_actual: status.render_loop.actual_fps,
-            scene_name: status.active_scene,
-            scene_snapshot_locked: status.active_scene_snapshot_locked,
+            fps_target,
+            fps_actual,
             device_count,
             total_leds: 0,
         })
@@ -101,14 +101,14 @@ impl DaemonClient {
 
     /// Fetch all connected devices.
     pub async fn get_devices(&self) -> Result<Vec<DeviceSummary>> {
-        let response: ApiDeviceListResponse = self.get_data("/devices").await?;
-        Ok(response.items.into_iter().map(map_device_summary).collect())
+        let items: Vec<ApiDeviceSummary> = self.get_all_pages("/devices").await?;
+        Ok(items.into_iter().map(map_device_summary).collect())
     }
 
     /// Fetch control surfaces selected by device, driver, or both.
     pub async fn get_control_surfaces(
         &self,
-        query: ControlSurfaceQuery<'_>,
+        query: &ControlSurfaceListQuery,
     ) -> Result<Vec<ControlSurfaceDocument>> {
         let response: Option<ControlSurfaceListResponse> = self
             .get_optional_data(&control_surface_list_path(query))
@@ -122,10 +122,10 @@ impl DaemonClient {
         device_id: &str,
         include_driver: bool,
     ) -> Result<Vec<ControlSurfaceDocument>> {
-        self.get_control_surfaces(ControlSurfaceQuery {
-            device_id: Some(device_id),
+        self.get_control_surfaces(&ControlSurfaceListQuery {
+            device_id: Some(device_id.to_owned()),
             driver_id: None,
-            include_driver,
+            include_driver: Some(include_driver),
         })
         .await
     }
@@ -148,12 +148,10 @@ impl DaemonClient {
     /// Apply typed changes to a dynamic control surface.
     pub async fn apply_control_changes(
         &self,
-        request: &ApplyControlChangesRequest,
+        surface_id: &str,
+        request: &PatchControlsRequest,
     ) -> Result<ApplyControlChangesResponse> {
-        let path = format!(
-            "/control-surfaces/{}/values",
-            path_segment(&request.surface_id)
-        );
+        let path = format!("/control-surfaces/{}/values", path_segment(surface_id));
         self.patch_data(&path, request).await
     }
 
@@ -220,7 +218,7 @@ impl DaemonClient {
     pub async fn apply_effect(
         &self,
         effect_id: &str,
-        controls: Option<&serde_json::Value>,
+        controls: Option<&std::collections::HashMap<String, ControlValue>>,
         zone_id: Option<&str>,
     ) -> Result<()> {
         let url = format!(
@@ -228,19 +226,12 @@ impl DaemonClient {
             self.base_url,
             path_segment(effect_id)
         );
-        let controls = controls
-            .and_then(serde_json::Value::as_object)
-            .map(|values| {
-                values
-                    .iter()
-                    .map(|(name, value)| {
-                        api_control_value_from_json(value)
-                            .map(|value| (name.clone(), value))
-                            .with_context(|| format!("Unsupported control value for {name}"))
-                    })
-                    .collect::<Result<_>>()
-            })
-            .transpose()?;
+        let controls = controls.map(|values| {
+            values
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        });
         let zone = zone_id
             .map(|zone_id| serde_json::from_value(serde_json::Value::String(zone_id.to_owned())))
             .transpose()
@@ -269,16 +260,10 @@ impl DaemonClient {
         Ok(response.items)
     }
 
-    /// Fetch the live scene tree and its saved-scene mutation policy.
-    pub async fn get_active_scene(&self) -> Result<Option<ActiveScene>> {
+    /// Fetch the canonical live scene tree.
+    pub async fn get_active_scene(&self) -> Result<SceneDocument> {
         let document: SceneDocument = self.get_data("/scene").await?;
-        let mutation_mode = self
-            .get_scenes()
-            .await?
-            .into_iter()
-            .find(|scene| scene.id == document.id.to_string())
-            .map_or(SceneMutationMode::Live, |scene| scene.mutation_mode);
-        Ok(Some(map_active_scene(document, mutation_mode)))
+        Ok(document)
     }
 
     /// Activate a saved scene by ID.
@@ -290,6 +275,7 @@ impl DaemonClient {
         );
         let response = self
             .auth_request(self.http.post(&url))
+            .json(&ActivateSceneRequest::default())
             .send()
             .await
             .with_context(|| format!("Failed to activate scene {scene_id}"))?;
@@ -341,7 +327,7 @@ impl DaemonClient {
         &self,
         zone_id: &str,
         layer_id: &str,
-        controls: &serde_json::Value,
+        controls: &std::collections::BTreeMap<String, ControlValue>,
     ) -> Result<()> {
         let zone = path_segment(zone_id);
         let layer = path_segment(layer_id);
@@ -349,20 +335,10 @@ impl DaemonClient {
             "{}/api/v1/scene/zones/{zone}/layers/{layer}/controls",
             self.base_url
         );
-        let values = controls
-            .as_object()
-            .context("Control patch must be an object")?
-            .iter()
-            .map(|(name, value)| {
-                api_control_value_from_json(value)
-                    .map(|value| (name.clone(), value))
-                    .with_context(|| format!("Unsupported control value for {name}"))
-            })
-            .collect::<Result<_>>()?;
         let response = self
             .auth_request(self.http.patch(&url))
             .json(&PatchControlsRequest {
-                values,
+                values: controls.clone(),
                 clear_bindings: Vec::new(),
             })
             .send()
@@ -396,12 +372,12 @@ impl DaemonClient {
     }
 
     /// Update a control value on the active effect.
-    pub async fn update_control(&self, control_id: &str, value: &serde_json::Value) -> Result<()> {
+    pub async fn update_control(&self, control_id: &str, value: &ControlValue) -> Result<()> {
         let (zone_id, layer, _, _) = self.effect_layer_target(None).await?;
         self.patch_zone_controls(
             &zone_id,
             &layer.id.to_string(),
-            &serde_json::json!({ control_id: value }),
+            &std::collections::BTreeMap::from([(control_id.to_owned(), value.clone())]),
         )
         .await
     }
@@ -509,13 +485,24 @@ impl DaemonClient {
             return Err(daemon_error("API request failed", response).await);
         }
 
-        // The API wraps responses in { "data": T, "meta": {...} }
-        let envelope: serde_json::Value = response.json().await?;
-        if let Some(data) = envelope.get("data") {
-            Ok(serde_json::from_value(data.clone())?)
-        } else {
-            // Some endpoints return the data directly
-            Ok(serde_json::from_value(envelope)?)
+        let envelope: ApiResponse<T> = response.json().await?;
+        Ok(envelope.data)
+    }
+
+    /// Fetch every page of a list route, following `page.has_more` until the
+    /// daemon reports the listing complete.
+    async fn get_all_pages<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
+        let mut items: Vec<T> = Vec::new();
+        let mut offset = 0_u64;
+        loop {
+            let page: ListResponse<T> = self.get_data(&paged_list_path(path, offset)).await?;
+            let fetched = page.items.len() as u64;
+            items.extend(page.items);
+            let has_more = page.page.is_some_and(|info| info.has_more);
+            if !has_more || fetched == 0 {
+                return Ok(items);
+            }
+            offset += fetched;
         }
     }
 
@@ -573,51 +560,6 @@ impl DaemonClient {
     }
 }
 
-/// Query parameters for the aggregate control-surface endpoint.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ControlSurfaceQuery<'a> {
-    pub device_id: Option<&'a str>,
-    pub driver_id: Option<&'a str>,
-    pub include_driver: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ControlSurfaceListResponse {
-    surfaces: Vec<ControlSurfaceDocument>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SystemStatusResponse {
-    running: bool,
-    global_brightness: u8,
-    device_count: usize,
-    active_scene: Option<String>,
-    #[serde(default)]
-    active_scene_snapshot_locked: bool,
-    /// The daemon nests every FPS figure here. A flat `fps` field would
-    /// silently deserialize to its default and read as a stalled render
-    /// loop, which is exactly what the status view used to show.
-    #[serde(default)]
-    render_loop: RenderLoopStatus,
-}
-
-#[derive(Debug, Deserialize)]
-struct SystemResponse {
-    status: Option<SystemStatusResponse>,
-}
-
-/// The `render_loop` block of the authenticated system status.
-#[derive(Debug, Default, Deserialize)]
-struct RenderLoopStatus {
-    #[serde(default)]
-    target_fps: f32,
-    /// Matches the `actual` figure the WebSocket `metrics` topic
-    /// publishes, so REST refreshes and metrics ticks agree on what the
-    /// number means.
-    #[serde(default)]
-    actual_fps: f32,
-}
-
 fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
     EffectSummary {
         id: summary.id,
@@ -646,11 +588,11 @@ fn map_effect_summary(summary: ApiEffectSummary) -> EffectSummary {
 /// Map a control definition, preserving the effect's TRUE defaults.
 ///
 /// Live values are deliberately NOT merged in here — they are per-zone
-/// (`ZoneSummary::controls`) and overlaying the primary zone's values onto
+/// (selected from the canonical zone resource) and overlaying the primary zone's values onto
 /// "defaults" made reset-to-default and zone-scoped editing impossible.
 fn map_control_definition(control: &ApiControlDefinition) -> ControlDefinition {
     let control_id = control.control_id().to_owned();
-    let default_value = map_control_value(&control.default_value);
+    let default_value = control.default_value.clone();
 
     ControlDefinition {
         id: control_id,
@@ -680,101 +622,12 @@ fn map_control_type(control_type: &ApiControlType) -> String {
     .to_string()
 }
 
-fn map_control_value(value: &ApiControlValue) -> ControlValue {
-    match value {
-        ApiControlValue::Float(v) => ControlValue::Float(*v),
-        ApiControlValue::Integer(v) => ControlValue::Integer(*v),
-        ApiControlValue::Boolean(v) => ControlValue::Boolean(*v),
-        ApiControlValue::Color(v) => ControlValue::Color(*v),
-        ApiControlValue::Enum(v) | ApiControlValue::Text(v) => ControlValue::Text(v.clone()),
-        ApiControlValue::Gradient(stops) => {
-            ControlValue::Text(format!("{} gradient stops", stops.len()))
-        }
-        ApiControlValue::Rect(rect) => ControlValue::Text(format!(
-            "{:.2},{:.2} {:.2}×{:.2}",
-            rect.x, rect.y, rect.width, rect.height,
-        )),
-    }
-}
-
-fn api_control_value_from_json(value: &serde_json::Value) -> Option<ApiControlValue> {
-    if let Ok(value) = serde_json::from_value(value.clone()) {
-        return Some(value);
-    }
-    if let Some(value) = value.as_i64() {
-        return i32::try_from(value).ok().map(ApiControlValue::Integer);
-    }
-    if value.is_number() {
-        return serde_json::from_value::<f32>(value.clone())
-            .ok()
-            .map(ApiControlValue::Float);
-    }
-    if let Some(value) = value.as_bool() {
-        return Some(ApiControlValue::Boolean(value));
-    }
-    if let Some(value) = value.as_str() {
-        return Some(ApiControlValue::Text(value.to_owned()));
-    }
-    if let Ok(color) = serde_json::from_value::<[f32; 4]>(value.clone()) {
-        return Some(ApiControlValue::Color(color));
-    }
-    serde_json::from_value::<ViewportRect>(value.clone())
-        .ok()
-        .map(ApiControlValue::Rect)
-}
-
 fn map_preset_template(template: &ApiPresetTemplate) -> PresetTemplate {
     PresetTemplate {
         id: template.id.to_string(),
         name: template.name.clone(),
         description: template.description.clone(),
-        controls: template
-            .controls
-            .iter()
-            .map(|(name, value)| (name.clone(), map_control_value(value)))
-            .collect(),
-    }
-}
-
-fn map_active_scene(response: SceneDocument, mutation_mode: SceneMutationMode) -> ActiveScene {
-    ActiveScene {
-        snapshot_locked: mutation_mode == SceneMutationMode::Snapshot,
-        id: response.id.to_string(),
-        name: response.name,
-        kind: response.kind,
-        mutation_mode,
-        revision: response.revision,
-        zones: response.zones.iter().map(map_zone_summary).collect(),
-    }
-}
-
-fn map_zone_summary(zone: &ZoneResource) -> ZoneSummary {
-    let effect_layer = zone.layers.iter().rev().find_map(|layer| {
-        let LayerSource::Effect {
-            effect_id,
-            controls,
-            ..
-        } = &layer.source
-        else {
-            return None;
-        };
-        Some((layer.id.to_string(), effect_id.to_string(), controls))
-    });
-    ZoneSummary {
-        id: zone.id.to_string(),
-        name: zone.name.clone(),
-        layer_id: effect_layer.as_ref().map(|(id, _, _)| id.clone()),
-        effect_id: effect_layer.as_ref().map(|(_, id, _)| id.clone()),
-        brightness: zone.brightness,
-        enabled: zone.enabled,
-        is_primary: zone.role == ZoneRole::Primary,
-        color: zone.color.clone(),
-        controls: effect_layer.map_or_else(HashMap::new, |(_, _, controls)| {
-            controls
-                .iter()
-                .map(|(name, value)| (name.clone(), map_control_value(value)))
-                .collect()
-        }),
+        controls: template.controls.clone(),
     }
 }
 
@@ -803,6 +656,18 @@ fn decode_simulated_display_frame(bytes: &[u8]) -> Result<CanvasFrame> {
         height,
         pixels: Bytes::from(rgb.into_raw()),
     })
+}
+
+/// Page size requested from every list route. The daemon defaults to 50 and
+/// rejects anything above 200, so asking for the ceiling keeps the number of
+/// round trips down without tripping validation.
+pub const LIST_PAGE_LIMIT: u64 = 200;
+
+/// Build the path for one page of a list route.
+#[must_use]
+pub fn paged_list_path(path: &str, offset: u64) -> String {
+    let separator = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{separator}limit={LIST_PAGE_LIMIT}&offset={offset}")
 }
 
 async fn ensure_success(response: reqwest::Response, context: &str) -> Result<()> {
@@ -843,23 +708,19 @@ async fn response_data<T: DeserializeOwned>(response: reqwest::Response) -> Resu
         return Err(daemon_error("API request failed", response).await);
     }
 
-    let envelope: serde_json::Value = response.json().await?;
-    if let Some(data) = envelope.get("data") {
-        Ok(serde_json::from_value(data.clone())?)
-    } else {
-        Ok(serde_json::from_value(envelope)?)
-    }
+    let envelope: ApiResponse<T> = response.json().await?;
+    Ok(envelope.data)
 }
 
-fn control_surface_list_path(query: ControlSurfaceQuery<'_>) -> String {
+fn control_surface_list_path(query: &ControlSurfaceListQuery) -> String {
     let mut parts = Vec::new();
-    if let Some(device_id) = query.device_id {
+    if let Some(device_id) = query.device_id.as_deref() {
         parts.push(format!("device_id={}", query_value(device_id)));
     }
-    if let Some(driver_id) = query.driver_id {
+    if let Some(driver_id) = query.driver_id.as_deref() {
         parts.push(format!("driver_id={}", query_value(driver_id)));
     }
-    if query.include_driver {
+    if query.include_driver == Some(true) {
         parts.push("include_driver=true".to_string());
     }
 

@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::control::{ControlDeltaBatch, ControlSet};
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -70,11 +71,11 @@ pub struct FrameDataSources<'a> {
     pub lighting: Option<&'a LightingState>,
 }
 
-/// Per-frame input data passed to the active renderer on every tick.
+/// Per-frame input data passed to the active renderer on every render.
 ///
 /// Contains timing information, the current audio analysis snapshot,
 /// and the target canvas dimensions. Control values are delivered
-/// separately via [`EffectRenderer::set_control`].
+/// separately via [`EffectRenderer::apply_controls`].
 #[derive(Debug, Clone, Copy)]
 pub struct FrameInput<'a> {
     /// Elapsed time in seconds since the effect was activated.
@@ -162,13 +163,15 @@ impl EffectRenderOutput {
 ///
 /// # Lifecycle
 ///
-/// 1. **`init`** — Called once when the effect is activated. The renderer
+/// 1. **`init`**: Called once when the effect is activated. The renderer
 ///    should compile shaders, load resources, and prepare for rendering.
-/// 2. **`render_into`** — Called once per frame. Produces pixels in a caller-
+/// 2. **`render_into`**: Called once per frame. Produces pixels in a caller-
 ///    owned [`Canvas`] using the given [`FrameInput`].
-/// 3. **`set_control`** — Called whenever a control value changes (user
-///    interaction, preset load, API call). May be called between ticks.
-/// 4. **`destroy`** — Called when the effect is deactivated. The renderer
+/// 3. **`initialize_controls`**: Called with the authoritative snapshot
+///    before the first frame after renderer creation or rebuild.
+/// 4. **`apply_controls`**: Called with ordered atomic deltas whenever
+///    authored or resolved values change. May be called between ticks.
+/// 5. **`destroy`**: Called when the effect is deactivated. The renderer
 ///    should release GPU resources, close web views, etc.
 pub trait EffectRenderer: Send {
     /// Initialize the renderer for the given effect.
@@ -225,26 +228,39 @@ pub trait EffectRenderer: Send {
         Ok(())
     }
 
-    /// Produce a single frame.
+    /// Initialize derived renderer state from the authoritative snapshot.
     ///
-    /// Legacy convenience wrapper that allocates a fresh target canvas and
-    /// delegates to [`render_into`](Self::render_into).
+    /// The default delivers the complete snapshot as resolution sequence
+    /// zero. Implementations may override this when replacing derived state
+    /// needs behavior distinct from applying an ordinary delta.
     ///
     /// # Errors
     ///
-    /// Returns an error if the frame cannot be produced.
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
-        self.render_into(input, &mut canvas)?;
-        Ok(canvas)
+    /// Returns an error when the renderer cannot replace its derived control
+    /// state from the authoritative snapshot.
+    fn initialize_controls(&mut self, controls: &ControlSet) -> anyhow::Result<()> {
+        let changes = controls
+            .iter()
+            .map(|(control_id, value)| (control_id.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        self.apply_controls(&ControlDeltaBatch::new(
+            controls.set_revision(),
+            0,
+            &changes,
+        ))
     }
 
-    /// Update a control parameter value.
+    /// Apply one ordered batch of resolved control changes atomically.
     ///
-    /// Called when a user adjusts a control, a preset is loaded, or the API
-    /// pushes a value. The renderer should store the value and apply it on
-    /// the next [`render_into`](Self::render_into) call.
-    fn set_control(&mut self, name: &str, value: &ControlValue);
+    /// Implementations update only derived renderer caches. The owning effect
+    /// slot retains the authoritative [`ControlSet`], and values have already
+    /// passed canonical and effect-definition validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the batch cannot be applied atomically to the
+    /// renderer's derived state.
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()>;
 
     /// Bind the content-addressed asset library.
     ///

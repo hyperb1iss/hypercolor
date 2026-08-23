@@ -17,7 +17,7 @@ other lanes, see [GLSL shader effects](@/effects/glsl-effects.md) and
 [display faces](@/effects/display-faces.md). The native Rust lane is authored as a
 compiled-in `EffectRenderer` and registered in `crates/hypercolor-core/src/effect/builtin/mod.rs`.
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
 ## Pick a path 🎯
 
@@ -36,14 +36,14 @@ accessible one end to end.
 The TypeScript and GLSL lanes both ship through the SDK, so a Rust compiler is never
 required to author them. That is the path below.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The SDK is published to npm as
 [`hypercolor`](https://www.npmjs.com/package/hypercolor). Workspaces pull it from the
 registry by default; to author against a local engine checkout instead, pass
 `--sdk-spec file:../hypercolor/sdk/packages/core` or set the
 `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Full prerequisites live in
 [setup](@/effects/setup.md).
-{% end %}
+{% </callout> %}
 
 ## Scaffold a workspace
 
@@ -213,13 +213,13 @@ contract: device-shape truth via `ctx.display`, a flexbox-only CSS subset, and o
 data sources for media, sensors, and audio. The dedicated guide is
 [display faces](@/effects/display-faces.md).
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The `shader` template authors a GLSL fragment shader that runs as **WebGL2 inside
 Servo**, not as a native GPU pipeline. There is no compiled wgpu shader lane today; that
 is future work. See [GLSL effects](@/effects/glsl-effects.md). For compiled-in Rust
 renderers, write an `EffectRenderer` in `crates/hypercolor-core/src/effect/builtin/`
 and register it in that crate's `builtin/mod.rs`.
-{% end %}
+{% </callout> %}
 
 ## Build
 
@@ -235,13 +235,13 @@ can load selected Google Fonts at runtime unless capture mode disables remote
 fonts. The build also extracts `<meta>` tags the daemon reads for controls,
 presets, and audio reactivity.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If your draw function reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or
 `engine.audio`) you **must** set `audio: true` in the options object. The build fails
 hard otherwise with an audio-reactivity validation error; this flag is not cosmetic.
 The `--audio` scaffold flag wires it up for you. See
 [audio reactivity](@/effects/audio.md).
-{% end %}
+{% </callout> %}
 
 ## Validate
 
@@ -306,13 +306,13 @@ including watch mode, is covered in [dev workflow](@/effects/dev-workflow.md).
 
 The whole loop in one picture:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
 A["main.ts<br/>canvas()"] --> B["bun run build<br/>dist/aurora.html"]
 B --> C["bun run validate<br/>Result: PASS"]
 C --> D["bun run ship:daemon<br/>POST /api/v1/effects/install"]
 D --> E["Live on :9420<br/>canvas preview + LEDs"]
-{% end %}
+{% </mermaid> %}
 
 ## See it without hardware
 
@@ -330,11 +330,11 @@ Display faces get a dedicated path: the face dev loop spins up virtual display
 simulators automatically so you can iterate on round LCD and strip layouts without the
 physical panels. That workflow lives in [display faces](@/effects/display-faces.md).
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 When real devices are connected, your effect lights them the moment you apply it. Plug
 in hardware, [discover your devices](@/guide/finding-devices.md), and the same preview
 you were watching drives the LEDs.
-{% end %}
+{% </callout> %}
 
 ## Apply it from an agent
 

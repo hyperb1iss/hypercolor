@@ -189,8 +189,8 @@ function buildSpectrum(ctx: FaceContext, wide: boolean) {
         lastTime = time
         const audioData = audio.data()
         const detail = Math.max(12, Math.min(CURVE_POINTS, Math.round(controls.barCount as number)))
-        const level = levelGlide.update(clamp01(audioData.level), dt)
-        if (audioData.level > SILENCE_LEVEL) loudAt = time
+        const level = levelGlide.update(clamp01(audioData.levelLinear), dt)
+        if (audioData.levelLinear > SILENCE_LEVEL) loudAt = time
         const idle = idleBlend.update(time - loudAt > SILENCE_AFTER_SECS ? 1 : 0, dt)
         const pulse = bloom.update(clamp01(audioData.beatPulse), dt)
         advance(audioData.melBandsNormalized, dt)

@@ -81,17 +81,6 @@ impl BlocksConnection {
         serde_json::from_str(&response).context("failed to parse discover response")
     }
 
-    /// Subscribe to device events.
-    pub async fn subscribe(&mut self, events: &[&str]) -> Result<()> {
-        let events_json: Vec<String> = events.iter().map(|e| format!("\"{e}\"")).collect();
-        let request = format!(
-            r#"{{"type":"subscribe","events":[{}]}}"#,
-            events_json.join(",")
-        );
-        let _response = self.json_request(&request).await?;
-        Ok(())
-    }
-
     /// Set brightness for a device.
     pub async fn set_brightness(&mut self, uid: u64, brightness: u8) -> Result<()> {
         let request = format!(r#"{{"type":"brightness","uid":{uid},"value":{brightness}}}"#);
@@ -135,21 +124,6 @@ impl BlocksConnection {
             .context("blocksd frame response read failed")?;
 
         Ok(response[0] == 0x01)
-    }
-
-    /// Read the next server-sent event (blocking).
-    pub async fn read_event(&mut self) -> Result<serde_json::Value> {
-        self.read_buf.clear();
-        self.reader
-            .read_line(&mut self.read_buf)
-            .await
-            .context("blocksd event read failed")?;
-
-        if self.read_buf.is_empty() {
-            bail!("blocksd connection closed");
-        }
-
-        serde_json::from_str(&self.read_buf).context("failed to parse blocksd event")
     }
 
     // ── Internal ────────────────────────────────────────────────────────

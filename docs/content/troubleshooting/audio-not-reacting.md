@@ -62,9 +62,9 @@ Output looks like:
 
 The source on line 0, ending in `.monitor`, is the one you want for music-reactive lighting.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 To react to music through your speakers, pick the `.monitor` source for your active output sink. To react to sounds in the room via a microphone, pick a regular input source. The two behave very differently, and most users want the monitor.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -94,9 +94,9 @@ device = "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
 
 Use the exact name from `pactl list sources short`. The match is case-insensitive and Hypercolor also tries partial matches, but an exact name is the most reliable.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The `device` field must match a PulseAudio/PipeWire source name, not an ALSA device string like `hw:0,0`. Bare ALSA device strings are not supported for system loopback capture.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -181,9 +181,9 @@ If your system uses only bare ALSA with no PulseAudio compatibility layer, syste
 
 The recommended path is to install PipeWire, which provides a PulseAudio compatibility layer via `pipewire-pulse`. PipeWire exposes monitor sources that Hypercolor discovers automatically, and it is the standard audio subsystem on most modern Linux distributions.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 PipeWire speaks the PulseAudio protocol via `pipewire-pulse`. If `pactl list sources short` works on your system, Hypercolor's audio capture works too, with no extra configuration needed.
-{% end %}
+{% </callout> %}
 
 ---
 

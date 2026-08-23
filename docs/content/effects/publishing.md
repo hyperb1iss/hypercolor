@@ -9,9 +9,9 @@ You have a finished effect. Publishing means turning that source into a self-con
 
 If you have not built or installed an effect yet, start with [the dev workflow](@/effects/dev-workflow.md) for the edit-build-ship loop, then come back here for the publishing details.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Every command below runs through `bunx hypercolor` inside your workspace, resolving the [`hypercolor`](https://www.npmjs.com/package/hypercolor) dependency from npm (or your local `file:` override).
-{% end %}
+{% </callout> %}
 
 ## What ships: the artifact contract
 
@@ -53,9 +53,9 @@ These are **warnings**: the effect still installs, but clean them up before shar
 - A preset referencing a control that does not exist, or a combobox preset value not in the control's options.
 - External `<script>` or `<link>` references, which mean the artifact may not be self-contained, a hard rule for a publishable effect.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Treat `--strict` as your publish bar. `bunx hypercolor validate dist/*.html --strict` exits non-zero on any warning, so a clean strict pass means the artifact has full metadata, no external references, and consistent presets. That is the standard for an effect you intend to share.
-{% end %}
+{% </callout> %}
 
 Two more checks run at build time, before validation even sees the file, and both fail the build hard. If your source reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or `engine.audio`) but the effect options omit `audio: true`, the build throws. And in a GLSL effect, every control must have a matching `i<Key>` uniform in the shader, or the build reports the missing uniforms. See [effect troubleshooting](@/effects/troubleshooting.md) for the full error catalog.
 
@@ -99,9 +99,9 @@ bun run ship:daemon
 
 This POSTs each validated file as a multipart form (field name `file`) to the daemon's install endpoint. By default it targets `http://127.0.0.1:9420`; override the target with `--daemon-url` or the `HYPERCOLOR_DAEMON_URL` environment variable.
 
-{% api_endpoint(method="POST", path="/api/v1/effects/install") %}
+{% <api_endpoint method="POST" path="/api/v1/effects/install"> %}
 Multipart upload of a single self-contained effect HTML file (form field `file`). The daemon validates, stores, and registers the effect, then returns the installed name, the stored path, and how many controls and presets it parsed.
-{% end %}
+{% </api_endpoint> %}
 
 A successful daemon install returns an envelope whose `data` carries the registered name, the stored path, and the control and preset counts:
 
@@ -128,13 +128,13 @@ hypercolor effects list
 
 Your effect appears alongside the built-ins. The repository ships roughly 47 SDK-authored HTML effects plus the compiled-in native renderers, and that set grows, so browse the catalog instead of memorizing a count. You can also open the effects browser in the web UI to see your effect with its controls and presets wired up.
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
 ## The publish flow end to end
 
 The whole sequence, from a clean workspace to a confirmed catalog entry:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     A[Author effect in src/effects/&lt;id&gt;/main.ts] --> B[bunx hypercolor build]
     B --> C{bunx hypercolor validate --strict}
@@ -146,7 +146,7 @@ graph TD
     F --> H[hypercolor effects list]
     G --> H
     H --> I[Effect live in the catalog]
-{% end %}
+{% </mermaid> %}
 
 ## Where to go next
 

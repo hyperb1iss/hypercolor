@@ -53,9 +53,6 @@ use hypercolor_core::input::screen::{
     ScreenPublicationKind, ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection,
 };
 use hypercolor_core::spatial::PreparedZonePlan;
-use hypercolor_core::types::canvas::{
-    BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts,
-};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_macos_capture::MacosCaptureFrame;
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
@@ -66,6 +63,7 @@ use hypercolor_macos_gpu_interop::{
     MacosScreenBridge as MacosInteropScreenBridge, MacosScreenStorageIdentity,
     probe_macos_metal4_capabilities,
 };
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, PublishedSurface, SurfaceStateCounts};
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::scene::ZoneId;
@@ -82,7 +80,7 @@ use hypercolor_windows_gpu_interop::{
 
 use super::{
     ComposedFrameSet, CompositionPlan, DisplayFinalizeCacheKey, MediaTextureSourceKey,
-    ProjectedGroupTextureRequirement, SparkleFlingerSurfacePoolCounts,
+    ProjectedZoneTextureRequirement, SparkleFlingerSurfacePoolCounts,
 };
 use crate::render_thread::gpu_device::{
     GpuBackendPreference, GpuRenderDevice, texture_format_name,
@@ -1259,7 +1257,7 @@ pub(crate) struct GpuSparkleFlinger {
     preview_surfaces: Option<GpuPreviewSurfaceSet>,
     media_texture_pools: HashMap<MediaUploadTextureKey, MediaUploadTexturePool>,
     media_texture_epoch: u64,
-    projected_group_snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
+    projected_zone_snapshots: HashMap<ZoneId, Option<GpuProjectionSnapshot>>,
     immutable_scene_snapshots: Vec<GpuImmutableSceneSnapshot>,
     current_output: Option<GpuCompositorOutputSurface>,
     cached_composition_key: Option<CachedReadbackKey>,
@@ -1697,7 +1695,7 @@ impl GpuSparkleFlinger {
             preview_surfaces: None,
             media_texture_pools: HashMap::new(),
             media_texture_epoch: 0,
-            projected_group_snapshots: HashMap::new(),
+            projected_zone_snapshots: HashMap::new(),
             immutable_scene_snapshots: Vec::new(),
             current_output: None,
             cached_composition_key: None,
@@ -2463,7 +2461,7 @@ impl GpuSparkleFlinger {
 
     pub(crate) fn prepare_projected_scene_resources(
         &self,
-        requirements: &[ProjectedGroupTextureRequirement],
+        requirements: &[ProjectedZoneTextureRequirement],
         gpu_projection_admitted: bool,
         scene_width: u32,
         scene_height: u32,
@@ -2490,8 +2488,8 @@ impl GpuSparkleFlinger {
         }
         for requirement in requirements {
             let reusable = self
-                .projected_group_snapshots
-                .get(&requirement.group_id)
+                .projected_zone_snapshots
+                .get(&requirement.zone_id)
                 .and_then(Option::as_ref)
                 .is_some_and(|snapshot| {
                     snapshot.width == requirement.width && snapshot.height == requirement.height
@@ -2527,7 +2525,7 @@ impl GpuSparkleFlinger {
                 };
                 Some(snapshot)
             };
-            snapshots.insert(requirement.group_id, snapshot);
+            snapshots.insert(requirement.zone_id, snapshot);
         }
         let mut compositor_surfaces = HashMap::new();
         if let Err(error) = compositor_surfaces.try_reserve(requirements.len().saturating_add(1)) {
@@ -2605,11 +2603,11 @@ impl GpuSparkleFlinger {
         };
         let sources = requirements.iter().map(|requirement| {
             let snapshot = snapshots
-                .get(&requirement.group_id)
+                .get(&requirement.zone_id)
                 .and_then(Option::as_ref)
                 .or_else(|| {
-                    self.projected_group_snapshots
-                        .get(&requirement.group_id)
+                    self.projected_zone_snapshots
+                        .get(&requirement.zone_id)
                         .and_then(Option::as_ref)
                 })
                 .expect("projected source snapshot must be admitted before bind groups");
@@ -2671,7 +2669,7 @@ impl GpuSparkleFlinger {
                 } else {
                     debug_assert!(projected_bind_groups.is_none());
                 }
-                gpu.projected_group_snapshots.clear();
+                gpu.projected_zone_snapshots.clear();
                 gpu.compositor_surface_cache.clear();
             };
         let GpuProjectedScenePreparation::Admitted {
@@ -2744,24 +2742,24 @@ impl GpuSparkleFlinger {
         self.ready_preview_surface = None;
         self.cached_sample_result = None;
         self.spatial_sampler.clear_bind_groups();
-        let mut installed = std::mem::take(&mut self.projected_group_snapshots);
-        for (group_id, snapshot) in &mut snapshots {
+        let mut installed = std::mem::take(&mut self.projected_zone_snapshots);
+        for (zone_id, snapshot) in &mut snapshots {
             if snapshot.is_none() {
-                *snapshot = installed.remove(group_id).flatten();
+                *snapshot = installed.remove(zone_id).flatten();
             }
             debug_assert!(snapshot.is_some());
         }
-        self.projected_group_snapshots = snapshots;
+        self.projected_zone_snapshots = snapshots;
     }
 
-    pub(crate) fn has_projected_group_resource(
+    pub(crate) fn has_projected_zone_resource(
         &self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         width: u32,
         height: u32,
     ) -> bool {
-        self.projected_group_snapshots
-            .get(&group_id)
+        self.projected_zone_snapshots
+            .get(&zone_id)
             .and_then(Option::as_ref)
             .is_some_and(|snapshot| snapshot.width == width && snapshot.height == height)
     }
@@ -2808,7 +2806,7 @@ impl GpuSparkleFlinger {
 
     #[cfg(test)]
     pub(crate) fn projected_snapshot_retained_bytes(&self) -> u64 {
-        self.projected_group_snapshots
+        self.projected_zone_snapshots
             .values()
             .filter_map(Option::as_ref)
             .fold(0_u64, |total, snapshot| {
@@ -2849,26 +2847,26 @@ impl GpuSparkleFlinger {
         self.fail_next_projected_scene_preparation.set(true);
     }
 
-    pub(crate) fn snapshot_projected_group_frame(
+    pub(crate) fn snapshot_projected_zone_frame(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         frame: GpuTextureFrame,
     ) -> Result<GpuTextureFrame> {
         debug_assert_eq!(frame.origin, GpuTextureFrameOrigin::CompositorOutput);
         self.flush_pending_output_submission()?;
         let snapshot = self
-            .projected_group_snapshots
-            .get_mut(&group_id)
+            .projected_zone_snapshots
+            .get_mut(&zone_id)
             .and_then(Option::as_mut)
-            .context("projected group GPU snapshot was not admitted before rendering")?;
+            .context("projected zone GPU snapshot was not admitted before rendering")?;
         anyhow::ensure!(
             snapshot.width == frame.width && snapshot.height == frame.height,
-            "projected group GPU snapshot dimensions do not match the rendered frame"
+            "projected zone GPU snapshot dimensions do not match the rendered frame"
         );
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("SparkleFlinger projected group snapshot"),
+                label: Some("SparkleFlinger projected zone snapshot"),
             });
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
@@ -3430,7 +3428,7 @@ impl GpuProjectionSnapshot {
             device,
             width,
             height,
-            "SparkleFlinger Projected Group Snapshot",
+            "SparkleFlinger Projected Zone Snapshot",
         )?;
         Ok(Self {
             width,

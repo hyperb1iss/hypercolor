@@ -1,0 +1,427 @@
+use super::*;
+use hypercolor_types::layer::SceneLayerId;
+
+fn static_surface(frame: &ProducerFrame) -> &PublishedSurface {
+    match frame {
+        ProducerFrame::Surface(surface) => surface,
+        ProducerFrame::Canvas(_) => panic!("static layer frame should be surface-backed"),
+        ProducerFrame::ScreenPublication(_) => {
+            panic!("static layer frame should be surface-backed")
+        }
+        #[cfg(feature = "servo-gpu-import")]
+        ProducerFrame::Gpu(_) => panic!("static layer frame should not use imported GPU storage"),
+        #[cfg(feature = "wgpu")]
+        ProducerFrame::GpuTexture(_) => {
+            panic!("static layer frame should not use compositor GPU storage")
+        }
+    }
+}
+
+#[test]
+fn static_layer_surfaces_reuse_final_srgba_storage() {
+    let mut cache = StaticLayerSurfaceCache::default();
+    let rgba = [0.25, 0.5, 0.75, 0.4];
+
+    let first =
+        color_fill_frame(&mut cache, 3, 2, rgba).expect("static layer surface should allocate");
+    let second =
+        color_fill_frame(&mut cache, 3, 2, rgba).expect("static layer surface should allocate");
+    let expected = LinearRgba::new(rgba[0], rgba[1], rgba[2], rgba[3]).to_encoded();
+
+    assert_eq!(
+        static_surface(&first).storage_identity(),
+        static_surface(&second).storage_identity()
+    );
+    assert_eq!(static_surface(&first).generation(), 1);
+    assert_eq!(static_surface(&first).width(), 3);
+    assert_eq!(static_surface(&first).height(), 2);
+    assert!(
+        static_surface(&first)
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel == [expected.r, expected.g, expected.b, expected.a])
+    );
+    assert_eq!(cache.entry_count(), 1);
+}
+
+#[test]
+fn transparent_static_layer_surface_preserves_zero_alpha() {
+    let mut cache = StaticLayerSurfaceCache::default();
+
+    let frame = transparent_black_frame(&mut cache, 2, 2)
+        .expect("transparent layer surface should allocate");
+
+    assert!(
+        static_surface(&frame)
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel == [0, 0, 0, 0])
+    );
+}
+
+#[test]
+fn static_layer_allocation_failure_does_not_poison_cache() {
+    let mut cache = StaticLayerSurfaceCache::default();
+
+    let error = color_fill_frame(&mut cache, u32::MAX, u32::MAX, [1.0, 0.0, 0.0, 1.0])
+        .expect_err("overflowed static layer surface should be rejected");
+
+    assert!(error.to_string().contains("overflow"));
+    assert_eq!(cache.entry_count(), 0);
+}
+
+#[test]
+fn static_layer_surface_cache_stays_bounded() {
+    let mut cache = StaticLayerSurfaceCache::default();
+    let first = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0])
+        .expect("static layer surface should allocate");
+    let first_identity = static_surface(&first).storage_identity();
+
+    for width in 2..=33 {
+        color_fill_frame(&mut cache, width, 1, [1.0, 0.0, 0.0, 1.0])
+            .expect("static layer surface should allocate");
+    }
+
+    assert_eq!(cache.entry_count(), 32);
+    let recreated = color_fill_frame(&mut cache, 1, 1, [1.0, 0.0, 0.0, 1.0])
+        .expect("static layer surface should allocate");
+    assert_ne!(
+        static_surface(&recreated).storage_identity(),
+        first_identity
+    );
+    assert_eq!(cache.entry_count(), 32);
+}
+
+#[test]
+fn empty_layer_stack_does_not_forge_a_layer_identity() {
+    let mut zone = sample_zone(4, 4);
+    zone.layers.clear();
+
+    assert!(passthrough_effect_layer(&zone).is_none());
+}
+
+#[test]
+fn single_effect_layer_can_passthrough_layer_compositor() {
+    let mut zone = sample_zone(4, 4);
+    let effect_id = zone
+        .effect_ids()
+        .next()
+        .expect("sample zone should have an effect");
+    let layer_id = SceneLayerId::new();
+    zone.layers = vec![SceneLayer::from_effect(
+        layer_id,
+        effect_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    )];
+
+    let layer = passthrough_effect_layer(&zone)
+        .expect("neutral materialized effect layer should bypass layer composition");
+
+    assert_eq!(layer.id, layer_id);
+}
+
+#[test]
+fn stacked_layers_use_layer_compositor() {
+    let mut zone = sample_zone(4, 4);
+    let effect_id = zone
+        .effect_ids()
+        .next()
+        .expect("sample zone should have an effect");
+    let effect_layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    let overlay = SceneLayer {
+        id: hypercolor_types::layer::SceneLayerId::new(),
+        name: None,
+        source: LayerSource::ColorFill {
+            rgba: [1.0, 0.0, 0.0, 1.0],
+        },
+        blend: BlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    };
+    zone.layers = vec![effect_layer, overlay];
+
+    assert!(passthrough_effect_layer(&zone).is_none());
+}
+
+#[test]
+fn adjusted_effect_layer_uses_layer_compositor() {
+    let mut zone = sample_zone(4, 4);
+    let effect_id = zone
+        .effect_ids()
+        .next()
+        .expect("sample zone should have an effect");
+    let mut layer = SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    );
+    layer.opacity = 0.5;
+    zone.layers = vec![layer];
+
+    assert!(passthrough_effect_layer(&zone).is_none());
+}
+
+#[test]
+fn missing_media_layer_renders_transparent_black_and_reports_health() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = EffectRegistry::new(Vec::new());
+    let mut zone = sample_zone(4, 4);
+    zone.layers = vec![SceneLayer {
+        id: hypercolor_types::layer::SceneLayerId::new(),
+        name: Some("Missing Media".into()),
+        source: LayerSource::Media {
+            asset_id: AssetId::new(),
+            playback: MediaPlayback::default(),
+        },
+        blend: BlendMode::Replace,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }];
+    let layer_id = zone.layers[0].id;
+    let mut zones = Vec::new();
+
+    let result = render_scene_for_test(
+        &mut runtime,
+        &[zone.clone()],
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+    )
+    .expect("missing media should not fail scene rendering");
+    let canvas = canvas_from_scene_frame(&result.scene_frame);
+
+    assert_eq!(canvas.get_pixel(0, 0), Rgba::TRANSPARENT);
+    assert!(matches!(
+        runtime.drain_layer_runtime_events().as_slice(),
+        [HypercolorEvent::LayerHealthChanged {
+            zone_id,
+            layer_id: event_layer_id,
+            health: LayerHealth::AssetMissing,
+            ..
+        }] if *zone_id == zone.id && *event_layer_id == layer_id
+    ));
+}
+
+#[test]
+fn screen_region_layer_uses_latest_capture_canvas() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = EffectRegistry::new(Vec::new());
+    let mut zone = sample_display_zone(2, 1);
+    zone.layers = vec![SceneLayer {
+        id: hypercolor_types::layer::SceneLayerId::new(),
+        name: Some("Screen".into()),
+        source: LayerSource::ScreenRegion {
+            viewport: hypercolor_types::viewport::ViewportRect::full(),
+        },
+        blend: BlendMode::Replace,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }];
+    let source = Canvas::from_vec(vec![255, 0, 0, 255, 0, 255, 0, 255], 2, 1);
+    let screen = ScreenData {
+        zone_colors: Vec::new().into(),
+        grid_width: 0,
+        grid_height: 0,
+        canvas_downscale: Some(PublishedSurface::from_canvas(&source, 7, 11)),
+        source_width: 2,
+        source_height: 1,
+        letterbox: [0; 4],
+    };
+    let mut zones = Vec::new();
+
+    let result = render_scene_for_test_with_screen(
+        &mut runtime,
+        &[zone.clone()],
+        1,
+        0,
+        &HashMap::from([(zone.id, 60)]),
+        &registry,
+        &mut zones,
+        Some(&screen),
+    )
+    .expect("screen region display zone should render");
+    let (_, frame) = result
+        .display_zone_frames
+        .first()
+        .expect("display zone should publish a direct frame");
+    let surface = frame.surface_for_test();
+
+    assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+    assert_eq!(surface.get_pixel(1, 0), Rgba::new(0, 255, 0, 255));
+    assert!(matches!(
+        runtime.drain_layer_runtime_events().as_slice(),
+        [HypercolorEvent::LayerHealthChanged {
+            health: LayerHealth::Active,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn gif_asset_layer_can_drive_direct_display_zone() {
+    let tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+    let mut library =
+        AssetLibrary::open(tempdir.path().join("assets")).expect("asset library should open");
+    let upload = library
+        .add_bytes(&red_gif_bytes(), AssetUploadOptions::new("red.gif"))
+        .expect("GIF upload should be accepted");
+    let asset_library = Arc::new(RwLock::new(library));
+    let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
+    let registry = EffectRegistry::new(Vec::new());
+    let mut zone = sample_display_zone(2, 2);
+    zone.layers = vec![SceneLayer {
+        id: hypercolor_types::layer::SceneLayerId::new(),
+        name: Some("GIF".into()),
+        source: LayerSource::Media {
+            asset_id: upload.record.id,
+            playback: MediaPlayback::default(),
+        },
+        blend: BlendMode::Replace,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }];
+    let mut zones = Vec::new();
+
+    let result = render_scene_for_test(
+        &mut runtime,
+        &[zone.clone()],
+        1,
+        0,
+        &HashMap::from([(zone.id, 60)]),
+        &registry,
+        &mut zones,
+    )
+    .expect("GIF media display zone should render");
+    let (_, frame) = result
+        .display_zone_frames
+        .first()
+        .expect("display zone should publish a direct frame");
+    let surface = frame.surface_for_test();
+    let canvas = Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
+
+    assert_eq!(canvas.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
+    assert!(matches!(
+        runtime.drain_layer_runtime_events().as_slice(),
+        [HypercolorEvent::LayerHealthChanged {
+            health: LayerHealth::Active,
+            ..
+        }]
+    ));
+}
+
+#[cfg(feature = "media-video")]
+#[test]
+fn stream_media_layer_reports_loading_until_first_frame() {
+    let tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
+    let mut library =
+        AssetLibrary::open(tempdir.path().join("assets")).expect("asset library should open");
+    let mut options = AssetUploadOptions::new("camera.stream");
+    options.type_hint = Some(AssetTypeHint::Stream);
+    let upload = library
+        .add_bytes(b"http://1.1.1.1/hypercolor-missing-live.m3u8\n", options)
+        .expect("stream URL upload should be accepted");
+    let asset_library = Arc::new(RwLock::new(library));
+    let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
+    let registry = EffectRegistry::new(Vec::new());
+    let mut zone = sample_zone(4, 4);
+    zone.layers = vec![SceneLayer {
+        id: hypercolor_types::layer::SceneLayerId::new(),
+        name: Some("Stream".into()),
+        source: LayerSource::Media {
+            asset_id: upload.record.id,
+            playback: MediaPlayback::default(),
+        },
+        blend: BlendMode::Replace,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }];
+    let layer_id = zone.layers[0].id;
+    let mut zones = Vec::new();
+
+    let result = render_scene_for_test(
+        &mut runtime,
+        &[zone.clone()],
+        1,
+        0,
+        &HashMap::new(),
+        &registry,
+        &mut zones,
+    )
+    .expect("stream media layer should not fail scene rendering");
+    let canvas = canvas_from_scene_frame(&result.scene_frame);
+
+    assert_eq!(canvas.get_pixel(0, 0), Rgba::TRANSPARENT);
+    assert!(matches!(
+        runtime.drain_layer_runtime_events().as_slice(),
+        [HypercolorEvent::LayerHealthChanged {
+            zone_id,
+            layer_id: event_layer_id,
+            health: LayerHealth::Loading,
+            ..
+        }] if *zone_id == zone.id && *event_layer_id == layer_id
+    ));
+}
+
+#[test]
+fn note_effect_error_dedupes_until_cleared() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let error = ZoneEffectError {
+        effect_id: "effect-1".into(),
+        effect_name: "Test Effect".into(),
+        zone_id: ZoneId::new(),
+        zone_name: "Test Zone".into(),
+        error: "boom".into(),
+    };
+
+    assert_eq!(runtime.note_effect_error(&error), Some(error.clone()));
+    assert_eq!(runtime.note_effect_error(&error), None);
+
+    runtime.clear_effect_error();
+
+    assert_eq!(runtime.note_effect_error(&error), Some(error));
+}
+
+#[test]
+fn recovered_effect_error_is_reported_once_after_clear() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let error = ZoneEffectError {
+        effect_id: "effect-1".into(),
+        effect_name: "Test Effect".into(),
+        zone_id: ZoneId::new(),
+        zone_name: "Test Zone".into(),
+        error: "boom".into(),
+    };
+
+    assert_eq!(runtime.note_effect_error(&error), Some(error.clone()));
+    runtime.clear_effect_error();
+
+    assert_eq!(runtime.take_recovered_effect_error(), Some(error));
+    assert_eq!(runtime.take_recovered_effect_error(), None);
+}

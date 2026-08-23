@@ -1,5 +1,7 @@
 //! Corsair LCD display streaming protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -14,7 +16,7 @@ use crate::drivers::corsair::framing::{
 use crate::drivers::corsair::types::cooler_pump_lcd_layout_hint;
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -329,8 +331,8 @@ impl Protocol for CorsairLcdProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
-        let mut zones = vec![ProtocolZone {
+    fn zones(&self) -> Vec<SegmentInfo> {
+        let mut zones = vec![SegmentInfo {
             name: "Display".to_owned(),
             led_count: 0,
             topology: DeviceTopologyHint::Display {
@@ -343,7 +345,7 @@ impl Protocol for CorsairLcdProtocol {
         }];
 
         if self.ring_led_count > 0 {
-            zones.push(ProtocolZone {
+            zones.push(SegmentInfo {
                 name: "RGB Ring".to_owned(),
                 led_count: self.ring_led_count,
                 topology: DeviceTopologyHint::Ring {

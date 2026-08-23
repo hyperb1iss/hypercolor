@@ -116,8 +116,8 @@ is the light-mode ramp.
 Chroma falls as lightness rises: deep surfaces carry more violet, bright
 surfaces nearly none. This keeps the dark UI rich and the light UI clean.
 
-**SilkCircuit accents.** The palette is shared across Bliss's tooling ecosystem;
-in Luminary it is consumed through semantic tokens, never raw.
+**SilkCircuit accents.** The palette is shared across Bliss's tooling ecosystem.
+Interactive chrome and status components consume it through semantic tokens.
 
 | Token | OKLCH | Hex anchor | Role |
 | ----- | ----- | ---------- | ---- |
@@ -129,9 +129,9 @@ in Luminary it is consumed through semantic tokens, never raw.
 | `--color-red` | `oklch(0.68 0.22 25)` | `#ff6363` | Error, danger |
 | `--color-blue` | `oklch(0.72 0.12 260)` | `#82aaff` | Info |
 
-`--color-purple-hover` and `--color-purple-light` extend the primary accent. A
-legacy hex-aliased set (`--color-electric-purple` and friends) survives from the
-pre-OKLCH migration; do not use it in new code.
+`--color-purple-hover` and `--color-purple-light` extend the primary accent.
+Data visualization and decorative spectra may use a primitive directly when
+the hue itself distinguishes one series from another.
 
 **Other primitives.**
 

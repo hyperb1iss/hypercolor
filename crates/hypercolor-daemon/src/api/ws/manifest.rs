@@ -27,7 +27,7 @@ use serde_json::{Map, Value, json};
 
 use hypercolor_leptos_ext::ws::{
     HYPERCOLOR_WS_PROTOCOL, HYPERCOLOR_WS_VERSION, PREVIEW_MIN_MESSAGE_BYTES,
-    PreviewTransportCapability, codec_binary_messages, codec_frame_layouts,
+    PreviewTransportLimits, codec_binary_messages, codec_frame_layouts,
 };
 
 use super::protocol::{
@@ -150,11 +150,8 @@ fn topics(descriptions: &Value) -> anyhow::Result<Value> {
             }),
         );
         let default_config = (vtable.default_config_json)();
-        if let Some(fps) = default_config.get("fps").and_then(Value::as_u64) {
-            entry.insert("default_fps".to_owned(), json!(fps));
-        }
-        if let Some(interval) = default_config.get("interval_ms").and_then(Value::as_u64) {
-            entry.insert("default_interval_ms".to_owned(), json!(interval));
+        if let Some(fps) = default_config.get("fps") {
+            entry.insert("default_fps".to_owned(), fps.clone());
         }
         if let Some(description) = prose.get("description") {
             entry.insert("description".to_owned(), description.clone());
@@ -276,7 +273,7 @@ fn preview_transport(descriptions: &Value) -> anyhow::Result<Value> {
         .as_object()
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("preview_transport must be an object"))?;
-    let defaults = PreviewTransportCapability::default();
+    let defaults = PreviewTransportLimits::default();
     block.insert(
         "max_publication_decoded_bytes".to_owned(),
         json!(defaults.max_decoded_publication_bytes),
@@ -289,22 +286,10 @@ fn preview_transport(descriptions: &Value) -> anyhow::Result<Value> {
         "max_connection_bytes".to_owned(),
         json!(defaults.max_connection_bytes),
     );
-    block.insert(
-        "max_reassembly_streams".to_owned(),
-        json!(defaults.max_streams),
-    );
-    block.insert(
-        "max_reassembly_tombstones".to_owned(),
-        json!(defaults.max_tombstones),
-    );
     block.insert("partial_idle_ms".to_owned(), json!(defaults.max_idle_ms));
     block.insert(
         "max_message_bytes".to_owned(),
         json!(defaults.max_message_bytes),
-    );
-    block.insert(
-        "max_chunk_count".to_owned(),
-        json!(defaults.max_chunk_count),
     );
     block.insert(
         "max_reassembly_state_bytes".to_owned(),

@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::AudioConfig;
+
 // ─── Constants ────────────────────────────────────────────────────────
 
 /// Number of logarithmically-spaced frequency bins in the spectrum (20 Hz – 20 kHz).
@@ -155,10 +157,11 @@ pub enum AudioSourceType {
 
 /// DSP pipeline configuration for the audio analysis engine.
 ///
-/// Controls FFT size, smoothing, gain, noise floor, and beat sensitivity.
-/// This is the *pipeline-tuning* config. For the TOML user-facing `[audio]`
-/// section (enable/disable, device selection), see
-/// [`config::AudioConfig`](crate::config::AudioConfig).
+/// Controls FFT size, smoothing, gain, noise floor, and beat sensitivity. The
+/// user-facing TOML `[audio]` section is
+/// [`config::AudioConfig`](crate::config::AudioConfig); the `From` impl below
+/// is the one projection from that section onto this pipeline, and every
+/// caller that turns user config into a running pipeline goes through it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioPipelineConfig {
     /// Audio capture source selection.
@@ -180,11 +183,51 @@ pub struct AudioPipelineConfig {
     pub beat_sensitivity: f32,
 }
 
+/// Fallback FFT window when the configured size does not fit a `usize`.
+const DEFAULT_FFT_SIZE: usize = 1024;
+
+impl From<&AudioConfig> for AudioPipelineConfig {
+    fn from(config: &AudioConfig) -> Self {
+        Self {
+            source: audio_source(config),
+            fft_size: usize::try_from(config.fft_size).unwrap_or(DEFAULT_FFT_SIZE),
+            smoothing: config.smoothing.clamp(0.0, 1.0),
+            gain: 1.0,
+            noise_floor: noise_gate_to_db(config.noise_gate),
+            beat_sensitivity: config.beat_sensitivity.max(0.01),
+        }
+    }
+}
+
+/// A disabled `[audio]` section captures nothing, so the pipeline source is
+/// silence rather than the device that would otherwise be opened.
+fn audio_source(config: &AudioConfig) -> AudioSourceType {
+    if !config.enabled {
+        return AudioSourceType::None;
+    }
+
+    let device = config.device.trim();
+    if device.eq_ignore_ascii_case("none") {
+        AudioSourceType::None
+    } else if device.eq_ignore_ascii_case("default") {
+        AudioSourceType::SystemMonitor
+    } else if device.eq_ignore_ascii_case("microphone") {
+        AudioSourceType::Microphone
+    } else {
+        AudioSourceType::Named(device.to_owned())
+    }
+}
+
+fn noise_gate_to_db(noise_gate: f32) -> f32 {
+    let linear = noise_gate.clamp(0.000_001, 1.0);
+    20.0 * linear.log10()
+}
+
 impl Default for AudioPipelineConfig {
     fn default() -> Self {
         Self {
             source: AudioSourceType::default(),
-            fft_size: 1024,
+            fft_size: DEFAULT_FFT_SIZE,
             smoothing: 0.15,
             gain: 1.0,
             noise_floor: -60.0,

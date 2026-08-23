@@ -38,16 +38,16 @@ pub struct SceneRow {
 /// The saved scene currently active, if any. The ephemeral default
 /// reports `None` — it is represented by the Default row instead.
 #[must_use]
-pub fn active_saved_scene_id(active: Option<&api::LiveSceneView>) -> Option<&str> {
+pub fn active_saved_scene_id(active: Option<&api::SceneDocument>) -> Option<String> {
     active
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
-        .map(|scene| scene.id.as_str())
+        .map(|scene| scene.id.to_string())
 }
 
 /// Label switcher triggers show for the active scene: the saved scene's
 /// name, or "Default" while the ephemeral default is running.
 #[must_use]
-pub fn active_scene_label(active: Option<&api::LiveSceneView>) -> String {
+pub fn active_scene_label(active: Option<&api::SceneDocument>) -> String {
     active
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .map_or_else(|| "Default".to_owned(), |scene| scene.name.clone())
@@ -56,7 +56,7 @@ pub fn active_scene_label(active: Option<&api::LiveSceneView>) -> String {
 /// Whether the active scene is snapshot-locked (the lock glyph on
 /// triggers). The ephemeral default is never locked.
 #[must_use]
-pub fn active_scene_locked(active: Option<&api::LiveSceneView>) -> bool {
+pub fn active_scene_locked(active: Option<&api::SceneDocument>) -> bool {
     active.is_some_and(|scene| {
         scene.kind != SceneKind::Ephemeral && scene.mutation_mode == SceneMutationMode::Snapshot
     })
@@ -70,7 +70,7 @@ pub fn active_scene_locked(active: Option<&api::LiveSceneView>) -> bool {
 #[must_use]
 pub fn scene_rows(
     scenes: &[api::SceneSummary],
-    active: Option<&api::LiveSceneView>,
+    active: Option<&api::SceneDocument>,
 ) -> Vec<SceneRow> {
     let active_id = active_saved_scene_id(active);
     let mut rows = Vec::with_capacity(scenes.len() + 1);
@@ -81,10 +81,13 @@ pub fn scene_rows(
         active: active_id.is_none(),
     });
     if let Some(scene) = active.filter(|scene| {
-        scene.kind != SceneKind::Ephemeral && !scenes.iter().any(|listed| listed.id == scene.id)
+        scene.kind != SceneKind::Ephemeral
+            && !scenes
+                .iter()
+                .any(|listed| listed.id == scene.id.to_string())
     }) {
         rows.push(SceneRow {
-            id: Some(scene.id.clone()),
+            id: Some(scene.id.to_string()),
             label: scene.name.clone(),
             locked: scene.mutation_mode == SceneMutationMode::Snapshot,
             active: true,
@@ -94,7 +97,7 @@ pub fn scene_rows(
         id: Some(scene.id.clone()),
         label: scene.name.clone(),
         locked: scene.mutation_mode == SceneMutationMode::Snapshot,
-        active: active_id == Some(scene.id.as_str()),
+        active: active_id.as_deref() == Some(scene.id.as_str()),
     }));
     rows
 }
@@ -226,7 +229,7 @@ fn SceneSwitcherRow(row: SceneRow, set_open: WriteSignal<bool>) -> impl IntoView
             </span>
             {row.locked.then(|| view! {
                 <span
-                    class="flex shrink-0 text-electric-yellow/70"
+                    class="flex shrink-0 text-status-warning/70"
                     title="Snapshot-locked scene"
                 >
                     <Icon icon=LuLock width="11px" height="11px" />

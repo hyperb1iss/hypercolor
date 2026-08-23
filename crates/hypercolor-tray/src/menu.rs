@@ -78,17 +78,17 @@ pub fn build_menu(state: &AppState) -> anyhow::Result<Menu> {
 /// Build menu items shown when connected to the daemon.
 fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
     // Current effect label
-    let effect_label = match &state.current_effect {
+    let effect_label = match &state.active_effect {
         Some(effect) => format!("\u{25b6} {}", effect.name),
         None => "No effect active".to_owned(),
     };
-    let current_effect = MenuItem::with_id(
-        MenuId::new("current_effect"),
+    let active_effect = MenuItem::with_id(
+        MenuId::new("active_effect"),
         &effect_label,
         false, // disabled label
         None,
     );
-    menu.append(&current_effect)?;
+    menu.append(&active_effect)?;
     if let Some(scene_name) = &state.active_scene_name {
         let scene_suffix = if state.scene_snapshot_locked {
             " [snap]"
@@ -96,9 +96,9 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
             ""
         };
         let scene_label = format!("Scene: {scene_name}{scene_suffix}");
-        let current_scene =
-            MenuItem::with_id(MenuId::new("current_scene"), &scene_label, false, None);
-        menu.append(&current_scene)?;
+        let active_scene =
+            MenuItem::with_id(MenuId::new("active_scene"), &scene_label, false, None);
+        menu.append(&active_scene)?;
     }
     menu.append(&PredefinedMenuItem::separator())?;
 
@@ -149,7 +149,7 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
     menu.append(&pause_item)?;
 
     // Stop effect (only when an effect is active)
-    if state.current_effect.is_some() {
+    if state.active_effect.is_some() {
         let stop_item = MenuItem::with_id(MenuId::new(ids::STOP_EFFECT), "Stop Effect", true, None);
         menu.append(&stop_item)?;
     }

@@ -295,6 +295,9 @@ pub enum MacosOwnerRemedy {
     StopStandaloneOwner {
         pid: u32,
     },
+    RestartStandalone {
+        pid: u32,
+    },
     StartAppSidecar,
     StartLaunchdService,
     StartHomebrewService,
@@ -786,6 +789,7 @@ fn macos_owner_remedy_to_js(remedy: &MacosOwnerRemedy) -> Result<JsValue, String
         MacosOwnerRemedy::StartLaunchdService => "start_launchd_service",
         MacosOwnerRemedy::StartHomebrewService => "start_homebrew_service",
         MacosOwnerRemedy::StopStandaloneOwner { .. }
+        | MacosOwnerRemedy::RestartStandalone { .. }
         | MacosOwnerRemedy::StartAppSidecar
         | MacosOwnerRemedy::Unknown => {
             return Err("offline owner remedy cannot be executed by this action".to_owned());
@@ -1062,6 +1066,23 @@ mod tests {
             pending,
             MacosOwnerCoordinatorOutcome::PendingStandalone {
                 remedy: MacosOwnerRemedy::StopStandaloneOwner { pid: 412 },
+                ..
+            }
+        ));
+
+        let restart: MacosOwnerCoordinatorOutcome = serde_json::from_value(serde_json::json!({
+            "status": "pending_standalone",
+            "requested_owner": "app_sidecar",
+            "remedy": {
+                "kind": "restart_standalone",
+                "pid": 77
+            }
+        }))
+        .expect("restart standalone outcome should decode");
+        assert!(matches!(
+            restart,
+            MacosOwnerCoordinatorOutcome::PendingStandalone {
+                remedy: MacosOwnerRemedy::RestartStandalone { pid: 77 },
                 ..
             }
         ));

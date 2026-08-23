@@ -1,25 +1,21 @@
-//! Tests for the effect engine, renderer trait, and registry.
+//! Tests for the renderer trait and effect registry.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::SystemTime;
 
-#[path = "support/effect_engine.rs"]
-mod effect_engine;
-
-use hypercolor_core::effect::{EffectEntry, EffectRegistry, EffectRenderer, FrameInput};
+use hypercolor_core::effect::{
+    EffectEntry, EffectRegistry, EffectRenderer, FrameInput, create_renderer_for_metadata,
+};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
+use hypercolor_types::control::ControlDeltaBatch;
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource, EffectState,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
 };
 use hypercolor_types::sensor::SystemSnapshot;
 use uuid::Uuid;
-
-use effect_engine::EffectEngine;
 
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 
@@ -30,13 +26,9 @@ static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::e
 struct MockRenderer {
     initialized: bool,
     destroyed: bool,
-    tick_count: u64,
-    controls: HashMap<String, ControlValue>,
-    /// If set, `init` will return this error.
+    render_count: u64,
     init_error: Option<String>,
-    /// Fill color for produced canvases (R, G, B, A).
     fill_color: [u8; 4],
-    shared_controls: Option<Arc<Mutex<HashMap<String, ControlValue>>>>,
 }
 
 impl MockRenderer {
@@ -44,21 +36,14 @@ impl MockRenderer {
         Self {
             initialized: false,
             destroyed: false,
-            tick_count: 0,
-            controls: HashMap::new(),
+            render_count: 0,
             init_error: None,
-            fill_color: [255, 0, 128, 255], // Electric pink
-            shared_controls: None,
+            fill_color: [255, 0, 128, 255],
         }
     }
 
     fn with_init_error(mut self, message: &str) -> Self {
         self.init_error = Some(message.to_owned());
-        self
-    }
-
-    fn with_control_sink(mut self, controls: Arc<Mutex<HashMap<String, ControlValue>>>) -> Self {
-        self.shared_controls = Some(controls);
         self
     }
 }
@@ -73,7 +58,7 @@ impl EffectRenderer for MockRenderer {
     }
 
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
-        self.tick_count += 1;
+        self.render_count += 1;
         if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
             *canvas = Canvas::new(input.canvas_width, input.canvas_height);
         }
@@ -87,14 +72,8 @@ impl EffectRenderer for MockRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        self.controls.insert(name.to_owned(), value.clone());
-        if let Some(shared) = &self.shared_controls {
-            shared
-                .lock()
-                .expect("shared control sink should not be poisoned")
-                .insert(name.to_owned(), value.clone());
-        }
+    fn apply_controls(&mut self, _batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn destroy(&mut self) {
@@ -123,63 +102,6 @@ fn sample_metadata() -> EffectMetadata {
         },
         license: Some("Apache-2.0".into()),
     }
-}
-
-fn sample_controlled_metadata() -> EffectMetadata {
-    let mut metadata = sample_metadata();
-    metadata.controls = vec![
-        ControlDefinition {
-            id: "speed".to_owned(),
-            name: "Speed".to_owned(),
-            kind: ControlKind::Number,
-            control_type: ControlType::Slider,
-            default_value: ControlValue::Float(5.0),
-            min: Some(0.0),
-            max: Some(10.0),
-            step: Some(1.0),
-            labels: Vec::new(),
-            group: Some("General".to_owned()),
-            tooltip: None,
-            aspect_lock: None,
-            preview_source: None,
-            binding: None,
-        },
-        ControlDefinition {
-            id: "mode".to_owned(),
-            name: "Mode".to_owned(),
-            kind: ControlKind::Combobox,
-            control_type: ControlType::Dropdown,
-            default_value: ControlValue::Enum("normal".to_owned()),
-            min: None,
-            max: None,
-            step: None,
-            labels: vec!["normal".to_owned(), "sparkle".to_owned()],
-            group: Some("General".to_owned()),
-            tooltip: None,
-            aspect_lock: None,
-            preview_source: None,
-            binding: None,
-        },
-    ];
-    metadata
-}
-
-fn sample_speed_binding() -> ControlBinding {
-    ControlBinding {
-        sensor: "cpu_temp".to_owned(),
-        sensor_min: 30.0,
-        sensor_max: 100.0,
-        target_min: 0.0,
-        target_max: 10.0,
-        deadband: 0.0,
-        smoothing: 0.0,
-    }
-}
-
-fn sample_bound_metadata() -> EffectMetadata {
-    let mut metadata = sample_controlled_metadata();
-    metadata.controls[0].binding = Some(sample_speed_binding());
-    metadata
 }
 
 fn builtin_metadata(name: &str) -> EffectMetadata {
@@ -276,474 +198,71 @@ fn frame_input_clone() {
     assert!((cloned.time_secs - input.time_secs).abs() < f64::EPSILON);
 }
 
-// ── EffectEngine Tests ───────────────────────────────────────────────────────
+// ── Renderer Lifecycle Tests ─────────────────────────────────────────────────
 
 #[test]
-fn engine_starts_idle() {
-    let engine = EffectEngine::new();
-    assert_eq!(engine.state(), EffectState::Loading);
-    assert!(!engine.is_running());
-    assert!(engine.active_metadata().is_none());
-}
-
-#[test]
-fn engine_default_is_idle() {
-    let engine = EffectEngine::default();
-    assert_eq!(engine.state(), EffectState::Loading);
-    assert!(!engine.is_running());
-}
-
-#[test]
-fn engine_activate_success() {
-    let mut engine = EffectEngine::new();
-    let renderer = Box::new(MockRenderer::new());
-    let meta = sample_metadata();
-    let name = meta.name.clone();
-
-    engine
-        .activate(renderer, meta)
-        .expect("activation should succeed");
-
-    assert_eq!(engine.state(), EffectState::Running);
-    assert!(engine.is_running());
-    assert_eq!(
-        engine.active_metadata().expect("should have metadata").name,
-        name
-    );
-}
-
-#[test]
-fn engine_activate_init_failure() {
-    let mut engine = EffectEngine::new();
-    let renderer = Box::new(MockRenderer::new().with_init_error("shader compilation failed"));
-    let meta = sample_metadata();
-
-    let result = engine.activate(renderer, meta);
-
-    assert!(result.is_err());
-    assert_eq!(engine.state(), EffectState::Loading);
-    assert!(!engine.is_running());
-    assert!(engine.active_metadata().is_none());
-}
-
-#[test]
-fn engine_deactivate() {
-    let mut engine = EffectEngine::new();
-    let renderer = Box::new(MockRenderer::new());
-    engine
-        .activate(renderer, sample_metadata())
-        .expect("activate");
-
-    engine.deactivate();
-
-    assert_eq!(engine.state(), EffectState::Loading);
-    assert!(!engine.is_running());
-    assert!(engine.active_metadata().is_none());
-}
-
-#[test]
-fn engine_deactivate_when_idle_is_noop() {
-    let mut engine = EffectEngine::new();
-    engine.deactivate(); // should not panic
-    assert_eq!(engine.state(), EffectState::Loading);
-}
-
-#[test]
-fn engine_activate_replaces_previous() {
-    let mut engine = EffectEngine::new();
-
-    let meta1 = sample_metadata();
-    engine
-        .activate(Box::new(MockRenderer::new()), meta1)
-        .expect("first activate");
-
-    let mut meta2 = sample_metadata();
-    meta2.name = "Plasma Ocean".into();
-    engine
-        .activate(Box::new(MockRenderer::new()), meta2)
-        .expect("second activate");
-
-    assert_eq!(
-        engine.active_metadata().expect("metadata").name,
-        "Plasma Ocean"
-    );
-    assert!(engine.is_running());
-}
-
-#[test]
-fn engine_tick_produces_canvas() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_metadata())
-        .expect("activate");
+fn renderer_initializes_renders_and_destroys_through_the_public_trait() {
+    let metadata = sample_metadata();
+    let mut renderer = MockRenderer::new();
+    renderer
+        .init_with_canvas_size(&metadata, 640, 400)
+        .expect("renderer initialization should succeed");
 
     let audio = AudioData::silence();
-    let canvas = engine.tick(0.016, &audio).expect("tick should succeed");
-
-    assert_eq!(canvas.width(), DEFAULT_CANVAS_WIDTH);
-    assert_eq!(canvas.height(), DEFAULT_CANVAS_HEIGHT);
-    // MockRenderer fills with [255, 0, 128, 255]
-    let pixel = canvas.get_pixel(0, 0);
-    assert_eq!(pixel.r, 255);
-    assert_eq!(pixel.g, 0);
-    assert_eq!(pixel.b, 128);
-    assert_eq!(pixel.a, 255);
-}
-
-#[test]
-fn engine_tick_into_reuses_target_canvas_allocation() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_metadata())
-        .expect("activate");
-
-    let audio = AudioData::silence();
-    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-    let original_ptr = canvas.as_rgba_bytes().as_ptr();
-
-    engine
-        .tick_into(0.016, &audio, &mut canvas)
-        .expect("tick_into should succeed");
-
-    assert_eq!(canvas.as_rgba_bytes().as_ptr(), original_ptr);
-    let pixel = canvas.get_pixel(0, 0);
-    assert_eq!(pixel.r, 255);
-    assert_eq!(pixel.g, 0);
-    assert_eq!(pixel.b, 128);
-    assert_eq!(pixel.a, 255);
-}
-
-#[test]
-fn engine_tick_when_idle_returns_black_canvas() {
-    let mut engine = EffectEngine::new();
-    let audio = AudioData::silence();
-    let canvas = engine.tick(0.016, &audio).expect("tick should succeed");
-
-    assert_eq!(canvas.width(), DEFAULT_CANVAS_WIDTH);
-    assert_eq!(canvas.height(), DEFAULT_CANVAS_HEIGHT);
-    // Should be opaque black
-    let pixel = canvas.get_pixel(0, 0);
-    assert_eq!(pixel.r, 0);
-    assert_eq!(pixel.g, 0);
-    assert_eq!(pixel.b, 0);
-    assert_eq!(pixel.a, 255);
-}
-
-#[test]
-fn engine_tick_into_when_idle_clears_target_canvas() {
-    let mut engine = EffectEngine::new().with_canvas_size(2, 1);
-    let audio = AudioData::silence();
-    let mut canvas = Canvas::new(2, 1);
-    canvas.fill(hypercolor_types::canvas::Rgba::new(255, 0, 128, 255));
-
-    engine
-        .tick_into(0.016, &audio, &mut canvas)
-        .expect("tick_into should succeed");
-
-    assert_eq!(
-        canvas.get_pixel(0, 0).to_rgb(),
-        hypercolor_types::canvas::Rgb::new(0, 0, 0)
-    );
-    assert_eq!(
-        canvas.get_pixel(1, 0).to_rgb(),
-        hypercolor_types::canvas::Rgb::new(0, 0, 0)
-    );
-}
-
-#[test]
-fn engine_tick_accumulates_time() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_metadata())
-        .expect("activate");
-
-    let audio = AudioData::silence();
-    for _ in 0..10 {
-        engine.tick(0.016, &audio).expect("tick");
-    }
-
-    // Engine should still be running after multiple ticks
-    assert!(engine.is_running());
-}
-
-#[test]
-fn engine_pause_and_resume() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_metadata())
-        .expect("activate");
-
-    engine.pause();
-    assert_eq!(engine.state(), EffectState::Paused);
-    assert!(!engine.is_running());
-
-    // Tick while paused returns black canvas
-    let audio = AudioData::silence();
-    let canvas = engine.tick(0.016, &audio).expect("tick while paused");
-    let pixel = canvas.get_pixel(0, 0);
-    assert_eq!(pixel.r, 0);
-    assert_eq!(pixel.g, 0);
-
-    engine.resume();
-    assert_eq!(engine.state(), EffectState::Running);
-    assert!(engine.is_running());
-}
-
-#[test]
-fn engine_pause_when_not_running_is_noop() {
-    let mut engine = EffectEngine::new();
-    engine.pause(); // should not panic, state stays Loading
-    assert_eq!(engine.state(), EffectState::Loading);
-}
-
-#[test]
-fn engine_resume_when_not_paused_is_noop() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_metadata())
-        .expect("activate");
-    engine.resume(); // already running, should be no-op
-    assert_eq!(engine.state(), EffectState::Running);
-}
-
-#[test]
-fn engine_set_control_forwarded_to_renderer() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_metadata())
-        .expect("activate");
-
-    engine.set_control("speed", &ControlValue::Float(10.0));
-    engine.set_control("enabled", &ControlValue::Boolean(true));
-
-    // Controls are stored — engine doesn't expose them directly,
-    // but we can verify the renderer received them by ticking
-    // (the mock stores them internally).
-    assert!(engine.is_running());
-}
-
-#[test]
-fn engine_set_control_when_idle_stores_value() {
-    let mut engine = EffectEngine::new();
-    // Setting controls before activation should not panic
-    engine.set_control("speed", &ControlValue::Float(5.0));
-    assert!(!engine.is_running());
-}
-
-#[test]
-fn engine_activate_seeds_default_controls_from_metadata() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_controlled_metadata())
-        .expect("activate");
-
-    let controls = engine.active_controls();
-    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(5.0)));
-    assert_eq!(
-        controls.get("mode"),
-        Some(&ControlValue::Enum("normal".to_owned()))
-    );
-}
-
-#[test]
-fn engine_set_control_checked_validates_against_schema() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_controlled_metadata())
-        .expect("activate");
-
-    let normalized = engine
-        .set_control_checked("speed", &ControlValue::Float(99.4))
-        .expect("speed should clamp/quantize");
-    assert_eq!(normalized, ControlValue::Float(10.0));
-    assert_eq!(
-        engine.active_controls().get("speed"),
-        Some(&ControlValue::Float(10.0))
-    );
-
-    let error = engine
-        .set_control_checked("mode", &ControlValue::Text("invalid".to_owned()))
-        .expect_err("mode should reject unknown option");
-    assert!(
-        error.to_string().contains("invalid option 'invalid'"),
-        "unexpected error: {error}"
-    );
-}
-
-#[test]
-fn engine_sensor_binding_updates_renderer_without_overwriting_manual_control() {
-    let captured_controls = Arc::new(Mutex::new(HashMap::new()));
-    let renderer = Box::new(MockRenderer::new().with_control_sink(Arc::clone(&captured_controls)));
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(renderer, sample_bound_metadata())
-        .expect("activate");
-
-    let sensors = SystemSnapshot {
-        cpu_temp_celsius: Some(58.0),
-        ..SystemSnapshot::empty()
+    let interaction = InteractionData::default();
+    let input = FrameInput {
+        time_secs: 0.016,
+        delta_secs: 0.016,
+        frame_number: 0,
+        audio: &audio,
+        interaction: &interaction,
+        screen: None,
+        sensors: &EMPTY_SENSORS,
+        sources: hypercolor_core::effect::FrameDataSources::default(),
+        canvas_width: 640,
+        canvas_height: 400,
     };
-    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-    engine
-        .tick_with_inputs_and_sensors_into(
-            0.016,
-            &AudioData::silence(),
-            &InteractionData::default(),
-            None,
-            &sensors,
-            &mut canvas,
-        )
-        .expect("tick with bound sensor");
+    let mut canvas = Canvas::new(640, 400);
+    let allocation = canvas.as_rgba_bytes().as_ptr();
+    renderer
+        .render_into(&input, &mut canvas)
+        .expect("renderer should produce a frame");
 
-    let applied = captured_controls
-        .lock()
-        .expect("shared control sink should not be poisoned");
-    assert_eq!(applied.get("speed"), Some(&ControlValue::Float(4.0)));
-    drop(applied);
-    assert_eq!(
-        engine.active_controls().get("speed"),
-        Some(&ControlValue::Float(5.0))
-    );
+    assert!(renderer.initialized);
+    assert_eq!(renderer.render_count, 1);
+    assert_eq!(canvas.as_rgba_bytes().as_ptr(), allocation);
+    assert_eq!(canvas.get_pixel(0, 0).r, 255);
+    assert_eq!(canvas.get_pixel(0, 0).b, 128);
+
+    renderer.destroy();
+    assert!(renderer.destroyed);
 }
 
 #[test]
-fn engine_sensor_binding_restores_manual_value_when_sensor_disappears() {
-    let captured_controls = Arc::new(Mutex::new(HashMap::new()));
-    let renderer = Box::new(MockRenderer::new().with_control_sink(Arc::clone(&captured_controls)));
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(renderer, sample_bound_metadata())
-        .expect("activate");
+fn renderer_initialization_failure_is_reported_by_the_public_trait() {
+    let mut renderer = MockRenderer::new().with_init_error("shader compilation failed");
+    let error = renderer
+        .init_with_canvas_size(&sample_metadata(), 320, 200)
+        .expect_err("renderer initialization should fail");
 
-    let hot_snapshot = SystemSnapshot {
-        cpu_temp_celsius: Some(86.0),
-        ..SystemSnapshot::empty()
-    };
-    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-    engine
-        .tick_with_inputs_and_sensors_into(
-            0.016,
-            &AudioData::silence(),
-            &InteractionData::default(),
-            None,
-            &hot_snapshot,
-            &mut canvas,
-        )
-        .expect("tick with bound sensor");
-    assert_eq!(
-        captured_controls
-            .lock()
-            .expect("shared control sink should not be poisoned")
-            .get("speed"),
-        Some(&ControlValue::Float(8.0))
-    );
-
-    engine
-        .tick_with_inputs_and_sensors_into(
-            0.016,
-            &AudioData::silence(),
-            &InteractionData::default(),
-            None,
-            &SystemSnapshot::empty(),
-            &mut canvas,
-        )
-        .expect("tick without sensor");
-    assert_eq!(
-        captured_controls
-            .lock()
-            .expect("shared control sink should not be poisoned")
-            .get("speed"),
-        Some(&ControlValue::Float(5.0))
-    );
+    assert!(error.to_string().contains("shader compilation failed"));
+    assert!(!renderer.initialized);
 }
 
 #[test]
-fn reset_to_defaults_clears_binding_runtime_state_for_next_tick() {
-    let captured_controls = Arc::new(Mutex::new(HashMap::new()));
-    let renderer = Box::new(MockRenderer::new().with_control_sink(Arc::clone(&captured_controls)));
-    let mut engine = EffectEngine::new();
-    engine
-        .activate(renderer, sample_bound_metadata())
-        .expect("activate");
+fn renderer_factory_selects_builtin_renderer() {
+    let metadata = builtin_metadata("solid_color");
+    let mut renderer =
+        create_renderer_for_metadata(&metadata).expect("built-in renderer should be selected");
 
-    let hot_snapshot = SystemSnapshot {
-        cpu_temp_celsius: Some(86.0),
-        ..SystemSnapshot::empty()
-    };
-    let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
-    engine
-        .tick_with_inputs_and_sensors_into(
-            0.016,
-            &AudioData::silence(),
-            &InteractionData::default(),
-            None,
-            &hot_snapshot,
-            &mut canvas,
-        )
-        .expect("tick with bound sensor");
-    assert_eq!(
-        captured_controls
-            .lock()
-            .expect("shared control sink should not be poisoned")
-            .get("speed"),
-        Some(&ControlValue::Float(8.0))
-    );
-
-    engine.reset_to_defaults().expect("reset to defaults");
-    assert_eq!(
-        captured_controls
-            .lock()
-            .expect("shared control sink should not be poisoned")
-            .get("speed"),
-        Some(&ControlValue::Float(5.0))
-    );
-
-    engine
-        .tick_with_inputs_and_sensors_into(
-            0.016,
-            &AudioData::silence(),
-            &InteractionData::default(),
-            None,
-            &hot_snapshot,
-            &mut canvas,
-        )
-        .expect("tick should reapply bound sensor after reset");
-    assert_eq!(
-        captured_controls
-            .lock()
-            .expect("shared control sink should not be poisoned")
-            .get("speed"),
-        Some(&ControlValue::Float(8.0))
-    );
-}
-
-#[test]
-fn engine_custom_canvas_size() {
-    let mut engine = EffectEngine::new().with_canvas_size(640, 400);
-    engine
-        .activate(Box::new(MockRenderer::new()), sample_metadata())
-        .expect("activate");
-
-    let audio = AudioData::silence();
-    let canvas = engine.tick(0.016, &audio).expect("tick");
-    assert_eq!(canvas.width(), 640);
-    assert_eq!(canvas.height(), 400);
-}
-
-#[test]
-fn engine_activate_metadata_selects_builtin_renderer() {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate_metadata(builtin_metadata("solid_color"))
-        .expect("built-in metadata activation should succeed");
-
-    assert!(engine.is_running());
+    renderer
+        .init_with_canvas_size(&metadata, 320, 200)
+        .expect("built-in renderer should initialize");
 }
 
 #[cfg(not(feature = "servo"))]
 #[test]
-fn engine_activate_metadata_html_requires_servo_feature() {
-    let mut engine = EffectEngine::new();
+fn renderer_factory_rejects_html_without_servo_feature() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
         name: "html-test".to_owned(),
@@ -763,9 +282,9 @@ fn engine_activate_metadata_html_requires_servo_feature() {
         license: None,
     };
 
-    let error = engine
-        .activate_metadata(metadata)
-        .expect_err("html activation should fail without servo feature");
+    let error = create_renderer_for_metadata(&metadata)
+        .err()
+        .expect("html renderer selection should fail without servo");
     assert!(error.to_string().contains("requires the `servo` feature"));
 }
 

@@ -1,8 +1,11 @@
 //! Persisted output settings: global brightness plus per-device user settings.
 
-use std::collections::HashMap;
+mod migration;
+
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 use hypercolor_core::device::DeviceRegistry;
@@ -12,13 +15,21 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-use crate::persistence::write_atomic;
+use crate::path_migration::{
+    MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
+};
+use crate::persistence::{
+    AtomicFileWriter, AtomicWriteCommitResult, PersistenceError, serialize_json_pretty,
+    write_atomic,
+};
 
-/// Current schema for `device-settings.json`. Version 2 is the
-/// canonical-key-space store: device rows live under the portable key
-/// when the hardware has one, else the local fingerprint, with
+const STORE_SUBJECT: &str = "device settings";
+
+/// Current schema for `device-settings.json`. Version 3 stores driver control
+/// values in the canonical control algebra. Device rows live under the
+/// portable key when the hardware has one, else the local fingerprint, with
 /// UUID-shaped legacy rows retained as machine-scoped configuration.
-pub const DEVICE_SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const DEVICE_SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 /// An unversioned file predates the envelope and is always v1, never
 /// "current": assuming current is how an old file gets rewritten in a
@@ -90,12 +101,48 @@ impl Default for PersistedSettingsSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+#[serde(deny_unknown_fields)]
+struct LegacySettingsSnapshot {
+    #[serde(default = "legacy_schema_version")]
+    schema_version: u32,
+    #[serde(default = "default_brightness")]
+    global_brightness: f32,
+    devices: HashMap<String, StoredDeviceSettings>,
+    driver_controls: HashMap<String, BTreeMap<String, serde_json::Value>>,
+}
+
+impl Default for LegacySettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            schema_version: legacy_schema_version(),
+            global_brightness: default_brightness(),
+            devices: HashMap::new(),
+            driver_controls: HashMap::new(),
+        }
+    }
+}
+
 /// Version probe read before the full parse, so a newer file's contents
 /// are never interpreted through this build's field definitions.
 #[derive(Deserialize)]
 struct SchemaProbe {
     #[serde(default = "legacy_schema_version")]
     schema_version: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FutureDocumentPolicy {
+    ReadOnly,
+    Reject,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceSettingsDocument {
+    snapshot: PersistedSettingsSnapshot,
+    source_version: u32,
+    refuse_writes: Option<String>,
 }
 
 /// JSON-backed per-device settings store.
@@ -108,6 +155,54 @@ pub struct DeviceSettingsStore {
     /// defaulting fields we cannot parse and writing them back would
     /// destroy the newer client's data.
     refuse_writes: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeviceSettingsAccess {
+    store: Arc<RwLock<DeviceSettingsStore>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum BrightnessPersistence {
+    Durable,
+    Retrying(PersistenceError),
+}
+
+impl DeviceSettingsAccess {
+    pub(crate) fn new(store: Arc<RwLock<DeviceSettingsStore>>) -> Self {
+        Self { store }
+    }
+
+    pub async fn device_settings_for_key(&self, key: &str) -> Option<StoredDeviceSettings> {
+        self.store.read().await.device_settings_for_key(key)
+    }
+
+    pub async fn persist_device_settings(
+        &self,
+        key: &str,
+        settings: StoredDeviceSettings,
+    ) -> anyhow::Result<()> {
+        let mut store = self.store.write().await;
+        store.set_device_settings(key, settings);
+        store.save()
+    }
+
+    pub async fn driver_control_values_for_key(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<ControlValueMap> {
+        self.store.read().await.driver_control_values_for_key(key)
+    }
+
+    pub async fn persist_driver_control_values(
+        &self,
+        key: &str,
+        values: ControlValueMap,
+    ) -> anyhow::Result<()> {
+        let mut store = self.store.write().await;
+        store.set_driver_control_values(key, values)?;
+        store.save()
+    }
 }
 
 impl DeviceSettingsStore {
@@ -123,8 +218,8 @@ impl DeviceSettingsStore {
 
     /// Load an existing store or create an empty one when absent.
     ///
-    /// A v1 file (no envelope) migrates to the current schema, leaving
-    /// the previous file as `device-settings.pre-v2.bak`; keys are not
+    /// A v1 or v2 file migrates to the current schema, leaving the previous
+    /// file as `device-settings.pre-v3.bak`; keys are not
     /// reclassified from disk, because a persisted string cannot prove
     /// what it was derived from — rows move to canonical keys as live
     /// devices prove their identities. A file whose schema is newer
@@ -135,40 +230,17 @@ impl DeviceSettingsStore {
             return Ok(Self::new(path.to_path_buf()));
         }
 
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("failed to read device settings at {}", path.display()))?;
-
-        let probe = serde_json::from_str::<SchemaProbe>(&raw)
-            .with_context(|| format!("failed to probe device settings at {}", path.display()))?;
-        if probe.schema_version > DEVICE_SETTINGS_SCHEMA_VERSION {
-            let reason = format!(
-                "device-settings.json is schema v{found}, newer than the supported \
-                 v{supported}; refusing to read or rewrite it",
-                found = probe.schema_version,
-                supported = DEVICE_SETTINGS_SCHEMA_VERSION,
-            );
-            tracing::error!(path = %path.display(), "{reason}");
-            let mut store = Self::new(path.to_path_buf());
-            store.refuse_writes = Some(reason);
-            return Ok(store);
-        }
-
-        let snapshot = serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
-            .with_context(|| format!("failed to parse device settings at {}", path.display()))?;
-
-        let loaded_version = snapshot.schema_version;
+        let document = read_settings_document(path, FutureDocumentPolicy::ReadOnly)?;
+        let loaded_version = document.source_version;
         let mut store = Self {
             path: path.to_path_buf(),
-            snapshot,
-            refuse_writes: None,
+            snapshot: document.snapshot,
+            refuse_writes: document.refuse_writes,
         };
-        store.normalize();
+        store.normalize()?;
 
         if loaded_version < DEVICE_SETTINGS_SCHEMA_VERSION {
-            let backup = migration_backup_path(path);
-            fs::copy(path, &backup).with_context(|| {
-                format!("failed to back up device settings to {}", backup.display())
-            })?;
+            let backup = back_up_content_schema(path)?;
             store.snapshot.schema_version = DEVICE_SETTINGS_SCHEMA_VERSION;
             store
                 .save()
@@ -185,15 +257,107 @@ impl DeviceSettingsStore {
         Ok(store)
     }
 
+    /// Relocate a legacy data-tier store and open the state-tier document.
+    ///
+    /// Content schemas v1 and v2 canonicalize before the path import. A future
+    /// canonical schema remains byte-preserved and read-only, while a future
+    /// legacy schema is refused because this build cannot safely rewrite it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either document cannot be read or canonicalized,
+    /// the state destination cannot be prepared, or legacy retirement fails.
+    pub fn load_migrated(
+        legacy_path: &Path,
+        canonical_path: &Path,
+    ) -> anyhow::Result<(Self, MigrationOutcome)> {
+        let writer = AtomicFileWriter::new(canonical_path).with_context(|| {
+            format!(
+                "failed to prepare device settings store at {}",
+                canonical_path.display()
+            )
+        })?;
+        let entry = PathMigrationEntry::new(
+            STORE_SUBJECT,
+            legacy_path.to_path_buf(),
+            canonical_path.to_path_buf(),
+        );
+        let migrated = migrate(&DeviceSettingsCodec, &entry, &writer)?;
+        let outcome = migrated.outcome;
+        let document = migrated.document.unwrap_or_else(empty_settings_document);
+        let source_version = document.source_version;
+        let mut store = Self {
+            path: canonical_path.to_path_buf(),
+            snapshot: document.snapshot,
+            refuse_writes: document.refuse_writes,
+        };
+        store.normalize()?;
+
+        if matches!(outcome, MigrationOutcome::AlreadyMigrated)
+            && source_version < DEVICE_SETTINGS_SCHEMA_VERSION
+        {
+            back_up_content_schema(canonical_path)?;
+            store
+                .save()
+                .context("failed to persist migrated device settings")?;
+        }
+
+        Ok((store, outcome))
+    }
+
     /// Return the configured global brightness scalar.
     #[must_use]
     pub fn global_brightness(&self) -> f32 {
         self.snapshot.global_brightness.clamp(0.0, 1.0)
     }
 
-    /// Persist a global brightness scalar.
-    pub fn set_global_brightness(&mut self, brightness: f32) {
-        self.snapshot.global_brightness = brightness.clamp(0.0, 1.0);
+    pub(crate) fn persist_global_brightness(
+        &mut self,
+        _authority: &crate::output_power::BrightnessMutationAuthority,
+        brightness: f32,
+    ) -> anyhow::Result<BrightnessPersistence> {
+        if let Some(reason) = &self.refuse_writes {
+            anyhow::bail!("device settings were not persisted: {reason}");
+        }
+
+        let mut next = self.snapshot.clone();
+        next.global_brightness = brightness.clamp(0.0, 1.0);
+        let payload = serialize_settings_snapshot(&next)?;
+        let rollback_payload = serialize_settings_snapshot(&self.snapshot)?;
+        let writer = AtomicFileWriter::new(&self.path).with_context(|| {
+            format!(
+                "failed to prepare device settings persistence at {}",
+                self.path.display()
+            )
+        })?;
+        let outcome = writer.reserve().admit(payload).commit_stage_aware();
+
+        match outcome {
+            AtomicWriteCommitResult::DurableWritten => {
+                self.snapshot = next;
+                Ok(BrightnessPersistence::Durable)
+            }
+            AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                self.snapshot = next;
+                Ok(BrightnessPersistence::Retrying(error))
+            }
+            AtomicWriteCommitResult::FailedBeforeReplacement(error) => {
+                let rollback = writer
+                    .reserve()
+                    .admit(rollback_payload)
+                    .commit_stage_aware();
+                if matches!(rollback, AtomicWriteCommitResult::Superseded) {
+                    anyhow::bail!(
+                        "global brightness rollback was superseded after persistence failed: \
+                         {error}"
+                    );
+                }
+                Err(error).context("failed to persist global brightness")
+            }
+            AtomicWriteCommitResult::Superseded => {
+                anyhow::bail!("global brightness persistence was superseded before publication")
+            }
+        }
     }
 
     /// Return stored settings for a persisted device settings key.
@@ -237,21 +401,27 @@ impl DeviceSettingsStore {
         self.set_device_settings(key, settings);
     }
 
-    #[must_use]
-    pub fn driver_control_values_for_key(&self, key: &str) -> ControlValueMap {
-        self.snapshot
+    pub fn driver_control_values_for_key(&self, key: &str) -> anyhow::Result<ControlValueMap> {
+        Ok(self
+            .snapshot
             .driver_controls
             .get(key)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
 
-    pub fn set_driver_control_values(&mut self, key: &str, values: ControlValueMap) {
+    pub fn set_driver_control_values(
+        &mut self,
+        key: &str,
+        values: ControlValueMap,
+    ) -> anyhow::Result<()> {
         if values.is_empty() {
             self.snapshot.driver_controls.remove(key);
         } else {
+            validate_control_map(key, &values)?;
             self.snapshot.driver_controls.insert(key.to_owned(), values);
         }
+        Ok(())
     }
 
     /// Move a device row persisted under a legacy key to its canonical
@@ -296,25 +466,13 @@ impl DeviceSettingsStore {
             })?;
         }
 
-        let payload = serde_json::to_string_pretty(&PersistedSettingsSnapshot {
-            schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
-            global_brightness: self.global_brightness(),
-            devices: self
-                .snapshot
-                .devices
-                .iter()
-                .map(|(key, settings)| (key.clone(), settings.clone().normalized()))
-                .collect(),
-            driver_controls: self.snapshot.driver_controls.clone(),
-        })
-        .context("failed to serialize device settings")?;
-        write_atomic(&self.path, payload.as_bytes())
-            .context("failed to persist device settings")?;
+        let payload = serialize_settings_snapshot(&self.snapshot)?;
+        write_atomic(&self.path, &payload).context("failed to persist device settings")?;
 
         Ok(())
     }
 
-    fn normalize(&mut self) {
+    fn normalize(&mut self) -> anyhow::Result<()> {
         self.snapshot.global_brightness = self.snapshot.global_brightness.clamp(0.0, 1.0);
         self.snapshot.devices.retain(|_, settings| {
             *settings = settings.clone().normalized();
@@ -323,7 +481,126 @@ impl DeviceSettingsStore {
         self.snapshot
             .driver_controls
             .retain(|_, values| !values.is_empty());
+        for (device_key, values) in &self.snapshot.driver_controls {
+            validate_control_map(device_key, values)?;
+        }
+        Ok(())
     }
+}
+
+fn empty_settings_document() -> DeviceSettingsDocument {
+    DeviceSettingsDocument {
+        snapshot: PersistedSettingsSnapshot::default(),
+        source_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+        refuse_writes: None,
+    }
+}
+
+fn read_settings_document(
+    path: &Path,
+    future_policy: FutureDocumentPolicy,
+) -> anyhow::Result<DeviceSettingsDocument> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read device settings at {}", path.display()))?;
+    let probe = serde_json::from_str::<SchemaProbe>(&raw)
+        .with_context(|| format!("failed to probe device settings at {}", path.display()))?;
+    let source_version = probe.schema_version;
+    if source_version > DEVICE_SETTINGS_SCHEMA_VERSION {
+        let reason = format!(
+            "device-settings.json is schema v{source_version}, newer than the supported v{DEVICE_SETTINGS_SCHEMA_VERSION}; refusing to read or rewrite it"
+        );
+        return match future_policy {
+            FutureDocumentPolicy::ReadOnly => {
+                tracing::error!(path = %path.display(), "{reason}");
+                Ok(DeviceSettingsDocument {
+                    snapshot: PersistedSettingsSnapshot::default(),
+                    source_version,
+                    refuse_writes: Some(reason),
+                })
+            }
+            FutureDocumentPolicy::Reject => anyhow::bail!("{reason}"),
+        };
+    }
+
+    let snapshot = if source_version < DEVICE_SETTINGS_SCHEMA_VERSION {
+        let legacy = serde_json::from_str::<LegacySettingsSnapshot>(&raw)
+            .with_context(|| format!("failed to parse device settings at {}", path.display()))?;
+        PersistedSettingsSnapshot {
+            schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+            global_brightness: legacy.global_brightness,
+            devices: legacy.devices,
+            driver_controls: migration::migrate_v2_driver_controls(legacy.driver_controls)?,
+        }
+    } else {
+        serde_json::from_str::<PersistedSettingsSnapshot>(&raw)
+            .with_context(|| format!("failed to parse device settings at {}", path.display()))?
+    };
+
+    Ok(DeviceSettingsDocument {
+        snapshot,
+        source_version,
+        refuse_writes: None,
+    })
+}
+
+fn serialize_settings_snapshot(snapshot: &PersistedSettingsSnapshot) -> anyhow::Result<Vec<u8>> {
+    serialize_json_pretty(&PersistedSettingsSnapshot {
+        schema_version: DEVICE_SETTINGS_SCHEMA_VERSION,
+        global_brightness: snapshot.global_brightness.clamp(0.0, 1.0),
+        devices: snapshot
+            .devices
+            .iter()
+            .map(|(key, settings)| (key.clone(), settings.clone().normalized()))
+            .collect(),
+        driver_controls: snapshot.driver_controls.clone(),
+    })
+    .context("failed to serialize device settings")
+}
+
+struct DeviceSettingsCodec;
+
+impl MigratedStore for DeviceSettingsCodec {
+    type Document = DeviceSettingsDocument;
+    type Error = anyhow::Error;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        let document = read_settings_document(path, FutureDocumentPolicy::ReadOnly)?;
+        Ok(VersionedDocument::new(document.source_version, document))
+    }
+
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        let document = read_settings_document(path, FutureDocumentPolicy::Reject)?;
+        Ok(Some(VersionedDocument::new(
+            document.source_version,
+            document,
+        )))
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        serialize_settings_snapshot(&document.snapshot)
+    }
+}
+
+fn back_up_content_schema(path: &Path) -> anyhow::Result<PathBuf> {
+    let backup = migration_backup_path(path);
+    fs::copy(path, &backup)
+        .with_context(|| format!("failed to back up device settings to {}", backup.display()))?;
+    Ok(backup)
+}
+
+fn validate_control_map(device_key: &str, values: &ControlValueMap) -> anyhow::Result<()> {
+    for (control_id, value) in values {
+        value.validate().with_context(|| {
+            format!("device settings control '{control_id}' for '{device_key}' is invalid")
+        })?;
+    }
+    Ok(())
 }
 
 /// The backup name for a schema migration, suffixed when it already
@@ -411,12 +688,12 @@ pub async fn device_settings_keys(
 /// attached hardware proves what it is.
 pub async fn resolve_device_settings_key(
     registry: &DeviceRegistry,
-    store: &RwLock<DeviceSettingsStore>,
+    access: &DeviceSettingsAccess,
     device_id: DeviceId,
 ) -> String {
     let keys = device_settings_keys(registry, device_id).await;
     if !keys.legacy.is_empty() {
-        let mut guard = store.write().await;
+        let mut guard = access.store.write().await;
         if guard.adopt_legacy_device_key(&keys.canonical, &keys.legacy)
             && let Err(error) = guard.save()
         {
@@ -430,7 +707,7 @@ pub async fn resolve_device_settings_key(
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
+    use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceFamily, DeviceFingerprint, DeviceInfo,
         DeviceOrigin,
@@ -477,7 +754,7 @@ mod tests {
         let portable_key = claim.key().to_string();
         let id = registry
             .add_discovered(DiscoveredDevice {
-                fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+                fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
                 connect_behavior: DiscoveryConnectBehavior::Deferred,
                 info,
                 metadata: HashMap::new(),
@@ -503,27 +780,27 @@ mod tests {
         );
 
         let migrated = fs::read_to_string(&path).expect("file rewritten");
-        assert!(migrated.contains("\"schema_version\": 2"));
-        assert!(dir.path().join("device-settings.pre-v2.bak").exists());
+        assert!(migrated.contains("\"schema_version\": 3"));
+        assert!(dir.path().join("device-settings.pre-v3.bak").exists());
 
         // A second v1 appearance must not clobber the first backup.
         fs::write(&path, v1_payload()).expect("reseed v1 file");
         DeviceSettingsStore::load(&path).expect("second migration");
-        assert!(dir.path().join("device-settings.pre-v2.2.bak").exists());
-        assert!(dir.path().join("device-settings.pre-v2.bak").exists());
+        assert!(dir.path().join("device-settings.pre-v3.2.bak").exists());
+        assert!(dir.path().join("device-settings.pre-v3.bak").exists());
     }
 
     #[test]
     fn newer_schema_loads_read_only_and_never_writes_back() {
         let dir = TempDir::new().expect("tempdir");
         let path = store_path(&dir);
-        let newer = r#"{ "schema_version": 3, "future_field": true }"#;
+        let newer = r#"{ "schema_version": 4, "future_field": true }"#;
         fs::write(&path, newer).expect("seed newer file");
 
         let mut store = DeviceSettingsStore::load(&path).expect("newer file loads safely");
         store.set_device_brightness("net:wled:aaa", 0.5);
         let error = store.save().expect_err("writes are refused");
-        assert!(error.to_string().contains("schema v3"));
+        assert!(error.to_string().contains("schema v4"));
         assert_eq!(
             fs::read_to_string(&path).expect("file survives"),
             newer,
@@ -547,17 +824,26 @@ mod tests {
         seeded.save().expect("seed saves");
 
         let (registry, device_id, portable_key) = claimed_registry("net:wled:aaa").await;
-        let store = RwLock::new(DeviceSettingsStore::load(&path).expect("store loads"));
+        let access = DeviceSettingsAccess::new(Arc::new(RwLock::new(
+            DeviceSettingsStore::load(&path).expect("store loads"),
+        )));
 
-        let key = resolve_device_settings_key(&registry, &store, device_id).await;
+        let key = resolve_device_settings_key(&registry, &access, device_id).await;
         assert_eq!(key, portable_key);
 
-        let guard = store.read().await;
         assert!(
-            guard.device_settings_for_key(&portable_key).is_some(),
+            access
+                .device_settings_for_key(&portable_key)
+                .await
+                .is_some(),
             "the row follows the device onto its canonical key"
         );
-        assert!(guard.device_settings_for_key("net:wled:aaa").is_none());
+        assert!(
+            access
+                .device_settings_for_key("net:wled:aaa")
+                .await
+                .is_none()
+        );
 
         let persisted = DeviceSettingsStore::load(&path).expect("reload");
         assert!(persisted.device_settings_for_key(&portable_key).is_some());
@@ -580,7 +866,7 @@ mod tests {
         };
         let id = registry
             .add_discovered(DiscoveredDevice {
-                fingerprint: DeviceFingerprint("net:wled:anon".to_owned()),
+                fingerprint: DeviceFingerprint::from_persisted("net:wled:anon".to_owned()),
                 connect_behavior: DiscoveryConnectBehavior::Deferred,
                 info,
                 metadata: HashMap::new(),
@@ -599,7 +885,7 @@ mod tests {
         // quarantines it, and neither unit may key settings by it.
         let registry = DeviceRegistry::new();
         let discovered = |name: &str, fingerprint: &str, peer_octet: u8| DiscoveredDevice {
-            fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+            fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
             connect_behavior: DiscoveryConnectBehavior::Deferred,
             info: DeviceInfo {
                 id: DeviceId::new(),

@@ -16,13 +16,13 @@ exit codes make this CLI a clean tool surface. See
 [Agents & MCP](@/agents/_index.md) for both the CLI-scripting angle and the MCP
 server alternative.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 **The daemon must be running.** The CLI talks to the daemon on `:9420`. If
 nothing is listening, you will get a connection error. Start it with
 `hypercolor service start`, or launch the desktop app, and verify with
 `hypercolor status`. The one exception is `hypercolor service`, which manages
 the daemon process directly and never touches the API.
-{% end %}
+{% </callout> %}
 
 ## Global flags
 
@@ -47,13 +47,13 @@ hypercolor [OPTIONS] <COMMAND>
 | `--theme <NAME>` | `HYPERCOLOR_THEME` | | Color theme name. |
 | `-v`, `--verbose` | | | Increase log verbosity. Repeatable: `-v` info, `-vv` debug, `-vvv` trace. |
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 `--format` hides its allowed values in `--help`, so they are easy to miss. The
 three valid formats are **`table`** (the styled default), **`json`** (machine
 output: the daemon's `data` payload with the envelope stripped), and
 **`plain`** (one bare value per line, ideal for piping into `cut`, `grep`, or
 a shell loop).
-{% end %}
+{% </callout> %}
 
 ### Loopback needs no key
 
@@ -89,7 +89,6 @@ hypercolor
 │   ├── pair
 │   ├── info
 │   ├── identify
-│   ├── set-color
 │   ├── controls
 │   ├── set-control
 │   └── action
@@ -110,7 +109,7 @@ hypercolor
 └── tui               Launch the interactive terminal dashboard
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **`server`, `servers`, and `service` are three different commands.**
 
 - `hypercolor server` (singular) queries the **one daemon you are connected
@@ -119,7 +118,7 @@ hypercolor
   mDNS and saves them as connection profiles.
 - `hypercolor service` manages the **local daemon process** through `systemctl`
   (Linux) or `launchctl` (macOS). It does not call the API at all.
-{% end %}
+{% </callout> %}
 
 ## Lighting
 
@@ -193,11 +192,11 @@ hypercolor effects activate plasma-engine --param hue_shift=120 --param density=
 | `--speed <0-100>` | | Speed-control shorthand. |
 | `--intensity <0-100>` | | Intensity-control shorthand. |
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 `--param` values are parsed as JSON first. So `--param density=0.8` sends a
 number, `--param wrap=true` sends a boolean, and `--param label=neon` falls back
 to a string. Quote anything with shell-special characters.
-{% end %}
+{% </callout> %}
 
 The remaining `effects` subcommands act on the **currently running** effect or
 on effect metadata:
@@ -220,7 +219,7 @@ Run `hypercolor effects rescan` after dropping a freshly built HTML effect into
 the effects directory so the daemon picks it up. Spatial layout selection lives
 on scenes through `scene.layout_id`; effects do not carry layout associations.
 
-{{ img(path="img/ui/effects.webp", alt="The effects gallery in the Hypercolor web UI") }}
+{{< img path="img/ui/effects.webp" alt="The effects gallery in the Hypercolor web UI" />}}
 
 ### brightness
 
@@ -242,7 +241,7 @@ hypercolor scenes list
 hypercolor scenes active
 hypercolor scenes create "Movie Night" --description "Dim and warm"
 hypercolor scenes snapshot "Current Rig" --description "Captured live state"
-hypercolor scenes activate "Movie Night"
+hypercolor scenes activate "Movie Night" --transition 250
 hypercolor scenes deactivate          # Return to the Default scene
 hypercolor scenes info "Movie Night"
 hypercolor scenes delete "Movie Night" --yes
@@ -273,7 +272,6 @@ hypercolor devices list --status connected --driver razer
 hypercolor devices discover --target wled --target hue --timeout 15
 hypercolor devices info "Razer Huntsman"
 hypercolor devices identify "Razer Huntsman" --duration 8
-hypercolor devices set-color "Lian Li Strip" "#ff00aa"
 ```
 
 `devices list` filters by `--status`, `--backend-id`, and `--driver`.
@@ -306,7 +304,7 @@ typed, for example `enum:grb`, `bool:true`, or `duration:1500`. Add
 without applying. `action` takes a `<device> <action>` pair with repeatable
 `-i`/`--input` assignments and `--yes` to confirm guarded actions.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Connected devices in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Connected devices in the Hypercolor web UI" />}}
 
 ### controls
 
@@ -492,12 +490,12 @@ hypercolor config profile default studio
 hypercolor config profile remove studio
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `hypercolor config profile` stores CLI connection settings (host, port, key)
 locally so you can switch which daemon you talk to. The global `--profile` flag
 selects one of those connection profiles. Lighting snapshots live under
 `hypercolor scenes snapshot`.
-{% end %}
+{% </callout> %}
 
 ### diagnose
 

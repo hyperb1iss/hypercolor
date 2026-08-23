@@ -60,9 +60,7 @@ test.describe("REST API", () => {
       expect(
         (
           await api.patch(`/api/v1/scene/zones/${zone.id}/layers/${layer.id}/controls`, {
-            data: {
-              values: controls,
-            },
+            data: { values: controls },
           })
         ).ok(),
       ).toBeTruthy();

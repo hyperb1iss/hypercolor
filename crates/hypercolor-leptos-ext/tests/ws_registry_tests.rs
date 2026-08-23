@@ -111,8 +111,8 @@ fn default_configs_are_the_frozen_wire_defaults() {
             TopicId::ZonePreview,
             json!({"fps": 15, "format": "rgb", "width": 0, "height": 0}),
         ),
-        (TopicId::Metrics, json!({"interval_ms": 1000})),
-        (TopicId::DeviceMetrics, json!({"interval_ms": 1000})),
+        (TopicId::Metrics, json!({"fps": 1.0})),
+        (TopicId::DeviceMetrics, json!({"fps": 1.0})),
         (TopicId::DisplayPreview, json!({"fps": 15})),
         (
             TopicId::InteractivePreview,
@@ -354,15 +354,18 @@ fn spectrum_patch_admits_only_the_declared_bin_counts() {
 }
 
 #[test]
-fn metrics_patch_bounds_the_snapshot_period() {
+fn metrics_patch_accepts_fractional_fps_and_rejects_out_of_range_values() {
     let config = MetricsConfig::default();
-    for interval_ms in [99_u32, 10_001] {
-        let patch = MetricsConfigPatch {
-            interval_ms: Some(interval_ms),
-        };
-        let error = apply_patch_transactionally(&config, &patch).expect_err("interval bound");
-        assert_eq!(error.field, "interval_ms");
-        assert_eq!(error.reason, "expected 100..=10000");
+    let patch: MetricsConfigPatch =
+        serde_json::from_value(json!({"fps": 0.5})).expect("fractional cadence parses");
+    let updated = apply_patch_transactionally(&config, &patch).expect("cadence applies");
+    assert_eq!(updated.fps.fps(), 0.5);
+
+    for fps in [0.09, 10.01] {
+        assert!(
+            serde_json::from_value::<MetricsConfigPatch>(json!({"fps": fps})).is_err(),
+            "out-of-range cadence {fps} must be rejected"
+        );
     }
 }
 

@@ -10,18 +10,18 @@ use hypercolor_types::scene::{SceneId, ZoneId};
 use hypercolor_types::spatial::Output;
 use serde::{Deserialize, Serialize};
 
-use crate::persistence::write_atomic;
+use crate::persistence::serialize_json_pretty;
 
 /// Discovery auto-sync exclusion scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LayoutAutoExclusionKey {
-    LegacyLayout(String),
+    Layout(String),
     Zone { scene_id: SceneId, zone_id: ZoneId },
 }
 
 impl LayoutAutoExclusionKey {
     pub fn layout(layout_id: impl Into<String>) -> Self {
-        Self::LegacyLayout(layout_id.into())
+        Self::Layout(layout_id.into())
     }
 
     #[must_use]
@@ -31,7 +31,7 @@ impl LayoutAutoExclusionKey {
 
     fn sort_key(&self) -> String {
         match self {
-            Self::LegacyLayout(layout_id) => format!("layout:{layout_id}"),
+            Self::Layout(layout_id) => format!("layout:{layout_id}"),
             Self::Zone { scene_id, zone_id } => format!("zone:{scene_id}:{zone_id}"),
         }
     }
@@ -40,13 +40,13 @@ impl LayoutAutoExclusionKey {
 impl fmt::Display for LayoutAutoExclusionKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LegacyLayout(layout_id) => write!(f, "layout:{layout_id}"),
+            Self::Layout(layout_id) => write!(f, "layout:{layout_id}"),
             Self::Zone { scene_id, zone_id } => write!(f, "zone:{scene_id}:{zone_id}"),
         }
     }
 }
 
-/// In-memory layout exclusion store keyed by legacy layout or scene-zone scope.
+/// In-memory layout exclusion store keyed by layout or scene-zone scope.
 pub type LayoutAutoExclusionStore = HashMap<LayoutAutoExclusionKey, HashSet<String>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +81,7 @@ impl PersistedLayoutAutoExclusionEntry {
 
     fn from_key(key: &LayoutAutoExclusionKey, excluded_device_ids: Vec<String>) -> Self {
         match key {
-            LayoutAutoExclusionKey::LegacyLayout(layout_id) => Self {
+            LayoutAutoExclusionKey::Layout(layout_id) => Self {
                 scope: None,
                 layout_id: Some(layout_id.clone()),
                 scene_id: None,
@@ -143,17 +143,7 @@ pub fn load(path: &Path) -> anyhow::Result<LayoutAutoExclusionStore> {
     Ok(out)
 }
 
-/// Persist layout auto-exclusions to disk using atomic-replace semantics.
-pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "failed to create layout auto-exclusion directory {}",
-                parent.display()
-            )
-        })?;
-    }
-
+pub(crate) fn serialize(store: &LayoutAutoExclusionStore) -> anyhow::Result<Vec<u8>> {
     let mut entries = store
         .iter()
         .filter_map(|(key, device_ids)| {
@@ -171,11 +161,7 @@ pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()>
         .collect::<Vec<_>>();
     entries.sort_by_key(PersistedLayoutAutoExclusionEntry::sort_key);
 
-    let payload = serde_json::to_string_pretty(&entries)
-        .context("failed to serialize layout auto-exclusions")?;
-    write_atomic(path, payload.as_bytes()).context("failed to persist layout auto-exclusions")?;
-
-    Ok(())
+    serialize_json_pretty(&entries).context("failed to serialize layout auto-exclusions")
 }
 
 /// Merge intentional device removals from a saved layout edit into the exclusion set.

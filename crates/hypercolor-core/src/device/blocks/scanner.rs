@@ -9,16 +9,17 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tracing::debug;
 
-use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
-use crate::types::device::{
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_types::device::{
     BLOCKS_OUTPUT_BACKEND_ID, ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    FingerprintNamespace, SegmentInfo,
 };
 
 use super::connection::{self, BlocksConnection};
 use super::types::{BlocksDeviceResponse, RoliBlockType};
 
-/// Transport scanner that discovers ROLI Blocks devices via blocksd.
+/// Discovery source for ROLI Blocks devices exposed by blocksd.
 pub struct BlocksScanner {
     socket_path: PathBuf,
 }
@@ -39,13 +40,9 @@ impl BlocksScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for BlocksScanner {
-    fn name(&self) -> &'static str {
-        "ROLI Blocks (blocksd)"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl BlocksScanner {
+    /// Discover ROLI devices exposed by blocksd.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         if !connection::socket_exists(&self.socket_path) {
             debug!("blocksd socket not found, skipping scan");
             return Ok(vec![]);
@@ -72,7 +69,8 @@ fn build_discovered_device(dev: &BlocksDeviceResponse) -> DiscoveredDevice {
         &dev.serial
     };
 
-    let fingerprint = DeviceFingerprint(format!("bridge:blocksd:{}", dev.uid));
+    let fingerprint =
+        DeviceFingerprint::mint(FingerprintNamespace::Bridge, "roli", &dev.uid.to_string());
     let device_id = fingerprint.stable_device_id();
 
     let rows = dev.grid_height;

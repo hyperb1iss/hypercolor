@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use thiserror::Error;
+use tokio::sync::watch;
 
 use super::plan::{
     InputPublicationDemandRevision, ScreenCapturePlan, ScreenPlanError, ScreenPlanGeneration,
@@ -16,9 +17,10 @@ use super::plan::{
 };
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat, CaptureSourceId,
-    CaptureTransferFunction, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
-    ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationExecutor,
-    ScreenPublicationKind, ScreenPublicationResidency,
+    CaptureTransferFunction, LetterboxBars, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenPublicationDescriptor, ScreenByteLease,
+    ScreenConsumerBranchId, ScreenConsumerBranchRevision, ScreenConsumerBranchRoute,
+    ScreenPublicationExecutor, ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
@@ -259,6 +261,7 @@ impl<'a> ScreenNativeWorkPayload<'a> {
 pub struct ScreenZonesPayload<'a> {
     columns: NonZeroU32,
     rows: NonZeroU32,
+    bars: LetterboxBars,
     colorimetry: ScreenPublicationColorimetry,
     colors: &'a [[u8; 3]],
 }
@@ -285,6 +288,7 @@ impl<'a> ScreenZonesPayload<'a> {
         Ok(Self {
             columns,
             rows,
+            bars: LetterboxBars::default(),
             colorimetry,
             colors,
         })
@@ -300,6 +304,12 @@ impl<'a> ScreenZonesPayload<'a> {
     #[must_use]
     pub const fn rows(self) -> NonZeroU32 {
         self.rows
+    }
+
+    /// Bars removed from the requested grid.
+    #[must_use]
+    pub const fn bars(self) -> LetterboxBars {
+        self.bars
     }
 
     /// Exact target encoding and transfer contract.
@@ -593,6 +603,7 @@ enum ScreenPublicationStorage {
     Zones {
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
         color_count: usize,
         colorimetry: ScreenPublicationColorimetry,
         colors: Box<[[u8; 3]]>,
@@ -634,6 +645,7 @@ impl ScreenPublicationStorage {
                 Ok(Self::Zones {
                     columns,
                     rows,
+                    bars: LetterboxBars::default(),
                     color_count: len,
                     colorimetry: descriptor_colorimetry(descriptor),
                     colors: try_zeroed_color_slice(len)?,
@@ -677,6 +689,7 @@ impl ScreenPublicationStorage {
                 Self::Zones {
                     columns,
                     rows,
+                    bars,
                     color_count,
                     colors,
                     ..
@@ -685,6 +698,7 @@ impl ScreenPublicationStorage {
             ) => {
                 *columns = payload.columns();
                 *rows = payload.rows();
+                *bars = payload.bars();
                 *color_count = payload.colors().len();
                 colors[..*color_count].copy_from_slice(payload.colors());
             }
@@ -706,14 +720,18 @@ impl ScreenPublicationStorage {
         }
     }
 
-    fn set_effective_zone_shape(
+    fn set_effective_zone_layout(
         &mut self,
+        maximum_columns: NonZeroU32,
+        maximum_rows: NonZeroU32,
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
     ) -> Result<(), ScreenPublicationHubError> {
         let Self::Zones {
             columns: effective_columns,
             rows: effective_rows,
+            bars: effective_bars,
             color_count,
             colors,
             ..
@@ -724,6 +742,7 @@ impl ScreenPublicationStorage {
                 observed: ScreenPayloadKind::Zones,
             });
         };
+        validate_effective_zone_layout(maximum_columns, maximum_rows, columns, rows, bars)?;
         let count = zone_count(columns, rows)?;
         if count > colors.len() {
             return Err(
@@ -736,16 +755,17 @@ impl ScreenPublicationStorage {
         }
         *effective_columns = columns;
         *effective_rows = rows;
+        *effective_bars = bars;
         *color_count = count;
         Ok(())
     }
 
-    fn reset_effective_shape(
+    fn reset_effective_layout(
         &mut self,
         descriptor: &ResolvedScreenPublicationDescriptor,
     ) -> Result<(), ScreenPublicationHubError> {
         if let ScreenPublicationKind::Zones { columns, rows } = descriptor.kind() {
-            self.set_effective_zone_shape(columns, rows)?;
+            self.set_effective_zone_layout(columns, rows, columns, rows, LetterboxBars::default())?;
         }
         Ok(())
     }
@@ -804,12 +824,14 @@ impl ScreenPublicationStorage {
             Self::Zones {
                 columns,
                 rows,
+                bars,
                 color_count,
                 colorimetry,
                 colors,
             } => ScreenBranchPayload::Zones(ScreenZonesPayload {
                 columns: *columns,
                 rows: *rows,
+                bars: *bars,
                 colorimetry: *colorimetry,
                 colors: &colors[..*color_count],
             }),
@@ -927,12 +949,6 @@ impl ScreenBranchPublication {
     /// Branch-local non-zero accepted sequence.
     #[must_use]
     pub const fn branch_sequence(&self) -> NonZeroU64 {
-        self.branch_sequence
-    }
-
-    /// Compatibility alias for the branch-local publication sequence.
-    #[must_use]
-    pub const fn publication_epoch(&self) -> NonZeroU64 {
         self.branch_sequence
     }
 
@@ -1505,6 +1521,12 @@ impl ScreenCommittedState {
         self.worker_bindings.as_slice()
     }
 
+    /// Committed routes from consumer registrations to canonical branches.
+    #[must_use]
+    pub fn route_catalog(&self) -> &[ScreenConsumerBranchRoute] {
+        self.plan.consumer_routes()
+    }
+
     pub(crate) fn runtime_binding(
         &self,
         source_id: &CaptureSourceId,
@@ -1732,6 +1754,7 @@ impl ScreenCommitActivation {
 /// Coordinator-owned atomic screen runtime authority.
 pub struct ScreenPublicationHub {
     state: Arc<ArcSwap<ScreenCommittedState>>,
+    plan_generation: watch::Sender<ScreenPlanGeneration>,
     pending_retired_bytes: Arc<AtomicU64>,
     next_invalidation_epoch: AtomicU64,
 }
@@ -1739,11 +1762,13 @@ pub struct ScreenPublicationHub {
 impl ScreenPublicationHub {
     pub(crate) fn new(slot_policy: ScreenPublicationSlotPolicy) -> Self {
         let pending_retired_bytes = Arc::new(AtomicU64::new(0));
+        let (plan_generation, _) = watch::channel(ScreenPlanGeneration::default());
         Self {
             state: Arc::new(ArcSwap::from_pointee(ScreenCommittedState::initial(
                 slot_policy,
                 Arc::clone(&pending_retired_bytes),
             ))),
+            plan_generation,
             pending_retired_bytes,
             next_invalidation_epoch: AtomicU64::new(1),
         }
@@ -1779,6 +1804,19 @@ impl ScreenPublicationHub {
                 authority: Arc::clone(&self.state),
             });
         (generation, lease)
+    }
+
+    /// Bind a registration-owned observer to its exact committed route.
+    #[must_use]
+    pub fn branch_observer(
+        &self,
+        consumer_branch_id: ScreenConsumerBranchId,
+    ) -> ScreenBranchObserver {
+        ScreenBranchObserver {
+            consumer_branch_id,
+            authority: Arc::clone(&self.state),
+            plan_generation: self.plan_generation.subscribe(),
+        }
     }
 
     /// Currently committed demand revision.
@@ -1936,7 +1974,7 @@ impl ScreenPublicationHub {
         Arc::get_mut(&mut publication)
             .expect("reserved publication has unique ownership")
             .storage
-            .reset_effective_shape(&publisher.branch.descriptor)?;
+            .reset_effective_layout(&publisher.branch.descriptor)?;
         Ok(PreparedScreenPublication {
             branch: Arc::clone(&publisher.branch),
             binding: publisher.binding.clone(),
@@ -2227,6 +2265,7 @@ impl ScreenPublicationHub {
         for lifetime in &activation.retired_resource_lifetimes {
             lifetime.arm_retirement();
         }
+        let plan_generation = state.plan.generation();
         self.state.store(state);
         for entry in &activation.retired_entries {
             entry.retire();
@@ -2240,6 +2279,13 @@ impl ScreenPublicationHub {
         for entry in &activation.retired_entries {
             entry.reap_releasable_gpu_payloads();
         }
+        self.plan_generation.send_if_modified(|current| {
+            if *current == plan_generation {
+                return false;
+            }
+            *current = plan_generation;
+            true
+        });
         let ScreenCommitActivation {
             activation: _,
             barrier_bindings: _,
@@ -2373,6 +2419,106 @@ impl fmt::Debug for ScreenPublicationHub {
 pub struct ScreenBranchLease {
     branch: Arc<ScreenBranchEntry>,
     authority: Arc<ArcSwap<ScreenCommittedState>>,
+}
+
+/// One coherent observation of a registration's current exact route.
+#[derive(Clone, Debug)]
+pub struct ScreenBranchObserverSnapshot {
+    consumer_branch_id: ScreenConsumerBranchId,
+    plan_generation: ScreenPlanGeneration,
+    branch_revision: Option<ScreenConsumerBranchRevision>,
+    lease: Option<ScreenBranchLease>,
+}
+
+impl ScreenBranchObserverSnapshot {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Committed plan generation observed with the route.
+    #[must_use]
+    pub const fn plan_generation(&self) -> ScreenPlanGeneration {
+        self.plan_generation
+    }
+
+    /// Revision of the active exact route, or `None` after removal.
+    #[must_use]
+    pub const fn branch_revision(&self) -> Option<ScreenConsumerBranchRevision> {
+        self.branch_revision
+    }
+
+    /// Exact active branch lease, or `None` after removal.
+    #[must_use]
+    pub const fn lease(&self) -> Option<&ScreenBranchLease> {
+        self.lease.as_ref()
+    }
+
+    /// Consume the observation and return its exact active lease.
+    #[must_use]
+    pub fn into_lease(self) -> Option<ScreenBranchLease> {
+        self.lease
+    }
+}
+
+/// Registration-owned latest-value observer for one exact consumer route.
+pub struct ScreenBranchObserver {
+    consumer_branch_id: ScreenConsumerBranchId,
+    authority: Arc<ArcSwap<ScreenCommittedState>>,
+    plan_generation: watch::Receiver<ScreenPlanGeneration>,
+}
+
+impl ScreenBranchObserver {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Read one coherent committed route snapshot without retaining old routes.
+    #[must_use]
+    pub fn snapshot(&self) -> ScreenBranchObserverSnapshot {
+        let state = self.authority.load_full();
+        let route = state.plan.consumer_route(self.consumer_branch_id);
+        let lease = route.map(|route| {
+            let branch = &state.branches[route.branch_index()];
+            ScreenBranchLease {
+                branch: Arc::clone(&branch.entry),
+                authority: Arc::clone(&self.authority),
+            }
+        });
+        ScreenBranchObserverSnapshot {
+            consumer_branch_id: self.consumer_branch_id,
+            plan_generation: state.plan.generation(),
+            branch_revision: route.map(ScreenConsumerBranchRoute::revision),
+            lease,
+        }
+    }
+
+    /// Wait for the next committed screen-plan generation.
+    pub async fn changed(&mut self) -> Option<ScreenBranchObserverSnapshot> {
+        self.plan_generation.changed().await.ok()?;
+        Some(self.snapshot())
+    }
+}
+
+impl fmt::Debug for ScreenBranchObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScreenBranchObserver")
+            .field("consumer_branch_id", &self.consumer_branch_id)
+            .field("plan_generation", &*self.plan_generation.borrow())
+            .finish_non_exhaustive()
+    }
+}
+
+impl RegisteredScreenBranchDemand {
+    /// Observe the exact route owned by this registration.
+    #[must_use]
+    pub fn observer(&self, hub: &ScreenPublicationHub) -> ScreenBranchObserver {
+        hub.branch_observer(self.consumer_branch_id())
+    }
 }
 
 impl ScreenBranchLease {
@@ -2539,16 +2685,19 @@ impl PreparedScreenPublication {
     /// Select the compact row-major prefix published by a dynamic zone crop.
     ///
     /// The reserved allocation remains descriptor-sized. Only the effective
-    /// shape and its exact color prefix become visible after finalization.
+    /// layout, removed bars, and exact color prefix become visible after
+    /// finalization.
     ///
     /// # Errors
     ///
     /// Rejects surface reservations, lost unique ownership, arithmetic
-    /// overflow, or a shape larger than the admitted descriptor capacity.
-    pub fn set_effective_zone_shape(
+    /// overflow, a shape larger than the admitted descriptor capacity, or
+    /// bars that do not produce the effective shape.
+    pub fn set_effective_zone_layout(
         &mut self,
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
     ) -> Result<(), ScreenPublicationHubError> {
         let expected = descriptor_payload_kind(&self.branch.descriptor);
         let (maximum_columns, maximum_rows) = match self.branch.descriptor.kind() {
@@ -2560,19 +2709,13 @@ impl PreparedScreenPublication {
                 });
             }
         };
-        if columns > maximum_columns || rows > maximum_rows {
-            return Err(
-                ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor {
-                    maximum_columns,
-                    maximum_rows,
-                    observed_columns: columns,
-                    observed_rows: rows,
-                },
-            );
-        }
-        self.publication_mut()?
-            .storage
-            .set_effective_zone_shape(columns, rows)
+        self.publication_mut()?.storage.set_effective_zone_layout(
+            maximum_columns,
+            maximum_rows,
+            columns,
+            rows,
+            bars,
+        )
     }
 }
 
@@ -2982,6 +3125,22 @@ pub enum ScreenPublicationHubError {
         /// Requested effective rows.
         observed_rows: NonZeroU32,
     },
+    /// Dynamic crop bars do not produce the submitted effective shape.
+    #[error(
+        "effective zone layout is incoherent: requested {requested_columns}x{requested_rows}, observed {observed_columns}x{observed_rows} with bars {bars:?}"
+    )]
+    EffectiveZoneLayoutMismatch {
+        /// Descriptor-requested columns.
+        requested_columns: NonZeroU32,
+        /// Descriptor-requested rows.
+        requested_rows: NonZeroU32,
+        /// Submitted effective columns.
+        observed_columns: NonZeroU32,
+        /// Submitted effective rows.
+        observed_rows: NonZeroU32,
+        /// Submitted dynamic crop bars.
+        bars: LetterboxBars,
+    },
     /// Dynamic crop color prefix exceeds the admitted zone allocation.
     #[error("effective zone shape {columns}x{rows} exceeds admitted color capacity {capacity}")]
     EffectiveZoneShapeExceedsCapacity {
@@ -3273,6 +3432,45 @@ fn surface_byte_len(extent: PixelExtent) -> Result<usize, ScreenPublicationHubEr
         })
         .and_then(|pixels| pixels.checked_mul(SURFACE_PIXEL_BYTES as usize))
         .ok_or(ScreenPublicationHubError::PayloadShapeOverflow)
+}
+
+fn validate_effective_zone_layout(
+    requested_columns: NonZeroU32,
+    requested_rows: NonZeroU32,
+    observed_columns: NonZeroU32,
+    observed_rows: NonZeroU32,
+    bars: LetterboxBars,
+) -> Result<(), ScreenPublicationHubError> {
+    if observed_columns > requested_columns || observed_rows > requested_rows {
+        return Err(
+            ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor {
+                maximum_columns: requested_columns,
+                maximum_rows: requested_rows,
+                observed_columns,
+                observed_rows,
+            },
+        );
+    }
+    let expected_columns = requested_columns
+        .get()
+        .checked_sub(bars.left)
+        .and_then(|columns| columns.checked_sub(bars.right));
+    let expected_rows = requested_rows
+        .get()
+        .checked_sub(bars.top)
+        .and_then(|rows| rows.checked_sub(bars.bottom));
+    if expected_columns != Some(observed_columns.get())
+        || expected_rows != Some(observed_rows.get())
+    {
+        return Err(ScreenPublicationHubError::EffectiveZoneLayoutMismatch {
+            requested_columns,
+            requested_rows,
+            observed_columns,
+            observed_rows,
+            bars,
+        });
+    }
+    Ok(())
 }
 
 fn zone_count(columns: NonZeroU32, rows: NonZeroU32) -> Result<usize, ScreenPublicationHubError> {

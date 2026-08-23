@@ -6,10 +6,10 @@ use std::sync::Arc;
 use hypercolor_types::config::InteractionRoutePolicy;
 
 use super::{
-    InputData, InputEventRead, InputSourceSlot, InteractionData, InteractionSourceOrigin,
-    InteractionTransientTotals, SourceStatusHandle,
+    InputData, InputEventRead, InputSourceSlot, InteractionData, InteractionTransientTotals,
+    SourceKind, SourceStatusHandle,
 };
-use crate::types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
 
 /// Stable identity for one interaction consumer lifetime.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -26,7 +26,6 @@ impl ConsumerIncarnation {
 enum SourceNamespace {
     Host,
     Browser,
-    CompatibilityAggregate,
 }
 
 /// Stable identity for one routable source lifetime.
@@ -57,14 +56,6 @@ impl SourceIncarnation {
     }
 
     #[must_use]
-    pub const fn compatibility_aggregate(value: u64) -> Self {
-        Self {
-            namespace: SourceNamespace::CompatibilityAggregate,
-            value,
-        }
-    }
-
-    #[must_use]
     pub const fn is_browser(self) -> bool {
         matches!(self.namespace, SourceNamespace::Browser)
     }
@@ -75,8 +66,6 @@ impl SourceIncarnation {
 pub enum InteractionRouteSourceClass {
     Host,
     Browser,
-    /// Legacy union published for old consumers, never a selectable route.
-    CompatibilityAggregate,
 }
 
 /// Zero-copy interaction snapshot from a graph or specialized slot.
@@ -210,10 +199,6 @@ impl InteractionRouteSource {
                     SourceNamespace::Browser,
                     InteractionRouteSourceClass::Browser
                 )
-                | (
-                    SourceNamespace::CompatibilityAggregate,
-                    InteractionRouteSourceClass::CompatibilityAggregate
-                )
         );
         assert!(
             namespace_matches,
@@ -234,16 +219,11 @@ impl InteractionRouteSource {
         availability_revision: u64,
         slot: InputSourceSlot,
     ) -> Option<Self> {
-        let (incarnation, class) = match slot.interaction_origin()? {
-            InteractionSourceOrigin::Host => (
-                SourceIncarnation::host_slot(slot.id()),
-                InteractionRouteSourceClass::Host,
-            ),
-            InteractionSourceOrigin::BrowserCompatibilityAggregate => (
-                SourceIncarnation::compatibility_aggregate(slot.id()),
-                InteractionRouteSourceClass::CompatibilityAggregate,
-            ),
-        };
+        if slot.kind() != Some(SourceKind::Interaction) {
+            return None;
+        }
+        let incarnation = SourceIncarnation::host_slot(slot.id());
+        let class = InteractionRouteSourceClass::Host;
         Some(Self::new(
             incarnation,
             descriptor,
@@ -847,7 +827,6 @@ impl ConsumerRouteState {
         interaction.mouse.norm_y = 0.0;
         interaction.mouse.mode = super::PointerMode::None;
         interaction.mouse.injected = false;
-        interaction.batch.wheel_hi_res = 0;
         interaction.batch.scroll = super::ScrollAggregate::default();
         interaction.batch.motion = super::MotionAggregate::default();
         interaction.batch.window_secs = 0.0;
@@ -902,10 +881,6 @@ impl ConsumerRouteState {
                     &mut recent_count,
                     key,
                 ),
-                InputEvent::MouseWheel { delta_hi_res, .. } => {
-                    interaction.batch.wheel_hi_res =
-                        interaction.batch.wheel_hi_res.saturating_add(*delta_hi_res);
-                }
                 InputEvent::PointerScroll {
                     delta_x_q16_16,
                     delta_y_q16_16,
@@ -1259,8 +1234,7 @@ fn synthetic_release(press: &TimedInputEvent, now_ms: u64) -> TimedInputEvent {
         InputEvent::Key { state, .. }
         | InputEvent::MouseButton { state, .. }
         | InputEvent::MidiNote { state, .. } => *state = InputButtonState::Released,
-        InputEvent::MouseWheel { .. }
-        | InputEvent::PointerScroll { .. }
+        InputEvent::PointerScroll { .. }
         | InputEvent::MidiControlChange { .. }
         | InputEvent::MidiPitchBend { .. }
         | InputEvent::MidiRealtime { .. } => {

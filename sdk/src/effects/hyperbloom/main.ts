@@ -230,7 +230,7 @@ canvas(
 
             // ── Audio (scaled by reactivity) ────────────────────────────────────
             const a = audio()
-            const level = (a?.level ?? 0) * liveCtl
+            const level = (a?.levelLinear ?? 0) * liveCtl
             const bass = (a?.bass ?? 0) * liveCtl
             const treble = (a?.treble ?? 0) * liveCtl
             const beatPulse = (a?.beatPulse ?? 0) * liveCtl

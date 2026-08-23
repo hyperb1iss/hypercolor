@@ -318,8 +318,8 @@ A few of the fifteen; the full list lives in `protocol/websocket-v1.json`.
 | `events`          | —         | subscribed   | System events and state changes | none                                  |
 | `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `zones`                 |
 | `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128) |
-| `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)     |
-| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)             |
+| `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba/jpeg) |
+| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `fps` (0.1-10)                        |
 | `display_preview` | device id | unsubscribed | One display's JPEG output       | `fps` (1-30)                          |
 
 ### Client → Server Messages
@@ -332,7 +332,7 @@ that subscription's config patch.
   "type": "subscribe",
   "topics": [
     { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
-    { "topic": "metrics", "config": { "interval_ms": 500 } }
+    { "topic": "metrics", "config": { "fps": 2 } }
   ]
 }
 ```
@@ -481,8 +481,8 @@ that subscription's config patch.
 # Connect and see the hello message
 websocat ws://localhost:9420/api/v1/ws
 
-# Subscribe to metrics every 500ms
-echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":500}}]}' | \
+# Subscribe to metrics twice a second
+echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":2}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 ```
 
@@ -1032,7 +1032,7 @@ RUST_LOG=hypercolor_daemon::render_thread=trace just daemon
 
 ```bash
 # 1. Subscribe to metrics via WebSocket
-echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"interval_ms":500}}]}' | \
+echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":2}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 
 # 2. Check per-stage timing breakdown in metrics output

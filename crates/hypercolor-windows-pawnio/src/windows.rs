@@ -13,6 +13,8 @@ use windows_sys::Win32::System::Threading::{
     CreateMutexA, INFINITE, ReleaseMutex, WaitForSingleObject,
 };
 
+use crate::PawnIoErrorKind;
+
 mod broker;
 
 const PAWNIO_INSTALL_ENV: &str = "HYPERCOLOR_PAWNIO_HOME";
@@ -156,6 +158,8 @@ pub enum PawnIoError {
         bus_path: String,
         /// SMBus address.
         address: u8,
+        /// Raw HRESULT returned by PawnIO.
+        hresult: u32,
         /// Human-readable detail.
         detail: String,
     },
@@ -176,9 +180,49 @@ pub enum PawnIoError {
     BrokerCall {
         /// Broker operation name.
         operation: &'static str,
+        /// Stable error classification reported by the broker.
+        kind: PawnIoErrorKind,
+        /// Raw HRESULT reported by PawnIO, when the failure reached it.
+        hresult: Option<u32>,
         /// Human-readable detail.
         detail: String,
     },
+}
+
+impl PawnIoError {
+    /// Return the stable error classification.
+    #[must_use]
+    pub fn kind(&self) -> PawnIoErrorKind {
+        match self {
+            Self::PawnIoNotInstalled | Self::ModuleNotFound { .. } => PawnIoErrorKind::NotFound,
+            Self::LoadLibrary { source, .. } | Self::LoadSymbol { source, .. } => {
+                error_kind_from_source(source)
+            }
+            Self::PawnIoCall { hresult, .. } | Self::SmBusIo { hresult, .. } => {
+                error_kind_from_hresult(*hresult)
+            }
+            Self::InvalidInput { .. } => PawnIoErrorKind::InvalidInput,
+            Self::BrokerUnavailable { .. } => PawnIoErrorKind::Unavailable,
+            Self::BrokerCall { kind, .. } => *kind,
+        }
+    }
+
+    fn hresult(&self) -> Option<u32> {
+        match self {
+            Self::PawnIoCall { hresult, .. } | Self::SmBusIo { hresult, .. } => Some(*hresult),
+            Self::BrokerCall { hresult, .. } => *hresult,
+            _ => None,
+        }
+    }
+
+    fn broker_call(operation: &'static str, detail: String) -> Self {
+        Self::BrokerCall {
+            operation,
+            kind: PawnIoErrorKind::Io,
+            hresult: None,
+            detail,
+        }
+    }
 }
 
 /// SMBus transfer direction.
@@ -525,6 +569,7 @@ impl DirectWindowsSmBusBus {
                 operation: "ioctl_smbus_xfer",
                 bus_path: self.info.path.clone(),
                 address,
+                hresult: status as u32,
                 detail: hresult_detail(status),
             });
         }
@@ -1183,6 +1228,41 @@ fn hresult_detail(status: i32) -> String {
     }
 }
 
+fn error_kind_from_source(error: &(dyn std::error::Error + 'static)) -> PawnIoErrorKind {
+    let mut source = Some(error);
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<std::io::Error>() {
+            return match error.kind() {
+                std::io::ErrorKind::PermissionDenied => PawnIoErrorKind::PermissionDenied,
+                std::io::ErrorKind::NotFound => PawnIoErrorKind::NotFound,
+                _ => PawnIoErrorKind::Io,
+            };
+        }
+        source = current.source();
+    }
+    PawnIoErrorKind::Io
+}
+
+const fn error_kind_from_hresult(hresult: u32) -> PawnIoErrorKind {
+    let status = hresult as i32;
+    if status == ERROR_ACCESS_DENIED || status == hresult_from_win32(ERROR_ACCESS_DENIED) {
+        return PawnIoErrorKind::PermissionDenied;
+    }
+
+    if matches!(status, 2 | 3 | 126)
+        || matches!(
+            status,
+            value if value == hresult_from_win32(2)
+                || value == hresult_from_win32(3)
+                || value == hresult_from_win32(126)
+        )
+    {
+        return PawnIoErrorKind::NotFound;
+    }
+
+    PawnIoErrorKind::Io
+}
+
 const fn hresult_from_win32(error: i32) -> i32 {
     if error <= 0 {
         error
@@ -1326,9 +1406,11 @@ pub(super) fn detect_cpu_vendor() -> PawnIoResult<CpuVendor> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SmBusBlockData, SmBusDirection, SmBusTransaction, bus_path, pack_transaction_data,
-        parse_bus_path, should_unpack_transaction_response, unpack_transaction_data,
+        PawnIoError, SmBusBlockData, SmBusDirection, SmBusTransaction, bus_path,
+        hresult_from_win32, pack_transaction_data, parse_bus_path,
+        should_unpack_transaction_response, unpack_transaction_data,
     };
+    use crate::PawnIoErrorKind;
 
     #[test]
     fn bus_path_round_trips_module_and_port() {
@@ -1369,5 +1451,36 @@ mod tests {
     fn write_transactions_do_not_unpack_pawnio_scratch_output() {
         assert!(!should_unpack_transaction_response(SmBusDirection::Write));
         assert!(should_unpack_transaction_response(SmBusDirection::Read));
+    }
+
+    #[test]
+    fn pawnio_classification_uses_hresult_not_detail() {
+        let misleading = PawnIoError::PawnIoCall {
+            operation: "test",
+            hresult: 1,
+            detail: "access denied and module not found".to_owned(),
+        };
+        assert_eq!(misleading.kind(), PawnIoErrorKind::Io);
+
+        let permission = PawnIoError::PawnIoCall {
+            operation: "test",
+            hresult: hresult_from_win32(5) as u32,
+            detail: "harmless display text".to_owned(),
+        };
+        assert_eq!(permission.kind(), PawnIoErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn smbus_error_retains_raw_hresult() {
+        let error = PawnIoError::SmBusIo {
+            operation: "test",
+            bus_path: "pawnio:test".to_owned(),
+            address: 0x40,
+            hresult: 0x8007_0005,
+            detail: "harmless display text".to_owned(),
+        };
+
+        assert_eq!(error.hresult(), Some(0x8007_0005));
+        assert_eq!(error.kind(), PawnIoErrorKind::PermissionDenied);
     }
 }

@@ -10,7 +10,7 @@ a canonical acquisition order to prevent deadlocks, and flags code that violates
 | #   | Field                         | Type                 | Guards                                      | File                       |
 | --- | ----------------------------- | -------------------- | ------------------------------------------- | -------------------------- |
 | 1   | `render_loop`                 | `tokio::RwLock`      | Frame timing, FPS tier, start/stop          | `api/mod.rs:109`           |
-| 2   | `scene_manager`               | `tokio::RwLock`      | Scene stack, transitions, render groups     | `api/mod.rs:100`           |
+| 2   | `scene_manager`               | `tokio::RwLock`      | Scene stack, transitions, render zones     | `api/mod.rs:100`           |
 | 3   | `effect_engine`               | `tokio::Mutex`       | Active renderer, controls, scene generation | `api/mod.rs:97`            |
 | 4   | `effect_registry`             | `tokio::RwLock`      | Effect catalog, metadata, rescan            | `api/mod.rs:92`            |
 | 5   | `input_manager`               | `tokio::Mutex`       | Audio/screen/interaction capture lifecycle  | `api/mod.rs:133`           |
@@ -124,7 +124,7 @@ effect_engine.lock()       [L3]  — canvas resize (if pending transaction)
   (dropped)
 effect_engine.lock()       [L3]  — scene snapshot demand query
   (dropped)
-effect_registry.read()     [L4]  — render group demand query (alt path)
+effect_registry.read()     [L4]  — render zone demand query (alt path)
   (dropped)
 input_manager.lock()       [L5]  — reconcile audio/screen capture
   (dropped)
@@ -132,7 +132,7 @@ input_manager.lock()       [L5]  — sample_inputs
   (dropped)
 effect_engine.lock()       [L3]  — render effect into canvas (via render_effect_into)
   (dropped)
-effect_registry.read()     [L4]  — render group scene (alt path, inside compose)
+effect_registry.read()     [L4]  — render zone scene (alt path, inside compose)
   (dropped)
 backend_manager.lock()     [L7]  — write_frame
   (dropped)

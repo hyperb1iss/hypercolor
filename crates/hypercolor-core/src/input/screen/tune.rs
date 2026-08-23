@@ -7,7 +7,7 @@
 
 use hypercolor_color::LinearRgba;
 
-use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct PreparedLinearColorTuning {

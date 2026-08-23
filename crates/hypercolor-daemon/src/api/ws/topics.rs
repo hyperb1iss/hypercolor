@@ -37,7 +37,7 @@ use super::relays::{
     relay_frames, relay_metrics, relay_screen_canvas, relay_screen_zones, relay_sensors,
     relay_spectrum, relay_web_viewport_canvas, relay_zone_preview,
 };
-use crate::api::AppState;
+use crate::app_state::AppState;
 
 /// Everything a relay task needs to attach itself to one connection.
 pub(super) struct RelayContext {
@@ -107,7 +107,7 @@ static RELAYS: &[RelayRegistration] = &[
         source: RelaySource::Connection(|context| {
             tokio::spawn(relay_canvas(
                 Arc::clone(&context.state.preview_runtime),
-                context.state.power_state.subscribe(),
+                context.state.output_power.subscribe(),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))
@@ -159,7 +159,7 @@ static RELAYS: &[RelayRegistration] = &[
         source: RelaySource::Connection(|context| {
             tokio::spawn(relay_display_preview(
                 Arc::clone(&context.state),
-                Arc::clone(&context.state.display_frames),
+                Arc::clone(context.state.domains.display.frames()),
                 context.preview_tx.clone(),
                 context.subscriptions.clone(),
             ))

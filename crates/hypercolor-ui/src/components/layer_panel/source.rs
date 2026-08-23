@@ -8,11 +8,11 @@
 use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
-use hypercolor_types::effect::EffectId;
-use hypercolor_types::layer::{LayerBlendMode, LayerSource, MediaPlayback};
+use hypercolor_types::effect::{EffectCategory, EffectId};
+use hypercolor_types::layer::{BlendMode, LayerSource, MediaPlayback};
 use hypercolor_types::scene::ZoneRole;
 
-use crate::api::LiveZoneView;
+use crate::api::ZoneResource;
 use hypercolor_types::viewport::FitMode;
 use uuid::Uuid;
 
@@ -72,8 +72,8 @@ impl EffectPickerMode {
     }
 
     #[must_use]
-    pub fn includes_category(self, category: &str) -> bool {
-        let is_display = category.eq_ignore_ascii_case("display");
+    pub const fn includes_category(self, category: EffectCategory) -> bool {
+        let is_display = matches!(category, EffectCategory::Display);
         match self {
             Self::Effects => !is_display,
             Self::Faces | Self::Mixed => true,
@@ -81,8 +81,8 @@ impl EffectPickerMode {
     }
 
     #[must_use]
-    pub fn sort_bucket(self, category: &str) -> u8 {
-        if self == Self::Faces && category.eq_ignore_ascii_case("display") {
+    pub const fn sort_bucket(self, category: EffectCategory) -> u8 {
+        if matches!(self, Self::Faces) && matches!(category, EffectCategory::Display) {
             0
         } else {
             1
@@ -138,20 +138,20 @@ pub fn effect_picker_mode(
 }
 
 #[must_use]
-pub fn effect_category_label(category: &str) -> String {
-    if category.eq_ignore_ascii_case("display") {
+pub fn effect_category_label(category: EffectCategory) -> String {
+    if category == EffectCategory::Display {
         "face".to_owned()
     } else {
-        category.to_owned()
+        category.as_str().to_owned()
     }
 }
 
 #[must_use]
-pub fn effect_picker_matches_query(name: &str, category: &str, query: &str) -> bool {
+pub fn effect_picker_matches_query(name: &str, category: EffectCategory, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     query.is_empty()
         || name.to_lowercase().contains(&query)
-        || category.to_lowercase().contains(&query)
+        || category.as_str().contains(&query)
         || effect_category_label(category)
             .to_lowercase()
             .contains(&query)
@@ -161,12 +161,12 @@ pub fn effect_picker_matches_query(name: &str, category: &str, query: &str) -> b
 /// nothing to scope to, and a scope that would target nothing is dropped
 /// (§6.6), so a result shorter than two means "show no selector".
 #[must_use]
-pub fn available_add_layer_scopes(groups: &[LiveZoneView]) -> Vec<AddLayerScope> {
-    if groups.len() < 2 {
+pub fn available_add_layer_scopes(zones: &[ZoneResource]) -> Vec<AddLayerScope> {
+    if zones.len() < 2 {
         return Vec::new();
     }
-    let has_lights = groups.iter().any(|group| group.role != ZoneRole::Display);
-    let has_screens = groups.iter().any(|group| group.role == ZoneRole::Display);
+    let has_lights = zones.iter().any(|zone| zone.role != ZoneRole::Display);
+    let has_screens = zones.iter().any(|zone| zone.role == ZoneRole::Display);
     let mut scopes = vec![AddLayerScope::ThisSurface];
     if has_lights {
         scopes.push(AddLayerScope::AllZones);
@@ -178,28 +178,28 @@ pub fn available_add_layer_scopes(groups: &[LiveZoneView]) -> Vec<AddLayerScope>
     scopes
 }
 
-/// Resolve a scope to the render-group ids that should receive the layer,
+/// Resolve a scope to the render-zone ids that should receive the layer,
 /// in scene order. Targets are deduplicated so a scope can never queue the
 /// same surface twice.
 #[must_use]
 pub fn resolve_add_layer_targets(
     scope: AddLayerScope,
-    groups: &[LiveZoneView],
-    selected_group_id: &str,
+    zones: &[ZoneResource],
+    selected_zone_id: &str,
 ) -> Vec<String> {
     match scope {
-        AddLayerScope::ThisSurface => vec![selected_group_id.to_owned()],
-        AddLayerScope::AllZones => groups
+        AddLayerScope::ThisSurface => vec![selected_zone_id.to_owned()],
+        AddLayerScope::AllZones => zones
             .iter()
-            .filter(|group| group.role != ZoneRole::Display)
-            .map(|group| group.id.to_string())
+            .filter(|zone| zone.role != ZoneRole::Display)
+            .map(|zone| zone.id.to_string())
             .collect(),
-        AddLayerScope::AllScreens => groups
+        AddLayerScope::AllScreens => zones
             .iter()
-            .filter(|group| group.role == ZoneRole::Display)
-            .map(|group| group.id.to_string())
+            .filter(|zone| zone.role == ZoneRole::Display)
+            .map(|zone| zone.id.to_string())
             .collect(),
-        AddLayerScope::WholeScene => groups.iter().map(|group| group.id.to_string()).collect(),
+        AddLayerScope::WholeScene => zones.iter().map(|zone| zone.id.to_string()).collect(),
     }
 }
 
@@ -241,84 +241,47 @@ pub fn media_layer_source_for(asset_id: AssetId) -> LayerSource {
 pub fn default_blend_for_added_layer(
     source: &LayerSource,
     existing_layer_count: usize,
-) -> LayerBlendMode {
+) -> BlendMode {
     if existing_layer_count > 0 && matches!(source, LayerSource::Effect { .. }) {
-        LayerBlendMode::Screen
+        BlendMode::Screen
     } else {
-        LayerBlendMode::Alpha
-    }
-}
-
-/// Human-readable description of a layer's content source. `media_names`
-/// resolves asset ids to filenames and `effect_names` resolves effect ids
-/// to their registry display name; an id with no match falls back to the
-/// bare kind ("Effect", "Media") — a raw UUID is never shown to the user
-/// (Spec 65 §15.2). An effect outside the HTML catalog, such as a native
-/// display face, has no resolvable name and reads simply as "Effect".
-// Superseded in the live UI by the row's split title/kind rendering, but
-// kept as the leptos-free pinned-contract function the §15.2 no-raw-UUID
-// test exercises.
-#[allow(dead_code)]
-#[must_use]
-pub fn layer_source_label(
-    source: &LayerSource,
-    media_names: &HashMap<String, String>,
-    effect_names: &HashMap<String, String>,
-) -> String {
-    match source {
-        LayerSource::Effect { effect_id, .. } => {
-            let id = effect_id.to_string();
-            effect_names
-                .get(&id)
-                .map(|name| format!("Effect {name}"))
-                .unwrap_or_else(|| "Effect".to_owned())
-        }
-        LayerSource::Media { asset_id, .. } => {
-            let id = asset_id.to_string();
-            media_names
-                .get(&id)
-                .map(|name| format!("Media {name}"))
-                .unwrap_or_else(|| "Media".to_owned())
-        }
-        LayerSource::ScreenRegion { .. } => "Screen region".to_owned(),
-        LayerSource::WebViewport { url, .. } => format!("Web {url}"),
-        LayerSource::ColorFill { .. } => "Color fill".to_owned(),
+        BlendMode::Alpha
     }
 }
 
 /// Snake-case wire token for a blend mode.
 #[must_use]
-pub fn blend_value(mode: LayerBlendMode) -> &'static str {
+pub fn blend_value(mode: BlendMode) -> &'static str {
     match mode {
-        LayerBlendMode::Replace => "replace",
-        LayerBlendMode::Alpha => "alpha",
-        LayerBlendMode::Add => "add",
-        LayerBlendMode::Screen => "screen",
-        LayerBlendMode::Multiply => "multiply",
-        LayerBlendMode::Overlay => "overlay",
-        LayerBlendMode::SoftLight => "soft_light",
-        LayerBlendMode::ColorDodge => "color_dodge",
-        LayerBlendMode::Difference => "difference",
-        LayerBlendMode::Tint => "tint",
-        LayerBlendMode::LumaReveal => "luma_reveal",
+        BlendMode::Replace => "replace",
+        BlendMode::Alpha => "alpha",
+        BlendMode::Add => "add",
+        BlendMode::Screen => "screen",
+        BlendMode::Multiply => "multiply",
+        BlendMode::Overlay => "overlay",
+        BlendMode::SoftLight => "soft_light",
+        BlendMode::ColorDodge => "color_dodge",
+        BlendMode::Difference => "difference",
+        BlendMode::Tint => "tint",
+        BlendMode::LumaReveal => "luma_reveal",
     }
 }
 
 /// Parse a blend-mode token, defaulting to `Alpha` for an unknown value.
 #[must_use]
-pub fn parse_blend(value: &str) -> LayerBlendMode {
+pub fn parse_blend(value: &str) -> BlendMode {
     match value {
-        "replace" => LayerBlendMode::Replace,
-        "add" => LayerBlendMode::Add,
-        "screen" => LayerBlendMode::Screen,
-        "multiply" => LayerBlendMode::Multiply,
-        "overlay" => LayerBlendMode::Overlay,
-        "soft_light" => LayerBlendMode::SoftLight,
-        "color_dodge" => LayerBlendMode::ColorDodge,
-        "difference" => LayerBlendMode::Difference,
-        "tint" => LayerBlendMode::Tint,
-        "luma_reveal" => LayerBlendMode::LumaReveal,
-        _ => LayerBlendMode::Alpha,
+        "replace" => BlendMode::Replace,
+        "add" => BlendMode::Add,
+        "screen" => BlendMode::Screen,
+        "multiply" => BlendMode::Multiply,
+        "overlay" => BlendMode::Overlay,
+        "soft_light" => BlendMode::SoftLight,
+        "color_dodge" => BlendMode::ColorDodge,
+        "difference" => BlendMode::Difference,
+        "tint" => BlendMode::Tint,
+        "luma_reveal" => BlendMode::LumaReveal,
+        _ => BlendMode::Alpha,
     }
 }
 

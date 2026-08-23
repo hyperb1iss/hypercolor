@@ -17,9 +17,6 @@ available for real load testing.
 - `axum`: server-side Axum WebSocket upgrade handler.
 - `events`, `canvas`, `raf`, `prelude`: browser helper modules, gated to
   `wasm32`.
-- `webgpu`: extends `canvas` with a `wgpu` surface for GPU canvas access.
-- `leptos`: Leptos-specific adapters.
-- `devtools`: reserved for diagnostics.
 
 Default features are empty. Consumers opt into exactly the runtime surface they
 need.

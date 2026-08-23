@@ -6,9 +6,9 @@ weight = 80
 
 Govee devices connect over your local network using Govee's LAN UDP protocol. Discovery is automatic once you enable LAN control in the Govee Home app. A cloud API key is optional and only needed for inventory enrichment when LAN is unavailable for a device.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 LAN control must be enabled **per device** in the Govee Home app before Hypercolor can discover it. Every device you want Hypercolor to control needs its own activation; it is not a global setting. This is the most common reason Govee devices do not appear in `hypercolor devices list`.
-{% end %}
+{% </callout> %}
 
 ## Prerequisites
 
@@ -25,9 +25,9 @@ Open the Govee Home app on your phone and follow these steps for each device you
 3. Scroll to find **LAN Control** and toggle it on.
 4. The device should confirm the change. Repeat for every Govee device.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Not every Govee SKU supports LAN control. If you do not see the LAN Control toggle for a device, check the [compatibility matrix](@/hardware/compatibility.md) to verify your model. Cloud-only models can still be used if you configure a cloud API key.
-{% end %}
+{% </callout> %}
 
 ## Step 2: Discover Govee devices
 
@@ -53,7 +53,7 @@ curl -X POST http://localhost:9420/api/v1/devices/discover \
 
 Open `http://localhost:9420`, navigate to **Devices**, and click **Discover**.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## Network requirements
 

@@ -15,8 +15,8 @@ use super::reducer::branch_requires_materialization;
 use super::{
     CaptureSourceId, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
     ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteLease,
-    ScreenByteReservation, ScreenPhysicalReductionDescriptor, ScreenPublicationExecutor,
-    ScreenPublicationKind, ScreenPublicationResidency,
+    ScreenByteReservation, ScreenConsumerBranchId, ScreenPhysicalReductionDescriptor,
+    ScreenPublicationExecutor, ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const TARGET_PIXEL_BYTES: u64 = 4;
@@ -38,6 +38,22 @@ impl ScreenPlanGeneration {
             .checked_add(1)
             .map(Self)
             .ok_or(ScreenPlanError::GenerationExhausted)
+    }
+}
+
+/// Revision of one consumer registration's exact branch route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScreenConsumerBranchRevision(u64);
+
+impl ScreenConsumerBranchRevision {
+    /// Plan generation where this registration last changed exact branches.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    const fn from_generation(generation: ScreenPlanGeneration) -> Self {
+        Self(generation.get())
     }
 }
 
@@ -106,6 +122,34 @@ impl ScreenPlanTransactionId {
 pub struct ScreenBranchDemand {
     descriptor: ResolvedScreenPublicationDescriptor,
     requested_hz: NonZeroU32,
+}
+
+/// One registration-to-canonical-branch route in a committed plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenConsumerBranchRoute {
+    consumer_branch_id: ScreenConsumerBranchId,
+    revision: ScreenConsumerBranchRevision,
+    branch_index: usize,
+}
+
+impl ScreenConsumerBranchRoute {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Revision of this registration's exact descriptor route.
+    #[must_use]
+    pub const fn revision(self) -> ScreenConsumerBranchRevision {
+        self.revision
+    }
+
+    /// Canonical branch index in the same committed plan.
+    #[must_use]
+    pub const fn branch_index(self) -> usize {
+        self.branch_index
+    }
 }
 
 impl ScreenBranchDemand {
@@ -259,6 +303,7 @@ pub struct ScreenCapturePlan {
     demand_revision: InputPublicationDemandRevision,
     branches: Arc<Vec<ScreenBranchDemand>>,
     physical_reductions: Arc<Vec<ScreenPhysicalReductionDemand>>,
+    consumer_routes: Arc<Vec<ScreenConsumerBranchRoute>>,
     compatibility_surface: Option<usize>,
     compatibility_zones: Option<usize>,
 }
@@ -286,6 +331,24 @@ impl ScreenCapturePlan {
     #[must_use]
     pub fn physical_reductions(&self) -> &[ScreenPhysicalReductionDemand] {
         self.physical_reductions.as_slice()
+    }
+
+    /// ID-sorted routes from consumer registrations to canonical branches.
+    #[must_use]
+    pub fn consumer_routes(&self) -> &[ScreenConsumerBranchRoute] {
+        self.consumer_routes.as_slice()
+    }
+
+    /// Route owned by one consumer registration.
+    #[must_use]
+    pub fn consumer_route(
+        &self,
+        consumer_branch_id: ScreenConsumerBranchId,
+    ) -> Option<ScreenConsumerBranchRoute> {
+        self.consumer_routes
+            .binary_search_by_key(&consumer_branch_id, |route| route.consumer_branch_id)
+            .ok()
+            .and_then(|index| self.consumer_routes.get(index).copied())
     }
 
     /// Index of the ordinary branch selected by the compatibility mirror.
@@ -328,6 +391,7 @@ impl Default for ScreenCapturePlan {
             demand_revision: InputPublicationDemandRevision::default(),
             branches: Arc::new(Vec::new()),
             physical_reductions: Arc::new(Vec::new()),
+            consumer_routes: Arc::new(Vec::new()),
             compatibility_surface: None,
             compatibility_zones: None,
         }
@@ -2426,6 +2490,12 @@ pub enum ScreenPlanError {
         /// Rejected candidate revision.
         candidate: InputPublicationDemandRevision,
     },
+    /// One consumer registration identity named more than one exact demand.
+    #[error("screen consumer branch identity {consumer_branch_id:?} is duplicated")]
+    DuplicateConsumerBranchId {
+        /// Duplicated stable consumer identity.
+        consumer_branch_id: ScreenConsumerBranchId,
+    },
     /// Checked descriptor resource arithmetic exceeded `u64`.
     #[error(
         "resource arithmetic overflow for {resource:?}: requested {requested}, available {available}, descriptor {descriptor:?}"
@@ -3289,22 +3359,38 @@ fn canonicalize_candidate(
         reserve_one(&mut resolved)?;
         resolved.push(demand);
     }
-    resolved.sort_unstable_by(|left, right| left.descriptor().cmp(right.descriptor()));
+    resolved.sort_unstable_by(|left, right| {
+        left.descriptor()
+            .cmp(right.descriptor())
+            .then_with(|| left.consumer_branch_id().cmp(&right.consumer_branch_id()))
+    });
 
     let mut branches: Vec<ScreenBranchDemand> = Vec::new();
+    let mut route_targets = Vec::new();
     for demand in resolved {
-        let (descriptor, requested_hz) = demand.into_parts();
-        if let Some(previous) = branches.last_mut()
+        let (consumer_branch_id, descriptor, requested_hz) = demand.into_parts();
+        let branch_index = if let Some(previous) = branches.last_mut()
             && previous.descriptor == descriptor
         {
             previous.requested_hz = previous.requested_hz.max(requested_hz);
-            continue;
-        }
-        reserve_one(&mut branches)?;
-        branches.push(ScreenBranchDemand {
-            descriptor,
-            requested_hz,
-        });
+            branches.len() - 1
+        } else {
+            reserve_one(&mut branches)?;
+            branches.push(ScreenBranchDemand {
+                descriptor,
+                requested_hz,
+            });
+            branches.len() - 1
+        };
+        reserve_one(&mut route_targets)?;
+        route_targets.push((consumer_branch_id, branch_index));
+    }
+    route_targets.sort_unstable_by_key(|(consumer_branch_id, _)| *consumer_branch_id);
+    if let Some(consumer_branch_id) = route_targets
+        .windows(2)
+        .find_map(|routes| (routes[0].0 == routes[1].0).then_some(routes[0].0))
+    {
+        return Err(ScreenPlanError::DuplicateConsumerBranchId { consumer_branch_id });
     }
 
     let compatibility_surface = compatibility
@@ -3324,19 +3410,49 @@ fn canonicalize_candidate(
         .transpose()?;
     let physical_reductions = group_physical_reductions(&branches)?;
 
+    let routes_changed = current.consumer_routes.len() != route_targets.len()
+        || current.consumer_routes.iter().zip(&route_targets).any(
+            |(current_route, (consumer_branch_id, branch_index))| {
+                current_route.consumer_branch_id != *consumer_branch_id
+                    || current.branches[current_route.branch_index].descriptor
+                        != branches[*branch_index].descriptor
+            },
+        );
     let changed = current.branches.as_slice() != branches.as_slice()
         || current.compatibility_surface != compatibility_surface
-        || current.compatibility_zones != compatibility_zones;
+        || current.compatibility_zones != compatibility_zones
+        || routes_changed;
     let generation = if changed {
         current.generation.next()?
     } else {
         current.generation
     };
+    let mut consumer_routes = Vec::new();
+    consumer_routes
+        .try_reserve_exact(route_targets.len())
+        .map_err(|_| ScreenPlanError::AllocationFailed)?;
+    for (consumer_branch_id, branch_index) in route_targets {
+        let revision = current
+            .consumer_route(consumer_branch_id)
+            .filter(|route| {
+                current.branches[route.branch_index].descriptor == branches[branch_index].descriptor
+            })
+            .map_or_else(
+                || ScreenConsumerBranchRevision::from_generation(generation),
+                ScreenConsumerBranchRoute::revision,
+            );
+        consumer_routes.push(ScreenConsumerBranchRoute {
+            consumer_branch_id,
+            revision,
+            branch_index,
+        });
+    }
     Ok(ScreenCapturePlan {
         generation,
         demand_revision,
         branches: Arc::new(branches),
         physical_reductions: Arc::new(physical_reductions),
+        consumer_routes: Arc::new(consumer_routes),
         compatibility_surface,
         compatibility_zones,
     })

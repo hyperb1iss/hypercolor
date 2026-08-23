@@ -114,6 +114,7 @@ fn discovery_settings_follow_driver_descriptors() {
 #[test]
 fn driver_list_response_deserializes_daemon_data() {
     let json = r#"{
+        "total": 1,
         "items": [{
             "descriptor": {
                 "id": "testnet",

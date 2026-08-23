@@ -11,12 +11,14 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::effect::{ControlValue, EffectId};
+use crate::control::ControlValue;
+use crate::effect::EffectId;
 
 // ── Strong IDs ─────────────────────────────────────────────────────────────
 
 /// Opaque identifier for an effect preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PresetId(pub Uuid);
 
 impl PresetId {
@@ -76,6 +78,7 @@ impl FromStr for PresetId {
 
 /// Opaque identifier for a playlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PlaylistId(pub Uuid);
 
 impl PlaylistId {
@@ -108,6 +111,7 @@ impl FromStr for PlaylistId {
 
 /// Opaque identifier for a playlist item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PlaylistItemId(pub Uuid);
 
 impl PlaylistItemId {
@@ -142,6 +146,7 @@ impl FromStr for PlaylistItemId {
 
 /// A single favorited effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FavoriteEffect {
     /// Canonical effect identifier.
     pub effect_id: EffectId,
@@ -153,6 +158,7 @@ pub struct FavoriteEffect {
 
 /// A saved parameter snapshot for one effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectPreset {
     pub id: PresetId,
     pub name: String,
@@ -172,6 +178,7 @@ pub struct EffectPreset {
 
 /// Target entity for one playlist slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlaylistItemTarget {
     /// Run an effect directly.
@@ -182,6 +189,7 @@ pub enum PlaylistItemTarget {
 
 /// One item in a playlist sequence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PlaylistItem {
     pub id: PlaylistItemId,
     pub target: PlaylistItemTarget,
@@ -191,6 +199,7 @@ pub struct PlaylistItem {
 
 /// A user-defined effect sequence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectPlaylist {
     pub id: PlaylistId,
     pub name: String,

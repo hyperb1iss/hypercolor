@@ -14,8 +14,7 @@ fn timed_input_event_payload_round_trips_losslessly() {
         "at_ms": 4_321,
         "seq": 91,
         "physical_code": "evdev:key:30",
-        "repeat_count": 4,
-        "future_metadata": {"generation": 7}
+        "repeat_count": 4
     });
 
     let decoded = TimedInputEventPayload::decode(&wire).expect("decode timed event");
@@ -28,8 +27,8 @@ fn timed_input_event_payload_round_trips_losslessly() {
 }
 
 #[test]
-fn timed_input_event_payload_accepts_prior_event_only_shape() {
-    let legacy = serde_json::json!({
+fn timed_input_event_payload_rejects_prior_event_only_shape() {
+    let incomplete = serde_json::json!({
         "event": {
             "kind": "mouse_button",
             "source_id": "host:mouse-1",
@@ -38,19 +37,43 @@ fn timed_input_event_payload_accepts_prior_event_only_shape() {
         }
     });
 
-    let decoded = TimedInputEventPayload::decode(&legacy).expect("decode legacy event");
-    assert_eq!(decoded.at_ms, 0);
-    assert_eq!(decoded.seq, 0);
-    assert_eq!(decoded.physical_code, None);
-    assert_eq!(decoded.repeat_count, 1);
+    assert!(TimedInputEventPayload::decode(&incomplete).is_err());
 }
 
 #[test]
 fn timed_input_event_payload_rejects_zero_repeat_multiplicity() {
     let invalid = serde_json::json!({
         "event": {"kind": "key"},
+        "at_ms": 1,
+        "seq": 2,
         "repeat_count": 0
     });
 
     assert!(TimedInputEventPayload::decode(&invalid).is_err());
+}
+
+#[test]
+fn timed_input_event_payload_emits_ordinary_repeat_multiplicity() {
+    let wire = serde_json::json!({
+        "event": {"kind": "key"},
+        "at_ms": 1,
+        "seq": 2,
+        "repeat_count": 1
+    });
+
+    let decoded = TimedInputEventPayload::decode(&wire).expect("decode ordinary edge");
+    assert_eq!(decoded.encode(), wire);
+}
+
+#[test]
+fn timed_input_event_payload_rejects_unknown_top_level_fields() {
+    let wire = serde_json::json!({
+        "event": {"kind": "key"},
+        "at_ms": 1,
+        "seq": 2,
+        "repeat_count": 1,
+        "future_metadata": {"generation": 7}
+    });
+
+    assert!(TimedInputEventPayload::decode(&wire).is_err());
 }

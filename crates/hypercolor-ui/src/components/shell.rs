@@ -198,8 +198,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
             .into_iter()
             .filter(|entry| {
                 entry.effect.runnable
-                    && (entry.matches_search(&q)
-                        || entry.effect.category.to_lowercase().contains(&q))
+                    && (entry.matches_search(&q) || entry.effect.category.as_str().contains(&q))
             })
             .map(|entry| PaletteEntry::Effect(Box::new(entry.effect)))
             .take(10)
@@ -209,7 +208,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
         // scene is marked so Enter on it is an honest no-op.
         let active_id = scenes_ctx
             .active
-            .with(|active| active_saved_scene_id(active.as_ref()).map(str::to_owned));
+            .with(|active| active_saved_scene_id(active.as_ref()));
         entries.extend(
             scenes_ctx
                 .scenes
@@ -320,7 +319,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                 let dot = zone
                                     .color
                                     .clone()
-                                    .unwrap_or_else(|| "var(--color-electric-purple)".to_owned());
+                                    .unwrap_or_else(|| "var(--color-accent)".to_owned());
                                 view! {
                                     <span
                                         class="inline-flex items-center gap-1.5 shrink-0 text-[9px] \
@@ -368,12 +367,12 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 let id = effect.id.clone();
                                                 let name = effect.name.clone();
                                                 let desc = effect.description.clone();
-                                                let category = effect.category.clone();
+                                                let category = effect.category.as_str();
 
                                                 view! {
                                                     <button
                                                         class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                               hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
+                                                               hover:bg-accent/[0.05] btn-press group animate-enter-up"
                                                         style=row_style
                                                         id=format!("palette-opt-{i}")
                                                         role="option"
@@ -403,7 +402,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 view! {
                                                     <button
                                                         class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                               hover:bg-electric-purple/[0.05] btn-press group animate-enter-up"
+                                                               hover:bg-accent/[0.05] btn-press group animate-enter-up"
                                                         style=row_style
                                                         id=format!("palette-opt-{i}")
                                                         role="option"
@@ -432,7 +431,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                             </span>
                                                             {locked.then(|| view! {
                                                                 <span
-                                                                    class="flex shrink-0 text-electric-yellow/70"
+                                                                    class="flex shrink-0 text-status-warning/70"
                                                                     title="Snapshot-locked scene"
                                                                 >
                                                                     <Icon icon=LuLock width="11px" height="11px" />
@@ -441,7 +440,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                         </div>
                                                         <span
                                                             class="text-[10px] shrink-0 px-2 py-0.5 rounded-full"
-                                                            style="background: rgba(225, 53, 255, 0.10); color: var(--color-electric-purple)"
+                                                            style="background: rgba(225, 53, 255, 0.10); color: var(--color-accent)"
                                                         >
                                                             "Scene"
                                                         </span>

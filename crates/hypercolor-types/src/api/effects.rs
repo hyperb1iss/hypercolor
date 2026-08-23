@@ -3,13 +3,64 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use strum::{Display, EnumString, VariantNames};
 
-use crate::api::common::Pagination;
-use crate::effect::{ControlDefinition, ControlValue, PresetTemplate};
+use crate::api::envelope::ListResponse;
+use crate::control::ControlValue;
+pub use crate::effect::EffectCategory;
+use crate::effect::{ControlDefinition, EffectSource, PresetTemplate};
+
+/// Rendering implementation used by an effect.
+///
+/// The catalog publishes the implementation kind without leaking the source
+/// file path carried by the engine's internal [`EffectSource`].
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    EnumString,
+    Display,
+    VariantNames,
+)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum EffectSourceKind {
+    Native,
+    Html,
+    Shader,
+}
+
+impl EffectSourceKind {
+    /// Canonical wire spelling for this source kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Html => "html",
+            Self::Shader => "shader",
+        }
+    }
+}
+
+impl From<&EffectSource> for EffectSourceKind {
+    fn from(source: &EffectSource) -> Self {
+        match source {
+            EffectSource::Native { .. } => Self::Native,
+            EffectSource::Html { .. } => Self::Html,
+            EffectSource::Shader { .. } => Self::Shader,
+        }
+    }
+}
 
 /// Origin of a preset in an effect's unified preset stack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EffectPresetOrigin {
     Bundled,
@@ -17,7 +68,8 @@ pub enum EffectPresetOrigin {
 }
 
 /// One bundled or saved preset projected through an effect-scoped API.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectPresetSummary {
     pub id: String,
     pub name: String,
@@ -31,18 +83,10 @@ pub struct EffectPresetSummary {
 }
 
 /// Response for `GET /api/v1/effects/{id}/presets`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct EffectPresetListResponse {
-    pub items: Vec<EffectPresetSummary>,
-    pub pagination: Pagination,
-}
+pub type EffectPresetListResponse = ListResponse<EffectPresetSummary>;
 
 /// Response for `GET /api/v1/effects`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct EffectListResponse {
-    pub items: Vec<EffectSummary>,
-    pub pagination: Pagination,
-}
+pub type EffectListResponse = ListResponse<EffectSummary>;
 
 /// One effect in the list response.
 ///
@@ -50,14 +94,15 @@ pub struct EffectListResponse {
 /// request asked for them via `include=controls,presets`, so the default
 /// list shape is unchanged and a client that ignores the parameter sees
 /// exactly the payload it saw before.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectSummary {
     pub id: String,
     pub name: String,
     pub description: String,
     pub author: String,
-    pub category: String,
-    pub source: String,
+    pub category: EffectCategory,
+    pub source: EffectSourceKind,
     pub runnable: bool,
     pub tags: Vec<String>,
     pub version: String,
@@ -76,7 +121,8 @@ pub struct EffectSummary {
 }
 
 /// Typed source requirements declared by an effect.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectCapabilitySet {
     #[serde(default)]
     pub audio_reactive: bool,
@@ -87,14 +133,15 @@ pub struct EffectCapabilitySet {
 }
 
 /// Response for `GET /api/v1/effects/{id}`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectDetailResponse {
     pub id: String,
     pub name: String,
     pub description: String,
     pub author: String,
-    pub category: String,
-    pub source: String,
+    pub category: EffectCategory,
+    pub source: EffectSourceKind,
     pub runnable: bool,
     pub tags: Vec<String>,
     pub version: String,
@@ -108,11 +155,11 @@ pub struct EffectDetailResponse {
 }
 
 /// Response for `POST /api/v1/effects/install`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct InstalledEffectResponse {
     pub id: String,
     pub name: String,
-    pub source: String,
     pub path: String,
     pub controls: usize,
     pub presets: usize,
@@ -123,6 +170,7 @@ pub struct InstalledEffectResponse {
 /// Counts describe what the rescan changed in the registry, so an
 /// all-zero response means the effect directories were already current.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RescanResponse {
     pub added: usize,
     pub removed: usize,

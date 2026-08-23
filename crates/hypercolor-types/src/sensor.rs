@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Published system snapshot shared across render, API, and overlays.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SystemSnapshot {
     /// Aggregate CPU load across all cores (0.0–100.0).
     pub cpu_load_percent: f32,
@@ -158,6 +159,7 @@ impl Default for SystemSnapshot {
 
 /// A single host sensor reading.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SensorReading {
     /// Stable sensor label.
     pub label: String,
@@ -197,6 +199,7 @@ impl SensorReading {
 
 /// Units exposed by system sensors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SensorUnit {
     Celsius,

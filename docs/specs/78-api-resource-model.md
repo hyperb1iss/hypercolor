@@ -1,6 +1,6 @@
 # Spec 78: Canonical API Resource Model
 
-**Status:** LOCKED rev 8 (2026-08-17) — four codex review rounds (finding trajectory 20 → 8 → 1 → 0), one post-convergence coordination update, and one owner reconciliation pass against the 2026-08-17 merge sweep (ten PRs landed between rev 5 and lock (#195-#204: six Spec 76 waves, four CI/build fixes); every §7 amendment re-verified against main, dispositions in §10).
+**Status:** LOCKED rev 9 (2026-08-19) — four codex review rounds (finding trajectory 20 → 8 → 1 → 0), one post-convergence coordination update, and one owner reconciliation pass against the 2026-08-17 merge sweep (ten PRs landed between rev 5 and lock (#195-#204: six Spec 76 waves, four CI/build fixes); every §7 amendment re-verified against main, dispositions in §10).
 **Findings base:** `docs/review/api-surface-review-2026-08-16.md` — full-surface review (REST route table read + four audit lanes: WS, MCP, clients, OpenAPI/security/docs) with file:line receipts, verified against the tree on 2026-08-16. Local artifact (`docs/review/` is gitignored); re-check line numbers at execution time.
 **Relationship to Spec 76:** Spec 76 unifies the *internals* (domain services, typed contracts, envelope, WS registry, OpenAPI catalog). This spec redesigns the *surface* those mechanics serve: the resource model, the route set, and the naming. It amends Spec 76 where the two touch (§7) and subsumes wave C1b (§7.3).
 **Authorship model:** same as Spec 76 — Fable owns the contracts and writes the contract-bearing code first; Opus 5 workers execute mechanical waves; Codex reviews per PR.
@@ -60,7 +60,7 @@ All mutations route through `SceneMutation`/`commit_scene` (Spec 76 §2.3) — `
 
 `GET /scene` returns the scene metadata (`id`, `name`, `kind`, `is_default`, `unassigned_behavior`, `layout_id`, `revision`) and every **authored zone** with its full layer stack: layer ids, effect refs, control values, blend/opacity. Clients never synthesize ids: the "synthetic legacy layer" convention (zone id passed as both zone and layer id — `zone_id` post-C1b; receipts `tui/src/client/rest.rs:361-366`, `ui/src/pages/effects/zone_controls.rs:255` from the pre-C1b tree) is deleted along with the routes it forged. A client patches the real layer id it read from `/scene` (or from the apply response, §2.3). No zone-scoped controls route exists — conditional shorthand routes ("valid only when the stack has one layer") are rejected as a class.
 
-**Display faces stay display-domain.** Runtime default display faces materialize as `default_display_groups` outside the authored scene (`core/src/scene/mod.rs:1893-1934`), and their controls live in display preferences. They are deliberately NOT projected into `/scene`: display composition is owned by `/displays/{id}/face` + `face/controls` + `face/composition`, which this spec retains unchanged. One owner per pixel path: authored zones belong to `/scene`, faces belong to `/displays`.
+**Display faces stay display-domain.** Runtime default display faces materialize as `default_display_zones` outside the authored scene (`core/src/scene/mod.rs:1526-1598`), and their controls live in display preferences. They are deliberately NOT projected into `/scene`: display composition is owned by `/displays/{id}/face` + `face/controls` + `face/composition`, which this spec retains unchanged. One owner per pixel path: authored zones belong to `/scene`, faces belong to `/displays`.
 
 ### 1.4 Layer identity lifecycle
 
@@ -209,10 +209,10 @@ MCP stays a curated concierge, but every tool becomes an honest, thin projection
 Spec 76's 3.2 arc landed in full before this lock (registry contract PR #193, wire-stable daemon adoption #196, keyed wire migration #203). Rev 5 wrote this section as amendments to 3.2's acceptance criteria; that ship has sailed, so each item below is now either **struck as landed** (with the PR that shipped it) or **owned by a Spec 78 wave**. Re-verified against main at lock time:
 
 **Landed — struck from the workload:**
-- The zone-vocabulary renames (`group_id`/`group_name`, `RenderGroupChanged`, WS message fields) shipped across C1b (#195) and 3.2c (#203); the 3.2c verifier's sweep confirms zero group-vocabulary survivors on any WS path. `groups_revision` inside persisted scenes remains the deliberate carve-out.
+- The zone-vocabulary renames shipped across C1b (#195), 3.2c (#203), and the scene-schema migration. The current REST, WS, persisted scene, renderer, and telemetry surfaces use `zone` vocabulary without a group-named compatibility carve-out.
 - RPC tags `0x80`/`0x81` and their codec were deleted by wave C1e (#191).
 
-**78.3 owns (verified still open at lock):**
+**78.3 owns — all seven shipped since lock; retained as the record of what the wave delivered:**
 - Drop the hello payload's singleton `effect`/`active_preset_id` fields (`active_preset_id` confirmed live at `ws/protocol.rs:912`) — both UIs consume `/scene` + events instead. Give `EffectControlChanged` zone + layer identity.
 - `zone_layout_preview` becomes active-scene-only and zone-keyed; the caller-selected `scene_id` field (confirmed live at `ws/protocol.rs:523,528`) is deleted.
 - Every `define_ws_topics!` entry declares a **backpressure class** — `Lossless` (awaited send), `LatestWins` (watch semantics), or `DropWithNotice` (try-send + `backpressure` message) — replacing today's ad-hoc behaviors; the manifest states each topic's class.
@@ -227,7 +227,7 @@ Spec 76's 3.2 arc landed in full before this lock (registry contract PR #193, wi
 
 ### 7.2 OpenAPI (amends wave 3.3)
 
-Wave 3.3's registration-helper catalog is implemented with `utoipa-axum`'s `OpenApiRouter` (utoipa 5.4 is already a workspace dep): route registration *is* spec registration, so drift is impossible rather than detectable. Acceptance criteria beyond Spec 76 §4.6: response schemas on every operation (today: zero catalog operations have any), true status codes (401/403/429 from security, 201/202 from the 17 handler sites, 101 for `/ws`), typed path parameters, and an extension hook so `ApiExtension` implementors contribute paths. The docs site's endpoint reference (`docs/content/api/rest.md`, 147 hand-written blocks) is generated from the emitted document; conceptual pages stay hand-written.
+Wave 3.3's registration-helper catalog is implemented with `utoipa-axum`'s `OpenApiRouter` (utoipa 5.4 is already a workspace dep): route registration *is* spec registration, so drift is impossible rather than detectable. Acceptance criteria beyond Spec 76 §4.6: response schemas on every operation (today: zero catalog operations have any), true status codes (401/403/429 from security, 201/202 from the 17 handler sites, 101 for `/ws`), typed path parameters, and an extension hook so `ApiExtension` implementors contribute paths. The docs site's endpoint reference (`docs/content/api/rest.md`) is to be generated from the emitted document; conceptual pages stay hand-written. **Not yet done:** the page still carries 116 hand-written `api_endpoint` blocks and no generator exists.
 
 ### 7.3 Wave C1b is consumed — it landed, and 78 deletes what it renamed
 
@@ -250,7 +250,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 **Error rendering rule for every wave:** every route this spec adds or rewrites renders the canonical `DomainError` envelope from its first commit. Spec 76 waves 2.1 and C1a are both landed (C1a merged 2026-08-16, PR #192), so the canonical envelope is the only error surface this spec ever touches; no new route may reintroduce a bespoke shape.
 
-**Route-inventory strategy:** Spec 76 wave 0.7's REST matrix remains the sole executable current-state pin, updated in every route-changing PR. Wave 78.1 additionally commits Appendix A as a **target manifest** (data, not a live assertion). A convergence test asserting live router ≡ Appendix A (Appendix A's scope: `/api/v1` JSON routes + `/health`; document routes excluded) activates at the end of wave 78.5 (the config-route rows landed with Spec 76 wave 4.3).
+**Route-inventory strategy:** Spec 76 wave 0.7's REST matrix remains the sole executable current-state pin, updated in every route-changing PR. Wave 78.1 additionally commits Appendix A as a **target manifest** (data, not a live assertion). A convergence test asserting live router ≡ Appendix A (Appendix A's scope: `/api/v1` JSON routes + `/health`; document routes excluded) is **active** at `daemon/tests/openapi_tests.rs:307`, pinning both the target and the live router at 82 paths.
 
 **78.0 — bug strikes** (independent, immediate; each lands regardless of the redesign)
 - 0a. Server-side effect filters + `Query` extractor (fixes the CLI's dead flags; UI drops WASM filtering; MCP drops its private filter).

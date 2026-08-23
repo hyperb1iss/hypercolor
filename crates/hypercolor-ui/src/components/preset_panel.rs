@@ -10,7 +10,7 @@ use crate::control_value_json::controls_to_json;
 use crate::toasts;
 use hypercolor_color::Hsl;
 use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 mod actions;
 
@@ -89,7 +89,7 @@ pub fn PresetToolbar(
     accent_rgb: Signal<String>,
     /// Callback fired after a preset is applied (so parent can refresh controls).
     #[prop(into)]
-    on_preset_applied: Callback<()>,
+    on_preset_applied: Callback<(api::EffectLayerTarget, api::EffectLayerTarget)>,
     /// The active preset ID from the engine (restored on effect switch).
     #[prop(into, optional)]
     active_preset_id_signal: Option<Signal<Option<String>>>,
@@ -182,14 +182,27 @@ pub fn PresetToolbar(
 
     // Select preset by value string (replaces the old on_select that took web_sys::Event)
     let on_select_value = move |val: String| {
+        let previous_selection = selected_id.get_untracked();
+        let Some(active_effect_id) = effect_id.get_untracked() else {
+            set_selected_id.set(previous_selection);
+            return;
+        };
+        let target_zone = zones_ctx.focused_zone_id_untracked();
+        let Some((observed_target, expected_revision)) =
+            zones_ctx.effect_target_untracked(&active_effect_id, target_zone.as_deref())
+        else {
+            set_selected_id.set(previous_selection);
+            toasts::toast_error("The selected effect is no longer active");
+            return;
+        };
+
         if val.is_empty() {
             // "No preset" selected — reset controls to defaults
-            let previous_selection = selected_id.get_untracked();
             set_selected_id.set(None);
             let on_applied = on_preset_applied;
             leptos::task::spawn_local(async move {
-                match api::reset_controls().await {
-                    Ok(()) => on_applied.run(()),
+                match api::reset_effect_controls(&observed_target, expected_revision).await {
+                    Ok(target) => on_applied.run((observed_target, target)),
                     Err(error) => {
                         set_selected_id.set(previous_selection);
                         toasts::toast_error(&format!("Failed to reset controls: {error}"));
@@ -199,22 +212,23 @@ pub fn PresetToolbar(
             return;
         }
 
-        let previous_selection = selected_id.get_untracked();
         set_selected_id.set(Some(val.clone()));
         set_mode.set(ToolbarMode::Idle);
         let on_applied = on_preset_applied;
-        let Some(active_effect_id) = effect_id.get_untracked() else {
-            set_selected_id.set(previous_selection);
-            return;
-        };
-        let target_zone = zones_ctx.focused_zone_id_untracked();
         leptos::task::spawn_local(async move {
-            match api::apply_effect_preset(&active_effect_id, &val, target_zone.as_deref()).await {
-                Ok(()) => {
+            match api::apply_effect_preset(
+                &active_effect_id,
+                &val,
+                Some(&observed_target.zone_id),
+                expected_revision,
+            )
+            .await
+            {
+                Ok(target) => {
                     if target_zone.is_some() {
                         zones_ctx.refresh.run(());
                     }
-                    on_applied.run(());
+                    on_applied.run((observed_target, target));
                 }
                 Err(error) => {
                     set_selected_id.set(previous_selection);
@@ -260,6 +274,13 @@ pub fn PresetToolbar(
         let controls_json = controls_to_json(&values);
         let refresh = refresh_presets;
         let target_zone = zones_ctx.focused_zone_id_untracked();
+        let on_applied = on_preset_applied;
+        let Some((observed_target, expected_revision)) =
+            zones_ctx.effect_target_untracked(&eid, target_zone.as_deref())
+        else {
+            toasts::toast_error("The selected effect is no longer active");
+            return;
+        };
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
             let req = api::SavePresetRequest {
@@ -272,11 +293,18 @@ pub fn PresetToolbar(
             match api::create_preset(&req).await {
                 Ok(created) => {
                     let created_id = created.id.to_string();
-                    match api::apply_effect_preset(&eid, &created_id, target_zone.as_deref()).await
+                    match api::apply_effect_preset(
+                        &eid,
+                        &created_id,
+                        Some(&observed_target.zone_id),
+                        expected_revision,
+                    )
+                    .await
                     {
-                        Ok(()) => {
+                        Ok(target) => {
                             set_selected_id.set(Some(created_id));
                             toasts::toast_success("Preset created");
+                            on_applied.run((observed_target, target));
                             refresh();
                         }
                         Err(error) => {
@@ -870,7 +898,7 @@ fn PresetDropdownDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
 mod tests {
     use std::collections::HashMap;
 
-    use hypercolor_types::effect::ControlValue;
+    use hypercolor_types::control::ControlValue;
 
     use super::{preset_controls_modified, preset_display_label};
 

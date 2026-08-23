@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use utoipa::ToSchema;
 
 use crate::device::{DeviceInfo, DeviceTopologyHint};
 use crate::spatial::LedTopology;
@@ -60,22 +59,22 @@ pub fn slugify_slot_id(raw: &str) -> String {
     trimmed.to_owned()
 }
 
-/// Return true when a controller slot ID names the same physical zone.
+/// Return true when a controller slot ID names the same physical channel.
 #[must_use]
-pub fn slot_id_matches_zone_name(slot_id: &str, zone_name: &str) -> bool {
-    slot_id.eq_ignore_ascii_case(zone_name)
-        || slot_id.eq_ignore_ascii_case(&slugify_slot_id(zone_name))
-        || slot_alias_key(slot_id) == slot_alias_key(zone_name)
+pub fn slot_id_matches_channel_name(slot_id: &str, channel_name: &str) -> bool {
+    slot_id.eq_ignore_ascii_case(channel_name)
+        || slot_id.eq_ignore_ascii_case(&slugify_slot_id(channel_name))
+        || slot_alias_key(slot_id) == slot_alias_key(channel_name)
 }
 
-/// Symmetric comparison for layout zone names and attachment slot aliases.
+/// Symmetric comparison for channel names and attachment slot aliases.
 #[must_use]
-pub fn zone_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> bool {
+pub fn channel_name_matches_slot_alias(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {
             left.eq_ignore_ascii_case(right)
-                || slot_id_matches_zone_name(left, right)
-                || slot_id_matches_zone_name(right, left)
+                || slot_id_matches_channel_name(left, right)
+                || slot_id_matches_channel_name(right, left)
         }
         (None, None) => true,
         _ => false,
@@ -111,7 +110,8 @@ fn slot_alias_key(raw: &str) -> String {
 }
 
 /// Template category used for filtering and UI grouping.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum ComponentCategory {
     /// Standard fan lighting ring or fan frame.
     Fan,
@@ -202,6 +202,7 @@ impl<'de> Deserialize<'de> for ComponentCategory {
 
 /// Where an attachment template came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentOrigin {
     /// Shipped by Hypercolor.
@@ -212,7 +213,8 @@ pub enum ComponentOrigin {
 }
 
 /// Default visual footprint for placing an attachment in the layout editor.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentCanvasSize {
     /// Width as a normalized fraction of the canvas.
     pub width: f32,
@@ -234,6 +236,7 @@ impl Default for ComponentCanvasSize {
 /// Empty matcher fields are wildcards. If a template has no compatibility
 /// entries at all, it is considered globally compatible.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentCompatibility {
     /// Controller driver or protocol identifiers.
     #[serde(default)]
@@ -263,6 +266,7 @@ impl ComponentCompatibility {
 
 /// Reusable attachment layout template.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentTemplate {
     /// Stable template identifier.
     pub id: String,
@@ -301,6 +305,7 @@ pub struct ComponentTemplate {
     pub image_url: Option<String>,
     /// Optional physical dimensions in millimeters.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Vec<f32>>, min_items = 2, max_items = 2))]
     pub physical_size_mm: Option<(f32, f32)>,
 }
 
@@ -329,6 +334,7 @@ impl ComponentTemplate {
 
 /// TOML-friendly manifest wrapper for one template file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentTemplateManifest {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]
@@ -363,7 +369,8 @@ impl Default for ComponentTemplateManifest {
 }
 
 /// One physical controller attachment point.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentSlot {
     /// Stable slot identifier.
     pub id: String,
@@ -418,7 +425,8 @@ impl ComponentSlot {
 }
 
 /// Binding from a controller slot to a chosen attachment template.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentBinding {
     /// Slot receiving the attachment.
     pub slot_id: String,
@@ -449,7 +457,8 @@ impl ComponentBinding {
 }
 
 /// Attachment-derived zone suggestion for layout import and preview flows.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ComponentSuggestedZone {
     /// Source slot ID on the physical controller.
     pub slot_id: String,
@@ -478,6 +487,7 @@ pub struct ComponentSuggestedZone {
 
 /// Per-controller attachment state persisted in TOML.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceComponentProfile {
     /// Schema version for migrations.
     #[serde(default = "current_attachment_schema_version")]
@@ -505,10 +515,11 @@ impl Default for DeviceComponentProfile {
 }
 
 impl DeviceInfo {
-    /// Derive a default attachment profile from the device's discovered zones.
+    /// Derive a default attachment profile from the device's discovered
+    /// segments.
     ///
-    /// This gives every zone a stable slot ID and LED range even before the
-    /// daemon grows a dedicated attachment registry.
+    /// This gives every segment a stable slot ID and LED range even before
+    /// the daemon grows a dedicated attachment registry.
     #[must_use]
     pub fn default_attachment_profile(&self) -> DeviceComponentProfile {
         let mut led_start = 0_u32;
@@ -516,18 +527,18 @@ impl DeviceInfo {
         let slots = self
             .segments
             .iter()
-            .map(|zone| {
-                let slot_id = dedupe_slot_id(&mut slot_ids, &slugify_slot_id(&zone.name));
+            .map(|segment| {
+                let slot_id = dedupe_slot_id(&mut slot_ids, &slugify_slot_id(&segment.name));
                 let slot = ComponentSlot {
                     id: slot_id,
-                    name: zone.name.clone(),
+                    name: segment.name.clone(),
                     led_start,
-                    led_count: zone.led_count,
-                    suggested_categories: suggested_categories(&zone.topology),
+                    led_count: segment.led_count,
+                    suggested_categories: suggested_categories(&segment.topology),
                     allowed_templates: Vec::new(),
                     allow_custom: true,
                 };
-                led_start = led_start.saturating_add(zone.led_count);
+                led_start = led_start.saturating_add(segment.led_count);
                 slot
             })
             .collect();

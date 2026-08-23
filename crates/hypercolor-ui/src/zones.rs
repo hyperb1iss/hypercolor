@@ -10,6 +10,8 @@
 
 pub mod surface;
 
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
@@ -22,7 +24,7 @@ use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_zones};
 pub struct ZonesContext {
     /// The active scene, shared by every consumer. `None` while loading
     /// or when only the ephemeral default is running with no zones yet.
-    pub active_scene: Memo<Option<api::LiveSceneView>>,
+    pub active_scene: Memo<Option<api::SceneDocument>>,
     /// All zones of the active scene in scene order (LED zones and
     /// display Screens), as the UI presents them.
     pub zones: Memo<Vec<Surface>>,
@@ -79,6 +81,56 @@ impl ZonesContext {
                 .then_some(id)
         })
     }
+
+    /// Immutable effect-layer identity and scene revision at the write target.
+    pub fn effect_target_untracked(
+        &self,
+        effect_id: &str,
+        zone_id: Option<&str>,
+    ) -> Option<(api::EffectLayerTarget, u64)> {
+        self.active_scene
+            .with_untracked(|scene| effect_target_in_scene(scene.as_ref()?, effect_id, zone_id))
+    }
+}
+
+fn effect_target_in_scene(
+    scene: &api::SceneDocument,
+    effect_id: &str,
+    zone_id: Option<&str>,
+) -> Option<(api::EffectLayerTarget, u64)> {
+    let zone = match zone_id {
+        Some(zone_id) => scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id),
+        None => scene
+            .zones
+            .iter()
+            .find(|zone| zone.role == ZoneRole::Primary)
+            .or_else(|| {
+                scene
+                    .zones
+                    .iter()
+                    .find(|zone| zone.role != ZoneRole::Display)
+            }),
+    }?;
+    let layer = zone.layers.iter().rev().find(|layer| {
+        let LayerSource::Effect {
+            effect_id: current, ..
+        } = &layer.source
+        else {
+            return false;
+        };
+        current.to_string() == effect_id
+    })?;
+    Some((
+        api::EffectLayerTarget {
+            effect_id: effect_id.to_owned(),
+            zone_id: zone.id.to_string(),
+            layer_id: layer.id.to_string(),
+        },
+        scene.revision,
+    ))
 }
 
 /// One LED zone's active-effect state — the per-zone answer to "what is
@@ -96,7 +148,7 @@ pub struct ZoneEffectState {
     /// to the zone's top-layer caption when the index doesn't know it.
     pub effect_name: Option<String>,
     pub effect_category: Option<String>,
-    pub control_values: std::collections::HashMap<String, hypercolor_types::effect::ControlValue>,
+    pub control_values: std::collections::HashMap<String, hypercolor_types::control::ControlValue>,
     pub preset_id: Option<String>,
     /// Scene revision observed with the control values.
     pub revision: u64,
@@ -125,7 +177,7 @@ pub struct ScenesContext {
     /// Every saved scene (the daemon omits the ephemeral default).
     pub scenes: Memo<Vec<api::SceneSummary>>,
     /// The shared active scene — same memo as [`ZonesContext::active_scene`].
-    pub active: Memo<Option<api::LiveSceneView>>,
+    pub active: Memo<Option<api::SceneDocument>>,
     /// Scene id mid-activation. Switchers disable and spin on this row;
     /// the displayed value flips only when the daemon confirms.
     pub switching: ReadSignal<Option<String>>,
@@ -167,8 +219,7 @@ pub fn provide_scene_contexts(
 
     // Memo (not derive) so refetches that return identical state don't
     // wake every zone-aware surface in the app.
-    let active_scene =
-        Memo::new(move |_| active_scene_resource.get().and_then(Result::ok).flatten());
+    let active_scene = Memo::new(move |_| active_scene_resource.get().and_then(Result::ok));
     let scenes = Memo::new(move |_| {
         scenes_resource
             .get()

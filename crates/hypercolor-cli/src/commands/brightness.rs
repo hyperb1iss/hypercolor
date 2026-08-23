@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
-use hypercolor_types::api::output::OutputPatchRequest;
+use hypercolor_types::api::output::{OutputPatchRequest, OutputResource};
 
 use crate::client::DaemonClient;
 use crate::output::{OutputContext, OutputFormat};
@@ -42,16 +42,12 @@ pub async fn execute(
 }
 
 async fn execute_get(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/output").await?;
+    let response: OutputResource = client.get("/output").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let value = response
-                .get("brightness")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.0);
-            println!("{}", brightness_percent(value));
+            println!("{}", brightness_percent(f64::from(response.brightness)));
         }
     }
 
@@ -68,7 +64,7 @@ async fn execute_set(
         power: None,
         brightness: Some(f32::from(u16::try_from(percent).unwrap_or(100)) / 100.0),
     };
-    let response = client.patch("/output", &body).await?;
+    let response: OutputResource = client.patch("/output", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

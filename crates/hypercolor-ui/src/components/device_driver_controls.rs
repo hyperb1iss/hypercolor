@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use hypercolor_leptos_ext::events::Change;
+use hypercolor_types::canvas::{Rgb, Rgba};
+use hypercolor_types::control::{ControlValue, SecretRef};
 use hypercolor_types::controls::{
     ActionConfirmationLevel, ControlAccess, ControlActionDescriptor, ControlAvailabilityState,
-    ControlChange, ControlFieldDescriptor, ControlGroupDescriptor, ControlSurfaceDocument,
-    ControlSurfaceScope, ControlValue as DynamicControlValue, ControlValueMap, ControlValueType,
+    ControlFieldDescriptor, ControlGroupDescriptor, ControlSurfaceDocument, ControlSurfaceScope,
+    ControlValueMap, ControlValueType,
 };
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -101,7 +103,7 @@ pub fn DeviceDriverControls(#[prop(into)] device_id: Signal<String>) -> impl Int
                 <div class="rounded-xl bg-surface-raised border border-edge-subtle/60 overflow-hidden">
                     <div class="px-4 py-3 flex items-center gap-2 text-[10px] text-fg-tertiary/60">
                         <Icon icon=LuTriangleAlert width="12px" height="12px" />
-                        <span>{error}</span>
+                        <span>{error.to_string()}</span>
                     </div>
                 </div>
             }.into_any(),
@@ -140,7 +142,7 @@ fn driver_surface_event_matches_device(surface_id: &str, device_id: &str) -> boo
 fn render_surface(
     surface: ControlSurfaceDocument,
     show_title: bool,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let title = surface_title(&surface);
     let groups = grouped_surface_items(&surface);
@@ -160,8 +162,8 @@ fn render_surface(
                 </div>
             })}
             <div class="divide-y divide-edge-subtle/30">
-                {groups.into_iter().map(|group| {
-                    render_group(surface.clone(), group, surfaces_resource)
+                {groups.into_iter().map(|section| {
+                    render_section(surface.clone(), section, surfaces_resource)
                 }).collect_view()}
             </div>
         </section>
@@ -265,13 +267,13 @@ fn section_from_group(group: ControlGroupDescriptor) -> ControlSurfaceSection {
     }
 }
 
-fn render_group(
+fn render_section(
     surface: ControlSurfaceDocument,
-    group: ControlSurfaceSection,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    section: ControlSurfaceSection,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
-    let label = group.label.clone();
-    let items = group.items.clone();
+    let label = section.label.clone();
+    let items = section.items.clone();
 
     view! {
         <section>
@@ -299,7 +301,7 @@ fn render_group(
 fn render_field(
     surface: ControlSurfaceDocument,
     field: ControlFieldDescriptor,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let field_id = field.id.clone();
     let current_value = surface.values.get(&field_id).cloned();
@@ -315,7 +317,6 @@ fn render_field(
     let description = field.description.clone();
     let value_view = render_field_editor(
         surface.surface_id.clone(),
-        surface.revision,
         field.clone(),
         current_value,
         editable,
@@ -340,11 +341,10 @@ fn render_field(
 
 fn render_field_editor(
     surface_id: String,
-    revision: u64,
     field: ControlFieldDescriptor,
-    current_value: Option<DynamicControlValue>,
+    current_value: Option<ControlValue>,
     editable: bool,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> AnyView {
     if !editable {
         return render_read_only_value(current_value.as_ref()).into_any();
@@ -353,16 +353,14 @@ fn render_field_editor(
     match &field.value_type {
         ControlValueType::Bool => render_bool_editor(
             surface_id,
-            revision,
             field.id.clone(),
-            matches!(current_value, Some(DynamicControlValue::Bool(true))),
+            matches!(current_value, Some(ControlValue::Bool(true))),
             surfaces_resource,
         )
         .into_any(),
         ControlValueType::Integer { min, max, step } => render_number_editor(NumberEditorProps {
             kind: NumberEditorKind::Integer,
             surface_id,
-            revision,
             field_id: field.id.clone(),
             value: number_text(current_value.as_ref()),
             min: min.map(|value| value.to_string()),
@@ -374,7 +372,6 @@ fn render_field_editor(
         ControlValueType::Float { min, max, step } => render_number_editor(NumberEditorProps {
             kind: NumberEditorKind::Float,
             surface_id,
-            revision,
             field_id: field.id.clone(),
             value: number_text(current_value.as_ref()),
             min: min.map(|value| value.to_string()),
@@ -387,7 +384,6 @@ fn render_field_editor(
             render_number_editor(NumberEditorProps {
                 kind: NumberEditorKind::DurationMs,
                 surface_id,
-                revision,
                 field_id: field.id.clone(),
                 value: number_text(current_value.as_ref()),
                 min: min.map(|value| value.to_string()),
@@ -399,7 +395,6 @@ fn render_field_editor(
         }
         ControlValueType::Enum { options } => render_enum_editor(
             surface_id,
-            revision,
             field.id.clone(),
             enum_text(current_value.as_ref()),
             options
@@ -417,7 +412,6 @@ fn render_field_editor(
         | ControlValueType::ColorRgba => render_text_editor(
             text_editor_kind(&field.value_type),
             surface_id,
-            revision,
             field.id.clone(),
             value_text(current_value.as_ref()),
             surfaces_resource,
@@ -430,7 +424,7 @@ fn render_field_editor(
     }
 }
 
-fn render_read_only_value(current_value: Option<&DynamicControlValue>) -> impl IntoView {
+fn render_read_only_value(current_value: Option<&ControlValue>) -> impl IntoView {
     let summary = value_text(current_value);
     view! {
         <div class="max-w-full rounded-md border border-edge-subtle/45 bg-surface-sunken/70 px-2 py-1 text-right">
@@ -443,10 +437,9 @@ fn render_read_only_value(current_value: Option<&DynamicControlValue>) -> impl I
 
 fn render_bool_editor(
     surface_id: String,
-    revision: u64,
     field_id: String,
     checked: bool,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     view! {
         <input
@@ -457,9 +450,8 @@ fn render_bool_editor(
                 if let Some(next) = Change::from_event(ev).checked() {
                     apply_change(
                         surface_id.clone(),
-                        revision,
                         field_id.clone(),
-                        DynamicControlValue::Bool(next),
+                        ControlValue::Bool(next),
                         surfaces_resource,
                     );
                 }
@@ -471,13 +463,12 @@ fn render_bool_editor(
 struct NumberEditorProps {
     kind: NumberEditorKind,
     surface_id: String,
-    revision: u64,
     field_id: String,
     value: String,
     min: Option<String>,
     max: Option<String>,
     step: String,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -491,7 +482,6 @@ fn render_number_editor(props: NumberEditorProps) -> impl IntoView {
     let NumberEditorProps {
         kind,
         surface_id,
-        revision,
         field_id,
         value,
         min,
@@ -522,7 +512,6 @@ fn render_number_editor(props: NumberEditorProps) -> impl IntoView {
                 };
                 apply_change(
                     surface_id.clone(),
-                    revision,
                     field_id.clone(),
                     parsed,
                     surfaces_resource,
@@ -534,11 +523,10 @@ fn render_number_editor(props: NumberEditorProps) -> impl IntoView {
 
 fn render_enum_editor(
     surface_id: String,
-    revision: u64,
     field_id: String,
     value: String,
     options: Vec<(String, String)>,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     view! {
         <select
@@ -551,9 +539,8 @@ fn render_enum_editor(
                 };
                 apply_change(
                     surface_id.clone(),
-                    revision,
                     field_id.clone(),
-                    DynamicControlValue::Enum(raw),
+                    ControlValue::Enum(raw),
                     surfaces_resource,
                 );
             }
@@ -568,10 +555,9 @@ fn render_enum_editor(
 fn render_text_editor(
     kind: TextEditorKind,
     surface_id: String,
-    revision: u64,
     field_id: String,
     value: String,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let is_secret = matches!(kind, TextEditorKind::Secret);
     view! {
@@ -585,11 +571,17 @@ fn render_text_editor(
                 let Some(raw) = Change::from_event(ev).value_string() else {
                     return;
                 };
+                let value = match text_value(kind, raw) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        toasts::toast_error(&error);
+                        return;
+                    }
+                };
                 apply_change(
                     surface_id.clone(),
-                    revision,
                     field_id.clone(),
-                    text_value(kind, raw),
+                    value,
                     surfaces_resource,
                 );
             }
@@ -600,7 +592,7 @@ fn render_text_editor(
 fn render_action(
     surface: ControlSurfaceDocument,
     action: ControlActionDescriptor,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) -> impl IntoView {
     let action_id = action.id.clone();
     let state = surface
@@ -689,14 +681,18 @@ fn action_button_class(
 
 fn apply_change(
     surface_id: String,
-    revision: u64,
     field_id: String,
-    value: DynamicControlValue,
-    surfaces_resource: LocalResource<Result<Vec<ControlSurfaceDocument>, String>>,
+    value: ControlValue,
+    surfaces_resource: LocalResource<api::ApiResult<Vec<ControlSurfaceDocument>>>,
 ) {
     leptos::task::spawn_local(async move {
-        let change = ControlChange { field_id, value };
-        match api::patch_control_values(surface_id, Some(revision), vec![change], false).await {
+        if let Err(error) = value.validate() {
+            toasts::toast_error(&format!("Driver control failed: {error}"));
+            surfaces_resource.refetch();
+            return;
+        }
+        let values = BTreeMap::from([(field_id, value)]);
+        match api::patch_control_values(&surface_id, values).await {
             Ok(_) => {
                 toasts::toast_success("Driver control updated");
                 surfaces_resource.refetch();
@@ -709,19 +705,19 @@ fn apply_change(
     });
 }
 
-fn parse_number_value(kind: NumberEditorKind, raw: &str) -> Result<DynamicControlValue, String> {
+fn parse_number_value(kind: NumberEditorKind, raw: &str) -> Result<ControlValue, String> {
     match kind {
         NumberEditorKind::Integer => raw
             .parse::<i64>()
-            .map(DynamicControlValue::Integer)
+            .map(ControlValue::Int)
             .map_err(|_| "Expected an integer value".to_string()),
         NumberEditorKind::Float => raw
             .parse::<f64>()
-            .map(DynamicControlValue::Float)
+            .map(ControlValue::Float)
             .map_err(|_| "Expected a number".to_string()),
         NumberEditorKind::DurationMs => raw
             .parse::<u64>()
-            .map(DynamicControlValue::DurationMs)
+            .map(|value| ControlValue::Duration(std::time::Duration::from_millis(value)))
             .map_err(|_| "Expected a duration in milliseconds".to_string()),
     }
 }
@@ -747,14 +743,20 @@ fn text_editor_kind(value_type: &ControlValueType) -> TextEditorKind {
     }
 }
 
-fn text_value(kind: TextEditorKind, raw: String) -> DynamicControlValue {
+fn text_value(kind: TextEditorKind, raw: String) -> Result<ControlValue, String> {
     match kind {
-        TextEditorKind::String => DynamicControlValue::String(raw),
-        TextEditorKind::Secret => DynamicControlValue::SecretRef(raw),
-        TextEditorKind::IpAddress => DynamicControlValue::IpAddress(raw),
-        TextEditorKind::MacAddress => DynamicControlValue::MacAddress(raw),
-        TextEditorKind::ColorRgb => DynamicControlValue::ColorRgb(parse_color_rgb(&raw)),
-        TextEditorKind::ColorRgba => DynamicControlValue::ColorRgba(parse_color_rgba(&raw)),
+        TextEditorKind::String => Ok(ControlValue::Text(raw)),
+        TextEditorKind::Secret => Ok(ControlValue::SecretRef(SecretRef::new(raw))),
+        TextEditorKind::IpAddress => ControlValue::ip(raw).map_err(|error| error.to_string()),
+        TextEditorKind::MacAddress => ControlValue::mac(raw).map_err(|error| error.to_string()),
+        TextEditorKind::ColorRgb => {
+            let [r, g, b] = parse_color_rgb(&raw);
+            Ok(ControlValue::ColorRgb(Rgb::new(r, g, b)))
+        }
+        TextEditorKind::ColorRgba => {
+            let [r, g, b, a] = parse_color_rgba(&raw);
+            Ok(ControlValue::ColorRgba(Rgba::new(r, g, b, a)))
+        }
     }
 }
 
@@ -791,23 +793,23 @@ fn parse_color_bytes(raw: &str) -> [u8; 4] {
     out
 }
 
-fn number_text(value: Option<&DynamicControlValue>) -> String {
+fn number_text(value: Option<&ControlValue>) -> String {
     match value {
-        Some(DynamicControlValue::Integer(value)) => value.to_string(),
-        Some(DynamicControlValue::Float(value)) => value.to_string(),
-        Some(DynamicControlValue::DurationMs(value)) => value.to_string(),
+        Some(ControlValue::Int(value)) => value.to_string(),
+        Some(ControlValue::Float(value)) => value.to_string(),
+        Some(ControlValue::Duration(value)) => value.as_millis().to_string(),
         _ => String::new(),
     }
 }
 
-fn enum_text(value: Option<&DynamicControlValue>) -> String {
+fn enum_text(value: Option<&ControlValue>) -> String {
     match value {
-        Some(DynamicControlValue::Enum(value)) => value.clone(),
+        Some(ControlValue::Enum(value)) => value.clone(),
         _ => String::new(),
     }
 }
 
-fn value_text(value: Option<&DynamicControlValue>) -> String {
+fn value_text(value: Option<&ControlValue>) -> String {
     control_value_summary(value)
 }
 

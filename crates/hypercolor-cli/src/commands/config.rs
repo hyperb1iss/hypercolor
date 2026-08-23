@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
+use hypercolor_types::api::config::{ConfigDocument, ConfigKeyResponse, ConfigMutationResponse};
+
 use crate::client::DaemonClient;
 use crate::config::{self, Profile};
 use crate::output::{OutputContext, OutputFormat, urlencoded};
@@ -178,7 +180,7 @@ pub async fn execute(args: &ConfigArgs, client: &DaemonClient, ctx: &OutputConte
 }
 
 async fn execute_show(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/config").await?;
+    let response: ConfigDocument = client.get("/config").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -197,18 +199,14 @@ async fn execute_get(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let response = client.get(&config_key_path(&args.key)).await?;
+    let response: ConfigKeyResponse = client.get(&config_key_path(&args.key)).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
-        OutputFormat::Plain | OutputFormat::Table => {
-            if let Some(val) = response.get("value") {
-                match val {
-                    serde_json::Value::String(s) => println!("{s}"),
-                    other => println!("{other}"),
-                }
-            }
-        }
+        OutputFormat::Plain | OutputFormat::Table => match &response.value {
+            serde_json::Value::String(value) => println!("{value}"),
+            other => println!("{other}"),
+        },
     }
 
     Ok(())
@@ -244,16 +242,16 @@ async fn execute_set(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = config_key_path_with_live(&args.key, args.live_request());
-    let response = client.put(&path, &parse_cli_value(&args.value)).await?;
+    let response: ConfigMutationResponse = client.put(&path, &parse_cli_value(&args.value)).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
             // The daemon reports what it actually did, so the note
             // follows the response rather than the requested flag.
-            let applied = if response["live"] == serde_json::Value::Bool(true) {
+            let applied = if response.live {
                 "  (applied to running daemon)"
-            } else if response["requires_restart"] == serde_json::Value::Bool(true) {
+            } else if response.requires_restart {
                 "  (restart the daemon to activate)"
             } else {
                 ""
@@ -275,7 +273,7 @@ async fn execute_reset(
         return Ok(());
     }
 
-    let response = match &args.key {
+    let response: ConfigMutationResponse = match &args.key {
         Some(key) => client.delete(&config_key_path(key)).await?,
         None => {
             client

@@ -4,7 +4,7 @@ description = "Set up Nanoleaf panels with Hypercolor: mDNS discovery, power-but
 weight = 60
 +++
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 Hypercolor discovers Nanoleaf controllers over mDNS, pairs via the Open API token flow
 (hold the power button 5-7 seconds), and streams per-panel color data over UDP External
@@ -71,12 +71,12 @@ before Hypercolor can request an auth token.
 
    The device should show state `Connected` and its panel count.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The pairing window closes when the controller exits pairing mode, usually within a few
 seconds of inactivity. Start the Hypercolor pair command before the window closes. If the
 command returns `ActionRequired`, the controller was not in pairing mode. Hold the power
 button again and retry immediately.
-{% end %}
+{% </callout> %}
 
 ## Port reference
 
@@ -173,10 +173,10 @@ hypercolor devices action <device-id> refresh_topology --yes
 
 Or click **Refresh Topology** in the device diagnostics panel in the web UI.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Refresh Topology triggers a brief reconnect. The device will stop receiving color data for
 a moment while the new layout is fetched.
-{% end %}
+{% </callout> %}
 
 ## Manual IP configuration
 

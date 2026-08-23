@@ -40,7 +40,7 @@ pub struct AdoptArgs {
     pub instance: String,
 
     /// Profile name to save as (defaults to the instance name).
-    #[arg(long, alias = "as")]
+    #[arg(long = "as")]
     pub name: Option<String>,
 
     /// Discovery timeout in seconds for locating the server.
@@ -124,7 +124,7 @@ async fn adopt_command(args: &AdoptArgs, ctx: &OutputContext) -> Result<()> {
         anyhow::bail!(
             "profile {profile_name:?} already exists \
              (use `hypercolor config profile set {profile_name} host ...` to update, \
-             or `--name` to adopt under a different name)"
+             or `--as` to adopt under a different name)"
         );
     }
 
@@ -158,4 +158,33 @@ fn slug_from_name(name: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::ServersCommand;
+
+    #[derive(Debug, Parser)]
+    struct TestCli {
+        #[command(subcommand)]
+        command: ServersCommand,
+    }
+
+    #[test]
+    fn adopt_accepts_only_documented_profile_flag() {
+        let parsed =
+            TestCli::try_parse_from(["hypercolor", "adopt", "studio-rig", "--as", "studio"])
+                .expect("documented profile flag should parse");
+        let ServersCommand::Adopt(args) = parsed.command else {
+            panic!("expected adopt command");
+        };
+        assert_eq!(args.name.as_deref(), Some("studio"));
+
+        let error =
+            TestCli::try_parse_from(["hypercolor", "adopt", "studio-rig", "--name", "studio"])
+                .expect_err("retired profile flag must be rejected");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
 }

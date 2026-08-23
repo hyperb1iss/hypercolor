@@ -8,8 +8,8 @@ use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
-use hypercolor_core::device::{BackendIo, DeviceDisplaySink};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame};
+use hypercolor_core::device::DisplayOutputLane;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat, OwnedDisplayFramePayload};
 use hypercolor_types::session::OffOutputBehavior;
 
@@ -25,9 +25,8 @@ use super::{
 };
 use crate::deadline::advance_deadline;
 use crate::display_frames::{DisplayFrameRuntime, DisplayFrameSnapshot};
-use crate::session::OutputPowerState;
+use crate::output_power::OutputPowerState;
 
-const DISPLAY_SINK_LOOKUP_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const DISPLAY_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 
 async fn publish_display_frame_snapshot(
@@ -62,62 +61,14 @@ fn preview_jpeg_for_payload(
 pub(super) struct DisplayWorkerHandle {
     tx: watch::Sender<Option<DisplayWorkerFrameSet>>,
     join_handle: JoinHandle<()>,
+    output_lane: DisplayOutputLane,
     pub config_signature: DisplayWorkerConfigSignature,
-}
-
-struct DisplayDeviceWriter {
-    backend_io: BackendIo,
-    display_sink: Option<Arc<dyn DeviceDisplaySink>>,
-    next_display_sink_lookup_at: Option<Instant>,
-}
-
-impl DisplayDeviceWriter {
-    const fn new(backend_io: BackendIo, display_sink: Option<Arc<dyn DeviceDisplaySink>>) -> Self {
-        Self {
-            backend_io,
-            display_sink,
-            next_display_sink_lookup_at: None,
-        }
-    }
-
-    async fn write_display_payload_owned(
-        &mut self,
-        device_id: DeviceId,
-        payload: Arc<OwnedDisplayFramePayload>,
-    ) -> anyhow::Result<()> {
-        let now = Instant::now();
-        if self.display_sink.is_none()
-            && self
-                .next_display_sink_lookup_at
-                .is_none_or(|retry_at| now >= retry_at)
-        {
-            self.display_sink = self.backend_io.display_sink(device_id).await;
-            self.next_display_sink_lookup_at = self
-                .display_sink
-                .is_none()
-                .then_some(now + DISPLAY_SINK_LOOKUP_RETRY_INTERVAL);
-        }
-
-        if let Some(sink) = self.display_sink.as_ref() {
-            if let Err(error) = sink.write_display_payload_owned(Arc::clone(&payload)).await {
-                self.display_sink = None;
-                self.next_display_sink_lookup_at = None;
-                return Err(error);
-            }
-            return Ok(());
-        }
-
-        self.backend_io
-            .write_display_payload_owned(device_id, payload)
-            .await
-    }
 }
 
 #[derive(Clone)]
 enum PendingDisplayFrame {
     Fresh(DisplayWorkerFrameSet),
-    StaticHold { retry: bool },
-    RetryAfterFailure(DisplayWorkerFrameSet),
+    StaticHold,
 }
 
 impl PendingDisplayFrame {
@@ -125,46 +76,18 @@ impl PendingDisplayFrame {
         Self::Fresh(frames)
     }
 
-    fn retry(frames: DisplayWorkerFrameSet) -> Self {
-        Self::RetryAfterFailure(frames)
-    }
-
     const fn static_hold() -> Self {
-        Self::StaticHold { retry: false }
-    }
-
-    const fn retry_cached_payload() -> Self {
-        Self::StaticHold { retry: true }
-    }
-
-    fn from_changed_frames(
-        frames: Option<DisplayWorkerFrameSet>,
-        retry_pending: bool,
-    ) -> Option<Self> {
-        frames.map(|frames| {
-            if retry_pending {
-                Self::retry(frames)
-            } else {
-                Self::fresh(frames)
-            }
-        })
+        Self::StaticHold
     }
 
     const fn force_send(&self) -> bool {
         !matches!(self, Self::Fresh(_))
     }
 
-    const fn is_retry(&self) -> bool {
-        matches!(
-            self,
-            Self::RetryAfterFailure(_) | Self::StaticHold { retry: true }
-        )
-    }
-
     fn into_frames(self) -> Option<DisplayWorkerFrameSet> {
         match self {
-            Self::Fresh(frames) | Self::RetryAfterFailure(frames) => Some(frames),
-            Self::StaticHold { .. } => None,
+            Self::Fresh(frames) => Some(frames),
+            Self::StaticHold => None,
         }
     }
 }
@@ -182,7 +105,7 @@ enum CapturedDisplayFrameSource {
     Face {
         scene_source: Option<CapturedDisplaySource>,
         face_source: CapturedDisplaySource,
-        blend_mode: hypercolor_types::scene::DisplayFaceBlendMode,
+        blend_mode: hypercolor_types::layer::BlendMode,
         opacity_bits: u32,
     },
 }
@@ -202,7 +125,7 @@ impl CapturedDisplayFrameSource {
                 display_source_matches(Some(captured), Some(frame))
             }
             (Self::Direct(captured), DisplayWorkerFrameSource::Direct(frame)) => {
-                display_group_source_matches(Some(captured), Some(frame))
+                display_zone_source_matches(Some(captured), Some(frame))
             }
             (
                 Self::Face {
@@ -234,7 +157,7 @@ impl CapturedDisplayFrameSource {
                     .expect("display worker should only capture a valid scene frame"),
             ),
             DisplayWorkerFrameSource::Direct(frame) => Self::Direct(
-                capture_display_group_source(Some(frame))
+                capture_display_zone_source(Some(frame))
                     .expect("display worker should only capture a valid direct frame"),
             ),
             DisplayWorkerFrameSource::Face {
@@ -285,16 +208,16 @@ fn display_source_matches(
     }
 }
 
-fn display_group_source_matches(
+fn display_zone_source_matches(
     captured: Option<&CapturedDisplaySource>,
-    source: Option<&Arc<DisplayGroupFrame>>,
+    source: Option<&Arc<DisplayZoneFrame>>,
 ) -> bool {
     match (captured, source) {
         (None, None) => true,
         (Some(captured), Some(source)) => {
-            let source_identity = display_group_source_identity(source.as_ref());
+            let source_identity = display_zone_source_identity(source.as_ref());
             captured.identity == source_identity
-                || display_group_source_content_matches(captured, source.as_ref())
+                || display_zone_source_content_matches(captured, source.as_ref())
         }
         _ => false,
     }
@@ -311,15 +234,15 @@ fn capture_display_source(source: Option<&Arc<CanvasFrame>>) -> Option<CapturedD
     })
 }
 
-fn capture_display_group_source(
-    source: Option<&Arc<DisplayGroupFrame>>,
+fn capture_display_zone_source(
+    source: Option<&Arc<DisplayZoneFrame>>,
 ) -> Option<CapturedDisplaySource> {
     source.map(|source| {
-        let identity = display_group_source_identity(source.as_ref());
+        let identity = display_zone_source_identity(source.as_ref());
         CapturedDisplaySource {
             identity,
             content_hash: should_hash_display_source_identity(identity)
-                .then(|| display_group_source_content_hash(source.as_ref())),
+                .then(|| display_zone_source_content_hash(source.as_ref())),
         }
     })
 }
@@ -333,10 +256,10 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
     }
 }
 
-fn display_group_source_identity(source: &DisplayGroupFrame) -> DisplaySourceIdentity {
+fn display_zone_source_identity(source: &DisplayZoneFrame) -> DisplaySourceIdentity {
     match source {
-        DisplayGroupFrame::Canvas(source) => display_source_identity(source),
-        DisplayGroupFrame::Yuv420(source) => DisplaySourceIdentity::Yuv420 {
+        DisplayZoneFrame::Canvas(source) => display_source_identity(source),
+        DisplayZoneFrame::Yuv420(source) => DisplaySourceIdentity::Yuv420 {
             storage: source.storage_identity(),
             width: source.width,
             height: source.height,
@@ -358,13 +281,13 @@ fn display_source_content_matches(captured: &CapturedDisplaySource, source: &Can
         && captured_hash == display_source_content_hash(source)
 }
 
-fn display_group_source_content_matches(
+fn display_zone_source_content_matches(
     captured: &CapturedDisplaySource,
-    source: &DisplayGroupFrame,
+    source: &DisplayZoneFrame,
 ) -> bool {
     match source {
-        DisplayGroupFrame::Canvas(source) => display_source_content_matches(captured, source),
-        DisplayGroupFrame::Yuv420(_) => false,
+        DisplayZoneFrame::Canvas(source) => display_source_content_matches(captured, source),
+        DisplayZoneFrame::Yuv420(_) => false,
     }
 }
 
@@ -383,10 +306,10 @@ fn display_source_content_hash(source: &CanvasFrame) -> u64 {
     source.surface().content_digest()
 }
 
-fn display_group_source_content_hash(source: &DisplayGroupFrame) -> u64 {
+fn display_zone_source_content_hash(source: &DisplayZoneFrame) -> u64 {
     match source {
-        DisplayGroupFrame::Canvas(source) => display_source_content_hash(source),
-        DisplayGroupFrame::Yuv420(source) => source.storage_identity().id,
+        DisplayZoneFrame::Canvas(source) => display_source_content_hash(source),
+        DisplayZoneFrame::Yuv420(source) => source.storage_identity().id,
     }
 }
 
@@ -397,8 +320,7 @@ impl DisplayWorkerHandle {
     )]
     pub fn spawn(
         target: Arc<DisplayTarget>,
-        backend_io: BackendIo,
-        display_sink: Option<Arc<dyn DeviceDisplaySink>>,
+        output_lane: DisplayOutputLane,
         power_state: watch::Receiver<OutputPowerState>,
         static_hold_refresh_interval: Duration,
         display_frames: Arc<RwLock<DisplayFrameRuntime>>,
@@ -407,9 +329,8 @@ impl DisplayWorkerHandle {
         let worker_backend_id = target.backend_id.clone();
         let worker_device_id = target.device_id;
         let config_signature = target.worker_config_signature();
-        let writer = DisplayDeviceWriter::new(backend_io, display_sink);
         let join_handle = tokio::spawn(run_display_worker(
-            writer,
+            output_lane.clone(),
             worker_backend_id,
             worker_device_id,
             target.as_ref().clone(),
@@ -422,12 +343,17 @@ impl DisplayWorkerHandle {
         Self {
             tx,
             join_handle,
+            output_lane,
             config_signature,
         }
     }
 
     pub fn push(&self, frames: DisplayWorkerFrameSet) {
         self.tx.send_replace(Some(frames));
+    }
+
+    pub(super) fn lane_is_active(&self) -> bool {
+        self.output_lane.is_active()
     }
 
     pub async fn shutdown(self) {
@@ -457,7 +383,7 @@ impl DisplayWorkerHandle {
     reason = "display worker borrows every subsystem it drives"
 )]
 async fn run_display_worker(
-    mut writer: DisplayDeviceWriter,
+    output_lane: DisplayOutputLane,
     backend_key: String,
     device_id: DeviceId,
     target: DisplayTarget,
@@ -485,7 +411,6 @@ async fn run_display_worker(
         }
     };
     let mut pending = None::<PendingDisplayFrame>;
-    let mut retry_after = None::<Instant>;
     let mut delivered_frame_number = 0_u64;
     let mut last_delivered_payload = None::<Arc<OwnedDisplayFramePayload>>;
     let mut last_delivered_preview_jpeg = None::<Arc<Vec<u8>>>;
@@ -499,7 +424,6 @@ async fn run_display_worker(
                             break;
                         }
                         pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
-                        retry_after = None;
                     }
                     changed = power_state.changed() => {
                         if changed.is_err() {
@@ -520,7 +444,6 @@ async fn run_display_worker(
                             break;
                         }
                         pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
-                        retry_after = None;
                     }
                     changed = power_state.changed() => {
                         if changed.is_err() {
@@ -538,23 +461,6 @@ async fn run_display_worker(
             continue;
         }
 
-        if let Some(retry_deadline) = retry_after.take() {
-            tokio::select! {
-                changed = rx.changed() => {
-                    if changed.is_err() {
-                        break;
-                    }
-                    let retry_pending = pending.as_ref().is_some_and(PendingDisplayFrame::is_retry);
-                    pending = PendingDisplayFrame::from_changed_frames(
-                        rx.borrow_and_update().clone(),
-                        retry_pending,
-                    );
-                    continue;
-                }
-                () = tokio::time::sleep_until(tokio::time::Instant::from_std(retry_deadline)) => {}
-            }
-        }
-
         if send_interval.is_some() {
             while Instant::now() < next_send_at {
                 tokio::select! {
@@ -562,12 +468,7 @@ async fn run_display_worker(
                         if changed.is_err() {
                             break 'worker;
                         }
-                        let retry_pending = pending.as_ref().is_some_and(PendingDisplayFrame::is_retry);
-                        pending = PendingDisplayFrame::from_changed_frames(
-                            rx.borrow_and_update().clone(),
-                            retry_pending,
-                        );
-                        retry_after = None;
+                        pending = rx.borrow_and_update().clone().map(PendingDisplayFrame::fresh);
                         if pending.is_none() {
                             continue 'worker;
                         }
@@ -583,7 +484,6 @@ async fn run_display_worker(
             continue;
         };
         let force_send = pending_frame.force_send();
-        let retry_attempt = pending_frame.is_retry();
 
         let Some(frames) = pending_frame.into_frames() else {
             if let Some(payload) = last_delivered_payload.as_ref() {
@@ -598,20 +498,11 @@ async fn run_display_worker(
                     )
                     .await;
                 }
-                record_display_write_attempt(&display_frames, retry_attempt).await;
-                let write_result = writer
-                    .write_display_payload_owned(device_id, Arc::clone(payload))
-                    .await;
+                record_display_write_attempt(&display_frames).await;
+                let write_result = output_lane.write(Arc::clone(payload)).await;
                 if let Err(error) = write_result {
                     record_display_write_failure(&display_frames).await;
                     maybe_warn_display_error(&mut last_warned_at, &target, &error);
-                    schedule_cached_display_retry(
-                        &mut pending,
-                        &mut retry_after,
-                        &mut next_send_at,
-                        send_interval,
-                        static_hold_refresh_interval,
-                    );
                     continue;
                 }
                 record_display_write_success(&display_frames).await;
@@ -664,21 +555,11 @@ async fn run_display_worker(
                 )
                 .await;
             }
-            record_display_write_attempt(&display_frames, retry_attempt).await;
-            let write_result = writer
-                .write_display_payload_owned(device_id, Arc::clone(payload))
-                .await;
+            record_display_write_attempt(&display_frames).await;
+            let write_result = output_lane.write(Arc::clone(payload)).await;
             if let Err(error) = write_result {
                 record_display_write_failure(&display_frames).await;
                 maybe_warn_display_error(&mut last_warned_at, &target, &error);
-                schedule_display_retry(
-                    &mut pending,
-                    &mut retry_after,
-                    &mut next_send_at,
-                    send_interval,
-                    static_hold_refresh_interval,
-                    frames,
-                );
                 continue;
             }
             record_display_write_success(&display_frames).await;
@@ -712,14 +593,14 @@ async fn run_display_worker(
                     &mut encode_state,
                 ),
                 DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
-                    DisplayGroupFrame::Canvas(frame) => encode_finalized_canvas_frame(
+                    DisplayZoneFrame::Canvas(frame) => encode_finalized_canvas_frame(
                         frame,
                         &geometry,
                         frame_format,
                         include_preview_jpeg,
                         &mut encode_state,
                     ),
-                    DisplayGroupFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
+                    DisplayZoneFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
                         frame,
                         frame_format,
                         include_preview_jpeg,
@@ -810,10 +691,8 @@ async fn run_display_worker(
             )
             .await;
         }
-        record_display_write_attempt(&display_frames, retry_attempt).await;
-        let write_result = writer
-            .write_display_payload_owned(device_id, Arc::clone(&payload))
-            .await;
+        record_display_write_attempt(&display_frames).await;
+        let write_result = output_lane.write(Arc::clone(&payload)).await;
         let display_format = payload.format;
         let display_bytes = payload.data.len();
         let previous_payload = last_delivered_payload.replace(Arc::clone(&payload));
@@ -823,14 +702,6 @@ async fn run_display_worker(
         if let Err(error) = write_result {
             record_display_write_failure(&display_frames).await;
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
-            schedule_display_retry(
-                &mut pending,
-                &mut retry_after,
-                &mut next_send_at,
-                send_interval,
-                static_hold_refresh_interval,
-                frames,
-            );
             continue;
         }
         record_display_write_success(&display_frames).await;
@@ -866,61 +737,8 @@ fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
     Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
 }
 
-fn schedule_display_retry(
-    pending: &mut Option<PendingDisplayFrame>,
-    retry_after: &mut Option<Instant>,
-    next_send_at: &mut Instant,
-    send_interval: Option<Duration>,
-    static_hold_refresh_interval: Duration,
-    frames: DisplayWorkerFrameSet,
-) {
-    schedule_retry_deadline(
-        retry_after,
-        next_send_at,
-        send_interval,
-        static_hold_refresh_interval,
-    );
-    *pending = Some(PendingDisplayFrame::retry(frames));
-}
-
-fn schedule_cached_display_retry(
-    pending: &mut Option<PendingDisplayFrame>,
-    retry_after: &mut Option<Instant>,
-    next_send_at: &mut Instant,
-    send_interval: Option<Duration>,
-    static_hold_refresh_interval: Duration,
-) {
-    schedule_retry_deadline(
-        retry_after,
-        next_send_at,
-        send_interval,
-        static_hold_refresh_interval,
-    );
-    *pending = Some(PendingDisplayFrame::retry_cached_payload());
-}
-
-fn schedule_retry_deadline(
-    retry_after: &mut Option<Instant>,
-    next_send_at: &mut Instant,
-    send_interval: Option<Duration>,
-    static_hold_refresh_interval: Duration,
-) {
-    let now = Instant::now();
-    let interval = send_interval.unwrap_or(static_hold_refresh_interval);
-    let retry_deadline = now.checked_add(interval).unwrap_or(now);
-
-    if send_interval.is_some() {
-        *next_send_at = retry_deadline;
-    } else {
-        *retry_after = Some(retry_deadline);
-    }
-}
-
-async fn record_display_write_attempt(
-    display_frames: &Arc<RwLock<DisplayFrameRuntime>>,
-    retry: bool,
-) {
-    display_frames.write().await.record_write_attempt(retry);
+async fn record_display_write_attempt(display_frames: &Arc<RwLock<DisplayFrameRuntime>>) {
+    display_frames.write().await.record_write_attempt(false);
 }
 
 fn recycle_display_payload_buffers(
@@ -1008,10 +826,10 @@ fn static_hold_refresh_deadline(
     Instant::now().checked_add(refresh_interval)
 }
 
-fn maybe_warn_display_error(
+fn maybe_warn_display_error<E: std::fmt::Display + ?Sized>(
     last_warned_at: &mut Option<Instant>,
     target: &DisplayTarget,
-    error: &anyhow::Error,
+    error: &E,
 ) {
     let should_warn =
         last_warned_at.is_none_or(|last| last.elapsed() >= DISPLAY_ERROR_WARN_INTERVAL);

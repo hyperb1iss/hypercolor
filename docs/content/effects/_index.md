@@ -10,7 +10,7 @@ Effects are web pages. Your desk is the canvas.
 
 Every Hypercolor effect renders into a single RGBA canvas, and the daemon samples that canvas at each LED's physical position before pushing colors to hardware. The default render surface is 640x480 at up to 60 FPS, retuned live across five adaptive tiers. Both dimensions and the target FPS flow from `daemon.canvas_width`, `daemon.canvas_height`, and the active render tier, so treat them as live values, never constants.
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
 ## Resolution independence is the whole game
 
@@ -25,9 +25,9 @@ Design for broad strokes. The maximum detail a strip can resolve is roughly `1 /
 
 Four paths, one canvas contract. The first two are the SDK's TypeScript surface, the third compiles into the daemon as Rust, and the fourth targets LCD display surfaces. There is a fifth escape hatch below for one-file ports.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor). Scaffold a workspace with `bun create hypercolor`; [setup](@/effects/setup.md) covers the details, including developing against a local engine checkout.
-{% end %}
+{% </callout> %}
 
 ### TypeScript canvas effects
 
@@ -41,9 +41,9 @@ A fragment shader runs per canvas pixel. Controls become uniforms automatically 
 
 These run as WebGL2 inside Servo, shipped as a self-contained HTML artifact. They are not a native GPU path.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 There is no runnable wgpu or SPIR-V shader lane today. `EffectSource::Shader` bails with a "not runnable yet" error, and the effect-renderer lane downgrades `RenderAccelerationMode::Gpu` to CPU (the compositor's GPU lane is separate and does ship). Treat a native GPU shader-effect path as future work. Every shader effect you ship runs as WebGL2 in Servo.
-{% end %}
+{% </callout> %}
 
 Read [GLSL effects](@/effects/glsl-effects.md) for the uniform contract and LED-specific shader patterns.
 
@@ -67,15 +67,15 @@ Below all four: a standalone LightScript-compatible HTML file with one canvas, o
 
 Every path produces the same thing: a canvas the spatial sampler reads. The renderer is polymorphic, so wgpu, Servo, and native Rust all satisfy one trait and slot into the same loop.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
   A[FrameInput: timing, audio, interaction, screen, sensors] --> B[EffectRenderer.render_into]
   B --> C[RGBA Canvas]
   C --> D[SpatialEngine samples canvas at each LED position]
   D --> E[ZoneColors written to devices]
-{% end %}
+{% </mermaid> %}
 
-`FrameInput` carries `time_secs`, `delta_secs`, `frame_number`, the audio snapshot, interaction and screen data, sensors, and the target canvas dimensions. Control values arrive separately through `set_control`, so a slider change applies on the next frame without restarting the effect.
+`FrameInput` carries `time_secs`, `delta_secs`, `frame_number`, the audio snapshot, interaction and screen data, sensors, and the target canvas dimensions. Control values arrive separately through ordered `apply_controls` batches, so a slider change applies on the next frame without restarting the effect.
 
 ## Before you write anything
 
@@ -102,6 +102,6 @@ Once you've picked a path, pair it with the deeper pages.
 
 Hypercolor ships a stack of native built-in effects compiled into the daemon (the `builtin/` set: `solid_color`, `gradient`, `rainbow`, `breathing`, `audio_pulse`, `color_wave`, `color_zones`, `screen_cast`, `media_player`, `calibration`, `web_viewport`, and friends) plus a large library of SDK HTML effects. Rather than memorize a count that moves every release, open the [catalog](@/effects/catalog.md) for the gallery, or hit `GET /api/v1/effects` on a running daemon to list exactly what's loaded.
 
-{% api_endpoint(method="GET", path="/api/v1/effects") %}
+{% <api_endpoint method="GET" path="/api/v1/effects"> %}
 List every effect the daemon knows about (native built-ins and installed HTML effects alike), wrapped in the standard `{ data, meta }` envelope. This is the source of truth for what you can apply right now. See the [REST reference](@/api/rest.md) for the full effects domain.
-{% end %}
+{% </api_endpoint> %}

@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 /// Opaque identifier for a user media asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AssetId(pub Uuid);
 
 impl AssetId {
@@ -59,6 +60,7 @@ impl FromStr for AssetId {
 
 /// Metadata scan state for an asset record.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AssetScanStatus {
     #[default]
@@ -75,6 +77,7 @@ pub enum AssetScanStatus {
 
 /// Non-fatal policy warnings attached to an accepted asset.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AssetWarning {
     PerAssetSoftCapExceeded { limit_bytes: u64 },
@@ -83,6 +86,7 @@ pub enum AssetWarning {
 
 /// Persisted metadata for one user media asset.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MediaAssetRecord {
     pub id: AssetId,
     pub name: String,
@@ -95,7 +99,9 @@ pub struct MediaAssetRecord {
     pub frame_count: Option<u32>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub created_at: DateTime<Utc>,
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub modified_at: DateTime<Utc>,
     #[serde(default)]
     pub scan_status: AssetScanStatus,

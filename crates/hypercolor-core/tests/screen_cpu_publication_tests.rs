@@ -15,14 +15,15 @@ use hypercolor_core::input::screen::{
     ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
     ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
-    ScreenColorTuning, ScreenCursorCapabilities, ScreenExactResource, ScreenExactResourceLedger,
-    ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration, ScreenPayloadKind,
-    ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
-    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
-    ScreenPublicationRetirement, ScreenReductionFilter, ScreenResourceApi, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy,
-    ScreenWorkerBinding, ScreenWorkerPreparationTicket, SourceScale,
+    ScreenColorTuning, ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenExactResource,
+    ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration,
+    ScreenPayloadKind, ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError,
+    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationRetirement,
+    ScreenReductionFilter, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
+    ScreenWorkerPreparationTicket, SourceScale,
 };
 use hypercolor_types::canvas::linear_to_srgb_u8;
 
@@ -556,6 +557,122 @@ fn one_exact_reduction_fans_out_to_surface_and_oversubscribed_zones() {
     assert_eq!(zones.rows(), non_zero(23));
     assert_eq!(zones.colors().len(), 29 * 23);
     assert!(zones.colors().iter().any(|color| *color != [0, 0, 0]));
+}
+
+#[test]
+fn exact_zone_publication_retains_dynamic_bars() {
+    let executor = executor();
+    let source = source(extent(5, 3));
+    let zones = demand_for_kind(
+        &source,
+        extent(5, 3),
+        ScreenPublicationKind::Zones {
+            columns: non_zero(5),
+            rows: non_zero(3),
+        },
+        ScreenProcessingProfileConfig {
+            grid: ScreenGridPolicy::PointSample,
+            content_bars: ScreenContentBarsPolicy::DetectAndCrop {
+                luminance_threshold: ScreenProfileScalar::try_new(0.02)
+                    .expect("test threshold is finite"),
+            },
+            ..ScreenProcessingProfileConfig::default()
+        },
+        &executor,
+    );
+    let mut builder = ScreenPlanBuilder::new();
+    let hub = builder.publication_hub();
+    let (plan, binding) = commit(&mut builder, [zones]);
+    let batch = executor
+        .prepare_batch(&source, &plan)
+        .expect("dynamic zone batch prepares");
+    let workspace = batch
+        .prepare_materialization_workspace(&plan)
+        .expect("dynamic zone workspace prepares");
+    let candidate = PreparedCpuPublicationFanout::prepare_executable_candidate(
+        &executor, &batch, workspace, &plan,
+    )
+    .expect("dynamic zone fanout prepares");
+    let mut fanout = candidate
+        .bind(&builder.committed_state(), &binding)
+        .expect("dynamic zone fanout binds");
+
+    let colors = [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [255, 0, 0],
+        [0, 255, 0],
+        [0, 0, 255],
+        [255, 255, 0],
+        [255, 0, 255],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+    ];
+    let pixels = colors
+        .into_iter()
+        .flat_map(|color| [color[0], color[1], color[2], u8::MAX])
+        .collect::<Vec<_>>();
+    let captured_at = Instant::now();
+    let frame = CaptureFrame::new(
+        CaptureFrameMetadata {
+            source_id: source.epoch().source_id.clone(),
+            topology_generation: source.epoch().topology_generation,
+            session_generation: source.epoch().session_generation,
+            sequence: 1,
+            captured_at,
+            fresh_until: captured_at + Duration::from_secs(2),
+            geometry: source.config().geometry(),
+            colorimetry: source.config().colorimetry(),
+            cursor: CaptureCursor::default(),
+        },
+        CaptureStorage::Cpu(CpuCaptureStorage::new(
+            Arc::from(pixels),
+            CapturePixelFormat::Rgba8,
+            20,
+            0,
+        )),
+        CaptureDamage::default(),
+    )
+    .expect("dynamic zone frame is valid");
+    let report = fanout
+        .publish_due(
+            &hub,
+            Some(&frame),
+            captured_at,
+            ScreenPublicationHealth::Healthy,
+        )
+        .expect("dynamic zone fanout publishes");
+    assert_eq!(report.published(), 1);
+
+    let descriptor = plan.branches()[0].descriptor();
+    let publication = hub
+        .lease(descriptor)
+        .expect("dynamic zone branch has a lease")
+        .read()
+        .expect("dynamic zone branch is live");
+    let ScreenBranchPayload::Zones(zones) = publication.payload() else {
+        panic!("dynamic zone branch publishes zones");
+    };
+    assert_eq!(zones.columns(), non_zero(5));
+    assert_eq!(zones.rows(), non_zero(1));
+    assert_eq!((zones.bars().top, zones.bars().bottom), (1, 1));
+    assert_eq!((zones.bars().left, zones.bars().right), (0, 0));
+    assert_eq!(
+        zones.colors(),
+        &[
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [255, 255, 0],
+            [255, 0, 255],
+        ]
+    );
 }
 
 #[test]

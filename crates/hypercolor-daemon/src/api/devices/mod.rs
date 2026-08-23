@@ -17,7 +17,7 @@ use axum::response::{IntoResponse, Response};
 use tracing::{debug, warn};
 
 use hypercolor_color::Rgb;
-use hypercolor_core::device::{BackendIo, DeviceLifecycleManager, DirectControlGuard};
+use hypercolor_core::device::{BackendIo, DirectControlGuard};
 use hypercolor_driver_api::DriverTrackedDevice;
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot};
 use hypercolor_types::device::{
@@ -25,9 +25,10 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::event::HypercolorEvent;
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::discovery as core_discovery;
+use crate::domain::output::brightness_percent;
 use crate::domain::{DomainError, ResourceKind};
 
 pub use hypercolor_types::api::devices::{IdentifyAttachmentRequest, ListDevicesQuery};
@@ -38,17 +39,12 @@ pub use attachments::{
     update_attachments,
 };
 pub use discovery::{DiscoverRequest, discover_devices};
-pub use pairing::{
-    DeletePairingResponse, GenericPairDeviceRequest, GenericPairDeviceResponse, delete_pairing,
-    pair_device,
-};
+pub use pairing::{DeletePairingResponse, PairDeviceResponse, delete_pairing, pair_device};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
 // Wire contracts live in hypercolor-types::api::devices — shared with the
 // web UI and the TUI so request/response drift is a compile error. Local
-// re-exports keep daemon-internal paths (`api::devices::Pagination`) stable.
-pub use hypercolor_types::api::common::Pagination;
 pub use hypercolor_types::api::devices::{
     DeleteDeviceResponse, DeviceConnectionSummary, DeviceListResponse, DeviceSummary,
     IdentifyAttachmentResponse, IdentifyDeviceResponse, IdentifyRequest, IdentifySegmentResponse,
@@ -90,32 +86,6 @@ impl DeviceListIncludes {
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/devices` — List all tracked devices.
-#[utoipa::path(
-    get,
-    path = "/api/v1/devices",
-    params(
-        ("offset" = Option<usize>, Query, description = "Number of devices to skip"),
-        ("limit" = Option<usize>, Query, description = "Maximum number of devices to return"),
-        ("status" = Option<String>, Query, description = "Filter by device status"),
-        ("backend_id" = Option<String>, Query, description = "Filter by output backend route"),
-        ("driver" = Option<String>, Query, description = "Filter by owning driver module"),
-        ("q" = Option<String>, Query, description = "Case-insensitive name/vendor search"),
-        ("include" = Option<String>, Query, description = "Comma-separated expansions: attachments")
-    ),
-    responses(
-        (
-            status = 200,
-            description = "Tracked devices",
-            body = crate::api::envelope::ApiResponse<DeviceListResponse>
-        ),
-        (
-            status = 422,
-            description = "Query validation failed",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "devices"
-)]
 pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListDevicesQuery>,
@@ -186,18 +156,28 @@ pub async fn list_devices(
             .device_registry
             .metadata_for_id(&tracked.info.id)
             .await;
-        items.push((
-            summarize_device_for_response(
-                &state,
-                &tracked.info,
-                &tracked.state,
-                tracked.user_settings.brightness,
-                layout_device_id,
-                metadata.as_ref(),
-            )
-            .await,
-            tracked.info.clone(),
-        ));
+        let summary = match summarize_device_for_response(
+            &state,
+            &tracked.info,
+            &tracked.state,
+            tracked.user_settings.brightness,
+            layout_device_id,
+            metadata.as_ref(),
+        )
+        .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    device_id = %tracked.info.id,
+                    driver_id = %tracked.info.driver_id(),
+                    "failed to summarize device pairing state"
+                );
+                return DomainError::Internal(anyhow::Error::new(error)).into_response();
+            }
+        };
+        items.push((summary, tracked.info.clone()));
     }
     items.sort_by_cached_key(|(summary, _)| summary.name.to_lowercase());
 
@@ -215,39 +195,21 @@ pub async fn list_devices(
         }
     }
     let has_more = offset.saturating_add(limit) < total;
-    ApiResponse::ok(DeviceListResponse {
+    envelope::ok(DeviceListResponse {
         items: paged_items
             .into_iter()
             .map(|(summary, _)| summary)
             .collect(),
-        pagination: Pagination {
-            offset,
-            limit,
-            total,
+        total: u64::try_from(total).expect("device count fits in u64"),
+        page: Some(hypercolor_types::api::PageInfo {
+            offset: u64::try_from(offset).expect("device offset fits in u64"),
+            limit: u64::try_from(limit).expect("device limit fits in u64"),
             has_more,
-        },
+        }),
     })
 }
 
 /// `GET /api/v1/devices/{id}` — Get a single device.
-#[utoipa::path(
-    get,
-    path = "/api/v1/devices/{id}",
-    params(("id" = String, Path, description = "Device id or display name")),
-    responses(
-        (
-            status = 200,
-            description = "Device detail",
-            body = crate::api::envelope::ApiResponse<DeviceSummary>
-        ),
-        (
-            status = 404,
-            description = "Device was not found",
-            body = hypercolor_types::api::envelope::ApiErrorBody
-        )
-    ),
-    tag = "devices"
-)]
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
@@ -264,17 +226,19 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         .metadata_for_id(&tracked.info.id)
         .await;
 
-    ApiResponse::ok(
-        summarize_device_for_response(
-            &state,
-            &tracked.info,
-            &tracked.state,
-            tracked.user_settings.brightness,
-            layout_device_id,
-            metadata.as_ref(),
-        )
-        .await,
+    match summarize_device_for_response(
+        &state,
+        &tracked.info,
+        &tracked.state,
+        tracked.user_settings.brightness,
+        layout_device_id,
+        metadata.as_ref(),
     )
+    .await
+    {
+        Ok(summary) => envelope::ok(summary),
+        Err(error) => DomainError::Internal(anyhow::Error::new(error)).into_response(),
+    }
 }
 
 /// `PUT /api/v1/devices/{id}` — Update a device's metadata.
@@ -380,17 +344,19 @@ pub async fn update_device(
         .metadata_for_id(&updated.info.id)
         .await;
 
-    ApiResponse::ok(
-        summarize_device_for_response(
-            &state,
-            &updated.info,
-            &updated.state,
-            updated.user_settings.brightness,
-            layout_device_id,
-            metadata.as_ref(),
-        )
-        .await,
+    match summarize_device_for_response(
+        &state,
+        &updated.info,
+        &updated.state,
+        updated.user_settings.brightness,
+        layout_device_id,
+        metadata.as_ref(),
     )
+    .await
+    {
+        Ok(summary) => envelope::ok(summary),
+        Err(error) => DomainError::Internal(anyhow::Error::new(error)).into_response(),
+    }
 }
 
 /// `DELETE /api/v1/devices/{id}` — Remove a device from tracking.
@@ -404,10 +370,10 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let driver_id = tracked.info.driver_id().to_owned();
-    let removed = if let Some(driver) = state.driver_registry.get(&driver_id)
+    let removed = if let Some(driver) = state.driver_registry().get(&driver_id)
         && let Some(provider) = driver.runtime_cache()
     {
-        let inventory = state.driver_host.driver_inventory();
+        let inventory = state.driver_host().driver_inventory();
         let guard = inventory.operation_guard().await;
         let device = DriverTrackedDevice {
             info: tracked.info.clone(),
@@ -437,9 +403,9 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     if removed.is_none() {
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     }
-    crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
+    crate::api::prune_scene_display_zones_for_device(&state, device_id).await;
 
-    ApiResponse::ok(DeleteDeviceResponse {
+    envelope::ok(DeleteDeviceResponse {
         id: device_id.to_string(),
         removed: true,
     })
@@ -476,7 +442,7 @@ pub async fn identify_device(
     };
     let color = requested_color.map(identify_color_echo);
     let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
-    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+    let identify_brightness = (state.output_power.snapshot().effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
@@ -552,7 +518,7 @@ pub async fn identify_device(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifyDeviceResponse {
+    envelope::ok(IdentifyDeviceResponse {
         device_id: device_id.to_string(),
         identifying: true,
         duration_ms,
@@ -609,7 +575,7 @@ pub async fn identify_segment(
     };
     let color = requested_color.map(identify_color_echo);
     let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
-    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+    let identify_brightness = (state.output_power.snapshot().effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
@@ -664,7 +630,7 @@ pub async fn identify_segment(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifySegmentResponse {
+    envelope::ok(IdentifySegmentResponse {
         device_id: device_id.to_string(),
         segment,
         segment_name,
@@ -722,7 +688,7 @@ pub async fn identify_attachment(
     };
     let color = requested_color.map(identify_color_echo);
     let identify_rgb = requested_color.map_or(DEFAULT_IDENTIFY_COLOR_RGB, identify_color_channels);
-    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+    let identify_brightness = (state.output_power.snapshot().effective_brightness()
         * tracked.user_settings.brightness)
         .clamp(0.0, 1.0);
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
@@ -798,7 +764,7 @@ pub async fn identify_attachment(
         direct_control,
     ));
 
-    ApiResponse::ok(IdentifyAttachmentResponse {
+    envelope::ok(IdentifyAttachmentResponse {
         device_id: device_id.to_string(),
         slot_id,
         binding_index,
@@ -846,7 +812,11 @@ pub(super) async fn ensure_default_logical_entry(
     state: &AppState,
     device_info: &DeviceInfo,
 ) -> String {
-    let fallback_layout_id = resolved_layout_device_id(state, device_info).await;
+    let fallback_layout_id = state
+        .domains
+        .layout
+        .resolved_layout_device_id(&state.domains.devices.layout_runtime(), device_info)
+        .await;
 
     let mut store = state.logical_devices.write().await;
     let default = crate::logical_devices::ensure_default_logical_device(
@@ -866,19 +836,19 @@ pub(super) async fn summarize_device_for_response(
     brightness: f32,
     layout_device_id: String,
     metadata: Option<&HashMap<String, String>>,
-) -> DeviceSummary {
-    DeviceSummary {
+) -> Result<DeviceSummary, hypercolor_driver_api::DriverError> {
+    Ok(DeviceSummary {
         id: info.id.to_string(),
         layout_device_id,
         name: info.name.clone(),
         origin: info.origin.clone(),
-        presentation: crate::network::device_presentation(state.driver_registry.as_ref(), info),
+        presentation: crate::network::device_presentation(state.driver_registry().as_ref(), info),
         status: device_state.variant_name().to_lowercase(),
         brightness: brightness_percent(brightness),
         firmware_version: info.firmware_version.clone(),
         connection: device_connection_summary(info, metadata),
         total_leds: info.total_led_count(),
-        auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await,
+        auth: pairing::build_device_auth_summary(state, info, device_state, metadata).await?,
         segments: info
             .segments
             .iter()
@@ -892,18 +862,20 @@ pub(super) async fn summarize_device_for_response(
             })
             .collect(),
         attachments: None,
-    }
+    })
 }
 
 pub(super) async fn refreshed_device_summary(
     state: &AppState,
     device_id: DeviceId,
-) -> Option<DeviceSummary> {
-    let tracked = state.device_registry.get(&device_id).await?;
+) -> Result<Option<DeviceSummary>, hypercolor_driver_api::DriverError> {
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return Ok(None);
+    };
     let layout_device_id = ensure_default_logical_entry(state, &tracked.info).await;
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
 
-    Some(
+    Ok(Some(
         summarize_device_for_response(
             state,
             &tracked.info,
@@ -912,8 +884,8 @@ pub(super) async fn refreshed_device_summary(
             layout_device_id,
             metadata.as_ref(),
         )
-        .await,
-    )
+        .await?,
+    ))
 }
 
 fn device_connection_summary(
@@ -970,39 +942,9 @@ fn percent_to_brightness(percent: u8) -> f32 {
     (f32::from(percent) / 100.0).clamp(0.0, 1.0)
 }
 
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "brightness is clamped to 0-100 percent before narrowing to a byte"
-)]
-fn brightness_percent(brightness: f32) -> u8 {
-    (brightness.clamp(0.0, 1.0) * 100.0).round() as u8
-}
-
 fn scale_rgb(color: [u8; 3], brightness: f32) -> [u8; 3] {
     let scaled = Rgb::new(color[0], color[1], color[2]).scale(brightness);
     [scaled.r, scaled.g, scaled.b]
-}
-
-pub(crate) async fn resolved_layout_device_id(
-    state: &AppState,
-    device_info: &DeviceInfo,
-) -> String {
-    if let Some(layout_device_id) = {
-        let lifecycle = state.lifecycle_manager.lock().await;
-        lifecycle
-            .layout_device_id_for(device_info.id)
-            .map(ToOwned::to_owned)
-    } {
-        return layout_device_id;
-    }
-
-    let fingerprint = state
-        .device_registry
-        .fingerprint_for_id(&device_info.id)
-        .await;
-    DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint.as_ref())
 }
 
 pub(super) async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {
@@ -1020,18 +962,18 @@ pub(crate) async fn persist_device_settings_for(
     settings: &DeviceUserSettings,
 ) -> Result<(), String> {
     let key = device_settings_key(state, device_id).await;
-    {
-        let mut store = state.device_settings.write().await;
-        store.set_device_settings(
+    state
+        .device_settings
+        .persist_device_settings(
             &key,
             crate::device_settings::StoredDeviceSettings {
                 name: settings.name.clone(),
                 disabled: !settings.enabled,
                 brightness: settings.brightness,
             },
-        );
-        store.save().map_err(|error| error.to_string())?;
-    }
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     state
         .event_bus
         .publish(HypercolorEvent::DeviceSettingsChanged { key: Some(key) });
@@ -1195,7 +1137,7 @@ async fn run_identify_flash(
     let mut show_on = false;
     let mut identify_failed = false;
     let mut phase_index = 0_u32;
-    let mut power_state = state.power_state.subscribe();
+    let mut power_state = state.output_power.subscribe();
 
     loop {
         if power_state.borrow().sleeping() {
@@ -1250,7 +1192,7 @@ async fn run_identify_flash(
         show_on = !show_on;
     }
 
-    let _transition_guard = state.output_power_transition.lock().await;
+    let output_power = state.output_power.transition().await;
     if !identify_failed {
         debug!(
             backend_id = %backend_id,
@@ -1271,13 +1213,13 @@ async fn run_identify_flash(
 
     drop(direct_control);
 
-    let power = *state.power_state.borrow();
+    let power = output_power.snapshot();
     if power.sleeping() {
-        super::effects::publish_static_output_snapshot(
-            state.as_ref(),
-            power.effective_off_output_color(),
-        )
-        .await;
+        state
+            .domains
+            .output
+            .publish_static_snapshot(power.effective_off_output_color())
+            .await;
     }
     debug!(
         backend_id = %backend_id,
@@ -1346,8 +1288,8 @@ async fn write_identify_output_if_running(
     device_id: DeviceId,
     colors: &[[u8; 3]],
 ) -> anyhow::Result<bool> {
-    let _transition_guard = state.output_power_transition.lock().await;
-    if state.power_state.borrow().sleeping() {
+    let output_power = state.output_power.transition().await;
+    if output_power.snapshot().sleeping() {
         return Ok(false);
     }
     direct_backend.write_colors(device_id, colors).await?;
@@ -1406,7 +1348,7 @@ async fn prepare_identify_backend(
             device_state = %device_state,
             "temporarily connecting device for identify"
         );
-        if let Err(error) = direct_backend.connect_with_refresh(device_id).await {
+        if let Err(error) = direct_backend.connect(device_id).await {
             warn!(
                 backend_id = %backend_id,
                 device_id = %device_id,
@@ -1532,7 +1474,7 @@ fn build_attachment_identify_frame(
     let device_key = device_id.to_string();
     let profile = profiles
         .get(&device_key)
-        .ok_or_else(|| DomainError::not_found(ResourceKind::Profile, device_id))?;
+        .ok_or_else(|| DomainError::not_found(ResourceKind::AttachmentProfile, device_id))?;
 
     let slot = profile
         .slots

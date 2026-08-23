@@ -7,8 +7,11 @@ use axum::body::Body;
 use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEntry;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
+use hypercolor_daemon::path_migration::MigrationOutcome;
+use hypercolor_daemon::simulators::SimulatedDisplayExt;
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{
@@ -51,7 +54,7 @@ async fn register_display(state: &Arc<AppState>, name: &str) -> DeviceId {
         .await
         .upsert(config.clone());
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -85,7 +88,7 @@ async fn register_face_effect(state: &Arc<AppState>, name: &str) -> EffectId {
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = state.effect_registry.write().await.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     effect_id
 }
 
@@ -185,13 +188,13 @@ async fn default_only_is_live_on_the_default_layer() {
     assert_eq!(payload["data"]["live_scope"], "default");
     assert_eq!(payload["data"]["effect"]["id"], effect_id.to_string());
 
-    // The default zone reaches the render groups.
-    let scene_manager = state.scene_manager.read().await;
-    assert!(scene_manager.active_render_groups().iter().any(|zone| {
+    // The default zone reaches the render zones.
+    let scene_manager = state.scene_manager.snapshot().await;
+    assert!(scene_manager.resolved_zones().iter().any(|zone| {
         zone.display_target
             .as_ref()
             .is_some_and(|target| target.device_id == device_id)
-            && zone.effect_id == Some(effect_id)
+            && zone.has_effect(effect_id)
     }));
 }
 
@@ -229,9 +232,9 @@ async fn scene_layer_wins_when_both_are_assigned() {
     assert_eq!(payload["data"]["effect"]["id"], scene_effect.to_string());
 
     // Only the scene zone renders for the device — the overlay is suppressed.
-    let scene_manager = state.scene_manager.read().await;
-    let groups_for_device = scene_manager
-        .active_render_groups()
+    let scene_manager = state.scene_manager.snapshot().await;
+    let zones_for_device = scene_manager
+        .resolved_zones()
         .iter()
         .filter(|zone| {
             zone.display_target
@@ -240,8 +243,8 @@ async fn scene_layer_wins_when_both_are_assigned() {
         })
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(groups_for_device.len(), 1);
-    assert_eq!(groups_for_device[0].effect_id, Some(scene_effect));
+    assert_eq!(zones_for_device.len(), 1);
+    assert!(zones_for_device[0].has_effect(scene_effect));
 }
 
 // ── Delete semantics ────────────────────────────────────────────────────
@@ -329,7 +332,11 @@ async fn control_patches_route_to_the_default_layer_when_it_is_live() {
         json_request(
             Method::PATCH,
             format!("/api/v1/displays/{device_id}/face/controls"),
-            serde_json::json!({ "controls": { "accent": "#e135ff" } }),
+            serde_json::json!({
+                "values": {
+                    "accent": { "kind": "text", "value": "#e135ff" }
+                }
+            }),
         ),
     )
     .await;
@@ -338,7 +345,7 @@ async fn control_patches_route_to_the_default_layer_when_it_is_live() {
     assert_eq!(payload["data"]["live_scope"], "default");
 
     // The stored preference carries the merged control.
-    let store = state.display_preferences.read().await;
+    let store = state.domains.display.preferences().read().await;
     let preference = store.get(device_id).expect("preference should exist");
     assert!(preference.controls.contains_key("accent"));
 }
@@ -353,7 +360,7 @@ fn store_round_trips_preferences_to_disk() {
     let preference = DisplayPreference {
         effect_id: EffectId::from(Uuid::now_v7()),
         controls: std::collections::HashMap::new(),
-        blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+        blend_mode: hypercolor_types::layer::BlendMode::Alpha,
         opacity: 0.8,
     };
 
@@ -365,6 +372,63 @@ fn store_round_trips_preferences_to_disk() {
 
     let reloaded = DisplayPreferencesStore::load(&path).expect("store should load");
     assert_eq!(reloaded.get(device_id), Some(&preference));
+}
+
+#[test]
+fn store_moves_to_state_with_a_durable_legacy_backup() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let legacy = root.path().join("data/display-preferences.json");
+    let canonical = root.path().join("state/display-preferences.json");
+    std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    let device_id = DeviceId::new();
+    let preference = DisplayPreference {
+        effect_id: EffectId::from(Uuid::now_v7()),
+        controls: std::collections::HashMap::new(),
+        blend_mode: hypercolor_types::layer::BlendMode::Alpha,
+        opacity: 0.75,
+    };
+    let mut legacy_store =
+        DisplayPreferencesStore::new(legacy.clone()).expect("legacy store initializes");
+    legacy_store
+        .set(device_id, preference.clone())
+        .expect("legacy preference persists");
+
+    let (migrated, outcome) =
+        DisplayPreferencesStore::load_migrated(&legacy, &canonical).expect("migration succeeds");
+    let MigrationOutcome::Imported {
+        backup: Some(backup),
+    } = outcome
+    else {
+        panic!("expected an imported backup, got {outcome:?}");
+    };
+
+    assert_eq!(migrated.get(device_id), Some(&preference));
+    assert!(canonical.exists());
+    assert!(!legacy.exists());
+    assert!(backup.exists());
+
+    let (_, second) =
+        DisplayPreferencesStore::load_migrated(&legacy, &canonical).expect("restart is idempotent");
+    assert_eq!(second, MigrationOutcome::AlreadyMigrated);
+}
+
+#[test]
+fn invalid_legacy_store_never_replaces_state() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let legacy = root.path().join("data/display-preferences.json");
+    let canonical = root.path().join("state/display-preferences.json");
+    std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    std::fs::write(&legacy, b"not json").expect("legacy fixture");
+
+    let error = DisplayPreferencesStore::load_migrated(&legacy, &canonical)
+        .expect_err("invalid legacy store is refused");
+
+    assert!(error.to_string().contains("failed to parse"));
+    assert!(!canonical.exists());
+    assert_eq!(
+        std::fs::read(&legacy).expect("legacy survives"),
+        b"not json"
+    );
 }
 
 // ── Scene-switch survival ───────────────────────────────────────────────
@@ -409,13 +473,13 @@ async fn default_face_survives_scene_switches() {
             payload["data"]["live_scope"], "default",
             "after activating {name}"
         );
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         assert!(
-            scene_manager.active_render_groups().iter().any(|zone| {
+            scene_manager.resolved_zones().iter().any(|zone| {
                 zone.display_target
                     .as_ref()
                     .is_some_and(|target| target.device_id == device_id)
-                    && zone.effect_id == Some(effect_id)
+                    && zone.has_effect(effect_id)
             }),
             "default face should render after activating {name}"
         );
@@ -433,9 +497,9 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
 
     put_face(&app, device_id, effect_id, "default").await;
     {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         assert!(
-            scene_manager.default_display_group_for(device_id).is_some(),
+            scene_manager.default_display_zone_for(device_id).is_some(),
             "default face should be live before deletion"
         );
     }
@@ -449,13 +513,13 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
     let payload = body_json(response).await;
     assert_eq!(payload["data"]["deleted"], true);
 
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     assert!(
-        scene_manager.default_display_group_for(device_id).is_none(),
+        scene_manager.default_display_zone_for(device_id).is_none(),
         "deleted display must not keep a runtime default face zone"
     );
     assert!(
-        !scene_manager.active_render_groups().iter().any(|zone| {
+        !scene_manager.resolved_zones().iter().any(|zone| {
             zone.display_target
                 .as_ref()
                 .is_some_and(|target| target.device_id == device_id)
@@ -464,7 +528,7 @@ async fn deleting_a_display_prunes_its_default_face_and_preference() {
     );
     drop(scene_manager);
 
-    let store = state.display_preferences.read().await;
+    let store = state.domains.display.preferences().read().await;
     assert!(
         store.get(device_id).is_none(),
         "deleted display must not keep a stored default-face preference"

@@ -3,13 +3,16 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use hypercolor_types::api::library::{
-    AddFavoriteRequest, PlaylistItemRequest, PlaylistTargetRequest, SavePlaylistRequest,
-    SavePresetRequest,
+    ActivatePlaylistResponse, ActivePlaylistStateResponse, AddFavoriteRequest, AddFavoriteResponse,
+    DeactivatePlaylistResponse, DeleteFavoriteResponse, DeletePlaylistResponse,
+    DeletePresetResponse, FavoriteListResponse, PlaylistItemRequest, PlaylistListResponse,
+    PlaylistTargetRequest, PresetListResponse, SavePlaylistRequest, SavePresetRequest,
 };
 use hypercolor_types::api::scene::ApplyEffectRequest;
+use hypercolor_types::library::{EffectPlaylist, EffectPreset};
 
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
+use crate::output::{OutputContext, OutputFormat, urlencoded};
 
 /// Saved effect library operations.
 #[derive(Debug, Args)]
@@ -254,44 +257,34 @@ async fn execute_favorites(
 ) -> Result<()> {
     match &args.command {
         FavoritesCommand::List => {
-            let response = client.get("/library/favorites").await?;
+            let response: FavoriteListResponse = client.get("/library/favorites").await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
-                    if let Some(items) = response.get("items").and_then(serde_json::Value::as_array)
-                    {
-                        for item in items {
-                            println!("{}", extract_str(item, "effect_name"));
-                        }
+                    for item in &response.items {
+                        println!("{}", item.effect_name);
                     }
                 }
                 OutputFormat::Table => {
-                    if let Some(items) = response.get("items").and_then(serde_json::Value::as_array)
-                    {
-                        let headers = ["Effect", "Effect ID", "Added (ms)"];
-                        let rows: Vec<Vec<String>> = items
-                            .iter()
-                            .map(|item| {
-                                vec![
-                                    ctx.painter.name(&extract_str(item, "effect_name")),
-                                    ctx.painter.id(&extract_str(item, "effect_id")),
-                                    ctx.painter.number(
-                                        &item
-                                            .get("added_at_ms")
-                                            .and_then(serde_json::Value::as_u64)
-                                            .map_or_else(|| "-".to_owned(), |v| v.to_string()),
-                                    ),
-                                ]
-                            })
-                            .collect();
-                        let row_count = rows.len();
-                        ctx.print_table(&headers, &rows);
-                        println!();
-                        ctx.info(&format!(
-                            "{} favorites",
-                            ctx.painter.number(&row_count.to_string())
-                        ));
-                    }
+                    let headers = ["Effect", "Effect ID", "Added (ms)"];
+                    let rows: Vec<Vec<String>> = response
+                        .items
+                        .iter()
+                        .map(|item| {
+                            vec![
+                                ctx.painter.name(&item.effect_name),
+                                ctx.painter.id(&item.effect_id),
+                                ctx.painter.number(&item.added_at_ms.to_string()),
+                            ]
+                        })
+                        .collect();
+                    let row_count = rows.len();
+                    ctx.print_table(&headers, &rows);
+                    println!();
+                    ctx.info(&format!(
+                        "{} favorites",
+                        ctx.painter.number(&row_count.to_string())
+                    ));
                 }
             }
         }
@@ -299,20 +292,12 @@ async fn execute_favorites(
             let body = AddFavoriteRequest {
                 effect: add_args.effect.clone(),
             };
-            let response = client.post("/library/favorites", &body).await?;
+            let response: AddFavoriteResponse = client.post("/library/favorites", &body).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
-                    let created = response
-                        .get("created")
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false);
-                    let effect = response
-                        .get("favorite")
-                        .and_then(|favorite| favorite.get("effect_name"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(&add_args.effect);
-                    if created {
+                    let effect = &response.favorite.effect_name;
+                    if response.created {
                         ctx.success(&format!("Favorite added: {effect}"));
                     } else {
                         ctx.success(&format!("Favorite refreshed: {effect}"));
@@ -322,7 +307,7 @@ async fn execute_favorites(
         }
         FavoritesCommand::Remove(remove_args) => {
             let path = format!("/library/favorites/{}", urlencoded(&remove_args.effect));
-            let response = client.delete(&path).await?;
+            let response: DeleteFavoriteResponse = client.delete(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -346,60 +331,41 @@ async fn execute_presets(
 ) -> Result<()> {
     match &args.command {
         PresetsCommand::List => {
-            let response = client.get("/library/presets").await?;
+            let response: PresetListResponse = client.get("/library/presets").await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
-                    if let Some(items) = response.get("items").and_then(serde_json::Value::as_array)
-                    {
-                        for item in items {
-                            println!("{}", extract_str(item, "name"));
-                        }
+                    for item in &response.items {
+                        println!("{}", item.name);
                     }
                 }
                 OutputFormat::Table => {
-                    if let Some(items) = response.get("items").and_then(serde_json::Value::as_array)
-                    {
-                        let headers = ["Name", "ID", "Effect", "Tags", "Updated (ms)"];
-                        let rows: Vec<Vec<String>> = items
-                            .iter()
-                            .map(|item| {
-                                let tags = item
-                                    .get("tags")
-                                    .and_then(serde_json::Value::as_array)
-                                    .map_or_else(String::new, |values| {
-                                        values
-                                            .iter()
-                                            .filter_map(serde_json::Value::as_str)
-                                            .collect::<Vec<_>>()
-                                            .join(",")
-                                    });
-                                vec![
-                                    ctx.painter.name(&extract_str(item, "name")),
-                                    ctx.painter.id(&extract_str(item, "id")),
-                                    ctx.painter.muted(&extract_str(item, "effect_id")),
-                                    if tags.is_empty() {
-                                        ctx.painter.muted("-")
-                                    } else {
-                                        ctx.painter.muted(&tags)
-                                    },
-                                    ctx.painter.number(
-                                        &item
-                                            .get("updated_at_ms")
-                                            .and_then(serde_json::Value::as_u64)
-                                            .map_or_else(|| "-".to_owned(), |v| v.to_string()),
-                                    ),
-                                ]
-                            })
-                            .collect();
-                        let row_count = rows.len();
-                        ctx.print_table(&headers, &rows);
-                        println!();
-                        ctx.info(&format!(
-                            "{} presets",
-                            ctx.painter.number(&row_count.to_string())
-                        ));
-                    }
+                    let headers = ["Name", "ID", "Effect", "Tags", "Updated (ms)"];
+                    let rows: Vec<Vec<String>> = response
+                        .items
+                        .iter()
+                        .map(|item| {
+                            let tags = item.tags.join(",");
+                            vec![
+                                ctx.painter.name(&item.name),
+                                ctx.painter.id(&item.id.to_string()),
+                                ctx.painter.muted(&item.effect_id.to_string()),
+                                if tags.is_empty() {
+                                    ctx.painter.muted("-")
+                                } else {
+                                    ctx.painter.muted(&tags)
+                                },
+                                ctx.painter.number(&item.updated_at_ms.to_string()),
+                            ]
+                        })
+                        .collect();
+                    let row_count = rows.len();
+                    ctx.print_table(&headers, &rows);
+                    println!();
+                    ctx.info(&format!(
+                        "{} presets",
+                        ctx.painter.number(&row_count.to_string())
+                    ));
                 }
             }
         }
@@ -408,55 +374,41 @@ async fn execute_presets(
         }
         PresetsCommand::Info(info_args) => {
             let path = format!("/library/presets/{}", urlencoded(&info_args.preset));
-            let response = client.get(&path).await?;
+            let response: EffectPreset = client.get(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
-                    println!("{}", extract_str(&response, "name"));
+                    println!("{}", response.name);
                 }
                 OutputFormat::Table => {
                     println!();
-                    ctx.info(&format!("Preset: {}", extract_str(&response, "name")));
+                    ctx.info(&format!("Preset: {}", response.name));
                     println!();
-                    ctx.info(&format!("ID            {}", extract_str(&response, "id")));
-                    ctx.info(&format!(
-                        "Effect        {}",
-                        extract_str(&response, "effect_id")
-                    ));
-                    let tags = response
-                        .get("tags")
-                        .and_then(serde_json::Value::as_array)
-                        .map_or_else(String::new, |values| {
-                            values
-                                .iter()
-                                .filter_map(serde_json::Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        });
+                    ctx.info(&format!("ID            {}", response.id));
+                    ctx.info(&format!("Effect        {}", response.effect_id));
+                    let tags = response.tags.join(", ");
                     if !tags.is_empty() {
                         ctx.info(&format!("Tags          {tags}"));
                     }
-                    ctx.info(&format!(
-                        "Updated (ms)  {}",
-                        response
-                            .get("updated_at_ms")
-                            .and_then(serde_json::Value::as_u64)
-                            .map_or_else(|| "-".to_owned(), |value| value.to_string())
-                    ));
+                    ctx.info(&format!("Updated (ms)  {}", response.updated_at_ms));
                     println!();
                 }
             }
         }
         PresetsCommand::Apply(apply_args) => {
             let preset_path = format!("/library/presets/{}", urlencoded(&apply_args.preset));
-            let preset = client.get(&preset_path).await?;
-            let effect_id = extract_str(&preset, "effect_id");
+            let preset: EffectPreset = client.get(&preset_path).await?;
+            let effect_id = preset.effect_id.to_string();
             let path = format!(
                 "/effects/{}/presets/{}/apply",
                 urlencoded(&effect_id),
                 urlencoded(&apply_args.preset)
             );
-            let response = client.post(&path, &ApplyEffectRequest::default()).await?;
+            // The preset-apply body has no named contract on purpose: the
+            // daemon builds it with serde_json, which widens the f32
+            // control values, so naming a shape would change the bytes.
+            let response: serde_json::Value =
+                client.post(&path, &ApplyEffectRequest::default()).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -477,7 +429,7 @@ async fn execute_presets(
             }
 
             let path = format!("/library/presets/{}", urlencoded(&delete_args.preset));
-            let response = client.delete(&path).await?;
+            let response: DeletePresetResponse = client.delete(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -489,7 +441,7 @@ async fn execute_presets(
             let path = format!("/library/presets/{}", urlencoded(&update_args.preset));
             let body: serde_json::Value = serde_json::from_str(&update_args.data)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
-            let response = client.put(&path, &body).await?;
+            let response: EffectPreset = client.put(&path, &body).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -516,85 +468,52 @@ async fn execute_playlists(
             execute_create_playlist(create_args, client, ctx).await?;
         }
         PlaylistsCommand::List => {
-            let response = client.get("/library/playlists").await?;
+            let response: PlaylistListResponse = client.get("/library/playlists").await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
-                    if let Some(items) = response.get("items").and_then(serde_json::Value::as_array)
-                    {
-                        for item in items {
-                            println!("{}", extract_str(item, "name"));
-                        }
+                    for item in &response.items {
+                        println!("{}", item.name);
                     }
                 }
                 OutputFormat::Table => {
-                    if let Some(items) = response.get("items").and_then(serde_json::Value::as_array)
-                    {
-                        let headers = ["Name", "ID", "Items", "Loop", "Updated (ms)"];
-                        let rows: Vec<Vec<String>> = items
-                            .iter()
-                            .map(|item| {
-                                let item_count = item
-                                    .get("items")
-                                    .and_then(serde_json::Value::as_array)
-                                    .map_or(0, Vec::len);
-                                let loop_display = item
-                                    .get("loop_enabled")
-                                    .and_then(serde_json::Value::as_bool)
-                                    .map_or_else(
-                                        || ctx.painter.muted("-"),
-                                        |v| ctx.painter.yesno(v),
-                                    );
-                                vec![
-                                    ctx.painter.name(&extract_str(item, "name")),
-                                    ctx.painter.id(&extract_str(item, "id")),
-                                    ctx.painter.number(&item_count.to_string()),
-                                    loop_display,
-                                    ctx.painter.number(
-                                        &item
-                                            .get("updated_at_ms")
-                                            .and_then(serde_json::Value::as_u64)
-                                            .map_or_else(|| "-".to_owned(), |v| v.to_string()),
-                                    ),
-                                ]
-                            })
-                            .collect();
-                        let row_count = rows.len();
-                        ctx.print_table(&headers, &rows);
-                        println!();
-                        ctx.info(&format!(
-                            "{} playlists",
-                            ctx.painter.number(&row_count.to_string())
-                        ));
-                    }
+                    let headers = ["Name", "ID", "Items", "Loop", "Updated (ms)"];
+                    let rows: Vec<Vec<String>> = response
+                        .items
+                        .iter()
+                        .map(|item| {
+                            vec![
+                                ctx.painter.name(&item.name),
+                                ctx.painter.id(&item.id.to_string()),
+                                ctx.painter.number(&item.items.len().to_string()),
+                                ctx.painter.yesno(item.loop_enabled),
+                                ctx.painter.number(&item.updated_at_ms.to_string()),
+                            ]
+                        })
+                        .collect();
+                    let row_count = rows.len();
+                    ctx.print_table(&headers, &rows);
+                    println!();
+                    ctx.info(&format!(
+                        "{} playlists",
+                        ctx.painter.number(&row_count.to_string())
+                    ));
                 }
             }
         }
         PlaylistsCommand::Info(info_args) => {
             let path = format!("/library/playlists/{}", urlencoded(&info_args.playlist));
-            let response = client.get(&path).await?;
+            let response: EffectPlaylist = client.get(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
-                OutputFormat::Plain => println!("{}", extract_str(&response, "name")),
+                OutputFormat::Plain => println!("{}", response.name),
                 OutputFormat::Table => {
                     println!();
-                    ctx.info(&format!("Playlist: {}", extract_str(&response, "name")));
+                    ctx.info(&format!("Playlist: {}", response.name));
                     println!();
-                    ctx.info(&format!("ID            {}", extract_str(&response, "id")));
-                    ctx.info(&format!(
-                        "Loop          {}",
-                        response
-                            .get("loop_enabled")
-                            .and_then(serde_json::Value::as_bool)
-                            .map_or_else(|| "?".to_owned(), |value| value.to_string())
-                    ));
-                    ctx.info(&format!(
-                        "Items         {}",
-                        response
-                            .get("items")
-                            .and_then(serde_json::Value::as_array)
-                            .map_or(0, Vec::len)
-                    ));
+                    ctx.info(&format!("ID            {}", response.id));
+                    ctx.info(&format!("Loop          {}", response.loop_enabled));
+                    ctx.info(&format!("Items         {}", response.items.len()));
                     println!();
                 }
             }
@@ -604,71 +523,43 @@ async fn execute_playlists(
                 "/library/playlists/{}/activate",
                 urlencoded(&activate_args.playlist)
             );
-            let response = client.post(&path, &serde_json::json!({})).await?;
+            let response: ActivatePlaylistResponse =
+                client.post(&path, &serde_json::json!({})).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
-                    let name = response
-                        .get("playlist")
-                        .and_then(|playlist| playlist.get("name"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(&activate_args.playlist);
-                    ctx.success(&format!("Playlist activated: {name}"));
+                    ctx.success(&format!("Playlist activated: {}", response.playlist.name));
                 }
             }
         }
         PlaylistsCommand::Active => {
-            let response = client.get("/library/playlists/active").await?;
+            let response: ActivePlaylistStateResponse =
+                client.get("/library/playlists/active").await?;
+            let playlist = &response.playlist;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
-                    let name = response
-                        .get("playlist")
-                        .and_then(|playlist| playlist.get("name"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("?");
-                    println!("{name}");
+                    println!("{}", playlist.name);
                 }
                 OutputFormat::Table => {
-                    let playlist = response.get("playlist").unwrap_or(&serde_json::Value::Null);
                     println!();
-                    ctx.info(&format!(
-                        "Active Playlist: {}",
-                        extract_str(playlist, "name")
-                    ));
+                    ctx.info(&format!("Active Playlist: {}", playlist.name));
                     println!();
-                    ctx.info(&format!("ID            {}", extract_str(playlist, "id")));
-                    ctx.info(&format!(
-                        "Items         {}",
-                        playlist
-                            .get("item_count")
-                            .and_then(serde_json::Value::as_u64)
-                            .map_or_else(|| "?".to_owned(), |value| value.to_string())
-                    ));
-                    ctx.info(&format!(
-                        "Started (ms)  {}",
-                        playlist
-                            .get("started_at_ms")
-                            .and_then(serde_json::Value::as_u64)
-                            .map_or_else(|| "?".to_owned(), |value| value.to_string())
-                    ));
+                    ctx.info(&format!("ID            {}", playlist.id));
+                    ctx.info(&format!("Items         {}", playlist.item_count));
+                    ctx.info(&format!("Started (ms)  {}", playlist.started_at_ms));
                     println!();
                 }
             }
         }
         PlaylistsCommand::Deactivate => {
-            let response = client
+            let response: DeactivatePlaylistResponse = client
                 .post("/library/playlists/deactivate", &serde_json::json!({}))
                 .await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
-                    let name = response
-                        .get("playlist")
-                        .and_then(|playlist| playlist.get("name"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("?");
-                    ctx.success(&format!("Playlist deactivated: {name}"));
+                    ctx.success(&format!("Playlist deactivated: {}", response.playlist.name));
                 }
             }
         }
@@ -682,7 +573,7 @@ async fn execute_playlists(
             }
 
             let path = format!("/library/playlists/{}", urlencoded(&delete_args.playlist));
-            let response = client.delete(&path).await?;
+            let response: DeletePlaylistResponse = client.delete(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -694,7 +585,7 @@ async fn execute_playlists(
             let path = format!("/library/playlists/{}", urlencoded(&update_args.playlist));
             let body: serde_json::Value = serde_json::from_str(&update_args.data)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
-            let response = client.put(&path, &body).await?;
+            let response: EffectPlaylist = client.put(&path, &body).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -724,13 +615,12 @@ async fn execute_create_preset(
         controls: Some(serde_json::Value::Object(controls)),
         tags: Some(args.tag.clone()),
     };
-    let response = client.post("/library/presets", &body).await?;
+    let response: EffectPreset = client.post("/library/presets", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let id = extract_str(&response, "id");
-            ctx.success(&format!("Preset created: {} ({id})", args.name));
+            ctx.success(&format!("Preset created: {} ({})", args.name, response.id));
         }
     }
 
@@ -768,13 +658,15 @@ async fn execute_create_playlist(
         loop_enabled: Some(!args.no_loop),
         items: Some(items),
     };
-    let response = client.post("/library/playlists", &body).await?;
+    let response: EffectPlaylist = client.post("/library/playlists", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let id = extract_str(&response, "id");
-            ctx.success(&format!("Playlist created: {} ({id})", args.name));
+            ctx.success(&format!(
+                "Playlist created: {} ({})",
+                args.name, response.id
+            ));
         }
     }
 

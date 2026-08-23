@@ -16,13 +16,13 @@ use crate::app::{CapabilitiesContext, DevicesContext, WsContext};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::storage;
-use crate::ws::messages::group_has_degraded_layer;
+use crate::ws::messages::zone_has_degraded_layer;
 
 use super::StudioContext;
-use super::device_card::{CardMode, StudioDeviceCard};
-use super::device_grouping::{
+use super::device_assignment::{
     DeviceMeta, ZoneDeviceRow, device_rows_for_zone, sort_device_rows, unassigned_device_rows,
 };
+use super::device_card::{CardMode, StudioDeviceCard};
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use super::zone_add_device::ZoneAddDevice;
 use super::zone_controls::{NewZoneControl, ZoneControls};
@@ -127,13 +127,11 @@ pub fn ZoneTree() -> impl IntoView {
             .get()
             .into_iter()
             .map(|surface| {
-                let outputs = scene
+                let mut base_rows = scene
                     .zones
                     .iter()
-                    .find(|group| group.id.to_string() == surface.id)
-                    .map(|group| group.layout.zones.clone())
-                    .unwrap_or_default();
-                let mut base_rows = device_rows_for_zone(&outputs, &metas);
+                    .find(|zone| zone.id.to_string() == surface.id)
+                    .map_or_else(Vec::new, |zone| device_rows_for_zone(zone, &metas));
                 sort_device_rows(&mut base_rows);
                 retain_by_search(&mut base_rows, &search);
                 let rows = base_rows
@@ -281,14 +279,15 @@ fn ZoneNode(
         move || !collapsed.with(|set| set.contains(&zone_id))
     });
 
-    let health_group = zone_id.clone();
+    let health_zone = zone_id.clone();
     let health_layer_ids = surface.layer_ids.clone();
     let degraded = Signal::derive(move || {
         let (Some(ws), Some(scene)) = (ws, studio.active_scene.get()) else {
             return false;
         };
-        ws.layer_health
-            .with(|map| group_has_degraded_layer(map, &scene.id, &health_group, &health_layer_ids))
+        ws.layer_health.with(|map| {
+            zone_has_degraded_layer(map, &scene.id.to_string(), &health_zone, &health_layer_ids)
+        })
     });
 
     let controls_open = RwSignal::new(false);

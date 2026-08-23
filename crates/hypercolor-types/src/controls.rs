@@ -5,12 +5,11 @@
 //! concrete driver.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::IpAddr;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use utoipa::ToSchema;
 
+use crate::control::ControlValue;
 use crate::device::DeviceId;
 
 /// Stable identifier for a control surface.
@@ -32,7 +31,8 @@ pub type ControlSurfaceRevision = u64;
 pub const CONTROL_SURFACE_SCHEMA_VERSION: u32 = 1;
 
 /// Scope owned by a control surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlSurfaceScope {
     /// Driver-module level controls.
@@ -52,7 +52,8 @@ pub enum ControlSurfaceScope {
 }
 
 /// Complete API document for a driver or device control surface.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlSurfaceDocument {
     /// Stable surface identifier.
     pub surface_id: ControlSurfaceId,
@@ -76,14 +77,13 @@ pub struct ControlSurfaceDocument {
     pub actions: Vec<ControlActionDescriptor>,
 
     /// Current field values keyed by field ID.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub values: ControlValueMap,
 
     /// Resolved availability keyed by field ID.
     pub availability: ControlAvailabilityMap,
 
     /// Resolved availability keyed by action ID.
-    #[serde(default)]
     pub action_availability: ControlActionAvailabilityMap,
 }
 
@@ -116,8 +116,9 @@ pub type ControlAvailabilityMap = BTreeMap<ControlFieldId, ControlAvailability>;
 pub type ControlActionAvailabilityMap = BTreeMap<ControlActionId, ControlAvailability>;
 
 /// Versioned type vocabulary for control values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-#[schema(no_recursion)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "schema", schema(no_recursion))]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ControlValueType {
     /// Boolean value.
@@ -216,8 +217,10 @@ pub enum ControlValueType {
         fields: Vec<ControlObjectField>,
     },
 
-    /// Unknown value type from a newer daemon or driver schema.
-    #[serde(other)]
+    /// Explicit unsupported value-type sentinel.
+    ///
+    /// Undeclared wire tags are rejected. Producers must send
+    /// `{ "kind": "unknown" }` when the sentinel is intentional.
     Unknown,
 }
 
@@ -229,7 +232,7 @@ impl ControlValueType {
             | (Self::Secret, ControlValue::SecretRef(_))
             | (Self::ColorRgb, ControlValue::ColorRgb(_))
             | (Self::ColorRgba, ControlValue::ColorRgba(_)) => Ok(()),
-            (Self::Integer { min, max, step }, ControlValue::Integer(value)) => {
+            (Self::Integer { min, max, step }, ControlValue::Int(value)) => {
                 validate_i64(*value, *min, *max, *step)
             }
             (Self::Float { min, max, step }, ControlValue::Float(value)) => {
@@ -239,12 +242,15 @@ impl ControlValueType {
                 Self::String {
                     min_len, max_len, ..
                 },
-                ControlValue::String(value),
+                ControlValue::Text(value),
             ) => validate_string(value, *min_len, *max_len),
-            (Self::IpAddress, ControlValue::IpAddress(value)) => validate_ip_address(value),
-            (Self::MacAddress, ControlValue::MacAddress(value)) => validate_mac_address(value),
-            (Self::DurationMs { min, max, step }, ControlValue::DurationMs(value)) => {
-                validate_u64(*value, *min, *max, *step)
+            (Self::IpAddress, ControlValue::Ip(_)) | (Self::MacAddress, ControlValue::Mac(_)) => {
+                Ok(())
+            }
+            (Self::DurationMs { min, max, step }, ControlValue::Duration(value)) => {
+                let millis = u64::try_from(value.as_millis())
+                    .map_err(|_| ControlValueValidationError::AboveMaximum)?;
+                validate_u64(millis, *min, *max, *step)
             }
             (Self::Enum { options }, ControlValue::Enum(value)) => validate_enum(options, value),
             (Self::Flags { options }, ControlValue::Flags(values)) => {
@@ -258,113 +264,12 @@ impl ControlValueType {
                 },
                 ControlValue::List(values),
             ) => validate_list(item_type, values, *min_items, *max_items),
-            (Self::Object { fields }, ControlValue::Object(values)) => {
-                validate_object(fields, values)
-            }
+            (Self::Object { fields }, ControlValue::Map(values)) => validate_object(fields, values),
             (Self::Unknown, _) => Err(ControlValueValidationError::UnsupportedValueType),
             _ => Err(ControlValueValidationError::TypeMismatch {
                 expected: self.clone(),
                 actual: value.kind(),
             }),
-        }
-    }
-}
-
-/// Typed value payload matching a [`ControlValueType`].
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
-#[schema(no_recursion)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "value")]
-pub enum ControlValue {
-    /// Empty value.
-    Null,
-
-    /// Boolean value.
-    Bool(bool),
-
-    /// Signed integer value.
-    Integer(i64),
-
-    /// Floating point value.
-    Float(f64),
-
-    /// UTF-8 string value.
-    String(String),
-
-    /// Reference to a secret in the credential store.
-    SecretRef(String),
-
-    /// RGB color.
-    ColorRgb([u8; 3]),
-
-    /// RGBA color.
-    ColorRgba([u8; 4]),
-
-    /// IP address text.
-    IpAddress(String),
-
-    /// MAC address text.
-    MacAddress(String),
-
-    /// Duration in milliseconds.
-    DurationMs(u64),
-
-    /// Single enum option value.
-    Enum(String),
-
-    /// Multiple flag option values.
-    Flags(Vec<String>),
-
-    /// Homogeneous list.
-    List(Vec<ControlValue>),
-
-    /// Structured object.
-    Object(BTreeMap<String, ControlValue>),
-
-    /// Unknown value from a newer daemon or driver schema.
-    #[serde(other)]
-    Unknown,
-}
-
-impl<'de> Deserialize<'de> for ControlValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct RawControlValue {
-            kind: String,
-            #[serde(default)]
-            value: Option<serde_json::Value>,
-        }
-
-        fn parse_value<T, E>(kind: &str, value: Option<serde_json::Value>) -> Result<T, E>
-        where
-            T: serde::de::DeserializeOwned,
-            E: serde::de::Error,
-        {
-            let value = value.ok_or_else(|| E::custom(format!("missing value for {kind}")))?;
-            serde_json::from_value(value)
-                .map_err(|error| E::custom(format!("invalid {kind} value: {error}")))
-        }
-
-        let raw = RawControlValue::deserialize(deserializer)?;
-        match raw.kind.as_str() {
-            "null" => Ok(Self::Null),
-            "bool" => parse_value("bool", raw.value).map(Self::Bool),
-            "integer" => parse_value("integer", raw.value).map(Self::Integer),
-            "float" => parse_value("float", raw.value).map(Self::Float),
-            "string" => parse_value("string", raw.value).map(Self::String),
-            "secret_ref" => parse_value("secret_ref", raw.value).map(Self::SecretRef),
-            "color_rgb" => parse_value("color_rgb", raw.value).map(Self::ColorRgb),
-            "color_rgba" => parse_value("color_rgba", raw.value).map(Self::ColorRgba),
-            "ip_address" => parse_value("ip_address", raw.value).map(Self::IpAddress),
-            "mac_address" => parse_value("mac_address", raw.value).map(Self::MacAddress),
-            "duration_ms" => parse_value("duration_ms", raw.value).map(Self::DurationMs),
-            "enum" => parse_value("enum", raw.value).map(Self::Enum),
-            "flags" => parse_value("flags", raw.value).map(Self::Flags),
-            "list" => parse_value("list", raw.value).map(Self::List),
-            "object" => parse_value("object", raw.value).map(Self::Object),
-            _ => Ok(Self::Unknown),
         }
     }
 }
@@ -376,26 +281,30 @@ impl ControlValue {
         match self {
             Self::Null => ControlValueKind::Null,
             Self::Bool(_) => ControlValueKind::Bool,
-            Self::Integer(_) => ControlValueKind::Integer,
+            Self::Int(_) => ControlValueKind::Int,
             Self::Float(_) => ControlValueKind::Float,
-            Self::String(_) => ControlValueKind::String,
+            Self::Text(_) => ControlValueKind::Text,
             Self::SecretRef(_) => ControlValueKind::SecretRef,
             Self::ColorRgb(_) => ControlValueKind::ColorRgb,
             Self::ColorRgba(_) => ControlValueKind::ColorRgba,
-            Self::IpAddress(_) => ControlValueKind::IpAddress,
-            Self::MacAddress(_) => ControlValueKind::MacAddress,
-            Self::DurationMs(_) => ControlValueKind::DurationMs,
+            Self::Ip(_) => ControlValueKind::Ip,
+            Self::Mac(_) => ControlValueKind::Mac,
+            Self::Duration(_) => ControlValueKind::Duration,
             Self::Enum(_) => ControlValueKind::Enum,
             Self::Flags(_) => ControlValueKind::Flags,
             Self::List(_) => ControlValueKind::List,
-            Self::Object(_) => ControlValueKind::Object,
+            Self::Map(_) => ControlValueKind::Map,
+            Self::ColorLinear(_) => ControlValueKind::ColorLinear,
+            Self::Gradient(_) => ControlValueKind::Gradient,
+            Self::Rect(_) => ControlValueKind::Rect,
             Self::Unknown => ControlValueKind::Unknown,
         }
     }
 }
 
 /// Lightweight kind descriptor for validation errors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlValueKind {
     /// Null value.
@@ -403,37 +312,98 @@ pub enum ControlValueKind {
     /// Boolean value.
     Bool,
     /// Integer value.
-    Integer,
+    Int,
     /// Float value.
     Float,
-    /// String value.
-    String,
+    /// Text value.
+    Text,
     /// Secret reference.
     SecretRef,
+    /// IP address.
+    Ip,
+    /// MAC address.
+    Mac,
+    /// Duration in milliseconds.
+    Duration,
     /// RGB color.
     ColorRgb,
     /// RGBA color.
     ColorRgba,
-    /// IP address.
-    IpAddress,
-    /// MAC address.
-    MacAddress,
-    /// Duration in milliseconds.
-    DurationMs,
+    /// Linear-light RGBA color.
+    ColorLinear,
+    /// Effect gradient value.
+    Gradient,
+    /// Effect rectangle value.
+    Rect,
     /// Enum value.
     Enum,
     /// Flag values.
     Flags,
     /// List value.
     List,
-    /// Object value.
-    Object,
-    /// Unknown future value.
+    /// Keyed map value.
+    Map,
+    /// Explicit unsupported value sentinel.
     Unknown,
 }
 
+impl ControlValueKind {
+    /// Every kind, in the order `ControlValue` declares its variants.
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Null,
+        Self::Bool,
+        Self::Int,
+        Self::Float,
+        Self::Text,
+        Self::SecretRef,
+        Self::Ip,
+        Self::Mac,
+        Self::Duration,
+        Self::ColorRgb,
+        Self::ColorRgba,
+        Self::ColorLinear,
+        Self::Gradient,
+        Self::Rect,
+        Self::Enum,
+        Self::Flags,
+        Self::List,
+        Self::Map,
+        Self::Unknown,
+    ];
+
+    /// Number of distinct control value kinds.
+    pub const COUNT: usize = 19;
+
+    /// The `kind` tag a value of this kind carries on the wire.
+    #[must_use]
+    pub const fn wire_tag(self) -> &'static str {
+        match self {
+            Self::Null => "null",
+            Self::Bool => "bool",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Text => "text",
+            Self::SecretRef => "secret_ref",
+            Self::Ip => "ip",
+            Self::Mac => "mac",
+            Self::Duration => "duration",
+            Self::ColorRgb => "color_rgb",
+            Self::ColorRgba => "color_rgba",
+            Self::ColorLinear => "color_linear",
+            Self::Gradient => "gradient",
+            Self::Rect => "rect",
+            Self::Enum => "enum",
+            Self::Flags => "flags",
+            Self::List => "list",
+            Self::Map => "map",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Stable enum option.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlEnumOption {
     /// Stable option value.
     pub value: String,
@@ -463,7 +433,8 @@ impl ControlEnumOption {
 }
 
 /// Field inside an object control value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlObjectField {
     /// Stable field identifier.
     pub id: String,
@@ -472,7 +443,7 @@ pub struct ControlObjectField {
     pub label: String,
 
     /// Expected value type.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub value_type: ControlValueType,
 
     /// Whether this field is required.
@@ -480,12 +451,13 @@ pub struct ControlObjectField {
 
     /// Optional default value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Object>))]
     pub default_value: Option<ControlValue>,
 }
 
 /// Field, action, or group owner.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlOwner {
     /// Host-owned common behavior.
@@ -499,7 +471,8 @@ pub enum ControlOwner {
 }
 
 /// Field descriptor for one typed control.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlFieldDescriptor {
     /// Stable field identifier within the surface.
     pub id: ControlFieldId,
@@ -519,12 +492,12 @@ pub struct ControlFieldDescriptor {
     pub description: Option<String>,
 
     /// Expected value type.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub value_type: ControlValueType,
 
     /// Optional default value.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Object>))]
     pub default_value: Option<ControlValue>,
 
     /// Read/write behavior.
@@ -540,7 +513,7 @@ pub struct ControlFieldDescriptor {
     pub visibility: ControlVisibility,
 
     /// Availability expression before daemon resolution.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub availability: ControlAvailabilityExpr,
 
     /// Stable ordering hint.
@@ -548,7 +521,8 @@ pub struct ControlFieldDescriptor {
 }
 
 /// Semantic group descriptor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlGroupDescriptor {
     /// Stable group identifier.
     pub id: ControlGroupId,
@@ -568,7 +542,8 @@ pub struct ControlGroupDescriptor {
 }
 
 /// Semantic group kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlGroupKind {
     /// General controls.
@@ -594,7 +569,8 @@ pub enum ControlGroupKind {
 }
 
 /// Field access mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlAccess {
     /// Client may read but not write.
@@ -606,7 +582,8 @@ pub enum ControlAccess {
 }
 
 /// Persistence target for a control field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlPersistence {
     /// Stored in `drivers.<id>`.
@@ -620,7 +597,8 @@ pub enum ControlPersistence {
 }
 
 /// Field visibility tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlVisibility {
     /// Standard user-facing control.
@@ -634,7 +612,8 @@ pub enum ControlVisibility {
 }
 
 /// Dynamic impact required to apply a control change.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ApplyImpact {
     /// No operational impact.
@@ -656,7 +635,8 @@ pub enum ApplyImpact {
 }
 
 /// Descriptor-time availability expression.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ControlAvailabilityExpr {
     /// Always available.
@@ -697,7 +677,8 @@ pub enum ControlAvailabilityExpr {
 }
 
 /// Resolved availability for a field.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlAvailability {
     /// Resolved state.
     pub state: ControlAvailabilityState,
@@ -708,7 +689,8 @@ pub struct ControlAvailability {
 }
 
 /// Resolved availability state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlAvailabilityState {
     /// Control can be edited or invoked.
@@ -724,7 +706,8 @@ pub enum ControlAvailabilityState {
 }
 
 /// Action descriptor for one-shot commands.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlActionDescriptor {
     /// Stable action identifier within the surface.
     pub id: ControlActionId,
@@ -748,7 +731,7 @@ pub struct ControlActionDescriptor {
 
     /// Optional typed result.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Object>))]
     pub result_type: Option<ControlValueType>,
 
     /// Optional confirmation metadata.
@@ -759,7 +742,7 @@ pub struct ControlActionDescriptor {
     pub apply_impact: ApplyImpact,
 
     /// Availability expression before daemon resolution.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub availability: ControlAvailabilityExpr,
 
     /// Stable ordering hint.
@@ -767,7 +750,8 @@ pub struct ControlActionDescriptor {
 }
 
 /// Action confirmation metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ActionConfirmation {
     /// Confirmation severity.
     pub level: ActionConfirmationLevel,
@@ -777,7 +761,8 @@ pub struct ActionConfirmation {
 }
 
 /// Confirmation severity for actions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ActionConfirmationLevel {
     /// Normal confirmation.
@@ -788,37 +773,21 @@ pub enum ActionConfirmationLevel {
     HardwarePersistent,
 }
 
-/// Request to apply one or more control changes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct ApplyControlChangesRequest {
-    /// Target surface.
-    pub surface_id: ControlSurfaceId,
-
-    /// Optional expected revision.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_revision: Option<ControlSurfaceRevision>,
-
-    /// Changes to apply atomically.
-    pub changes: Vec<ControlChange>,
-
-    /// Validate without mutating state.
-    #[serde(default)]
-    pub dry_run: bool,
-}
-
 /// One requested field change.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlChange {
     /// Field to update.
     pub field_id: ControlFieldId,
 
     /// Requested value.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub value: ControlValue,
 }
 
 /// Response from applying control changes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ApplyControlChangesResponse {
     /// Target surface.
     pub surface_id: ControlSurfaceId,
@@ -839,29 +808,31 @@ pub struct ApplyControlChangesResponse {
     pub impacts: Vec<ApplyImpact>,
 
     /// Current values after the transaction.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub values: ControlValueMap,
 }
 
 /// Accepted field change.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct AppliedControlChange {
     /// Field that changed.
     pub field_id: ControlFieldId,
 
     /// Applied value.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub value: ControlValue,
 }
 
 /// Rejected field change.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct RejectedControlChange {
     /// Field that failed validation or apply.
     pub field_id: ControlFieldId,
 
     /// Attempted value.
-    #[schema(value_type = Object)]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub attempted_value: ControlValue,
 
     /// Typed error.
@@ -869,7 +840,8 @@ pub struct RejectedControlChange {
 }
 
 /// Typed control apply error.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ControlApplyError {
     /// Field does not exist.
@@ -877,7 +849,7 @@ pub enum ControlApplyError {
     /// Value has the wrong type.
     TypeMismatch {
         /// Expected type.
-        #[schema(value_type = Object)]
+        #[cfg_attr(feature = "schema", schema(value_type = Object))]
         expected: ControlValueType,
     },
     /// Value is outside the allowed range.
@@ -913,8 +885,32 @@ pub enum ControlApplyError {
     },
 }
 
+impl std::fmt::Display for ControlApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownField => f.write_str("unknown field"),
+            Self::TypeMismatch { expected } => write!(f, "expected {expected:?}"),
+            Self::OutOfRange => f.write_str("value is out of range"),
+            Self::InvalidValue { message } | Self::UnsupportedDynamicApply { message } => {
+                f.write_str(message)
+            }
+            Self::Unavailable { reason } => write!(f, "control unavailable: {reason}"),
+            Self::Conflict { current_revision } => {
+                write!(
+                    f,
+                    "surface revision conflict; current is {current_revision:?}"
+                )
+            }
+            Self::Unauthorized => f.write_str("not authorized"),
+            Self::DeviceOffline => f.write_str("device is offline"),
+            Self::DriverError { message } => write!(f, "driver error: {message}"),
+        }
+    }
+}
+
 /// Result from invoking an action.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ControlActionResult {
     /// Target surface.
     pub surface_id: ControlSurfaceId,
@@ -927,7 +923,7 @@ pub struct ControlActionResult {
 
     /// Optional typed result.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Object>))]
     pub result: Option<ControlValue>,
 
     /// Resulting surface revision.
@@ -935,7 +931,8 @@ pub struct ControlActionResult {
 }
 
 /// Action execution status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ControlActionStatus {
     /// Action was accepted for async execution.
@@ -949,7 +946,8 @@ pub enum ControlActionStatus {
 }
 
 /// WebSocket event for control-surface changes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ControlSurfaceEvent {
     /// Surface descriptors, availability, or values changed.
@@ -970,7 +968,7 @@ pub enum ControlSurfaceEvent {
         revision: ControlSurfaceRevision,
 
         /// Changed or current values.
-        #[schema(value_type = Object)]
+        #[cfg_attr(feature = "schema", schema(value_type = Object))]
         values: ControlValueMap,
     },
 
@@ -1051,14 +1049,6 @@ pub enum ControlValueValidationError {
     /// String is too long.
     #[error("string is too long")]
     StringTooLong,
-
-    /// IP address is invalid.
-    #[error("invalid IP address")]
-    InvalidIpAddress,
-
-    /// MAC address is invalid.
-    #[error("invalid MAC address")]
-    InvalidMacAddress,
 
     /// Enum or flag option is unknown.
     #[error("unknown option: {0}")]
@@ -1172,26 +1162,6 @@ fn validate_string(
         return Err(ControlValueValidationError::StringTooLong);
     }
     Ok(())
-}
-
-fn validate_ip_address(value: &str) -> Result<(), ControlValueValidationError> {
-    value
-        .parse::<IpAddr>()
-        .map(|_| ())
-        .map_err(|_| ControlValueValidationError::InvalidIpAddress)
-}
-
-fn validate_mac_address(value: &str) -> Result<(), ControlValueValidationError> {
-    let mut parts = value.split(':');
-    if (0..6).all(|_| parts.next().is_some_and(is_hex_octet)) && parts.next().is_none() {
-        Ok(())
-    } else {
-        Err(ControlValueValidationError::InvalidMacAddress)
-    }
-}
-
-fn is_hex_octet(value: &str) -> bool {
-    value.len() == 2 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn validate_enum(

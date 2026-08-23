@@ -147,9 +147,9 @@ shape: combo("Shape", ["Circle", "Square", "Hexagon"], {
 
 Options: `default` (otherwise the first value wins), `tooltip`, `group`, `uniform`.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 **The palette function comes from `paletteControl`, not the key name.** A plain `combo('Palette', ['A', 'B', 'C'])`, or the shorthand `palette: ['A', 'B', 'C']`, stays a raw string at runtime. The automatic `PaletteFn` (canvas) and integer index (shaders) come from the dedicated `paletteControl()` factory, which tags the spec with `meta.palette = true`. The key name `palette` is not magic. If you have a plain combobox and want the function, call `createPaletteFn(name)` inside your draw. See [Palettes](@/effects/palettes.md).
-{% end %}
+{% </callout> %}
 
 ### `paletteControl(label, values, options?)`
 
@@ -310,9 +310,9 @@ One control name triggers automatic normalization. The SDK's `MAGIC_NAMES` table
 
 To opt out, either rename the key (for example `speedMult`) and normalize the value yourself, or set an explicit `normalize: 'none'` on the factory. The `normalize` option on `num` also lets you apply `'speed'` or `'percentage'` normalization to a differently-named control on purpose. Normalization keys off the resolved hint, which is your explicit option first and the `MAGIC_NAMES` lookup only as a fallback.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 `'percentage'` normalization maps a `0-200` slider to a `0-2` multiplier via `normalizePercentage()` (`max(0.01, value / 100)`), so `100` reads as `1.0`. It is the right hint for "intensity" or "scale" controls you want centered on unity.
-{% end %}
+{% </callout> %}
 
 ## Palette controls
 

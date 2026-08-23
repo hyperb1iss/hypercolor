@@ -2,9 +2,13 @@
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::AppState;
+use super::{ToolDefinition, ToolError, output_schema, serialize_result};
+use crate::app_state::AppState;
 use crate::domain::output;
+use crate::mcp::results::{
+    AudioLevelsResult, AudioStateResult, BeatResult, LayoutResult, LayoutSummaryResult,
+    LayoutZoneResult, OutputPowerResult, SensorDataResult, StatusResult,
+};
 use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::Arc;
@@ -20,7 +24,7 @@ pub(super) fn build_get_status() -> ToolDefinition {
             "type": "object",
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<StatusResult>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -44,17 +48,7 @@ pub(super) fn build_set_output_power() -> ToolDefinition {
             "required": ["state"],
             "additionalProperties": false
         }),
-        output_schema: json!({
-            "type": "object",
-            "properties": {
-                "state": {
-                    "type": "string",
-                    "enum": ["running", "paused"]
-                }
-            },
-            "required": ["state"],
-            "additionalProperties": false
-        }),
+        output_schema: output_schema::<OutputPowerResult>(),
         read_only: false,
         destructive: false,
         idempotent: true,
@@ -70,7 +64,7 @@ pub(super) fn build_get_audio_state() -> ToolDefinition {
             "type": "object",
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<AudioStateResult>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -86,7 +80,7 @@ pub(super) fn build_get_layout() -> ToolDefinition {
             "type": "object",
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<LayoutResult>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -103,7 +97,7 @@ pub(super) fn build_diagnose() -> ToolDefinition {
             "properties": {},
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<hypercolor_types::api::diagnose::DiagnoseResponse>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -125,7 +119,7 @@ pub(super) fn build_get_sensor_data() -> ToolDefinition {
             },
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<SensorDataResult>(),
         read_only: true,
         destructive: false,
         idempotent: true,
@@ -140,14 +134,16 @@ pub(super) async fn handle_set_output_power_with_state(
 ) -> Result<Value, ToolError> {
     let requested = parse_output_power_mode(params)?;
     let outcome = output::patch_output(
-        state,
+        &state.domains.output,
         OutputPatchRequest {
             power: Some(requested),
             brightness: None,
         },
     )
     .await?;
-    Ok(json!({ "state": outcome.power }))
+    serialize_result(OutputPowerResult {
+        state: outcome.output.power,
+    })
 }
 
 fn parse_output_power_mode(params: &Value) -> Result<OutputPowerMode, ToolError> {
@@ -163,7 +159,7 @@ fn parse_output_power_mode(params: &Value) -> Result<OutputPowerMode, ToolError>
 }
 
 pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Value, ToolError> {
-    Ok(crate::mcp::payload::build_status_payload(state).await)
+    serialize_result(crate::mcp::payload::build_status_payload(state).await)
 }
 
 pub(super) async fn handle_get_sensor_data_with_state(
@@ -174,45 +170,45 @@ pub(super) async fn handle_get_sensor_data_with_state(
     let snapshot = latest_sensor_snapshot(state).await;
     let reading = label.and_then(|value| snapshot.reading(value));
 
-    Ok(json!({
-        "snapshot": snapshot.as_ref(),
-        "reading": reading,
-    }))
+    serialize_result(SensorDataResult {
+        snapshot: snapshot.as_ref().clone(),
+        reading,
+    })
 }
 
-pub(super) fn handle_get_audio_state_with_state(state: &AppState) -> Value {
+pub(super) fn handle_get_audio_state_with_state(state: &AppState) -> Result<Value, ToolError> {
     let spectrum = state.event_bus.spectrum_receiver().borrow().clone();
     let enabled = state
         .config_manager
         .as_ref()
         .is_some_and(|config_manager| config_manager.get().audio.enabled);
 
-    json!({
-        "enabled": enabled,
-        "levels": {
-            "overall": spectrum.level,
-            "bass": spectrum.bass,
-            "mid": spectrum.mid,
-            "treble": spectrum.treble
+    serialize_result(AudioStateResult {
+        enabled,
+        levels: AudioLevelsResult {
+            overall: spectrum.level,
+            bass: spectrum.bass,
+            mid: spectrum.mid,
+            treble: spectrum.treble,
         },
-        "beat": {
-            "detected": spectrum.beat,
-            "confidence": spectrum.beat_confidence,
-            "bpm_estimate": spectrum.bpm
+        beat: BeatResult {
+            detected: spectrum.beat,
+            confidence: spectrum.beat_confidence,
+            bpm_estimate: spectrum.bpm,
         },
-        "spectrum_bins": spectrum.bins.len()
+        spectrum_bins: spectrum.bins.len(),
     })
 }
 
 async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
-    let input_manager = state.input_manager.lock().await;
+    let input_manager = state.input_manager().lock().await;
     input_manager
         .latest_sensor_snapshot()
         .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))
 }
 
 pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolError> {
-    let spatial = state.spatial_engine.read().await;
+    let spatial = state.spatial_engine.snapshot();
     let layout = spatial.layout();
     let total_leds: u64 = layout
         .zones
@@ -220,30 +216,33 @@ pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Val
         .map(|zone| u64::from(zone.topology.led_count()))
         .sum();
 
-    Ok(json!({
-        "layout": {
-            "id": layout.id,
-            "name": layout.name,
-            "description": layout.description,
-            "canvas_width": layout.canvas_width,
-            "canvas_height": layout.canvas_height,
-            "zone_count": layout.zones.len()
+    serialize_result(LayoutResult {
+        layout: LayoutSummaryResult {
+            id: layout.id.clone(),
+            name: layout.name.clone(),
+            description: layout.description.clone(),
+            canvas_width: layout.canvas_width,
+            canvas_height: layout.canvas_height,
+            zone_count: layout.zones.len(),
         },
-        "zones": layout.zones.iter().map(|zone| json!({
-            "id": zone.id,
-            "name": zone.name,
-            "device_id": zone.device_id,
-            "led_count": zone.topology.led_count()
-        })).collect::<Vec<_>>(),
-        "total_devices": state.device_registry.len().await,
-        "total_leds": total_leds
-    }))
+        zones: layout
+            .zones
+            .iter()
+            .map(|zone| LayoutZoneResult {
+                id: zone.id.clone(),
+                name: zone.name.clone(),
+                device_id: zone.device_id.clone(),
+                led_count: zone.topology.led_count(),
+            })
+            .collect(),
+        total_devices: state.device_registry.len().await,
+        total_leds,
+    })
 }
 
 pub(super) async fn handle_diagnose_with_state(
     _params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    serde_json::to_value(crate::api::diagnose::collect_default_diagnostics(state).await)
-        .map_err(|error| ToolError::Internal(error.to_string()))
+    serialize_result(state.domains.diagnostics.collect_default().await)
 }

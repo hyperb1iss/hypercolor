@@ -15,13 +15,13 @@ zone lifecycle (create, rename, recolor, enable, make-default, delete), the
 permanent **Default zone**, and the **Unassigned** entry that catches hardware
 no zone has claimed.
 
-{{ img(path="img/ui/studio.webp", alt="The Studio workspace with the zone tree on the left") }}
+{{< img path="img/ui/studio.webp" alt="The Studio workspace with the zone tree on the left" />}}
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Zones are partitions of a scene, never "rooms." A scene is a whole-rig config;
 a zone is a part of that scene. Switching scenes swaps your entire setup,
 while zones split one scene into independently lit regions.
-{% end %}
+{% </callout> %}
 
 ## Single-zone and multi-zone scenes
 
@@ -52,11 +52,11 @@ one Default zone so there is always a home for your lights.
 Until you give it a name, the zone tree shows it as **"Default zone"** rather
 than its internal seed label. Rename it and your name takes over immediately.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The Default zone is a real zone at every scale. In a single-zone scene it is
 just the zone, with no special chrome. You can still open its settings to rename
 or recolor it.
-{% end %}
+{% </callout> %}
 
 ## Creating a zone
 
@@ -79,7 +79,7 @@ it is ready to accept zone creation, so on a freshly started daemon it may take
 a moment to show up.
 
 A new zone starts empty. Add hardware to it from the
-[device grouping](@/studio/device-grouping.md) flow, then arrange those devices
+[device assignment](@/studio/device-assignment.md) flow, then arrange those devices
 on its [layout canvas](@/studio/layouts.md).
 
 ## Zone settings: rename, color, enable
@@ -102,7 +102,7 @@ LEDs display.
 disabled zone dims in the tree and stops driving its devices, but it keeps its
 layers, layout, and color so you can bring it back exactly as it was.
 
-{{ img(path="img/ui/ui-studio-zones.webp", alt="Zones in the Hypercolor Studio workspace") }}
+{{< img path="img/ui/ui-studio-zones.webp" alt="Zones in the Hypercolor Studio workspace" />}}
 
 ## Make a zone the default
 
@@ -125,11 +125,11 @@ to back out.
 Only Custom zones expose a delete control. The Default zone has no delete
 affordance at all, because every scene must keep one.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Deleting a zone removes its layer stack and its layout for the current scene.
 The physical devices are untouched, but their assignment to that zone, and any
 effects layered on it, are gone. The devices return to the Unassigned pool.
-{% end %}
+{% </callout> %}
 
 ## The Unassigned entry
 
@@ -160,11 +160,11 @@ The policy is editable only when the daemon advertises the
 `scene-unassigned-behavior-write` capability. When it does not, the Stage shows
 the current policy in plain words as a read-only value rather than a picker.
 
-{{ img(path="img/ui/studio.webp", alt="The Hypercolor Studio workspace") }}
+{{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
 
 The cleanest fix for unclaimed hardware is usually to assign it. Use the
 zone-assignment panel beneath the canvas to move those outputs into a real zone.
-See [device grouping](@/studio/device-grouping.md) for the assignment flow.
+See [device assignment](@/studio/device-assignment.md) for the assignment flow.
 
 ## How zone edits stay safe under concurrent changes
 
@@ -185,7 +185,7 @@ The full revision model, REST routes, and stale-retry semantics live in
 
 ## Where to go next
 
-- [Device grouping](@/studio/device-grouping.md) puts hardware into your zones
+- [Device assignment](@/studio/device-assignment.md) puts hardware into your zones
   and splits outputs across them.
 - [Layouts](@/studio/layouts.md) arranges each zone's devices on its own spatial
   canvas.

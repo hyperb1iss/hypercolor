@@ -101,7 +101,7 @@ pub fn DisplayPreviewPage() -> impl IntoView {
                         <PreviewShellMessage
                             icon=LuMonitor
                             title="Preview unavailable"
-                            body=error
+                            body=error.to_string()
                         />
                     }
                     .into_any(),

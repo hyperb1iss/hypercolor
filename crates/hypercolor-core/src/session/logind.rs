@@ -13,7 +13,7 @@ use zbus::Connection;
 use zbus::zvariant::{OwnedFd, OwnedObjectPath};
 
 use crate::session::SessionMonitor;
-use crate::types::session::{SessionConfig, SessionEvent};
+use hypercolor_types::session::{SessionConfig, SessionEvent};
 
 const INHIBITOR_GRACE: Duration = Duration::from_millis(100);
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(1);

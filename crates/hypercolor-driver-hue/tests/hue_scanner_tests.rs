@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_hue::{HueKnownBridge, HueScanner};
+use hypercolor_driver_support::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 

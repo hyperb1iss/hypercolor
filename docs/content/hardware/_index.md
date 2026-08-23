@@ -6,7 +6,7 @@ template = "section.html"
 weight = 60
 +++
 
-{{ img(path="img/ui/ui-devices.webp", alt="Hypercolor device view showing connected hardware") }}
+{{< img path="img/ui/ui-devices.webp" alt="Hypercolor device view showing connected hardware" />}}
 
 Hypercolor talks to RGB hardware through two parallel systems: a **Hardware Abstraction Layer** (HAL) for local devices connected over USB or SMBus/I2C, and a set of **network driver crates** for LAN and cloud-connected devices. Both converge on the same render pipeline, so your effects see one unified canvas and the drivers handle the rest.
 
@@ -63,7 +63,7 @@ For hardware that Hypercolor does not yet support natively, the OpenRGB fallback
 
 The render pipeline delivers zone colors to the HAL; the HAL turns them into wire-format packets and ships them to the device:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     C[SparkleFlinger canvas] --> S[SpatialEngine]
     S -->|per-zone colors| BM[BackendManager]
@@ -82,7 +82,7 @@ graph TD
     USB --> LianLi[Lian Li hubs]
     USB --> Other[QMK · PrismRGB · Nollie · Push 2]
     SMB --> ASUS_SMB[ASUS motherboard / GPU / DRAM]
-{% end %}
+{% </mermaid> %}
 
 Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:<mac>`, Govee: `net:govee:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
 
@@ -107,13 +107,14 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **WLED** | Network / UDP | DDP and E1.31/sACN; RGB and RGBW; no authentication | Supported |
 | **Govee** | Network / UDP + Cloud | LAN UDP control; optional cloud API fallback | Supported |
 | **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
+| **ROLI Blocks bridge** | Unix socket / blocksd | Lightpad, LUMI Keys, and Seaboard Blocks as pixel-addressable surfaces; Unix only | Supported (opt-in) |
 | **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
 
-The OpenRGB bridge is disabled in config by default and is not counted among the 12 native driver families; enable it explicitly per [OpenRGB fallback](@/hardware/openrgb-fallback.md).
+Neither bridge is counted among the 12 driver families with shipping device support, and both are off by default. Enable the OpenRGB one per [OpenRGB fallback](@/hardware/openrgb-fallback.md) and the ROLI one with `discovery.blocks_scan`. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If another RGB manager (OpenRGB, Aura Sync, openrazer daemon, iCUE via Wine) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. See [conflicting software](@/hardware/conflicting-software.md).
-{% end %}
+{% </callout> %}
 
 ---
 

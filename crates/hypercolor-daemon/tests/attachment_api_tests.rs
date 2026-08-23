@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::time::Duration;
 
-use anyhow::Result;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -11,11 +11,13 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    SegmentInfo,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -23,6 +25,8 @@ use hypercolor_types::spatial::{
 };
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+type Result<T> = std::result::Result<T, DeviceError>;
 
 struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
@@ -82,19 +86,22 @@ impl DeviceBackend for RecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
-    }
-
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         self.writes
             .lock()
             .expect("recording backend mutex should not be poisoned")
@@ -316,12 +323,29 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 
-    let mut spatial = state.spatial_engine.write().await;
-    spatial.update_layout(layout);
+    let preview =
+        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout));
+    tokio::pin!(preview);
+    let response = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                response = &mut preview => break response,
+                () = tokio::task::yield_now() => {
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("attachment layout should publish");
+                }
+            }
+        }
+    })
+    .await
+    .expect("attachment layout publication should finish");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 async fn register_recording_backend(
@@ -329,7 +353,7 @@ async fn register_recording_backend(
     writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>,
 ) {
     let mut manager = state.backend_manager.lock().await;
-    manager.register_backend(Box::new(RecordingBackend::new(writes)));
+    manager.register_backend(Arc::new(RecordingBackend::new(writes)));
 }
 
 #[tokio::test]
@@ -436,7 +460,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
         }]
     });
     let logical_device_count = state.logical_devices.read().await.len();
-    let layout_before = state.spatial_engine.read().await.layout().clone();
+    let layout_before = state.spatial_engine.snapshot().layout().clone();
     let mut events = state.event_bus.subscribe_all();
     let validation_response = send_json(
         &app,
@@ -482,7 +506,7 @@ async fn device_attachment_profile_flow_persists_and_clears() {
         state.logical_devices.read().await.len(),
         logical_device_count
     );
-    assert_eq!(state.spatial_engine.read().await.layout(), layout_before);
+    assert_eq!(state.spatial_engine.snapshot().layout(), layout_before);
     assert!(state.usb_protocol_configs.config(device_id).await.is_none());
     assert!(events.try_recv().is_err());
 
@@ -972,7 +996,10 @@ async fn attachment_identify_separates_missing_slots_from_unusable_selections() 
     .await;
     assert_eq!(missing_slot.status(), StatusCode::NOT_FOUND);
     let missing_slot_json = body_json(missing_slot).await;
-    assert_eq!(missing_slot_json["error"]["code"], "not_found");
+    assert_eq!(
+        missing_slot_json["error"]["code"],
+        "attachment_slot_not_found"
+    );
     assert_eq!(
         missing_slot_json["error"]["message"],
         "attachment slot not found: no-such-slot"

@@ -10,7 +10,7 @@
 //! loop {
 //!     RenderLoop::tick()                 // timing gate + FPS control
 //!     read immutable input graph         // shared frame inputs
-//!     render active scene groups         // Servo/native/media producers
+//!     render active scene zones          // Servo/native/media producers
 //!     SparkleFlinger::compose_frame()    // canonical scene canvas
 //!     sample LED output                  // CPU or prepared GPU sampler
 //!     publish scene/display canvases     // latest-value bus/watch streams
@@ -44,7 +44,7 @@ mod macos_screen_diagnostics;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
-mod render_groups;
+mod render_zones;
 mod scene_dependency;
 mod scene_snapshot;
 mod scene_state;
@@ -76,15 +76,16 @@ pub(crate) use self::macos_screen_diagnostics::{
 };
 use self::pipeline_driver::run_pipeline;
 pub(crate) use self::producer_queue::ProducerFrame;
-pub(crate) use self::render_groups::{RenderSceneContext, ZoneFrameInputs};
+pub(crate) use self::render_zones::{RenderSceneContext, ZoneFrameInputs};
 pub(crate) use self::scene_dependency::SceneDependencyKey;
-use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::DiscoveryRuntime;
+use crate::domain::scene::{ScenePlanReader, SceneService};
+use crate::domain::spatial::SpatialService;
 use crate::interaction_routing::InteractionRoutingControl;
+use crate::output_power::OutputPowerState;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::OutputPowerState;
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
@@ -92,16 +93,14 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
-use hypercolor_core::scene::SceneManager;
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 
-pub(crate) struct InteractivePreviewZoneRuntime(render_groups::ZoneRuntime);
+pub(crate) struct InteractivePreviewZoneRuntime(render_zones::ZoneRuntime);
 
 impl InteractivePreviewZoneRuntime {
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Result<Self> {
-        Ok(Self(render_groups::ZoneRuntime::try_new_preview(
+        Ok(Self(render_zones::ZoneRuntime::try_new_preview(
             scene_width,
             scene_height,
         )?))
@@ -113,7 +112,7 @@ impl InteractivePreviewZoneRuntime {
         asset_library: Arc<RwLock<AssetLibrary>>,
     ) -> Result<Self> {
         Ok(Self(
-            render_groups::ZoneRuntime::try_with_asset_library_preview(
+            render_zones::ZoneRuntime::try_with_asset_library_preview(
                 scene_width,
                 scene_height,
                 asset_library,
@@ -133,11 +132,11 @@ impl InteractivePreviewZoneRuntime {
         zones: &mut Vec<ZoneColors>,
     ) -> anyhow::Result<ProducerFrame> {
         self.0.admit_reconcile(
-            context.groups,
+            context.zones,
             context.active_scene_id,
             context.dependency_key,
             context.registry,
-            context.display_group_descriptors,
+            context.display_zone_descriptors,
             context.authoritative_spatial_engine,
             sparkleflinger,
         )?;
@@ -257,14 +256,14 @@ pub struct RenderThread {
 /// duration of each pipeline stage.
 #[derive(Clone)]
 pub struct RenderThreadState {
-    /// Effect catalog used to resolve render-group assignments.
+    /// Effect catalog used to resolve render-zone assignments.
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// User media asset library used by media-backed scene layers.
     pub asset_library: Arc<RwLock<AssetLibrary>>,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
@@ -291,7 +290,10 @@ pub struct RenderThreadState {
     pub render_loop: Arc<RwLock<RenderLoop>>,
 
     /// Active scene stack and transition runtime.
-    pub scene_manager: Arc<RwLock<SceneManager>>,
+    pub scene_manager: SceneService,
+
+    /// Lock-free scene plan projection read once per frame.
+    pub scene_plan: ScenePlanReader,
 
     /// Input orchestrator owned by the dedicated publication pump and demand control.
     pub input_manager: Arc<Mutex<InputManager>>,
@@ -301,9 +303,6 @@ pub struct RenderThreadState {
 
     /// Session policy output state (brightness scale + sleep flag).
     pub power_state: watch::Receiver<OutputPowerState>,
-
-    /// Persisted global and per-device output settings.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
     /// Frame-boundary scene changes consumed by the render thread.
     pub scene_transactions: SceneTransactionQueue,
@@ -324,7 +323,7 @@ pub struct RenderThreadState {
     /// Ceiling derived from user configuration before runtime admission.
     pub configured_max_fps_tier: ConfiguredFpsTier,
 
-    /// Effective `display.face_fps_cap` for group-direct HTML faces.
+    /// Effective `display.face_fps_cap` for zone-direct HTML faces.
     pub face_fps_cap: u32,
 }
 
@@ -395,17 +394,27 @@ impl RenderThread {
                         return Ok(());
                     }
                 };
+                #[cfg(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                ))]
                 let pipeline = runtime.block_on(pipeline_runtime::PipelineRuntime::from_state(
                     &state,
                     input_pump.reader(),
                     pipeline_demands,
-                    #[cfg(all(
-                        target_os = "macos",
-                        feature = "wgpu",
-                        feature = "screen-capture"
-                    ))]
                     macos_screen_parity_mailbox,
                 ));
+                #[cfg(not(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                )))]
+                let pipeline = pipeline_runtime::PipelineRuntime::from_state(
+                    &state,
+                    input_pump.reader(),
+                    pipeline_demands,
+                );
                 match pipeline {
                     Ok(runtime_state) => {
                         let monitor = input_pump.monitor();
@@ -587,10 +596,10 @@ mod tests {
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
-    use hypercolor_core::types::canvas::{
+    use hypercolor_types::canvas::{
         Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
     };
-    use hypercolor_core::types::event::ZoneColors;
+    use hypercolor_types::event::ZoneColors;
 
     use super::frame_policy::SkipDecision;
     use super::screen_canvas::screen_data_to_surface;

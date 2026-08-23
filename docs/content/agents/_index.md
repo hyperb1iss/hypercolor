@@ -8,9 +8,9 @@ template = "section.html"
 
 Hypercolor is built to be driven by AI agents. Point an assistant at the daemon and it can read the live lighting state, browse the effect catalog, apply visuals, tune brightness, manage scenes, and diagnose a misbehaving device, all over two complementary surfaces: a built-in **MCP server** and a scriptable **CLI**. This section shows how to wire them up and put them to work.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Hypercolor exposes the same engine through every interface. Whether an agent calls an MCP tool, runs a CLI command, or hits the REST API, it operates on one shared state through the event bus, so a change made one way is instantly visible everywhere.
-{% end %}
+{% </callout> %}
 
 ## Two surfaces, one engine 🔮
 
@@ -23,15 +23,15 @@ There are two ways to put an agent in control. They are not competitors. Most re
 
 The MCP server gives a model structured tools, browsable resources, and ready-made prompts. The CLI gives any agent that can run a command a machine-readable contract through `--json` output and exit codes. When a job needs both, for example building an effect with the SDK and then applying it, you reach across the line: the SDK authoring CLI installs the effect, then an MCP tool or the daemon CLI applies it.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404. Start at [MCP setup](@/agents/mcp-setup.md), which leads with turning it on.
-{% end %}
+{% </callout> %}
 
 ## The three MCP primitives
 
 The MCP server speaks in three kinds of building blocks. Knowing which is which tells an agent how to use it.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
 A[AI Agent] -->|calls| T[Tools]
 A -->|reads| R[Resources]
@@ -40,7 +40,7 @@ T -->|act on| E[Hypercolor Engine]
 R -->|reflect| E
 P -->|orchestrate| T
 P -->|reference| R
-{% end %}
+{% </mermaid> %}
 
 **Tools** are actions and queries the model invokes with structured arguments, the verbs. There are **17**: `get_status`, `get_devices`, `list_effects`, `list_scenes`, `get_audio_state`, `get_layout`, `get_sensor_data`, `diagnose`, `set_brightness`, `set_output_power`, `set_effect`, `set_color`, `clear_zone`, `adjust_controls`, `activate_scene`, `create_scene`, and `set_display_face`. The first eight are read-only. The other nine mutate state, and five of those mutations are destructive. See the [tools reference](@/agents/tools-reference.md).
 
@@ -48,15 +48,15 @@ P -->|reference| R
 
 **Prompts** are guided, parameterized templates a client surfaces as slash commands. There are **3**: `mood_lighting`, `troubleshoot`, and `setup_automation`. Each one encodes a known-good flow so the model does not have to invent it. See [prompt templates](@/agents/prompt-templates.md).
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The server ships its own operating instructions to every connected client: start with `get_status` or the `hypercolor://state` resource before making changes, use `list_effects` to discover the catalog before applying visuals, and prefer structured arguments and resource reads over guessing the current state. That read-then-act discipline is the through-line for every agent workflow here.
-{% end %}
+{% </callout> %}
 
 ## Where to go next
 
-{% callout(type="success") %}
+{% <callout type="success"> %}
 New to agent control? Walk it in order: enable the server, learn the tools, then study a worked playbook.
-{% end %}
+{% </callout> %}
 
 - **[MCP setup](@/agents/mcp-setup.md)**: Turn the server on, then copy-paste connection config for Claude Code, Claude Desktop, Cursor, Zed, and generic MCP clients.
 - **[Tools reference](@/agents/tools-reference.md)**: All 17 tools with arguments, defaults, enums, read-only and idempotency flags, and a worked call for each.

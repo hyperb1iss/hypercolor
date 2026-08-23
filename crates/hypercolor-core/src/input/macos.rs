@@ -19,11 +19,11 @@ use crate::input::traits::{
     ProtectedSourceAuthorizationAction,
 };
 use crate::input::{
-    LegacyWheelProjector, MacosAuthorizationState, MacosCapabilityOwner, MacosInputPlatformStatus,
+    MacosAuthorizationState, MacosCapabilityOwner, MacosInputPlatformStatus,
     MacosProtectedSourceState, MacosTimingStatus, SourceIssue, SourceKind, SourcePlatformStatus,
     SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
-use crate::types::event::{
+use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
 };
 
@@ -95,7 +95,6 @@ struct SharedState {
     pointer: Option<PointerSnapshot>,
     pointer_present: bool,
     topology_generation: Option<u64>,
-    legacy_wheel_projector: LegacyWheelProjector,
     diagnostics: MacosInputFoldDiagnostics,
     epoch: u64,
 }
@@ -111,7 +110,6 @@ impl SharedState {
         self.pointer = None;
         self.pointer_present = false;
         self.topology_generation = None;
-        self.legacy_wheel_projector.reset();
     }
 }
 
@@ -1111,7 +1109,6 @@ fn fold_event(
             state.diagnostics.state_gaps = state.diagnostics.state_gaps.saturating_add(1);
             synthesize_releases(state, at_ms, event_limit);
             state.topology_generation = None;
-            state.legacy_wheel_projector.reset();
         }
     }
 }
@@ -1405,27 +1402,6 @@ fn fold_scroll(
             at_ms,
             seq: 0,
             physical_code: Some("macos:scroll".to_owned()),
-            repeat_count: 1,
-        },
-        event_limit,
-    );
-    if canonical_unit != PointerScrollUnit::Line120 {
-        return;
-    }
-    let legacy_delta = state.legacy_wheel_projector.project(delta_y_q16_16);
-    if legacy_delta == 0 {
-        return;
-    }
-    push_event(
-        state,
-        TimedInputEvent {
-            event: InputEvent::MouseWheel {
-                source_id: SOURCE_ID.to_owned(),
-                delta_hi_res: legacy_delta,
-            },
-            at_ms,
-            seq: 0,
-            physical_code: Some("macos:legacy-wheel-shadow".to_owned()),
             repeat_count: 1,
         },
         event_limit,

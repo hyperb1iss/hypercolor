@@ -56,11 +56,12 @@ use crate::input::screen::{
     ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenCursorCapabilities,
     ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenGpuSurfacePayload,
     ScreenNativePreparationPayload, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenPublicationColorimetry,
-    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
-    ScreenPublicationHub, ScreenPublicationKind, ScreenPublicationMetadata, ScreenReductionFilter,
-    ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenPhysicalReductionDescriptor, ScreenPreparedWorkerToken, ScreenProcessingProfile,
+    ScreenPublicationColorimetry, ScreenPublicationExecutor, ScreenPublicationExecutorRequest,
+    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenReductionFilter, ScreenRequiredResourceMinimum,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSourceReflection,
+    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
     ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
 };
@@ -92,18 +93,6 @@ static WINDOWS_GPU_PREPARATION_GATES: OnceLock<Mutex<HashMap<GpuAdapterLuid, Arc
 /// that application exits, so retrying quietly beats surfacing an error the
 /// user cannot act on.
 const REOPEN_BACKOFF: Duration = Duration::from_secs(2);
-
-/// Persists a legacy monitor selector after its stable output id is known.
-pub type CaptureSourceSink = Arc<dyn Fn(ResolvedCaptureSource) + Send + Sync>;
-
-/// A successfully opened legacy source and the stable value it resolved to.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedCaptureSource {
-    /// Exact configured value used to open the capture session.
-    pub configured_source: String,
-    /// Stable source value suitable for persistence.
-    pub stable_source: String,
-}
 
 /// Settings shared between the input source handle and the capture worker.
 struct SharedSettings {
@@ -197,16 +186,16 @@ const fn capture_resource_operation(kind: CaptureResourceKind) -> &'static str {
         CaptureResourceKind::PointerShape => "reserve Windows pointer shape",
         CaptureResourceKind::CanonicalDesktop => "reserve Windows canonical desktop",
         CaptureResourceKind::PointerTexture => "reserve Windows pointer texture",
-        CaptureResourceKind::CompatibilityReductionConstantBuffer => {
-            "reserve Windows compatibility reduction constant buffer"
+        CaptureResourceKind::AnalysisReductionConstantBuffer => {
+            "reserve Windows analysis reduction constant buffer"
         }
-        CaptureResourceKind::CompatibilityReductionTextures => {
-            "reserve Windows compatibility reduction textures"
+        CaptureResourceKind::AnalysisReductionTextures => {
+            "reserve Windows analysis reduction textures"
         }
-        CaptureResourceKind::CompatibilityCpuStagingTexture => {
-            "reserve Windows compatibility CPU staging texture"
+        CaptureResourceKind::AnalysisCpuStagingTexture => {
+            "reserve Windows analysis CPU staging texture"
         }
-        CaptureResourceKind::CompatibilityFramePlane => "reserve Windows compatibility frame plane",
+        CaptureResourceKind::RgbaFramePlane => "reserve Windows RGBA frame plane",
     }
 }
 
@@ -397,6 +386,14 @@ struct ExactPublicationShared {
 }
 
 impl ExactPublicationShared {
+    fn advance_resolution_revision(&self) {
+        self.resolution_revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                revision.checked_add(1)
+            })
+            .expect("Windows screen publication resolution revision exhausted");
+    }
+
     fn replace_source(&self, next: Option<WindowsPublicationSource>) {
         let mut source = self
             .source
@@ -406,11 +403,7 @@ impl ExactPublicationShared {
             return;
         }
         *source = next;
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("Windows screen publication resolution revision exhausted");
+        self.advance_resolution_revision();
     }
 
     fn source(&self) -> Option<WindowsPublicationSource> {
@@ -618,7 +611,6 @@ pub struct WindowsScreenCaptureInput {
     worker: Option<CaptureWorker>,
     status: SourceStatusReporter,
     status_session: SourceSessionSlot,
-    source_sink: Option<CaptureSourceSink>,
     #[cfg(feature = "windows-capture-fixtures")]
     fixture: Option<Arc<WindowsScreenCaptureFixtureState>>,
 }
@@ -888,7 +880,7 @@ impl WindowsScreenCaptureInput {
         )
     }
 
-    /// Create a source with caller-calibrated compatibility and exact CPU fences.
+    /// Create a source with caller-calibrated analysis and exact CPU fences.
     #[must_use]
     pub fn with_compute_capacity_policy(
         config: CaptureConfig,
@@ -939,7 +931,6 @@ impl WindowsScreenCaptureInput {
                 false,
             ),
             status_session: SourceSessionSlot::new(),
-            source_sink: None,
             #[cfg(feature = "windows-capture-fixtures")]
             fixture: None,
         }
@@ -987,13 +978,6 @@ impl WindowsScreenCaptureInput {
         Ok((source, fixture))
     }
 
-    /// Attach a callback that persists resolved legacy monitor selections.
-    #[must_use]
-    pub fn with_capture_source_sink(mut self, sink: CaptureSourceSink) -> Self {
-        self.source_sink = Some(sink);
-        self
-    }
-
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
         self.observe_worker_exit(false);
         if self.worker.is_some() {
@@ -1012,7 +996,6 @@ impl WindowsScreenCaptureInput {
         #[cfg(test)]
         let processed_activity_generation = Arc::clone(&worker_processed_activity_generation);
         let status_session = self.status_session.clone();
-        let source_sink = self.source_sink.clone();
         let session_generation = self
             .settings
             .session_generation
@@ -1031,7 +1014,6 @@ impl WindowsScreenCaptureInput {
                     &worker_processed_activity_generation,
                     status_session,
                     session_generation,
-                    source_sink,
                     ready_tx,
                 );
                 let _ = exit_tx.send(());
@@ -1421,10 +1403,12 @@ impl WindowsScreenCaptureInput {
     /// Publish new settings and bump the generation the worker polls.
     fn reconfigure(&mut self, config: CaptureConfig) -> anyhow::Result<()> {
         CaptureCadence::new(config.target_fps)?;
+        config.exact_processing_profile(&ScreenProcessingProfile::default())?;
         let snapshot = self.settings.snapshot();
         if snapshot.config == config {
             return Ok(());
         }
+        let processing_changed = snapshot.config.processing_controls_differ(&config);
         let source_generation = if snapshot.config.source == config.source {
             snapshot.source_generation
         } else {
@@ -1436,6 +1420,9 @@ impl WindowsScreenCaptureInput {
             #[cfg(feature = "windows-capture-fixtures")]
             if self.fixture.is_some() {
                 self.adopt_fixture_settings(prepared);
+                if processing_changed {
+                    self.exact.advance_resolution_revision();
+                }
                 return Ok(());
             }
             if self.running {
@@ -1446,10 +1433,16 @@ impl WindowsScreenCaptureInput {
             if snapshot.source_generation != source_generation {
                 self.exact.replace_source(None);
             }
+            if processing_changed {
+                self.exact.advance_resolution_revision();
+            }
             return Ok(());
         }
         self.settings
             .commit_values(&config, source_generation, self.capture_demand);
+        if processing_changed {
+            self.exact.advance_resolution_revision();
+        }
         Ok(())
     }
 }
@@ -1641,7 +1634,12 @@ impl InputSource for WindowsScreenCaptureInput {
         let Some(source) = self.exact.source() else {
             return Ok(None);
         };
-        resolve_windows_publication_branch(&source, demand)
+        let configured = self
+            .settings
+            .snapshot()
+            .config
+            .bind_exact_processing_profile(demand)?;
+        resolve_windows_publication_branch(&source, &configured)
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
@@ -3368,7 +3366,6 @@ fn run_worker(
     processed_activity_generation: &AtomicU64,
     status_session: SourceSessionSlot,
     session_generation: u64,
-    source_sink: Option<CaptureSourceSink>,
     ready: mpsc::SyncSender<std::result::Result<(), String>>,
 ) {
     let initial_settings = settings.snapshot();
@@ -3576,8 +3573,7 @@ fn run_worker(
         let session = if let Some(session) = duplicator.as_mut() {
             session
         } else {
-            let configured_source = config.source.clone();
-            let selector = super::monitor_selector_from_source(&configured_source);
+            let selector = super::monitor_selector_from_source(&config.source);
             let requested_extent = demand
                 .requested_extent()
                 .expect("active Windows capture demand carries an extent");
@@ -3585,20 +3581,11 @@ fn run_worker(
                 coordinator: settings.admission_coordinator.clone(),
             });
             match DesktopDuplicator::open_with_resource_admission(
-                selector.clone(),
+                selector,
                 native_capture_extent(requested_extent),
                 resource_admission,
             ) {
                 Ok(session) => {
-                    if let Some(source) = selector.canonical_source(session.source_id()) {
-                        if let Some(sink) = source_sink.as_ref() {
-                            sink(ResolvedCaptureSource {
-                                configured_source,
-                                stable_source: source.clone(),
-                            });
-                        }
-                        config.source = source;
-                    }
                     let (width, height) = session.native_extent();
                     info!(
                         source = session.source_id(),
@@ -3744,7 +3731,7 @@ fn run_worker(
                 Ok(_) => rejected_analysis_work = None,
                 Err(error) => {
                     clear_capture_publication(publication);
-                    warn!(%error, "Windows compatibility screen analysis exceeds admitted CPU compute");
+                    warn!(%error, "Windows screen analysis exceeds admitted CPU compute");
                     if let Some(status) = status_session.load() {
                         status.unavailable(screen_analysis_admission_issue(&error));
                     }

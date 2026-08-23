@@ -1,6 +1,6 @@
 //! Device-related API types and fetch functions.
 
-use super::client;
+use super::{ApiResult, client};
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -30,24 +30,18 @@ pub use hypercolor_types::api::attachments::{
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
 /// Fetch all tracked devices.
-pub async fn fetch_devices() -> Result<Vec<DeviceSummary>, String> {
-    let list: DeviceListResponse =
-        client::fetch_json("/api/v1/devices?include=attachments").await?;
-    Ok(list.items)
+pub async fn fetch_devices() -> ApiResult<Vec<DeviceSummary>> {
+    client::fetch_all_pages("/api/v1/devices?include=attachments").await
 }
 
 /// Trigger device discovery scan.
-pub async fn discover_devices() -> Result<(), String> {
-    client::post_empty("/api/v1/devices/discover")
-        .await
-        .map_err(Into::into)
+pub async fn discover_devices() -> ApiResult<()> {
+    client::post_empty("/api/v1/devices/discover").await
 }
 
 /// Update a device (name, enabled, brightness).
-pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> Result<DeviceSummary, String> {
-    client::put_json(&format!("/api/v1/devices/{id}"), req)
-        .await
-        .map_err(Into::into)
+pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> ApiResult<DeviceSummary> {
+    client::put_json(&format!("/api/v1/devices/{id}"), req).await
 }
 
 /// The identify blink the UI asks for: two seconds in the given hex color.
@@ -59,22 +53,19 @@ fn identify_request(color: &str) -> IdentifyRequest {
 }
 
 /// Identify a device by flashing its LEDs.
-pub async fn identify_device(id: &str) -> Result<(), String> {
+pub async fn identify_device(id: &str) -> ApiResult<()> {
     let body = identify_request("FF06B5");
-    client::post_json_discard(&format!("/api/v1/devices/{id}/identify"), &body)
-        .await
-        .map_err(Into::into)
+    client::post_json_discard(&format!("/api/v1/devices/{id}/identify"), &body).await
 }
 
 /// Identify a single hardware segment by flashing only its LEDs.
-pub async fn identify_segment(device_id: &str, segment: &str) -> Result<(), String> {
+pub async fn identify_segment(device_id: &str, segment: &str) -> ApiResult<()> {
     let body = identify_request("FF06B5");
     client::post_json_discard(
         &format!("/api/v1/devices/{device_id}/segments/{segment}/identify"),
         &body,
     )
     .await
-    .map_err(Into::into)
 }
 
 /// Identify a specific attachment component by flashing its LED range.
@@ -83,7 +74,7 @@ pub async fn identify_attachment(
     slot_id: &str,
     binding_index: Option<usize>,
     instance: Option<u32>,
-) -> Result<(), String> {
+) -> ApiResult<()> {
     let body = IdentifyAttachmentRequest {
         base: identify_request("80FFEA"),
         binding_index,
@@ -94,67 +85,51 @@ pub async fn identify_attachment(
         &body,
     )
     .await
-    .map_err(Into::into)
 }
 
 /// Create a user-authored attachment template (custom strip, matrix, etc.).
 pub async fn create_attachment_template(
     template: &hypercolor_types::attachment::ComponentTemplate,
-) -> Result<TemplateDetail, String> {
-    client::post_json("/api/v1/attachments/templates", template)
-        .await
-        .map_err(Into::into)
+) -> ApiResult<TemplateDetail> {
+    client::post_json("/api/v1/attachments/templates", template).await
 }
 
 /// Fetch attachment bindings and import-ready zones for a physical device.
-pub async fn fetch_device_attachments(device_id: &str) -> Result<DeviceComponentsResponse, String> {
-    client::fetch_json(&format!("/api/v1/devices/{device_id}/attachments"))
-        .await
-        .map_err(Into::into)
+pub async fn fetch_device_attachments(device_id: &str) -> ApiResult<DeviceComponentsResponse> {
+    client::fetch_json(&format!("/api/v1/devices/{device_id}/attachments")).await
 }
 
 /// Fetch attachment templates, optionally filtered by category.
-pub async fn fetch_attachment_templates(
-    category: Option<&str>,
-) -> Result<Vec<TemplateSummary>, String> {
-    let mut url = "/api/v1/attachments/templates?limit=200".to_string();
+pub async fn fetch_attachment_templates(category: Option<&str>) -> ApiResult<Vec<TemplateSummary>> {
+    let mut url = "/api/v1/attachments/templates".to_string();
     if let Some(cat) = category {
-        url.push_str(&format!("&category={cat}"));
+        url.push_str(&format!("?category={cat}"));
     }
-    let list: TemplateListResponse = client::fetch_json(&url).await?;
-    Ok(list.items)
+    client::fetch_all_pages(&url).await
 }
 
 /// Update attachment bindings for a device.
 pub async fn update_device_attachments(
     device_id: &str,
     req: &UpdateAttachmentsRequest,
-) -> Result<DeviceComponentsUpdateResponse, String> {
-    client::put_json(&format!("/api/v1/devices/{device_id}/attachments"), req)
-        .await
-        .map_err(Into::into)
+) -> ApiResult<DeviceComponentsUpdateResponse> {
+    client::put_json(&format!("/api/v1/devices/{device_id}/attachments"), req).await
 }
 
 // ── Pairing Functions ───────────────────────────────────────────────────────
 
 /// Pair a device using the generic pairing surface.
-pub async fn pair_device(id: &str, req: &PairDeviceRequest) -> Result<PairDeviceResponse, String> {
-    client::post_json(&format!("/api/v1/devices/{id}/pair"), req)
-        .await
-        .map_err(Into::into)
+pub async fn pair_device(id: &str, req: &PairDeviceRequest) -> ApiResult<PairDeviceResponse> {
+    client::post_json(&format!("/api/v1/devices/{id}/pair"), req).await
 }
 
 /// Remove stored credentials for a device.
-pub async fn unpair_device(id: &str) -> Result<DeletePairingResponse, String> {
-    client::delete_json(&format!("/api/v1/devices/{id}/pair"))
-        .await
-        .map_err(Into::into)
+pub async fn unpair_device(id: &str) -> ApiResult<DeletePairingResponse> {
+    client::delete_json(&format!("/api/v1/devices/{id}/pair")).await
 }
 
 /// `DELETE /api/v1/simulators/displays/{id}` — remove a simulated display
 /// device along with its stored config and face assignments.
-pub async fn delete_simulated_display(id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/simulators/displays/{id}"))
-        .await
-        .map_err(Into::into)
+pub async fn delete_simulated_display(id: &str) -> ApiResult<()> {
+    client::delete_empty(&format!("/api/v1/simulators/displays/{id}")).await
 }

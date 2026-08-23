@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -155,7 +155,7 @@ pub fn CalibrationGuide(
             style:border-top=move || format!("2px solid rgba({}, 0.24)", accent_rgb.get())
         >
             <div class="flex items-start gap-2.5 mb-3">
-                <div class="w-8 h-8 rounded-lg bg-neon-cyan/10 text-neon-cyan flex items-center justify-center shrink-0">
+                <div class="w-8 h-8 rounded-lg bg-cyan/10 text-cyan flex items-center justify-center shrink-0">
                     <Icon icon=LuRadar width="15px" height="15px" />
                 </div>
                 <div class="min-w-0">
@@ -168,8 +168,8 @@ pub fn CalibrationGuide(
                 </div>
             </div>
 
-            <div class="rounded-lg border border-neon-cyan/15 bg-black/20 px-3 py-2.5 mb-3">
-                <div class="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.14em] text-neon-cyan/80 mb-1.5">
+            <div class="rounded-lg border border-cyan/15 bg-black/20 px-3 py-2.5 mb-3">
+                <div class="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.14em] text-cyan/80 mb-1.5">
                     <Icon icon=LuCircleDot width="11px" height="11px" />
                     "Current Pass"
                 </div>
@@ -219,17 +219,28 @@ pub fn CalibrationGuide(
                                 return;
                             };
                             let target_zone = zones_ctx.focused_zone_id_untracked();
+                            let Some((observed_target, expected_revision)) = zones_ctx
+                                .effect_target_untracked(
+                                    &active_effect_id,
+                                    target_zone.as_deref(),
+                                )
+                            else {
+                                toasts::toast_error("Calibration effect is no longer active");
+                                return;
+                            };
                             let preset_id = template.id;
                             let preset_name = template.name;
                             leptos::task::spawn_local(async move {
                                 match api::apply_effect_preset(
                                     &active_effect_id,
                                     &preset_id,
-                                    target_zone.as_deref(),
+                                    Some(&observed_target.zone_id),
+                                    expected_revision,
                                 )
                                 .await
                                 {
-                                    Ok(()) => {
+                                    Ok(target) => {
+                                        fx.adopt_replacement_target(&observed_target, target);
                                         fx.refresh_active_effect();
                                         toasts::toast_success(&format!("Loaded {preset_name}"));
                                     }
@@ -262,7 +273,7 @@ pub fn CalibrationGuide(
                                                 {step.preset}
                                             </div>
                                             <button
-                                                class="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-neon-cyan/20 bg-neon-cyan/8 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-neon-cyan transition-colors hover:bg-neon-cyan/14"
+                                                class="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-cyan/20 bg-cyan/8 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-cyan transition-colors hover:bg-cyan/14"
                                                 on:click=on_apply
                                             >
                                                 <Icon icon=LuPlay width="10px" height="10px" />
@@ -286,7 +297,7 @@ pub fn CalibrationGuide(
                     {DIAGNOSIS_TIPS.into_iter().map(|tip| {
                         view! {
                             <div class="flex items-start gap-2 rounded-lg bg-black/10 px-2.5 py-2">
-                                <span class="text-electric-yellow/80 mt-0.5 shrink-0">
+                                <span class="text-status-warning/80 mt-0.5 shrink-0">
                                     <Icon icon=tip.icon width="12px" height="12px" />
                                 </span>
                                 <div class="min-w-0">
@@ -321,11 +332,11 @@ fn control_label(values: &HashMap<String, ControlValue>, key: &str) -> Option<St
 fn control_bool(values: &HashMap<String, ControlValue>, key: &str) -> bool {
     values
         .get(key)
-        .is_some_and(|value| matches!(value, ControlValue::Boolean(true)))
+        .is_some_and(|value| matches!(value, ControlValue::Bool(true)))
 }
 
 fn control_number(values: &HashMap<String, ControlValue>, key: &str) -> Option<f32> {
-    values.get(key).and_then(ControlValue::as_f32)
+    values.get(key).and_then(ControlValue::as_effect_f32)
 }
 
 fn speed_feel(speed: f32) -> &'static str {

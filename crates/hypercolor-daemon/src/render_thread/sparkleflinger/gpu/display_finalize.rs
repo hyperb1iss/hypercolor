@@ -5,10 +5,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use hypercolor_core::bus::DisplayYuv420Frame;
-use hypercolor_core::types::canvas::{
+use hypercolor_types::canvas::{
     PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::ZoneId;
 use hypercolor_types::spatial::EdgeBehavior;
 
@@ -710,12 +710,12 @@ impl GpuSparkleFlinger {
 
     fn retain_current_display_finalize_route(&mut self, key: DisplayFinalizeCacheKey) {
         self.display_finalize_surfaces
-            .retain(|cached_key, _| cached_key.group_id != key.group_id || *cached_key == key);
+            .retain(|cached_key, _| cached_key.zone_id != key.zone_id || *cached_key == key);
     }
 
-    pub(crate) fn retain_display_finalize_groups(&mut self, active_group_ids: &[ZoneId]) {
+    pub(crate) fn retain_display_finalize_zones(&mut self, active_zone_ids: &[ZoneId]) {
         self.display_finalize_surfaces
-            .retain(|key, _| active_group_ids.contains(&key.group_id));
+            .retain(|key, _| active_zone_ids.contains(&key.zone_id));
     }
 
     fn release_display_finalize_slot(
@@ -940,19 +940,19 @@ enum DisplayFinalizeShaderMode {
     Difference = 10,
 }
 
-fn display_finalize_mode(mode: DisplayFaceBlendMode) -> DisplayFinalizeShaderMode {
+fn display_finalize_mode(mode: BlendMode) -> DisplayFinalizeShaderMode {
     match mode {
-        DisplayFaceBlendMode::Replace => DisplayFinalizeShaderMode::Replace,
-        DisplayFaceBlendMode::Alpha => DisplayFinalizeShaderMode::Alpha,
-        DisplayFaceBlendMode::Tint => DisplayFinalizeShaderMode::Tint,
-        DisplayFaceBlendMode::LumaReveal => DisplayFinalizeShaderMode::LumaReveal,
-        DisplayFaceBlendMode::Add => DisplayFinalizeShaderMode::Add,
-        DisplayFaceBlendMode::Screen => DisplayFinalizeShaderMode::Screen,
-        DisplayFaceBlendMode::Multiply => DisplayFinalizeShaderMode::Multiply,
-        DisplayFaceBlendMode::Overlay => DisplayFinalizeShaderMode::Overlay,
-        DisplayFaceBlendMode::SoftLight => DisplayFinalizeShaderMode::SoftLight,
-        DisplayFaceBlendMode::ColorDodge => DisplayFinalizeShaderMode::ColorDodge,
-        DisplayFaceBlendMode::Difference => DisplayFinalizeShaderMode::Difference,
+        BlendMode::Replace => DisplayFinalizeShaderMode::Replace,
+        BlendMode::Alpha => DisplayFinalizeShaderMode::Alpha,
+        BlendMode::Tint => DisplayFinalizeShaderMode::Tint,
+        BlendMode::LumaReveal => DisplayFinalizeShaderMode::LumaReveal,
+        BlendMode::Add => DisplayFinalizeShaderMode::Add,
+        BlendMode::Screen => DisplayFinalizeShaderMode::Screen,
+        BlendMode::Multiply => DisplayFinalizeShaderMode::Multiply,
+        BlendMode::Overlay => DisplayFinalizeShaderMode::Overlay,
+        BlendMode::SoftLight => DisplayFinalizeShaderMode::SoftLight,
+        BlendMode::ColorDodge => DisplayFinalizeShaderMode::ColorDodge,
+        BlendMode::Difference => DisplayFinalizeShaderMode::Difference,
     }
 }
 

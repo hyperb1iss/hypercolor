@@ -1,5 +1,7 @@
 //! Pure Nollie protocol encoder/decoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -10,9 +12,7 @@ use hypercolor_types::device::{
 };
 use tracing::warn;
 
-use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-};
+use crate::protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};
 
 pub(super) const GEN1_LEDS_PER_PACKET: usize = 21;
 pub(super) const LEGACY_LEDS_PER_PACKET: usize = 20;
@@ -525,7 +525,7 @@ impl Protocol for NollieProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         match self.model {
             NollieModel::Nollie1 => gen1_zones(CHANNELS_NOLLIE_1, LEDS_NOLLIE_1, self.model),
             NollieModel::Nollie8 | NollieModel::Prism8 => {
@@ -603,7 +603,7 @@ impl Protocol for NollieProtocol {
     }
 }
 
-fn gen1_zones(channels: usize, leds_per_channel: usize, model: NollieModel) -> Vec<ProtocolZone> {
+fn gen1_zones(channels: usize, leds_per_channel: usize, model: NollieModel) -> Vec<SegmentInfo> {
     numbered_zones(1, channels, leds_per_channel, model)
 }
 
@@ -612,9 +612,9 @@ fn numbered_zones(
     channels: usize,
     leds_per_channel: usize,
     model: NollieModel,
-) -> Vec<ProtocolZone> {
+) -> Vec<SegmentInfo> {
     (0..channels)
-        .map(|index| ProtocolZone {
+        .map(|index| SegmentInfo {
             name: format!("Channel {}", index + first_channel),
             led_count: u32::try_from(leds_per_channel).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Strip,
@@ -624,7 +624,7 @@ fn numbered_zones(
         .collect()
 }
 
-fn legacy_l_channels(model: NollieModel) -> Vec<ProtocolZone> {
+fn legacy_l_channels(model: NollieModel) -> Vec<SegmentInfo> {
     const LABELS: [&str; 8] = [
         "Channel 6",
         "Channel 5",
@@ -638,7 +638,7 @@ fn legacy_l_channels(model: NollieModel) -> Vec<ProtocolZone> {
 
     LABELS
         .iter()
-        .map(|label| ProtocolZone {
+        .map(|label| SegmentInfo {
             name: (*label).to_owned(),
             led_count: u32::try_from(LEDS_NOLLIE_LEGACY_8).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Strip,
@@ -648,7 +648,7 @@ fn legacy_l_channels(model: NollieModel) -> Vec<ProtocolZone> {
         .collect()
 }
 
-fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
+fn nollie32_zones(config: Nollie32Config) -> Vec<SegmentInfo> {
     let mut zones = gen1_zones(
         CHANNELS_NOLLIE_32_MAIN,
         LEDS_GEN2_CHANNEL,
@@ -658,7 +658,7 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
     );
 
     if config.atx_cable_present {
-        zones.push(ProtocolZone {
+        zones.push(SegmentInfo {
             name: "ATX Strimer".to_owned(),
             led_count: u32::try_from(LEDS_ATX_STRIMER).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
@@ -668,7 +668,7 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
     }
 
     if let Some(topology) = config.gpu_cable_type.topology() {
-        zones.push(ProtocolZone {
+        zones.push(SegmentInfo {
             name: "GPU Strimer".to_owned(),
             led_count: u32::try_from(config.gpu_cable_type.led_count()).unwrap_or(u32::MAX),
             topology,

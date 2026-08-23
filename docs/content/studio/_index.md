@@ -8,7 +8,7 @@ template = "section.html"
 
 Studio is where you compose your whole rig. It is the web UI's creative workspace at `/studio`: pick a scene, partition your hardware into zones, arrange each zone's devices on its own spatial canvas, stack layers of effects and media, and watch every change render live.
 
-{{ img(path="img/ui/studio.webp", alt="Studio: the zone tree on the left, the live Stage in the center") }}
+{{< img path="img/ui/studio.webp" alt="Studio: the zone tree on the left, the live Stage in the center" />}}
 
 ## The model 🔮
 
@@ -46,7 +46,7 @@ New to Studio? Walk these pages in order.
 
 ## Compose your rig
 
-- [Device grouping](@/studio/device-grouping.md): add and move devices between zones, read the device card, and assign at output granularity.
+- [Device assignment](@/studio/device-assignment.md): add and move devices between zones, read the device card, and assign at output granularity.
 - [Layers](@/studio/layers.md): build the layer stack: blend modes, opacity, transform and color, reorder, and per-layer health.
 - [Layouts](@/studio/layouts.md): the spatial canvas: drag, resize, and rotate outputs, with compound selection, undo, and live preview.
 - [Effects and controls](@/studio/effects-and-controls.md): apply effects to a zone and drive the live control panel inside a layer.

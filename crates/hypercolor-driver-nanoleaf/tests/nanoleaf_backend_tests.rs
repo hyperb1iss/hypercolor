@@ -3,12 +3,13 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_nanoleaf::{
     NanoleafBackend, NanoleafConfig, NanoleafDiscoveredDevice, build_device_info,
 };
+use hypercolor_driver_support::CredentialStore;
+use hypercolor_types::device::DeviceError;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;
@@ -67,8 +68,7 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         device_ips: Vec::new(),
         transition_time: 1,
     };
-    let mut backend = NanoleafBackend::with_mdns_enabled(config, Arc::clone(&store), false)
-        .with_stream_port(stream_port);
+    let backend = NanoleafBackend::new(config, Arc::clone(&store)).with_stream_port(stream_port);
 
     let discovered = NanoleafDiscoveredDevice {
         device_key: "living-room".to_owned(),
@@ -83,11 +83,15 @@ async fn backend_connect_write_brightness_and_disconnect() -> TestResult {
         ),
         panel_ids: Vec::new(),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
-        metadata: HashMap::new(),
+        metadata: HashMap::from([
+            ("device_key".to_owned(), "living-room".to_owned()),
+            ("ip".to_owned(), "127.0.0.1".to_owned()),
+            ("api_port".to_owned(), api_port.to_string()),
+        ]),
         claim: None,
     };
     let device_id = discovered.info.id;
-    backend.remember_device(discovered);
+    backend.adopt_device(&discovered.into_discovered())?;
 
     backend.connect(&device_id).await?;
 
@@ -137,23 +141,19 @@ async fn backend_connect_without_discovery_fails() {
             .await
             .expect("credential store"),
     );
-    let mut backend = NanoleafBackend::with_mdns_enabled(
+    let backend = NanoleafBackend::new(
         NanoleafConfig {
             device_ips: Vec::new(),
             transition_time: 1,
         },
         store,
-        false,
     );
 
     let error = backend
         .connect(&hypercolor_types::device::DeviceId::new())
         .await
         .expect_err("connect without discovery should fail");
-    assert!(
-        error.to_string().contains("not known"),
-        "unexpected error: {error}"
-    );
+    assert!(matches!(error, DeviceError::NotAdopted { .. }));
 }
 
 fn json_response(body: &str) -> Vec<u8> {

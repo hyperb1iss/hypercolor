@@ -681,7 +681,7 @@ fn screen_capture_input_produces_screen_data() {
             assert!(downscale.width() <= DEFAULT_CANVAS_WIDTH);
             assert_eq!(
                 downscale.get_pixel(0, 0),
-                hypercolor_core::types::canvas::Rgba::new(200, 100, 50, 255)
+                hypercolor_types::canvas::Rgba::new(200, 100, 50, 255)
             );
             for zc in &screen.zone_colors {
                 assert_eq!(zc.colors.len(), 1, "one color per zone");
@@ -1232,24 +1232,25 @@ fn disabling_letterbox_live_clears_stale_bars() {
 // ─── Monitor selection ───────────────────────────────────────────────────────
 
 #[test]
-fn monitor_source_accepts_prefixed_and_bare_indices() {
+fn monitor_source_strings_are_never_reinterpreted_as_indices() {
+    use hypercolor_windows_capture::MonitorSelector;
+
     for (source, expected) in [
-        ("monitor:0", 0),
-        ("monitor:1", 1),
-        ("monitor:11", 11),
-        ("display:2", 2),
-        ("3", 3),
-        ("  monitor: 2  ", 2),
+        ("monitor:0", "0"),
+        ("monitor:11", "11"),
+        ("display:2", "display:2"),
+        ("3", "3"),
+        ("  monitor: 2  ", "2"),
     ] {
         assert_eq!(
             hypercolor_core::input::screen::monitor_selector_from_source(source),
-            hypercolor_windows_capture::MonitorSelector::Index(expected),
-            "source {source:?} should select monitor {expected}"
+            MonitorSelector::StableId(expected.to_owned()),
+            "source {source:?} must retain string identity"
         );
     }
 }
 
-/// Auto means the primary display while non-numeric values remain stable ids.
+/// Auto means the primary display while every other value is a stable id.
 #[test]
 fn monitor_sources_preserve_auto_and_stable_ids() {
     use hypercolor_windows_capture::MonitorSelector;

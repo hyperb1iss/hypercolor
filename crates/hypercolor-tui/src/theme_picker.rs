@@ -18,9 +18,6 @@ use serde::{Deserialize, Serialize};
 
 // ── Persistence ─────────────────────────────────────────────────────────
 
-/// Application directory appended to the platform config directory.
-const APP_DIR: &str = "hypercolor";
-
 /// File name for the TUI config within the Hypercolor config directory.
 const CONFIG_FILE_NAME: &str = "tui.toml";
 
@@ -52,9 +49,7 @@ fn default_show_donate() -> bool {
 /// Locate the TUI config file path.
 ///
 /// `HYPERCOLOR_TUI_CONFIG` overrides the location outright; otherwise the file
-/// lands in the same XDG layout `hypercolor-core`'s `config::paths` resolves
-/// (`~/.config/hypercolor/` on Linux, `%APPDATA%\hypercolor\` on Windows),
-/// reached through `dirs` directly so the TUI stays off the render engine.
+/// lands in the shared Hypercolor config directory.
 ///
 /// # Panics
 ///
@@ -65,8 +60,8 @@ pub fn config_path() -> PathBuf {
     if let Ok(path) = std::env::var("HYPERCOLOR_TUI_CONFIG") {
         return PathBuf::from(path);
     }
-    resolve_config_path(dirs::config_dir())
-        .expect("no platform config directory; set HOME or HYPERCOLOR_TUI_CONFIG")
+    resolve_config_path(Some(hypercolor_core::config::paths::config_dir()))
+        .expect("the shared config resolver always yields a directory")
 }
 
 /// Place the TUI config file inside a resolved platform config directory.
@@ -75,7 +70,7 @@ pub fn config_path() -> PathBuf {
 /// exercised from a test: edition 2024 makes `std::env::set_var` unsafe and
 /// this crate forbids unsafe code.
 fn resolve_config_path(config_dir: Option<PathBuf>) -> Option<PathBuf> {
-    Some(config_dir?.join(APP_DIR).join(CONFIG_FILE_NAME))
+    Some(config_dir?.join(CONFIG_FILE_NAME))
 }
 
 /// Load the TUI config from disk, returning defaults if missing.
@@ -178,7 +173,7 @@ mod tests {
 
     #[test]
     fn resolved_path_nests_under_the_platform_config_dir() {
-        let resolved = resolve_config_path(Some(PathBuf::from("/xdg-config")))
+        let resolved = resolve_config_path(Some(PathBuf::from("/xdg-config/hypercolor")))
             .expect("a resolved config dir yields a path");
         assert!(resolved.starts_with("/xdg-config"));
         assert!(resolved.ends_with("hypercolor/tui.toml"));

@@ -6,11 +6,11 @@ weight = 60
 
 This page turns the tools, resources, and CLI commands from the rest of the Agents section into three end-to-end playbooks an agent can follow verbatim. Each one is a real sequence of calls with the responses an agent should expect, drawn straight from the daemon's MCP and CLI contracts. Every workflow opens the same way: read state before you touch it.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The MCP server ships this exact instruction to every client: start with `get_status` or the `hypercolor://state` resource, browse with `list_effects` before applying visuals, and prefer structured arguments and resource reads over guessing. The playbooks below are that discipline made concrete.
-{% end %}
+{% </callout> %}
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard an agent reads through hypercolor://state") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard an agent reads through hypercolor://state" />}}
 
 ## Before you start
 
@@ -81,7 +81,7 @@ Browse the catalog instead of guessing an effect name. Filter `list_effects` to 
 }
 ```
 
-{{ img(path="img/effects/borealis.webp", alt="A calm ambient effect in the gallery") }}
+{{< img path="img/effects/borealis.webp" alt="A calm ambient effect in the gallery" />}}
 
 ### 3. Apply it
 
@@ -141,9 +141,9 @@ The MCP `create_scene` tool creates an empty reusable scene with a seeded Primar
 // adjust_controls with the returned zone and layer identities
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Scenes are whole-rig configurations, not per-room settings. Flexible canvas partitions inside a scene are zones, covered in the [Studio docs](@/studio/_index.md). To capture the live runtime state exactly, use `hypercolor scenes snapshot "Evening Calm"` through the CLI.
-{% end %}
+{% </callout> %}
 
 The same loop in the CLI, for an agent that shells out rather than speaking MCP:
 
@@ -160,9 +160,9 @@ Note the CLI surface differs from the MCP tool. The activate verb uses `--speed`
 
 This is the playbook that crosses both CLIs. You author an HTML effect with the SDK, install it into the daemon, then apply it. There is no MCP tool to install or rescan effects, so this path has to cross from the authoring CLI to the daemon CLI or an MCP `set_effect` call.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Inside a scaffolded effect workspace, `bunx hypercolor` resolves the workspace's `hypercolor` dependency: the npm release by default, or a local build when the workspace was scaffolded with a `file:` SDK spec. These instructions assume you are in such a workspace.
-{% end %}
+{% </callout> %}
 
 ### 1. Build in the SDK workspace
 
@@ -196,7 +196,7 @@ After installing, the daemon picks up the new effect through a rescan. There is 
 
 ```bash
 hypercolor effects rescan
-# → Rescanned: 12 effects found
+# → Rescanned: 3 added, 1 updated, 0 removed
 hypercolor effects list --search aurora -j
 ```
 
@@ -212,11 +212,11 @@ Or over MCP, with `set_effect`:
 // set_effect with { "query": "Aurora", "controls": { "speed": 7 } }
 ```
 
-{{ img(path="img/ui/effects.webp", alt="An effect applied and rendering on the canvas") }}
+{{< img path="img/ui/effects.webp" alt="An effect applied and rendering on the canvas" />}}
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The install-and-apply path is the clearest case where a single agent job spans both CLIs. The SDK authoring CLI gets the effect onto the daemon; the daemon CLI or an MCP tool makes it live. Building [HTML effects](@/effects/_index.md) is its own topic with its own section.
-{% end %}
+{% </callout> %}
 
 ## Workflow C: diagnose a sick device
 
@@ -308,9 +308,9 @@ hypercolor diagnose --report ./hypercolor-report.json --system
 
 Read the checks before acting. A network device that drops to `delivered_fps: 0` with rising transport failures is usually outside the daemon's control: powered down, on a different VLAN, or behind AP isolation. The fix lives in [Network devices](@/hardware/_index.md), not in a nonexistent reconnect tool. A device that is connected but rendering wrong colors is a different class of problem, covered in [Color science for LEDs](@/effects/color-science.md). Distinguishing the two is exactly what the diagnostic snapshot lets an agent do.
 
-{% callout(type="success") %}
+{% <callout type="success"> %}
 The pattern repeats across all three workflows: orient on shared state, narrow with a filtered query, act with a structured call, and verify by reading state back. An agent that follows it never operates blind.
-{% end %}
+{% </callout> %}
 
 ## Where to go next
 

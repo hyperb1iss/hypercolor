@@ -140,9 +140,28 @@ impl InputScreenBranchDemand {
     const fn requested_hz(&self) -> u32 {
         self.branch.requested_hz().get()
     }
+
+    fn same_publication_request(&self, other: &Self) -> bool {
+        self.branch.request() == other.branch.request()
+            && self.branch.requested_hz() == other.branch.requested_hz()
+            && self.legacy_extent == other.legacy_extent
+    }
 }
 
 impl InputPublicationDemand {
+    pub(crate) fn same_publication_request(&self, other: &Self) -> bool {
+        self.audio == other.audio
+            && self.interaction == other.interaction
+            && self.media == other.media
+            && self.network == other.network
+            && self.screen.len() == other.screen.len()
+            && self
+                .screen
+                .iter()
+                .zip(other.screen.iter())
+                .all(|(left, right)| left.same_publication_request(right))
+    }
+
     /// Request the same rate for every typed source.
     #[must_use]
     pub fn all_sources(requested_hz: u32, screen_extent: PixelExtent) -> Self {
@@ -715,7 +734,7 @@ impl OwnedInputPublicationDemand {
     }
 
     pub(crate) fn publish(&mut self, demand: InputPublicationDemand) {
-        if demand != self.current {
+        if !demand.same_publication_request(&self.current) {
             self.registration.update(demand.clone());
             self.current = demand;
         }

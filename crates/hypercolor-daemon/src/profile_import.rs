@@ -7,15 +7,15 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::identity::LayoutId;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
     ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
-    SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::Deserialize;
@@ -28,7 +28,7 @@ use crate::scene_store::SceneStore;
 const PROFILE_IMPORT_NAMESPACE: Uuid = uuid!("2a937b6a-4ba1-5eb8-b02e-d3ca6eeaf3bd");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProfileImportOutcome {
+pub(crate) enum ProfileImportOutcome {
     NoSource,
     Imported { profiles: usize, backup: PathBuf },
 }
@@ -82,9 +82,9 @@ impl LegacyProfile {
     }
 }
 
-pub fn import_profiles(
+pub(crate) fn import_profiles(
     profiles_path: &Path,
-    scene_store: &mut SceneStore,
+    scenes_path: &Path,
     layouts: &HashMap<String, SpatialLayout>,
     default_layout: &SpatialLayout,
 ) -> anyhow::Result<ProfileImportOutcome> {
@@ -92,12 +92,15 @@ pub fn import_profiles(
         return Ok(ProfileImportOutcome::NoSource);
     }
 
+    let mut scene_store = SceneStore::load(scenes_path)
+        .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
+
     let bytes = fs::read(profiles_path)
         .with_context(|| format!("failed to read profiles at {}", profiles_path.display()))?;
     let profiles = serde_json::from_slice::<HashMap<String, LegacyProfile>>(&bytes)
         .with_context(|| format!("failed to parse profiles at {}", profiles_path.display()))?;
     let profile_count = profiles.len();
-    let merged = merge_profiles(scene_store, profiles, layouts, default_layout)?;
+    let merged = merge_profiles(&scene_store, profiles, layouts, default_layout)?;
     let pending = scene_store
         .reserve_save(merged.into_values())
         .context("failed to prepare imported scene snapshot")?;
@@ -184,23 +187,21 @@ fn convert_profile(
         .and_then(|id| layouts.get(id))
         .unwrap_or(default_layout);
 
-    let mut groups =
+    let mut zones =
         Vec::with_capacity(usize::from(profile.primary.is_some()) + profile.displays.len());
     if let Some(primary) = profile.primary {
-        groups.push(primary_zone(scene_id, primary, primary_layout.clone()));
+        zones.push(primary_zone(scene_id, primary, primary_layout.clone()));
     }
     for display in profile.displays {
-        groups.push(display_zone(scene_id, display));
+        zones.push(display_zone(scene_id, display));
     }
 
     let scene = Scene {
         id: scene_id,
         name,
         description: profile.description,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups,
-        groups_revision: 0,
+        zones,
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,
@@ -240,10 +241,6 @@ fn primary_zone(scene_id: SceneId, primary: LegacyProfilePrimary, layout: Spatia
         id: zone_id,
         name: "Default".to_owned(),
         description: Some("Default zone.".to_owned()),
-        effect_id: Some(primary.effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: primary.active_preset_id,
         layers: vec![layer],
         layout,
         brightness: 1.0,
@@ -272,10 +269,6 @@ fn display_zone(scene_id: SceneId, display: LegacyProfileDisplay) -> Zone {
         id: derived_zone_id(scene_id, &zone_key),
         name: format!("{device_id} Face"),
         description: Some(format!("Display face for {device_id}")),
-        effect_id: Some(display.effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![layer],
         layout: deferred_display_layout(device_id),
         brightness: 1.0,
@@ -298,7 +291,6 @@ fn deferred_display_layout(device_id: DeviceId) -> SpatialLayout {
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -380,3 +372,6 @@ fn backup_path(path: &Path) -> PathBuf {
     name.push(format!(".migrated-{timestamp}"));
     path.with_file_name(name)
 }
+
+#[cfg(test)]
+mod tests;

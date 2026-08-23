@@ -215,12 +215,12 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::extract::ws::Message;
     use axum::http::{Request, StatusCode};
-    use hypercolor_core::input::{BrowserInputSource, InputGraphHandle, InputSource};
+    use hypercolor_core::input::{BrowserInputHandle, InputGraphHandle};
     use hypercolor_types::config::InteractionRoutePolicy;
 
     use super::{MAX_TRUSTED_LOCAL_WEBSOCKET_MESSAGE_BYTES, TrustedLocalApi, TrustedLocalApiError};
-    use crate::api::AppState;
     use crate::api::security::SecurityState;
+    use crate::app_state::AppState;
     use crate::interaction_routing::InteractionRoutingControl;
     use crate::interactive_preview::{
         InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
@@ -368,9 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_websocket_shutdown_joins_active_preview_cleanup() {
-        let mut source = BrowserInputSource::new();
-        source.start().expect("browser input source should start");
-        let browser_input = source.handle();
+        let browser_input = BrowserInputHandle::new();
         let interaction_routing = InteractionRoutingControl::new(
             browser_input.registry(),
             1,
@@ -383,8 +381,8 @@ mod tests {
         let state = Arc::new(state);
         let executor = Arc::new(
             InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
-                scene_manager: Arc::clone(&state.scene_manager),
-                effect_registry: Arc::clone(&state.effect_registry),
+                scene_manager: state.scene_manager.clone(),
+                effect_registry: state.domains.effects.registry_handle(),
                 asset_library: Some(Arc::clone(&state.asset_library)),
                 event_bus: Arc::clone(&state.event_bus),
                 input_graph: InputGraphHandle::default(),

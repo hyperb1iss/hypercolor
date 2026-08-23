@@ -12,13 +12,13 @@ LED color, audio spectrum, and canvas previews. The web UI, the TUI, and any
 custom client all speak this one protocol, so you never poll and never juggle a
 second HTTP connection.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The wire contract here is generated from the daemon source on `main`. The JSON
 message shapes come from `crates/hypercolor-daemon/src/api/ws/protocol.rs`; the
 binary frame layouts are owned by `hypercolor-leptos-ext::ws` and round-trip
 tested against the daemon encoders in `daemon/src/api/ws/tests.rs`. When the code
 and this page disagree, the code wins; file an issue.
-{% end %}
+{% </callout> %}
 
 ## Connect
 
@@ -43,13 +43,13 @@ Native clients that control the request headers should instead send
 [auth and security](@/api/auth-and-security.md) for the dual-key model.
 Loopback clients on the default unsecured daemon need no key at all.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Browser origin is enforced on the upgrade. Requests with no `Origin` header
 (native and CLI clients) and loopback origins are always allowed. A non-loopback
 browser origin is rejected unless it appears in the daemon's `web.cors_origins`
 allowlist and auth is enabled. A blocked upgrade returns `403 Forbidden` before
 the socket opens.
-{% end %}
+{% </callout> %}
 
 ### Quick test
 
@@ -92,7 +92,7 @@ The daemon never pushes data for a subscription you do not hold, with one
 exception: the `events` topic is active on every connection from the moment it
 opens.
 
-{% mermaid() %}
+{% <mermaid> %}
 sequenceDiagram
   participant C as Client
   participant D as Daemon
@@ -108,7 +108,7 @@ sequenceDiagram
   end
   C->>D: unsubscribe { topics: [frames] }
   D-->>C: unsubscribed (remaining subscriptions)
-{% end %}
+{% </mermaid> %}
 
 ## The hello handshake
 
@@ -129,7 +129,7 @@ live.
     "running": true,
     "paused": false,
     "brightness": 100,
-    "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8, "actual": 60.0 },
+    "fps": { "target": 60, "capacity": 60.0, "delivered": 59.8 },
     "scene": { "id": "late-night", "name": "Late Night", "snapshot_locked": false },
     "layout": null,
     "device_count": 3,
@@ -142,8 +142,7 @@ live.
     "interactive_preview", "input_events",
     "commands", "canvas_format_jpeg", "interactive_previews",
     "wide_preview_frames", "preview_chunking",
-    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
-    "preview_transport_v1:decoded=536870912,encoded=536936448,connection=1073872896,streams=256,tombstones=1024,idle_ms=5000,message=1048576,chunks=4096"
+    "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576"
   ],
   "subscriptions": [{ "topic": "events" }]
 }
@@ -156,23 +155,18 @@ plus feature flags such as `commands`, `canvas_format_jpeg`,
 `subscriptions` uses the same entry shape the acknowledgments do, so a client
 reads its live set the same way everywhere.
 
-The daemon advertises two preview transport capabilities, `preview_transport_v2`
-first and `preview_transport_v1` behind it. Both describe the receiver's memory
-contract for preview publications, and they differ in what the intermediate
-limits count. V1 bounds reassembly by object counts (`streams`, a tombstone
-count, and `chunks`); V2 states the same ceilings in bytes (`reassembly`,
-`tombstones` as a byte budget, `sender`, and `cursors`) and derives the chunk
-ceiling from the encoded budget instead of pinning it. Both versions carry
-`decoded`, `encoded`, `connection`, `idle_ms`, and `message`.
+The daemon advertises one `preview_transport_v2` capability. The capability
+describes receiver memory contracts for decoded and encoded publications,
+connection retention, reassembly state, tombstones, sender state, cursor state,
+idle expiry, and individual WebSocket messages. Chunk admission derives from
+the encoded byte budget instead of a separate object-count ceiling.
 
 A client sends its own capability string in the optional `preview_transport`
 field of its first `subscribe`; the daemon applies the field-by-field minimum
 before activating preview topics and returns the effective capability in
-`subscribed`. Version selection is part of that minimum: the negotiated
-transport is V2 only when both peers advertise V2, and a single V1 peer
-downgrades the whole session. A client that omits the field uses the daemon's
-advertised defaults. Renegotiation after a preview publication is active is
-rejected instead of changing limits underneath in-flight state.
+`subscribed`. A client that omits the field uses the daemon's advertised
+defaults. Renegotiation after a preview publication is active is rejected
+instead of changing limits underneath in-flight state.
 
 The advertised message budget must be at least 184 bytes so every bounded
 stream identity can still carry a one-byte publication fragment. Under V1 the
@@ -223,14 +217,14 @@ subscription per connection.
 | `interactive_preview` | preview id | Binary | An interactive scene preview lane the subscription itself opens. Control-tier only. |
 | `input_events` | — | JSON | Timed keyboard and pointer events from the input pipeline. Control-tier only. |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `screen_canvas`, `screen_zones`, `interactive_preview`, and `input_events`
 expose live screen-capture pixels, host input activity, or a render lane of
 their own, so they require a control-tier subscription. On a secured daemon,
 subscribing without a control key returns an `error` with code `forbidden` and
 `required_tier: "control"`. On the default unsecured loopback daemon there is no
 key to provide and the subscription succeeds.
-{% end %}
+{% </callout> %}
 
 ## Client messages
 
@@ -256,7 +250,7 @@ on the first subscription so both peers enforce the same physical budgets. Send
   "preview_transport": "preview_transport_v2:decoded=536870912,encoded=536936448,connection=1073872896,reassembly=8388608,tombstones=4194304,sender=8388608,cursors=8388608,idle_ms=5000,message=1048576",
   "topics": [
     { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
-    { "topic": "metrics", "config": { "interval_ms": 1000 } },
+    { "topic": "metrics", "config": { "fps": 1.0 } },
     { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
   ]
 }
@@ -277,7 +271,7 @@ takes no config reports none:
   "topics": [
     { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
     { "topic": "events" },
-    { "topic": "metrics", "config": { "interval_ms": 1000 } },
+    { "topic": "metrics", "config": { "fps": 1.0 } },
     { "topic": "display_preview", "key": "3f2504e0-4f89-11d3-9a0c-0305e82c3301", "config": { "fps": 15 } }
   ]
 }
@@ -310,7 +304,7 @@ snapshot of what remains:
   "type": "unsubscribed",
   "topics": [
     { "topic": "events" },
-    { "topic": "metrics", "config": { "interval_ms": 1000 } }
+    { "topic": "metrics", "config": { "fps": 1.0 } }
   ]
 }
 ```
@@ -511,7 +505,9 @@ store the concept as `groups`, while the public wire uses zone vocabulary.
 ### metrics
 
 Periodic render-performance snapshot on the `metrics` topic, sent at the
-configured `interval_ms` (default 1000 ms). The `data` object is large: it
+configured `fps` cadence (default 1 fps). Fractional values support slower
+cadences, such as `0.5` fps for one publication every two seconds. The `data`
+object is large: it
 includes FPS, frame-time percentiles, per-stage timing, pacing jitter, effect
 and Servo health counters, render-surface pool gauges, preview demand, memory,
 device output, and WebSocket statistics. A representative subset:
@@ -521,24 +517,24 @@ device output, and WebSocket statistics. A representative subset:
   "type": "metrics",
   "timestamp": "2026-06-24T18:03:11.482Z",
   "data": {
-    "fps": { "target": 60, "ceiling": 60, "capacity": 59.8, "delivered": 59.2, "actual": 59.8, "dropped": 0 },
+    "fps": { "target": 60, "ceiling": 60, "capacity": 59.8, "delivered": 59.2, "dropped": 0 },
     "frame_time": { "avg_ms": 4.2, "p95_ms": 5.1, "p99_ms": 6.0, "max_ms": 8.3 },
     "devices": { "connected": 3, "total_leds": 432, "output_errors": 0 }
   }
 }
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Treat `metrics.data` as an open, additive object: read the fields you need by
 name and ignore the rest. The daemon adds counters over time (Servo render
 stages, GPU import slots, SparkleFlinger finalize stats), so a client that
 hard-asserts on the full key set will break on upgrade.
-{% end %}
+{% </callout> %}
 
 ### device_metrics
 
 Periodic per-device output telemetry on the `device_metrics` topic, also
-governed by `interval_ms`.
+governed by `fps`.
 
 ### sensors
 
@@ -584,8 +580,8 @@ The notice names the topic it dropped, and a keyed topic also names the key.
 ```
 
 Clients can patch the subscription to match the bandwidth they intend to consume.
-`frames` and `spectrum` use `reduce_fps` with `suggested_fps`. `metrics` and
-`device_metrics` use `increase_interval_ms` with `suggested_interval_ms`.
+All four topics use `reduce_fps` with `suggested_fps`. Telemetry suggestions may
+be fractional.
 Daemon metrics expose preview queue bytes plus queued, replaced, rejected,
 sent-publication, and sent-chunk counters for diagnosing the actual bottleneck.
 
@@ -686,7 +682,7 @@ The maximum accepted preview surface is currently 512 MiB at four bytes per pixe
 
 | Field | Type | Default | Range / values |
 | --- | --- | --- | --- |
-| `interval_ms` | integer | `1000` | 100..=10000 |
+| `fps` | number | `1.0` | 0.1..=10.0 |
 
 ### screen_zones config
 
@@ -749,13 +745,13 @@ integers are little-endian.
 | `0x11` | extended screen zones | 41 bytes |
 | `0x12` | wide display preview | 19 bytes + device id |
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `0x04` is intentionally unused in the current topic set. The passive
 preview-canvas tags (`0x03`/`0x05`/`0x06`) share one header layout,
 distinguished only by the leading tag. Display preview left that family when it
 became keyed: its frames carry the device id, so they use the same
 identity-prefixed layout as interactive previews.
-{% end %}
+{% </callout> %}
 
 ### frames (0x01)
 

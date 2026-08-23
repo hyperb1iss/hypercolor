@@ -12,14 +12,16 @@ use hypercolor_driver_api::{
 };
 use hypercolor_driver_govee::cloud::V1Device;
 use hypercolor_driver_govee::{
-    GoveeDriverModule, GoveeKnownDevice, build_cloud_discovered_device, build_device_info,
-    govee_device_control_surface, govee_driver_control_surface, merge_cloud_inventory,
-    parse_scan_response, resolve_govee_probe_devices, resolve_govee_probe_devices_from_sources,
+    GoveeConfig, GoveeDriverModule, GoveeKnownDevice, build_cloud_discovered_device,
+    build_device_info, govee_device_control_surface, govee_driver_control_surface,
+    merge_cloud_inventory, parse_scan_response, resolve_govee_probe_devices,
+    resolve_govee_probe_devices_from_sources,
 };
-use hypercolor_types::config::{DriverConfigEntry, GoveeConfig};
+use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyImpact, ControlAccess, ControlChange, ControlPersistence, ControlSurfaceEvent,
-    ControlSurfaceScope, ControlValue, ControlValueMap,
+    ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -211,7 +213,7 @@ fn cloud_inventory_device_uses_mac_fingerprint_when_device_id_is_mac() {
         properties: None,
     });
 
-    assert_eq!(discovered.fingerprint.0, "net:govee:aabbccddeeff");
+    assert_eq!(discovered.fingerprint.as_str(), "net:govee:aabbccddeeff");
     assert_eq!(discovered.info.name, "Desk Strip");
     assert_eq!(
         discovered.metadata.get("mac"),
@@ -231,19 +233,17 @@ fn cloud_inventory_merges_with_lan_device_without_overriding_lan_metadata() {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 8)),
     )
     .expect("scan response should parse");
-    let mut devices = vec![hypercolor_driver_api::DriverDiscoveredDevice::from(
-        hypercolor_driver_api::DiscoveredDevice {
-            fingerprint: DeviceFingerprint("net:govee:001122334455".to_owned()),
-            connect_behavior: hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect,
-            info: build_device_info(&lan_device),
-            metadata: HashMap::from([
-                ("ip".to_owned(), "10.0.0.8".to_owned()),
-                ("sku".to_owned(), "H619A".to_owned()),
-                ("mac".to_owned(), "001122334455".to_owned()),
-            ]),
-            claim: None,
-        },
-    )];
+    let mut devices = vec![hypercolor_driver_api::DiscoveredDevice {
+        fingerprint: DeviceFingerprint::from_persisted("net:govee:001122334455".to_owned()),
+        connect_behavior: hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect,
+        info: build_device_info(&lan_device),
+        metadata: HashMap::from([
+            ("ip".to_owned(), "10.0.0.8".to_owned()),
+            ("sku".to_owned(), "H619A".to_owned()),
+            ("mac".to_owned(), "001122334455".to_owned()),
+        ]),
+        claim: None,
+    }];
 
     merge_cloud_inventory(
         &mut devices,
@@ -304,14 +304,16 @@ fn govee_driver_control_surface_exposes_config_fields() {
     );
     assert_eq!(
         surface.values["known_ips"],
-        ControlValue::List(vec![ControlValue::IpAddress("10.0.0.9".to_owned())])
+        ControlValue::List(vec![
+            ControlValue::ip("10.0.0.9").expect("fixture IP should be valid")
+        ])
     );
     assert_eq!(
         surface.values["power_off_on_disconnect"],
         ControlValue::Bool(true)
     );
-    assert_eq!(surface.values["lan_state_fps"], ControlValue::Integer(7));
-    assert_eq!(surface.values["razer_fps"], ControlValue::Integer(25));
+    assert_eq!(surface.values["lan_state_fps"], ControlValue::Int(7));
+    assert_eq!(surface.values["razer_fps"], ControlValue::Int(25));
 
     let changed = govee_driver_control_surface(&GoveeConfig {
         razer_fps: 26,
@@ -341,7 +343,7 @@ async fn govee_apply_persists_values_without_running_host_impacts() {
         ValidatedControlChanges {
             changes: vec![ControlChange {
                 field_id: "lan_state_fps".to_owned(),
-                value: ControlValue::Integer(8),
+                value: ControlValue::Int(8),
             }],
             impacts: vec![ApplyImpact::BackendRebind, ApplyImpact::DiscoveryRescan],
         },
@@ -350,10 +352,10 @@ async fn govee_apply_persists_values_without_running_host_impacts() {
     .expect("govee control apply should persist values");
 
     assert_eq!(response.surface_id, "driver:govee");
-    assert_eq!(response.values["lan_state_fps"], ControlValue::Integer(8));
+    assert_eq!(response.values["lan_state_fps"], ControlValue::Int(8));
     assert_eq!(
         host.saved_driver_values("govee")["lan_state_fps"],
-        ControlValue::Integer(8)
+        ControlValue::Int(8)
     );
     assert_eq!(host.rebinds.load(Ordering::Relaxed), 0);
     assert_eq!(host.rescans.load(Ordering::Relaxed), 0);
@@ -397,19 +399,19 @@ fn govee_device_control_surface_exposes_lan_metadata() {
     );
     assert_eq!(
         surface.values["ip"],
-        ControlValue::IpAddress("10.0.0.5".to_owned())
+        ControlValue::ip("10.0.0.5").expect("fixture IP should be valid")
     );
     assert_eq!(
         surface.values["sku"],
-        ControlValue::String("H619A".to_owned())
+        ControlValue::Text("H619A".to_owned())
     );
     assert_eq!(
         surface.values["mac"],
-        ControlValue::MacAddress("001122334455".to_owned())
+        ControlValue::mac("001122334455").expect("fixture MAC should be valid")
     );
     assert_eq!(surface.values["razer_streaming"], ControlValue::Bool(true));
-    assert_eq!(surface.values["led_count"], ControlValue::Integer(1));
-    assert_eq!(surface.values["max_fps"], ControlValue::Integer(10));
+    assert_eq!(surface.values["led_count"], ControlValue::Int(1));
+    assert_eq!(surface.values["max_fps"], ControlValue::Int(10));
 }
 
 #[test]
@@ -434,7 +436,7 @@ fn govee_device_control_surface_exposes_cloud_metadata() {
 
     assert_eq!(
         surface.values["cloud_device_id"],
-        ControlValue::String("AA:BB:CC:DD:EE:FF".to_owned())
+        ControlValue::Text("AA:BB:CC:DD:EE:FF".to_owned())
     );
     assert_eq!(
         surface.values["cloud_controllable"],
@@ -447,8 +449,8 @@ fn govee_device_control_surface_exposes_cloud_metadata() {
     assert_eq!(
         surface.values["cloud_support_cmds"],
         ControlValue::List(vec![
-            ControlValue::String("turn".to_owned()),
-            ControlValue::String("brightness".to_owned()),
+            ControlValue::Text("turn".to_owned()),
+            ControlValue::Text("brightness".to_owned()),
         ])
     );
 }
@@ -487,7 +489,9 @@ fn tracked_govee_device(ip: &str, sku: &str, mac: &str) -> DriverTrackedDevice {
             ("sku".to_owned(), sku.to_owned()),
             ("mac".to_owned(), mac.to_owned()),
         ]),
-        fingerprint: Some(DeviceFingerprint(format!("net:govee:{mac}"))),
+        fingerprint: Some(DeviceFingerprint::from_persisted(format!(
+            "net:govee:{mac}"
+        ))),
         current_state: DeviceState::Known,
     }
 }

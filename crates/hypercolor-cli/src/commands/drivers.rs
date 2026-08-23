@@ -3,12 +3,16 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use hypercolor_types::api::controls::InvokeControlActionRequest;
-use hypercolor_types::controls::ApplyControlChangesRequest;
-use serde_json::Value;
+use hypercolor_types::api::drivers::{DriverListResponse, DriverSummary};
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::controls::{
+    ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
+};
+use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
 
 use crate::client::DaemonClient;
 use crate::commands::controls;
-use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
+use crate::output::{OutputContext, OutputFormat, urlencoded};
 
 /// Driver module inventory and dynamic controls.
 #[derive(Debug, Args)]
@@ -48,14 +52,6 @@ pub struct DriverSetControlArgs {
 
     /// Typed value. Examples: `enum:ddp`, `bool:true`, `ip:10.0.0.2`.
     pub value: String,
-
-    /// Expected surface revision for optimistic concurrency.
-    #[arg(long)]
-    pub expected_revision: Option<u64>,
-
-    /// Validate the transaction without applying it.
-    #[arg(long)]
-    pub dry_run: bool,
 }
 
 /// Arguments for `drivers action`.
@@ -92,25 +88,18 @@ pub async fn execute(args: &DriversArgs, client: &DaemonClient, ctx: &OutputCont
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/drivers").await?;
+    let response: DriverListResponse = client.get_list("/drivers").await?;
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            for driver in response
-                .get("items")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                println!("{}", descriptor_field(driver, "id"));
+            for driver in &response.items {
+                println!("{}", driver.descriptor.id);
             }
         }
         OutputFormat::Table => {
             let rows = response
-                .get("items")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
+                .items
+                .iter()
                 .map(|driver| driver_row(driver, ctx))
                 .collect::<Vec<_>>();
             ctx.print_table(
@@ -127,7 +116,7 @@ async fn execute_controls(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let response = client
+    let response: ControlSurfaceDocument = client
         .get(&format!("/drivers/{}/controls", urlencoded(&args.driver)))
         .await?;
     controls::render_surface(&response, ctx)
@@ -140,15 +129,12 @@ async fn execute_set_control(
 ) -> Result<()> {
     let surface_id = driver_control_surface_id(client, &args.driver).await?;
     let assignment = format!("{}={}", args.field, args.value);
-    let changes = controls::assignments_to_changes(&[assignment])?;
-    let body = ApplyControlChangesRequest {
-        expected_revision: args.expected_revision,
-        changes,
-        dry_run: args.dry_run,
-        surface_id: surface_id.clone(),
+    let body = PatchControlsRequest {
+        values: controls::assignments_to_values(&[assignment])?,
+        clear_bindings: Vec::new(),
     };
 
-    let response = client
+    let response: ApplyControlChangesResponse = client
         .patch(
             &format!("/control-surfaces/{}/values", urlencoded(&surface_id)),
             &body,
@@ -164,9 +150,9 @@ async fn execute_action(
 ) -> Result<()> {
     let surface = driver_control_surface(client, &args.driver).await?;
     controls::ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
-    let surface_id = extract_str(&surface, "surface_id");
+    let surface_id = surface.surface_id.clone();
     let input = controls::assignments_to_map(&args.input)?;
-    let response = client
+    let response: ControlActionResult = client
         .post(
             &format!(
                 "/control-surfaces/{}/actions/{}",
@@ -179,70 +165,65 @@ async fn execute_action(
     controls::render_action_response(&response, ctx)
 }
 
-fn driver_row(driver: &Value, ctx: &OutputContext) -> Vec<String> {
+fn driver_row(driver: &DriverSummary, ctx: &OutputContext) -> Vec<String> {
     vec![
-        ctx.painter.name(&presentation_label(driver)),
-        ctx.painter.muted(&descriptor_field(driver, "module_kind")),
-        ctx.painter.muted(&transport_summary(driver)),
+        ctx.painter.name(&driver.presentation.label),
         ctx.painter
-            .muted(if driver_enabled(driver) { "yes" } else { "no" }),
-        ctx.painter.muted(
-            driver
-                .get("control_surface_id")
-                .and_then(Value::as_str)
-                .unwrap_or("-"),
-        ),
+            .muted(module_kind_label(driver.descriptor.module_kind)),
+        ctx.painter.muted(&transport_summary(driver)),
+        ctx.painter.muted(if driver.enabled { "yes" } else { "no" }),
+        ctx.painter
+            .muted(driver.control_surface_id.as_deref().unwrap_or("-")),
     ]
 }
 
 async fn driver_control_surface_id(client: &DaemonClient, driver: &str) -> Result<String> {
     let surface = driver_control_surface(client, driver).await?;
-    Ok(extract_str(&surface, "surface_id"))
+    Ok(surface.surface_id)
 }
 
-async fn driver_control_surface(client: &DaemonClient, driver: &str) -> Result<Value> {
+async fn driver_control_surface(
+    client: &DaemonClient,
+    driver: &str,
+) -> Result<ControlSurfaceDocument> {
     client
         .get(&format!("/drivers/{}/controls", urlencoded(driver)))
         .await
 }
 
-fn descriptor_field(driver: &Value, key: &str) -> String {
-    driver.get("descriptor").map_or_else(
-        || "?".to_string(),
-        |descriptor| extract_str(descriptor, key),
-    )
+const fn module_kind_label(kind: DriverModuleKind) -> &'static str {
+    match kind {
+        DriverModuleKind::Network => "network",
+        DriverModuleKind::Hal => "hal",
+        DriverModuleKind::Bridge => "bridge",
+        DriverModuleKind::Host => "host",
+        DriverModuleKind::Virtual => "virtual",
+    }
 }
 
-fn presentation_label(driver: &Value) -> String {
-    driver
-        .get("presentation")
-        .and_then(|presentation| presentation.get("label"))
-        .and_then(Value::as_str)
-        .map_or_else(
-            || descriptor_field(driver, "display_name"),
-            ToOwned::to_owned,
-        )
+fn transport_summary(driver: &DriverSummary) -> String {
+    let transports = driver
+        .descriptor
+        .transports
+        .iter()
+        .map(transport_label)
+        .collect::<Vec<_>>();
+    if transports.is_empty() {
+        "-".to_string()
+    } else {
+        transports.join(", ")
+    }
 }
 
-fn transport_summary(driver: &Value) -> String {
-    driver
-        .get("descriptor")
-        .and_then(|descriptor| descriptor.get("transports"))
-        .and_then(Value::as_array)
-        .map(|transports| {
-            transports
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .filter(|summary| !summary.is_empty())
-        .unwrap_or_else(|| "-".to_string())
-}
-
-fn driver_enabled(driver: &Value) -> bool {
-    driver
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+fn transport_label(transport: &DriverTransportKind) -> String {
+    match transport {
+        DriverTransportKind::Network => "network".to_owned(),
+        DriverTransportKind::Usb => "usb".to_owned(),
+        DriverTransportKind::Smbus => "smbus".to_owned(),
+        DriverTransportKind::Midi => "midi".to_owned(),
+        DriverTransportKind::Serial => "serial".to_owned(),
+        DriverTransportKind::Virtual => "virtual".to_owned(),
+        DriverTransportKind::Bridge => "bridge".to_owned(),
+        DriverTransportKind::Custom(kind) => kind.clone(),
+    }
 }

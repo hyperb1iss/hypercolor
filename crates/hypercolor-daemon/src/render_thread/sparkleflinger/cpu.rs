@@ -1,10 +1,11 @@
+use hypercolor_color::PixelBlendMode;
 use hypercolor_core::blend_math::{
-    RgbaBlendMode, blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
-};
-use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceResourceError,
+    blend_opaque_normal_rgba_pixels_in_place, blend_rgba_pixels_in_place,
 };
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
+use hypercolor_types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceResourceError,
+};
 
 use super::face_overlay::{blend_luma_reveal_rgba, blend_material_tint_rgba};
 use super::transform::process_layer_canvas;
@@ -465,18 +466,18 @@ fn compose_rgba_layer(
     }
 
     let blend_mode = match mode {
-        CompositionMode::Replace | CompositionMode::Alpha => RgbaBlendMode::Normal,
-        CompositionMode::Add => RgbaBlendMode::Add,
-        CompositionMode::Screen => RgbaBlendMode::Screen,
-        CompositionMode::Multiply => RgbaBlendMode::Multiply,
-        CompositionMode::Overlay => RgbaBlendMode::Overlay,
-        CompositionMode::SoftLight => RgbaBlendMode::SoftLight,
-        CompositionMode::ColorDodge => RgbaBlendMode::ColorDodge,
-        CompositionMode::Difference => RgbaBlendMode::Difference,
-        CompositionMode::Tint | CompositionMode::LumaReveal => RgbaBlendMode::Normal,
+        CompositionMode::Replace | CompositionMode::Alpha => PixelBlendMode::Normal,
+        CompositionMode::Add => PixelBlendMode::Add,
+        CompositionMode::Screen => PixelBlendMode::Screen,
+        CompositionMode::Multiply => PixelBlendMode::Multiply,
+        CompositionMode::Overlay => PixelBlendMode::Overlay,
+        CompositionMode::SoftLight => PixelBlendMode::SoftLight,
+        CompositionMode::ColorDodge => PixelBlendMode::ColorDodge,
+        CompositionMode::Difference => PixelBlendMode::Difference,
+        CompositionMode::Tint | CompositionMode::LumaReveal => PixelBlendMode::Normal,
     };
     let result_opaque = target_opaque && layer_opaque_hint;
-    if blend_mode == RgbaBlendMode::Normal && result_opaque {
+    if blend_mode == PixelBlendMode::Normal && result_opaque {
         blend_opaque_normal_rgba_pixels_in_place(target.as_rgba_bytes_mut(), source_rgba, opacity);
         return true;
     }

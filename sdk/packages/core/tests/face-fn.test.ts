@@ -216,7 +216,7 @@ describe('face audio opt-in', () => {
                 testAudioContext(calls),
                 () => (_time, _controls, _sensors, audio) => {
                     calls.push(`available:${audio.available()}`)
-                    calls.push(`level:${audio.data().level}`)
+                    calls.push(`level:${audio.data().levelLinear}`)
                     calls.push(`mel:${audio.data().melBands.length}`)
                 },
                 [],

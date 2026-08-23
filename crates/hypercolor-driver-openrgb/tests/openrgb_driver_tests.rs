@@ -6,9 +6,9 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceDeliveryId, DeviceDeliveryStatus, DiscoveryConnectBehavior, DiscoveryRequest,
-    DriverConfigView, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverRuntimeActions, DriverTrackedDevice,
+    DeviceBackend, DeviceBackendFactory, DeviceDeliveryId, DeviceDeliveryStatus, DiscoveredDevice,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverCredentialStore,
+    DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions, DriverTrackedDevice,
 };
 use hypercolor_driver_openrgb::{
     DESCRIPTOR, OpenRgbConfig, OpenRgbDriverModule, OpenRgbOwnership, OpenRgbOwnershipMode,
@@ -19,10 +19,37 @@ use hypercolor_openrgb_sdk::{
     PacketId, RgbColor,
 };
 use hypercolor_types::config::DriverConfigEntry;
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceError, DeviceId};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+async fn discover_and_adopt(
+    module: &OpenRgbDriverModule,
+    backend: &Arc<dyn DeviceBackend>,
+    host: &dyn DriverHost,
+    config: DriverConfigView<'_>,
+) -> Vec<DiscoveredDevice> {
+    let devices = module
+        .discovery()
+        .expect("OpenRGB should expose discovery")
+        .discover(
+            host,
+            &DiscoveryRequest {
+                timeout: Duration::from_secs(2),
+                mdns_enabled: false,
+            },
+            config,
+        )
+        .await
+        .expect("driver discovery should read the fake OpenRGB server");
+    for device in &devices {
+        backend
+            .adopt_device(device)
+            .expect("backend should adopt the canonical discovery result");
+    }
+    devices
+}
 
 #[tokio::test]
 async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
@@ -67,8 +94,8 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
         .await
         .expect("discovery should read fake OpenRGB controller");
 
-    assert_eq!(discovery.devices.len(), 1);
-    let discovered = &discovery.devices[0];
+    assert_eq!(discovery.len(), 1);
+    let discovered = &discovery[0];
     assert_eq!(
         discovered.connect_behavior,
         DiscoveryConnectBehavior::AutoConnect
@@ -82,16 +109,13 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     assert_eq!(discovered.info.capabilities.max_fps, 45);
     assert!(discovered.info.capabilities.supports_direct);
 
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    assert_eq!(devices.len(), 1);
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    backend
+        .adopt_device(discovered)
+        .expect("backend should adopt the canonical discovery result");
+    let device_id = discovered.info.id;
 
     backend
         .connect(&device_id)
@@ -115,14 +139,14 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
 }
 
 #[tokio::test]
-async fn backend_reconnects_after_openrgb_socket_closes() {
+async fn backend_surfaces_socket_close_without_private_reconnect() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("fake OpenRGB server should bind");
     let endpoint = listener
         .local_addr()
         .expect("fake OpenRGB server should expose local addr");
-    let server = tokio::spawn(run_reconnect_server(listener));
+    let server = tokio::spawn(run_no_private_reconnect_server(listener));
     let config = OpenRgbConfig {
         endpoints: vec![endpoint],
         ownership: OpenRgbOwnership {
@@ -138,31 +162,36 @@ async fn backend_reconnects_after_openrgb_socket_closes() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
         .await
         .expect("backend should connect selected controller");
     tokio::time::sleep(Duration::from_millis(20)).await;
-    backend
-        .write_colors(&device_id, &[[90, 80, 70], [60, 50, 40]])
-        .await
-        .expect("backend should reconnect and stream colors");
+    let sink = backend
+        .frame_sink(&device_id)
+        .expect("connected controller should expose a frame sink");
+    let ack = sink
+        .deliver_colors_shared(
+            DeviceDeliveryId {
+                queue_generation: 3,
+                sequence: 1,
+            },
+            Arc::new(vec![[90, 80, 70], [60, 50, 40]]),
+        )
+        .await;
 
-    let update = server.await.expect("server task should join");
-    assert_eq!(update.header.device_index, 0);
-    assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
-    assert_eq!(&update.payload[6..10], &[90, 80, 70, 0]);
-    assert_eq!(&update.payload[10..14], &[60, 50, 40, 0]);
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    assert!(
+        server
+            .await
+            .expect("server task should confirm no reconnect")
+    );
 }
 
 #[tokio::test]
@@ -203,15 +232,11 @@ async fn connect_re_resolves_controller_index_before_mode_setup() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -253,21 +278,64 @@ async fn connect_fails_when_re_resolved_controller_disappears() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     let error = backend
         .connect(&device_id)
         .await
         .expect_err("backend should reject disappeared remap");
     assert!(error.to_string().contains("disappeared"));
+    server.await.expect("server task should join");
+}
+
+#[tokio::test]
+async fn connect_handshake_timeout_preserves_configured_deadline() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_connect_handshake_timeout_server(listener));
+    let read_timeout = Duration::from_millis(20);
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        read_timeout_ms: u64::try_from(read_timeout.as_millis())
+            .expect("test timeout should fit u64"),
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+
+    let error = backend
+        .connect(&device_id)
+        .await
+        .expect_err("silent handshake should reach the configured read timeout");
+
+    assert_eq!(
+        error,
+        DeviceError::Timeout {
+            after: read_timeout
+        }
+    );
     server.await.expect("server task should join");
 }
 
@@ -298,15 +366,11 @@ async fn connect_rejects_unapproved_active_mode_after_setup() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     let error = backend
         .connect(&device_id)
@@ -343,15 +407,11 @@ async fn connect_rejects_missing_active_mode_after_setup() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     let error = backend
         .connect(&device_id)
@@ -386,15 +446,11 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -449,15 +505,11 @@ async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -504,15 +556,11 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -565,15 +613,11 @@ async fn disconnect_completes_while_frame_sink_writers_race() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -638,15 +682,11 @@ async fn disconnect_restores_previous_openrgb_mode() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -713,15 +753,11 @@ async fn disconnect_fallback_blacks_out_without_previous_mode() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -767,15 +803,11 @@ async fn disconnect_blackout_policy_writes_zero_frame() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -821,15 +853,11 @@ async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should read fake OpenRGB controller");
-    let device_id = devices[0].id;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
 
     backend
         .connect(&device_id)
@@ -905,15 +933,11 @@ async fn discover_with_startup_rescan_server(server_protocol_version: u32) -> bo
     };
     let host = NullHost;
     let module = OpenRgbDriverModule;
-    let mut backend = module
-        .build_output_backend(&host, view)
-        .expect("backend construction should succeed")
-        .expect("OpenRGB should build an output backend");
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
 
-    let devices = backend
-        .discover()
-        .await
-        .expect("backend discovery should tolerate empty OpenRGB server");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
     assert!(devices.is_empty());
 
     server.await.expect("server task should join")
@@ -976,6 +1000,29 @@ async fn run_connect_missing_server(listener: TcpListener) {
         }
         connection_index = connection_index.saturating_add(1);
     }
+}
+
+async fn run_connect_handshake_timeout_server(listener: TcpListener) {
+    let (stream, _) = listener
+        .accept()
+        .await
+        .expect("fake OpenRGB server should accept discovery client");
+    let discovery_update = handle_output_connection(stream, false).await;
+    assert!(
+        discovery_update.is_none(),
+        "discovery should close without sending LED output"
+    );
+
+    let (mut stream, _) = listener
+        .accept()
+        .await
+        .expect("fake OpenRGB server should accept connect client");
+    let mut decoder = PacketDecoder::new();
+    let packet = read_next_packet(&mut stream, &mut decoder)
+        .await
+        .expect("connect client should send protocol negotiation");
+    assert_eq!(packet.header.packet_id, PacketId::RequestProtocolVersion);
+    tokio::time::sleep(Duration::from_millis(100)).await;
 }
 
 async fn handle_connect_missing_connection(mut stream: TcpStream, connection_index: u32) -> bool {
@@ -1349,19 +1396,18 @@ async fn handle_setup_readback_connection(
     false
 }
 
-async fn run_reconnect_server(listener: TcpListener) -> Packet {
-    let mut connection_index = 0_u32;
-    loop {
+async fn run_no_private_reconnect_server(listener: TcpListener) -> bool {
+    for connection_index in 0..2 {
         let (stream, _) = listener
             .accept()
             .await
             .expect("fake OpenRGB server should accept client");
         let close_after_mode_setup = connection_index == 1;
-        connection_index += 1;
-        if let Some(update) = handle_reconnect_connection(stream, close_after_mode_setup).await {
-            return update;
-        }
+        let _ = handle_output_connection(stream, close_after_mode_setup).await;
     }
+    tokio::time::timeout(Duration::from_millis(250), listener.accept())
+        .await
+        .is_err()
 }
 
 async fn run_latest_value_server(listener: TcpListener) -> Packet {
@@ -1370,7 +1416,7 @@ async fn run_latest_value_server(listener: TcpListener) -> Packet {
             .accept()
             .await
             .expect("fake OpenRGB server should accept client");
-        if let Some(update) = handle_reconnect_connection(stream, false).await {
+        if let Some(update) = handle_output_connection(stream, false).await {
             return update;
         }
     }
@@ -1503,11 +1549,12 @@ async fn handle_drain_connection(mut stream: TcpStream) {
     }
 }
 
-async fn handle_reconnect_connection(
+async fn handle_output_connection(
     mut stream: TcpStream,
-    close_after_mode_setup: bool,
+    close_after_mode_readback: bool,
 ) -> Option<Packet> {
     let mut decoder = PacketDecoder::new();
+    let mut saw_output_mode_setup = false;
     while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
         match packet.header.packet_id {
             PacketId::RequestProtocolVersion => {
@@ -1544,6 +1591,9 @@ async fn handle_reconnect_connection(
                     controller_payload_v5("Board", "SER123", "hidraw0"),
                 )
                 .await;
+                if close_after_mode_readback && saw_output_mode_setup {
+                    return None;
+                }
             }
             PacketId::SetCustomMode => {
                 assert_eq!(packet.header.device_index, 0);
@@ -1551,9 +1601,7 @@ async fn handle_reconnect_connection(
             PacketId::UpdateMode => {
                 assert_eq!(packet.header.device_index, 0);
                 assert!(!packet.payload.is_empty());
-                if close_after_mode_setup {
-                    return None;
-                }
+                saw_output_mode_setup = true;
             }
             PacketId::UpdateLeds => return Some(packet),
             other => panic!("unexpected OpenRGB client packet: {other:?}"),

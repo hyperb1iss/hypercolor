@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::asset::AssetId;
+use crate::control::ControlValue;
 use crate::controls::ControlSurfaceEvent;
 use crate::device::DeviceOrigin;
 use crate::layer::SceneLayerId;
@@ -28,6 +29,7 @@ pub struct EffectRef {
 
 /// Lightweight reference to a discovered device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceRef {
     pub id: String,
     pub name: String,
@@ -245,7 +247,7 @@ pub enum MidiRealtimeMessage {
     Stop,
 }
 
-/// A discrete host input event from keyboard or MIDI sources.
+/// An ordered host input edge from keyboard, pointer, or MIDI sources.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputEvent {
@@ -261,12 +263,6 @@ pub enum InputEvent {
         source_id: String,
         button: String,
         state: InputButtonState,
-    },
-
-    /// A host pointer wheel moved, in 1/120-notch hi-res units.
-    MouseWheel {
-        source_id: String,
-        delta_hi_res: i32,
     },
 
     /// Two-axis pointer scroll with exact signed Q16.16 deltas.
@@ -317,7 +313,6 @@ impl InputEvent {
         match self {
             Self::Key { source_id, .. }
             | Self::MouseButton { source_id, .. }
-            | Self::MouseWheel { source_id, .. }
             | Self::PointerScroll { source_id, .. }
             | Self::MidiNote { source_id, .. }
             | Self::MidiControlChange { source_id, .. }
@@ -339,26 +334,12 @@ impl InputEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimedInputEvent {
     pub event: InputEvent,
-    #[serde(default)]
     pub at_ms: u64,
-    #[serde(default)]
     pub seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physical_code: Option<String>,
-    #[serde(
-        default = "default_input_event_repeat_count",
-        deserialize_with = "deserialize_input_event_repeat_count",
-        skip_serializing_if = "input_event_repeat_count_is_one"
-    )]
+    #[serde(deserialize_with = "deserialize_input_event_repeat_count")]
     pub repeat_count: u32,
-}
-
-const fn default_input_event_repeat_count() -> u32 {
-    1
-}
-
-const fn input_event_repeat_count_is_one(value: &u32) -> bool {
-    *value == 1
 }
 
 fn deserialize_input_event_repeat_count<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -388,19 +369,6 @@ pub enum ContextType {
     Presence,
     /// Custom context from webhook or external integration.
     Custom,
-}
-
-/// Lightweight control value for event payloads (3 variants).
-///
-/// Used within [`HypercolorEvent::EffectControlChanged`] to carry
-/// old/new values across the event bus without pulling in the full
-/// 7-variant [`effect::ControlValue`](crate::effect::ControlValue).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum EventControlValue {
-    Number(f32),
-    Boolean(bool),
-    String(String),
 }
 
 /// Process topology that owns the active macOS daemon.
@@ -795,27 +763,14 @@ pub enum HypercolorEvent {
     EffectControlChanged {
         effect_id: String,
         control_id: String,
-        old_value: EventControlValue,
-        new_value: EventControlValue,
+        old_value: ControlValue,
+        new_value: ControlValue,
         /// Zone whose stack holds the patched layer.
         zone_id: ZoneId,
         /// The patched layer.
         layer_id: SceneLayerId,
         trigger: ChangeTrigger,
     },
-
-    /// A compositing layer was added to the effect stack.
-    EffectLayerAdded {
-        layer_id: String,
-        effect: EffectRef,
-        /// Stack index (0 = bottom).
-        index: u32,
-        blend_mode: String,
-        opacity: f32,
-    },
-
-    /// A compositing layer was removed from the effect stack.
-    EffectLayerRemoved { layer_id: String, effect_id: String },
 
     /// The effect registry was rescanned (hot-reload or manual trigger).
     EffectRegistryUpdated {
@@ -1183,8 +1138,6 @@ impl HypercolorEvent {
             Self::EffectStarted { .. }
             | Self::EffectStopped { .. }
             | Self::EffectControlChanged { .. }
-            | Self::EffectLayerAdded { .. }
-            | Self::EffectLayerRemoved { .. }
             | Self::EffectRegistryUpdated { .. }
             | Self::EffectError { .. }
             | Self::EffectDegraded { .. } => EventCategory::Effect,

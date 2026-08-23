@@ -62,7 +62,6 @@ canvas = [
     "web-sys/WebGlRenderingContext",
     "web-sys/Window",
 ]
-webgpu = ["canvas", "dep:wgpu"]
 raf = ["dep:wasm-bindgen", "dep:web-sys", "web-sys/Performance", "web-sys/Window"]
 prelude = [
     "dep:js-sys",
@@ -76,23 +75,18 @@ prelude = [
     "web-sys/console",
 ]
 axum = ["ws-core", "dep:axum"]
-leptos = ["dep:leptos", "dep:leptos-use"]
-devtools = []
 
 [dependencies]
 axum = { workspace = true, optional = true }
 bytes = "1.11"
 gloo-events = { version = "0.3", optional = true }
 js-sys = { version = "0.3", optional = true }
-leptos = { version = "0.8", features = ["csr"], optional = true }
-leptos-use = { version = "0.18", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 web-sys = { version = "0.3", optional = true }
-wgpu = { workspace = true, optional = true }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

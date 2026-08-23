@@ -1,3 +1,5 @@
+use hypercolor_types::api::effects::EffectSourceKind;
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
 use hypercolor_ui::components::canvas_preview::{
     canonical_injection_key, effect_wants_interaction, normalized_canvas_position,
@@ -14,14 +16,14 @@ use hypercolor_ui::ws::{
     InteractivePreviewRequest,
 };
 
-fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary {
+fn summary(input_reactive: bool, category: EffectCategory, tags: &[&str]) -> EffectSummary {
     EffectSummary {
         id: "fx".to_owned(),
         name: "Fx".to_owned(),
         description: String::new(),
         author: String::new(),
-        category: category.to_owned(),
-        source: "html".to_owned(),
+        category,
+        source: EffectSourceKind::Html,
         runnable: true,
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: "1.0.0".to_owned(),
@@ -49,7 +51,6 @@ fn edges_serialize_to_daemon_wire_shape() {
             state: InputEdgeState::Released,
         },
         InputInjectEdge::Move { nx: 0.25, ny: 1.0 },
-        InputInjectEdge::Wheel { delta_hi_res: -120 },
         InputInjectEdge::Scroll {
             delta_x_q16_16: 98_304,
             delta_y_q16_16: -131_072,
@@ -68,7 +69,6 @@ fn edges_serialize_to_daemon_wire_shape() {
                 { "kind": "key", "key": "a", "state": "pressed" },
                 { "kind": "button", "button": "left", "state": "released" },
                 { "kind": "move", "nx": 0.25, "ny": 1.0 },
-                { "kind": "wheel", "delta_hi_res": -120 },
                 {
                     "kind": "scroll",
                     "delta_x_q16_16": 98304,
@@ -355,10 +355,14 @@ fn normalized_positions_clamp_to_unit_square() {
 
 #[test]
 fn interaction_gate_uses_authoritative_capability() {
-    assert!(effect_wants_interaction(&summary(true, "ambient", &[])));
+    assert!(effect_wants_interaction(&summary(
+        true,
+        EffectCategory::Ambient,
+        &[]
+    )));
     assert!(!effect_wants_interaction(&summary(
         false,
-        "interactive",
+        EffectCategory::Interactive,
         &["input", "mouse", "keyboard"]
     )));
 }

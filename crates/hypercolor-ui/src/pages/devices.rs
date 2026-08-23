@@ -116,17 +116,17 @@ pub fn DevicesPage() -> impl IntoView {
     let device_zones = Memo::new(move |_| {
         let mut map = std::collections::HashMap::<String, String>::new();
         if let Some(scene) = zones_ctx.active_scene.get() {
-            for group in &scene.zones {
-                if group.role == ZoneRole::Display {
+            for zone in &scene.zones {
+                if zone.role == ZoneRole::Display {
                     continue;
                 }
-                let label = if group.role == ZoneRole::Primary && group.name == "Primary" {
+                let label = if zone.role == ZoneRole::Primary && zone.name == "Primary" {
                     "Default zone".to_owned()
                 } else {
-                    group.name.clone()
+                    zone.name.clone()
                 };
-                for output in &group.layout.zones {
-                    map.entry(output.device_id.clone())
+                for member in &zone.members {
+                    map.entry(member.device_id.clone())
                         .or_insert_with(|| label.clone());
                 }
             }

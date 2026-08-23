@@ -29,9 +29,9 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
     let active_scene_snapshot_locked = status.active_scene_snapshot_locked;
 
     let status_color = if running {
-        "var(--color-success-green)"
+        "var(--color-status-success)"
     } else {
-        "var(--color-error-red)"
+        "var(--color-status-error)"
     };
 
     view! {
@@ -51,7 +51,7 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
                 <StatusPill
                     label="Uptime"
                     value=uptime.as_str()
-                    color="var(--color-neon-cyan)"
+                    color="var(--color-cyan)"
                     pulsing=false
                 />
                 <div class="w-px h-5 bg-edge-subtle/30" />
@@ -65,7 +65,7 @@ pub(super) fn StatusStrip(status: SystemStatus) -> impl IntoView {
                 <StatusPill
                     label="Effects"
                     value=format!("{effect_count}")
-                    color="var(--color-electric-purple)"
+                    color="var(--color-accent)"
                     pulsing=false
                 />
             </div>
@@ -128,9 +128,9 @@ fn ScenePill(fallback_scene: Option<String>, fallback_locked: bool) -> impl Into
         {move || pill.get().map(|(value, locked, interactive)| {
             let label = if locked { "Scene Lock" } else { "Scene" };
             let color = if locked {
-                "var(--color-electric-yellow)"
+                "var(--color-status-warning)"
             } else {
-                "var(--color-neon-cyan)"
+                "var(--color-cyan)"
             };
             let value_text = if locked { format!("{value} · snap") } else { value };
             view! {

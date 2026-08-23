@@ -19,11 +19,11 @@ model, see [Zones](@/studio/zones.md), [Layers](@/studio/layers.md), and
 [Layouts](@/studio/layouts.md). The shared response and error envelopes live in
 the [REST API](@/api/rest.md) reference.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 **Vocabulary.** A scene is a whole-rig configuration. A zone is a flexible
 partition of its canvas. A member is one device segment assignment inside a
 zone. A layer is one authored source in that zone's stack.
-{% end %}
+{% </callout> %}
 
 ## Route map 🎯
 
@@ -49,87 +49,87 @@ activate it and edit the live tree, or replace the stored scene document with
 
 ### Live scene
 
-{% api_endpoint(method="GET", path="/api/v1/scene") %}
+{% <api_endpoint method="GET" path="/api/v1/scene"> %}
 Return the complete live scene document. An active scene always exists, so this
 route always returns `200`. The JSON `revision` is also served as `ETag`.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scene") %}
+{% <api_endpoint method="PATCH" path="/api/v1/scene"> %}
 Patch `name` or `unassigned_behavior`. The default scene cannot be renamed.
 This structural write optionally accepts `If-Match`.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scene/deactivate") %}
+{% <api_endpoint method="POST" path="/api/v1/scene/deactivate"> %}
 Return to the Default scene and receive the new live document.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scene/clear") %}
+{% <api_endpoint method="POST" path="/api/v1/scene/clear"> %}
 Clear every non-display zone's layer stack. Pass
 `{ "zone": "<zone_uuid>" }` to clear one non-display stack. Display zones stay
 owned by the display API, and a targeted display clear is rejected. This is the
 canonical stop gesture and optionally accepts `If-Match`.
-{% end %}
+{% </api_endpoint> %}
 
 ### Zones and members
 
-{% api_endpoint(method="POST", path="/api/v1/scene/zones") %}
+{% <api_endpoint method="POST" path="/api/v1/scene/zones"> %}
 Create a custom zone. Primary and display zones are created by their owning
 engine flows.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/scene/zones/{zone}") %}
+{% <api_endpoint method="GET" path="/api/v1/scene/zones/{zone}"> %}
 Read one live zone resource.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}") %}
+{% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}"> %}
 Patch the zone's name, enabled state, brightness, or color.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}"> %}
 Delete a custom zone.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scene/zones/{zone}/members") %}
+{% <api_endpoint method="POST" path="/api/v1/scene/zones/{zone}/members"> %}
 Assign device segments with `{ "device_id": "...", "segments": [...] }`.
 The response carries minted member ids.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}/members/{member}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}/members/{member}"> %}
 Remove one membership by its member id. Segment names are not resource ids.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scene/zones/{zone}/layout") %}
+{% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layout"> %}
 Write a compact zone layout containing member placements. Every placement names
 a member id from the live zone document.
-{% end %}
+{% </api_endpoint> %}
 
 All mutating routes in this section are structural. Each may carry the scene
 document's current `revision` in `If-Match`.
 
 ### Layers
 
-{% api_endpoint(method="GET", path="/api/v1/scene/zones/{zone}/layers") %}
+{% <api_endpoint method="GET" path="/api/v1/scene/zones/{zone}/layers"> %}
 List the zone's authored layer stack from bottom to top.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scene/zones/{zone}/layers") %}
+{% <api_endpoint method="POST" path="/api/v1/scene/zones/{zone}/layers"> %}
 Append a layer. The server mints its `SceneLayerId`.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}/layers/order") %}
+{% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}/layers/order"> %}
 Reorder the stack with every current layer id exactly once, bottom to top.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scene/zones/{zone}/layers/{layer}") %}
+{% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layers/{layer}"> %}
 Replace a whole layer. Every successful replacement mints a fresh id, including
 a replacement with the same effect and controls.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scene/zones/{zone}/layers/{layer}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}/layers/{layer}"> %}
 Delete a layer.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scene/zones/{zone}/layers/{layer}/controls") %}
+{% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}/layers/{layer}/controls"> %}
 Patch effect controls with the shared shape:
 
 ```json
@@ -146,7 +146,7 @@ This value write never takes `If-Match`. If the layer was replaced, the old id
 returns `404 layer_not_found`. A value targeting a bound control returns
 `409 control_bound` unless the same request names that key in `clear_bindings`.
 Binding removal and the new values commit atomically.
-{% end %}
+{% </api_endpoint> %}
 
 Layer create, replace, delete, and reorder are structural writes and may carry
 `If-Match`. The control route is the only in-place layer value mutation.
@@ -306,11 +306,11 @@ transient preview so the live render reflects the in-progress placement. The
 preview is not a REST mutation, does not persist the scene, and does not change
 the global spatial layout.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The `zone_layout_preview` text command is distinct from the `zone_preview`
 binary channel. The command sends an in-progress placement to the daemon. The
 binary channel streams rendered preview pixels back to subscribers.
-{% end %}
+{% </callout> %}
 
 ### Pushing and clearing a preview
 
@@ -365,7 +365,7 @@ The wide layout is used when either dimension exceeds `u16::MAX`.
 
 ## How a structural mutation flows
 
-{% mermaid() %}
+{% <mermaid> %}
 sequenceDiagram
     participant UI as Studio
     participant API as Daemon REST
@@ -383,7 +383,7 @@ sequenceDiagram
         UI->>API: GET /scene
         UI->>UI: rebase and retry
     end
-{% end %}
+{% </mermaid> %}
 
 ## Related
 

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use hypercolor_core::scene::SceneManager;
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::scene::DisplayFaceTarget;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use uuid::Uuid;
 
@@ -37,35 +39,69 @@ fn sample_layout() -> SpatialLayout {
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
 
 #[test]
-fn invalidate_active_render_groups_bumps_revision_without_mutating_groups() {
+fn invalidate_resolved_zones_bumps_revision_without_mutating_zones() {
     let mut manager = SceneManager::with_default();
     manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &sample_effect("aurora"),
             HashMap::new(),
             None,
             sample_layout(),
         )
-        .expect("primary group should be created");
+        .expect("primary zone should be created");
 
-    let groups_before = manager.active_render_groups();
-    let revision_before = manager.active_render_groups_revision();
+    let zones_before = manager.resolved_zones();
+    let revision_before = manager.resolved_zones_revision();
 
-    manager.invalidate_active_render_groups();
+    manager.invalidate_resolved_zones();
 
     assert!(
-        manager.active_render_groups_revision() > revision_before,
+        manager.resolved_zones_revision() > revision_before,
         "invalidating active zones should advance the revision"
     );
     assert_eq!(
-        manager.active_render_groups().as_ref(),
-        groups_before.as_ref(),
-        "invalidating external dependencies should not rewrite the active groups"
+        manager.resolved_zones().as_ref(),
+        zones_before.as_ref(),
+        "invalidating external dependencies should not rewrite the active zones"
+    );
+}
+
+#[test]
+fn effect_id_migration_rewrites_scene_and_overlay_and_fences_stale_layouts() {
+    let legacy_id = EffectId::new(Uuid::now_v7());
+    let canonical_id = EffectId::new(Uuid::now_v7());
+    let mut effect = sample_effect("legacy");
+    effect.id = legacy_id;
+    let mut manager = SceneManager::with_default();
+    manager
+        .upsert_primary_zone(&effect, HashMap::new(), None, sample_layout())
+        .expect("primary zone should be created");
+    let mut overlay = manager.resolved_zones()[0].clone();
+    overlay.display_target = Some(DisplayFaceTarget::new(DeviceId::new()));
+    manager.set_default_display_zone(overlay);
+    let revision_before = manager.resolved_zones_revision();
+
+    let migrated = manager.remap_effect_ids(&HashMap::from([(legacy_id, canonical_id)]));
+
+    assert_eq!(migrated, 2);
+    assert!(manager.resolved_zones_revision() > revision_before);
+    assert!(
+        manager
+            .resolved_zones()
+            .iter()
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .all(|effect_id| effect_id == canonical_id)
+    );
+    assert!(
+        manager
+            .default_display_zones()
+            .iter()
+            .flat_map(hypercolor_types::scene::Zone::effect_ids)
+            .all(|effect_id| effect_id == canonical_id)
     );
 }

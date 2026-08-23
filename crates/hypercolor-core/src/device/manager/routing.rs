@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use hypercolor_types::attachment::zone_name_matches_slot_alias;
+use hypercolor_types::attachment::channel_name_matches_slot_alias;
 use hypercolor_types::device::{DeviceId, DeviceInfo, SegmentInfo};
 use hypercolor_types::spatial::{
     LedTopology, NormalizedPosition, Output, OutputComponent, SpatialLayout, StripDirection,
@@ -437,7 +437,7 @@ pub(super) fn zone_name_covered_by_layout(
 ) -> bool {
     assigned_zone_names
         .iter()
-        .any(|assigned| zone_name_matches_slot_alias(Some(assigned.as_str()), Some(zone_name)))
+        .any(|assigned| channel_name_matches_slot_alias(Some(assigned.as_str()), Some(zone_name)))
 }
 
 pub(super) fn unassigned_output_zone(
@@ -606,7 +606,7 @@ fn zone_segment_for_name(
 ) -> Option<SegmentRange> {
     zone_segments.get(zone_name).copied().or_else(|| {
         zone_segments.iter().find_map(|(candidate, segment)| {
-            zone_name_matches_slot_alias(Some(zone_name), Some(candidate)).then_some(*segment)
+            channel_name_matches_slot_alias(Some(zone_name), Some(candidate)).then_some(*segment)
         })
     })
 }

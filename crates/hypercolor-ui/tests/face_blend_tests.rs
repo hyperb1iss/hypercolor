@@ -1,6 +1,6 @@
 //! Contract tests for the shared face-composition vocabulary.
 
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 use hypercolor_ui::face_blend::{
     FACE_BLEND_OPTIONS, FACE_BLEND_PRESETS, face_blend_option, face_blend_select_options,
     face_blend_value, parse_face_blend,
@@ -15,15 +15,12 @@ fn every_blend_mode_round_trips_through_wire_tokens() {
 
 #[test]
 fn alpha_presents_as_cutout() {
-    assert_eq!(
-        face_blend_option(DisplayFaceBlendMode::Alpha).label,
-        "Cutout"
-    );
+    assert_eq!(face_blend_option(BlendMode::Alpha).label, "Cutout");
 }
 
 #[test]
 fn unknown_wire_token_falls_back_to_blended() {
-    assert_eq!(parse_face_blend("nonsense"), DisplayFaceBlendMode::Alpha);
+    assert_eq!(parse_face_blend("nonsense"), BlendMode::Alpha);
 }
 
 #[test]
@@ -43,6 +40,6 @@ fn presets_reference_presentable_modes_with_valid_opacity() {
         assert!((0.0..=1.0).contains(&preset.opacity));
         // A preset that names a non-blending mode would render a dead
         // Blend Amount slider; every quick look must blend.
-        assert!(preset.mode.blends_with_effect());
+        assert!(preset.mode.blends_with_base());
     }
 }

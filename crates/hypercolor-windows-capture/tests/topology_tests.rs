@@ -50,29 +50,17 @@ fn stable_id_survives_enumeration_reorder() {
 }
 
 #[test]
-fn legacy_index_canonicalizes_across_restart_and_reorder() {
-    let before_restart = [
+fn programmatic_index_selection_remains_available() {
+    let monitors = [
         monitor(0, "left", -2560, false),
         monitor(1, "main", 0, true),
     ];
-    let legacy = MonitorSelector::parse("monitor:1");
-    let selected = legacy
-        .resolve(&before_restart)
-        .expect("legacy selector resolves before restart");
-    let persisted = legacy
-        .canonical_source(&selected.id)
-        .expect("legacy index produces a stable source");
 
-    let after_restart = [
-        monitor(0, "main", 0, true),
-        monitor(1, "left", -2560, false),
-    ];
-    let restored = MonitorSelector::parse(&persisted)
-        .resolve(&after_restart)
-        .expect("stable source survives restart and reorder");
+    let selected = MonitorSelector::Index(1)
+        .resolve(&monitors)
+        .expect("low-level index selector resolves");
 
-    assert_eq!(restored.id, "main");
-    assert_eq!(restored.index, 0);
+    assert_eq!(selected.id, "main");
 }
 
 #[test]
@@ -86,7 +74,7 @@ fn disappeared_stable_source_is_not_rebound_to_an_index_neighbor() {
 }
 
 #[test]
-fn parser_preserves_stable_ids_and_legacy_indices() {
+fn parser_preserves_stable_ids_without_reinterpreting_numeric_strings() {
     assert_eq!(MonitorSelector::parse("auto"), MonitorSelector::Auto);
     assert_eq!(
         MonitorSelector::parse("monitor:dxgi:adapter:display"),
@@ -94,7 +82,15 @@ fn parser_preserves_stable_ids_and_legacy_indices() {
     );
     assert_eq!(
         MonitorSelector::parse("display:3"),
-        MonitorSelector::Index(3)
+        MonitorSelector::StableId("display:3".to_owned())
+    );
+    assert_eq!(
+        MonitorSelector::parse("monitor:1"),
+        MonitorSelector::StableId("1".to_owned())
+    );
+    assert_eq!(
+        MonitorSelector::parse("3"),
+        MonitorSelector::StableId("3".to_owned())
     );
     assert_eq!(
         MonitorSelector::parse(r"display:\\?\display#del4098#instance"),

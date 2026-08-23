@@ -78,7 +78,9 @@ use console::{
 };
 use frame_updates::{combined_script, render_update_preview};
 use readback::read_framebuffer_into_canvas;
-pub(super) use runtime_html::{effect_is_audio_reactive, prepare_runtime_html_source};
+pub(super) use runtime_html::{
+    cleanup_runtime_html_path, effect_is_audio_reactive, prepare_runtime_html_source,
+};
 use scheduler::{PendingRenderCommand, ScheduledServoWork, ServoWorkerScheduler};
 #[cfg(test)]
 use shared::shared_worker_acquisition_allowed;

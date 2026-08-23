@@ -23,7 +23,7 @@ pub(super) fn FrameTimelinePanel(
             m.as_ref()
                 .map(|m| {
                     format!(
-                        "frame #{} · {} · {} layer{} · {} group{}",
+                        "frame #{} · {} · {} layer{} · {} zone{}",
                         m.timeline.frame_token,
                         m.timeline.compositor_backend.replace('_', " "),
                         m.timeline.logical_layer_count,
@@ -32,8 +32,8 @@ pub(super) fn FrameTimelinePanel(
                         } else {
                             "s"
                         },
-                        m.timeline.render_group_count,
-                        if m.timeline.render_group_count == 1 {
+                        m.timeline.render_zone_count,
+                        if m.timeline.render_zone_count == 1 {
                             ""
                         } else {
                             "s"
@@ -60,7 +60,7 @@ pub(super) fn FrameTimelinePanel(
         >
             <div class="px-4 py-2.5 flex items-center justify-between gap-2">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuTimer width="14px" height="14px" style="color: var(--color-electric-yellow)" />
+                    <Icon icon=LuTimer width="14px" height="14px" style="color: var(--color-status-warning)" />
                     <h2 class="text-[13px] font-medium text-fg-secondary">"Frame Timeline"</h2>
                     <span class="text-[9px] font-mono uppercase tracking-[0.1em] text-fg-tertiary/50">
                         "last 30s"
@@ -70,7 +70,7 @@ pub(super) fn FrameTimelinePanel(
                     {move || scene_badge.get().map(|(active, xfade)| view! {
                         <div class="flex items-center gap-1.5">
                             {active.then(|| view! {
-                                <span class="text-[9px] font-mono uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-electric-purple/10 text-electric-purple border border-electric-purple/20">
+                                <span class="text-[9px] font-mono uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-accent/10 text-accent border border-accent/20">
                                     "scene"
                                 </span>
                             })}
@@ -145,7 +145,7 @@ pub(super) fn PacingPanel(
     view! {
         <div class="pt-1">
             <div class="flex items-center gap-2 mb-3">
-                <Icon icon=LuWifi width="14px" height="14px" style="color: var(--color-electric-purple)" />
+                <Icon icon=LuWifi width="14px" height="14px" style="color: var(--color-accent)" />
                 <h2 class="text-[13px] font-medium text-fg-secondary">"Frame Pacing"</h2>
             </div>
             <div class="space-y-4">
@@ -153,19 +153,19 @@ pub(super) fn PacingPanel(
                     label="Jitter"
                     detail=jitter_label
                     values=jitter_series
-                    color="var(--color-electric-purple)"
+                    color="var(--color-accent)"
                 />
                 <PacingRow
                     label="Wake Delay"
                     detail=wake_label
                     values=wake_series
-                    color="var(--color-electric-yellow)"
+                    color="var(--color-status-warning)"
                 />
                 <PacingRow
                     label="Frame Age"
                     detail=age_label
                     values=frame_age_series
-                    color="var(--color-neon-cyan)"
+                    color="var(--color-cyan)"
                 />
                 <PacingRow
                     label="Frame Time p95"
@@ -252,11 +252,6 @@ pub(super) fn BackpressureBanner(notice: BackpressureNotice) -> impl IntoView {
     let suggestion = notice
         .suggested_fps
         .map(|fps| format!("{fps} fps"))
-        .or_else(|| {
-            notice
-                .suggested_interval_ms
-                .map(|interval_ms| format!("{interval_ms} ms"))
-        })
         .unwrap_or_else(|| "adjust subscription config".to_owned());
     let text = format!(
         "{} dropped on {}. {} → {}",
@@ -267,8 +262,8 @@ pub(super) fn BackpressureBanner(notice: BackpressureNotice) -> impl IntoView {
     );
 
     view! {
-        <div class="rounded-xl border border-electric-yellow/25 bg-electric-yellow/[0.06] px-4 py-3 text-[12px] text-electric-yellow flex items-center gap-3">
-            <Icon icon=LuTriangleAlert width="16px" height="16px" style="color: var(--color-electric-yellow); flex-shrink: 0" />
+        <div class="rounded-xl border border-status-warning/25 bg-status-warning/[0.06] px-4 py-3 text-[12px] text-status-warning flex items-center gap-3">
+            <Icon icon=LuTriangleAlert width="16px" height="16px" style="color: var(--color-status-warning); flex-shrink: 0" />
             <div>
                 <span class="font-mono uppercase tracking-[0.14em] mr-2">"Backpressure"</span>
                 {text}

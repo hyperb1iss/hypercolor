@@ -13,7 +13,6 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
 use hypercolor_types::scene::ZoneRole;
-use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::zones::ZoneOutcome;
 use crate::api::{self, DeviceSummary, SegmentTopologySummary};
@@ -27,7 +26,7 @@ use crate::layout_utils;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
-use super::device_grouping::ZoneDeviceRow;
+use super::device_assignment::ZoneDeviceRow;
 use super::zone_add_device::{assign_device_to_zone, zone_display_name};
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -176,19 +175,17 @@ pub fn StudioDeviceCard(
         None => led_label(row.led_count),
     };
 
-    // Snapshot the current zone's layout once — used both to resolve
-    // each channel's output id and to gather the bulk-hide id set.
-    // The Unassigned bucket has no layout (its devices are by
-    // definition placed in no zone), so the snapshot is `None` there.
+    // Project the current zone's placements once to resolve channel ids and
+    // gather the bulk-hide id set. The Unassigned bucket has no placements.
     let placed = mode == CardMode::Placed;
-    let layout_snapshot: Option<SpatialLayout> = if placed {
+    let zone_outputs = if placed {
         studio.active_scene.with_untracked(|scene| {
             scene.as_ref().and_then(|scene| {
                 scene
                     .zones
                     .iter()
-                    .find(|group| group.id.to_string() == select)
-                    .map(|group| group.layout.clone())
+                    .find(|zone| zone.id.to_string() == select)
+                    .map(api::zone_outputs)
             })
         })
     } else {
@@ -199,15 +196,14 @@ pub fn StudioDeviceCard(
             studio.active_scene.with_untracked(|scene| {
                 scene
                     .as_ref()
-                    .map(|scene| hidden_outputs_storage_key(&scene.id, &select))
+                    .map(|scene| hidden_outputs_storage_key(&scene.id.to_string(), &select))
             })
         })
         .flatten();
-    let device_output_ids: Vec<String> = layout_snapshot
+    let device_output_ids: Vec<String> = zone_outputs
         .as_ref()
-        .map(|layout| {
-            layout
-                .zones
+        .map(|outputs| {
+            outputs
                 .iter()
                 .filter(|output| output.device_id == device.layout_device_id)
                 .map(|output| output.id.clone())
@@ -222,12 +218,17 @@ pub fn StudioDeviceCard(
         .map(|channel| {
             let display_name =
                 channel_names::effective_channel_name(&device.id, &channel.id, &channel.name);
-            let output_id = layout_snapshot.as_ref().and_then(|layout| {
-                layout_utils::representative_zone_id_for_device_slot(
-                    layout,
-                    &device.layout_device_id,
-                    Some(channel.name.as_str()),
-                )
+            let output_id = zone_outputs.as_ref().and_then(|outputs| {
+                outputs
+                    .iter()
+                    .find(|output| {
+                        output.device_id == device.layout_device_id
+                            && layout_utils::channel_name_matches_slot_alias(
+                                output.zone_name.as_deref(),
+                                Some(channel.name.as_str()),
+                            )
+                    })
+                    .map(|output| output.id.clone())
             });
             ComponentRow {
                 name: display_name.clone(),
@@ -627,9 +628,9 @@ fn card_ops_menu(
                     scene
                         .zones
                         .iter()
-                        .filter(|group| group.role != ZoneRole::Display)
-                        .filter(|group| group.id.to_string() != current.get_value())
-                        .map(|group| (group.id.to_string(), zone_display_name(group)))
+                        .filter(|zone| zone.role != ZoneRole::Display)
+                        .filter(|zone| zone.id.to_string() != current.get_value())
+                        .map(|zone| (zone.id.to_string(), zone_display_name(zone)))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -711,8 +712,7 @@ fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_id
         .collect::<Vec<_>>();
     let revision = scene.revision;
     spawn_local(async move {
-        match api::zones::assign_devices(&target_zone_id, assignments, false, Some(revision)).await
-        {
+        match api::zones::assign_devices(&target_zone_id, assignments, false, revision).await {
             Ok(ZoneOutcome::Applied(_)) => {
                 let suffix = if count == 1 { "" } else { "s" };
                 toasts::toast_success(&format!("Moved {count} output{suffix}"));
@@ -977,14 +977,12 @@ fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: St
     let output_ids: Vec<String> = scene
         .zones
         .iter()
-        .find(|group| group.id.to_string() == zone_id)
-        .map(|group| {
-            group
-                .layout
-                .zones
+        .find(|zone| zone.id.to_string() == zone_id)
+        .map(|zone| {
+            zone.members
                 .iter()
-                .filter(|output| output.device_id == device_id)
-                .map(|output| output.id.clone())
+                .filter(|member| member.device_id == device_id)
+                .map(|member| member.id.to_string())
                 .collect()
         })
         .unwrap_or_default();
@@ -994,7 +992,7 @@ fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: St
     let mut revision = scene.revision;
     spawn_local(async move {
         for output_id in output_ids {
-            match api::zones::unassign_device(&zone_id, &output_id, Some(revision)).await {
+            match api::zones::unassign_device(&zone_id, &output_id, revision).await {
                 Ok(ZoneOutcome::Applied(next)) => revision = next,
                 Ok(ZoneOutcome::Stale { .. }) => {
                     toasts::toast_error("Scene changed elsewhere — reloaded, try again");
@@ -1096,14 +1094,14 @@ fn screen_surface_id_for_device(studio: StudioContext, device_id: &str) -> Optio
             scene
                 .zones
                 .iter()
-                .find(|group| {
-                    group.role == ZoneRole::Display
-                        && group
+                .find(|zone| {
+                    zone.role == ZoneRole::Display
+                        && zone
                             .display_target
                             .as_ref()
                             .is_some_and(|target| target.device_id.to_string() == device_id)
                 })
-                .map(|group| group.id.to_string())
+                .map(|zone| zone.id.to_string())
         })
     })
 }

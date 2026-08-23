@@ -4,8 +4,10 @@ use std::time::{Duration, SystemTime};
 use axum::body::Body;
 use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
+use hypercolor_daemon::simulators::SimulatedDisplayExt;
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
 use hypercolor_types::device::DeviceId;
 use tower::ServiceExt;
@@ -45,7 +47,7 @@ async fn register_display(state: &Arc<AppState>) -> DeviceId {
         .await
         .upsert(config.clone());
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -60,7 +62,7 @@ async fn publish_frame(
     frame_number: u64,
     captured_at: SystemTime,
 ) {
-    state.display_frames.write().await.set_frame(
+    state.domains.display.frames().write().await.set_frame(
         device_id,
         DisplayFrameSnapshot {
             jpeg_data: Arc::new(jpeg),

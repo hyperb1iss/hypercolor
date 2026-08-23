@@ -11,18 +11,17 @@
 //! version — `revision`, the commit generation — served as `ETag` and
 //! honored via optional `If-Match` on structural mutations (§1.6).
 //!
-//! No `ToSchema` here: the embedded scene graph does not derive it,
-//! and schema registration arrives with the `utoipa-axum` catalog
-//! (Spec 78 §7.2, after wave 78.5) rather than as orphan schemas now.
+//! OpenAPI derives are available behind the crate's `schema` feature. The
+//! daemon enables that feature and registers these types through its
+//! `utoipa-axum` catalog (Spec 78 §7.2).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use crate::effect::ControlValue;
+use crate::control::ControlValue;
 use crate::identity::LayoutId;
 use crate::layer::{
-    LayerAdjust, LayerBinding, LayerBlendMode, LayerSource, LayerTransform, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerBinding, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use crate::library::PresetId;
 use crate::scene::{
@@ -37,16 +36,20 @@ use serde::{Deserialize, Serialize};
 /// Always present — an active scene always exists (Spec 78 §1.1), so
 /// there is no idle sentinel and no all-optional shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SceneDocument {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub id: SceneId,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub kind: SceneKind,
     /// Whether this is the auto-managed default scene, which cannot be
     /// renamed or deleted.
     pub is_default: bool,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub unassigned_behavior: UnassignedBehavior,
     /// The named spatial layout this scene references, if any
     /// (Spec 78 §3.2). Activation applies it; a dangling reference is
@@ -56,14 +59,17 @@ pub struct SceneDocument {
     #[serde(default)]
     pub activation_brightness: Option<f32>,
     #[serde(default = "default_scene_transition")]
+    #[cfg_attr(feature = "schema", schema(value_type = Object))]
     pub transition: TransitionSpec,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schema(value_type = u8))]
     pub priority: ScenePriority,
     #[serde(default = "default_scene_enabled")]
     pub enabled: bool,
     #[serde(default)]
     pub metadata: HashMap<String, String>,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub mutation_mode: SceneMutationMode,
     /// The commit generation. Served as `ETag`; the one wire version
     /// token (Spec 78 §1.6).
@@ -86,12 +92,15 @@ const fn default_scene_enabled() -> bool {
 
 /// One authored zone inside the live document (Spec 78 §1.3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ZoneResource {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub id: ZoneId,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub role: ZoneRole,
     pub enabled: bool,
     pub brightness: f32,
@@ -99,6 +108,7 @@ pub struct ZoneResource {
     pub color: Option<String>,
     /// Present on Display-role zones only.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Object>))]
     pub display_target: Option<DisplayFaceTarget>,
     /// Device segments assigned to this zone, addressed by membership
     /// id (Spec 78 §1.2) — never by device-scoped segment name.
@@ -118,6 +128,7 @@ pub struct ZoneResource {
 /// design: member placements only, no computed LED data, and no
 /// device-internal vocabulary (Spec 78 §5.1). Vec order is z-order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ZoneLayoutResource {
     pub placements: Vec<MemberPlacement>,
 }
@@ -129,6 +140,7 @@ pub struct ZoneLayoutResource {
 /// client-tolerance convention wins for embedded resources. The
 /// strict envelope around it still rejects unknown top-level fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MemberPlacement {
     pub member: ZoneMemberId,
     /// Center on the canvas, normalized `[0.0, 1.0]`.
@@ -151,6 +163,7 @@ fn default_placement_scale() -> f32 {
 /// A zone membership's identity — wire-transparent, unique within its
 /// zone, which is all its zone-scoped route needs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(transparent)]
 pub struct ZoneMemberId(pub String);
 
@@ -163,6 +176,7 @@ impl std::fmt::Display for ZoneMemberId {
 /// One zone membership: a device segment's assignment, with its own
 /// identity (Spec 78 §1.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ZoneMember {
     /// The resource identity for `DELETE .../members/{member}`; unique
     /// within the zone.
@@ -179,30 +193,36 @@ pub struct ZoneMember {
 
 /// `PATCH /scene` — scene-level fields only (Spec 78 §1.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ScenePatchRequest {
     /// Rename; rejected for the default scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub unassigned_behavior: Option<UnassignedBehavior>,
 }
 
 /// `POST /scene/clear` — the "stop" gesture (Spec 78 §1.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ClearSceneRequest {
     /// Clear one non-display zone's stack; omitted clears every non-display zone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub zone: Option<ZoneId>,
 }
 
 /// `POST /scene/zones` — create a zone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CreateZoneRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub role: Option<ZoneRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
@@ -210,6 +230,7 @@ pub struct CreateZoneRequest {
 
 /// `PATCH /scene/zones/{zone}` — name and structural fields.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PatchZoneRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -246,6 +267,7 @@ where
 /// `PUT /scene/zones/{zone}/layout` — zone-scoped spatial override,
 /// in the same compact shape the zone resource reads back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ZoneLayoutRequest {
     pub placements: Vec<MemberPlacement>,
@@ -256,6 +278,7 @@ pub struct ZoneLayoutRequest {
 /// The request names a device and its segments; the response's zone
 /// resource carries the minted membership ids (Spec 78 §1.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AssignMembersRequest {
     pub device_id: String,
@@ -265,18 +288,19 @@ pub struct AssignMembersRequest {
     pub segments: Vec<String>,
 }
 
-/// `POST /scene/zones/{zone}/layers` — append a layer to the stack.
+/// `POST /scene/zones/{zone}/layers`: append a layer to the stack.
 ///
 /// The server mints the layer id (Spec 78 §1.4); the response's zone
 /// resource carries it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct CreateLayerRequest {
     pub source: LayerSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blend: Option<LayerBlendMode>,
+    pub blend: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,18 +313,53 @@ pub struct CreateLayerRequest {
     pub enabled: Option<bool>,
 }
 
-/// `PUT /scene/zones/{zone}/layers/{layer}` — whole-layer replace.
+/// `PUT /scene/zones/{zone}/layers/{layer}`: whole-layer replace.
 ///
 /// Replacement is creation: every successful `PUT` mints a fresh layer
 /// id, same effect or not (Spec 78 §1.4). The request shape is the
 /// creation shape; the path names the layer being replaced.
-pub type ReplaceLayerRequest = CreateLayerRequest;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceLayerRequest {
+    pub source: LayerSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<BlendMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<LayerTransform>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adjust: Option<LayerAdjust>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bindings: Option<Vec<LayerBinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+impl From<ReplaceLayerRequest> for CreateLayerRequest {
+    fn from(request: ReplaceLayerRequest) -> Self {
+        Self {
+            source: request.source,
+            name: request.name,
+            blend: request.blend,
+            opacity: request.opacity,
+            transform: request.transform,
+            adjust: request.adjust,
+            bindings: request.bindings,
+            enabled: request.enabled,
+        }
+    }
+}
 
 /// `PATCH /scene/zones/{zone}/layers/order` — reorder the stack.
 ///
 /// `order` names every layer in the zone exactly once, bottom to top;
 /// anything else is a validation error.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ReorderLayersRequest {
     pub order: Vec<SceneLayerId>,
@@ -317,6 +376,7 @@ pub struct ReorderLayersRequest {
 /// removal and the accompanying values land in one atomic commit
 /// (Spec 78 §1.6).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PatchControlsRequest {
     #[serde(default)]
@@ -330,6 +390,7 @@ pub struct PatchControlsRequest {
 /// Grows when the engine does; the request field does not accept
 /// aspirational values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TransitionType {
     /// Immediate switch — the only transition the engine performs.
@@ -343,11 +404,13 @@ pub enum TransitionType {
 /// running this effect; a projection of the same `SceneMutation` a
 /// layer-stack replacement performs, never a second code path.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ApplyEffectRequest {
     /// Target zone; omitted means the primary zone, created if the
     /// scene has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub zone: Option<ZoneId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls: Option<BTreeMap<String, ControlValue>>,
@@ -361,6 +424,7 @@ pub struct ApplyEffectRequest {
 /// commit stands, the outcome says whether the side effect landed,
 /// and a failure carries its reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SideEffectOutcome {
     pub applied: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -396,6 +460,7 @@ impl SideEffectOutcome {
 /// route (`PATCH /output`), never a blind re-apply, because apply
 /// mints a fresh layer id and is deliberately not idempotent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ApplyEffectResponse {
     pub zone: ZoneResource,
     pub transition: TransitionType,

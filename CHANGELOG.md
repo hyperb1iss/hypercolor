@@ -25,6 +25,9 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   schema version 5.
 - Import legacy `profiles.json` entries into scenes on first startup, then
   retire the source only after the scene write is durable.
+- Decode every Python client response through the generated OpenAPI models.
+  The handwritten msgspec mirrors are gone, so a field the daemon stops
+  sending now fails the decode instead of silently arriving as `None`.
 
 ### Removed
 
@@ -34,6 +37,17 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   behavior through canonical resources.
 - Remove the profile REST routes, CLI commands, shared types, WebSocket fields
   and events, MCP `set_profile` tool, and `hypercolor://profiles` resource.
+- Remove the `[dbus]`, `[tui]`, and `[features]` config sections and the
+  top-level `include` key. None of the four reached a consumer: `[dbus]` named
+  a service the daemon never published (its D-Bus use is client-side, for
+  MPRIS and session events, and is unchanged), the TUI reads its theme from
+  its own `tui.toml`, no feature flag gated any code, and `include` never
+  merged a file. Existing config files keep loading, and the retired keys are
+  preserved verbatim through the extension catch-all rather than deleted on
+  the next save.
+- Remove the unimplemented multi-room layout model: `SpaceDefinition`,
+  `RoomDimensions`, `RoomAdjacency`, `Wall`, and the `spaces` field on
+  `SpatialLayout`. Nothing ever read the hierarchy; layouts stay flat.
 
 ### Breaking Changes
 
@@ -45,6 +59,60 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Replace display preview, capture picker, and playlist stop calls with
   `/displays/{id}/frame`, `PUT /capture/source`, and
   `POST /library/playlists/deactivate` respectively.
+- Device fingerprints now include a canonical namespace and driver qualifier.
+  Existing hardware may appear once under its new identity and require
+  re-adoption plus reapplying device-local settings. Hypercolor preserves old
+  persisted records and does not silently reset or delete them.
+- Portable driver identities now carry a generic driver-owned namespace.
+  `device-aliases.json` schema version 1 remains untouched but is no longer
+  loaded. Back up and remove that file, then rescan devices to rebuild the
+  schema version 2 alias overlay from the unchanged portable keys.
+- **SDK: `InputData.available` is removed.** The deprecation in 0.3.1 named
+  SDK 0.4.0 as the removal point; it happens here instead. Read `routed` and
+  `healthy`, the two authoritative lifecycle facts the runtime wire already
+  carried. `mouse.coordinatesAvailable` is unrelated and stays.
+- **SDK: the `dev` CLI command is removed.** It had already been reduced to a
+  message saying it was gone, so the help surface disagreed with the commands
+  that worked. Use the Bun workspace `dev` script for package watch builds.
+- **Python: the `Layout` alias is removed.** Layout endpoints have always
+  returned `SpatialLayout`; import that name from the shared spatial contract.
+- **Python: handwritten resource mirrors are removed.** `get_state`, the legacy
+  device properties, the handwritten `Scene`, `Zone`, and `Effect` models, and
+  the `surface.id` alias are gone. Both facades build requests and decode
+  responses with the generated OpenAPI types, and filter names and response
+  shapes now match the daemon exactly.
+- `SpatialLayout` no longer carries `spaces`, and the `SpaceDefinition`,
+  `RoomDimensions`, `RoomAdjacency`, and `Wall` schemas are gone from the API
+  and the generated clients. Stored layouts that still carry a `spaces` key
+  load unchanged; the key is ignored.
+- Effect error fallback now uses `clear_zones`, and runtime session snapshots
+  store default scene content under `default_scene_zones`. Schema version 4
+  config migrates the old fallback value once; schema version 5 config and
+  unversioned runtime snapshots reject the retired group-named spellings.
+- **Python client models are the generated OpenAPI types.** The handwritten
+  mirrors under `hypercolor.models.*` are deleted; import from
+  `hypercolor.models` instead of its former submodules. Return types
+  change accordingly: `Device` becomes `DeviceSummary`, `Driver` becomes
+  `DriverSummary`, `ControlSurface` becomes `ControlSurfaceDocument`,
+  `ControlApplyResult` becomes `ApplyControlChangesResponse`, `Preset`
+  becomes `EffectPreset`, `Playlist` becomes `EffectPlaylist`, `Favorite`
+  becomes `FavoriteSummary`, `OutputState` becomes `OutputResource`,
+  `IdentifyResult` becomes `IdentifyDeviceResponse`, `ConfigMutationResult`
+  becomes `ConfigMutationResponse`, `DisplaySummary` becomes
+  `DisplaySummaryListItem`, `DisplayFaceAssignment` becomes
+  `DisplayFaceResponse`, and `apply_layout()` returns `ApplyLayoutResponse`
+  rather than the grab-bag `MutationResult`. The convenience properties on
+  the retired mirrors (`Device.enabled`, `OutputState.paused`,
+  `OutputState.brightness_percent`) are gone; read `status`, `power`, and
+  `brightness` directly.
+- **`discover_devices()` sends the canonical `targets` field.** The keyword
+  argument is renamed from `backends` to `targets` and a `wait` argument now
+  reaches the daemon's synchronous mode. The return value is the
+  status-tagged union of `DiscoveryScanningResponse` and
+  `DiscoveryCompletedResponse`, so a completed scan exposes the full
+  `DiscoveryScanResult` the client used to discard.
+- **`get_audio_spectrum()` is typed `NoReturn`.** It always raised; spectrum
+  snapshots only exist on the WebSocket stream.
 
 ## [0.3.2] - 2026-08-15
 
@@ -204,6 +272,7 @@ A cross-platform input and capture release. Host keyboard and mouse capture land
 - Bound Windows Raw Input payload reads to the record rather than the buffer, and bound the record walk to the union arm actually read (`40175f83`, `ba5e963f`)
 - Close Raw Input lifecycle races and stop delivering every batch to core twice (`5040d66b`, `cef4cd05`)
 - Never capture screen content for screen-mirroring effects when generating cover artwork (`003a5794`)
+- `getInputData()` reports input declaration, routing, health, freshness, and degradation independently. Recent keyboard or mouse activity no longer implies source availability.
 - Route conduct and security reports through GitHub's private reporting flow (`6c047eb2`)
 
 ### Removed
@@ -211,6 +280,11 @@ A cross-platform input and capture release. Host keyboard and mouse capture land
 - Remove the legacy Displays, Assets, and Layout pages along with their feature flag; Studio is the only workspace (`d753a927`)
 - Remove the simulator UI journey E2E suite and `crates/hypercolor-app/src/resources.rs` with its tests (`d7fc98a9`, `d753a927`)
 - Remove the legacy SDK canvas resolution warning (`3eebfcd9`)
+
+### Deprecated
+
+- `InputData.available` now means `routed && healthy` and remains as a
+  compatibility alias. Read the explicit lifecycle fields instead.
 
 ### Breaking Changes
 
@@ -225,22 +299,6 @@ A cross-platform input and capture release. Host keyboard and mouse capture land
 - Files Changed: 819
 - Insertions: +188,678
 - Deletions: -15,247
-<!-- -------------------------------------------------------------- -->
-
-## [Unreleased]
-
-### Changed
-
-- `getInputData()` now reports input declaration, routing, health, freshness,
-  and degradation independently. Recent keyboard or mouse activity no longer
-  implies source availability.
-
-### Deprecated
-
-- `InputData.available` now means `routed && healthy` and remains as a
-  compatibility alias through SDK 0.3.x. Read the explicit lifecycle fields
-  instead; the alias will be removed in SDK 0.4.0.
-
 ## [0.2.1] - 2026-07-15
 
 First public release of Hypercolor, a cross-platform RGB LED orchestration daemon with a GPU-accelerated render pipeline, multi-vendor hardware support, and a full effect authoring SDK.
@@ -321,3 +379,8 @@ First public release of Hypercolor, a cross-platform RGB LED orchestration daemo
 - Files Changed: 2,591
 - Insertions: +720,254
 - Deletions: -2,397
+
+[Unreleased]: https://github.com/hyperb1iss/hypercolor/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/hyperb1iss/hypercolor/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/hyperb1iss/hypercolor/compare/v0.2.1...v0.3.1
+[0.2.1]: https://github.com/hyperb1iss/hypercolor/releases/tag/v0.2.1

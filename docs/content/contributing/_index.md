@@ -48,9 +48,9 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 | Dependencies or licenses | `just deny` |
 | OpenAPI schema | `just python-generate-check` |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `cargo check --workspace` does NOT cover `hypercolor-ui`. That crate is excluded from the Cargo workspace and must be checked separately with `just ui-test` or `just ui-build`.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -145,7 +145,7 @@ Subject lines: imperative mood, 76 characters or fewer, no trailing period. Body
 
 The dependency graph has hard rules. Violating them produces circular dependencies that break the workspace.
 
-- **`hypercolor-types`** depends on nothing. All shared vocabulary types live here.
+- **`hypercolor-types`** depends on `hypercolor-color` plus foundational external crates. Cross-crate domain vocabulary lives here; the color kernel remains in `hypercolor-color`.
 - **`hypercolor-hal`** depends on `types` only. It must never depend on `core`.
 - **`hypercolor-core`** depends on `types` and `hal`. Engine logic and traits live here.
 - **`hypercolor-daemon`** is the binary; it depends on `core`, `driver-api`, `network`, and `driver-builtin`. Nothing imports it.
@@ -226,9 +226,9 @@ See [Adding an effect](@/contributing/adding-an-effect.md) for the full walkthro
 
 **Native Rust effects** implement `EffectRenderer` and register via `register_builtin_effects()` in `crates/hypercolor-core/src/effect/builtin/mod.rs`. Adding an effect means creating a new submodule in that directory, implementing `EffectRenderer`, and adding a `metadata()` constructor that returns `EffectMetadata`. Native effects produce `Canvas` frames entirely in Rust and run at roughly 1 ms per frame without Servo overhead, making them the right choice for performance-critical or audio-reactive work.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 There is no GPU shader lane for native Rust effects. `EffectSource::Shader` is not a runnable path. GLSL effects run as WebGL2 inside Servo, not as compiled wgpu shaders. Frame GPU/wgpu texture import is infrastructure for Servo frame delivery, not a general shader pipeline. If you want a GLSL effect, write it as a WebGL2 SDK effect.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -250,6 +250,6 @@ Driver modules are organized by silicon or OEM family, not by brand. Rebranded S
 4. Open a PR with a description that explains what changed and why. Link any relevant spec.
 5. Respond to review feedback. Do not squash until a maintainer asks.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The device compatibility matrix (`docs/content/hardware/compatibility.md`) is generated output. Regenerate it with `just compat` after editing `data/drivers/vendors/*.toml`. Never hand-edit the rows between the BEGIN/END markers.
-{% end %}
+{% </callout> %}

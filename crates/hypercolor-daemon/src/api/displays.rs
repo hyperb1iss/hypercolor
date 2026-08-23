@@ -1,5 +1,6 @@
 //! Display-face and preview endpoints — `/api/v1/displays/*`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,34 +9,24 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use hypercolor_types::api::displays::{
+    DeleteDisplayFaceResponse, DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery,
+    DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
+};
+use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
-use hypercolor_types::effect::{EffectCategory, EffectSource};
-use hypercolor_types::event::ZoneChangeKind;
-use hypercolor_types::layer::{SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{DisplayFaceBlendMode, DisplayFaceTarget, Zone};
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-use tracing::warn;
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::{DisplayFaceTarget, Zone};
 
-use crate::api::AppState;
 use crate::api::devices;
-use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::ApiResponse;
-use crate::api::publish_render_group_changed;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
-use crate::domain::{DomainError, ResourceKind};
-
-pub use hypercolor_types::api::displays::{
-    DisplayFaceResponse, DisplayFaceScope, DisplayFaceScopeQuery, DisplaySummary,
-    SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+use crate::domain::display::{
+    SetDefaultDisplayFace, display_face_layout, display_surface_info, normalize_display_face_target,
 };
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DisplaySurfaceInfo {
-    pub width: u32,
-    pub height: u32,
-    pub circular: bool,
-}
+use crate::domain::{DomainError, ResourceKind};
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
 
@@ -59,7 +50,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
         let Some(surface) = display_surface_info(&tracked.info) else {
             continue;
         };
-        let target_fps = crate::display_output::capped_group_direct_display_target_fps(
+        let target_fps = crate::display_output::capped_zone_direct_display_target_fps(
             tracked.info.capabilities.max_fps,
             face_fps_cap,
         );
@@ -79,7 +70,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
     }
 
     displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-    ApiResponse::ok(displays)
+    envelope::ok(displays)
 }
 
 /// `GET /api/v1/displays/{id}/frame` — latest composited frame for a display.
@@ -98,7 +89,7 @@ pub async fn get_display_frame(
         Err(error) => return error.into_response(),
     };
 
-    let Some(frame) = state.display_frames.read().await.frame(device_id) else {
+    let Some(frame) = state.domains.display.frames().read().await.frame(device_id) else {
         return DomainError::not_found(ResourceKind::DisplayFrame, device_id).into_response();
     };
 
@@ -137,21 +128,21 @@ pub async fn get_display_face(
         Err(error) => return error.into_response(),
     };
 
-    let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
-    if scene_assigned {
+    let layers = state.domains.display.face_layers(device_id).await;
+    if layers.scene_assigned {
         return match current_display_face_assignment(&state, device_id).await {
-            Ok(response) => ApiResponse::ok(Some(response)),
+            Ok(response) => envelope::ok(Some(response)),
             Err(error) => error.into_response(),
         };
     }
-    if default_assigned {
+    if layers.default_assigned {
         return match current_default_face_assignment(&state, device_id).await {
-            Ok(response) => ApiResponse::ok(Some(response)),
+            Ok(response) => envelope::ok(Some(response)),
             Err(error) => error.into_response(),
         };
     }
 
-    ApiResponse::ok(None::<DisplayFaceResponse>)
+    envelope::ok(None::<DisplayFaceResponse>)
 }
 
 /// `PUT /api/v1/displays/{id}/face` — assign or update a face in the active scene.
@@ -175,106 +166,59 @@ pub async fn set_display_face(
         .into_response();
     };
 
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect_id) else {
-            return DomainError::not_found(ResourceKind::Effect, &body.effect_id).into_response();
-        };
-        if effect.category != EffectCategory::Display {
-            return DomainError::validation(format!(
-                "Effect '{}' is not a display face",
-                effect.name
-            ))
-            .into_response();
-        }
-        if !effect_source_is_html(&effect.source) {
-            return DomainError::validation(format!(
-                "Effect '{}' is not an HTML display face",
-                effect.name
-            ))
-            .into_response();
-        }
-        effect
+    let Some(effect) = state
+        .domains
+        .effects
+        .resolve_for_mutation(&body.effect_id)
+        .await
+    else {
+        return DomainError::not_found(ResourceKind::Effect, &body.effect_id).into_response();
     };
 
     let composition_explicit = body.blend_mode.is_some() || body.opacity.is_some();
-    let mut display_target = if composition_explicit {
-        DisplayFaceTarget {
-            blend_mode: body.blend_mode.unwrap_or(DisplayFaceBlendMode::Alpha),
-            device_id,
-            opacity: body.opacity.unwrap_or(1.0),
-        }
-    } else {
-        // No explicit composition: default to a blended overlay so the face
-        // layers over the live effect instead of replacing it.
-        DisplayFaceTarget {
-            blend_mode: DisplayFaceBlendMode::Alpha,
-            device_id,
-            opacity: 1.0,
-        }
-    }
-    .normalized();
-    if !display_target.clone().blends_with_effect() {
-        display_target.opacity = 1.0;
-    }
+    // Without an explicit composition the face blends over the live effect
+    // instead of replacing it.
+    let display_target = normalize_display_face_target(DisplayFaceTarget {
+        blend_mode: body.blend_mode.unwrap_or(BlendMode::Alpha),
+        device_id,
+        opacity: body.opacity.unwrap_or(1.0),
+    });
 
     if body.scope == DisplayFaceScope::Default {
-        let preference = crate::display_preferences::DisplayPreference {
-            blend_mode: display_target.blend_mode,
-            controls: body.controls,
-            effect_id: effect.id,
-            opacity: display_target.opacity,
-        };
+        let written = match state
+            .domains
+            .display
+            .set_default_face(SetDefaultDisplayFace {
+                device_id,
+                effect,
+                controls: body.controls,
+                target: display_target,
+            })
+            .await
         {
-            let mut store = state.display_preferences.write().await;
-            if let Err(error) = store.set(device_id, preference) {
-                return DomainError::Internal(anyhow::anyhow!(
-                    "Failed to prepare display preference persistence: {error}"
-                ))
-                .into_response();
-            }
-        }
-        let Some(zone) = apply_display_preference_overlay(state.as_ref(), device_id).await else {
-            return DomainError::Internal(anyhow::anyhow!(
-                "Failed to install the default face overlay"
-            ))
-            .into_response();
+            Ok(written) => written,
+            Err(error) => return error.into_response(),
         };
 
-        let (scene_assigned, _) = display_face_layer_state(&state, device_id).await;
-        let scene_id = {
-            let scene_manager = state.scene_manager.read().await;
-            scene_manager
-                .active_scene()
-                .map(|scene| scene.id)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT)
-        };
-        if !scene_assigned {
-            publish_render_group_changed(state.as_ref(), scene_id, &zone, ZoneChangeKind::Updated);
-        }
-
-        return ApiResponse::ok(DisplayFaceResponse {
+        return envelope::ok(DisplayFaceResponse {
             default_assigned: true,
             device_id: device_id.to_string(),
-            effect,
-            zone,
-            live_scope: if scene_assigned {
+            effect: written.effect,
+            zone: written.zone,
+            live_scope: if written.scene_assigned {
                 DisplayFaceScope::Scene
             } else {
                 DisplayFaceScope::Default
             },
-            scene_assigned,
-            scene_id: scene_id.to_string(),
+            scene_assigned: written.scene_assigned,
+            scene_id: written.scene_id.to_string(),
         });
     }
 
-    let default_assigned = {
-        let store = state.display_preferences.read().await;
-        store.get(device_id).is_some()
-    };
+    let default_assigned = state.domains.display.has_default_face(device_id).await;
 
     let written = match crate::domain::display::set_display_face(
-        state.as_ref(),
+        &state.domains.effects,
         crate::domain::display::SetDisplayFace {
             device_id,
             device_name: tracked.info.name.clone(),
@@ -283,7 +227,6 @@ pub async fn set_display_face(
             layout: display_face_layout(device_id, tracked.info.name.as_str(), surface),
             target: display_target,
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {
@@ -291,10 +234,10 @@ pub async fn set_display_face(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(DisplayFaceResponse {
+    envelope::ok(DisplayFaceResponse {
         default_assigned,
         device_id: device_id.to_string(),
-        effect,
+        effect: effect.into_metadata(),
         zone: if composition_explicit {
             written.zone
         } else {
@@ -323,68 +266,34 @@ pub async fn patch_display_face_composition(
             .into_response();
     }
 
-    let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
-    if !scene_assigned && default_assigned {
+    let layers = state.domains.display.face_layers(device_id).await;
+    if !layers.scene_assigned && layers.default_assigned {
+        if let Err(error) = state
+            .domains
+            .display
+            .patch_default_composition(device_id, body.blend_mode, body.opacity)
+            .await
         {
-            let mut store = state.display_preferences.write().await;
-            let Some(preference) = store.get(device_id).cloned() else {
-                return DomainError::not_found(
-                    ResourceKind::Zone,
-                    format!("default-face:{device_id}"),
-                )
-                .into_response();
-            };
-            let mut updated = preference;
-            let mut target = DisplayFaceTarget {
-                blend_mode: body.blend_mode.unwrap_or(updated.blend_mode),
-                device_id,
-                opacity: body.opacity.unwrap_or(updated.opacity),
-            }
-            .normalized();
-            if !target.clone().blends_with_effect() {
-                target.opacity = 1.0;
-            }
-            updated.blend_mode = target.blend_mode;
-            updated.opacity = target.opacity;
-            if let Err(error) = store.set(device_id, updated) {
-                return DomainError::Internal(anyhow::anyhow!(
-                    "Failed to prepare display preference persistence: {error}"
-                ))
-                .into_response();
-            }
+            return error.into_response();
         }
         return match current_default_face_assignment(state.as_ref(), device_id).await {
-            Ok(response) => {
-                let scene_id = response
-                    .scene_id
-                    .parse::<uuid::Uuid>()
-                    .map(hypercolor_types::scene::SceneId)
-                    .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-                publish_render_group_changed(
-                    state.as_ref(),
-                    scene_id,
-                    &response.zone,
-                    ZoneChangeKind::Updated,
-                );
-                ApiResponse::ok(response)
-            }
+            Ok(response) => envelope::ok(response),
             Err(error) => error.into_response(),
         };
     }
 
-    let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
+    let (zone, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
         Ok(response) => (response.zone, response.effect),
         Err(error) => return error.into_response(),
     };
 
     let written = match crate::domain::display::patch_display_composition(
-        state.as_ref(),
+        &state.domains.scene,
         crate::domain::display::PatchDisplayComposition {
-            zone_id: group.id,
+            zone_id: zone.id,
             blend_mode: body.blend_mode,
             opacity: body.opacity,
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {
@@ -396,11 +305,8 @@ pub async fn patch_display_face_composition(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(DisplayFaceResponse {
-        default_assigned: {
-            let store = state.display_preferences.read().await;
-            store.get(device_id).is_some()
-        },
+    envelope::ok(DisplayFaceResponse {
+        default_assigned: state.domains.display.has_default_face(device_id).await,
         device_id: device_id.to_string(),
         effect,
         zone: written.zone,
@@ -427,57 +333,17 @@ pub async fn delete_display_face(
     };
 
     if query.scope == DisplayFaceScope::Default {
-        let removed = {
-            let mut store = state.display_preferences.write().await;
-            match store.remove(device_id) {
-                Ok(removed) => removed.is_some(),
-                Err(error) => {
-                    return DomainError::Internal(anyhow::anyhow!(
-                        "Failed to prepare display preference persistence: {error}"
-                    ))
-                    .into_response();
-                }
-            }
-        };
-        let scene_assigned = {
-            let scene_manager = state.scene_manager.read().await;
-            scene_manager
-                .active_scene()
-                .and_then(|scene| scene.display_group_for(device_id))
-                .is_some_and(display_zone_has_face_assignment)
-        };
-        match crate::domain::display::remove_default_display_overlay(state.as_ref(), device_id)
-            .await
-        {
-            Ok(cleared) => {
-                if removed
-                    && !scene_assigned
-                    && let Some(mut zone) = cleared
-                {
-                    zone.effect_id = None;
-                    zone.layers.clear();
-                    let scene_id = {
-                        let scene_manager = state.scene_manager.read().await;
-                        scene_manager
-                            .active_scene()
-                            .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
-                    };
-                    publish_render_group_changed(
-                        state.as_ref(),
-                        scene_id,
-                        &zone,
-                        ZoneChangeKind::Updated,
-                    );
-                }
-            }
+        let cleared = match state.domains.display.clear_default_face(device_id).await {
+            Ok(cleared) => cleared,
             Err(error) => return error.into_response(),
-        }
+        };
 
-        return ApiResponse::ok(serde_json::json!({
-            "device_id": device_id.to_string(),
-            "scope": DisplayFaceScope::Default,
-            "deleted": removed,
-        }));
+        return envelope::ok(DeleteDisplayFaceResponse {
+            device_id: device_id.to_string(),
+            scene_id: None,
+            scope: DisplayFaceScope::Default,
+            deleted: cleared.removed,
+        });
     }
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return DomainError::not_found(ResourceKind::Device, &device).into_response();
@@ -491,13 +357,12 @@ pub async fn delete_display_face(
     };
 
     let cleared = match crate::domain::display::clear_display_face(
-        state.as_ref(),
+        &state.domains.scene,
         crate::domain::display::ClearDisplayFace {
             device_id,
             device_name: tracked.info.name.clone(),
             layout: display_face_layout(device_id, tracked.info.name.as_str(), surface),
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {
@@ -505,12 +370,12 @@ pub async fn delete_display_face(
         Err(error) => return error.into_response(),
     };
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": device_id.to_string(),
-        "scene_id": cleared.scene_id.to_string(),
-        "scope": DisplayFaceScope::Scene,
-        "deleted": true,
-    }))
+    envelope::ok(DeleteDisplayFaceResponse {
+        device_id: device_id.to_string(),
+        scene_id: Some(cleared.scene_id.to_string()),
+        scope: DisplayFaceScope::Scene,
+        deleted: true,
+    })
 }
 
 /// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides
@@ -518,101 +383,61 @@ pub async fn delete_display_face(
 ///
 /// Returns the full `DisplayFaceResponse` so callers can reconcile their
 /// optimistic local state with the authoritative values the daemon
-/// persisted (defaults are resolved server-side, colors are normalized,
-/// etc.). Individual raw JSON values are converted via the shared
-/// `json_to_control_value` helper — unsupported shapes are reported in
-/// the `rejected` array instead of silently dropped.
+/// persisted (defaults are resolved server-side and colors are normalized).
 pub async fn patch_display_face_controls(
     State(state): State<Arc<AppState>>,
     Path(device): Path<String>,
-    Json(body): Json<UpdateDisplayFaceControlsRequest>,
+    Json(body): Json<PatchControlsRequest>,
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
 
-    let controls_object = body
-        .controls
-        .as_ref()
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-
-    if controls_object.is_empty() {
+    if !body.clear_bindings.is_empty() {
         return DomainError::validation_field(
-            "controls",
-            "controls payload must include at least one key",
+            "clear_bindings",
+            "display faces do not support input bindings",
+        )
+        .into_response();
+    }
+    if body.values.is_empty() {
+        return DomainError::validation_field(
+            "values",
+            "values payload must include at least one key",
         )
         .into_response();
     }
 
-    let (scene_assigned, default_assigned) = display_face_layer_state(&state, device_id).await;
-    if !scene_assigned && default_assigned {
-        let effect = match current_default_face_assignment(state.as_ref(), device_id).await {
-            Ok(response) => response.effect,
-            Err(error) => return error.into_response(),
-        };
-        let (normalized_controls, rejected) =
-            crate::api::effects::normalize_control_payload(&effect, &controls_object);
-        if !rejected.is_empty() {
-            warn!(
-                face = %effect.name,
-                rejected_controls = ?rejected,
-                "Rejected one or more default face control updates"
-            );
-        }
+    let requested_controls = body.values.into_iter().collect::<HashMap<_, _>>();
+
+    let layers = state.domains.display.face_layers(device_id).await;
+    if !layers.scene_assigned && layers.default_assigned {
+        if let Err(error) = state
+            .domains
+            .display
+            .merge_default_controls(device_id, &requested_controls)
+            .await
         {
-            let mut store = state.display_preferences.write().await;
-            let Some(preference) = store.get(device_id).cloned() else {
-                return DomainError::not_found(
-                    ResourceKind::Zone,
-                    format!("default-face:{device_id}"),
-                )
-                .into_response();
-            };
-            let mut updated = preference;
-            updated.controls.extend(normalized_controls);
-            if let Err(error) = store.set(device_id, updated) {
-                return DomainError::Internal(anyhow::anyhow!(
-                    "Failed to prepare display preference persistence: {error}"
-                ))
-                .into_response();
-            }
+            return error.into_response();
         }
         return match current_default_face_assignment(state.as_ref(), device_id).await {
-            Ok(response) => {
-                let scene_id = response
-                    .scene_id
-                    .parse::<uuid::Uuid>()
-                    .map(hypercolor_types::scene::SceneId)
-                    .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-                publish_render_group_changed(
-                    state.as_ref(),
-                    scene_id,
-                    &response.zone,
-                    ZoneChangeKind::ControlsPatched,
-                );
-                ApiResponse::ok(response)
-            }
+            Ok(response) => envelope::ok(response),
             Err(error) => error.into_response(),
         };
     }
 
-    let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
-        Ok(response) => (response.zone, response.effect),
+    let zone = match current_display_face_assignment(state.as_ref(), device_id).await {
+        Ok(response) => response.zone,
         Err(error) => return error.into_response(),
     };
-    let (normalized_controls, rejected) =
-        crate::api::effects::normalize_control_payload(&effect, &controls_object);
 
     let written = match crate::domain::display::patch_display_face_controls(
-        state.as_ref(),
+        &state.domains.effects,
         crate::domain::display::PatchDisplayFaceControls {
-            zone_id: group.id,
-            controls: normalized_controls,
+            zone_id: zone.id,
+            controls: requested_controls,
         },
-        crate::domain::MutationContext::api(),
     )
     .await
     {
@@ -624,25 +449,14 @@ pub async fn patch_display_face_controls(
         Err(error) => return error.into_response(),
     };
 
-    if !rejected.is_empty() {
-        warn!(
-            face = %effect.name,
-            rejected_controls = ?rejected,
-            "Rejected one or more display face control updates"
-        );
-    }
-
-    ApiResponse::ok(DisplayFaceResponse {
-        default_assigned: {
-            let store = state.display_preferences.read().await;
-            store.get(device_id).is_some()
-        },
+    envelope::ok(DisplayFaceResponse {
+        default_assigned: state.domains.display.has_default_face(device_id).await,
         device_id: device_id.to_string(),
-        effect,
-        zone: written.zone,
+        effect: written.effect,
+        zone: written.written.zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
-        scene_id: written.scene_id.to_string(),
+        scene_id: written.written.scene_id.to_string(),
     })
 }
 
@@ -743,178 +557,41 @@ async fn current_display_face_assignment(
     state: &AppState,
     device_id: DeviceId,
 ) -> Result<DisplayFaceResponse, DomainError> {
-    let (scene_id, group) = {
-        let scene_manager = state.scene_manager.read().await;
+    let (scene_id, zone) = {
+        let scene_manager = state.scene_manager.snapshot().await;
         let Some(active_scene) = scene_manager.active_scene() else {
             return Err(DomainError::not_found(ResourceKind::Scene, "active"));
         };
-        let Some(group) = active_scene.display_group_for(device_id).cloned() else {
+        let Some(zone) = active_scene.display_zone_for(device_id).cloned() else {
             return Err(DomainError::not_found(
                 ResourceKind::Zone,
                 format!("display-face:{device_id}"),
             ));
         };
-        (active_scene.id, group)
+        (active_scene.id, zone)
     };
 
-    let Some(effect_id) = group.effect_id else {
+    let Some(effect_id) = zone.effect_ids().next() else {
         return Err(DomainError::not_found(
             ResourceKind::Effect,
-            format!("zone:{}", group.id),
+            format!("zone:{}", zone.id),
         ));
     };
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(entry) = registry.get(&effect_id) else {
-            return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
-        };
-        entry.metadata.clone()
+    let Some(effect) = state.domains.effects.metadata(effect_id).await else {
+        return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
     };
 
-    let default_assigned = {
-        let store = state.display_preferences.read().await;
-        store.get(device_id).is_some()
-    };
+    let default_assigned = state.domains.display.has_default_face(device_id).await;
 
     Ok(DisplayFaceResponse {
         default_assigned,
         device_id: device_id.to_string(),
         effect,
-        zone: group,
+        zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: scene_id.to_string(),
     })
-}
-
-/// Build the runtime-only default zone a preference materializes into.
-fn build_default_display_zone(
-    device_id: DeviceId,
-    device_name: &str,
-    effect_id: hypercolor_types::effect::EffectId,
-    preference: &crate::display_preferences::DisplayPreference,
-    layout: SpatialLayout,
-) -> Zone {
-    Zone {
-        id: hypercolor_types::scene::ZoneId::new(),
-        name: format!("{device_name} Face"),
-        description: Some(format!("Default face for {device_name}")),
-        effect_id: Some(effect_id),
-        controls: preference.controls.clone(),
-        control_bindings: std::collections::HashMap::new(),
-        preset_id: None,
-        layers: vec![SceneLayer::from_effect(
-            SceneLayerId::new(),
-            effect_id,
-            preference.controls.clone(),
-            std::collections::HashMap::new(),
-            None,
-        )],
-        layout,
-        brightness: 1.0,
-        enabled: true,
-        color: None,
-        display_target: Some(
-            DisplayFaceTarget {
-                blend_mode: preference.blend_mode,
-                device_id,
-                opacity: preference.opacity,
-            }
-            .normalized(),
-        ),
-        role: hypercolor_types::scene::ZoneRole::Display,
-        controls_version: 0,
-        layers_version: 0,
-    }
-}
-
-/// Install (or refresh) the runtime default zone for one display from its
-/// stored preference. Removes the overlay when the preference is gone or
-/// its effect no longer resolves. Returns the installed zone, if any.
-pub(crate) async fn apply_display_preference_overlay(
-    state: &AppState,
-    device_id: DeviceId,
-) -> Option<Zone> {
-    let preference = {
-        let store = state.display_preferences.read().await;
-        store.get(device_id).cloned()
-    };
-    let Some(preference) = preference else {
-        return retract_default_display_overlay(state, device_id).await;
-    };
-
-    let tracked = state.device_registry.get(&device_id).await?;
-    let surface = display_surface_info(&tracked.info)?;
-    let effect_resolves = {
-        let registry = state.effect_registry.read().await;
-        registry.get(&preference.effect_id).is_some()
-    };
-    if !effect_resolves {
-        warn!(
-            %device_id,
-            effect_id = %preference.effect_id,
-            "Default display face effect is not installed; skipping overlay"
-        );
-        return retract_default_display_overlay(state, device_id).await;
-    }
-
-    let zone = build_default_display_zone(
-        device_id,
-        tracked.info.name.as_str(),
-        preference.effect_id,
-        &preference,
-        display_face_layout(device_id, tracked.info.name.as_str(), surface),
-    );
-    match crate::domain::display::set_default_display_overlay(state, device_id, zone).await {
-        Ok(installed) => installed,
-        Err(error) => {
-            warn!(%error, %device_id, "Failed to install the default face overlay");
-            None
-        }
-    }
-}
-
-/// Drop a display's runtime default overlay, reporting `None` either way
-/// so the caller reads it as "no overlay is installed".
-async fn retract_default_display_overlay(state: &AppState, device_id: DeviceId) -> Option<Zone> {
-    if let Err(error) =
-        crate::domain::display::remove_default_display_overlay(state, device_id).await
-    {
-        warn!(%error, %device_id, "Failed to retract the default face overlay");
-    }
-    None
-}
-
-/// Reconcile every connected display's default-face overlay with the
-/// preference store. Runs alongside surface sync (scene activation and
-/// display listing) so defaults follow devices as they appear.
-pub(crate) async fn sync_display_preference_overlays(state: &Arc<AppState>) {
-    let device_ids = {
-        let store = state.display_preferences.read().await;
-        store
-            .iter()
-            .map(|(device_id, _)| device_id)
-            .collect::<Vec<_>>()
-    };
-    for device_id in device_ids {
-        apply_display_preference_overlay(state.as_ref(), device_id).await;
-    }
-}
-
-/// Resolve both assignment layers for a display.
-async fn display_face_layer_state(state: &AppState, device_id: DeviceId) -> (bool, bool) {
-    let scene_assigned = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager
-            .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
-            .is_some_and(display_zone_has_face_assignment)
-    };
-    let default_assigned = {
-        let store = state.display_preferences.read().await;
-        store.get(device_id).is_some()
-    };
-    (scene_assigned, default_assigned)
 }
 
 /// Current assignment for the *default* layer, materialized from the
@@ -923,26 +600,27 @@ async fn current_default_face_assignment(
     state: &AppState,
     device_id: DeviceId,
 ) -> Result<DisplayFaceResponse, DomainError> {
-    let Some(zone) = apply_display_preference_overlay(state, device_id).await else {
+    let Some(zone) = state
+        .domains
+        .display
+        .apply_preference_overlay(device_id)
+        .await
+    else {
         return Err(DomainError::not_found(
             ResourceKind::Zone,
             format!("default-face:{device_id}"),
         ));
     };
-    let Some(effect_id) = zone.effect_id else {
+    let Some(effect_id) = zone.effect_ids().next() else {
         return Err(DomainError::Internal(anyhow::anyhow!(
             "Default face zone has no effect"
         )));
     };
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(entry) = registry.get(&effect_id) else {
-            return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
-        };
-        entry.metadata.clone()
+    let Some(effect) = state.domains.effects.metadata(effect_id).await else {
+        return Err(DomainError::not_found(ResourceKind::Effect, effect_id));
     };
     let scene_id = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager.active_scene().map_or_else(
             || hypercolor_types::scene::SceneId::DEFAULT.to_string(),
             |scene| scene.id.to_string(),
@@ -960,92 +638,14 @@ async fn current_default_face_assignment(
     })
 }
 
-fn compact_display_face_assignment_zone(mut group: Zone) -> Zone {
-    if let Some(target) = group.display_target.as_mut()
-        && target.blend_mode == DisplayFaceBlendMode::Replace
+fn compact_display_face_assignment_zone(mut zone: Zone) -> Zone {
+    if let Some(target) = zone.display_target.as_mut()
+        && target.blend_mode == BlendMode::Replace
         && (target.opacity - 1.0).abs() <= f32::EPSILON
     {
-        target.blend_mode = DisplayFaceBlendMode::Alpha;
+        target.blend_mode = BlendMode::Alpha;
     }
-    group
-}
-
-fn display_zone_has_face_assignment(group: &Zone) -> bool {
-    group.effect_id.is_some()
-}
-
-pub(crate) fn display_face_layout(
-    device_id: DeviceId,
-    device_name: &str,
-    surface: DisplaySurfaceInfo,
-) -> SpatialLayout {
-    SpatialLayout {
-        id: format!("display-face:{device_id}"),
-        name: format!("{device_name} Display Face"),
-        description: Some(format!("Native-resolution face canvas for {device_name}")),
-        canvas_width: surface.width,
-        canvas_height: surface.height,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    }
-}
-
-pub(crate) async fn connected_display_surface_layouts(
-    state: &AppState,
-) -> Vec<(DeviceId, String, SpatialLayout)> {
-    state
-        .device_registry
-        .list()
-        .await
-        .into_iter()
-        .filter(|tracked| tracked.state.is_renderable())
-        .filter_map(|tracked| {
-            let surface = display_surface_info(&tracked.info)?;
-            Some((
-                tracked.info.id,
-                tracked.info.name.clone(),
-                display_face_layout(tracked.info.id, tracked.info.name.as_str(), surface),
-            ))
-        })
-        .collect()
-}
-
-pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {
-    let displays = connected_display_surface_layouts(state).await;
-    if let Err(error) =
-        crate::domain::display::hydrate_existing_display_surfaces(state, displays).await
-    {
-        warn!(%error, "Failed to hydrate connected display surfaces");
-    }
-}
-
-pub(crate) fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
-    for segment in &info.segments {
-        if let DeviceTopologyHint::Display {
-            width,
-            height,
-            circular,
-        } = &segment.topology
-        {
-            return Some(DisplaySurfaceInfo {
-                width: *width,
-                height: *height,
-                circular: *circular,
-            });
-        }
-    }
-
-    info.capabilities
-        .display_resolution
-        .filter(|_| info.capabilities.has_display)
-        .map(|(width, height)| DisplaySurfaceInfo {
-            width,
-            height,
-            circular: false,
-        })
+    zone
 }
 
 /// Build the API-facing descriptor for a display device — the same shared
@@ -1077,8 +677,4 @@ pub(crate) fn display_descriptor_for_device(
         target_fps,
         pixel_format,
     ))
-}
-
-fn effect_source_is_html(source: &EffectSource) -> bool {
-    matches!(source, EffectSource::Html { .. })
 }

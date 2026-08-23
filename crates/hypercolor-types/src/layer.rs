@@ -9,15 +9,16 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::asset::AssetId;
-use crate::canvas::BlendMode;
-use crate::effect::{ControlBinding, ControlValue, EffectId};
+use crate::control::ControlValue;
+use crate::effect::{ControlBinding, EffectId};
 use crate::library::PresetId;
-use crate::scene::DisplayFaceBlendMode;
 use crate::spatial::NormalizedPosition;
 use crate::viewport::{FitMode, ViewportRect};
+use hypercolor_color::PixelBlendMode;
 
 /// Stable identifier for a layer within a zone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SceneLayerId(pub Uuid);
 
 impl SceneLayerId {
@@ -68,6 +69,7 @@ impl FromStr for SceneLayerId {
 
 /// Authored layer inside a zone's bottom-to-top stack.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct SceneLayer {
     /// Stable identifier for this layer.
     pub id: SceneLayerId,
@@ -81,13 +83,13 @@ pub struct SceneLayer {
 
     /// How this layer composes with the layer beneath it.
     #[serde(default)]
-    pub blend: LayerBlendMode,
+    pub blend: BlendMode,
 
     /// Layer opacity.
     #[serde(default = "default_layer_opacity")]
     pub opacity: f32,
 
-    /// Geometric placement of the source within the group's canvas.
+    /// Geometric placement of the source within the zone's canvas.
     #[serde(default)]
     pub transform: LayerTransform,
 
@@ -105,7 +107,7 @@ pub struct SceneLayer {
 }
 
 impl SceneLayer {
-    /// Create the legacy single-effect layer for a zone.
+    /// Create an effect-backed layer for a zone.
     #[must_use]
     pub fn from_effect(
         id: SceneLayerId,
@@ -123,7 +125,7 @@ impl SceneLayer {
                 control_bindings,
                 preset_id,
             },
-            blend: LayerBlendMode::Replace,
+            blend: BlendMode::Replace,
             opacity: default_layer_opacity(),
             transform: LayerTransform::default(),
             adjust: LayerAdjust::default(),
@@ -163,6 +165,7 @@ impl SceneLayer {
 
 /// Source that feeds one authored layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayerSource {
     /// A Hypercolor effect from the registry.
@@ -221,10 +224,11 @@ impl LayerSource {
     }
 }
 
-/// Layer blend mode used by authored stacks.
+/// Blend mode used by authored layers and display faces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum LayerBlendMode {
+pub enum BlendMode {
     Replace,
     #[default]
     Alpha,
@@ -239,44 +243,33 @@ pub enum LayerBlendMode {
     LumaReveal,
 }
 
-impl LayerBlendMode {
-    /// Return the equivalent canvas blend mode when one exists.
+impl BlendMode {
+    /// Return whether this mode composites over the scene beneath it.
     #[must_use]
-    pub const fn standard_canvas_blend_mode(self) -> Option<BlendMode> {
+    pub const fn blends_with_base(self) -> bool {
+        !matches!(self, Self::Replace)
+    }
+
+    /// Return the equivalent pixel-kernel mode when one exists.
+    #[must_use]
+    pub const fn pixel_mode(self) -> Option<PixelBlendMode> {
         match self {
             Self::Replace | Self::Tint | Self::LumaReveal => None,
-            Self::Alpha => Some(BlendMode::Normal),
-            Self::Add => Some(BlendMode::Add),
-            Self::Screen => Some(BlendMode::Screen),
-            Self::Multiply => Some(BlendMode::Multiply),
-            Self::Overlay => Some(BlendMode::Overlay),
-            Self::SoftLight => Some(BlendMode::SoftLight),
-            Self::ColorDodge => Some(BlendMode::ColorDodge),
-            Self::Difference => Some(BlendMode::Difference),
-        }
-    }
-}
-
-impl From<DisplayFaceBlendMode> for LayerBlendMode {
-    fn from(value: DisplayFaceBlendMode) -> Self {
-        match value {
-            DisplayFaceBlendMode::Replace => Self::Replace,
-            DisplayFaceBlendMode::Alpha => Self::Alpha,
-            DisplayFaceBlendMode::Tint => Self::Tint,
-            DisplayFaceBlendMode::LumaReveal => Self::LumaReveal,
-            DisplayFaceBlendMode::Add => Self::Add,
-            DisplayFaceBlendMode::Screen => Self::Screen,
-            DisplayFaceBlendMode::Multiply => Self::Multiply,
-            DisplayFaceBlendMode::Overlay => Self::Overlay,
-            DisplayFaceBlendMode::SoftLight => Self::SoftLight,
-            DisplayFaceBlendMode::ColorDodge => Self::ColorDodge,
-            DisplayFaceBlendMode::Difference => Self::Difference,
+            Self::Alpha => Some(PixelBlendMode::Normal),
+            Self::Add => Some(PixelBlendMode::Add),
+            Self::Screen => Some(PixelBlendMode::Screen),
+            Self::Multiply => Some(PixelBlendMode::Multiply),
+            Self::Overlay => Some(PixelBlendMode::Overlay),
+            Self::SoftLight => Some(PixelBlendMode::SoftLight),
+            Self::ColorDodge => Some(PixelBlendMode::ColorDodge),
+            Self::Difference => Some(PixelBlendMode::Difference),
         }
     }
 }
 
 /// Media playback settings for media-backed layers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MediaPlayback {
     #[serde(default = "default_playback_speed")]
     pub speed: f32,
@@ -315,6 +308,7 @@ impl MediaPlayback {
 
 /// End-of-stream policy for media playback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LoopMode {
     None,
@@ -325,6 +319,7 @@ pub enum LoopMode {
 
 /// Web viewport render policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum WebViewportRender {
     #[default]
@@ -334,6 +329,7 @@ pub enum WebViewportRender {
 
 /// Geometric placement for a layer source.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LayerTransform {
     pub anchor: NormalizedPosition,
     pub scale: [f32; 2],
@@ -387,6 +383,7 @@ impl Default for LayerTransform {
 
 /// Per-layer color adjustment settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LayerAdjust {
     pub brightness: f32,
     pub saturation: f32,
@@ -453,6 +450,7 @@ impl Default for LayerAdjust {
 
 /// Live mapping from runtime data to a scalar layer parameter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct LayerBinding {
     pub target: LayerParameter,
     pub source: BindingSource,
@@ -468,6 +466,7 @@ impl LayerBinding {
 
 /// Bindable scalar layer parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum LayerParameter {
     Opacity,
@@ -484,6 +483,7 @@ pub enum LayerParameter {
 
 /// Runtime source that drives a layer binding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BindingSource {
     AudioBand { band: AudioBand },
@@ -506,6 +506,7 @@ impl BindingSource {
 
 /// Coarse audio features exposed to layer bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AudioBand {
     Bass,
@@ -519,6 +520,7 @@ pub enum AudioBand {
 
 /// Time-domain waveform for layer bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum TimeWave {
     #[default]
@@ -530,6 +532,7 @@ pub enum TimeWave {
 
 /// Linear mapping from source values into target parameter values.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct BindingMap {
     pub source_min: f32,
     pub source_max: f32,

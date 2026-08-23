@@ -6,7 +6,7 @@ weight = 30
 
 A scene is your whole rig captured as one configuration: every zone, every layer, every layout, every effect and control. Exactly one scene is active at a time, and switching scenes rewrites the entire rig in one move. The Studio scene selector lives in the page header toolbar and is the headline control of the workspace.
 
-{{ img(path="img/ui/studio.webp", alt="The Studio workspace with the scene selector in the header") }}
+{{< img path="img/ui/studio.webp" alt="The Studio workspace with the scene selector in the header" />}}
 
 If you want the full mental model first, read the [Studio overview](@/studio/overview.md). This page covers the scene itself: the full create / rename / delete / switch cycle, the ephemeral default scene you start out in, and how the active scene connects to where effects land.
 
@@ -20,9 +20,9 @@ A scene is the top-level object. It owns everything below it:
 
 Switching scenes is therefore a whole-rig change, not a per-light tweak. Because the active scene is shared across the entire app, a switch made in Studio, from the dashboard, from another browser tab, or from the CLI lands everywhere at once.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Scenes are whole-rig configurations and zones are flexible partitions of the render canvas. They are not rooms, and Hypercolor uses no smart-home vocabulary. See [Vocabulary and naming](@/studio/vocabulary-and-naming.md) for the locked terms.
-{% end %}
+{% </callout> %}
 
 ## The scene selector
 
@@ -32,7 +32,7 @@ The selector sits at the left of the Studio header and has three parts:
 2. A **New** button for creating a scene.
 3. An **actions menu** (the three-dot overflow) to rename or delete the active scene.
 
-{{ img(path="img/ui/ui-scenes.webp", alt="The scene switcher in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-scenes.webp" alt="The scene switcher in the Hypercolor web UI" />}}
 
 The picker always names what is actually rendering, even on a brand-new install where no scene has been saved yet. That fresh state is the ephemeral default scene, described next.
 
@@ -44,9 +44,9 @@ You leave the default scene the moment you create your first scene. Creating a s
 
 To return to the default scene later, deactivate the active scene from the app-wide scene switcher in the sidebar or dashboard header. Deactivation rebuilds the ephemeral working state, and the picker only flips once the daemon confirms the switch.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Switching back to the default scene is itself a real switch. The scene switcher in the sidebar and dashboard appears whenever there is somewhere to switch to: two or more saved scenes, or one saved scene while the ephemeral default is the one running, so you can always move between your saved scene and the live default.
-{% end %}
+{% </callout> %}
 
 ## Create a scene
 
@@ -70,9 +70,9 @@ Open the actions menu and choose **Rename**, edit the name inline, and press Ent
 
 Rename acts on the **active** scene, so it is offered only when the active scene is a real, saved one. It is never offered for the ephemeral default.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Renaming uses the same whole-document replacement contract as every stored-scene edit. The UI first reads the complete scene, changes only its name, then sends the document back with its revision as `If-Match`. If another client changes the scene before the rename lands, the daemon rejects the stale write instead of overwriting it.
-{% end %}
+{% </callout> %}
 
 ## Delete a scene
 
@@ -94,7 +94,7 @@ A Screen or the synthetic Unassigned entry is never used as an apply-target. Sel
 
 ## Where scenes live in the bigger picture
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     S[Scene, one active, whole-rig] --> Z1[Zone]
     S --> Z2[Zone]
@@ -102,6 +102,6 @@ graph TD
     Z1 --> LO1[Layout]
     Z2 --> L2[Layers]
     Z2 --> LO2[Layout]
-{% end %}
+{% </mermaid> %}
 
 For the engine and concurrency story behind scene and zone mutations, see [Studio architecture](@/studio/architecture.md) and [Zone API and concurrency](@/studio/zone-api-and-concurrency.md). For the REST surface itself, see the [API reference](@/api/rest.md).

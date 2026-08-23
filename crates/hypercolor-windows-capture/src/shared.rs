@@ -23,14 +23,14 @@ pub enum CaptureResourceKind {
     CanonicalDesktop,
     /// Cursor texture shared by exact GPU publication lanes.
     PointerTexture,
-    /// Constant buffer retained by the compatibility reduction path.
-    CompatibilityReductionConstantBuffer,
-    /// Output and staging-ring textures retained by compatibility reduction.
-    CompatibilityReductionTextures,
-    /// CPU-readable full-desktop staging texture used by compatibility capture.
-    CompatibilityCpuStagingTexture,
-    /// Packed host frame plane returned by compatibility capture.
-    CompatibilityFramePlane,
+    /// Constant buffer retained by the analysis reduction path.
+    AnalysisReductionConstantBuffer,
+    /// Output and staging-ring textures retained by analysis reduction.
+    AnalysisReductionTextures,
+    /// CPU-readable full-desktop staging texture used by analysis capture.
+    AnalysisCpuStagingTexture,
+    /// Packed host frame plane returned by analysis capture.
+    RgbaFramePlane,
 }
 
 /// Immutable ownership of one admitted source allocation.
@@ -1745,21 +1745,21 @@ pub struct CursorInfo {
 type FramePool = Arc<Mutex<Vec<Vec<u8>>>>;
 
 #[derive(Debug)]
-pub(crate) struct LegacyFramePlane {
+pub(crate) struct RgbaFramePlane {
     pub(crate) rgba: Vec<u8>,
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub(crate) resource_lease: Arc<dyn CaptureResourceLease>,
 }
 
-pub(crate) type LegacyFramePool = Arc<Mutex<Vec<LegacyFramePlane>>>;
-const LEGACY_FRAME_POOL_WARM_LEN: usize = 3;
+pub(crate) type RgbaFramePool = Arc<Mutex<Vec<RgbaFramePlane>>>;
+const RGBA_FRAME_POOL_WARM_LEN: usize = 3;
 
-pub(crate) fn recycle_legacy_frame_plane(pool: &LegacyFramePool, mut plane: LegacyFramePlane) {
+pub(crate) fn recycle_rgba_frame_plane(pool: &RgbaFramePool, mut plane: RgbaFramePlane) {
     plane.rgba.clear();
     let mut pool = pool
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pool.len() < LEGACY_FRAME_POOL_WARM_LEN {
+    if pool.len() < RGBA_FRAME_POOL_WARM_LEN {
         pool.push(plane);
         return;
     }
@@ -1978,7 +1978,7 @@ pub struct Frame {
     /// Tightly packed RGBA8 pixels, `width * height * 4` bytes.
     rgba: Vec<u8>,
     resource_lease: Option<Arc<dyn CaptureResourceLease>>,
-    pool: LegacyFramePool,
+    pool: RgbaFramePool,
 }
 
 #[cfg(target_os = "windows")]
@@ -1999,7 +1999,7 @@ impl Frame {
         rotation: DisplayRotation,
         rgba: Vec<u8>,
         resource_lease: Arc<dyn CaptureResourceLease>,
-        pool: LegacyFramePool,
+        pool: RgbaFramePool,
     ) -> Self {
         Self {
             source_id,
@@ -2041,9 +2041,9 @@ impl Drop for Frame {
         let Some(resource_lease) = self.resource_lease.take() else {
             return;
         };
-        recycle_legacy_frame_plane(
+        recycle_rgba_frame_plane(
             &self.pool,
-            LegacyFramePlane {
+            RgbaFramePlane {
                 rgba,
                 resource_lease,
             },
@@ -2066,10 +2066,10 @@ pub fn monitor_count() -> usize {
 
 /// One attached display output, in capture index order.
 ///
-/// New callers persist `id`; `index` remains for ordering and legacy configs.
+/// Callers persist `id`; `index` remains for ordering and low-level selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorInfo {
-    /// Legacy zero-based enumeration index for display ordering.
+    /// Zero-based enumeration index for display ordering.
     pub index: usize,
     /// Stable source id used for persisted selection and capture epochs.
     pub id: String,
@@ -2098,7 +2098,7 @@ pub enum MonitorSelector {
     Auto,
     /// Follow one output across enumeration reorder by its stable id.
     StableId(String),
-    /// Legacy adapter/output enumeration index.
+    /// Adapter/output enumeration index for low-level callers.
     Index(usize),
 }
 
@@ -2112,32 +2112,16 @@ impl MonitorSelector {
         }
 
         if let Some(value) = source.strip_prefix("monitor:") {
-            let value = value.trim();
-            return value
-                .parse::<usize>()
-                .map_or_else(|_| Self::StableId(value.to_owned()), Self::Index);
+            return Self::StableId(value.trim().to_owned());
         }
-        if let Some(value) = source.strip_prefix("display:")
-            && let Ok(index) = value.trim().parse::<usize>()
-        {
-            return Self::Index(index);
-        }
-        source
-            .parse::<usize>()
-            .map_or_else(|_| Self::StableId(source.to_owned()), Self::Index)
-    }
-
-    /// Convert a resolved legacy index into its stable persisted form.
-    #[must_use]
-    pub fn canonical_source(&self, resolved_source_id: &str) -> Option<String> {
-        matches!(self, Self::Index(_)).then(|| format!("monitor:{resolved_source_id}"))
+        Self::StableId(source.to_owned())
     }
 
     /// Resolve this selection against one topology snapshot.
     ///
     /// # Errors
     ///
-    /// Returns [`CaptureError::MonitorNotFound`] for a legacy index outside
+    /// Returns [`CaptureError::MonitorNotFound`] for an index outside
     /// the snapshot, or [`CaptureError::SourceNotFound`] for an absent stable
     /// id. `Auto` resolves the primary output even when it is not index zero.
     pub fn resolve<'a>(&self, monitors: &'a [MonitorInfo]) -> CaptureResult<&'a MonitorInfo> {
@@ -2243,13 +2227,13 @@ mod tests {
         let resource_lease = commit_capture_resource(
             reserve_capture_resource(
                 default_capture_resource_admission().as_ref(),
-                CaptureResourceKind::CompatibilityFramePlane,
+                CaptureResourceKind::RgbaFramePlane,
                 4,
-                "reserve test compatibility frame",
+                "reserve test RGBA frame",
             )
             .expect("test reservation succeeds"),
             4,
-            "commit test compatibility frame",
+            "commit test RGBA frame",
         )
         .expect("test lease succeeds");
         let frame = Frame::new(
@@ -2280,13 +2264,13 @@ mod tests {
         let resource_lease = commit_capture_resource(
             reserve_capture_resource(
                 default_capture_resource_admission().as_ref(),
-                CaptureResourceKind::CompatibilityFramePlane,
+                CaptureResourceKind::RgbaFramePlane,
                 4,
-                "reserve test compatibility frame",
+                "reserve test RGBA frame",
             )
             .expect("test reservation succeeds"),
             4,
-            "commit test compatibility frame",
+            "commit test RGBA frame",
         )
         .expect("test lease succeeds");
         let mut frame = Frame::new(

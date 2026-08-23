@@ -16,8 +16,9 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{builtin_effect_id, color_control, preset_with_desc, slider_control};
@@ -209,49 +210,51 @@ impl EffectRenderer for AudioPulseRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "base_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.base_color = *c;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "base_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.base_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "peak_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.peak_color = *c;
+                "peak_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.peak_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "sensitivity" => {
-                if let Some(v) = value.as_f32() {
-                    self.sensitivity = v.max(0.01);
+                "sensitivity" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.sensitivity = value.max(0.01);
+                    }
                 }
-            }
-            "wave_speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.wave_speed = v.clamp(0.0, 8.0);
+                "wave_speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.wave_speed = value.clamp(0.0, 8.0);
+                    }
                 }
-            }
-            "wave_width" => {
-                if let Some(v) = value.as_f32() {
-                    self.wave_width = v.clamp(0.01, 1.0);
+                "wave_width" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.wave_width = value.clamp(0.01, 1.0);
+                    }
                 }
-            }
-            "beat_decay" => {
-                if let Some(v) = value.as_f32() {
-                    // Floor of 0.15 s: shorter envelopes make consecutive
-                    // beats read as strobing on LED hardware.
-                    self.beat_decay_secs = v.clamp(0.15, 3.0);
+                "beat_decay" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        // Floor of 0.15 s: shorter envelopes make consecutive
+                        // beats read as strobing on LED hardware.
+                        self.beat_decay_secs = value.clamp(0.15, 3.0);
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {
         self.waves.clear();
         self.beat_energy = 0.0;
@@ -333,8 +336,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Cyberpunk",
             "Hot pink rings on electric midnight",
             &[
-                ("base_color", ControlValue::Color([0.0, 0.02, 0.12, 1.0])),
-                ("peak_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.0, 0.02, 0.12, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([1.0, 0.1, 0.6, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(2.5)),
                 ("beat_decay", ControlValue::Float(0.35)),
                 ("wave_speed", ControlValue::Float(1.4)),
@@ -345,8 +354,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Fire Response",
             "Ember rings rolling across dark maroon",
             &[
-                ("base_color", ControlValue::Color([0.08, 0.02, 0.0, 1.0])),
-                ("peak_color", ControlValue::Color([1.0, 0.4, 0.0, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.08, 0.02, 0.0, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([1.0, 0.4, 0.0, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(3.0)),
                 ("beat_decay", ControlValue::Float(0.25)),
                 ("wave_speed", ControlValue::Float(1.8)),
@@ -357,8 +372,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Arctic Beat",
             "Cold cyan rings on deep indigo ice",
             &[
-                ("base_color", ControlValue::Color([0.01, 0.02, 0.1, 1.0])),
-                ("peak_color", ControlValue::Color([0.35, 0.9, 1.0, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.01, 0.02, 0.1, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([0.35, 0.9, 1.0, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(1.8)),
                 ("beat_decay", ControlValue::Float(0.5)),
                 ("wave_speed", ControlValue::Float(1.0)),
@@ -369,8 +390,14 @@ fn presets() -> Vec<PresetTemplate> {
             "Bass Thunder",
             "Slow, thick crimson rings for heavy drops",
             &[
-                ("base_color", ControlValue::Color([0.02, 0.0, 0.0, 1.0])),
-                ("peak_color", ControlValue::Color([0.95, 0.08, 0.12, 1.0])),
+                (
+                    "base_color",
+                    ControlValue::linear_color([0.02, 0.0, 0.0, 1.0]),
+                ),
+                (
+                    "peak_color",
+                    ControlValue::linear_color([0.95, 0.08, 0.12, 1.0]),
+                ),
                 ("sensitivity", ControlValue::Float(2.8)),
                 ("beat_decay", ControlValue::Float(0.7)),
                 ("wave_speed", ControlValue::Float(0.7)),

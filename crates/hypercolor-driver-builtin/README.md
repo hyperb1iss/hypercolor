@@ -11,20 +11,20 @@ of per-driver branching.
 
 ## Position in the Workspace
 
-- Depends on: `hypercolor-core`, `hypercolor-driver-api`, `hypercolor-network`,
-  `hypercolor-types`, `anyhow`; and optionally `hypercolor-driver-govee`,
-  `hypercolor-driver-hue`, `hypercolor-driver-nanoleaf`, `hypercolor-driver-wled`,
-  `hypercolor-hal`
+- Depends on: `hypercolor-core`, `hypercolor-driver-api`,
+  `hypercolor-driver-support`, `hypercolor-network`, `hypercolor-types`,
+  `anyhow`; and optionally `hypercolor-driver-govee`, `hypercolor-driver-hue`,
+  `hypercolor-driver-nanoleaf`, `hypercolor-driver-wled`, `hypercolor-hal`
 - Consumed by: `hypercolor-daemon`
 - Defines no driver logic itself; all logic lives in the individual driver crates
 
 ## Key Public Surface
 
-- `build_driver_module_registry(config, credential_store) -> Result<DriverModuleRegistry>` —
+- `build_driver_module_registry(config, credential_store) -> Result<DriverModuleRegistry>`:
   primary entry point; constructs and returns the populated registry
-- `register_driver_modules(registry, config, credential_store) -> Result<()>` —
+- `register_driver_modules(registry, config, credential_store) -> Result<()>`:
   registers into an existing registry instance
-- `normalize_driver_config_entries(config)` — ensures every compiled-in driver has
+- `normalize_driver_config_entries(config)`: ensures every compiled-in driver has
   a matching config entry in the daemon's configuration
 
 ## Cargo Features
@@ -40,5 +40,5 @@ of per-driver branching.
 
 ---
 
-Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB
+Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor), open-source RGB
 lighting orchestration for Linux. Licensed under Apache-2.0.

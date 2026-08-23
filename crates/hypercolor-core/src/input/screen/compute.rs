@@ -8,7 +8,7 @@ use super::{
     PixelExtent, ResolvedScreenSource, ScreenCapturePlan, ScreenPhysicalReductionDescriptor,
     ScreenPublicationExecutor, ScreenReductionFilter, ScreenSourceSelector, fit_within,
 };
-use crate::types::canvas::SurfaceResourceError;
+use hypercolor_types::canvas::SurfaceResourceError;
 
 const SOURCE_REDUCTION_WEIGHT: u64 = 5;
 const SECTOR_FINALIZATION_WEIGHT: u64 = 32;

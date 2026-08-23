@@ -99,11 +99,11 @@ struct DaemonArgs {
     bind: Option<String>,
 
     /// Host/interface to bind using the configured daemon port.
-    #[arg(long, alias = "listen-host", alias = "host", conflicts_with = "bind")]
+    #[arg(long, conflicts_with = "bind")]
     listen: Option<String>,
 
     /// Listen on every IPv4 and IPv6 network interface.
-    #[arg(long, alias = "lan", alias = "all-interfaces", conflicts_with_all = ["bind", "listen"])]
+    #[arg(long, conflicts_with_all = ["bind", "listen"])]
     listen_all: bool,
 
     /// Log level (trace, debug, info, warn, error).
@@ -813,7 +813,12 @@ fn run_daemon(
     let runtime = daemon::build_main_runtime()?;
     runtime.block_on(async move {
         let shutdown_rx = install_signal_handlers();
-        daemon::run_with_extensions(options, shutdown_rx, extension_installers).await
+        Box::pin(daemon::run_with_extensions(
+            options,
+            shutdown_rx,
+            extension_installers,
+        ))
+        .await
     })
 }
 
@@ -830,9 +835,7 @@ fn run_prepared_macos_daemon(
             let _run_loop_stop = MainRunLoopStop;
             let result = runtime.block_on(async move {
                 let shutdown_rx = install_signal_handlers();
-                prepared
-                    .run_with_extensions(shutdown_rx, extension_installers)
-                    .await
+                Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
             });
             let _ = result_tx.send(result);
         })
@@ -933,6 +936,28 @@ mod tests {
             config.rendering.servo_gpu_import.mode,
             ServoGpuImportMode::Auto
         );
+    }
+
+    #[test]
+    fn daemon_network_flags_accept_only_canonical_spellings() {
+        let listen = DaemonArgs::try_parse_from(["hypercolor-daemon", "--listen", "192.168.1.10"])
+            .expect("canonical listen flag should parse");
+        assert_eq!(listen.listen.as_deref(), Some("192.168.1.10"));
+
+        let listen_all = DaemonArgs::try_parse_from(["hypercolor-daemon", "--listen-all"])
+            .expect("canonical listen-all flag should parse");
+        assert!(listen_all.listen_all);
+
+        for retired in ["--listen-host", "--host"] {
+            let error = DaemonArgs::try_parse_from(["hypercolor-daemon", retired, "192.168.1.10"])
+                .expect_err("retired listen flag must be rejected");
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+        for retired in ["--lan", "--all-interfaces"] {
+            let error = DaemonArgs::try_parse_from(["hypercolor-daemon", retired])
+                .expect_err("retired listen-all flag must be rejected");
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
     }
 
     #[test]

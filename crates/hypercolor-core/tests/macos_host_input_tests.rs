@@ -1,12 +1,12 @@
 //! macOS host-input folding and deterministic adapter-boundary contracts.
 
 use hypercolor_core::input::{MacosHostInput, PointerMode, Q16_16_SCALE};
-use hypercolor_core::types::event::{
-    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit,
-};
 use hypercolor_macos_input::{
     MacosInputBatch, MacosInputEvent, MacosInputGapReason, MacosModifierFlags, MacosPointerButton,
     MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
+};
+use hypercolor_types::event::{
+    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit,
 };
 
 fn desktop(topology_generation: u64) -> MacosVirtualDesktop {
@@ -19,7 +19,7 @@ fn fold(
     events: &[MacosInputEvent],
 ) -> (
     hypercolor_core::input::InteractionData,
-    Vec<hypercolor_core::types::event::TimedInputEvent>,
+    Vec<hypercolor_types::event::TimedInputEvent>,
 ) {
     input.fold_and_snapshot(MacosInputBatch {
         epoch: input.epoch(),
@@ -29,7 +29,7 @@ fn fold(
     })
 }
 
-fn key_states(events: &[hypercolor_core::types::event::TimedInputEvent]) -> Vec<InputButtonState> {
+fn key_states(events: &[hypercolor_types::event::TimedInputEvent]) -> Vec<InputButtonState> {
     events
         .iter()
         .filter_map(|event| match event.event {
@@ -165,7 +165,7 @@ fn media_keys_and_extra_buttons_use_canonical_names() {
 }
 
 #[test]
-fn physical_wheel_emits_exact_axes_then_legacy_vertical_shadow() {
+fn physical_wheel_emits_exact_axes() {
     let mut input = MacosHostInput::new(false, true);
     let events = [MacosInputEvent::Wheel {
         fixed_delta_x: Q16_16_SCALE,
@@ -188,43 +188,10 @@ fn physical_wheel_emits_exact_axes_then_legacy_vertical_shadow() {
             ..
         }
     ));
-    assert!(matches!(
-        folded[1].event,
-        InputEvent::MouseWheel {
-            delta_hi_res: -240,
-            ..
-        }
-    ));
 }
 
 #[test]
-fn subunit_wheel_motion_carries_fractional_remainder() {
-    let mut input = MacosHostInput::new(false, true);
-    let wheel = [MacosInputEvent::Wheel {
-        fixed_delta_x: 0,
-        fixed_delta_y: 1,
-        unit: MacosScrollUnit::Notches,
-        phase: MacosScrollPhase::None,
-        momentum_phase: MacosScrollPhase::None,
-    }];
-    let mut legacy_total = 0;
-
-    for _ in 0..547 {
-        let (_, folded) = fold(&mut input, &wheel);
-        legacy_total += folded
-            .iter()
-            .filter_map(|event| match event.event {
-                InputEvent::MouseWheel { delta_hi_res, .. } => Some(delta_hi_res),
-                _ => None,
-            })
-            .sum::<i32>();
-    }
-
-    assert_eq!(legacy_total, 1);
-}
-
-#[test]
-fn continuous_scroll_preserves_pixels_and_phases_without_legacy_shadow() {
+fn continuous_scroll_preserves_pixels_and_phases() {
     let mut input = MacosHostInput::new(false, true);
     let events = [MacosInputEvent::Wheel {
         fixed_delta_x: 3 * Q16_16_SCALE,

@@ -102,12 +102,6 @@ fn build_cmd() -> clap::Command {
                         .arg(Arg::new("duration").long("duration").default_value("5")),
                 )
                 .subcommand(
-                    Command::new("set-color")
-                        .about("Set device color")
-                        .arg(Arg::new("device").required(true))
-                        .arg(Arg::new("color").required(true)),
-                )
-                .subcommand(
                     Command::new("controls")
                         .about("Show device controls")
                         .arg(Arg::new("device").required(true)),
@@ -117,13 +111,7 @@ fn build_cmd() -> clap::Command {
                         .about("Apply a device control value")
                         .arg(Arg::new("device").required(true))
                         .arg(Arg::new("field").required(true))
-                        .arg(Arg::new("value").required(true))
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
-                        ),
+                        .arg(Arg::new("value").required(true)),
                 )
                 .subcommand(
                     Command::new("action")
@@ -171,12 +159,6 @@ fn build_cmd() -> clap::Command {
                                 .short('v')
                                 .required(true)
                                 .action(ArgAction::Append),
-                        )
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
                         ),
                 )
                 .subcommand(
@@ -208,13 +190,7 @@ fn build_cmd() -> clap::Command {
                         .about("Apply a driver control value")
                         .arg(Arg::new("driver").required(true))
                         .arg(Arg::new("field").required(true))
-                        .arg(Arg::new("value").required(true))
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
-                        ),
+                        .arg(Arg::new("value").required(true)),
                 )
                 .subcommand(
                     Command::new("action")
@@ -596,21 +572,12 @@ fn parse_devices_identify() {
 }
 
 #[test]
-fn parse_devices_set_color() {
+fn reject_devices_set_color() {
     let cmd = build_cmd();
-    let matches = cmd
+    let error = cmd
         .try_get_matches_from(["hyper", "devices", "set-color", "Strip", "#ff6ac1"])
-        .expect("devices set-color should parse");
-    let (_, sub) = matches.subcommand().expect("should have subcommand");
-    let (_, sc) = sub.subcommand().expect("should have set-color");
-    assert_eq!(
-        sc.get_one::<String>("device").map(String::as_str),
-        Some("Strip")
-    );
-    assert_eq!(
-        sc.get_one::<String>("color").map(String::as_str),
-        Some("#ff6ac1")
-    );
+        .expect_err("devices set-color should not parse");
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
 #[test]
@@ -646,8 +613,6 @@ fn parse_devices_set_control() {
             "00000000-0000-0000-0000-000000000001",
             "color_order",
             "enum:grb",
-            "--expected-revision",
-            "2",
         ])
         .expect("devices set-control should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -717,9 +682,6 @@ fn parse_controls_set_typed_values() {
             "host=ip:10.0.0.42",
             "--value",
             "timeout=duration:1500",
-            "--expected-revision",
-            "4",
-            "--dry-run",
         ])
         .expect("controls set should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -729,12 +691,6 @@ fn parse_controls_set_typed_values() {
         .expect("should have values")
         .collect();
     assert_eq!(values, vec!["host=ip:10.0.0.42", "timeout=duration:1500"]);
-    assert_eq!(
-        set.get_one::<String>("expected-revision")
-            .map(String::as_str),
-        Some("4")
-    );
-    assert!(set.get_flag("dry-run"));
 }
 
 #[test]
@@ -776,9 +732,6 @@ fn parse_drivers_set_control() {
             "wled",
             "default_protocol",
             "enum:ddp",
-            "--expected-revision",
-            "3",
-            "--dry-run",
         ])
         .expect("drivers set-control should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -795,12 +748,6 @@ fn parse_drivers_set_control() {
         set.get_one::<String>("value").map(String::as_str),
         Some("enum:ddp")
     );
-    assert_eq!(
-        set.get_one::<String>("expected-revision")
-            .map(String::as_str),
-        Some("3")
-    );
-    assert!(set.get_flag("dry-run"));
 }
 
 #[test]
@@ -853,6 +800,8 @@ fn parse_effects_list_with_filters() {
     use clap::Parser as _;
     use hypercolor_cli::Commands;
     use hypercolor_cli::commands::effects::EffectCommand;
+    use hypercolor_types::api::effects::EffectSourceKind;
+    use hypercolor_types::effect::EffectCategory;
 
     let cli = hypercolor_cli::Cli::try_parse_from([
         "hyper",
@@ -875,10 +824,10 @@ fn parse_effects_list_with_filters() {
         panic!("expected the list subcommand");
     };
 
-    assert_eq!(list.source.as_deref(), Some("native"));
+    assert_eq!(list.source, Some(EffectSourceKind::Native));
     assert!(list.audio);
     assert_eq!(list.search.as_deref(), Some("aurora"));
-    assert_eq!(list.category.as_deref(), Some("ambient"));
+    assert_eq!(list.category, Some(EffectCategory::Ambient));
 }
 
 /// The renamed flag is gone, not aliased.

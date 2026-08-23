@@ -6,8 +6,9 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
 };
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
@@ -68,27 +69,30 @@ impl EffectRenderer for ScreenCastRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "viewport" => {
-                if let ControlValue::Rect(rect) = value {
-                    self.viewport = rect.clamp();
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "viewport" => {
+                    if let ControlValue::Rect(rect) = value {
+                        self.viewport =
+                            ViewportRect::new(rect.x, rect.y, rect.width, rect.height).clamp();
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "fit_mode" => {
-                if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
-                    self.fit_mode = parse_fit_mode(mode);
+                "fit_mode" => {
+                    if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
+                        self.fit_mode = parse_fit_mode(mode);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 

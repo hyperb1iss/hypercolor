@@ -6,6 +6,7 @@ use leptos_icons::Icon;
 use crate::api;
 use crate::app::DevicesContext;
 use crate::icons::*;
+use crate::layout_history::RemovedOutputCache;
 
 mod devices;
 mod offline;
@@ -29,8 +30,8 @@ pub(super) struct PaletteState {
     pub set_hidden_zones: WriteSignal<std::collections::HashSet<String>>,
     pub compound_depth: Signal<crate::compound_selection::CompoundDepth>,
     pub set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
-    pub removed_zone_cache: Signal<crate::layout_utils::ZoneCache>,
-    pub set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+    pub removed_zone_cache: Signal<RemovedOutputCache>,
+    pub set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     pub stable_devices: Memo<Vec<api::DeviceSummary>>,
     pub collapsed_devices: ReadSignal<std::collections::HashSet<String>>,
     pub set_collapsed_devices: WriteSignal<std::collections::HashSet<String>>,

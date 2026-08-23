@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use hypercolor_core::bus::ScreenZonesFrame;
 use hypercolor_core::input::ScreenData;
-use hypercolor_core::types::canvas::{PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
+use hypercolor_types::canvas::{PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
 
 use super::RenderThreadState;
 
@@ -121,7 +121,7 @@ pub(crate) fn publish_screen_zones(
 
     state
         .event_bus
-        .screen_zones_sender()
+        .screen_zones_lane()
         .send_if_modified(|current| {
             if current.same_content(&frame) {
                 false

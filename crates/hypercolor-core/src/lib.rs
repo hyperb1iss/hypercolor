@@ -2,8 +2,6 @@
 //!
 //! Contains the render loop, device backend traits, effect engine,
 //! spatial sampler, event bus, and configuration management.
-pub use hypercolor_types as types;
-
 pub mod asset;
 pub mod attachment;
 pub mod blend_math;
@@ -17,3 +15,9 @@ pub mod scene;
 pub mod session;
 pub mod spatial;
 pub mod system;
+
+/// Durable file replacement shared by every Hypercolor store.
+///
+/// The implementation lives in `hypercolor-persistence` so driver crates can
+/// register their destinations without depending on the engine.
+pub use hypercolor_persistence as persistence;

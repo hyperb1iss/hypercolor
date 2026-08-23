@@ -5,9 +5,8 @@ use std::sync::Arc;
 
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
-use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
+use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 use hypercolor_types::layer::{LoopMode, MediaPlayback};
 use hypercolor_types::viewport::FitMode;
 use tokio::sync::RwLock;
@@ -137,49 +136,54 @@ impl EffectRenderer for MediaPlayerRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "asset" => match value {
-                ControlValue::Text(asset) | ControlValue::Enum(asset) => self.set_asset(asset),
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "asset" => match value {
+                    ControlValue::Text(asset) | ControlValue::Enum(asset) => {
+                        self.set_asset(asset);
+                    }
+                    _ => {}
+                },
+                "loop_mode" => {
+                    if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
+                        self.playback.loop_mode = loop_mode_from_control(value);
+                    }
+                }
+                "fit" => {
+                    if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
+                        self.fit_mode = fit_mode_from_control(value);
+                    }
+                }
+                "speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.playback.speed = value.clamp(0.0, 4.0);
+                    }
+                }
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 2.0);
+                    }
+                }
+                "tint" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.tint = [color.r, color.g, color.b, color.a];
+                    }
+                }
+                "tint_strength" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.tint_strength = value.clamp(0.0, 1.0);
+                    }
+                }
+                "hue_shift" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.hue_shift = value;
+                    }
+                }
                 _ => {}
-            },
-            "loop_mode" => {
-                if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
-                    self.playback.loop_mode = loop_mode_from_control(value);
-                }
             }
-            "fit" => {
-                if let ControlValue::Enum(value) | ControlValue::Text(value) = value {
-                    self.fit_mode = fit_mode_from_control(value);
-                }
-            }
-            "speed" => {
-                if let Some(value) = value.as_f32() {
-                    self.playback.speed = value.clamp(0.0, 4.0);
-                }
-            }
-            "brightness" => {
-                if let Some(value) = value.as_f32() {
-                    self.brightness = value.clamp(0.0, 2.0);
-                }
-            }
-            "tint" => {
-                if let ControlValue::Color(value) = value {
-                    self.tint = *value;
-                }
-            }
-            "tint_strength" => {
-                if let Some(value) = value.as_f32() {
-                    self.tint_strength = value.clamp(0.0, 1.0);
-                }
-            }
-            "hue_shift" => {
-                if let Some(value) = value.as_f32() {
-                    self.hue_shift = value;
-                }
-            }
-            _ => {}
         }
+        Ok(())
     }
 
     fn bind_asset_library(&mut self, library: Arc<RwLock<AssetLibrary>>) {
@@ -188,7 +192,6 @@ impl EffectRenderer for MediaPlayerRenderer {
             self.asset_dirty = true;
         }
     }
-
     fn destroy(&mut self) {}
 }
 

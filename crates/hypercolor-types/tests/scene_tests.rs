@@ -1,12 +1,13 @@
 #![allow(clippy::float_cmp)]
 
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
+use hypercolor_types::effect::EffectId;
+use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{
-    ActionKind, AutomationRule, ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget,
-    EasingFunction, Scene, SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope,
-    TransitionSpec, TriggerSource, UnassignedBehavior, Zone, ZoneAssignment, ZoneId, ZoneRole,
+    ActionKind, AutomationRule, ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene,
+    SceneId, SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec,
+    TriggerSource, UnassignedBehavior, Zone, ZoneAssignment, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -30,15 +31,8 @@ fn sample_scene() -> Scene {
         id: SceneId::new(),
         name: "Test Scene".into(),
         description: Some("A scene for testing".into()),
-        scope: SceneScope::Full,
-        zone_assignments: vec![ZoneAssignment {
-            zone_name: "keyboard:main".into(),
-            effect_name: "rainbow_wave".into(),
-            parameters: HashMap::from([("speed".into(), "0.5".into())]),
-            brightness: Some(0.8),
-        }],
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: sample_transition(),
         priority: ScenePriority::USER,
         enabled: true,
@@ -84,21 +78,22 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
 
-fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> Zone {
+fn sample_zone(name: &str, zone_id: &str, effect_id: EffectId) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: name.into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
+        layers: vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            HashMap::from([("speed".into(), ControlValue::Float(0.5))]),
+            HashMap::new(),
+            None,
+        )],
         layout: sample_layout(zone_id),
         brightness: 0.8,
         enabled: true,
@@ -156,19 +151,17 @@ fn scene_construction() {
     assert_eq!(scene.description.as_deref(), Some("A scene for testing"));
     assert!(scene.enabled);
     assert_eq!(scene.priority, ScenePriority::USER);
-    assert_eq!(scene.zone_assignments.len(), 1);
+    assert!(scene.zones.is_empty());
 }
 
 #[test]
-fn scene_with_no_assignments() {
+fn scene_with_no_zones() {
     let scene = Scene {
         id: SceneId::new(),
         name: "Empty".into(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: vec![],
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: sample_transition(),
         priority: ScenePriority::AMBIENT,
         enabled: false,
@@ -179,7 +172,7 @@ fn scene_with_no_assignments() {
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
     };
-    assert!(scene.zone_assignments.is_empty());
+    assert!(scene.zones.is_empty());
     assert!(!scene.enabled);
     assert!(scene.description.is_none());
 }
@@ -192,44 +185,7 @@ fn scene_json_round_trip() {
     assert_eq!(restored.name, original.name);
     assert_eq!(restored.description, original.description);
     assert_eq!(restored.enabled, original.enabled);
-    assert_eq!(
-        restored.zone_assignments.len(),
-        original.zone_assignments.len()
-    );
-    assert_eq!(restored.groups.len(), original.groups.len());
-}
-
-#[test]
-fn scene_effective_scope_prefers_render_groups() {
-    let effect_id = EffectId::from(Uuid::now_v7());
-    let scene = Scene {
-        groups: vec![sample_group("Desk", "desk:main", effect_id)],
-        ..sample_scene()
-    };
-
-    assert_eq!(
-        scene.effective_scope(),
-        SceneScope::Zones(vec!["desk:main".into()])
-    );
-}
-
-#[test]
-fn scene_effective_zone_assignments_flatten_render_groups() {
-    let effect_id = EffectId::from(Uuid::now_v7());
-    let scene = Scene {
-        groups: vec![sample_group("Desk", "desk:main", effect_id)],
-        ..sample_scene()
-    };
-
-    let assignments = scene.effective_zone_assignments();
-    assert_eq!(assignments.len(), 1);
-    assert_eq!(assignments[0].zone_name, "desk:main");
-    assert_eq!(assignments[0].effect_name, effect_id.to_string());
-    assert_eq!(
-        assignments[0].parameters.get("speed").map(String::as_str),
-        Some("0.5")
-    );
-    assert_eq!(assignments[0].brightness, Some(0.8));
+    assert_eq!(restored.zones.len(), original.zones.len());
 }
 
 #[test]
@@ -239,22 +195,22 @@ fn display_face_target_new_seeds_blended_default() {
     // A fresh target must agree with the enum's serde default: blended
     // over the effect, never Replace. A Replace seed blacks out the live
     // effect for any face assigned without an explicit composition patch.
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::default());
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert_eq!(target.blend_mode, BlendMode::default());
+    assert_eq!(target.blend_mode, BlendMode::Alpha);
     assert!(target.blends_with_effect());
 }
 
 #[test]
-fn render_group_display_target_round_trips_in_scene_json() {
+fn zone_display_target_round_trips_in_scene_json() {
     let effect_id = EffectId::from(Uuid::now_v7());
     let device_id = DeviceId::new();
     let mut display_target = DisplayFaceTarget::new(device_id);
-    display_target.blend_mode = DisplayFaceBlendMode::SoftLight;
+    display_target.blend_mode = BlendMode::SoftLight;
     display_target.opacity = 0.64;
     let scene = Scene {
-        groups: vec![Zone {
+        zones: vec![Zone {
             display_target: Some(display_target.clone()),
-            ..sample_group("AIO Display", "desk:display", effect_id)
+            ..sample_zone("AIO Display", "desk:display", effect_id)
         }],
         ..sample_scene()
     };
@@ -262,136 +218,43 @@ fn render_group_display_target_round_trips_in_scene_json() {
     let json = serde_json::to_string(&scene).expect("serialize Scene");
     let restored: Scene = serde_json::from_str(&json).expect("deserialize Scene");
 
-    assert_eq!(restored.groups[0].display_target, Some(display_target));
+    assert_eq!(restored.zones[0].display_target, Some(display_target));
 }
 
 #[test]
-fn render_group_legacy_json_materializes_fresh_effect_layer() {
-    let group_id = ZoneId::new();
-    let effect_id = EffectId::from(Uuid::now_v7());
-    let json = serde_json::json!({
-        "id": group_id,
-        "name": "Primary",
-        "description": null,
-        "effect_id": effect_id,
-        "controls": { "speed": { "float": 0.75 } },
-        "control_bindings": {},
-        "preset_id": null,
-        "layout": sample_layout("desk:main"),
-        "brightness": 1.0,
-        "enabled": true,
-        "color": null,
-        "display_target": null,
-        "role": "primary",
-        "controls_version": 4
-    });
+fn zone_rejects_retired_singleton_effect_fields() {
+    let mut json = serde_json::to_value(sample_zone(
+        "Primary",
+        "desk:main",
+        EffectId::from(Uuid::now_v7()),
+    ))
+    .expect("zone should serialize");
+    json["effect_id"] = serde_json::json!(EffectId::from(Uuid::now_v7()));
 
-    let group: Zone = serde_json::from_value(json).expect("deserialize legacy group");
-
-    assert_eq!(group.effect_id, Some(effect_id));
-    assert_eq!(group.controls_version, 4);
-    assert_eq!(group.layers_version, 0);
-    assert_eq!(group.layers.len(), 1);
-    assert_ne!(group.layers[0].id.as_uuid(), group_id.0);
-    let LayerSource::Effect {
-        effect_id: layer_effect,
-        controls,
-        ..
-    } = &group.layers[0].source
-    else {
-        panic!("legacy group should synthesize an effect layer");
-    };
-    assert_eq!(*layer_effect, effect_id);
-    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(0.75)));
+    let error = serde_json::from_value::<Zone>(json).expect_err("legacy field must be rejected");
+    assert!(error.to_string().contains("effect_id"));
 }
 
 #[test]
-fn serialized_synthetic_effect_layer_identity_migrates_once() {
-    let zone_id = ZoneId::new();
-    let effect_id = EffectId::new(uuid::Uuid::now_v7());
-    let mut zone = sample_group("Legacy", "desk:main", effect_id);
-    zone.id = zone_id;
-    let mut value = serde_json::to_value(zone).expect("zone should serialize");
-    value["layers"] = serde_json::to_value(vec![SceneLayer::from_effect(
-        SceneLayerId::from_uuid(zone_id.0),
-        effect_id,
-        HashMap::new(),
-        HashMap::new(),
-        None,
-    )])
-    .expect("predecessor layer should serialize");
+fn scene_rejects_retired_flat_authorities() {
+    let mut json = serde_json::to_value(sample_scene()).expect("scene should serialize");
+    json["scope"] = serde_json::json!("full");
+    json["zone_assignments"] = serde_json::json!([]);
 
-    let migrated: Zone = serde_json::from_value(value).expect("legacy zone should migrate");
-    let migrated_id = migrated.layers[0].id;
-    assert_ne!(migrated_id.0, zone_id.0);
-
-    let reloaded: Zone = serde_json::from_value(
-        serde_json::to_value(&migrated).expect("migrated zone should serialize"),
-    )
-    .expect("migrated zone should reload");
-    assert_eq!(reloaded.layers[0].id, migrated_id);
+    serde_json::from_value::<Scene>(json).expect_err("legacy scene authorities must be rejected");
 }
 
 #[test]
-fn render_group_layers_are_authoritative_over_legacy_fields() {
-    let legacy_effect = EffectId::from(Uuid::now_v7());
-    let layer_effect = EffectId::from(Uuid::now_v7());
-    let layer_id = SceneLayerId::new();
-    let json = serde_json::json!({
-        "id": ZoneId::new(),
-        "name": "Layered",
-        "description": null,
-        "effect_id": legacy_effect,
-        "controls": { "speed": { "float": 0.25 } },
-        "control_bindings": {},
-        "preset_id": null,
-        "layers": [{
-            "id": layer_id,
-            "source": {
-                "type": "effect",
-                "effect_id": layer_effect,
-                "controls": { "speed": { "float": 1.5 } }
-            },
-            "blend": "replace",
-            "opacity": 1.0
-        }],
-        "layout": sample_layout("desk:main"),
-        "brightness": 1.0,
-        "enabled": true,
-        "color": null,
-        "display_target": null,
-        "role": "primary"
-    });
-
-    let group: Zone = serde_json::from_value(json).expect("deserialize layered group");
-
-    assert_eq!(group.effect_id, Some(layer_effect));
-    assert_eq!(group.controls.get("speed"), Some(&ControlValue::Float(1.5)));
-
-    let serialized = serde_json::to_value(&group).expect("serialize group");
-    assert_eq!(
-        serialized["effect_id"],
-        serde_json::to_value(layer_effect).expect("effect id json")
-    );
-    assert_eq!(serialized["layers"][0]["id"], serde_json::json!(layer_id));
-}
-
-#[test]
-fn scene_json_requires_group_role() {
+fn scene_json_requires_zone_role() {
     let json = serde_json::json!({
         "id": SceneId::new(),
         "name": "Strict Scene",
         "description": null,
-        "scope": "full",
-        "zone_assignments": [],
-        "groups": [{
+        "zones": [{
             "id": ZoneId::new(),
             "name": "Primary",
             "description": null,
-            "effect_id": EffectId::from(Uuid::now_v7()),
-            "controls": {},
-            "control_bindings": {},
-            "preset_id": null,
+            "layers": [],
             "layout": sample_layout("desk:main"),
             "brightness": 1.0,
             "enabled": true,
@@ -413,9 +276,9 @@ fn scene_json_requires_group_role() {
 #[test]
 fn scene_json_requires_scene_kind() {
     let mut json = serde_json::to_value(Scene {
-        groups: vec![Zone {
+        zones: vec![Zone {
             role: ZoneRole::Primary,
-            ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
+            ..sample_zone("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
     })
@@ -434,9 +297,9 @@ fn scene_json_requires_scene_kind() {
 #[test]
 fn scene_json_requires_mutation_mode() {
     let mut json = serde_json::to_value(Scene {
-        groups: vec![Zone {
+        zones: vec![Zone {
             role: ZoneRole::Primary,
-            ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
+            ..sample_zone("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
     })
@@ -454,33 +317,33 @@ fn scene_json_requires_mutation_mode() {
 }
 
 #[test]
-fn scene_validate_group_exclusivity_rejects_duplicates() {
+fn scene_validate_zone_exclusivity_rejects_duplicates() {
     let scene = Scene {
-        groups: vec![
-            sample_group("Desk", "shared:zone", EffectId::from(Uuid::now_v7())),
-            sample_group("Room", "shared:zone", EffectId::from(Uuid::now_v7())),
+        zones: vec![
+            sample_zone("Desk", "shared:zone", EffectId::from(Uuid::now_v7())),
+            sample_zone("Room", "shared:zone", EffectId::from(Uuid::now_v7())),
         ],
         ..sample_scene()
     };
 
     let conflicts = scene
-        .validate_group_exclusivity()
+        .validate_zone_exclusivity()
         .expect_err("duplicate zone ids should fail exclusivity");
     assert_eq!(conflicts.len(), 1);
     assert!(conflicts[0].contains("shared:zone"));
 }
 
 #[test]
-fn scene_validate_rejects_two_primary_groups() {
+fn scene_validate_rejects_two_primary_zones() {
     let scene = Scene {
-        groups: vec![
+        zones: vec![
             Zone {
                 role: ZoneRole::Primary,
-                ..sample_group("Desk", "desk:main", EffectId::from(Uuid::now_v7()))
+                ..sample_zone("Desk", "desk:main", EffectId::from(Uuid::now_v7()))
             },
             Zone {
                 role: ZoneRole::Primary,
-                ..sample_group("Room", "room:main", EffectId::from(Uuid::now_v7()))
+                ..sample_zone("Room", "room:main", EffectId::from(Uuid::now_v7()))
             },
         ],
         ..sample_scene()
@@ -488,28 +351,28 @@ fn scene_validate_rejects_two_primary_groups() {
 
     let errors = scene
         .validate()
-        .expect_err("multiple primary groups should be rejected");
+        .expect_err("multiple primary zones should be rejected");
     assert!(
         errors
             .iter()
             .any(|error| error.contains("more than one primary")),
-        "expected primary-group validation error, got {errors:?}"
+        "expected primary-zone validation error, got {errors:?}"
     );
 }
 
 #[test]
 fn scene_validate_rejects_display_without_target() {
     let scene = Scene {
-        groups: vec![Zone {
+        zones: vec![Zone {
             role: ZoneRole::Display,
-            ..sample_group("Display", "desk:display", EffectId::from(Uuid::now_v7()))
+            ..sample_zone("Display", "desk:display", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
     };
 
     let errors = scene
         .validate()
-        .expect_err("display groups without a target should be rejected");
+        .expect_err("display zones without a target should be rejected");
     assert!(
         errors
             .iter()
@@ -522,11 +385,11 @@ fn scene_validate_rejects_display_without_target() {
 fn scene_validate_rejects_duplicate_display_device_ids() {
     let device_id = DeviceId::new();
     let scene = Scene {
-        groups: vec![
+        zones: vec![
             Zone {
                 role: ZoneRole::Display,
                 display_target: Some(DisplayFaceTarget::new(device_id)),
-                ..sample_group(
+                ..sample_zone(
                     "Display A",
                     "desk:display_a",
                     EffectId::from(Uuid::now_v7()),
@@ -535,7 +398,7 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
             Zone {
                 role: ZoneRole::Display,
                 display_target: Some(DisplayFaceTarget::new(device_id)),
-                ..sample_group(
+                ..sample_zone(
                     "Display B",
                     "desk:display_b",
                     EffectId::from(Uuid::now_v7()),
@@ -1105,4 +968,25 @@ fn validate_fences_the_activation_fields() {
         scene.validate().is_ok(),
         "valid values pass: in-range brightness, well-formed id"
     );
+}
+
+#[test]
+fn validate_fences_the_scene_name_contract() {
+    let mut scene = sample_scene();
+    scene.name = "   ".to_owned();
+    let errors = scene.validate().expect_err("blank scene names are invalid");
+    assert!(
+        errors.iter().any(|error| error.contains("scene name")),
+        "blank names are reported: {errors:?}"
+    );
+
+    scene.name = "x".repeat(129);
+    let errors = scene.validate().expect_err("long scene names are invalid");
+    assert!(
+        errors.iter().any(|error| error.contains("128")),
+        "the maximum length is reported: {errors:?}"
+    );
+
+    scene.name = "x".repeat(128);
+    assert!(scene.validate().is_ok(), "the documented limit is valid");
 }

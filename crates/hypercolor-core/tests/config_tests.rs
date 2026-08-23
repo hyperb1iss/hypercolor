@@ -1,9 +1,10 @@
 //! Tests for the configuration manager and path resolution.
 
-use std::{fs, sync::Arc};
+use std::fs;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::types::config::InteractionRoutePolicy;
+use hypercolor_types::config::{EffectErrorFallbackPolicy, InteractionRoutePolicy};
 
 // ─── TOML Parsing ───────────────────────────────────────────────────────────
 
@@ -23,7 +24,6 @@ fn load_minimal_toml() {
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);
-    assert!(!config.features.wasm_plugins);
     assert_eq!(config.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
 }
@@ -36,6 +36,32 @@ fn schema_v4_renames_start_profile_before_deserialization() {
 
     assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.start_scene, "Evening");
+}
+
+#[test]
+fn schema_v4_renames_clear_groups_fallback_before_deserialization() {
+    let config = ConfigManager::parse_toml(
+        "schema_version = 4\n[effect_engine]\neffect_error_fallback = \"clear_groups\"\n",
+    )
+    .expect("schema v4 should migrate");
+
+    assert_eq!(
+        config.effect_engine.effect_error_fallback,
+        EffectErrorFallbackPolicy::ClearZones
+    );
+}
+
+#[test]
+fn schema_v5_refuses_the_retired_clear_groups_fallback() {
+    let error = ConfigManager::parse_toml(
+        "schema_version = 5\n[effect_engine]\neffect_error_fallback = \"clear_groups\"\n",
+    )
+    .expect_err("schema v5 must reject the retired fallback value");
+
+    assert!(
+        format!("{error:#}").contains("unknown variant `clear_groups`"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -163,15 +189,15 @@ fn load_full_toml_with_overrides() {
     assert_eq!(config.web.websocket_fps, 15);
     assert_eq!(config.audio.device, "pulse-monitor");
     assert_eq!(config.audio.fft_size, 2048);
-    assert!(config.features.wasm_plugins);
-    assert!(config.features.midi_input);
-    assert!(!config.features.hue_entertainment);
     assert!(!config.drivers["openrgb"].enabled);
     assert_eq!(
         config.drivers["openrgb"].settings["socket"],
         "/run/openrgb.sock"
     );
-    assert_eq!(config.include, vec!["local.toml"]);
+    assert!(
+        config.extensions.contains_key("include"),
+        "a retired top-level key is preserved verbatim"
+    );
 }
 
 #[test]
@@ -288,22 +314,6 @@ fn conditional_config_mutation_rejects_stale_identity_without_side_effects() {
     let current = Arc::clone(&manager.get());
     assert!(manager.modify_if_current(&current, |config| config.daemon.port = 9999));
     assert_eq!(manager.get().daemon.port, 9999);
-}
-
-#[test]
-fn conditional_save_publishes_only_after_persistence_succeeds() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let blocked_parent = dir.path().join("not-a-directory");
-    fs::write(&blocked_parent, "block directory creation").expect("blocker should be written");
-    let manager = ConfigManager::new(blocked_parent.join("hypercolor.toml"))
-        .expect("ConfigManager should use defaults");
-    let before = Arc::clone(&manager.get());
-
-    let result = manager.modify_and_save_if_current(&before, |config| config.daemon.port = 7777);
-
-    assert!(result.is_err());
-    assert!(manager.is_current(&before));
-    assert_eq!(manager.get().daemon.port, 9420);
 }
 
 #[test]
@@ -471,6 +481,30 @@ fn reload_serializes_with_an_inflight_config_writer() {
 
 // ─── Path Resolution ────────────────────────────────────────────────────────
 
+static PATH_OVERRIDE_LOCK: Mutex<()> = Mutex::new(());
+
+struct PathOverrideTestGuard {
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl PathOverrideTestGuard {
+    fn acquire() -> Self {
+        let lock = PATH_OVERRIDE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_state_dir_override(None);
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for PathOverrideTestGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_state_dir_override(None);
+        ConfigManager::set_data_dir_override(None);
+    }
+}
+
 #[test]
 fn config_dir_ends_with_hypercolor() {
     let dir = ConfigManager::config_dir();
@@ -483,6 +517,7 @@ fn config_dir_ends_with_hypercolor() {
 
 #[test]
 fn data_dir_ends_with_hypercolor() {
+    let _guard = PathOverrideTestGuard::acquire();
     let dir = ConfigManager::data_dir();
     // On Windows the last component is "hypercolor" (under LocalAppData).
     // On Linux it's also "hypercolor" (under ~/.local/share).
@@ -494,12 +529,25 @@ fn data_dir_ends_with_hypercolor() {
 
 #[test]
 fn data_dir_override_replaces_default_resolution() {
+    let _guard = PathOverrideTestGuard::acquire();
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let override_path = dir.path().join("override-data");
 
     ConfigManager::set_data_dir_override(Some(override_path.clone()));
     assert_eq!(ConfigManager::data_dir(), override_path);
-    ConfigManager::set_data_dir_override(None);
+}
+
+#[test]
+fn state_dir_uses_an_independent_override() {
+    let _guard = PathOverrideTestGuard::acquire();
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_path = dir.path().join("data");
+    let state_path = dir.path().join("state");
+
+    ConfigManager::set_data_dir_override(Some(data_path.clone()));
+    ConfigManager::set_state_dir_override(Some(state_path.clone()));
+    assert_eq!(ConfigManager::data_dir(), data_path);
+    assert_eq!(ConfigManager::state_dir(), state_path);
 }
 
 #[test]
@@ -513,7 +561,9 @@ fn cache_dir_contains_hypercolor() {
 
 #[test]
 fn all_dirs_are_absolute() {
+    let _guard = PathOverrideTestGuard::acquire();
     assert!(ConfigManager::config_dir().is_absolute());
     assert!(ConfigManager::data_dir().is_absolute());
+    assert!(ConfigManager::state_dir().is_absolute());
     assert!(ConfigManager::cache_dir().is_absolute());
 }

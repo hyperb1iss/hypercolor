@@ -82,18 +82,8 @@ fn connected_menu_contains_dynamic_entries() {
     let entries = menu_model(&connected_state());
 
     assert_item(&entries, "header", "Hypercolor", false);
-    assert_item(
-        &entries,
-        "current_effect",
-        "\u{25b6} Aurora Borealis",
-        false,
-    );
-    assert_item(
-        &entries,
-        "current_scene",
-        "Scene: Movie Night [snap]",
-        false,
-    );
+    assert_item(&entries, "active_effect", "\u{25b6} Aurora Borealis", false);
+    assert_item(&entries, "active_scene", "Scene: Movie Night [snap]", false);
     let brightness = find_submenu(&entries, "Brightness (80%)");
     // The current preset (matches state.brightness=80) is the disabled marker.
     assert_item(brightness, "brightness:75", "  75%", true);
@@ -122,13 +112,13 @@ fn connected_menu_contains_dynamic_entries() {
 }
 
 #[test]
-fn connected_menu_hides_stop_effect_without_current_effect() {
+fn connected_menu_hides_stop_effect_without_active_effect() {
     let mut state = connected_state();
-    state.current_effect = None;
+    state.active_effect = None;
 
     let entries = menu_model(&state);
 
-    assert_item(&entries, "current_effect", "No effect active", false);
+    assert_item(&entries, "active_effect", "No effect active", false);
     assert_no_item(&entries, ids::STOP_EFFECT);
 }
 
@@ -187,7 +177,7 @@ fn menu_ids_map_to_app_actions() {
         Some(MenuAction::SwitchServer(2))
     );
     assert_eq!(action_for_menu_id("server:not-a-number"), None);
-    assert_eq!(action_for_menu_id("current_effect"), None);
+    assert_eq!(action_for_menu_id("active_effect"), None);
 }
 
 fn connected_state() -> AppState {
@@ -196,7 +186,7 @@ fn connected_state() -> AppState {
         running: true,
         paused: true,
         brightness: 80,
-        current_effect: Some(EffectInfo {
+        active_effect: Some(EffectInfo {
             id: "aurora".to_owned(),
             name: "Aurora Borealis".to_owned(),
         }),

@@ -6,7 +6,7 @@ weight = 100
 
 The now-playing transport is the set of small surfaces that tell you what is rendering and let you steer it without opening Studio. It lives in three places: the **Now Playing panel** at the bottom of the sidebar, the **now-playing chip** in the Studio Stage header, and the **zone chips** in the preview cabinet. In a multi-zone scene, every one of them tells the truth per zone instead of mirroring a single effect everywhere.
 
-{{ img(path="img/ui/studio.webp", alt="Studio: the zone tree on the left, the live Stage in the center") }}
+{{< img path="img/ui/studio.webp" alt="Studio: the zone tree on the left, the live Stage in the center" />}}
 
 ## The sidebar Now Playing panel
 
@@ -23,9 +23,9 @@ The control row carries five actions:
 - **Shuffle** jumps to a random runnable effect, skipping the one already playing when more than one exists.
 - The **brightness slider** sets global brightness from 0 to 100 percent. It pushes updates as you drag, throttled so a fast drag does not flood the daemon.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Previous, Next, and Shuffle only consider effects flagged `runnable`. The full catalog is browsable from the [Effects](@/effects/_index.md) section; the transport is the quick way to cycle through it without leaving your current page.
-{% end %}
+{% </callout> %}
 
 ### The audio toggle
 
@@ -43,9 +43,9 @@ When the active scene has more than one LED zone, the singular effect metadata i
 
 The "what it is showing" label resolves in order: the zone's directly-assigned effect name first, then the zone's top layer caption if the effect index does not know the name, then **No effect** if the zone is rendering nothing. A paused zone dims to make its state obvious at a glance.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The sidebar shows up to **three** zone rows. Any zones beyond that fold into a **"+N more zones"** link that opens Studio, where every zone is visible. The exact cap is `SIDEBAR_ZONE_ROW_CAP = 3`.
-{% end %}
+{% </callout> %}
 
 ### Pause and resume are per-zone, and they say so
 
@@ -61,7 +61,7 @@ The Stage header carries its own now-playing chip, and it does a different job f
 
 The chip is rendered for every surface, both Lights and Screens, because both carry a layer stack and both need a way to open the composition panel. For how the layer stack itself works, see [Layers](@/studio/layers.md).
 
-{{ img(path="img/ui/ui-studio-zones.webp", alt="Zones in the Hypercolor Studio workspace") }}
+{{< img path="img/ui/ui-studio-zones.webp" alt="Zones in the Hypercolor Studio workspace" />}}
 
 ## Preview-cabinet zone chips
 
@@ -77,7 +77,7 @@ This is why the sidebar glow, the palette strip, and the zone swatches all share
 
 ## How it all connects
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     Scene[Active scene] --> ZE[Per-zone effect state]
     ZE --> Rows[Sidebar zone rows]
@@ -86,7 +86,7 @@ graph TD
     PATCH -->|enabled flag| Scene
     Rows -->|overflow| Studio[Open Studio]
     Chip[Stage now-playing chip] -->|click| Comp[Composition slide-over]
-{% end %}
+{% </mermaid> %}
 
 The transport surfaces are a thin, honest read-and-steer layer over the shared active scene. They never invent their own state, they always name the zone they act on, and when many zones are in play they hand you off to Studio rather than pretending the rig is simpler than it is.
 

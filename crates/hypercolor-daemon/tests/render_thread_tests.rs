@@ -4,10 +4,9 @@
 //! Effect render → Spatial sample → Device push → Bus publish.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 #[cfg(feature = "wgpu")]
@@ -16,11 +15,10 @@ use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, HypercolorBus, PreviewKind};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
-    ReconnectPolicy, UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -30,34 +28,41 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_daemon::domain::layout::LayoutContext;
+use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
+use hypercolor_daemon::domain::spatial::SpatialService;
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::config::RenderAccelerationMode;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
-use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::event::{
     FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent, ZoneColors,
 };
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
+use hypercolor_types::scene::{
+    DisplayFaceTarget, Scene, SceneId, UnassignedBehavior, Zone, ZoneId, ZoneRole,
+};
 use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
+use hypercolor_daemon::SceneTransactionQueue;
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
+use hypercolor_daemon::output_power::{OutputPower, OutputPowerState};
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
 use hypercolor_daemon::render_thread::{
     CanvasDims, InputPublicationConsumer, InputPublicationDemand,
     InputPublicationDemandRegistration, RenderThread, RenderThreadState,
 };
-use hypercolor_daemon::scene_transactions::{SceneTransactionQueue, apply_layout_update};
-use hypercolor_daemon::session::OutputPowerState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -72,8 +77,60 @@ fn test_layout(zones: Vec<Output>) -> SpatialLayout {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
+    }
+}
+
+fn test_discovery_runtime(
+    device_registry: DeviceRegistry,
+    backend_manager: Arc<Mutex<BackendManager>>,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+    event_bus: Arc<HypercolorBus>,
+    spatial: SpatialService,
+) -> DiscoveryRuntime {
+    let state_dir = std::env::temp_dir().join(format!(
+        "hypercolor-render-discovery-{}",
+        uuid::Uuid::now_v7()
+    ));
+    let scene_transactions = SceneTransactionQueue::default();
+    let scene_manager =
+        SceneService::with_temporary_store(SceneManager::with_default(), Arc::clone(&event_bus))
+            .expect("temporary scene store should open");
+    let layout = LayoutContext::new_test_context(
+        HashMap::new(),
+        state_dir.join("layouts.json"),
+        HashMap::new(),
+        state_dir.join("layout-auto-exclusions.json"),
+        spatial,
+        scene_manager,
+        scene_transactions,
+        state_dir.join("runtime-state.json"),
+    );
+    DiscoveryRuntime {
+        device_registry,
+        backend_manager,
+        lifecycle_manager,
+        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
+        event_bus,
+        layout,
+        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
+        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
+        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(
+            state_dir.join("attachment-profiles.json"),
+        ))),
+        device_settings: OutputPower::new(DeviceSettingsStore::new(
+            state_dir.join("device-settings.json"),
+        ))
+        .device_settings(),
+        runtime_state_path: state_dir.join("runtime-state.json"),
+        device_aliases_path: state_dir.join("device-aliases.json"),
+        usb_protocol_configs: UsbProtocolConfigStore::new(),
+        credential_store: Arc::new(
+            CredentialStore::open_blocking(&state_dir).expect("test credential store"),
+        ),
+        in_progress: Arc::new(AtomicBool::new(false)),
+        pending_scans: Arc::default(),
+        task_spawner: tokio::runtime::Handle::current(),
     }
 }
 
@@ -148,14 +205,14 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> Output {
     }
 }
 
-fn assert_canvas_group_frame(
-    frame: &DisplayGroupFrame,
+fn assert_canvas_zone_frame(
+    frame: &DisplayZoneFrame,
     width: u32,
     height: u32,
     first_pixel: [u8; 4],
 ) {
-    let DisplayGroupFrame::Canvas(frame) = frame else {
-        panic!("test display group frame should be a canvas");
+    let DisplayZoneFrame::Canvas(frame) = frame else {
+        panic!("test display zone frame should be a canvas");
     };
     assert_eq!(frame.width, width);
     assert_eq!(frame.height, height);
@@ -196,7 +253,72 @@ struct SlowDisconnectFailBackend {
     info: DeviceInfo,
     disconnect_started: Arc<Notify>,
     disconnect_delay: Duration,
-    connected: bool,
+    connected: AtomicBool,
+}
+
+struct FencedRecoveryBackend {
+    device_id: DeviceId,
+    attempts: AtomicUsize,
+    allow_success: Notify,
+    disconnects: AtomicUsize,
+}
+
+impl FencedRecoveryBackend {
+    fn new(info: DeviceInfo) -> Self {
+        Self {
+            device_id: info.id,
+            attempts: AtomicUsize::new(0),
+            allow_success: Notify::new(),
+            disconnects: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for FencedRecoveryBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "fenced".to_owned(),
+            name: "Fenced Recovery Backend".to_owned(),
+            description: "Controls failure and success ordering for lifecycle tests".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        if *id != self.device_id {
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
+        }
+        self.disconnects.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        if *id != self.device_id {
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
+        }
+        let attempt = self.attempts.fetch_add(1, Ordering::AcqRel);
+        if attempt == 0 {
+            return Err(DeviceError::write(id, "failure before newer success"));
+        }
+
+        self.allow_success.notified().await;
+        Ok(())
+    }
 }
 
 impl SlowDisconnectFailBackend {
@@ -205,7 +327,7 @@ impl SlowDisconnectFailBackend {
             info,
             disconnect_started,
             disconnect_delay,
-            connected: true,
+            connected: AtomicBool::new(true),
         }
     }
 }
@@ -220,33 +342,42 @@ impl DeviceBackend for SlowDisconnectFailBackend {
         }
     }
 
-    async fn discover(&mut self) -> anyhow::Result<Vec<DeviceInfo>> {
-        Ok(vec![self.info.clone()])
-    }
-
-    async fn connect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
-        if *id != self.info.id {
-            anyhow::bail!("unknown slow-disconnect test device {id}");
-        }
-        self.connected = true;
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> anyhow::Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.info.id {
-            anyhow::bail!("unknown slow-disconnect test device {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
+        }
+        self.connected.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        if *id != self.info.id {
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         self.disconnect_started.notify_waiters();
         tokio::time::sleep(self.disconnect_delay).await;
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> anyhow::Result<()> {
-        if !self.connected {
-            anyhow::bail!("slow-disconnect test device {id} is disconnected");
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
-        anyhow::bail!("forced async write failure for slow-disconnect test device {id}");
+        Err(DeviceError::write(id, "forced async write failure"))
     }
 }
 
@@ -278,7 +409,7 @@ fn active_builtin_effect(stem: &str, controls: HashMap<String, ControlValue>) ->
 fn solid_color_controls(r: u8, g: u8, b: u8) -> HashMap<String, ControlValue> {
     HashMap::from([(
         "color".into(),
-        ControlValue::Color([
+        ControlValue::linear_color([
             f32::from(r) / 255.0,
             f32::from(g) / 255.0,
             f32::from(b) / 255.0,
@@ -287,7 +418,7 @@ fn solid_color_controls(r: u8, g: u8, b: u8) -> HashMap<String, ControlValue> {
     )])
 }
 
-fn primary_group(
+fn primary_zone(
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
@@ -303,10 +434,6 @@ fn primary_group(
         id: ZoneId::new(),
         name: "Primary".into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout,
         brightness: 1.0,
@@ -319,7 +446,7 @@ fn primary_group(
     }
 }
 
-fn custom_group(
+fn custom_zone(
     name: &str,
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
@@ -336,10 +463,6 @@ fn custom_group(
         id: ZoneId::new(),
         name: name.into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout,
         brightness: 1.0,
@@ -352,8 +475,8 @@ fn custom_group(
     }
 }
 
-fn display_group(
-    group_id: ZoneId,
+fn display_zone(
+    zone_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
@@ -367,13 +490,9 @@ fn display_group(
         None,
     )];
     Zone {
-        id: group_id,
+        id: zone_id,
         name: "Display".into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls,
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout,
         brightness: 1.0,
@@ -1029,25 +1148,6 @@ where
     .expect("expected a matching canvas in time")
 }
 
-async fn wait_for_next_canvas_frame(
-    rx: &mut watch::Receiver<CanvasFrame>,
-    previous_frame_number: u32,
-) -> CanvasFrame {
-    tokio::time::timeout(WAIT_DEADLINE, async {
-        loop {
-            rx.changed()
-                .await
-                .expect("canvas sender should remain connected");
-            let frame = rx.borrow().clone();
-            if frame.frame_number > previous_frame_number {
-                break frame;
-            }
-        }
-    })
-    .await
-    .expect("expected the next canvas frame in time")
-}
-
 #[cfg(feature = "wgpu")]
 async fn wait_for_render_loop_frame_number(
     state: &RenderThreadState,
@@ -1105,18 +1205,21 @@ fn make_render_state(
     let mut scene_manager = SceneManager::with_default();
     if let Some(metadata) = active_effect.metadata.as_ref() {
         scene_manager
-            .upsert_primary_group(
+            .upsert_primary_zone(
                 metadata,
                 active_effect.controls.clone(),
                 active_effect.preset_id,
                 spatial_engine.layout().as_ref().clone(),
             )
-            .expect("test render state should seed a default primary group");
+            .expect("test render state should seed a default primary zone");
     }
+    let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
+        .expect("temporary scene store should open");
+    let scene_plan = scene_manager.plan_reader();
     RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
-        spatial_engine: Arc::new(RwLock::new(spatial_engine)),
+        spatial_engine: SpatialService::new(spatial_engine),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -1127,14 +1230,12 @@ fn make_render_state(
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(scene_manager)),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
@@ -1144,6 +1245,87 @@ fn make_render_state(
         configured_max_fps_tier: FpsTier::Full.into(),
         face_fps_cap: 30,
     }
+}
+
+async fn publish_layout(state: &RenderThreadState, layout: SpatialLayout) {
+    let state_dir =
+        std::env::temp_dir().join(format!("hypercolor-render-layout-{}", uuid::Uuid::now_v7()));
+    let context = LayoutContext::new_test_context(
+        HashMap::new(),
+        state_dir.join("layouts.json"),
+        HashMap::new(),
+        state_dir.join("layout-auto-exclusions.json"),
+        state.spatial_engine.clone(),
+        state.scene_manager.clone(),
+        state.scene_transactions.clone(),
+        state_dir.join("runtime-state.json"),
+    );
+    context
+        .test_workflows()
+        .publish(layout)
+        .await
+        .expect("layout authority should publish the update");
+}
+
+async fn commit_render_mutation(state: &RenderThreadState, mutation: SceneMutation) {
+    state
+        .scene_manager
+        .commit_mutation(mutation)
+        .await
+        .expect("render scene mutation should commit");
+}
+
+async fn install_render_scenes(
+    state: &RenderThreadState,
+    scenes: impl IntoIterator<Item = Scene>,
+    active_scene_id: SceneId,
+) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    for scene in scenes {
+        mutation
+            .create_scene(scene)
+            .expect("render scene should be created");
+    }
+    mutation
+        .activate(
+            active_scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("render scene should activate");
+    commit_render_mutation(state, mutation).await;
+}
+
+async fn activate_render_scene(state: &RenderThreadState, scene_id: SceneId) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .activate(
+            scene_id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
+        .expect("render scene should activate");
+    commit_render_mutation(state, mutation).await;
+}
+
+async fn install_render_effect(
+    state: &RenderThreadState,
+    metadata: &EffectMetadata,
+    controls: HashMap<String, ControlValue>,
+    layout: SpatialLayout,
+) {
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            metadata,
+            controls,
+            None,
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("render effect should install");
+    commit_render_mutation(state, mutation).await;
 }
 
 async fn wait_for_device_state(
@@ -1342,11 +1524,11 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(backend));
+    backend_manager.register_backend(Arc::new(backend));
     backend_manager.map_device("mock:audio-strip", "mock", device_id);
 
     let layout = test_layout(vec![strip_zone("zone_audio", "mock:audio-strip", 10)]);
@@ -1464,10 +1646,7 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
             let registry = state.effect_registry.read().await;
             builtin_effect_metadata(&registry, "audio_pulse")
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, test_layout(Vec::new()))
-            .expect("activate audio-reactive primary group");
+        install_render_effect(&state, &metadata, HashMap::new(), test_layout(Vec::new())).await;
     }
 
     wait_for_audio_capture_transition(&transitions, true).await;
@@ -1477,15 +1656,13 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
             let registry = state.effect_registry.read().await;
             builtin_effect_metadata(&registry, "solid_color")
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(
-                &metadata,
-                solid_color_controls(8, 16, 24),
-                None,
-                test_layout(Vec::new()),
-            )
-            .expect("reactivate non-audio primary group");
+        install_render_effect(
+            &state,
+            &metadata,
+            solid_color_controls(8, 16, 24),
+            test_layout(Vec::new()),
+        )
+        .await;
     }
 
     wait_for_audio_capture_transition(&transitions, false).await;
@@ -1616,57 +1793,6 @@ async fn render_thread_advances_active_scene_transitions() {
         SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
         BackendManager::new(),
     );
-
-    let scene_a = make_scene("Scene A");
-    let scene_b = make_scene("Scene B");
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene_a.clone())
-            .expect("create scene a");
-        scene_manager
-            .create(scene_b.clone())
-            .expect("create scene b");
-        scene_manager
-            .activate(&scene_a.id, None)
-            .expect("activate scene a");
-        scene_manager
-            .activate(&scene_b.id, None)
-            .expect("activate scene b");
-    }
-
-    {
-        let mut rl = state.render_loop.write().await;
-        rl.start();
-    }
-
-    let mut rt = RenderThread::spawn(state.clone());
-    tokio::time::sleep(Duration::from_millis(120)).await;
-
-    {
-        let mut rl = state.render_loop.write().await;
-        rl.stop();
-    }
-    rt.shutdown().await.expect("shutdown");
-
-    let scene_manager = state.scene_manager.read().await;
-    let transition = scene_manager
-        .active_transition()
-        .expect("scene transition should still be active");
-    assert!(
-        transition.progress > 0.0,
-        "render thread should advance scene transitions on the frame clock"
-    );
-    assert_eq!(scene_manager.active_scene_id(), Some(&scene_b.id));
-}
-
-#[tokio::test]
-async fn render_thread_crossfades_scene_transition_between_effect_frames() {
-    let state = make_render_state(
-        idle_effect(),
-        SpatialEngine::new(test_layout(vec![strip_zone("zone_0", "mock:strip", 8)])),
-        BackendManager::new(),
-    );
     let mut canvas_rx = state.event_bus.canvas_receiver();
 
     let solid_id = {
@@ -1675,30 +1801,20 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     };
 
     let mut scene_a = make_scene("Scene A");
-    scene_a.groups = vec![primary_group(
+    scene_a.transition.duration_ms = 0;
+    scene_a.zones = vec![primary_zone(
         solid_id,
         solid_color_controls(255, 0, 0),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
     )];
     let mut scene_b = make_scene("Scene B");
-    scene_b.transition.duration_ms = 5_000;
-    scene_b.groups = vec![primary_group(
+    scene_b.transition.duration_ms = 60_000;
+    scene_b.zones = vec![primary_zone(
         solid_id,
         solid_color_controls(0, 0, 255),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
     )];
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene_a.clone())
-            .expect("create scene a");
-        scene_manager
-            .create(scene_b.clone())
-            .expect("create scene b");
-        scene_manager
-            .activate(&scene_a.id, None)
-            .expect("activate scene a");
-    }
+    install_render_scenes(&state, vec![scene_a.clone(), scene_b.clone()], scene_a.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1711,18 +1827,16 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
         .expect("timed out waiting for initial canvas")
         .expect("canvas sender should remain connected");
     let initial_canvas = canvas_rx.borrow().clone();
-    let initial_pixel = &initial_canvas.rgba_bytes()[0..4];
-    assert_eq!(initial_pixel, [255, 0, 0, 255].as_slice());
+    assert_eq!(&initial_canvas.rgba_bytes()[0..4], [255, 0, 0, 255]);
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&scene_b.id, None)
-            .expect("activate scene b");
-    }
-
-    let blended_canvas =
-        wait_for_next_canvas_frame(&mut canvas_rx, initial_canvas.frame_number).await;
+    activate_render_scene(&state, scene_b.id).await;
+    let blended_canvas = wait_for_canvas_where(&mut canvas_rx, |frame| {
+        let pixel = &frame.rgba_bytes()[0..4];
+        frame.frame_number > initial_canvas.frame_number
+            && pixel != [255, 0, 0, 255].as_slice()
+            && pixel != [0, 0, 255, 255].as_slice()
+    })
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1730,12 +1844,20 @@ async fn render_thread_crossfades_scene_transition_between_effect_frames() {
     }
     rt.shutdown().await.expect("shutdown");
 
+    let scene_manager = state.scene_manager.snapshot().await;
+    let plan = scene_manager
+        .transition_plan()
+        .expect("scene activation should retain its immutable transition plan");
+    assert_eq!(plan.from_scene, scene_a.id);
+    assert_eq!(plan.to_scene, scene_b.id);
+    assert_eq!(scene_manager.active_scene_id(), Some(&scene_b.id));
     let blended_pixel = &blended_canvas.rgba_bytes()[0..4];
     assert_ne!(blended_pixel, [255, 0, 0, 255].as_slice());
+    assert_ne!(blended_pixel, [0, 0, 255, 255].as_slice());
 }
 
 #[tokio::test]
-async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
+async fn pipeline_renders_active_scene_zones_without_global_effect_engine() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -1748,32 +1870,30 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
         builtin_effect_id(&registry, "solid_color")
     };
 
-    let mut scene = make_scene("Grouped Scene");
-    scene.groups = vec![
-        custom_group(
+    let mut scene = make_scene("Zoneed Scene");
+    scene.zones = vec![
+        custom_zone(
             "Left",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
         ),
-        custom_group(
+        custom_zone(
             "Right",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_right", "mock:right", 0.75, 0.5)]),
         ),
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create grouped scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate grouped scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1798,19 +1918,19 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
         .zones
         .iter()
         .find(|zone| zone.zone_id == "zone_left")
-        .expect("left group zone should be rendered");
+        .expect("left zone zone should be rendered");
     let right_zone = frame
         .zones
         .iter()
         .find(|zone| zone.zone_id == "zone_right")
-        .expect("right group zone should be rendered");
+        .expect("right zone zone should be rendered");
 
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 0, 255]));
 }
 
 #[tokio::test]
-async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
+async fn multi_zone_scene_publishes_authoritative_canvas_and_scene_canvas() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -1824,32 +1944,30 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
         builtin_effect_id(&registry, "solid_color")
     };
 
-    let mut scene = make_scene("Grouped Canvas Scene");
-    scene.groups = vec![
-        custom_group(
+    let mut scene = make_scene("Zoneed Canvas Scene");
+    scene.zones = vec![
+        custom_zone(
             "Left",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
         ),
-        custom_group(
+        custom_zone(
             "Right",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+            )]),
             test_layout(vec![point_zone("zone_right", "mock:right", 0.75, 0.5)]),
         ),
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create grouped canvas scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate grouped canvas scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -1860,11 +1978,11 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
 
     tokio::time::timeout(WAIT_DEADLINE, canvas_rx.changed())
         .await
-        .expect("expected grouped scene canvas in time")
+        .expect("expected zoneed scene canvas in time")
         .expect("canvas sender should remain connected");
     tokio::time::timeout(WAIT_DEADLINE, scene_canvas_rx.changed())
         .await
-        .expect("expected grouped scene authoritative scene canvas in time")
+        .expect("expected zoneed scene authoritative scene canvas in time")
         .expect("scene canvas sender should remain connected");
 
     {
@@ -1892,7 +2010,7 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
 }
 
 #[tokio::test]
-async fn late_group_canvas_subscribers_see_last_display_face_frame() {
+async fn late_zone_canvas_subscribers_see_last_display_face_frame() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -1904,55 +2022,50 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let display_id = DeviceId::new();
 
     let mut scene = make_scene("Display Face Scene");
-    scene.groups = vec![display_group(
-        group_id,
+    scene.zones = vec![display_zone(
+        zone_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     )];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create display face scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate display face scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
         rl.start();
     }
 
-    let group_canvas_sender = state.event_bus.group_canvas_sender(group_id);
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(zone_id);
     let mut rt = RenderThread::spawn(state.clone());
-    let mut published_group_rx = group_canvas_sender.subscribe();
+    let mut published_zone_rx = zone_canvas_sender.subscribe();
     let _ = wait_for_next_frame(&mut frame_rx, 0).await;
-    tokio::time::timeout(WAIT_DEADLINE, published_group_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, published_zone_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
-    let group_rx = group_canvas_sender.subscribe();
-    let frame = group_rx.borrow().clone();
-    assert_canvas_group_frame(&frame, 320, 200, [0, 0, 255, 255]);
-    let (_, published_targets) = state.event_bus.display_group_targets_snapshot();
+    let zone_rx = zone_canvas_sender.subscribe();
+    let frame = zone_rx.borrow().clone();
+    assert_canvas_zone_frame(&frame, 320, 200, [0, 0, 255, 255]);
+    let (_, published_targets) = state.event_bus.display_zone_targets_snapshot();
     let published_target = published_targets
-        .get(&group_id)
-        .expect("display group target metadata should publish with the face frame");
+        .get(&zone_id)
+        .expect("display zone target metadata should publish with the face frame");
     assert_eq!(published_target.device_id, display_id);
-    // The fixture group carries the seed target, which defaults to the
+    // The fixture zone carries the seed target, which defaults to the
     // blended composition; the published metadata must mirror it.
     assert_eq!(
         published_target.blend_mode,
-        hypercolor_types::scene::DisplayFaceBlendMode::Alpha
+        hypercolor_types::layer::BlendMode::Alpha
     );
     assert_eq!(published_target.opacity, 1.0);
 
@@ -1977,43 +2090,41 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let display_id = DeviceId::new();
 
-    let mut face_group = display_group(
-        group_id,
+    let mut face_zone = display_zone(
+        zone_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     );
-    face_group
+    face_zone
         .display_target
         .as_mut()
-        .expect("display group should carry a display target")
-        .blend_mode = hypercolor_types::scene::DisplayFaceBlendMode::Difference;
+        .expect("display zone should carry a display target")
+        .blend_mode = hypercolor_types::layer::BlendMode::Difference;
 
     let mut scene = make_scene("GPU Display Face Scene");
-    scene.groups = vec![
-        custom_group(
+    scene.zones = vec![
+        custom_zone(
             "Primary",
             solid_id,
-            HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+            HashMap::from([(
+                "color".into(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
             test_layout(Vec::new()),
         ),
-        face_group,
+        face_zone,
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(scene.clone())
-            .expect("create gpu display face scene");
-        scene_manager
-            .activate(&scene.id, None)
-            .expect("activate gpu display face scene");
-    }
+    install_render_scenes(&state, vec![scene.clone()], scene.id).await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2021,21 +2132,21 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     }
 
     let mut scene_canvas_rx = state.event_bus.scene_canvas_receiver();
-    let group_canvas_sender = state.event_bus.group_canvas_sender(group_id);
-    let mut group_canvas_rx = group_canvas_sender.subscribe();
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(zone_id);
+    let mut zone_canvas_rx = zone_canvas_sender.subscribe();
     let mut rt = RenderThread::spawn(state.clone());
 
     tokio::time::timeout(WAIT_DEADLINE, scene_canvas_rx.changed())
         .await
         .expect("authoritative scene canvas should publish within timeout")
         .expect("scene canvas stream should stay open");
-    tokio::time::timeout(WAIT_DEADLINE, group_canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, zone_canvas_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
 
     let scene_frame = scene_canvas_rx.borrow().clone();
-    let face_frame = group_canvas_rx.borrow().clone();
+    let face_frame = zone_canvas_rx.borrow().clone();
 
     assert_eq!(scene_frame.width, 320);
     assert_eq!(scene_frame.height, 200);
@@ -2043,7 +2154,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         scene_frame.surface().get_pixel(160, 100),
         Rgba::new(255, 0, 0, 255)
     );
-    assert_canvas_group_frame(&face_frame, 320, 200, [0, 0, 255, 255]);
+    assert_canvas_zone_frame(&face_frame, 320, 200, [0, 0, 255, 255]);
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2053,7 +2164,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
 }
 
 #[tokio::test]
-async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change() {
+async fn render_thread_prunes_stale_zone_canvas_streams_when_face_zones_change() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2065,42 +2176,42 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let first_group_id = ZoneId::new();
-    let second_group_id = ZoneId::new();
+    let first_zone_id = ZoneId::new();
+    let second_zone_id = ZoneId::new();
     let display_id = DeviceId::new();
 
     let mut first_scene = make_scene("Face Scene A");
-    first_scene.groups = vec![display_group(
-        first_group_id,
+    first_scene.zones = vec![display_zone(
+        first_zone_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([1.0, 0.0, 0.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     )];
     first_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut second_scene = make_scene("Face Scene B");
-    second_scene.groups = vec![display_group(
-        second_group_id,
+    second_scene.zones = vec![display_zone(
+        second_zone_id,
         display_id,
         solid_id,
-        HashMap::from([("color".into(), ControlValue::Color([0.0, 0.0, 1.0, 1.0]))]),
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+        )]),
         test_layout(Vec::new()),
     )];
     second_scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(first_scene.clone())
-            .expect("create first face scene");
-        scene_manager
-            .create(second_scene.clone())
-            .expect("create second face scene");
-        scene_manager
-            .activate(&first_scene.id, None)
-            .expect("activate first face scene");
-    }
+    install_render_scenes(
+        &state,
+        vec![first_scene.clone(), second_scene.clone()],
+        first_scene.id,
+    )
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2110,39 +2221,34 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let mut rt = RenderThread::spawn(state.clone());
     let first_frame = wait_for_next_frame(&mut frame_rx, 0).await;
     assert!(first_frame.frame_number > 0);
-    // Group canvas streams and display targets register as the render loop
+    // Zone canvas streams and display targets register as the render loop
     // publishes them, on channels separate from the lighting frame above, so
     // wait for convergence instead of racing the first iteration.
-    wait_until("first group canvas stream", || {
-        state.event_bus.group_canvas_stream_count() == 1
+    wait_until("first zone canvas stream", || {
+        state.event_bus.zone_canvas_stream_count() == 1
     })
     .await;
-    wait_until("first display group target", || {
-        let (_, targets) = state.event_bus.display_group_targets_snapshot();
-        state.event_bus.display_group_target_count() == 1 && targets.contains_key(&first_group_id)
+    wait_until("first display zone target", || {
+        let (_, targets) = state.event_bus.display_zone_targets_snapshot();
+        state.event_bus.display_zone_target_count() == 1 && targets.contains_key(&first_zone_id)
     })
     .await;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&second_scene.id, None)
-            .expect("activate second face scene");
-    }
+    activate_render_scene(&state, second_scene.id).await;
 
     let second_frame = wait_for_next_frame(&mut frame_rx, first_frame.frame_number).await;
     assert!(second_frame.frame_number > first_frame.frame_number);
-    wait_until("stale group stream pruned", || {
-        let (_, targets) = state.event_bus.display_group_targets_snapshot();
-        state.event_bus.group_canvas_stream_count() == 1
-            && state.event_bus.display_group_target_count() == 1
-            && !targets.contains_key(&first_group_id)
-            && targets.contains_key(&second_group_id)
+    wait_until("stale zone stream pruned", || {
+        let (_, targets) = state.event_bus.display_zone_targets_snapshot();
+        state.event_bus.zone_canvas_stream_count() == 1
+            && state.event_bus.display_zone_target_count() == 1
+            && !targets.contains_key(&first_zone_id)
+            && targets.contains_key(&second_zone_id)
     })
     .await;
 
-    wait_until("stale group canvas cleared", || {
-        let stale_rx = state.event_bus.group_canvas_receiver(first_group_id);
+    wait_until("stale zone canvas cleared", || {
+        let stale_rx = state.event_bus.zone_canvas_receiver(first_zone_id);
         let stale_frame = stale_rx.borrow().clone();
         stale_frame.width() == 0 && stale_frame.height() == 0
     })
@@ -2156,7 +2262,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 }
 
 #[tokio::test]
-async fn audio_capture_enabled_when_any_active_group_is_reactive() {
+async fn audio_capture_enabled_when_any_active_zone_is_reactive() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2186,7 +2292,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     };
 
     let mut audio_scene = make_scene("Audio Scene");
-    audio_scene.groups = vec![primary_group(
+    audio_scene.zones = vec![primary_zone(
         audio_pulse_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
@@ -2194,25 +2300,19 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     audio_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.groups = vec![primary_group(
+    solid_scene.zones = vec![primary_zone(
         solid_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
     )];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(audio_scene.clone())
-            .expect("create audio scene");
-        scene_manager
-            .create(solid_scene.clone())
-            .expect("create solid scene");
-        scene_manager
-            .activate(&audio_scene.id, None)
-            .expect("activate audio scene");
-    }
+    install_render_scenes(
+        &state,
+        vec![audio_scene.clone(), solid_scene.clone()],
+        audio_scene.id,
+    )
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2223,12 +2323,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
 
     wait_for_audio_capture_transition(&transitions, true).await;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&solid_scene.id, None)
-            .expect("activate solid scene");
-    }
+    activate_render_scene(&state, solid_scene.id).await;
 
     wait_for_audio_capture_transition(&transitions, false).await;
 
@@ -2246,7 +2341,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
 }
 
 #[tokio::test]
-async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
+async fn render_thread_gates_screen_capture_to_screen_reactive_scene_zones() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2284,7 +2379,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     };
 
     let mut screen_scene = make_scene("Screen Scene");
-    screen_scene.groups = vec![primary_group(
+    screen_scene.zones = vec![primary_zone(
         screen_cast_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
@@ -2292,25 +2387,19 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     screen_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.groups = vec![primary_group(
+    solid_scene.zones = vec![primary_zone(
         solid_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
     )];
     solid_scene.unassigned_behavior = UnassignedBehavior::Off;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .create(screen_scene.clone())
-            .expect("create screen scene");
-        scene_manager
-            .create(solid_scene.clone())
-            .expect("create solid scene");
-        scene_manager
-            .activate(&screen_scene.id, None)
-            .expect("activate screen scene");
-    }
+    install_render_scenes(
+        &state,
+        vec![screen_scene.clone(), solid_scene.clone()],
+        screen_scene.id,
+    )
+    .await;
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2321,12 +2410,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
 
     wait_for_screen_capture_transition(&transitions, true).await;
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .activate(&solid_scene.id, None)
-            .expect("activate solid scene");
-    }
+    activate_render_scene(&state, solid_scene.id).await;
 
     wait_for_screen_capture_transition(&transitions, false).await;
 
@@ -2546,7 +2630,7 @@ async fn pipeline_publishes_canvas_data_via_preview_runtime() {
 }
 
 #[tokio::test]
-async fn effect_engine_removal_does_not_break_single_group_fast_path() {
+async fn effect_engine_removal_does_not_break_single_zone_fast_path() {
     // Set up a mock device.
     let device_id = DeviceId::new();
     let mock_config = MockDeviceConfig {
@@ -2559,11 +2643,11 @@ async fn effect_engine_removal_does_not_break_single_group_fast_path() {
         id: Some(device_id),
     };
 
-    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
     backend.connect(&device_id).await.expect("connect");
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(backend));
+    backend_manager.register_backend(Arc::new(backend));
     backend_manager.map_device("mock:strip", "mock", device_id);
 
     // Set up spatial layout with one zone.
@@ -2612,7 +2696,7 @@ async fn effect_engine_removal_does_not_break_single_group_fast_path() {
 }
 
 #[tokio::test]
-async fn primary_group_canvas_published_to_canvas_channel() {
+async fn primary_zone_canvas_published_to_canvas_channel() {
     let state = make_render_state(
         active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2774,7 +2858,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     backend.fail_write = true;
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(backend));
+    backend_manager.register_backend(Arc::new(backend));
     backend_manager.map_device(&layout_device_id, "mock", device_id);
     let backend_manager = Arc::new(Mutex::new(backend_manager));
 
@@ -2800,41 +2884,15 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     }
 
     let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
-    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout.clone())));
+    let spatial_engine = SpatialService::new(SpatialEngine::new(layout.clone()));
     let event_bus = Arc::new(HypercolorBus::new());
-    let discovery_runtime = DiscoveryRuntime {
-        device_registry: device_registry.clone(),
-        backend_manager: Arc::clone(&backend_manager),
-        lifecycle_manager: Arc::clone(&lifecycle_manager),
-        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
-        event_bus: Arc::clone(&event_bus),
-        spatial_engine: Arc::clone(&spatial_engine),
-        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
-        layouts: Arc::new(RwLock::new(HashMap::new())),
-        layouts_path: PathBuf::from("layouts.json"),
-        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
-        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
-            "attachment-profiles.json",
-        )))),
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
-        scene_transactions: SceneTransactionQueue::default(),
-        runtime_state_path: PathBuf::from("runtime-state.json"),
-        usb_protocol_configs: UsbProtocolConfigStore::new(),
-        credential_store: Arc::new(
-            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
-                "hypercolor-test-credentials-{}",
-                uuid::Uuid::now_v7()
-            )))
-            .expect("test credential store"),
-        ),
-        in_progress: Arc::new(AtomicBool::new(false)),
-        pending_scans: Arc::default(),
-        task_spawner: tokio::runtime::Handle::current(),
-    };
+    let discovery_runtime = test_discovery_runtime(
+        device_registry.clone(),
+        Arc::clone(&backend_manager),
+        Arc::clone(&lifecycle_manager),
+        Arc::clone(&event_bus),
+        spatial_engine.clone(),
+    );
 
     let effect_seed = active_builtin_effect("solid_color", solid_color_controls(255, 0, 0));
     let mut scene_manager = SceneManager::with_default();
@@ -2843,13 +2901,16 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         .clone()
         .expect("builtin effect should expose metadata");
     scene_manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &metadata,
             effect_seed.controls.clone(),
             effect_seed.preset_id,
             layout.clone(),
         )
-        .expect("failing-device test should seed a primary group");
+        .expect("failing-device test should seed a primary zone");
+    let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
+        .expect("temporary scene store should open");
+    let scene_plan = scene_manager.plan_reader();
 
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
@@ -2866,14 +2927,12 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(scene_manager)),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
@@ -2938,6 +2997,162 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
+    reason = "this acceptance test wires queue delivery identity through the contended lifecycle handoff"
+)]
+async fn newer_success_fences_deferred_async_failure_recovery() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Fenced Recovery Strip".into(),
+        led_count: 8,
+        topology: LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+    let info = MockDeviceBackend::new()
+        .with_device(&mock_config)
+        .device_infos()
+        .first()
+        .cloned()
+        .expect("mock backend should expose one device");
+    let layout_device_id = DeviceLifecycleManager::layout_device_id(&info);
+    let backend = Arc::new(FencedRecoveryBackend::new(info.clone()));
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(backend.clone());
+    backend_manager.map_device(&layout_device_id, "fenced", device_id);
+
+    let device_registry = DeviceRegistry::new();
+    assert_eq!(device_registry.add(info.clone()).await, device_id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::with_reconnect_policy(
+        ReconnectPolicy {
+            initial_delay: Duration::from_secs(5),
+            ..ReconnectPolicy::default()
+        },
+    )));
+    {
+        let mut lifecycle = lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("connected state should be valid");
+        lifecycle
+            .on_frame_success(device_id)
+            .expect("frame success should move device to active");
+    }
+
+    let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
+    let mut state = make_render_state(
+        active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
+        SpatialEngine::new(layout),
+        backend_manager,
+    );
+    let backend_manager = Arc::clone(&state.backend_manager);
+    let event_bus = Arc::clone(&state.event_bus);
+    let discovery_runtime = test_discovery_runtime(
+        device_registry.clone(),
+        Arc::clone(&backend_manager),
+        Arc::clone(&lifecycle_manager),
+        Arc::clone(&event_bus),
+        state.spatial_engine.clone(),
+    );
+    state.discovery_runtime = Some(discovery_runtime.clone());
+
+    let lifecycle_guard = lifecycle_manager.lock().await;
+    let mut event_rx = event_bus.subscribe_all();
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.start();
+    }
+    let mut render_thread = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if backend_manager
+                .lock()
+                .await
+                .device_output_statistics()
+                .first()
+                .is_some_and(|stats| stats.transport_failed == 1)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("delivery N should fail while lifecycle ownership is contended");
+
+    loop {
+        match event_rx.try_recv() {
+            Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                panic!("render event channel closed")
+            }
+        }
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) if matches!(event.event, HypercolorEvent::FrameRendered { .. }) => break,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("render event channel closed")
+                }
+            }
+        }
+    })
+    .await
+    .expect("a later frame should defer failure N behind the lifecycle lock");
+
+    backend.allow_success.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if backend_manager
+                .lock()
+                .await
+                .device_output_statistics()
+                .first()
+                .is_some_and(|stats| {
+                    stats.last_transport_completed_sequence > stats.last_transport_failed_sequence
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("delivery N+1 should succeed before lifecycle ownership is released");
+
+    drop(lifecycle_guard);
+    let lifecycle = lifecycle_manager.lock().await;
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Active));
+    drop(lifecycle);
+
+    assert_eq!(backend.disconnects.load(Ordering::Relaxed), 0);
+    assert_eq!(backend_manager.lock().await.mapped_device_count(), 1);
+    assert!(
+        discovery_runtime
+            .reconnect_tasks
+            .lock()
+            .expect("reconnect task map lock poisoned")
+            .is_empty()
+    );
+
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.stop();
+    }
+    render_thread.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
     reason = "this regression test wires the real render thread, output queue, and lifecycle handoff"
 )]
 async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
@@ -2962,7 +3177,7 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     let disconnect_started = Arc::new(Notify::new());
 
     let mut backend_manager = BackendManager::new();
-    backend_manager.register_backend(Box::new(SlowDisconnectFailBackend::new(
+    backend_manager.register_backend(Arc::new(SlowDisconnectFailBackend::new(
         info.clone(),
         Arc::clone(&disconnect_started),
         Duration::from_millis(650),
@@ -2998,40 +3213,13 @@ async fn pipeline_keeps_rendering_while_async_write_failure_disconnects() {
     );
     let backend_manager = Arc::clone(&state.backend_manager);
     let event_bus = Arc::clone(&state.event_bus);
-    let spatial_engine = Arc::clone(&state.spatial_engine);
-    let discovery_runtime = DiscoveryRuntime {
-        device_registry: device_registry.clone(),
-        backend_manager: Arc::clone(&backend_manager),
-        lifecycle_manager: Arc::clone(&lifecycle_manager),
-        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
-        event_bus: Arc::clone(&event_bus),
-        spatial_engine,
-        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
-        layouts: Arc::new(RwLock::new(HashMap::new())),
-        layouts_path: PathBuf::from("layouts.json"),
-        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
-        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(PathBuf::from(
-            "attachment-profiles.json",
-        )))),
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
-        scene_transactions: SceneTransactionQueue::default(),
-        runtime_state_path: PathBuf::from("runtime-state.json"),
-        usb_protocol_configs: UsbProtocolConfigStore::new(),
-        credential_store: Arc::new(
-            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
-                "hypercolor-test-credentials-{}",
-                uuid::Uuid::now_v7()
-            )))
-            .expect("test credential store"),
-        ),
-        in_progress: Arc::new(AtomicBool::new(false)),
-        pending_scans: Arc::default(),
-        task_spawner: tokio::runtime::Handle::current(),
-    };
+    let discovery_runtime = test_discovery_runtime(
+        device_registry.clone(),
+        Arc::clone(&backend_manager),
+        Arc::clone(&lifecycle_manager),
+        Arc::clone(&event_bus),
+        state.spatial_engine.clone(),
+    );
     state.discovery_runtime = Some(discovery_runtime.clone());
 
     let mut event_rx = event_bus.subscribe_all();
@@ -3148,7 +3336,7 @@ async fn pipeline_with_no_effect_produces_black_canvas() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    // With no active groups and no zones, the idle pipeline stays black.
+    // With no active zones and no zones, the idle pipeline stays black.
     let frame_data = frame_rx.borrow().clone();
     assert!(frame_data.zones.is_empty());
 }
@@ -3470,8 +3658,18 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
         retained_canvas.rgba_bytes().as_ptr(),
         retained_screen.rgba_bytes().as_ptr()
     );
-    assert!(preview_snapshot.latest_canvas_frame_number > initial_canvas.frame_number);
-    assert!(preview_snapshot.latest_screen_canvas_frame_number > initial_screen.frame_number);
+    assert!(
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .latest_frame_number
+            > initial_canvas.frame_number
+    );
+    assert!(
+        preview_snapshot
+            .preview(PreviewKind::ScreenCanvas)
+            .latest_frame_number
+            > initial_screen.frame_number
+    );
 }
 
 #[cfg(feature = "wgpu")]
@@ -4090,14 +4288,11 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
         .expect("initial sampled color should exist");
     assert_eq!(initial_color, [255, 0, 0]);
 
-    apply_layout_update(
-        &state.spatial_engine,
-        &state.scene_manager,
-        &state.scene_transactions,
+    publish_layout(
+        &state,
         test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
     )
-    .await
-    .expect("renderer should acknowledge the layout update");
+    .await;
 
     let updated_color = tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
@@ -4158,18 +4353,15 @@ async fn pipeline_retires_layout_updates_while_the_render_loop_is_paused() {
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let applied = tokio::time::timeout(
+    tokio::time::timeout(
         Duration::from_secs(5),
-        apply_layout_update(
-            &state.spatial_engine,
-            &state.scene_manager,
-            &state.scene_transactions,
+        publish_layout(
+            &state,
             test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
         ),
     )
     .await
     .expect("a paused render loop must still retire layout transactions");
-    applied.expect("renderer should acknowledge the layout update while paused");
 
     {
         let mut rl = state.render_loop.write().await;
@@ -4274,7 +4466,7 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let published_spectrum = state.event_bus.spectrum_sender().borrow().clone();
+    let published_spectrum = state.event_bus.spectrum_lane().borrow().clone();
     assert_eq!(published_spectrum.timestamp_ms, 0);
     assert!(published_spectrum.level.abs() <= f32::EPSILON);
     assert_eq!(published_spectrum.bins.len(), 0);
@@ -4435,12 +4627,13 @@ async fn idle_pipeline_skips_canvas_publication_without_receivers() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    let published_canvas = state.event_bus.canvas_sender().borrow().clone();
+    let published_canvas = state.event_bus.canvas_lane().borrow().clone();
     let preview_snapshot = state.preview_runtime.snapshot();
     assert_eq!(published_canvas.width, 0);
     assert_eq!(published_canvas.height, 0);
-    assert_eq!(preview_snapshot.canvas_frames_published, 0);
-    assert!(preview_snapshot.latest_canvas_frame_number > 0);
+    let canvas_preview = preview_snapshot.preview(PreviewKind::Canvas);
+    assert_eq!(canvas_preview.frames_published, 0);
+    assert!(canvas_preview.latest_frame_number > 0);
 }
 
 #[tokio::test]
@@ -4482,13 +4675,22 @@ async fn pipeline_throttles_canvas_preview_publication_to_tracked_receiver_fps()
 
     let preview_snapshot = state.preview_runtime.snapshot();
     assert!(
-        preview_snapshot.canvas_frames_published <= 3,
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .frames_published
+            <= 3,
         "expected low-fps preview demand to gate source publication, got {} canvas publications",
-        preview_snapshot.canvas_frames_published
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .frames_published
     );
     assert!(
-        preview_snapshot.latest_canvas_frame_number
-            > preview_snapshot.canvas_frames_published as u32,
+        preview_snapshot
+            .preview(PreviewKind::Canvas)
+            .latest_frame_number
+            > preview_snapshot
+                .preview(PreviewKind::Canvas)
+                .frames_published as u32,
         "expected preview telemetry to keep advancing even when source publication is throttled"
     );
 }
@@ -4552,20 +4754,23 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         .clone()
         .expect("builtin effect should expose metadata");
     scene_manager
-        .upsert_primary_group(
+        .upsert_primary_zone(
             &metadata,
             effect_seed.controls.clone(),
             effect_seed.preset_id,
             layout.clone(),
         )
-        .expect("release-sleep test should seed a primary group");
+        .expect("release-sleep test should seed a primary zone");
 
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
+    let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
+        .expect("temporary scene store should open");
+    let scene_plan = scene_manager.plan_reader();
     let state = RenderThreadState {
         effect_registry: Arc::new(RwLock::new(builtin_effect_registry())),
         asset_library: test_asset_library(),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(layout))),
+        spatial_engine: SpatialService::new(SpatialEngine::new(layout)),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -4576,14 +4781,12 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(scene_manager)),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),

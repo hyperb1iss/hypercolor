@@ -845,10 +845,10 @@ Per workspace convention: tests in `tests/`, named `{feature}_tests.rs`.
 1. **Mount occupancy.** Should `place_outputs` track which mounts are
    filled and warn on double-booking? Leaning yes-as-warning (it's
    legitimate to stack a strip behind a fan).
-2. **Desk/room scale and `spaces`.** `SpatialLayout.spaces` +
-   `RoomDimensions` exist but are unused. Room-kind rig templates can
-   target a flat canvas now and adopt spaces when that subsystem wakes
-   up — confirm we're happy deferring.
+2. **Desk/room scale and `spaces`.** *Resolved by deletion (2026-08-22):*
+   `SpatialLayout.spaces` and `RoomDimensions` were unused and are gone.
+   Room-kind rig templates target a flat canvas. Reviving a multi-scale
+   model means designing it fresh, not un-deferring this.
 3. **Template versioning across sync.** When the community template registry lands,
    id collisions between local user templates and community templates
    need a precedence rule. Proposal: local always wins, registry pulls

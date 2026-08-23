@@ -27,13 +27,6 @@
     "id": "01a00e1a-c2be-7c82-9c39-4d35657c142d",
     "name": "Pump LCD Face",
     "description": "Display face for Pump LCD",
-    "effect_id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
-    "controls": {
-      "label": {
-        "text": "gpu"
-      }
-    },
-    "preset_id": null,
     "layers": [
       {
         "id": "01a00e1a-c2be-7c82-9c39-4d35657c142d",
@@ -42,7 +35,8 @@
           "effect_id": "01a00e1a-c2b9-79e3-8e9b-4fdaf90e773d",
           "controls": {
             "label": {
-              "text": "gpu"
+              "kind": "text",
+              "value": "gpu"
             }
           }
         },
@@ -87,7 +81,6 @@
         "type": "bilinear"
       },
       "default_edge_behavior": "clamp",
-      "spaces": null,
       "version": 1
     },
     "brightness": 1.0,

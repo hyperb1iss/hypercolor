@@ -6,8 +6,8 @@
 //! than occupying a permanent rail.
 
 mod composition_panel;
+pub mod device_assignment;
 mod device_card;
-pub mod device_grouping;
 mod face_composition;
 mod scene_selector;
 mod stage;
@@ -63,7 +63,7 @@ fn save_hidden_outputs(map: &HashMap<String, HashSet<String>>) {
 }
 
 /// An empty layer stack at revision 0 — the resource value for a selection
-/// that has no per-group layer endpoint (none selected, or the synthetic
+/// that has no per-zone layer endpoint (none selected, or the synthetic
 /// Unassigned entry).
 fn empty_layer_stack() -> api::LayerStackResponse {
     api::LayerStackResponse {
@@ -77,7 +77,7 @@ fn empty_layer_stack() -> api::LayerStackResponse {
 #[derive(Clone, Copy)]
 pub struct StudioContext {
     pub selected_surface_id: RwSignal<Option<String>>,
-    pub active_scene: Signal<Option<api::LiveSceneView>>,
+    pub active_scene: Signal<Option<api::SceneDocument>>,
     /// Re-fetch the active scene. Zone mutations call this so the tree and
     /// Stage pick up the new zone set and scene revision.
     pub refresh_scene: Callback<()>,
@@ -114,12 +114,12 @@ pub fn StudioPage() -> impl IntoView {
     // keep it fresh, so zone changes made from other pages, other
     // clients, or the CLI land here without a Studio-local refetch.
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
-    let active_scene: Signal<Option<api::LiveSceneView>> = zones_ctx.active_scene.into();
+    let active_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
 
     let selected_surface_id = RwSignal::new(None::<String>);
 
-    // Keep the selection on a still-present group, defaulting to the first
-    // LED group so Studio always opens on a Light.
+    // Keep the selection on a still-present zone, defaulting to the first
+    // LED zone so Studio always opens on a Light.
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
             if selected_surface_id.get_untracked().is_some() {
@@ -128,12 +128,12 @@ pub fn StudioPage() -> impl IntoView {
             return;
         };
         let current = selected_surface_id.get_untracked();
-        // The synthetic Unassigned entry has no group; it is "present"
+        // The synthetic Unassigned entry has no zone; it is "present"
         // while the scene is genuinely multi-zone (§9.4).
         let multi_zone = surface::led_zone_count(&scene.zones) > 1;
         let still_present = current.as_ref().is_some_and(|id| {
             (id == UNASSIGNED_SURFACE_ID && multi_zone)
-                || scene.zones.iter().any(|group| group.id.to_string() == *id)
+                || scene.zones.iter().any(|zone| zone.id.to_string() == *id)
         });
         if still_present {
             return;
@@ -141,9 +141,9 @@ pub fn StudioPage() -> impl IntoView {
         let next = scene
             .zones
             .iter()
-            .find(|group| group.role != ZoneRole::Display)
+            .find(|zone| zone.role != ZoneRole::Display)
             .or_else(|| scene.zones.first())
-            .map(|group| group.id.to_string());
+            .map(|zone| zone.id.to_string());
         selected_surface_id.set(next);
     });
 
@@ -160,7 +160,7 @@ pub fn StudioPage() -> impl IntoView {
                 && scene
                     .zones
                     .iter()
-                    .any(|group| group.id.to_string() == *id && group.role != ZoneRole::Display)
+                    .any(|zone| zone.id.to_string() == *id && zone.role != ZoneRole::Display)
         });
         if let Some(zone_id) = selected_led_zone {
             zones_ctx.focused_zone.set(Some(zone_id.clone()));
@@ -171,7 +171,7 @@ pub fn StudioPage() -> impl IntoView {
                 if !scene
                     .zones
                     .iter()
-                    .any(|group| group.id.to_string() == target.as_str())
+                    .any(|zone| zone.id.to_string() == target.as_str())
         ) {
             // A Screen / Unassigned selection holding a target left over
             // from a no-longer-active scene falls back to the default zone.
@@ -183,13 +183,13 @@ pub fn StudioPage() -> impl IntoView {
     let layers_resource = api::daemon_resource(move || {
         let _ = layers_tick.get();
         let scene = active_scene.get();
-        let group_id = selected_surface_id.get();
+        let zone_id = selected_surface_id.get();
         async move {
-            match (scene, group_id) {
+            match (scene, zone_id) {
                 // The Unassigned entry is not a surface — it has no layer
-                // stack, so it never hits the per-group layer endpoint.
-                (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => Ok(empty_layer_stack()),
-                (Some(_), Some(group_id)) => api::list_layers(&group_id).await,
+                // stack, so it never hits the per-zone layer endpoint.
+                (_, Some(zone_id)) if zone_id == UNASSIGNED_SURFACE_ID => Ok(empty_layer_stack()),
+                (Some(_), Some(zone_id)) => api::list_layers(&zone_id).await,
                 _ => Ok(empty_layer_stack()),
             }
         }
@@ -202,7 +202,7 @@ pub fn StudioPage() -> impl IntoView {
     let refresh_scene = zones_ctx.refresh;
 
     // The zone tree owns selection, so the layer panel shows the selected
-    // surface's name in its header rather than a redundant group selector.
+    // surface's name in its header rather than a redundant zone selector.
     let surface_label = Signal::derive(move || {
         let id = selected_surface_id.get()?;
         let scene = active_scene.get()?;
@@ -340,8 +340,8 @@ pub fn StudioPage() -> impl IntoView {
                     </ZoneLayoutProvider>
                     <CompositionPanel
                         active_scene=active_scene
-                        selected_group_id=selected_surface_id.read_only()
-                        set_selected_group_id=selected_surface_id.write_only()
+                        selected_zone_id=selected_surface_id.read_only()
+                        set_selected_zone_id=selected_surface_id.write_only()
                         surface_label=surface_label
                         layers_resource=layers_resource
                         on_layers_mutated=on_layers_mutated

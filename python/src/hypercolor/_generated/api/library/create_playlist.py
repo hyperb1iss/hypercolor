@@ -5,42 +5,83 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.api_error_body import ApiErrorBody
+from ...models.create_playlist_response_201 import CreatePlaylistResponse201
+from ...models.save_playlist_request import SavePlaylistRequest
 from ...types import Response
 
 
-def _get_kwargs() -> dict[str, Any]:
+def _get_kwargs(
+    *,
+    body: SavePlaylistRequest,
+) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
         "url": "/api/v1/library/playlists",
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | None:
-    if response.status_code == 200:
-        return None
+) -> ApiErrorBody | CreatePlaylistResponse201 | None:
+    if response.status_code == 201:
+        response_201 = CreatePlaylistResponse201.from_dict(response.json())
+
+        return response_201
 
     if response.status_code == 400:
-        return None
+        response_400 = ApiErrorBody.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 401:
+        response_401 = ApiErrorBody.from_dict(response.json())
+
+        return response_401
+
+    if response.status_code == 403:
+        response_403 = ApiErrorBody.from_dict(response.json())
+
+        return response_403
 
     if response.status_code == 404:
-        return None
+        response_404 = ApiErrorBody.from_dict(response.json())
+
+        return response_404
 
     if response.status_code == 409:
-        return None
+        response_409 = ApiErrorBody.from_dict(response.json())
+
+        return response_409
 
     if response.status_code == 412:
-        return None
+        response_412 = ApiErrorBody.from_dict(response.json())
+
+        return response_412
 
     if response.status_code == 422:
-        return None
+        response_422 = ApiErrorBody.from_dict(response.json())
+
+        return response_422
+
+    if response.status_code == 429:
+        response_429 = ApiErrorBody.from_dict(response.json())
+
+        return response_429
 
     if response.status_code == 500:
-        return None
+        response_500 = ApiErrorBody.from_dict(response.json())
+
+        return response_500
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -50,7 +91,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any]:
+) -> Response[ApiErrorBody | CreatePlaylistResponse201]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,18 +103,25 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
+    body: SavePlaylistRequest,
+) -> Response[ApiErrorBody | CreatePlaylistResponse201]:
     """Create playlist
+
+    Args:
+        body (SavePlaylistRequest): Request body for `POST /api/v1/library/playlists` and
+            `PUT /api/v1/library/playlists/{id}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        Response[ApiErrorBody | CreatePlaylistResponse201]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        body=body,
+    )
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -82,22 +130,81 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 
-async def asyncio_detailed(
+def sync(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
+    body: SavePlaylistRequest,
+) -> ApiErrorBody | CreatePlaylistResponse201 | None:
     """Create playlist
+
+    Args:
+        body (SavePlaylistRequest): Request body for `POST /api/v1/library/playlists` and
+            `PUT /api/v1/library/playlists/{id}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        ApiErrorBody | CreatePlaylistResponse201
     """
 
-    kwargs = _get_kwargs()
+    return sync_detailed(
+        client=client,
+        body=body,
+    ).parsed
+
+
+async def asyncio_detailed(
+    *,
+    client: AuthenticatedClient | Client,
+    body: SavePlaylistRequest,
+) -> Response[ApiErrorBody | CreatePlaylistResponse201]:
+    """Create playlist
+
+    Args:
+        body (SavePlaylistRequest): Request body for `POST /api/v1/library/playlists` and
+            `PUT /api/v1/library/playlists/{id}`.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[ApiErrorBody | CreatePlaylistResponse201]
+    """
+
+    kwargs = _get_kwargs(
+        body=body,
+    )
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
     return _build_response(client=client, response=response)
+
+
+async def asyncio(
+    *,
+    client: AuthenticatedClient | Client,
+    body: SavePlaylistRequest,
+) -> ApiErrorBody | CreatePlaylistResponse201 | None:
+    """Create playlist
+
+    Args:
+        body (SavePlaylistRequest): Request body for `POST /api/v1/library/playlists` and
+            `PUT /api/v1/library/playlists/{id}`.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        ApiErrorBody | CreatePlaylistResponse201
+    """
+
+    return (
+        await asyncio_detailed(
+            client=client,
+            body=body,
+        )
+    ).parsed

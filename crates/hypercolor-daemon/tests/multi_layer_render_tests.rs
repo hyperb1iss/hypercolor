@@ -1,27 +1,28 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::{DisplayGroupFrame, HypercolorBus};
+use hypercolor_core::bus::{DisplayZoneFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::SceneTransactionQueue;
+use hypercolor_daemon::domain::scene::SceneService;
+use hypercolor_daemon::domain::spatial::SpatialService;
+use hypercolor_daemon::output_power::OutputPowerState;
 use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::preview_runtime::PreviewRuntime;
 use hypercolor_daemon::render_thread::{CanvasDims, RenderThread, RenderThreadState};
-use hypercolor_daemon::scene_transactions::SceneTransactionQueue;
-use hypercolor_daemon::session::OutputPowerState;
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{ControlValue, EffectId};
-use hypercolor_types::layer::{LayerBlendMode, SceneLayer, SceneLayerId};
+use hypercolor_types::effect::EffectId;
+use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -54,7 +55,6 @@ fn test_layout(zones: Vec<Output>) -> SpatialLayout {
         zones,
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -86,16 +86,11 @@ fn full_zone(id: &str) -> Output {
     }
 }
 
-fn solid_layer(
-    effect_id: EffectId,
-    color: [f32; 4],
-    blend: LayerBlendMode,
-    opacity: f32,
-) -> SceneLayer {
+fn solid_layer(effect_id: EffectId, color: [f32; 4], blend: BlendMode, opacity: f32) -> SceneLayer {
     let mut layer = SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
-        HashMap::from([("color".into(), ControlValue::Color(color))]),
+        HashMap::from([("color".into(), ControlValue::linear_color(color))]),
         HashMap::new(),
         None,
     );
@@ -104,15 +99,11 @@ fn solid_layer(
     layer
 }
 
-fn render_group(name: &str, effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
+fn render_zone(name: &str, _effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: name.into(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout: test_layout(vec![full_zone("zone:all")]),
         brightness: 1.0,
@@ -125,23 +116,26 @@ fn render_group(name: &str, effect_id: EffectId, layers: Vec<SceneLayer>) -> Zon
     }
 }
 
-fn display_group(
-    group_id: ZoneId,
+fn display_zone(
+    zone_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
     layers: Vec<SceneLayer>,
 ) -> Zone {
-    let mut group = render_group("Display", effect_id, layers);
-    group.id = group_id;
-    group.layout = test_layout(Vec::new());
-    group.display_target = Some(DisplayFaceTarget::new(device_id));
-    group.role = ZoneRole::Display;
-    group
+    let mut zone = render_zone("Display", effect_id, layers);
+    zone.id = zone_id;
+    zone.layout = test_layout(Vec::new());
+    zone.display_target = Some(DisplayFaceTarget::new(device_id));
+    zone.role = ZoneRole::Display;
+    zone
 }
 
 fn render_state() -> RenderThreadState {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());
+    let scene_manager =
+        SceneService::in_memory(SceneManager::with_default(), Arc::clone(&event_bus));
+    let scene_plan = scene_manager.plan_reader();
     let asset_tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
     let asset_dir = asset_tempdir.path().join("assets");
     RenderThreadState {
@@ -149,7 +143,7 @@ fn render_state() -> RenderThreadState {
         asset_library: Arc::new(RwLock::new(
             AssetLibrary::open(asset_dir).expect("test asset library should open"),
         )),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(test_layout(Vec::new())))),
+        spatial_engine: SpatialService::new(SpatialEngine::new(test_layout(Vec::new()))),
         backend_manager: Arc::new(Mutex::new(BackendManager::new())),
         device_registry: DeviceRegistry::new(),
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
@@ -160,14 +154,12 @@ fn render_state() -> RenderThreadState {
             hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore::default(),
         ),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-        scene_manager: Arc::new(RwLock::new(SceneManager::with_default())),
+        scene_manager,
+        scene_plan,
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
-            "device-settings.json",
-        )))),
         scene_transactions: SceneTransactionQueue::default(),
         screen_capture_configured: false,
         canvas_dims: CanvasDims::new(320, 200),
@@ -179,15 +171,18 @@ fn render_state() -> RenderThreadState {
     }
 }
 
-async fn install_scene(state: &RenderThreadState, groups: Vec<Zone>) {
+async fn install_scene(state: &mut RenderThreadState, zones: Vec<Zone>) {
     let mut scene = make_scene("Multi Layer Scene");
-    scene.groups = groups;
+    scene.zones = zones;
     scene.unassigned_behavior = UnassignedBehavior::Off;
-    let mut scene_manager = state.scene_manager.write().await;
+    let mut scene_manager = state.scene_manager.snapshot().await;
     scene_manager.create(scene.clone()).expect("create scene");
     scene_manager
         .activate(&scene.id, None)
         .expect("activate scene");
+    let scene_manager = SceneService::in_memory(scene_manager, Arc::clone(&state.event_bus));
+    state.scene_plan = scene_manager.plan_reader();
+    state.scene_manager = scene_manager;
 }
 
 async fn run_until_canvas_frame(state: &RenderThreadState) -> hypercolor_core::bus::CanvasFrame {
@@ -211,20 +206,20 @@ async fn run_until_canvas_frame(state: &RenderThreadState) -> hypercolor_core::b
 
 #[tokio::test]
 async fn duplicate_effect_layers_compose_bottom_to_top() {
-    let state = render_state();
+    let mut state = render_state();
     let solid_id = {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group = render_group(
+    let zone = render_zone(
         "Layered",
         solid_id,
         vec![
-            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], LayerBlendMode::Replace, 1.0),
-            solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], LayerBlendMode::Alpha, 0.5),
+            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], BlendMode::Replace, 1.0),
+            solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], BlendMode::Alpha, 0.5),
         ],
     );
-    install_scene(&state, vec![group]).await;
+    install_scene(&mut state, vec![zone]).await;
 
     let frame = run_until_canvas_frame(&state).await;
     let pixel = frame.surface().get_pixel(160, 100);
@@ -237,22 +232,22 @@ async fn duplicate_effect_layers_compose_bottom_to_top() {
 
 #[tokio::test]
 async fn disabled_effect_layers_do_not_contribute_to_output() {
-    let state = render_state();
+    let mut state = render_state();
     let solid_id = {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let mut disabled = solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], LayerBlendMode::Replace, 1.0);
+    let mut disabled = solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], BlendMode::Replace, 1.0);
     disabled.enabled = false;
-    let group = render_group(
+    let zone = render_zone(
         "Disabled Overlay",
         solid_id,
         vec![
-            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], LayerBlendMode::Replace, 1.0),
+            solid_layer(solid_id, [1.0, 0.0, 0.0, 1.0], BlendMode::Replace, 1.0),
             disabled,
         ],
     );
-    install_scene(&state, vec![group]).await;
+    install_scene(&mut state, vec![zone]).await;
 
     let frame = run_until_canvas_frame(&state).await;
 
@@ -264,50 +259,50 @@ async fn disabled_effect_layers_do_not_contribute_to_output() {
 
 #[tokio::test]
 async fn display_layer_stack_publishes_separately_from_scene_canvas() {
-    let state = render_state();
+    let mut state = render_state();
     let solid_id = {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let display_group_id = ZoneId::new();
+    let display_zone_id = ZoneId::new();
     let display_device_id = DeviceId::new();
-    let group_canvas_sender = state.event_bus.group_canvas_sender(display_group_id);
-    let mut group_canvas_rx = group_canvas_sender.subscribe();
-    let scene_group = render_group(
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(display_zone_id);
+    let mut zone_canvas_rx = zone_canvas_sender.subscribe();
+    let scene_zone = render_zone(
         "Scene",
         solid_id,
         vec![solid_layer(
             solid_id,
             [1.0, 0.0, 0.0, 1.0],
-            LayerBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
         )],
     );
-    let face_group = display_group(
-        display_group_id,
+    let face_zone = display_zone(
+        display_zone_id,
         display_device_id,
         solid_id,
         vec![solid_layer(
             solid_id,
             [0.0, 0.0, 1.0, 1.0],
-            LayerBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
         )],
     );
-    install_scene(&state, vec![scene_group, face_group]).await;
+    install_scene(&mut state, vec![scene_zone, face_zone]).await;
 
     let scene_frame = run_until_canvas_frame(&state).await;
-    tokio::time::timeout(Duration::from_secs(2), group_canvas_rx.changed())
+    tokio::time::timeout(Duration::from_secs(2), zone_canvas_rx.changed())
         .await
-        .expect("expected display group frame within 2 seconds")
-        .expect("group canvas sender should remain connected");
+        .expect("expected display zone frame within 2 seconds")
+        .expect("zone canvas sender should remain connected");
 
     assert_eq!(
         scene_frame.surface().get_pixel(160, 100),
         Rgba::new(255, 0, 0, 255)
     );
-    let DisplayGroupFrame::Canvas(face_frame) = group_canvas_rx.borrow().clone() else {
-        panic!("display group should publish a canvas frame");
+    let DisplayZoneFrame::Canvas(face_frame) = zone_canvas_rx.borrow().clone() else {
+        panic!("display zone should publish a canvas frame");
     };
     assert_eq!(&face_frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
 }

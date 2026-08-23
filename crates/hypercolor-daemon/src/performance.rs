@@ -120,7 +120,7 @@ pub(crate) struct LatestFrameMetrics {
     pub postprocess_us: u32,
     pub publish_us: u32,
     pub publish_frame_data_us: u32,
-    pub publish_group_canvas_us: u32,
+    pub publish_zone_canvas_us: u32,
     pub publish_preview_us: u32,
     pub publish_events_us: u32,
     pub overhead_us: u32,
@@ -152,25 +152,21 @@ pub(crate) struct LatestFrameMetrics {
     pub devices_written: u32,
     pub total_leds: u32,
     pub logical_layer_count: u32,
-    pub render_group_count: u32,
+    pub render_zone_count: u32,
     pub scene_active: bool,
     pub scene_transition_active: bool,
-    pub render_surface_slot_count: u32,
-    pub render_surface_free_slots: u32,
-    pub render_surface_published_slots: u32,
-    pub render_surface_dequeued_slots: u32,
     /// Cumulative count of scene-surface-pool dequeues that had to allocate a
     /// fresh canvas because every slot was still shared downstream AND
     /// the pool was already at its growth cap. A rising value signals
     /// the cap is too low for current subscriber fan-out.
     pub scene_pool_saturation_reallocs: u64,
-    /// Same as above but summed across per-group direct-canvas pools.
+    /// Same as above but summed across per-zone direct-canvas pools.
     pub direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size.
     /// Non-zero values are benign — the pool converged on its working
     /// set. A steadily climbing value could indicate an Arc leak.
     pub scene_pool_grown_slots: u32,
-    /// Same as above but summed across per-group direct-canvas pools.
+    /// Same as above but summed across per-zone direct-canvas pools.
     pub direct_pool_grown_slots: u32,
     pub scene_pool_slot_count: u32,
     pub scene_pool_max_slots: u32,
@@ -844,6 +840,151 @@ fn delivered_fps(
 
 fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RenderHealthCounts {
+    pub(crate) servo: ServoEffectHealthCounts,
+    pub(crate) pipeline: RenderPipelineHealthCounts,
+}
+
+#[cfg(feature = "servo")]
+pub(crate) type ServoEffectHealthCounts = hypercolor_core::effect::ServoTelemetrySnapshot;
+
+#[cfg(not(feature = "servo"))]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ServoEffectHealthCounts {
+    pub(crate) soft_stalls_total: u64,
+    pub(crate) breaker_opens_total: u64,
+    pub(crate) session_creates_total: u64,
+    pub(crate) session_create_failures_total: u64,
+    pub(crate) session_create_wait_total_us: u64,
+    pub(crate) session_create_wait_max_us: u64,
+    pub(crate) page_loads_total: u64,
+    pub(crate) page_load_failures_total: u64,
+    pub(crate) page_load_wait_total_us: u64,
+    pub(crate) page_load_wait_max_us: u64,
+    pub(crate) renderer_loads_total: u64,
+    pub(crate) renderer_load_failures_total: u64,
+    pub(crate) renderer_load_wait_total_us: u64,
+    pub(crate) renderer_load_wait_max_us: u64,
+    pub(crate) detached_destroys_total: u64,
+    pub(crate) detached_destroy_failures_total: u64,
+    pub(crate) destroy_wait_total_us: u64,
+    pub(crate) destroy_wait_max_us: u64,
+    pub(crate) render_requests_total: u64,
+    pub(crate) render_queue_wait_total_us: u64,
+    pub(crate) render_queue_wait_max_us: u64,
+    pub(crate) render_scene_requests_total: u64,
+    pub(crate) render_scene_queue_wait_total_us: u64,
+    pub(crate) render_scene_queue_wait_max_us: u64,
+    pub(crate) render_display_requests_total: u64,
+    pub(crate) render_display_queue_wait_total_us: u64,
+    pub(crate) render_display_queue_wait_max_us: u64,
+    pub(crate) render_queue_depth: u64,
+    pub(crate) render_queue_depth_max: u64,
+    pub(crate) render_superseded_total: u64,
+    pub(crate) render_pending_age_max_us: u64,
+    pub(crate) render_cpu_frames_total: u64,
+    pub(crate) render_cached_frames_total: u64,
+    pub(crate) render_gpu_frames_total: u64,
+    pub(crate) render_gpu_import_failures_total: u64,
+    pub(crate) render_gpu_import_fallbacks_total: u64,
+    pub(crate) render_gpu_import_fallback_reason: Option<&'static str>,
+    pub(crate) render_gpu_import_windows_sync_mode: Option<&'static str>,
+    pub(crate) render_gpu_import_stale_frame_total: u64,
+    pub(crate) render_gpu_import_adapter_mismatch_total: u64,
+    pub(crate) render_gpu_import_slot_count: u64,
+    pub(crate) render_gpu_import_pending_slots: u64,
+    pub(crate) render_gpu_import_pending_slots_max: u64,
+    pub(crate) render_gpu_import_completed_slots: u64,
+    pub(crate) render_gpu_import_available_slots: u64,
+    pub(crate) render_gpu_import_available_slots_min: u64,
+    pub(crate) render_gpu_import_oldest_pending_age_max_us: u64,
+    pub(crate) render_gpu_import_blit_total_us: u64,
+    pub(crate) render_gpu_import_blit_max_us: u64,
+    pub(crate) render_gpu_import_sync_total_us: u64,
+    pub(crate) render_gpu_import_sync_max_us: u64,
+    pub(crate) render_gpu_import_total_us: u64,
+    pub(crate) render_gpu_import_max_us: u64,
+    pub(crate) render_evaluate_scripts_total_us: u64,
+    pub(crate) render_evaluate_scripts_max_us: u64,
+    pub(crate) render_event_loop_total_us: u64,
+    pub(crate) render_event_loop_max_us: u64,
+    pub(crate) render_paint_total_us: u64,
+    pub(crate) render_paint_max_us: u64,
+    pub(crate) render_readback_total_us: u64,
+    pub(crate) render_readback_max_us: u64,
+    pub(crate) render_frame_total_us: u64,
+    pub(crate) render_frame_max_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RenderPipelineHealthCounts {
+    pub(crate) cpu_producer_frames: u64,
+    pub(crate) gpu_producer_frames: u64,
+    pub(crate) gpu_cpu_materialization_blocked_total: u64,
+    pub(crate) skipped_gpu_source_uploads: u64,
+    pub(crate) media_texture_allocations_total: u64,
+    pub(crate) media_texture_upload_bytes_total: u64,
+    pub(crate) display_finalize_rgba_attempts_total: u64,
+    pub(crate) display_finalize_yuv_attempts_total: u64,
+    pub(crate) display_finalize_successes_total: u64,
+    pub(crate) display_finalize_misses_total: u64,
+    pub(crate) display_finalize_latches_total: u64,
+    pub(crate) display_finalize_blocking_wait_total_us: u64,
+    pub(crate) display_finalize_blocking_wait_max_us: u64,
+    pub(crate) display_finalize_surface_reallocs_total: u64,
+}
+
+pub(crate) fn render_health_counts() -> RenderHealthCounts {
+    RenderHealthCounts {
+        servo: servo_effect_health_counts(),
+        pipeline: render_pipeline_health_counts(),
+    }
+}
+
+#[cfg(feature = "servo")]
+fn servo_effect_health_counts() -> ServoEffectHealthCounts {
+    hypercolor_core::effect::servo_telemetry_snapshot()
+}
+
+#[cfg(not(feature = "servo"))]
+fn servo_effect_health_counts() -> ServoEffectHealthCounts {
+    ServoEffectHealthCounts::default()
+}
+
+#[cfg(feature = "wgpu")]
+fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
+    let producer = crate::render_thread::producer_frame_counts();
+    let gpu = crate::render_thread::sparkleflinger::gpu::gpu_sparkleflinger_telemetry_snapshot();
+    RenderPipelineHealthCounts {
+        cpu_producer_frames: producer.cpu_frames,
+        gpu_producer_frames: producer.gpu_frames,
+        gpu_cpu_materialization_blocked_total: producer.gpu_cpu_materialization_blocked,
+        skipped_gpu_source_uploads: gpu.source_upload_skipped_total,
+        media_texture_allocations_total: gpu.media_texture_allocations_total,
+        media_texture_upload_bytes_total: gpu.media_texture_upload_bytes_total,
+        display_finalize_rgba_attempts_total: gpu.display_finalize_rgba_attempts_total,
+        display_finalize_yuv_attempts_total: gpu.display_finalize_yuv_attempts_total,
+        display_finalize_successes_total: gpu.display_finalize_successes_total,
+        display_finalize_misses_total: gpu.display_finalize_misses_total,
+        display_finalize_latches_total: gpu.display_finalize_latches_total,
+        display_finalize_blocking_wait_total_us: gpu.display_finalize_blocking_wait_total_us,
+        display_finalize_blocking_wait_max_us: gpu.display_finalize_blocking_wait_max_us,
+        display_finalize_surface_reallocs_total: gpu.display_finalize_surface_reallocs_total,
+    }
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
+    let producer = crate::render_thread::producer_frame_counts();
+    RenderPipelineHealthCounts {
+        cpu_producer_frames: producer.cpu_frames,
+        gpu_producer_frames: producer.gpu_frames,
+        gpu_cpu_materialization_blocked_total: producer.gpu_cpu_materialization_blocked,
+        ..RenderPipelineHealthCounts::default()
+    }
 }
 
 #[cfg(test)]

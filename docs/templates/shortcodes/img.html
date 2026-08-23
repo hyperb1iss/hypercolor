@@ -1,4 +1,0 @@
-{#- Intrinsic dimensions come from the file itself so lazy-loaded images
-    reserve their space instead of reflowing the page as they arrive. -#}
-{%- set meta = get_image_metadata(path="static/" ~ path, allow_missing=true) -%}
-<img src="{{ get_url(path=path) }}" alt="{{ alt | default(value="") }}"{% if meta %} width="{{ meta.width }}" height="{{ meta.height }}"{% endif %} loading="lazy" decoding="async" />

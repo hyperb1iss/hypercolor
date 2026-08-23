@@ -11,10 +11,10 @@ use hypercolor_leptos_ext::ws::{
     EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
     InteractivePreviewFrameView, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG,
     PreviewCancelFrame, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
-    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, ZonePreviewFrameView,
+    PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
+    SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
+    ZonePreviewFrame, ZonePreviewFrameView,
 };
 pub use hypercolor_leptos_ext::ws::{
     PreviewFrameView as CanvasFrame, PreviewPixelFormat as CanvasPixelFormat,
@@ -106,16 +106,8 @@ pub struct MetricsFps {
     pub target: u32,
     pub ceiling: u32,
     pub capacity: f64,
-    pub delivered: Option<f64>,
-    pub actual: f64,
+    pub delivered: f64,
     pub dropped: u32,
-}
-
-impl MetricsFps {
-    #[must_use]
-    pub fn delivered_or_legacy(&self) -> f64 {
-        self.delivered.unwrap_or(self.actual)
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -142,7 +134,7 @@ pub struct MetricsStages {
     pub preview_postprocess_ms: f64,
     pub event_bus_ms: f64,
     pub publish_frame_data_ms: f64,
-    pub publish_group_canvas_ms: f64,
+    pub publish_zone_canvas_ms: f64,
     pub publish_preview_ms: f64,
     pub publish_events_ms: f64,
     pub coordination_overhead_ms: f64,
@@ -170,8 +162,6 @@ pub struct MetricsPacing {
     pub gpu_sample_queue_saturated: u32,
     pub gpu_sample_wait_blocked: u32,
     pub gpu_sample_cpu_fallback: u32,
-    pub cpu_sampling_late_readback: u32,
-    pub led_sampling_readback: u32,
     pub preview_surface: u32,
     pub scene_canvas_forced_surface: u32,
     pub gpu_readback_failed_frames: u32,
@@ -252,8 +242,6 @@ pub struct MetricsTimeline {
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
     pub gpu_sample_cpu_fallback: bool,
-    pub cpu_sampling_late_readback: bool,
-    pub led_sampling_readback: bool,
     pub preview_surface: bool,
     pub scene_canvas_forced_surface: bool,
     pub cpu_readback_skipped: bool,
@@ -261,7 +249,7 @@ pub struct MetricsTimeline {
     pub budget_ms: f64,
     pub wake_late_ms: f64,
     pub logical_layer_count: u32,
-    pub render_group_count: u32,
+    pub render_zone_count: u32,
     pub scene_active: bool,
     pub scene_transition_active: bool,
     pub scene_snapshot_done_ms: f64,
@@ -290,15 +278,9 @@ pub struct MetricsTimeline {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MetricsRenderSurfaces {
-    pub slot_count: u32,
-    pub free_slots: u32,
-    pub published_slots: u32,
-    pub dequeued_slots: u32,
     pub canvas_receivers: u32,
-    #[serde(rename = "preview_pool_saturation_reallocs")]
     pub scene_pool_saturation_reallocs: u64,
     pub direct_pool_saturation_reallocs: u64,
-    #[serde(rename = "preview_pool_grown_slots")]
     pub scene_pool_grown_slots: u32,
     pub direct_pool_grown_slots: u32,
     pub scene_pool_slot_count: u32,
@@ -431,8 +413,7 @@ pub struct BackpressureNotice {
     pub dropped_frames: u32,
     pub topic: String,
     pub recommendation: String,
-    pub suggested_fps: Option<u32>,
-    pub suggested_interval_ms: Option<u32>,
+    pub suggested_fps: Option<f64>,
 }
 
 /// Lightweight device event hint used to decide whether the devices list
@@ -449,7 +430,7 @@ pub struct SceneEventHint {
     pub generation: u64,
     pub event_type: String,
     pub scene_id: Option<String>,
-    /// Zone (render group) the event names, for zone-tagged events like
+    /// Zone (render zone) the event names, for zone-tagged events like
     /// `zone_changed` and `layer_stack_changed`.
     pub zone_id: Option<String>,
     pub scene_name: Option<String>,
@@ -517,9 +498,6 @@ pub struct InputSourceStatusEventHint {
     pub retired: bool,
 }
 
-/// Authoritative macOS daemon-owner snapshot used to invalidate REST status.
-pub type MacosDaemonOwnershipEventHint = MacosDaemonOwnershipStatus;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlSurfaceEventHint {
     pub event_type: String,
@@ -551,8 +529,14 @@ struct BackpressureMessage {
     dropped_frames: u32,
     topic: String,
     recommendation: String,
-    suggested_fps: Option<u32>,
-    suggested_interval_ms: Option<u32>,
+    suggested_fps: Option<f64>,
+}
+
+fn whole_fps(fps: f64) -> Option<u32> {
+    if fps < 1.0 || fps.fract() != 0.0 {
+        return None;
+    }
+    fps.to_string().parse().ok()
 }
 
 // ── Audio Level ─────────────────────────────────────────────────────────────
@@ -591,23 +575,6 @@ impl Default for PreviewBinaryDecoder {
 }
 
 impl PreviewBinaryDecoder {
-    pub(super) fn apply_hello_capabilities(&mut self, message: &serde_json::Value) {
-        let Some(capability) = message
-            .get("capabilities")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|capabilities| {
-                PreviewTransportCapability::from_capabilities(
-                    capabilities.iter().filter_map(serde_json::Value::as_str),
-                )
-            })
-        else {
-            return;
-        };
-        self.chunks = PreviewChunkReassembler::new(
-            PreviewReassemblyLimits::default().negotiated_with(capability),
-        );
-    }
-
     pub(super) fn decode_at(
         &mut self,
         buffer: js_sys::ArrayBuffer,
@@ -938,12 +905,12 @@ pub(super) fn handle_json_message(
     set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
     set_last_extension_event: &WriteSignal<Option<ExtensionEventHint>>,
     set_last_input_source_status_event: &WriteSignal<Option<InputSourceStatusEventHint>>,
-    set_last_macos_daemon_ownership_event: &WriteSignal<Option<MacosDaemonOwnershipEventHint>>,
+    set_last_macos_daemon_ownership_event: &WriteSignal<Option<MacosDaemonOwnershipStatus>>,
     set_layer_health: &WriteSignal<HashMap<String, LayerHealth>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
-    set_preview_transport_cap: &WriteSignal<u32>,
+    set_preview_backpressure_cap: &WriteSignal<u32>,
     set_last_backpressure_at_ms: &WriteSignal<Option<f64>>,
     set_backpressure_probe_epoch: &WriteSignal<u64>,
 ) {
@@ -969,28 +936,23 @@ pub(super) fn handle_json_message(
                     .and_then(|target| target.as_u64())
                     .and_then(|target| u32::try_from(target).ok())
                     .unwrap_or_default();
-                let actual = state
-                    .get("fps")
-                    .and_then(|fps| fps.get("actual"))
-                    .and_then(|actual| actual.as_f64())
-                    .unwrap_or_default();
                 let capacity = state
                     .get("fps")
                     .and_then(|fps| fps.get("capacity"))
                     .and_then(|capacity| capacity.as_f64())
-                    .unwrap_or(actual);
+                    .unwrap_or_default();
                 let delivered = state
                     .get("fps")
                     .and_then(|fps| fps.get("delivered"))
-                    .and_then(|delivered| delivered.as_f64());
+                    .and_then(|delivered| delivered.as_f64())
+                    .unwrap_or_default();
 
-                if target > 0 || actual > 0.0 {
+                if target > 0 || delivered > 0.0 {
                     set_metrics.update(|metrics| {
                         let mut next = metrics.clone().unwrap_or_default();
                         next.fps.target = target;
                         next.fps.capacity = capacity;
                         next.fps.delivered = delivered;
-                        next.fps.actual = actual;
                         *metrics = Some(next);
                     });
                 }
@@ -1044,12 +1006,12 @@ pub(super) fn handle_json_message(
         }
         "backpressure" => {
             if let Ok(message) = BackpressureMessage::deserialize(msg) {
-                if message.topic == "canvas"
-                    && message.recommendation == "reduce_fps"
-                    && message.suggested_fps.is_some_and(|fps| fps > 0)
+                if let Some(suggested_fps) = message
+                    .suggested_fps
+                    .filter(|_| message.topic == "canvas" && message.recommendation == "reduce_fps")
+                    .and_then(whole_fps)
                 {
-                    let suggested_fps = message.suggested_fps.unwrap_or_default();
-                    set_preview_transport_cap
+                    set_preview_backpressure_cap
                         .update(|current| *current = (*current).min(suggested_fps));
                     set_last_backpressure_at_ms.set(Some(now_ms()));
                 }
@@ -1058,7 +1020,6 @@ pub(super) fn handle_json_message(
                     topic: message.topic,
                     recommendation: message.recommendation,
                     suggested_fps: message.suggested_fps,
-                    suggested_interval_ms: message.suggested_interval_ms,
                 };
                 if backpressure_notice.get_untracked().as_ref() != Some(&notice) {
                     set_backpressure_notice.set(Some(notice));
@@ -1175,9 +1136,8 @@ pub fn extract_input_source_status_event_hint(
 
 pub fn extract_macos_daemon_ownership_event_hint(
     data: &serde_json::Value,
-) -> Option<MacosDaemonOwnershipEventHint> {
-    let hint = MacosDaemonOwnershipEventHint::deserialize(data).ok()?;
-    (hint.active_owner.is_some() && hint.owner_epoch.is_some()).then_some(hint)
+) -> Option<MacosDaemonOwnershipStatus> {
+    MacosDaemonOwnershipStatus::deserialize(data).ok()
 }
 
 pub fn extract_control_surface_event_hint(
@@ -1242,16 +1202,16 @@ pub fn extract_effect_error_hint(
 }
 
 /// Compose the health-map key for a layer. A `SceneLayerId` is unique only
-/// within its zone — two groups can carry the same layer id — and
-/// the daemon keys health by group as well, so scene and group ride along
-/// or one group's health would clobber another group's row.
+/// within its zone. Two zones can carry the same layer id, and the daemon
+/// keys health by zone as well, so scene and zone ride along or one zone's
+/// health would clobber another zone's row.
 pub fn layer_health_key(scene_id: &str, zone_id: &str, layer_id: &str) -> String {
     format!("{scene_id}/{zone_id}/{layer_id}")
 }
 
 /// Decode a `layer_health_changed` event into its `(health-map key, health)`.
 /// All three identity fields are required: the daemon always sends them, and
-/// without scene + group the key would collide across zones.
+/// without scene and zone the key would collide across zones.
 pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
     let scene_id = data.get("scene_id")?.as_str()?;
     let zone_id = data.get("zone_id")?.as_str()?;
@@ -1261,16 +1221,16 @@ pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHe
 }
 
 /// Whether any *current* layer in a zone is in a degraded health
-/// state. "Degraded" is the alarming end of `LayerHealth` — a failed
+/// state. "Degraded" is the alarming end of `LayerHealth`: a failed
 /// producer or a missing asset; transient `Loading`/`Stalled` states do not
 /// count, so the §6.7 Screen-row and Stage indicators stay meaningful.
 ///
 /// The health map is append-only and the daemon drops a layer's runtime
 /// state on reconcile without a recovery event, so a removed-but-failed
-/// layer leaves a stale entry behind. `current_layer_ids` is the group's
+/// layer leaves a stale entry behind. `current_layer_ids` is the zone's
 /// live layer set; an entry for a layer no longer in it is ignored, so a
 /// deleted failed layer cannot keep the surface flagged.
-pub fn group_has_degraded_layer(
+pub fn zone_has_degraded_layer(
     layer_health: &HashMap<String, LayerHealth>,
     scene_id: &str,
     zone_id: &str,
@@ -1410,18 +1370,18 @@ mod tests {
     use super::extract_input_source_status_event_hint;
 
     #[test]
-    fn input_status_hint_decodes_exact_and_legacy_consumer_counts() {
+    fn input_status_hint_defaults_a_missing_optional_consumer_count() {
         let current = extract_input_source_status_event_hint(&json!({
             "source_id": "macos:session",
             "active_consumer_count": 4
         }))
         .expect("current input status event should decode");
-        let legacy = extract_input_source_status_event_hint(&json!({
+        let partial = extract_input_source_status_event_hint(&json!({
             "source_id": "macos:session"
         }))
-        .expect("additive field should preserve legacy event decoding");
+        .expect("a missing optional count should still decode");
 
         assert_eq!(current.active_consumer_count, 4);
-        assert_eq!(legacy.active_consumer_count, 0);
+        assert_eq!(partial.active_consumer_count, 0);
     }
 }

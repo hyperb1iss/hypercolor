@@ -7,7 +7,7 @@ fn gpu_display_finalize_applies_replace_brightness_and_circular_mask() {
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(0, 0, 255, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(255, 0, 0, 255)));
-    let mut params = display_finalize_params(4, 4, DisplayFaceBlendMode::Replace);
+    let mut params = display_finalize_params(4, 4, BlendMode::Replace);
     params.circular = true;
     params.brightness = 0.5;
 
@@ -30,7 +30,7 @@ fn gpu_display_finalize_alpha_blends_in_linear_light() {
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
-    let mut params = display_finalize_params(2, 2, DisplayFaceBlendMode::Alpha);
+    let mut params = display_finalize_params(2, 2, BlendMode::Alpha);
     params.opacity = 0.5;
 
     let surface = finalize_display_face_blocking(&mut compositor, &scene, &face, params);
@@ -48,7 +48,7 @@ fn gpu_display_finalize_yuv420_reads_back_luma_and_chroma_planes() {
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 0, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
-    let params = display_finalize_params(2, 2, DisplayFaceBlendMode::Replace);
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
 
     let frame = finalize_display_face_yuv420_blocking(&mut compositor, &scene, &face, params);
 
@@ -71,7 +71,7 @@ fn gpu_display_finalize_yuv420_samples_same_size_face_on_texel_centers() {
     face_canvas.set_pixel(0, 0, Rgba::new(255, 0, 255, 0));
     face_canvas.set_pixel(1, 0, Rgba::new(0, 0, 255, 255));
     let face = ProducerFrame::Canvas(face_canvas);
-    let params = display_finalize_params(2, 1, DisplayFaceBlendMode::Replace);
+    let params = display_finalize_params(2, 1, BlendMode::Replace);
 
     let frame = finalize_display_face_yuv420_blocking(&mut compositor, &scene, &face, params);
 
@@ -144,7 +144,7 @@ fn gpu_display_finalize_copies_imported_face_into_owned_source_texture() {
     let params = display_finalize_params_for_format(
         width,
         height,
-        DisplayFaceBlendMode::Replace,
+        BlendMode::Replace,
         DisplayFrameFormat::Jpeg,
     );
 
@@ -178,7 +178,7 @@ fn gpu_display_finalize_async_ring_releases_slots_after_discard() {
     };
     let scene = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(0, 0, 255, 255)));
     let face = ProducerFrame::Canvas(solid_canvas_with_size(2, 2, Rgba::new(255, 0, 0, 255)));
-    let params = display_finalize_params(2, 2, DisplayFaceBlendMode::Replace);
+    let params = display_finalize_params(2, 2, BlendMode::Replace);
     let mut pending = Vec::new();
 
     for _ in 0..DISPLAY_FINALIZE_READBACK_SLOT_COUNT {
@@ -228,8 +228,8 @@ fn gpu_display_finalize_keeps_route_surface_sets_independent() {
     let scene_large =
         ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(0, 255, 0, 255)));
     let face_large = ProducerFrame::Canvas(solid_canvas_with_size(4, 4, Rgba::new(0, 0, 255, 255)));
-    let small_params = display_finalize_params(2, 2, DisplayFaceBlendMode::Replace);
-    let large_params = display_finalize_params(4, 4, DisplayFaceBlendMode::Replace);
+    let small_params = display_finalize_params(2, 2, BlendMode::Replace);
+    let large_params = display_finalize_params(4, 4, BlendMode::Replace);
 
     let small_pending = match compositor
         .begin_finalize_display_face(&scene_small, &face_small, small_params)
@@ -282,7 +282,7 @@ fn gpu_display_finalize_keeps_route_surface_sets_independent() {
     assert_eq!(&small.rgba_bytes()[0..4], &[255, 0, 0, 255]);
     assert_eq!(&large.rgba_bytes()[0..4], &[0, 0, 255, 255]);
 
-    compositor.retain_display_finalize_groups(&[small_params.cache_key.group_id]);
+    compositor.retain_display_finalize_zones(&[small_params.cache_key.zone_id]);
     assert!(
         compositor
             .display_finalize_surfaces

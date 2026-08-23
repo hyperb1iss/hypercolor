@@ -35,7 +35,11 @@ const LAYER_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
 /// effect's control schema and renders the shared [`ControlPanel`]; edits
 /// are coalesced and patched onto the layer's stored controls.
 #[component]
-pub fn EffectControlsSection(group_id: String, layer: SceneLayer) -> impl IntoView {
+pub fn EffectControlsSection(
+    zone_id: String,
+    layer: SceneLayer,
+    on_layers_mutated: Callback<()>,
+) -> impl IntoView {
     let LayerSource::Effect {
         effect_id,
         controls,
@@ -74,18 +78,23 @@ pub fn EffectControlsSection(group_id: String, layer: SceneLayer) -> impl IntoVi
     let (values, set_values) = signal(controls);
     let layer_id = layer.id.to_string();
 
+    let session_target = Signal::stored(Some(format!("{zone_id}:{layer_id}")));
     let patch: ControlPatchFn = Arc::new({
-        let group_id = group_id.clone();
-        move |payload: serde_json::Value, _version: Option<u64>| -> ControlPatchFuture {
-            let group_id = group_id.clone();
+        let zone_id = zone_id.clone();
+        move |_target: String,
+              payload: crate::optimistic_controls::ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
+            let zone_id = zone_id.clone();
             let layer_id = layer_id.clone();
             Box::pin(async move {
-                api::patch_layer_controls(&group_id, &layer_id, &payload).await?;
+                api::patch_layer_controls(&zone_id, &layer_id, &payload).await?;
                 Ok(api::MutationOutcome::Applied(None))
             })
         }
     });
     let session = use_control_patch_session(ControlPatchConfig {
+        target: session_target,
         defs,
         set_values,
         initial_version: None,
@@ -94,6 +103,8 @@ pub fn EffectControlsSection(group_id: String, layer: SceneLayer) -> impl IntoVi
         on_error: Callback::new(|error: String| {
             toasts::toast_error(&format!("Effect controls failed: {error}"));
         }),
+        recover: on_layers_mutated,
+        on_committed: None,
         flush_guard: None,
     });
     let on_change = session.on_change;
@@ -135,7 +146,7 @@ pub fn EffectControlsSection(group_id: String, layer: SceneLayer) -> impl IntoVi
 /// standard layer update.
 #[component]
 pub fn MediaPlaybackSection(
-    group_id: String,
+    zone_id: String,
     layer: SceneLayer,
     revision: u64,
     on_layers_mutated: Callback<()>,
@@ -155,7 +166,7 @@ pub fn MediaPlaybackSection(
             if let LayerSource::Media { playback, .. } = &mut next.source {
                 mutate(playback);
             }
-            update_layer(group_id.clone(), next, revision, on_layers_mutated);
+            update_layer(zone_id.clone(), next, revision, on_layers_mutated);
         }
     };
     let push_speed = push.clone();

@@ -19,9 +19,9 @@ If you want to write an effect for personal use or a community release, start wi
 
 The 11 native built-ins (`solid_color`, `gradient`, `rainbow`, `breathing`, `audio_pulse`, `color_wave`, `color_zones`, `screen_cast`, `media_player`, `calibration`, and `web_viewport`, which is Servo-only) exist because they must work even when Servo is not compiled in. New native effects should meet that same bar. Everything else belongs in the SDK.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 There is no runnable wgpu/GPU shader lane in Hypercolor. `EffectSource::Shader` is reserved. GLSL effects run as WebGL2 inside Servo's renderer, not as native GPU compute. Frame wgpu shaders as future work and never suggest authors target that path.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -43,13 +43,13 @@ crates/hypercolor-core/src/effect/builtin/
 
 Every native effect is a struct that implements `EffectRenderer` from `crates/hypercolor-core/src/effect/traits.rs`. The trait is `Send` but not `Sync`, so keep that in mind if the effect holds non-`Sync` state.
 
-The two methods you must implement are `init` (called once on activation) and `render_into` (called once per frame):
+The four required methods are `init`, `render_into`, `apply_controls`, and `destroy`:
 
 ```rust
 use hypercolor_types::canvas::{Canvas, LinearRgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-    PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use super::common::{builtin_effect_id, slider_control};
@@ -83,16 +83,21 @@ impl EffectRenderer for YourEffectRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "speed" => {
-                if let Some(v) = value.as_f32() { self.speed = v.max(0.1); }
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "speed" => {
+                    if let Some(v) = value.as_effect_f32() { self.speed = v.max(0.1); }
+                }
+                "brightness" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.brightness = v.clamp(0.0, 1.0);
+                    }
+                }
+                _ => {}
             }
-            "brightness" => {
-                if let Some(v) = value.as_f32() { self.brightness = v.clamp(0.0, 1.0); }
-            }
-            _ => {}
         }
+        Ok(())
     }
 
     fn destroy(&mut self) {}
@@ -179,9 +184,9 @@ Tests go in a `tests/` directory, not inline `#[cfg(test)]` blocks. The whole wo
 
 SDK effects live under `sdk/src/effects/<name>/`. The build pipeline compiles them to self-contained HTML files that the daemon renders via Servo's WebGL2 context.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `hypercolor` is published to npm. External contributors can scaffold a standalone workspace with `bun create hypercolor`; see [creating effects](@/effects/creating-effects.md). Inside the monorepo, effects resolve the SDK through the Bun workspace instead.
-{% end %}
+{% </callout> %}
 
 ### Build an effect in the monorepo
 
@@ -367,6 +372,6 @@ The effect-reviewer agent (`.agents/agents/effect-reviewer/`) runs this checklis
 - The effect name is title-cased and distinct from existing effects.
 - Native effects include tests; HTML effects include at least one preset.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Run the effect-reviewer agent against your work before opening a PR. It catches the color science and animation issues that are hardest to see on a monitor but obvious on hardware.
-{% end %}
+{% </callout> %}

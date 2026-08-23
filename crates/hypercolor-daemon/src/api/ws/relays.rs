@@ -13,12 +13,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Bytes;
 use axum::extract::ws::Utf8Bytes;
-use hypercolor_core::bus::EventTimestamp;
+use hypercolor_core::bus::{EventTimestamp, PreviewKind};
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::BrowserInputPublicationId;
 use hypercolor_leptos_ext::ws::registry::{
-    CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, METRICS_INTERVAL_MS_MAX,
+    Cadence, CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, METRICS_FPS_MIN,
     MetricsConfig, ScreenZonesConfig, SpectrumConfig, TopicId,
 };
 use hypercolor_leptos_ext::ws::{
@@ -26,7 +26,7 @@ use hypercolor_leptos_ext::ws::{
     InteractivePreviewFrame as WireInteractivePreviewFrame, PREVIEW_CHUNK_FIXED_HEADER_LEN,
     PreviewCancelFrame, PreviewChunkFrame, PreviewFrame as WirePreviewFrame, PreviewFrameChannel,
     PreviewPixelFormat as WirePreviewFormat, PreviewPublicationMetadata, PreviewStreamId,
-    PreviewTransportCapability, PreviewTransportVersion, ScreenZonesFrame as WireScreenZonesFrame,
+    PreviewTransportLimits, ScreenZonesFrame as WireScreenZonesFrame,
     ZonePreviewFrame as WireZonePreviewFrame,
 };
 use hypercolor_types::canvas::{PublishedSurfaceStorageIdentity, SurfaceDescriptor};
@@ -54,12 +54,12 @@ use super::protocol::{
     MetricsSessionLatency, MetricsStages, MetricsTimeline, MetricsWebsocket, ServerMessage,
     SubscriptionState, event_message_parts, should_relay_event,
 };
-use crate::api::AppState;
+use crate::app_state::AppState;
 use crate::interactive_preview::PreviewResourceLease;
+use crate::output_power::OutputPowerState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
-use crate::performance::LatestFrameMetrics;
+use crate::performance::{LatestFrameMetrics, render_health_counts};
 use crate::preview_runtime::{PreviewDemandSummary, PreviewPixelFormat, PreviewStreamDemand};
-use crate::session::OutputPowerState;
 
 const BACKPRESSURE_REPORT_INTERVAL: Duration = Duration::from_millis(500);
 pub(super) static WS_PREVIEW_PUBLICATION_QUEUED_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -78,10 +78,10 @@ pub(super) struct PreviewOutboundLimits {
 
 impl Default for PreviewOutboundLimits {
     fn default() -> Self {
-        let capability = PreviewTransportCapability::default();
+        let limits = PreviewTransportLimits::default();
         Self {
-            max_publication_bytes: capability.max_encoded_publication_bytes,
-            max_connection_bytes: capability.max_connection_bytes,
+            max_publication_bytes: limits.max_encoded_publication_bytes,
+            max_connection_bytes: limits.max_connection_bytes,
         }
     }
 }
@@ -112,22 +112,16 @@ pub(super) enum PreviewOutboundError {
     ConnectionBudgetExceeded { maximum: usize, actual: usize },
     #[error("preview connection retains {retained} bytes; {requested} more must wait")]
     ConnectionBusy { retained: usize, requested: usize },
-    #[error("preview connection stream limit is {maximum}")]
-    StreamBudgetExceeded { maximum: usize },
     #[error("preview sender state needs {actual} bytes; limit is {maximum}")]
     SenderStateBudgetExceeded { maximum: usize, actual: usize },
     #[error("preview cursor state needs {actual} bytes; limit is {maximum}")]
     CursorStateBudgetExceeded { maximum: usize, actual: usize },
-    #[error("preview cancellation queue limit is {maximum}")]
-    CancellationBudgetExceeded { maximum: usize },
     #[error("preview router could not allocate indexed state for {entries} streams")]
     RouterAllocationFailed { entries: usize },
     #[error("preview publication identity space is exhausted")]
     PublicationIdExhausted,
     #[error("preview chunk encoding failed: {0}")]
     ChunkEncoding(String),
-    #[error("preview transport must be negotiated before preview activation")]
-    TransportAlreadyActive,
 }
 
 #[derive(Debug)]
@@ -177,7 +171,7 @@ struct PreviewOutboundState {
     cancellation_order: VecDeque<PreviewStreamId>,
     next_publication_id: u64,
     limits: PreviewOutboundLimits,
-    capability: PreviewTransportCapability,
+    transport_limits: PreviewTransportLimits,
 }
 
 impl Drop for PreviewOutboundState {
@@ -238,20 +232,18 @@ impl PreviewOutboundState {
                 .try_reserve(1)
                 .map_err(|_| PreviewOutboundError::RouterAllocationFailed { entries })?;
         }
-        if self.capability.version == PreviewTransportVersion::V2 {
-            let additional = usize::from(!self.current.contains_key(stream))
-                .saturating_mul(preview_current_state_bytes(stream))
-                .saturating_add(
-                    usize::from(!self.queued.contains_key(stream))
-                        .saturating_mul(preview_queued_state_bytes(stream)),
-                );
-            let requested = self.sender_state_bytes().saturating_add(additional);
-            if requested > self.capability.max_sender_state_bytes {
-                return Err(PreviewOutboundError::SenderStateBudgetExceeded {
-                    maximum: self.capability.max_sender_state_bytes,
-                    actual: requested,
-                });
-            }
+        let additional = usize::from(!self.current.contains_key(stream))
+            .saturating_mul(preview_current_state_bytes(stream))
+            .saturating_add(
+                usize::from(!self.queued.contains_key(stream))
+                    .saturating_mul(preview_queued_state_bytes(stream)),
+            );
+        let requested = self.sender_state_bytes().saturating_add(additional);
+        if requested > self.transport_limits.max_sender_state_bytes {
+            return Err(PreviewOutboundError::SenderStateBudgetExceeded {
+                maximum: self.transport_limits.max_sender_state_bytes,
+                actual: requested,
+            });
         }
         Ok(())
     }
@@ -262,21 +254,12 @@ impl PreviewOutboundState {
         additional_bytes: usize,
     ) -> Result<(), PreviewOutboundError> {
         let entries = self.pending_cancellations.len().saturating_add(additional);
-        if self.capability.version == PreviewTransportVersion::V1
-            && entries > self.capability.max_tombstones
-        {
-            return Err(PreviewOutboundError::CancellationBudgetExceeded {
-                maximum: self.capability.max_tombstones,
+        let requested = self.sender_state_bytes().saturating_add(additional_bytes);
+        if requested > self.transport_limits.max_sender_state_bytes {
+            return Err(PreviewOutboundError::SenderStateBudgetExceeded {
+                maximum: self.transport_limits.max_sender_state_bytes,
+                actual: requested,
             });
-        }
-        if self.capability.version == PreviewTransportVersion::V2 {
-            let requested = self.sender_state_bytes().saturating_add(additional_bytes);
-            if requested > self.capability.max_sender_state_bytes {
-                return Err(PreviewOutboundError::SenderStateBudgetExceeded {
-                    maximum: self.capability.max_sender_state_bytes,
-                    actual: requested,
-                });
-            }
         }
         self.pending_cancellations
             .try_reserve(additional)
@@ -412,6 +395,7 @@ pub(super) fn preview_outbound_channel() -> (PreviewOutboundSender, PreviewOutbo
 pub(super) fn preview_outbound_channel_with_limits(
     limits: PreviewOutboundLimits,
 ) -> (PreviewOutboundSender, PreviewOutboundReceiver) {
+    let protocol_limits = PreviewTransportLimits::default();
     let shared = Arc::new(PreviewOutboundShared {
         state: StdMutex::new(PreviewOutboundState {
             queued: HashMap::new(),
@@ -425,7 +409,15 @@ pub(super) fn preview_outbound_channel_with_limits(
             cancellation_order: VecDeque::new(),
             next_publication_id: 1,
             limits,
-            capability: PreviewTransportCapability::default(),
+            transport_limits: PreviewTransportLimits {
+                max_encoded_publication_bytes: protocol_limits
+                    .max_encoded_publication_bytes
+                    .min(limits.max_publication_bytes),
+                max_connection_bytes: protocol_limits
+                    .max_connection_bytes
+                    .min(limits.max_connection_bytes),
+                ..protocol_limits
+            },
         }),
         item_notify: Notify::new(),
         capacity_notify: Notify::new(),
@@ -439,65 +431,6 @@ pub(super) fn preview_outbound_channel_with_limits(
 }
 
 impl PreviewOutboundSender {
-    /// The capability this sender would agree on with `peer`, without
-    /// agreeing to it. Staging the answer lets a subscribe reject on
-    /// something else entirely with the transport still untouched.
-    pub(super) fn project_negotiation(
-        &self,
-        peer: PreviewTransportCapability,
-    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
-        let state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        Self::negotiated_capability(&state, peer)
-    }
-
-    pub(super) fn negotiate_transport(
-        &self,
-        peer: PreviewTransportCapability,
-    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        // Checked and applied under one lock: either the whole
-        // capability swap lands or the transport is left as it was.
-        let negotiated = Self::negotiated_capability(&state, peer)?;
-        state.capability = negotiated;
-        state.limits = PreviewOutboundLimits {
-            max_publication_bytes: negotiated.max_encoded_publication_bytes,
-            max_connection_bytes: negotiated.max_connection_bytes,
-        };
-        Ok(negotiated)
-    }
-
-    fn negotiated_capability(
-        state: &PreviewOutboundState,
-        peer: PreviewTransportCapability,
-    ) -> Result<PreviewTransportCapability, PreviewOutboundError> {
-        if !state.current.is_empty()
-            || !state.queued.is_empty()
-            || !state.in_flight.is_empty()
-            || !state.pending_cancellations.is_empty()
-        {
-            return Err(PreviewOutboundError::TransportAlreadyActive);
-        }
-        let supported = PreviewTransportCapability::default();
-        let local = PreviewTransportCapability {
-            max_encoded_publication_bytes: supported
-                .max_encoded_publication_bytes
-                .min(state.limits.max_publication_bytes),
-            max_connection_bytes: supported
-                .max_connection_bytes
-                .min(state.limits.max_connection_bytes),
-            ..supported
-        };
-        Ok(local.negotiated_with(peer))
-    }
-
     pub(super) fn publish(
         &self,
         stream: PreviewStreamId,
@@ -552,9 +485,9 @@ impl PreviewOutboundSender {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if decoded_bytes > state.capability.max_decoded_publication_bytes {
+        if decoded_bytes > state.transport_limits.max_decoded_publication_bytes {
             return Err(PreviewOutboundError::DecodedPublicationBudgetExceeded {
-                maximum: state.capability.max_decoded_publication_bytes,
+                maximum: state.transport_limits.max_decoded_publication_bytes,
                 actual: decoded_bytes,
             });
         }
@@ -570,15 +503,6 @@ impl PreviewOutboundSender {
                 actual: encoded.len(),
             });
         }
-        if state.capability.version == PreviewTransportVersion::V1
-            && !state.current.contains_key(&stream)
-            && state.current.len() >= state.capability.max_streams
-        {
-            return Err(PreviewOutboundError::StreamBudgetExceeded {
-                maximum: state.capability.max_streams,
-            });
-        }
-
         let replaced_bytes = state
             .queued
             .get(&stream)
@@ -891,27 +815,27 @@ impl PreviewSendCursor {
         publication: PreviewPublication,
         max_message_bytes: usize,
     ) -> Result<Self, PreviewOutboundError> {
-        let capability = PreviewTransportCapability::default();
-        if max_message_bytes > capability.max_message_bytes {
+        let limits = PreviewTransportLimits::default();
+        if max_message_bytes > limits.max_message_bytes {
             return Err(PreviewOutboundError::ChunkEncoding(format!(
-                "message budget {max_message_bytes} exceeds advertised limit {}",
-                capability.max_message_bytes
+                "message budget {max_message_bytes} exceeds protocol limit {}",
+                limits.max_message_bytes
             )));
         }
-        Self::with_capability(
+        Self::with_limits(
             publication,
-            PreviewTransportCapability {
+            PreviewTransportLimits {
                 max_message_bytes,
-                ..capability
+                ..limits
             },
         )
     }
 
-    pub(super) fn with_capability(
+    pub(super) fn with_limits(
         publication: PreviewPublication,
-        capability: PreviewTransportCapability,
+        limits: PreviewTransportLimits,
     ) -> Result<Self, PreviewOutboundError> {
-        let max_message_bytes = capability.max_message_bytes;
+        let max_message_bytes = limits.max_message_bytes;
         let identity_len = publication.stream().identity_bytes();
         let envelope_len = PREVIEW_CHUNK_FIXED_HEADER_LEN
             .checked_add(identity_len)
@@ -938,10 +862,10 @@ impl PreviewSendCursor {
         } else {
             1
         };
-        let max_chunk_count = capability.effective_max_chunk_count(identity_len);
+        let max_chunk_count = limits.effective_max_chunk_count(identity_len);
         if chunk_count > max_chunk_count {
             return Err(PreviewOutboundError::ChunkEncoding(format!(
-                "chunk count {chunk_count} exceeds advertised limit {}",
+                "chunk count {chunk_count} exceeds protocol limit {}",
                 max_chunk_count
             )));
         }
@@ -1013,67 +937,19 @@ pub(super) struct PreviewCursorQueue {
     cursors: HashMap<PreviewStreamId, QueuedPreviewCursor>,
     head: Option<PreviewStreamId>,
     tail: Option<PreviewStreamId>,
-    max_streams: usize,
     max_state_bytes: usize,
     state_bytes: usize,
-    version: PreviewTransportVersion,
 }
 
 impl PreviewCursorQueue {
-    #[cfg(test)]
-    pub(super) fn new(max_streams: usize) -> Self {
+    pub(super) fn with_limits(limits: PreviewTransportLimits) -> Self {
         Self {
             cursors: HashMap::new(),
             head: None,
             tail: None,
-            max_streams,
-            max_state_bytes: usize::MAX,
+            max_state_bytes: limits.max_cursor_state_bytes,
             state_bytes: 0,
-            version: PreviewTransportVersion::V1,
         }
-    }
-
-    pub(super) fn with_capability(capability: PreviewTransportCapability) -> Self {
-        Self {
-            cursors: HashMap::new(),
-            head: None,
-            tail: None,
-            max_streams: capability.max_streams,
-            max_state_bytes: capability.max_cursor_state_bytes,
-            state_bytes: 0,
-            version: capability.version,
-        }
-    }
-
-    /// Whether the queue's live cursors fit inside `capability`.
-    pub(super) fn check_capability(
-        &self,
-        capability: PreviewTransportCapability,
-    ) -> Result<(), PreviewOutboundError> {
-        if capability.version == PreviewTransportVersion::V1 {
-            if self.cursors.len() > capability.max_streams {
-                return Err(PreviewOutboundError::StreamBudgetExceeded {
-                    maximum: capability.max_streams,
-                });
-            }
-        } else if self.state_bytes > capability.max_cursor_state_bytes {
-            return Err(PreviewOutboundError::CursorStateBudgetExceeded {
-                maximum: capability.max_cursor_state_bytes,
-                actual: self.state_bytes,
-            });
-        }
-        Ok(())
-    }
-
-    pub(super) fn set_capability(
-        &mut self,
-        capability: PreviewTransportCapability,
-    ) -> Result<(), PreviewOutboundError> {
-        self.check_capability(capability)?;
-        self.max_streams = capability.max_streams;
-        self.max_state_bytes = capability.max_cursor_state_bytes;
-        self.version = capability.version;
-        Ok(())
     }
 
     pub(super) fn try_insert(
@@ -1082,14 +958,6 @@ impl PreviewCursorQueue {
     ) -> Result<Option<PreviewSendCursor>, PreviewOutboundError> {
         let stream = cursor.publication().stream().clone();
         let replacing = self.cursors.contains_key(&stream);
-        if self.version == PreviewTransportVersion::V1
-            && !replacing
-            && self.cursors.len() >= self.max_streams
-        {
-            return Err(PreviewOutboundError::StreamBudgetExceeded {
-                maximum: self.max_streams,
-            });
-        }
         let replaced_bytes = self.cursors.get(&stream).map_or(0, |queued| {
             preview_cursor_state_bytes(queued.cursor.publication().stream())
         });
@@ -1101,7 +969,7 @@ impl PreviewCursorQueue {
                 maximum: self.max_state_bytes,
                 actual: usize::MAX,
             })?;
-        if self.version == PreviewTransportVersion::V2 && requested > self.max_state_bytes {
+        if requested > self.max_state_bytes {
             return Err(PreviewOutboundError::CursorStateBudgetExceeded {
                 maximum: self.max_state_bytes,
                 actual: requested,
@@ -1202,14 +1070,8 @@ impl PreviewCursorQueue {
     pub(super) fn requeue(&mut self, cursor: PreviewSendCursor) {
         let stream = cursor.publication().stream().clone();
         debug_assert!(!self.cursors.contains_key(&stream));
-        debug_assert!(
-            self.version == PreviewTransportVersion::V2 || self.cursors.len() < self.max_streams
-        );
         let cursor_bytes = preview_cursor_state_bytes(&stream);
-        debug_assert!(
-            self.version == PreviewTransportVersion::V1
-                || self.state_bytes.saturating_add(cursor_bytes) <= self.max_state_bytes
-        );
+        debug_assert!(self.state_bytes.saturating_add(cursor_bytes) <= self.max_state_bytes);
         self.insert_at_tail(stream, cursor);
         self.state_bytes = self.state_bytes.saturating_add(cursor_bytes);
     }
@@ -1375,7 +1237,7 @@ struct BackpressurePending {
 #[derive(Debug, Clone, Copy)]
 enum BackpressureAdvice {
     ReduceFps(u32),
-    IncreaseIntervalMs(u32),
+    ReduceCadence(Cadence),
 }
 
 impl BackpressureReporter {
@@ -1845,7 +1707,7 @@ pub(super) async fn relay_canvas(
             }
             () = tokio::time::sleep(preview_send_delay(last_sent_at, active_fps, Instant::now())), if pending_send => {
                 // Clone out of the watch borrow before encoding so the
-                // render thread's canvas_sender().send() isn't blocked on
+                // render thread's canvas lane publication isn't blocked on
                 // bilinear/JPEG work. CanvasFrame's pixel storage is
                 // Arc-backed, so clone is cheap (refcount bumps).
                 let (canvas_snapshot, surface_identity) = {
@@ -2359,7 +2221,7 @@ pub(super) async fn relay_zone_preview(
                     latest.clone()
                 };
                 let mut active_streams = HashSet::new();
-                for zone_preview in &zone_previews {
+                for zone_preview in zone_previews.iter() {
                     let stream = PreviewStreamId::Zone {
                         scene_id: *zone_preview.scene_id.0.as_bytes(),
                         zone_id: *zone_preview.zone_id.0.as_bytes(),
@@ -2510,7 +2372,7 @@ pub(super) async fn relay_display_preview(
                     .get(&device_id)
                     .await
                     .is_some_and(|tracked| {
-                        crate::api::displays::display_surface_info(&tracked.info).is_some()
+                        crate::domain::display::display_surface_info(&tracked.info).is_some()
                     });
             if !known_display_device {
                 continue;
@@ -2685,7 +2547,7 @@ async fn follow_display_preview(
                 .get(&device_id)
                 .await
                 .is_some_and(|tracked| {
-                    crate::api::displays::display_surface_info(&tracked.info).is_some()
+                    crate::domain::display::display_surface_info(&tracked.info).is_some()
                 });
         if !still_previewable {
             return;
@@ -2727,25 +2589,22 @@ pub(super) async fn relay_metrics(
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
     let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
-    let mut active_interval_ms = None::<u32>;
+    let mut active_cadence = None::<Cadence>;
     let backpressure = BackpressureReporter::new(json_tx.clone(), "metrics", None);
 
     loop {
-        if active_interval_ms.is_none() {
-            active_interval_ms = {
+        if active_cadence.is_none() {
+            active_cadence = {
                 let subs = subscriptions.borrow();
                 if subs.contains(TopicId::Metrics) {
-                    Some(
-                        subs.config_of::<MetricsConfig>(TopicId::Metrics, None)
-                            .interval_ms,
-                    )
+                    Some(subs.config_of::<MetricsConfig>(TopicId::Metrics, None).fps)
                 } else {
                     None
                 }
             };
         }
 
-        let Some(interval_ms) = active_interval_ms else {
+        let Some(cadence) = active_cadence else {
             if subscriptions.changed().await.is_err() {
                 break;
             }
@@ -2758,10 +2617,10 @@ pub(super) async fn relay_metrics(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
-                active_interval_ms = None;
+                active_cadence = None;
                 continue;
             }
-            () = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
+            () = tokio::time::sleep(cadence.period()) => {}
         }
 
         let still_subscribed = {
@@ -2775,21 +2634,16 @@ pub(super) async fn relay_metrics(
         let total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
         let delta_bytes = total_bytes.saturating_sub(last_total_bytes);
         last_total_bytes = total_bytes;
-        let interval_secs = f64::from(interval_ms) / 1000.0;
-        let bytes_per_sec = if interval_secs > 0.0 {
-            let delta_u32 = u32::try_from(delta_bytes).unwrap_or(u32::MAX);
-            f64::from(delta_u32) / interval_secs
-        } else {
-            0.0
-        };
+        let delta_u32 = u32::try_from(delta_bytes).unwrap_or(u32::MAX);
+        let bytes_per_sec = f64::from(delta_u32) * cadence.fps();
 
         let message = build_metrics_message(&state, bytes_per_sec).await;
         if let Ok(text) = serde_json::to_string(&message)
             && !try_enqueue_json(&json_tx, text, "metrics")
         {
-            backpressure.record_drop(BackpressureAdvice::IncreaseIntervalMs(
-                interval_ms.saturating_mul(2).min(METRICS_INTERVAL_MS_MAX),
-            ));
+            let suggested_fps = (cadence.fps() / 2.0).max(METRICS_FPS_MIN);
+            let suggested = Cadence::from_fps(suggested_fps).unwrap_or_default();
+            backpressure.record_drop(BackpressureAdvice::ReduceCadence(suggested));
         }
     }
 }
@@ -2800,17 +2654,17 @@ pub(super) async fn relay_device_metrics(
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
-    let mut active_interval_ms = None::<u32>;
+    let mut active_cadence = None::<Cadence>;
     let backpressure = BackpressureReporter::new(json_tx.clone(), "device_metrics", None);
 
     loop {
-        if active_interval_ms.is_none() {
-            active_interval_ms = {
+        if active_cadence.is_none() {
+            active_cadence = {
                 let subs = subscriptions.borrow();
                 if subs.contains(TopicId::DeviceMetrics) {
                     Some(
                         subs.config_of::<MetricsConfig>(TopicId::DeviceMetrics, None)
-                            .interval_ms,
+                            .fps,
                     )
                 } else {
                     None
@@ -2818,7 +2672,7 @@ pub(super) async fn relay_device_metrics(
             };
         }
 
-        let Some(interval_ms) = active_interval_ms else {
+        let Some(cadence) = active_cadence else {
             if subscriptions.changed().await.is_err() {
                 break;
             }
@@ -2831,10 +2685,10 @@ pub(super) async fn relay_device_metrics(
                     break;
                 }
                 let _ = subscriptions.borrow_and_update();
-                active_interval_ms = None;
+                active_cadence = None;
                 continue;
             }
-            () = tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))) => {}
+            () = tokio::time::sleep(cadence.period()) => {}
         }
 
         let still_subscribed = {
@@ -2849,9 +2703,9 @@ pub(super) async fn relay_device_metrics(
         if let Ok(text) = serde_json::to_string(&message)
             && !try_enqueue_json(&json_tx, text, "device_metrics")
         {
-            backpressure.record_drop(BackpressureAdvice::IncreaseIntervalMs(
-                interval_ms.saturating_mul(2).min(METRICS_INTERVAL_MS_MAX),
-            ));
+            let suggested_fps = (cadence.fps() / 2.0).max(METRICS_FPS_MIN);
+            let suggested = Cadence::from_fps(suggested_fps).unwrap_or_default();
+            backpressure.record_drop(BackpressureAdvice::ReduceCadence(suggested));
         }
     }
 }
@@ -3052,23 +2906,18 @@ async fn enqueue_backpressure_notice(
     advice: BackpressureAdvice,
     dropped_frames: u32,
 ) -> bool {
-    let (recommendation, suggested_fps, suggested_interval_ms) = match advice {
-        BackpressureAdvice::ReduceFps(current_fps) => (
-            "reduce_fps",
-            Some(current_fps.saturating_div(2).max(1)),
-            None,
-        ),
-        BackpressureAdvice::IncreaseIntervalMs(suggested_interval_ms) => {
-            ("increase_interval_ms", None, Some(suggested_interval_ms))
+    let suggested_fps = match advice {
+        BackpressureAdvice::ReduceFps(current_fps) => {
+            f64::from(current_fps.saturating_div(2).max(1))
         }
+        BackpressureAdvice::ReduceCadence(cadence) => cadence.fps(),
     };
     let message = ServerMessage::Backpressure {
         dropped_frames: dropped_frames.max(1),
         topic: topic.to_owned(),
         key: key.map(str::to_owned),
-        recommendation: recommendation.to_owned(),
-        suggested_fps,
-        suggested_interval_ms,
+        recommendation: "reduce_fps".to_owned(),
+        suggested_fps: Some(suggested_fps),
     };
 
     let Ok(text) = serde_json::to_string(&message) else {
@@ -3134,7 +2983,7 @@ pub(super) async fn build_metrics_message(
     let connected = devices.len();
 
     let (canvas_width, canvas_height) = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         let layout = spatial.layout();
         (layout.canvas_width, layout.canvas_height)
     };
@@ -3146,14 +2995,26 @@ pub(super) async fn build_metrics_message(
     let daemon_rss_mb = process_rss_mb().unwrap_or(0.0);
     let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
     let preview_runtime = state.preview_runtime.snapshot();
+    let canvas_preview = preview_runtime.preview(PreviewKind::Canvas);
+    let scene_canvas_preview = preview_runtime.preview(PreviewKind::SceneCanvas);
+    let screen_canvas_preview = preview_runtime.preview(PreviewKind::ScreenCanvas);
+    let web_viewport_canvas_preview = preview_runtime.preview(PreviewKind::WebViewportCanvas);
+    let zone_preview = preview_runtime.zone_preview;
     let canvas_demand = state.preview_runtime.canvas_demand();
     let scene_canvas_demand = state.preview_runtime.scene_canvas_demand();
     let screen_canvas_demand = state.preview_runtime.screen_canvas_demand();
     let web_viewport_canvas_demand = state.preview_runtime.web_viewport_canvas_demand();
     let zone_preview_demand = state.preview_runtime.zone_preview_demand();
-    let display_output = state.display_frames.read().await.metrics_snapshot();
-    let servo_health = servo_effect_health_counts();
-    let pipeline_health = render_pipeline_health_counts();
+    let display_output = state
+        .domains
+        .display
+        .frames()
+        .read()
+        .await
+        .metrics_snapshot();
+    let health = render_health_counts();
+    let servo_health = health.servo;
+    let pipeline_health = health.pipeline;
     let usb_actor_metrics = usb_actor_metrics_snapshot();
 
     ServerMessage::Metrics {
@@ -3168,7 +3029,6 @@ pub(super) async fn build_metrics_message(
                 } else {
                     0.0
                 },
-                actual: round_1(capacity_fps),
                 dropped: render_stats.consecutive_misses,
             },
             frame_time: MetricsFrameTime {
@@ -3198,7 +3058,7 @@ pub(super) async fn build_metrics_message(
                 preview_postprocess_ms: round_2(us_to_ms(latest_frame.postprocess_us)),
                 event_bus_ms: round_2(us_to_ms(latest_frame.publish_us)),
                 publish_frame_data_ms: round_2(us_to_ms(latest_frame.publish_frame_data_us)),
-                publish_group_canvas_ms: round_2(us_to_ms(latest_frame.publish_group_canvas_us)),
+                publish_zone_canvas_ms: round_2(us_to_ms(latest_frame.publish_zone_canvas_us)),
                 publish_preview_ms: round_2(us_to_ms(latest_frame.publish_preview_us)),
                 publish_events_ms: round_2(us_to_ms(latest_frame.publish_events_us)),
                 coordination_overhead_ms: round_2(us_to_ms(latest_frame.overhead_us)),
@@ -3229,8 +3089,6 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_queue_saturated: performance_snapshot.pacing.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: performance_snapshot.pacing.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: performance_snapshot.pacing.gpu_sample_cpu_fallback,
-                cpu_sampling_late_readback: 0,
-                led_sampling_readback: 0,
                 preview_surface: performance_snapshot.pacing.preview_surface,
                 scene_canvas_forced_surface: performance_snapshot
                     .pacing
@@ -3404,8 +3262,6 @@ pub(super) async fn build_metrics_message(
                 gpu_sample_queue_saturated: latest_frame.gpu_sample_queue_saturated,
                 gpu_sample_wait_blocked: latest_frame.gpu_sample_wait_blocked,
                 gpu_sample_cpu_fallback: latest_frame.gpu_sample_cpu_fallback,
-                cpu_sampling_late_readback: false,
-                led_sampling_readback: false,
                 preview_surface: latest_frame.preview_surface,
                 scene_canvas_forced_surface: latest_frame.scene_canvas_forced_surface,
                 cpu_readback_skipped: latest_frame.cpu_readback_skipped,
@@ -3413,7 +3269,7 @@ pub(super) async fn build_metrics_message(
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
                 wake_late_ms: round_2(us_to_ms(latest_frame.wake_late_us)),
                 logical_layer_count: latest_frame.logical_layer_count,
-                render_group_count: latest_frame.render_group_count,
+                render_zone_count: latest_frame.render_zone_count,
                 scene_active: latest_frame.scene_active,
                 scene_transition_active: latest_frame.scene_transition_active,
                 scene_snapshot_done_ms: round_2(us_to_ms(
@@ -3430,10 +3286,6 @@ pub(super) async fn build_metrics_message(
                 frame_done_ms: round_2(us_to_ms(latest_frame.timeline.frame_done_us)),
             },
             render_surfaces: MetricsRenderSurfaces {
-                slot_count: latest_frame.render_surface_slot_count,
-                free_slots: latest_frame.render_surface_free_slots,
-                published_slots: latest_frame.render_surface_published_slots,
-                dequeued_slots: latest_frame.render_surface_dequeued_slots,
                 canvas_receivers: latest_frame.canvas_receiver_count,
                 scene_pool_saturation_reallocs: latest_frame.scene_pool_saturation_reallocs,
                 direct_pool_saturation_reallocs: latest_frame.direct_pool_saturation_reallocs,
@@ -3463,24 +3315,22 @@ pub(super) async fn build_metrics_message(
                 compositor_pool_dequeued_slots: latest_frame.compositor_pool_dequeued_slots,
             },
             preview: MetricsPreview {
-                canvas_receivers: preview_runtime.canvas_receivers,
-                scene_canvas_receivers: preview_runtime.scene_canvas_receivers,
-                screen_canvas_receivers: preview_runtime.screen_canvas_receivers,
-                web_viewport_canvas_receivers: preview_runtime.web_viewport_canvas_receivers,
-                zone_preview_receivers: preview_runtime.zone_preview_receivers,
-                canvas_frames_published: preview_runtime.canvas_frames_published,
-                scene_canvas_frames_published: preview_runtime.scene_canvas_frames_published,
-                screen_canvas_frames_published: preview_runtime.screen_canvas_frames_published,
-                web_viewport_canvas_frames_published: preview_runtime
-                    .web_viewport_canvas_frames_published,
-                zone_preview_frames_published: preview_runtime.zone_preview_frames_published,
-                latest_canvas_frame_number: preview_runtime.latest_canvas_frame_number,
-                latest_scene_canvas_frame_number: preview_runtime.latest_scene_canvas_frame_number,
-                latest_screen_canvas_frame_number: preview_runtime
-                    .latest_screen_canvas_frame_number,
-                latest_web_viewport_canvas_frame_number: preview_runtime
-                    .latest_web_viewport_canvas_frame_number,
-                latest_zone_preview_frame_number: preview_runtime.latest_zone_preview_frame_number,
+                canvas_receivers: canvas_preview.receivers,
+                scene_canvas_receivers: scene_canvas_preview.receivers,
+                screen_canvas_receivers: screen_canvas_preview.receivers,
+                web_viewport_canvas_receivers: web_viewport_canvas_preview.receivers,
+                zone_preview_receivers: zone_preview.receivers,
+                canvas_frames_published: canvas_preview.frames_published,
+                scene_canvas_frames_published: scene_canvas_preview.frames_published,
+                screen_canvas_frames_published: screen_canvas_preview.frames_published,
+                web_viewport_canvas_frames_published: web_viewport_canvas_preview.frames_published,
+                zone_preview_frames_published: zone_preview.frames_published,
+                latest_canvas_frame_number: canvas_preview.latest_frame_number,
+                latest_scene_canvas_frame_number: scene_canvas_preview.latest_frame_number,
+                latest_screen_canvas_frame_number: screen_canvas_preview.latest_frame_number,
+                latest_web_viewport_canvas_frame_number: web_viewport_canvas_preview
+                    .latest_frame_number,
+                latest_zone_preview_frame_number: zone_preview.latest_frame_number,
                 canvas_demand: metrics_preview_demand(canvas_demand),
                 scene_canvas_demand: metrics_preview_demand(scene_canvas_demand),
                 screen_canvas_demand: metrics_preview_demand(screen_canvas_demand),
@@ -3570,7 +3420,7 @@ pub(super) fn build_device_metrics_message(state: &AppState) -> ServerMessage {
 async fn sensor_snapshot_receiver(
     state: &AppState,
 ) -> Option<watch::Receiver<Arc<SystemSnapshot>>> {
-    let input_manager = state.input_manager.lock().await;
+    let input_manager = state.input_manager().lock().await;
     input_manager.sensor_snapshot_receiver()
 }
 
@@ -3580,303 +3430,6 @@ fn sensor_snapshot_message(snapshot: &SystemSnapshot) -> Option<Utf8Bytes> {
         data: snapshot.clone(),
     };
     serde_json::to_string(&message).ok().map(Into::into)
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct ServoEffectHealthCounts {
-    soft_stalls_total: u64,
-    breaker_opens_total: u64,
-    session_creates_total: u64,
-    session_create_failures_total: u64,
-    session_create_wait_total_us: u64,
-    session_create_wait_max_us: u64,
-    page_loads_total: u64,
-    page_load_failures_total: u64,
-    page_load_wait_total_us: u64,
-    page_load_wait_max_us: u64,
-    renderer_loads_total: u64,
-    renderer_load_failures_total: u64,
-    renderer_load_wait_total_us: u64,
-    renderer_load_wait_max_us: u64,
-    detached_destroys_total: u64,
-    detached_destroy_failures_total: u64,
-    destroy_wait_total_us: u64,
-    destroy_wait_max_us: u64,
-    render_requests_total: u64,
-    render_queue_wait_total_us: u64,
-    render_queue_wait_max_us: u64,
-    render_scene_requests_total: u64,
-    render_scene_queue_wait_total_us: u64,
-    render_scene_queue_wait_max_us: u64,
-    render_display_requests_total: u64,
-    render_display_queue_wait_total_us: u64,
-    render_display_queue_wait_max_us: u64,
-    render_queue_depth: u64,
-    render_queue_depth_max: u64,
-    render_superseded_total: u64,
-    render_pending_age_max_us: u64,
-    render_cpu_frames_total: u64,
-    render_cached_frames_total: u64,
-    render_gpu_frames_total: u64,
-    render_gpu_import_failures_total: u64,
-    render_gpu_import_fallbacks_total: u64,
-    render_gpu_import_fallback_reason: Option<&'static str>,
-    render_gpu_import_windows_sync_mode: Option<&'static str>,
-    render_gpu_import_stale_frame_total: u64,
-    render_gpu_import_adapter_mismatch_total: u64,
-    render_gpu_import_slot_count: u64,
-    render_gpu_import_pending_slots: u64,
-    render_gpu_import_pending_slots_max: u64,
-    render_gpu_import_completed_slots: u64,
-    render_gpu_import_available_slots: u64,
-    render_gpu_import_available_slots_min: u64,
-    render_gpu_import_oldest_pending_age_max_us: u64,
-    render_gpu_import_blit_total_us: u64,
-    render_gpu_import_blit_max_us: u64,
-    render_gpu_import_sync_total_us: u64,
-    render_gpu_import_sync_max_us: u64,
-    render_gpu_import_total_us: u64,
-    render_gpu_import_max_us: u64,
-    render_evaluate_scripts_total_us: u64,
-    render_evaluate_scripts_max_us: u64,
-    render_event_loop_total_us: u64,
-    render_event_loop_max_us: u64,
-    render_paint_total_us: u64,
-    render_paint_max_us: u64,
-    render_readback_total_us: u64,
-    render_readback_max_us: u64,
-    render_frame_total_us: u64,
-    render_frame_max_us: u64,
-}
-
-#[cfg(feature = "servo")]
-fn servo_effect_health_counts() -> ServoEffectHealthCounts {
-    let snapshot = hypercolor_core::effect::servo_telemetry_snapshot();
-    ServoEffectHealthCounts {
-        soft_stalls_total: snapshot.soft_stalls_total,
-        breaker_opens_total: snapshot.breaker_opens_total,
-        session_creates_total: snapshot.session_creates_total,
-        session_create_failures_total: snapshot.session_create_failures_total,
-        session_create_wait_total_us: snapshot.session_create_wait_total_us,
-        session_create_wait_max_us: snapshot.session_create_wait_max_us,
-        page_loads_total: snapshot.page_loads_total,
-        page_load_failures_total: snapshot.page_load_failures_total,
-        page_load_wait_total_us: snapshot.page_load_wait_total_us,
-        page_load_wait_max_us: snapshot.page_load_wait_max_us,
-        renderer_loads_total: snapshot.renderer_loads_total,
-        renderer_load_failures_total: snapshot.renderer_load_failures_total,
-        renderer_load_wait_total_us: snapshot.renderer_load_wait_total_us,
-        renderer_load_wait_max_us: snapshot.renderer_load_wait_max_us,
-        detached_destroys_total: snapshot.detached_destroys_total,
-        detached_destroy_failures_total: snapshot.detached_destroy_failures_total,
-        destroy_wait_total_us: snapshot.destroy_wait_total_us,
-        destroy_wait_max_us: snapshot.destroy_wait_max_us,
-        render_requests_total: snapshot.render_requests_total,
-        render_queue_wait_total_us: snapshot.render_queue_wait_total_us,
-        render_queue_wait_max_us: snapshot.render_queue_wait_max_us,
-        render_scene_requests_total: snapshot.render_scene_requests_total,
-        render_scene_queue_wait_total_us: snapshot.render_scene_queue_wait_total_us,
-        render_scene_queue_wait_max_us: snapshot.render_scene_queue_wait_max_us,
-        render_display_requests_total: snapshot.render_display_requests_total,
-        render_display_queue_wait_total_us: snapshot.render_display_queue_wait_total_us,
-        render_display_queue_wait_max_us: snapshot.render_display_queue_wait_max_us,
-        render_queue_depth: snapshot.render_queue_depth,
-        render_queue_depth_max: snapshot.render_queue_depth_max,
-        render_superseded_total: snapshot.render_superseded_total,
-        render_pending_age_max_us: snapshot.render_pending_age_max_us,
-        render_cpu_frames_total: snapshot.render_cpu_frames_total,
-        render_cached_frames_total: snapshot.render_cached_frames_total,
-        render_gpu_frames_total: snapshot.render_gpu_frames_total,
-        render_gpu_import_failures_total: snapshot.render_gpu_import_failures_total,
-        render_gpu_import_fallbacks_total: snapshot.render_gpu_import_fallbacks_total,
-        render_gpu_import_fallback_reason: snapshot.render_gpu_import_fallback_reason,
-        render_gpu_import_windows_sync_mode: snapshot.render_gpu_import_windows_sync_mode,
-        render_gpu_import_stale_frame_total: snapshot.render_gpu_import_stale_frame_total,
-        render_gpu_import_adapter_mismatch_total: snapshot.render_gpu_import_adapter_mismatch_total,
-        render_gpu_import_slot_count: snapshot.render_gpu_import_slot_count,
-        render_gpu_import_pending_slots: snapshot.render_gpu_import_pending_slots,
-        render_gpu_import_pending_slots_max: snapshot.render_gpu_import_pending_slots_max,
-        render_gpu_import_completed_slots: snapshot.render_gpu_import_completed_slots,
-        render_gpu_import_available_slots: snapshot.render_gpu_import_available_slots,
-        render_gpu_import_available_slots_min: snapshot.render_gpu_import_available_slots_min,
-        render_gpu_import_oldest_pending_age_max_us: snapshot
-            .render_gpu_import_oldest_pending_age_max_us,
-        render_gpu_import_blit_total_us: snapshot.render_gpu_import_blit_total_us,
-        render_gpu_import_blit_max_us: snapshot.render_gpu_import_blit_max_us,
-        render_gpu_import_sync_total_us: snapshot.render_gpu_import_sync_total_us,
-        render_gpu_import_sync_max_us: snapshot.render_gpu_import_sync_max_us,
-        render_gpu_import_total_us: snapshot.render_gpu_import_total_us,
-        render_gpu_import_max_us: snapshot.render_gpu_import_max_us,
-        render_evaluate_scripts_total_us: snapshot.render_evaluate_scripts_total_us,
-        render_evaluate_scripts_max_us: snapshot.render_evaluate_scripts_max_us,
-        render_event_loop_total_us: snapshot.render_event_loop_total_us,
-        render_event_loop_max_us: snapshot.render_event_loop_max_us,
-        render_paint_total_us: snapshot.render_paint_total_us,
-        render_paint_max_us: snapshot.render_paint_max_us,
-        render_readback_total_us: snapshot.render_readback_total_us,
-        render_readback_max_us: snapshot.render_readback_max_us,
-        render_frame_total_us: snapshot.render_frame_total_us,
-        render_frame_max_us: snapshot.render_frame_max_us,
-    }
-}
-
-#[cfg(not(feature = "servo"))]
-const fn servo_effect_health_counts() -> ServoEffectHealthCounts {
-    ServoEffectHealthCounts {
-        soft_stalls_total: 0,
-        breaker_opens_total: 0,
-        session_creates_total: 0,
-        session_create_failures_total: 0,
-        session_create_wait_total_us: 0,
-        session_create_wait_max_us: 0,
-        page_loads_total: 0,
-        page_load_failures_total: 0,
-        page_load_wait_total_us: 0,
-        page_load_wait_max_us: 0,
-        renderer_loads_total: 0,
-        renderer_load_failures_total: 0,
-        renderer_load_wait_total_us: 0,
-        renderer_load_wait_max_us: 0,
-        detached_destroys_total: 0,
-        detached_destroy_failures_total: 0,
-        destroy_wait_total_us: 0,
-        destroy_wait_max_us: 0,
-        render_requests_total: 0,
-        render_queue_wait_total_us: 0,
-        render_queue_wait_max_us: 0,
-        render_scene_requests_total: 0,
-        render_scene_queue_wait_total_us: 0,
-        render_scene_queue_wait_max_us: 0,
-        render_display_requests_total: 0,
-        render_display_queue_wait_total_us: 0,
-        render_display_queue_wait_max_us: 0,
-        render_queue_depth: 0,
-        render_queue_depth_max: 0,
-        render_superseded_total: 0,
-        render_pending_age_max_us: 0,
-        render_cpu_frames_total: 0,
-        render_cached_frames_total: 0,
-        render_gpu_frames_total: 0,
-        render_gpu_import_failures_total: 0,
-        render_gpu_import_fallbacks_total: 0,
-        render_gpu_import_fallback_reason: None,
-        render_gpu_import_windows_sync_mode: None,
-        render_gpu_import_stale_frame_total: 0,
-        render_gpu_import_adapter_mismatch_total: 0,
-        render_gpu_import_slot_count: 0,
-        render_gpu_import_pending_slots: 0,
-        render_gpu_import_pending_slots_max: 0,
-        render_gpu_import_completed_slots: 0,
-        render_gpu_import_available_slots: 0,
-        render_gpu_import_available_slots_min: 0,
-        render_gpu_import_oldest_pending_age_max_us: 0,
-        render_gpu_import_blit_total_us: 0,
-        render_gpu_import_blit_max_us: 0,
-        render_gpu_import_sync_total_us: 0,
-        render_gpu_import_sync_max_us: 0,
-        render_gpu_import_total_us: 0,
-        render_gpu_import_max_us: 0,
-        render_evaluate_scripts_total_us: 0,
-        render_evaluate_scripts_max_us: 0,
-        render_event_loop_total_us: 0,
-        render_event_loop_max_us: 0,
-        render_paint_total_us: 0,
-        render_paint_max_us: 0,
-        render_readback_total_us: 0,
-        render_readback_max_us: 0,
-        render_frame_total_us: 0,
-        render_frame_max_us: 0,
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct RenderPipelineHealthCounts {
-    cpu_producer_frames: u64,
-    gpu_producer_frames: u64,
-    gpu_cpu_materialization_blocked_total: u64,
-    skipped_gpu_source_uploads: u64,
-    media_texture_allocations_total: u64,
-    media_texture_upload_bytes_total: u64,
-    display_finalize_rgba_attempts_total: u64,
-    display_finalize_yuv_attempts_total: u64,
-    display_finalize_successes_total: u64,
-    display_finalize_misses_total: u64,
-    display_finalize_latches_total: u64,
-    display_finalize_blocking_wait_total_us: u64,
-    display_finalize_blocking_wait_max_us: u64,
-    display_finalize_surface_reallocs_total: u64,
-}
-
-fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
-    let producer = crate::render_thread::producer_frame_counts();
-    let gpu = gpu_sparkleflinger_health_counts();
-    RenderPipelineHealthCounts {
-        cpu_producer_frames: producer.cpu_frames,
-        gpu_producer_frames: producer.gpu_frames,
-        gpu_cpu_materialization_blocked_total: producer.gpu_cpu_materialization_blocked,
-        skipped_gpu_source_uploads: gpu.source_upload_skipped_total,
-        media_texture_allocations_total: gpu.media_texture_allocations_total,
-        media_texture_upload_bytes_total: gpu.media_texture_upload_bytes_total,
-        display_finalize_rgba_attempts_total: gpu.display_finalize_rgba_attempts_total,
-        display_finalize_yuv_attempts_total: gpu.display_finalize_yuv_attempts_total,
-        display_finalize_successes_total: gpu.display_finalize_successes_total,
-        display_finalize_misses_total: gpu.display_finalize_misses_total,
-        display_finalize_latches_total: gpu.display_finalize_latches_total,
-        display_finalize_blocking_wait_total_us: gpu.display_finalize_blocking_wait_total_us,
-        display_finalize_blocking_wait_max_us: gpu.display_finalize_blocking_wait_max_us,
-        display_finalize_surface_reallocs_total: gpu.display_finalize_surface_reallocs_total,
-    }
-}
-
-#[cfg(feature = "wgpu")]
-fn gpu_sparkleflinger_health_counts() -> GpuSparkleFlingerHealthCounts {
-    let snapshot =
-        crate::render_thread::sparkleflinger::gpu::gpu_sparkleflinger_telemetry_snapshot();
-    GpuSparkleFlingerHealthCounts {
-        source_upload_skipped_total: snapshot.source_upload_skipped_total,
-        media_texture_allocations_total: snapshot.media_texture_allocations_total,
-        media_texture_upload_bytes_total: snapshot.media_texture_upload_bytes_total,
-        display_finalize_rgba_attempts_total: snapshot.display_finalize_rgba_attempts_total,
-        display_finalize_yuv_attempts_total: snapshot.display_finalize_yuv_attempts_total,
-        display_finalize_successes_total: snapshot.display_finalize_successes_total,
-        display_finalize_misses_total: snapshot.display_finalize_misses_total,
-        display_finalize_latches_total: snapshot.display_finalize_latches_total,
-        display_finalize_blocking_wait_total_us: snapshot.display_finalize_blocking_wait_total_us,
-        display_finalize_blocking_wait_max_us: snapshot.display_finalize_blocking_wait_max_us,
-        display_finalize_surface_reallocs_total: snapshot.display_finalize_surface_reallocs_total,
-    }
-}
-
-#[cfg(not(feature = "wgpu"))]
-const fn gpu_sparkleflinger_health_counts() -> GpuSparkleFlingerHealthCounts {
-    GpuSparkleFlingerHealthCounts {
-        source_upload_skipped_total: 0,
-        media_texture_allocations_total: 0,
-        media_texture_upload_bytes_total: 0,
-        display_finalize_rgba_attempts_total: 0,
-        display_finalize_yuv_attempts_total: 0,
-        display_finalize_successes_total: 0,
-        display_finalize_misses_total: 0,
-        display_finalize_latches_total: 0,
-        display_finalize_blocking_wait_total_us: 0,
-        display_finalize_blocking_wait_max_us: 0,
-        display_finalize_surface_reallocs_total: 0,
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct GpuSparkleFlingerHealthCounts {
-    source_upload_skipped_total: u64,
-    media_texture_allocations_total: u64,
-    media_texture_upload_bytes_total: u64,
-    display_finalize_rgba_attempts_total: u64,
-    display_finalize_yuv_attempts_total: u64,
-    display_finalize_successes_total: u64,
-    display_finalize_misses_total: u64,
-    display_finalize_latches_total: u64,
-    display_finalize_blocking_wait_total_us: u64,
-    display_finalize_blocking_wait_max_us: u64,
-    display_finalize_surface_reallocs_total: u64,
 }
 
 fn round_1(value: f64) -> f64 {
@@ -3995,8 +3548,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{
-        BACKPRESSURE_REPORT_INTERVAL, BackpressureAdvice, BackpressureReporter, preview_send_delay,
-        preview_surface_identity,
+        BACKPRESSURE_REPORT_INTERVAL, BackpressureAdvice, BackpressureReporter, Cadence,
+        preview_send_delay, preview_surface_identity,
     };
 
     #[test]
@@ -4056,7 +3609,7 @@ mod tests {
             "an unkeyed topic reports no key"
         );
         assert_eq!(first["dropped_frames"], 1);
-        assert_eq!(first["suggested_fps"], 30);
+        assert_eq!(first["suggested_fps"], 30.0);
 
         reporter.record_drop(BackpressureAdvice::ReduceFps(60));
         reporter.record_drop(BackpressureAdvice::ReduceFps(60));
@@ -4074,7 +3627,7 @@ mod tests {
         assert_eq!(second["type"], "backpressure");
         assert_eq!(second["topic"], "canvas");
         assert_eq!(second["dropped_frames"], 2);
-        assert_eq!(second["suggested_fps"], 30);
+        assert_eq!(second["suggested_fps"], 30.0);
     }
 
     #[tokio::test]
@@ -4085,7 +3638,9 @@ mod tests {
             .expect("queue accepts its first message");
 
         let reporter = BackpressureReporter::new(json_tx, "metrics", None);
-        reporter.record_drop(BackpressureAdvice::IncreaseIntervalMs(2_000));
+        reporter.record_drop(BackpressureAdvice::ReduceCadence(
+            Cadence::from_fps(0.5).expect("fixture cadence is valid"),
+        ));
         tokio::task::yield_now().await;
         assert_eq!(
             json_rx
@@ -4104,9 +3659,8 @@ mod tests {
         assert_eq!(notice["type"], "backpressure");
         assert_eq!(notice["topic"], "metrics");
         assert_eq!(notice["dropped_frames"], 1);
-        assert_eq!(notice["recommendation"], "increase_interval_ms");
-        assert_eq!(notice["suggested_interval_ms"], 2_000);
-        assert!(notice.get("suggested_fps").is_none());
+        assert_eq!(notice["recommendation"], "reduce_fps");
+        assert_eq!(notice["suggested_fps"], 0.5);
     }
 
     #[tokio::test]

@@ -46,7 +46,7 @@ sccache/ccache, clang+lld linking on Linux, and Servo build state.
 ```
 crates/
   hypercolor-color/                # Color kernel: pixel types, conversions, hex, blending, device encoding; bottom of the graph
-  hypercolor-types/                # Zero-dependency shared data vocabulary; every crate depends on it
+  hypercolor-types/                # Shared data vocabulary above the color kernel; every crate depends on it
   hypercolor-core/                 # Engine: render loop, device backends, Servo effect renderer, event bus, spatial sampler, input pipeline, scene/session management
   hypercolor-hal/                  # Hardware abstraction: USB/HID/SMBus protocol encoding and transport for the local driver families
   hypercolor-linux-gpu-interop/    # Linux GL/Vulkan texture import boundary for Servo frames
@@ -60,7 +60,9 @@ crates/
   hypercolor-windows-input/        # Windows Raw Input host keyboard and pointer capture
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
   hypercolor-platform-fs/          # Audited platform filesystem operations
+  hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
   hypercolor-driver-api/           # Stable trait/type boundary between the daemon and all driver implementations
+  hypercolor-driver-support/       # Native credential and discovery services layered on the driver API
   hypercolor-driver-builtin/       # Compile-time bundle assembling HAL + network drivers into a registry via feature flags
   hypercolor-driver-hue/           # Philips Hue Bridge driver (Entertainment API over DTLS)
   hypercolor-driver-nanoleaf/      # Nanoleaf panels driver (HTTP pairing + UDP external control)
@@ -90,7 +92,8 @@ docs/content/              # Public documentation (Zola site at https://hyperb1i
 
 ```mermaid
 graph TD
-    T[hypercolor-types] --> HAL[hypercolor-hal]
+    C[hypercolor-color] --> T[hypercolor-types]
+    T --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
     HAL --> CORE
     LGI[hypercolor-linux-gpu-interop] --> CORE
@@ -103,15 +106,17 @@ graph TD
     WC[hypercolor-windows-capture] --> CORE & WGI
     WI[hypercolor-windows-input] --> CORE
     WH[hypercolor-windows-helper]
-    T & CORE --> DAPI[hypercolor-driver-api]
-    DAPI --> HUE[hypercolor-driver-hue]
-    DAPI --> NL[hypercolor-driver-nanoleaf]
-    DAPI --> WLED[hypercolor-driver-wled]
-    DAPI --> GV[hypercolor-driver-govee]
+    PER[hypercolor-persistence] --> CORE
+    T --> DAPI[hypercolor-driver-api]
+    DAPI & PER --> DS[hypercolor-driver-support]
+    DAPI & DS --> HUE[hypercolor-driver-hue]
+    DAPI & DS --> NL[hypercolor-driver-nanoleaf]
+    DAPI & DS --> WLED[hypercolor-driver-wled]
+    DAPI & DS --> GV[hypercolor-driver-govee]
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
     DAPI --> NET[hypercolor-network]
-    HAL & HUE & NL & WLED & GV & ORD --> DB[hypercolor-driver-builtin]
-    CORE & HAL & DB & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
+    CORE & DAPI & HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
+    CORE & HAL & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
@@ -135,12 +140,18 @@ encoders conform to it (round-trip tested in `daemon/src/api/ws/tests.rs`), and
 both the web UI and the TUI decode with it. Never hand-roll those frame layouts.
 
 `hypercolor-types::api` is the single definition of the REST request/response
-contracts for the devices, scenes, zones, and effects domains (plus the shared
-`Pagination`); the daemon serializes these types and both UIs deserialize them.
-Diagnostic telemetry (system status internals, metrics) deliberately stays
-daemon-local; clients consume tolerant subsets. When adding or changing an
-endpoint in a shared domain, change the type in `hypercolor-types::api`, never
-a hand-mirrored copy.
+contracts across seventeen domain modules (assets, attachments, capture,
+config, controls, devices, diagnose, displays, drivers, effects, layouts,
+library, output, scene, scenes, simulators, system) plus the shared
+`envelope` module that owns `ApiResponse`, `ListResponse`, `PageInfo`, and
+`ApiErrorBody`. The daemon serializes these types; the web UI, the TUI, the
+CLI, the tray, and the desktop app shell deserialize them, and the Python
+client is generated from the same schemas. Every list route answers
+`ListResponse { items, total, page }`, where `page` is present only on the
+routes that genuinely page. Diagnostic telemetry (system status internals,
+metrics) deliberately stays daemon-local; clients consume tolerant subsets.
+When adding or changing an endpoint in a shared domain, change the type in
+`hypercolor-types::api`, never a hand-mirrored copy.
 
 ## Architecture
 
@@ -174,8 +185,9 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 ### Key Traits
 
-- **`DeviceBackend`** (`core/src/device/traits.rs`): hardware communication.
-  Methods: discover, connect, write_colors, disconnect. Long-running I/O dispatched internally.
+- **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
+  Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
+  Long-running I/O is dispatched internally.
 - **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer (wgpu and Servo
   both implement this). Input: `FrameInput` (timing, audio, interaction, screen). Output: `Canvas`.
 - **`InputSource`** (`core/src/input/traits.rs`): audio, screen capture, keyboard, MIDI.
@@ -185,9 +197,12 @@ Rule of thumb: events are broadcast, data streams are watch.
 
 ### AppState
 
-The daemon's shared state is `Arc`-wrapped and injected into every Axum handler. Key detail:
-`EffectEngine` is behind `Mutex` (not `RwLock`) because `dyn EffectRenderer` is `Send` but
-NOT `Sync`. Read-heavy subsystems (EffectRegistry, SceneManager, SpatialEngine) use `RwLock`.
+The daemon's shared state is `Arc`-wrapped and injected into every Axum handler. Subsystems
+that own a `!Sync` renderer or a serialized device path sit behind `Mutex` (`BackendManager`,
+`DeviceLifecycleManager`, `InputManager`); `EffectRegistry` is read-heavy and uses `RwLock`.
+Scene, layout, effect, and spatial state is not reached through raw locks at all: it lives
+behind the domain services in `AppState::domains` (`SceneService`, `SpatialService`, and the
+rest of `DomainContexts`), which own their own commit ordering and event publication.
 
 ## UI Crate
 
@@ -300,8 +315,9 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   Servo's renderer is single-threaded.
 - **Canvas defaults to 640x480 but is configurable.** Flow dimensions from `daemon.canvas_width`
   and `daemon.canvas_height` through the engine; never hardcode. Both canvas size and target
-  FPS retune live via `SceneTransaction::ResizeCanvas` (frame-boundary) and `RenderLoop::set_tier`
-  respectively. Spatial coordinates are normalized `[0.0, 1.0]`, so effects stay resolution-
+  FPS retune live: the frame executor notices new dimensions at the top of a frame and runs
+  `RenderPipeline::prepare_canvas_resize` then `commit_canvas_resize`, and `RenderLoop::set_tier`
+  retunes the tier. Spatial coordinates are normalized `[0.0, 1.0]`, so effects stay resolution-
   independent. LED positions are generated once from topology and cached; call `update_layout()`
   to regenerate.
 - **Watch vs broadcast.** Don't use broadcast for high-frequency data (frame colors, spectrum).

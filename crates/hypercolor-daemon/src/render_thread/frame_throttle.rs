@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use tracing::{debug, trace, warn};
 
-use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::Canvas;
-use hypercolor_core::types::event::FrameTiming;
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::Canvas;
+use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
@@ -92,9 +92,9 @@ pub(crate) async fn maybe_sleep_throttle(
                     screen_capture_active: false,
                 },
                 scene_id: scene_snapshot.scene_runtime.active_scene_id,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: frame_num_u32,
                 elapsed_ms: scene_snapshot.elapsed_ms,
                 reuse_existing_frame: false,
@@ -144,7 +144,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
+        let write_stats = manager.write_frame(zone_colors, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
@@ -174,9 +174,9 @@ pub(crate) async fn maybe_sleep_throttle(
                 screen_capture_active: false,
             },
             scene_id: scene_snapshot.scene_runtime.active_scene_id,
-            group_canvases: &[],
+            display_zone_frames: &[],
             zone_canvases: &[],
-            active_group_canvas_ids: &[],
+            active_display_zone_ids: &[],
             frame_number: frame_num_u32,
             elapsed_ms: scene_snapshot.elapsed_ms,
             reuse_existing_frame: false,

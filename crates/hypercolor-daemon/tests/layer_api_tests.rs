@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::body::Body;
@@ -7,11 +6,11 @@ use hypercolor_core::asset::{AssetTypeHint, AssetUploadOptions};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::engine::FpsTier;
 use hypercolor_core::scene::make_scene;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
@@ -52,14 +51,6 @@ async fn send(app: &axum::Router, request: Request<Body>) -> axum::response::Res
         .oneshot(request)
         .await
         .expect("request should succeed")
-}
-
-fn empty_request(method: &str, uri: String) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .body(Body::empty())
-        .expect("request should build")
 }
 
 fn json_request(method: &str, uri: String, body: serde_json::Value) -> Request<Body> {
@@ -104,7 +95,6 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -146,7 +136,7 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
             asset_id,
             playback: MediaPlayback::default(),
         },
-        blend: LayerBlendMode::Alpha,
+        blend: BlendMode::Alpha,
         opacity: 1.0,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
@@ -158,14 +148,10 @@ fn media_layer(asset_id: AssetId) -> SceneLayer {
 async fn install_media_scene(state: &Arc<AppState>, layers: Vec<SceneLayer>) -> SceneId {
     let mut scene = make_scene("Media Admission Scene");
     let scene_id = scene.id;
-    scene.groups = vec![Zone {
+    scene.zones = vec![Zone {
         id: ZoneId::new(),
         name: "Media".to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers,
         layout: sample_layout("media:main"),
         brightness: 1.0,
@@ -177,8 +163,11 @@ async fn install_media_scene(state: &Arc<AppState>, layers: Vec<SceneLayer>) -> 
         layers_version: 0,
     }];
 
-    let mut manager = state.scene_manager.write().await;
-    manager.create(scene).expect("scene should create");
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation.create_scene(scene).expect("scene should create");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("scene should commit");
     scene_id
 }
 
@@ -201,7 +190,11 @@ async fn activate_scene_rejects_video_media_cap() {
 
     let response = send(
         &app,
-        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+        json_request(
+            "POST",
+            format!("/api/v1/scenes/{scene_id}/activate"),
+            json!({}),
+        ),
     )
     .await;
 
@@ -226,7 +219,12 @@ async fn activate_scene_rejects_video_media_cap() {
         "layer details carry zone_name"
     );
     assert_ne!(
-        state.scene_manager.read().await.active_scene_id().copied(),
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene_id()
+            .copied(),
         Some(scene_id)
     );
 }
@@ -244,7 +242,11 @@ async fn activate_scene_rejects_livestream_media_cap() {
 
     let response = send(
         &app,
-        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+        json_request(
+            "POST",
+            format!("/api/v1/scenes/{scene_id}/activate"),
+            json!({}),
+        ),
     )
     .await;
 
@@ -259,7 +261,12 @@ async fn activate_scene_rejects_livestream_media_cap() {
     assert_eq!(json["error"]["details"]["counts"]["livestream"], 2);
     assert_eq!(json["error"]["details"]["caps"]["livestream"], 1);
     assert_ne!(
-        state.scene_manager.read().await.active_scene_id().copied(),
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene_id()
+            .copied(),
         Some(scene_id)
     );
 }
@@ -278,7 +285,11 @@ async fn live_tree_create_rejects_a_second_livestream_without_mutation() {
     assert_eq!(
         send(
             &app,
-            empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/{scene_id}/activate"),
+                json!({}),
+            ),
         )
         .await
         .status(),
@@ -286,10 +297,10 @@ async fn live_tree_create_rejects_a_second_livestream_without_mutation() {
     );
     let zone_id = state
         .scene_manager
-        .read()
+        .snapshot()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("activated scene should have a primary zone")
         .id;
 
@@ -308,10 +319,10 @@ async fn live_tree_create_rejects_a_second_livestream_without_mutation() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = body_json(response).await;
     assert_eq!(body["error"]["details"]["counts"]["livestream"], 2);
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let layers = &manager
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("active zone should remain")
         .layers;
     assert_eq!(layers.len(), 1);
@@ -330,7 +341,11 @@ async fn concurrent_livestream_creates_cannot_both_cross_the_cap() {
     assert_eq!(
         send(
             &app,
-            empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/{scene_id}/activate"),
+                json!({}),
+            ),
         )
         .await
         .status(),
@@ -338,10 +353,10 @@ async fn concurrent_livestream_creates_cannot_both_cross_the_cap() {
     );
     let zone_id = state
         .scene_manager
-        .read()
+        .snapshot()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("activated scene should have a primary zone")
         .id;
     let uri = format!("/api/v1/scene/zones/{zone_id}/layers");
@@ -376,11 +391,11 @@ async fn concurrent_livestream_creates_cannot_both_cross_the_cap() {
         *status,
         StatusCode::CONFLICT | StatusCode::UNPROCESSABLE_ENTITY
     )));
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert_eq!(
         manager
             .active_scene()
-            .and_then(hypercolor_types::scene::Scene::primary_group)
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
             .expect("active zone should remain")
             .layers
             .len(),
@@ -402,7 +417,11 @@ async fn live_tree_replace_subtracts_the_addressed_livestream_before_counting() 
     assert_eq!(
         send(
             &app,
-            empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+            json_request(
+                "POST",
+                format!("/api/v1/scenes/{scene_id}/activate"),
+                json!({}),
+            ),
         )
         .await
         .status(),
@@ -410,10 +429,10 @@ async fn live_tree_replace_subtracts_the_addressed_livestream_before_counting() 
     );
     let zone_id = state
         .scene_manager
-        .read()
+        .snapshot()
         .await
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("activated scene should have a primary zone")
         .id;
 
@@ -430,10 +449,10 @@ async fn live_tree_replace_subtracts_the_addressed_livestream_before_counting() 
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let layers = &manager
         .active_scene()
-        .and_then(hypercolor_types::scene::Scene::primary_group)
+        .and_then(hypercolor_types::scene::Scene::primary_zone)
         .expect("active zone should remain")
         .layers;
     let [replacement] = layers.as_slice() else {
@@ -468,13 +487,22 @@ async fn activate_scene_downshifts_when_media_cost_exceeds_soft_cap() {
 
     let response = send(
         &app,
-        empty_request("POST", format!("/api/v1/scenes/{scene_id}/activate")),
+        json_request(
+            "POST",
+            format!("/api/v1/scenes/{scene_id}/activate"),
+            json!({}),
+        ),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
-        state.scene_manager.read().await.active_scene_id().copied(),
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene_id()
+            .copied(),
         Some(scene_id)
     );
     assert_eq!(state.render_loop.read().await.stats().tier, FpsTier::High);

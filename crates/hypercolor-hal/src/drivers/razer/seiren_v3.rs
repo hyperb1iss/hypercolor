@@ -1,5 +1,7 @@
 //! Razer Seiren V3 Chroma protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::time::Duration;
 
 use hypercolor_types::device::{
@@ -10,7 +12,7 @@ use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 const SEIREN_V3_PAYLOAD_LEN: usize = 63;
@@ -178,8 +180,8 @@ impl Protocol for SeirenV3Protocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
-        vec![ProtocolZone {
+    fn zones(&self) -> Vec<SegmentInfo> {
+        vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 10,
             topology: DeviceTopologyHint::Custom,

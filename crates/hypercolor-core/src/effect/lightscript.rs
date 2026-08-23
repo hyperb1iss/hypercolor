@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use hypercolor_color::{Hsl, Rgb};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
+#[cfg(feature = "servo")]
+use hypercolor_types::control::EffectJsonValueError;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -17,11 +19,10 @@ mod payload;
 
 use super::traits::{FrameInput, InputSourceAvailability};
 use payload::{
-    LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptControlValue,
-    LightScriptFramePayload, LightScriptInputAvailabilityPayload, LightScriptInteractionPayload,
-    LightScriptLightingPayload, LightScriptMediaPayload, LightScriptNetPayload,
-    LightScriptScreenPayload, LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32,
-    sanitize_f64,
+    LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptFramePayload,
+    LightScriptInputAvailabilityPayload, LightScriptInteractionPayload, LightScriptLightingPayload,
+    LightScriptMediaPayload, LightScriptNetPayload, LightScriptScreenPayload,
+    LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32, sanitize_f64,
 };
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
@@ -49,6 +50,14 @@ const MEL_RUNNING_MAX_DECAY: f32 = 0.999;
 const MEL_RUNNING_MAX_FLOOR: f32 = 0.001;
 const SPECTRUM_BASS_END: usize = 40;
 const SPECTRUM_MID_END: usize = 130;
+
+#[cfg(feature = "servo")]
+pub(in crate::effect) fn control_js_literal(
+    value: &ControlValue,
+) -> Result<String, EffectJsonValueError> {
+    let value = value.try_to_effect_json()?;
+    Ok(serde_json::to_string(&value).expect("serde_json::Value must serialize"))
+}
 
 #[derive(Debug, Clone, Default)]
 struct DerivedAudioState {
@@ -193,11 +202,7 @@ impl LightscriptRuntime {
             "  if (!(window.engine.audio.spectralFluxBands instanceof Float32Array) || window.engine.audio.spectralFluxBands.length !== 3) { window.engine.audio.spectralFluxBands = new Float32Array(3); }\n",
         );
         script.push_str(&format!(
-            "  window.engine.audio.level = {};\n",
-            LEVEL_FLOOR_DB
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.levelRaw = {};\n",
+            "  window.engine.audio.levelDb = {};\n",
             LEVEL_FLOOR_DB
         ));
         script.push_str("  window.engine.audio.levelLinear = 0;\n");
@@ -919,8 +924,9 @@ impl LightscriptRuntime {
     fn changed_control_payload(
         &mut self,
         controls: &HashMap<String, ControlValue>,
-    ) -> BTreeMap<String, LightScriptControlValue> {
+    ) -> BTreeMap<String, serde_json::Value> {
         let mut changed_controls = BTreeMap::new();
+        let mut accepted = Vec::new();
         for (name, value) in controls {
             let changed = self
                 .last_controls
@@ -931,12 +937,13 @@ impl LightscriptRuntime {
                 continue;
             }
 
-            changed_controls.insert(
-                name.clone(),
-                LightScriptControlValue::from_control_value(value),
-            );
-            self.last_controls.insert(name.clone(), value.clone());
+            let projected = value
+                .try_to_effect_json()
+                .expect("effect pool admits only renderer-compatible controls");
+            changed_controls.insert(name.clone(), projected);
+            accepted.push((name.clone(), value.clone()));
         }
+        self.last_controls.extend(accepted);
         changed_controls
     }
 }

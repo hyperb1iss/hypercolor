@@ -2,29 +2,55 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use axum::extract::ws::{Message, WebSocketUpgrade};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
 use hypercolor_tui::action::Action;
 use hypercolor_tui::bridge::spawn_data_bridge;
+use hypercolor_types::api::system::{RenderLoopStatus, ServerInfo, SystemResource, SystemStatus};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 struct TestState {
-    status_calls: Arc<AtomicUsize>,
-    control_surface_calls: Arc<AtomicUsize>,
+    status: Arc<AtomicUsize>,
+    scene: Arc<AtomicUsize>,
+    control_surface: Arc<AtomicUsize>,
+}
+
+fn canonical_json(mut envelope: serde_json::Value) -> Json<serde_json::Value> {
+    envelope["meta"] = serde_json::json!({
+        "api_version": "v1",
+        "request_id": "req_bridge",
+        "timestamp": "2026-08-20T00:00:00Z"
+    });
+    Json(envelope)
+}
+
+async fn assert_canonical_subscription(socket: &mut WebSocket) {
+    let Some(Ok(Message::Text(message))) = socket.recv().await else {
+        panic!("expected a text subscription request");
+    };
+    let subscription: serde_json::Value =
+        serde_json::from_str(&message).expect("subscription request should be JSON");
+    assert_eq!(
+        subscription.get("type").and_then(serde_json::Value::as_str),
+        Some("subscribe")
+    );
+    assert!(subscription.get("preview_transport").is_none());
 }
 
 #[tokio::test]
-async fn active_scene_event_refreshes_daemon_status() {
+async fn active_scene_event_refreshes_the_canonical_document() {
     let status_calls = Arc::new(AtomicUsize::new(0));
+    let scene_calls = Arc::new(AtomicUsize::new(0));
     let state = TestState {
-        status_calls: Arc::clone(&status_calls),
-        control_surface_calls: Arc::new(AtomicUsize::new(0)),
+        status: Arc::clone(&status_calls),
+        scene: Arc::clone(&scene_calls),
+        control_surface: Arc::new(AtomicUsize::new(0)),
     };
 
     let router = Router::new()
@@ -32,6 +58,7 @@ async fn active_scene_event_refreshes_daemon_status() {
         .route("/api/v1/effects", get(effects_handler))
         .route("/api/v1/devices", get(devices_handler))
         .route("/api/v1/library/favorites", get(favorites_handler))
+        .route("/api/v1/scene", get(scene_handler))
         .route("/api/v1/ws", get(ws_handler))
         .with_state(state);
 
@@ -61,19 +88,23 @@ async fn active_scene_event_refreshes_daemon_status() {
 
     let updated = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Some(Action::DaemonStateUpdated(state)) = action_rx.recv().await
-                && state.scene_name.as_deref() == Some("Movie Night")
+            if let Some(Action::ActiveSceneUpdated(scene)) = action_rx.recv().await
+                && scene.name == "Movie Night"
             {
-                break (state.scene_name.clone(), state.scene_snapshot_locked);
+                break (scene.name.clone(), scene.mutation_mode);
             }
         }
     })
     .await
     .expect("timed out waiting for scene status refresh");
 
-    assert_eq!(updated.0.as_deref(), Some("Movie Night"));
-    assert!(updated.1);
+    assert_eq!(updated.0, "Movie Night");
+    assert_eq!(
+        updated.1,
+        hypercolor_types::scene::SceneMutationMode::Snapshot
+    );
     assert_eq!(status_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(scene_calls.load(Ordering::SeqCst), 3);
 
     cancel.cancel();
     bridge.await.expect("bridge task should join");
@@ -84,8 +115,9 @@ async fn active_scene_event_refreshes_daemon_status() {
 async fn control_surface_event_refreshes_device_surface() {
     let control_surface_calls = Arc::new(AtomicUsize::new(0));
     let state = TestState {
-        status_calls: Arc::new(AtomicUsize::new(0)),
-        control_surface_calls: Arc::clone(&control_surface_calls),
+        status: Arc::new(AtomicUsize::new(0)),
+        scene: Arc::new(AtomicUsize::new(0)),
+        control_surface: Arc::clone(&control_surface_calls),
     };
 
     let router = Router::new()
@@ -147,35 +179,54 @@ async fn control_surface_event_refreshes_device_surface() {
 }
 
 async fn status_handler(State(state): State<TestState>) -> Json<serde_json::Value> {
-    let call = state.status_calls.fetch_add(1, Ordering::SeqCst);
-    let (scene_name, snapshot_locked) = if call <= 1 {
-        ("Default", false)
-    } else {
-        ("Movie Night", true)
-    };
+    state.status.fetch_add(1, Ordering::SeqCst);
 
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
+        "data": SystemResource {
+          identity: ServerInfo::default(),
+          status: Some(SystemStatus {
+            running: true,
+            global_brightness: 42,
+            device_count: 3,
+            render_loop: RenderLoopStatus {
+                target_fps: 60,
+                actual_fps: 59.8,
+                ..RenderLoopStatus::default()
+            },
+            ..SystemStatus::default()
+          })
+        }
+    }))
+}
+
+async fn scene_handler(State(state): State<TestState>) -> Json<serde_json::Value> {
+    let call = state.scene.fetch_add(1, Ordering::SeqCst);
+    let (name, mutation_mode) = if call <= 1 {
+        ("Default", "live")
+    } else {
+        ("Movie Night", "snapshot")
+    };
+    canonical_json(serde_json::json!({
         "data": {
-          "status": {
-            "running": true,
-            "global_brightness": 42,
-            "device_count": 3,
-            "active_effect": serde_json::Value::Null,
-            "active_scene": scene_name,
-            "active_scene_snapshot_locked": snapshot_locked
-          }
+            "id": "0198c5b6-1111-7000-8000-000000000001",
+            "name": name,
+            "kind": "named",
+            "is_default": false,
+            "mutation_mode": mutation_mode,
+            "revision": call + 1,
+            "zones": []
         }
     }))
 }
 
 async fn effects_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "items": [],
-            "pagination": {
+            "total": 0,
+            "page": {
                 "offset": 0,
                 "limit": 50,
-                "total": 0,
                 "has_more": false
             }
         }
@@ -183,13 +234,13 @@ async fn effects_handler() -> Json<serde_json::Value> {
 }
 
 async fn devices_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "items": [],
-            "pagination": {
+            "total": 0,
+            "page": {
                 "offset": 0,
                 "limit": 50,
-                "total": 0,
                 "has_more": false
             }
         }
@@ -197,15 +248,10 @@ async fn devices_handler() -> Json<serde_json::Value> {
 }
 
 async fn favorites_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "items": [],
-            "pagination": {
-                "offset": 0,
-                "limit": 50,
-                "total": 0,
-                "has_more": false
-            }
+            "total": 0
         }
     }))
 }
@@ -215,9 +261,9 @@ async fn control_surface_handler(
     State(state): State<TestState>,
 ) -> Json<serde_json::Value> {
     assert_eq!(surface_id, test_surface_id());
-    state.control_surface_calls.fetch_add(1, Ordering::SeqCst);
+    state.control_surface.fetch_add(1, Ordering::SeqCst);
 
-    Json(serde_json::json!({
+    canonical_json(serde_json::json!({
         "data": {
             "surface_id": test_surface_id(),
             "scope": {
@@ -248,7 +294,7 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
                 "brightness": 42,
                 "fps": {
                     "target": 60,
-                    "actual": 59.8
+                    "delivered": 59.8
                 },
                 "device_count": 3,
                 "total_leds": 120
@@ -259,11 +305,10 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
             .await
             .expect("send hello");
 
-        let _ = socket.recv().await;
+        assert_canonical_subscription(&mut socket).await;
         let subscribed = serde_json::json!({
             "type": "subscribed",
-            "topics": [],
-            "preview_transport": "preview_transport_v2"
+            "topics": []
         });
         socket
             .send(Message::Text(subscribed.to_string().into()))
@@ -276,8 +321,6 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
             "data": {
                 "previous": "default",
                 "current": "scene_movie_night",
-                "current_name": "Movie Night",
-                "current_snapshot_locked": true,
                 "reason": "user_activate"
             }
         });
@@ -298,7 +341,7 @@ async fn control_surface_ws_handler(ws: WebSocketUpgrade) -> Response {
                 "brightness": 42,
                 "fps": {
                     "target": 60,
-                    "actual": 59.8
+                    "delivered": 59.8
                 },
                 "device_count": 1,
                 "total_leds": 225
@@ -309,11 +352,10 @@ async fn control_surface_ws_handler(ws: WebSocketUpgrade) -> Response {
             .await
             .expect("send hello");
 
-        let _ = socket.recv().await;
+        assert_canonical_subscription(&mut socket).await;
         let subscribed = serde_json::json!({
             "type": "subscribed",
-            "topics": [],
-            "preview_transport": "preview_transport_v2"
+            "topics": []
         });
         socket
             .send(Message::Text(subscribed.to_string().into()))

@@ -22,17 +22,22 @@ use hypercolor_types::portable::{
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::persistence::write_atomic;
+use crate::path_migration::{
+    MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
+};
+use crate::persistence::{AtomicFileWriter, serialize_json_pretty, write_atomic};
 
-/// File name of the overlay inside the daemon data directory.
+/// File name of the overlay inside the daemon state directory.
 pub const DEVICE_ALIASES_FILE: &str = "device-aliases.json";
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+const STORE_SUBJECT: &str = "device aliases";
 
 /// Persisted portable-key overlay.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeviceAliasFile {
-    /// Envelope version for forward-compatible reads.
+    /// Envelope version used to refuse unknown future documents.
     #[serde(default = "schema_version")]
     pub schema_version: u32,
 
@@ -55,6 +60,12 @@ pub struct DeviceAliasFile {
 
 const fn schema_version() -> u32 {
     SCHEMA_VERSION
+}
+
+#[derive(Deserialize)]
+struct AliasSchemaProbe {
+    #[serde(default = "schema_version")]
+    schema_version: u32,
 }
 
 /// One portable key's recorded local identity.
@@ -108,16 +119,38 @@ pub struct PersistedKeyCollision {
 /// Load the overlay from disk. A missing file is an empty overlay.
 pub fn load(path: &Path) -> anyhow::Result<DeviceAliasFile> {
     if !path.exists() {
-        return Ok(DeviceAliasFile {
-            schema_version: SCHEMA_VERSION,
-            ..DeviceAliasFile::default()
-        });
+        return Ok(empty_alias_file());
     }
 
-    let payload = fs::read_to_string(path)
-        .with_context(|| format!("failed to read device aliases at {}", path.display()))?;
-    serde_json::from_str(&payload)
-        .with_context(|| format!("failed to parse device aliases at {}", path.display()))
+    DeviceAliasCodec::read(path).map(|document| document.document)
+}
+
+/// Relocate a legacy data-tier overlay and load the state-tier document.
+///
+/// # Errors
+///
+/// Returns an error when either document is unreadable or invalid, the state
+/// destination cannot be prepared, or a durable import cannot be retired.
+pub fn load_migrated(
+    legacy_path: &Path,
+    canonical_path: &Path,
+) -> anyhow::Result<(DeviceAliasFile, MigrationOutcome)> {
+    let writer = AtomicFileWriter::new(canonical_path).with_context(|| {
+        format!(
+            "failed to prepare device alias store at {}",
+            canonical_path.display()
+        )
+    })?;
+    let entry = PathMigrationEntry::new(
+        STORE_SUBJECT,
+        legacy_path.to_path_buf(),
+        canonical_path.to_path_buf(),
+    );
+    let migrated = migrate(&DeviceAliasCodec, &entry, &writer)?;
+    Ok((
+        migrated.document.unwrap_or_else(empty_alias_file),
+        migrated.outcome,
+    ))
 }
 
 /// Persist the overlay with atomic-replace semantics.
@@ -155,10 +188,20 @@ pub async fn seed_registry(path: &Path, registry: &DeviceRegistry) {
         }
     };
 
+    seed_registry_document(path, file, registry).await;
+}
+
+/// Seed the registry from an already-authoritative overlay document.
+pub async fn seed_registry_document(path: &Path, file: DeviceAliasFile, registry: &DeviceRegistry) {
     let pins: HashMap<PortableDeviceKey, DeviceFingerprint> = file
         .aliases
         .iter()
-        .map(|(key, record)| (key.clone(), DeviceFingerprint(record.fingerprint.clone())))
+        .map(|(key, record)| {
+            (
+                key.clone(),
+                DeviceFingerprint::from_persisted(record.fingerprint.clone()),
+            )
+        })
         .collect();
     let quarantined: HashSet<PortableDeviceKey> = file.quarantined_keys.into_iter().collect();
 
@@ -207,8 +250,8 @@ pub async fn sync_from_registry(path: &Path, registry: &DeviceRegistry) -> anyho
     for (key, pinned_fingerprint) in pins {
         let live = claims_by_key.get(&key);
         if let Some(record) = file.aliases.get_mut(&key) {
-            if record.fingerprint != pinned_fingerprint.0 {
-                record.fingerprint = pinned_fingerprint.0;
+            if record.fingerprint != pinned_fingerprint.as_str() {
+                record.fingerprint = pinned_fingerprint.into_string();
                 changed = true;
             }
             if let Some((claim, layout_device_id)) = live {
@@ -236,7 +279,7 @@ pub async fn sync_from_registry(path: &Path, registry: &DeviceRegistry) -> anyho
                 DeviceAliasRecord {
                     source: claim.source(),
                     raw: claim.raw().to_owned(),
-                    fingerprint: pinned_fingerprint.0,
+                    fingerprint: pinned_fingerprint.into_string(),
                     layout_device_id: layout_device_id.clone(),
                     first_seen_epoch_s: now,
                     last_seen_epoch_s: now,
@@ -265,9 +308,9 @@ fn persisted_collision(collision: PortableKeyCollision, now: u64) -> PersistedKe
     PersistedKeyCollision {
         key: collision.key,
         observed_epoch_s: now,
-        existing_fingerprint: collision.existing_fingerprint.0,
+        existing_fingerprint: collision.existing_fingerprint.into_string(),
         existing_claim: collision.existing_claim,
-        incoming_fingerprint: collision.incoming_fingerprint.0,
+        incoming_fingerprint: collision.incoming_fingerprint.into_string(),
         incoming_claim: collision.incoming_claim,
     }
 }
@@ -279,12 +322,68 @@ fn unix_now_s() -> u64 {
         .unwrap_or_default()
 }
 
+fn empty_alias_file() -> DeviceAliasFile {
+    DeviceAliasFile {
+        schema_version: SCHEMA_VERSION,
+        ..DeviceAliasFile::default()
+    }
+}
+
+struct DeviceAliasCodec;
+
+impl DeviceAliasCodec {
+    fn read(path: &Path) -> anyhow::Result<VersionedDocument<DeviceAliasFile>> {
+        let payload = fs::read_to_string(path)
+            .with_context(|| format!("failed to read device aliases at {}", path.display()))?;
+        let probe: AliasSchemaProbe = serde_json::from_str(&payload)
+            .with_context(|| format!("failed to probe device aliases at {}", path.display()))?;
+        if probe.schema_version != SCHEMA_VERSION {
+            let relation = if probe.schema_version > SCHEMA_VERSION {
+                "newer"
+            } else {
+                "older"
+            };
+            anyhow::bail!(
+                "device-aliases.json is schema v{}, {relation} than supported v{}; refusing to read or rewrite it",
+                probe.schema_version,
+                SCHEMA_VERSION
+            );
+        }
+        let file: DeviceAliasFile = serde_json::from_str(&payload)
+            .with_context(|| format!("failed to parse device aliases at {}", path.display()))?;
+        Ok(VersionedDocument::new(file.schema_version, file))
+    }
+}
+
+impl MigratedStore for DeviceAliasCodec {
+    type Document = DeviceAliasFile;
+    type Error = anyhow::Error;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        Self::read(path)
+    }
+
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        Self::read(path).map(Some)
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        serialize_json_pretty(document).context("failed to serialize device aliases")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
+    use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
     use hypercolor_types::device::DeviceState;
     use hypercolor_types::portable::NetworkAttachment;
     use tempfile::TempDir;
@@ -297,7 +396,7 @@ mod tests {
 
     fn discovered(name: &str, fingerprint: &str, mac: &str, peer_octet: u8) -> DiscoveredDevice {
         DiscoveredDevice {
-            fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+            fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: mock_info(name),
             metadata: HashMap::new(),
@@ -388,7 +487,7 @@ mod tests {
 
         assert_eq!(
             second_session.fingerprint_for_id(&id).await,
-            Some(DeviceFingerprint("net:wled:aaa".to_owned()))
+            Some(DeviceFingerprint::from_persisted("net:wled:aaa".to_owned()))
         );
     }
 
@@ -440,7 +539,9 @@ mod tests {
             .await;
         assert_eq!(
             next_session.fingerprint_for_id(&id).await,
-            Some(DeviceFingerprint("net:wled:unit-c".to_owned()))
+            Some(DeviceFingerprint::from_persisted(
+                "net:wled:unit-c".to_owned()
+            ))
         );
     }
 
@@ -452,5 +553,72 @@ mod tests {
         assert!(file.quarantined_keys.is_empty());
         assert!(file.collisions.is_empty());
         assert_eq!(file.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn overlay_moves_to_state_with_a_durable_backup() {
+        let dir = TempDir::new().expect("tempdir");
+        let legacy = dir.path().join("data/device-aliases.json");
+        let canonical = dir.path().join("state/device-aliases.json");
+        save(&legacy, &empty_alias_file()).expect("seed legacy overlay");
+
+        let (file, outcome) =
+            load_migrated(&legacy, &canonical).expect("overlay migration succeeds");
+        let MigrationOutcome::Imported {
+            backup: Some(backup),
+        } = outcome
+        else {
+            panic!("expected an imported backup, got {outcome:?}");
+        };
+
+        assert_eq!(file.schema_version, SCHEMA_VERSION);
+        assert!(canonical.exists());
+        assert!(!legacy.exists());
+        assert!(backup.exists());
+
+        let (_, second) = load_migrated(&legacy, &canonical).expect("restart is idempotent");
+        assert_eq!(second, MigrationOutcome::AlreadyMigrated);
+    }
+
+    #[test]
+    fn newer_overlay_schema_is_refused_without_rewrite() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = overlay_path(&dir);
+        let payload = br#"{"schema_version":3,"aliases":{},"quarantined_keys":[],"collisions":[],"future":true}"#;
+        fs::write(&path, payload).expect("write future overlay");
+
+        let error = load(&path).expect_err("future schema is refused");
+
+        assert!(error.to_string().contains("schema v3"));
+        assert_eq!(fs::read(&path).expect("future overlay survives"), payload);
+    }
+
+    #[test]
+    fn older_vendor_specific_overlay_is_refused_without_rewrite() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = overlay_path(&dir);
+        let payload = br#"{"schema_version":1,"aliases":{},"quarantined_keys":[],"collisions":[]}"#;
+        fs::write(&path, payload).expect("write older overlay");
+
+        let error = load(&path).expect_err("older schema is refused");
+
+        assert!(error.to_string().contains("schema v1"));
+        assert!(error.to_string().contains("older than supported v2"));
+        assert_eq!(fs::read(&path).expect("older overlay survives"), payload);
+    }
+
+    #[test]
+    fn invalid_legacy_overlay_never_replaces_state() {
+        let dir = TempDir::new().expect("tempdir");
+        let legacy = dir.path().join("data/device-aliases.json");
+        let canonical = dir.path().join("state/device-aliases.json");
+        fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+        fs::write(&legacy, b"not json").expect("write invalid overlay");
+
+        let error = load_migrated(&legacy, &canonical).expect_err("invalid legacy is refused");
+
+        assert!(error.to_string().contains("failed to probe"));
+        assert_eq!(fs::read(&legacy).expect("legacy survives"), b"not json");
+        assert!(!canonical.exists());
     }
 }

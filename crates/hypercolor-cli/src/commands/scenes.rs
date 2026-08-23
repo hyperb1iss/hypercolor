@@ -2,11 +2,15 @@
 
 use anyhow::Result;
 use clap::{ArgAction, Args, Subcommand, ValueEnum};
-use hypercolor_types::api::scenes::CreateSceneRequest;
-use hypercolor_types::scene::SceneMutationMode;
+use hypercolor_types::api::scene::SceneDocument;
+use hypercolor_types::api::scenes::{
+    ActivateSceneRequest, ActivateSceneResponse, CreateSceneRequest, DeleteSceneResponse,
+    SceneListResponse, SceneSummary, SnapshotSceneRequest,
+};
+use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
+use crate::output::{OutputContext, OutputFormat, urlencoded};
 
 /// Reusable scene management.
 #[derive(Debug, Args)]
@@ -132,11 +136,11 @@ async fn execute_snapshot(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let body = serde_json::json!({
-        "name": args.name,
-        "description": args.description,
-    });
-    let response = client.post("/scenes/snapshot", &body).await?;
+    let body = SnapshotSceneRequest {
+        name: args.name.clone(),
+        description: args.description.clone(),
+    };
+    let response: SceneSummary = client.post("/scenes/snapshot", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -149,50 +153,37 @@ async fn execute_snapshot(
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/scenes").await?;
+    let response: SceneListResponse = client.get("/scenes").await?;
+    let scenes = &response.items;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(scenes) = response.get("items").and_then(serde_json::Value::as_array) {
-                for scene in scenes {
-                    if let Some(name) = scene.get("name").and_then(serde_json::Value::as_str) {
-                        println!("{name}");
-                    }
-                }
+            for scene in scenes {
+                println!("{}", scene.name);
             }
         }
         OutputFormat::Table => {
-            if let Some(scenes) = response.get("items").and_then(serde_json::Value::as_array) {
-                let headers = ["ID", "Scene", "Mode", "Priority", "Enabled"];
-                let rows: Vec<Vec<String>> = scenes
-                    .iter()
-                    .map(|s| {
-                        let enabled = s
-                            .get("enabled")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        vec![
-                            ctx.painter.id(&extract_str(s, "id")),
-                            ctx.painter.name(&extract_str(s, "name")),
-                            extract_str(s, "mutation_mode"),
-                            ctx.painter.number(
-                                &s.get("priority")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .map_or_else(|| "?".to_string(), |v| v.to_string()),
-                            ),
-                            ctx.painter.yesno(enabled),
-                        ]
-                    })
-                    .collect();
+            let headers = ["ID", "Scene", "Mode", "Priority", "Enabled"];
+            let rows: Vec<Vec<String>> = scenes
+                .iter()
+                .map(|s| {
+                    vec![
+                        ctx.painter.id(&s.id),
+                        ctx.painter.name(&s.name),
+                        mutation_mode_label(s.mutation_mode).to_owned(),
+                        ctx.painter.number(&s.priority.to_string()),
+                        ctx.painter.yesno(s.enabled),
+                    ]
+                })
+                .collect();
 
-                ctx.print_table(&headers, &rows);
-                println!();
-                ctx.info(&format!(
-                    "{} scenes",
-                    ctx.painter.number(&scenes.len().to_string())
-                ));
-            }
+            ctx.print_table(&headers, &rows);
+            println!();
+            ctx.info(&format!(
+                "{} scenes",
+                ctx.painter.number(&scenes.len().to_string())
+            ));
         }
     }
 
@@ -211,7 +202,7 @@ async fn execute_create(
         mutation_mode: Some(args.mutation_mode.as_scene_mutation_mode()),
     };
 
-    let response = client.post("/scenes", &body).await?;
+    let response: SceneSummary = client.post("/scenes", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -224,27 +215,23 @@ async fn execute_create(
 }
 
 async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/scene").await?;
+    let response: SceneDocument = client.get("/scene").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            println!("{}", extract_str(&response, "name"));
+            println!("{}", response.name);
         }
         OutputFormat::Table => {
             println!();
-            ctx.info(&format!("Active Scene: {}", extract_str(&response, "name")));
+            ctx.info(&format!("Active Scene: {}", response.name));
             println!();
-            ctx.info(&format!("ID             {}", extract_str(&response, "id")));
+            ctx.info(&format!("ID             {}", response.id));
             ctx.info(&format!(
                 "Kind           {}",
-                extract_str(&response, "kind")
+                scene_kind_label(response.kind)
             ));
-            let zones = response
-                .get("zones")
-                .and_then(serde_json::Value::as_array)
-                .map_or(0, Vec::len);
-            ctx.info(&format!("Zones          {zones}"));
+            ctx.info(&format!("Zones          {}", response.zones.len()));
             println!();
         }
     }
@@ -258,10 +245,10 @@ async fn execute_activate(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/scenes/{}/activate", urlencoded(&args.name));
-    // POST /scenes/{id}/activate takes no request body, so this payload has no
-    // typed home and the daemon discards it.
-    let body = serde_json::json!({ "transition_ms": args.transition });
-    let response = client.post(&path, &body).await?;
+    let body = ActivateSceneRequest {
+        transition_ms: args.transition.map(u64::from),
+    };
+    let response: ActivateSceneResponse = client.post(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -274,7 +261,7 @@ async fn execute_activate(
 }
 
 async fn execute_deactivate(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client
+    let response: SceneDocument = client
         .post("/scene/deactivate", &serde_json::json!({}))
         .await?;
 
@@ -302,7 +289,7 @@ async fn execute_delete(
     }
 
     let path = format!("/scenes/{}", urlencoded(&args.name));
-    let response = client.delete(&path).await?;
+    let response: DeleteSceneResponse = client.delete(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -320,42 +307,46 @@ async fn execute_info(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/scenes/{}", urlencoded(&args.name));
-    let response = client.get(&path).await?;
+    let response: SceneDocument = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            println!("{}", extract_str(&response, "name"));
+            println!("{}", response.name);
         }
         OutputFormat::Table => {
             println!();
-            ctx.info(&format!("Scene: {}", extract_str(&response, "name")));
+            ctx.info(&format!("Scene: {}", response.name));
             println!();
-            ctx.info(&format!("ID             {}", extract_str(&response, "id")));
-            let priority = response
-                .get("priority")
-                .and_then(serde_json::Value::as_u64)
-                .map_or_else(|| "?".to_string(), |v| v.to_string());
+            ctx.info(&format!("ID             {}", response.id));
             ctx.info(&format!(
                 "Mutation Mode  {}",
-                extract_str(&response, "mutation_mode")
+                mutation_mode_label(response.mutation_mode)
             ));
-            ctx.info(&format!("Priority       {priority}"));
+            ctx.info(&format!("Priority       {}", response.priority.0));
             ctx.info(&format!(
                 "Enabled        {}",
-                if response
-                    .get("enabled")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    "yes"
-                } else {
-                    "no"
-                }
+                if response.enabled { "yes" } else { "no" }
             ));
             println!();
         }
     }
 
     Ok(())
+}
+
+/// Wire spelling of a scene's mutation mode.
+const fn mutation_mode_label(mode: SceneMutationMode) -> &'static str {
+    match mode {
+        SceneMutationMode::Live => "live",
+        SceneMutationMode::Snapshot => "snapshot",
+    }
+}
+
+/// Wire spelling of a scene's kind.
+const fn scene_kind_label(kind: SceneKind) -> &'static str {
+    match kind {
+        SceneKind::Named => "named",
+        SceneKind::Ephemeral => "ephemeral",
+    }
 }

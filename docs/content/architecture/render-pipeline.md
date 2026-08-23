@@ -6,7 +6,7 @@ weight = 10
 
 Every frame Hypercolor renders flows through the same pipeline on a dedicated OS thread. Understanding the pipeline is the foundation for writing performant effects, tuning layouts, and contributing to the engine.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard" />}}
 
 ## Pipeline overview
 
@@ -68,7 +68,7 @@ canvas.sample(nx, ny, SamplingMethod::Bilinear); // normalized coords
 canvas.as_rgba_bytes_mut()                        // direct buffer access
 ```
 
-Canvas resize is a frame-boundary operation dispatched via `SceneTransaction::ResizeCanvas`. Spatial coordinates are normalized so effects require no change when the canvas is resized.
+Canvas resize is a frame-boundary operation. Spatial coordinates are normalized so effects require no change when the canvas is resized.
 
 ### Renderer backends
 
@@ -168,7 +168,7 @@ fps_controller.maybe_transition();
 
 Two operations trigger mid-run reconfigurations without stalling the render thread:
 
-- **`SceneTransaction::ResizeCanvas`** changes `canvas_width` / `canvas_height` at the next frame boundary. Effects are resolution-independent so no effect code changes are needed.
+- **Canvas resize** changes `canvas_width` / `canvas_height` at the next frame boundary. The frame executor detects the new dimensions at the top of a frame, calls `RenderPipeline::prepare_canvas_resize`, and commits the prepared surfaces with `commit_canvas_resize`. Effects are resolution-independent so no effect code changes are needed.
 - **`SpatialEngine::update_layout()`** recomputes all topology-derived LED positions after the user edits zone geometry in the layout editor.
 
 Both operations are queued and applied at safe frame boundaries.

@@ -1,4 +1,5 @@
-//! Per-device output telemetry types and REST fetcher.
+//! Per-device output telemetry types decoded from the `device_metrics`
+//! WebSocket topic; there is no REST route behind them.
 //!
 //! Mirrors the daemon's `DeviceMetricsSnapshot` shape. The daemon computes
 //! stable output rates in one shared collector, so every caller sees the same
@@ -20,8 +21,6 @@ pub struct DeviceMetrics {
     pub fps_sent: f32,
     /// Smoothed rate of frames queued into the output lane.
     pub fps_queued: f32,
-    /// Backward-compatible alias for `fps_sent`.
-    pub fps_actual: f32,
     /// Configured frame-rate cap for the queue.
     pub fps_target: u32,
     /// Configured minimum output interval in milliseconds.
@@ -62,10 +61,8 @@ impl DeviceMetrics {
     pub fn sent_fps(&self) -> f32 {
         if self.delivered_fps > 0.0 {
             self.delivered_fps
-        } else if self.fps_sent > 0.0 || self.fps_actual <= 0.0 {
-            self.fps_sent
         } else {
-            self.fps_actual
+            self.fps_sent
         }
     }
 

@@ -40,8 +40,8 @@ use crate::input::status::SourceStatusPolicy;
 use crate::input::traits::{InputData, InputSource};
 use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
 use crate::input::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
-use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
-use crate::types::event::TimedInputEvent;
+use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
+use hypercolor_types::event::TimedInputEvent;
 
 use beat::{BeatDetector, BeatFrame};
 use features::{
@@ -53,7 +53,7 @@ use realtime::{AudioFrameRing, push_interleaved_frames};
 
 #[cfg(target_os = "linux")]
 use self::linux as linux_audio;
-use crate::types::audio::{CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
+use hypercolor_types::audio::{CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 
 const DEFAULT_AUDIO_FRAME_DT: f32 = 1.0 / 60.0;
 const AUDIO_RING_DURATION_MS: usize = 500;

@@ -18,7 +18,8 @@ use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::api::{self, AppState};
+use crate::api;
+use crate::app_state::AppState;
 use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
 use crate::startup::{DaemonState, config_sources};
@@ -88,7 +89,7 @@ impl PreparedDaemon {
     ///
     /// Returns an error when subsystem startup, serving, or shutdown fails.
     pub async fn run(self, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-        self.run_with_extensions(shutdown_rx, &[]).await
+        Box::pin(self.run_with_extensions(shutdown_rx, &[])).await
     }
 
     /// Return the primary address owned by this prepared daemon.
@@ -135,16 +136,19 @@ impl PreparedDaemon {
         for installer in extension_installers {
             installer.install(&mut daemon_state)?;
         }
-        daemon_state.start().await?;
+        Box::pin(daemon_state.start()).await?;
 
         let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
-        let mut app_state = AppState::from_daemon_state(&daemon_state);
-        if let Some(attestation) = macos_daemon_session_attestation.as_ref() {
-            app_state.install_macos_daemon_session(attestation);
-        }
-        let app_state = Arc::new(app_state);
-        api::displays::sync_connected_display_surfaces(&app_state).await;
-        api::displays::sync_display_preference_overlays(&app_state).await;
+        let app_state = Arc::new(api::build_state(
+            &daemon_state,
+            macos_daemon_session_attestation.as_ref(),
+        ));
+        daemon_state.domains.display.sync_connected_surfaces().await;
+        daemon_state
+            .domains
+            .display
+            .sync_preference_overlays()
+            .await;
         if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
             if let Err(shutdown_error) = daemon_state.shutdown().await {
                 warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");
@@ -213,7 +217,7 @@ pub fn build_main_runtime() -> Result<tokio::runtime::Runtime> {
 ///
 /// Returns an error when startup, serving, or graceful shutdown fails.
 pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-    run_with_extensions(options, shutdown_rx, &[]).await
+    Box::pin(run_with_extensions(options, shutdown_rx, &[])).await
 }
 
 /// Run the daemon with downstream extension installers.
@@ -227,10 +231,8 @@ pub async fn run_with_extensions(
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
-    prepare(options)
-        .await?
-        .run_with_extensions(shutdown_rx, extension_installers)
-        .await
+    let prepared = prepare(options).await?;
+    Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
 }
 
 /// Load configuration and bind every final API listener without starting the
@@ -871,7 +873,7 @@ mod tests {
         bind_api_listener, bind_api_listener_with_lease, default_env_filter,
         notify_api_ready_extensions, resolve_log_level, serve_api_listeners_with_shutdown_timeout,
     };
-    use crate::api::AppState;
+    use crate::app_state::AppState;
     use crate::extensions::DaemonLifecycleExtension;
     use crate::startup::{DaemonState, default_config};
 

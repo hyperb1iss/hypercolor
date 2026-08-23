@@ -26,11 +26,13 @@ use crate::input::screen::{
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ScreenAdmissionCapacity,
     ScreenAnalysisComputeCapacity, ScreenAspectPolicy, ScreenBranchPayload,
     ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenCaptureDemand,
-    ScreenComputeCapacityPolicy, ScreenExtentRequest, ScreenInputGraphGeneration,
-    ScreenPlanBuilder, ScreenProcessingProfile, ScreenPublicationExecutorRequest,
-    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenResourceKind,
+    ScreenComputeCapacityPolicy, ScreenContentBarsPolicy, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenResourceApi, ScreenResourceKind, ScreenSceneCutPolicy, ScreenSmoothingPolicy,
     ScreenSourceSelector, ScreenUpscalePolicy, ScreenWorkerBindingState, analyze_screen_frame,
 };
+use crate::input::traits::InputSource;
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
 fn settings(session_generation: u64) -> Arc<SharedSettings> {
@@ -2031,6 +2033,79 @@ fn inactive_wayland_reconfigure_rejects_invalid_cadence_transactionally() {
 
     assert!(error.to_string().contains("scheduler clock limit"));
     assert_eq!(input.settings.config_snapshot(), baseline);
+}
+
+#[test]
+fn live_processing_config_invalidates_and_rebinds_exact_wayland_demand() {
+    let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
+    input
+        .set_screen_capture_demand(active_demand())
+        .expect("test demand activates without starting a portal session");
+    input
+        .settings
+        .session_generation
+        .store(43, Ordering::Release);
+    let mut worker = WaylandAnalysisState::new(
+        Arc::clone(&input.settings),
+        Arc::clone(&input.latest_snapshot),
+        source(43, PhysicalOrigin::default(), extent(1920, 1080)),
+        CaptureConfig::default(),
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
+    capture_legacy(&mut worker, 4, 2, 7);
+    let demand = RegisteredScreenBranchDemand::new(
+        ScreenPublicationRequest::new(
+            ScreenSourceSelector::Configured,
+            ScreenPublicationKind::Surface,
+            ScreenPublicationExecutorRequest::Cpu,
+            ScreenExtentRequest::Native,
+            ScreenAspectPolicy::Contain,
+            Arc::new(ScreenProcessingProfile::default()),
+        ),
+        NonZeroU32::new(60).expect("test cadence is nonzero"),
+    );
+    let initial = input
+        .resolve_screen_publication_branch(&demand)
+        .expect("initial configured branch resolves")
+        .expect("Wayland source owns the configured selector");
+    let initial_revision = input.screen_publication_resolution_revision();
+
+    let next = CaptureConfig {
+        smoothing_alpha: 0.0,
+        scene_cut_threshold: 765.0,
+        letterbox_enabled: true,
+        letterbox_threshold: 0.05,
+        ..CaptureConfig::default()
+    };
+    input
+        .reconfigure(next)
+        .expect("valid live processing controls commit");
+    let rebound = input
+        .resolve_screen_publication_branch(&demand)
+        .expect("changed configured branch resolves")
+        .expect("Wayland source still owns the configured selector");
+
+    assert_eq!(
+        input.screen_publication_resolution_revision(),
+        initial_revision + 1
+    );
+    assert_eq!(rebound.consumer_branch_id(), initial.consumer_branch_id());
+    assert_ne!(
+        rebound.descriptor().processing_profile(),
+        initial.descriptor().processing_profile()
+    );
+    assert!(matches!(
+        rebound.descriptor().processing_profile().content_bars(),
+        ScreenContentBarsPolicy::DetectAndCrop { luminance_threshold }
+            if luminance_threshold.value() == 0.05
+    ));
+    assert!(matches!(
+        rebound.descriptor().processing_profile().smoothing(),
+        ScreenSmoothingPolicy::Frozen {
+            scene_cut: ScreenSceneCutPolicy::MeanAbsoluteDelta { threshold }
+        } if threshold.value() == 1.0
+    ));
 }
 
 #[test]

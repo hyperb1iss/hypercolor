@@ -2,6 +2,7 @@
 //!
 //! Renders a single line with current effect, device count, and LED count.
 
+use hypercolor_types::scene::SceneMutationMode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -9,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::screen::ScreenId;
-use crate::state::AppState;
+use crate::state::{AppState, scene_is_multi_zone, zone_effect_id};
 use crate::theme;
 
 /// Interactive region hit by a status-bar mouse click.
@@ -109,20 +110,20 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
     let multi_zone = state
         .active_scene
         .as_deref()
-        .is_some_and(crate::state::ActiveScene::multi_zone);
+        .is_some_and(scene_is_multi_zone);
     let target = state.target_zone();
 
     // Current effect name — gradient brand style. The targeted zone
     // falls back to the primary one, which is what the daemon's deleted
     // singular "active effect" always described.
     let effect_name = target
-        .and_then(|zone| zone.effect_id.as_deref())
+        .and_then(zone_effect_id)
         .map(|effect_id| {
             state
                 .effects
                 .iter()
                 .find(|effect| effect.id == effect_id)
-                .map_or_else(|| effect_id.to_string(), |effect| effect.name.clone())
+                .map_or_else(|| effect_id.clone(), |effect| effect.name.clone())
         })
         .unwrap_or_else(|| "No effect".to_string());
 
@@ -144,31 +145,31 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
         }
     }
 
+    if let Some(scene) = state.active_scene.as_deref() {
+        spans.push(Span::styled(" \u{2500} ", Style::default().fg(muted)));
+        spans.push(Span::styled(
+            scene.name.clone(),
+            Style::default().fg(theme::accent_secondary()),
+        ));
+        if scene_is_multi_zone(scene) {
+            spans.push(Span::styled(
+                format!(" \u{00B7} {} zones", scene.zones.len()),
+                Style::default().fg(muted),
+            ));
+        }
+        if scene.mutation_mode == SceneMutationMode::Snapshot {
+            spans.push(Span::styled(" ", Style::default().fg(muted)));
+            spans.push(Span::styled(
+                "[snap]",
+                Style::default()
+                    .fg(theme::warning())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+
     // Separator + device count.
     if let Some(ref daemon) = state.daemon {
-        if let Some(scene_name) = daemon.scene_name.as_ref() {
-            spans.push(Span::styled(" \u{2500} ", Style::default().fg(muted)));
-            spans.push(Span::styled(
-                scene_name.clone(),
-                Style::default().fg(theme::accent_secondary()),
-            ));
-            if let Some(scene) = state.active_scene.as_deref().filter(|s| s.multi_zone()) {
-                spans.push(Span::styled(
-                    format!(" \u{00B7} {} zones", scene.zones.len()),
-                    Style::default().fg(muted),
-                ));
-            }
-            if daemon.scene_snapshot_locked {
-                spans.push(Span::styled(" ", Style::default().fg(muted)));
-                spans.push(Span::styled(
-                    "[snap]",
-                    Style::default()
-                        .fg(theme::warning())
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-        }
-
         spans.push(Span::styled(" \u{2500} ", Style::default().fg(muted)));
         spans.push(Span::styled(
             format!("{} devices", daemon.device_count),

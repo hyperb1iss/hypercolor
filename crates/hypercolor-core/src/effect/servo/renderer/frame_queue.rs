@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use hypercolor_types::event::{InputButtonState, InputEvent};
 use hypercolor_types::sensor::SystemSnapshot;
 use tracing::warn;
@@ -421,7 +422,6 @@ fn normalize_queued_interaction(interaction: &mut crate::input::InteractionData)
                     } => Some(key.clone()),
                     InputEvent::Key { .. }
                     | InputEvent::MouseButton { .. }
-                    | InputEvent::MouseWheel { .. }
                     | InputEvent::PointerScroll { .. }
                     | InputEvent::MidiNote { .. }
                     | InputEvent::MidiControlChange { .. }

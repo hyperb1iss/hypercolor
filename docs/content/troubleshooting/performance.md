@@ -8,9 +8,9 @@ Hypercolor's render loop targets your configured `daemon.target_fps` ceiling usi
 
 This page walks you through reading the `diagnose` output, identifying which part of the pipeline is the bottleneck, and fixing the root cause.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Never lower the FPS cap, canvas resolution, or LED output rate as a "fix." Those are product baselines and performance contracts. The right approach is to identify the actual bottleneck using the metrics below and address it there.
-{% end %}
+{% </callout> %}
 
 ---
 

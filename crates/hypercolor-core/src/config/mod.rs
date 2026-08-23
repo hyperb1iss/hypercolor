@@ -2,10 +2,11 @@
 //!
 //! [`ConfigManager`] owns the live configuration and provides lock-free reads
 //! via [`arc_swap::ArcSwap`]. TOML files are parsed into
-//! [`HypercolorConfig`](crate::types::config::HypercolorConfig) from
+//! [`HypercolorConfig`](hypercolor_types::config::HypercolorConfig) from
 //! `hypercolor-types`.
 
 pub mod paths;
+pub mod servers;
 pub mod sources;
 
 pub use sources::{
@@ -14,15 +15,15 @@ pub use sources::{
 };
 
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use arc_swap::{ArcSwap, Guard};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use crate::types::config::{
+use crate::persistence::{AtomicFileWriter, AtomicWriteCommitResult};
+use hypercolor_types::config::{
     CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, default_driver_configs,
 };
 
@@ -62,6 +63,8 @@ pub struct ConfigManager {
     config: Arc<ArcSwap<HypercolorConfig>>,
     /// Path to the TOML configuration file this manager was loaded from.
     config_path: PathBuf,
+    /// Process-wide persistence coordinator for the config destination.
+    persistence: AtomicFileWriter,
     /// Serializes read-modify-write mutations and file writes so concurrent
     /// writers (config API, capture restore-token sink) cannot lose updates
     /// or interleave partial file contents.
@@ -78,13 +81,6 @@ pub struct ConfigManager {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConfigPersistenceStage {
     Serialize,
-    CreateParent,
-    CreateTemporary,
-    WriteTemporary,
-    SyncTemporary,
-    Replace,
-    SyncDirectory,
-    AfterDurableWrite,
 }
 
 #[derive(Default)]
@@ -147,9 +143,12 @@ impl ConfigManager {
             Self::default_config()
         };
 
+        let persistence = AtomicFileWriter::new(&config_path)
+            .with_context(|| format!("failed to prepare {}", config_path.display()))?;
         Ok(Self {
             config: Arc::new(ArcSwap::from_pointee(config)),
             config_path,
+            persistence,
             write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
             boot_state: std::sync::OnceLock::new(),
             #[cfg(test)]
@@ -172,19 +171,23 @@ impl ConfigManager {
     #[must_use]
     pub fn from_config_unchecked(config_path: PathBuf, config: HypercolorConfig) -> Self {
         Self::with_config(config_path, normalize_config(config))
+            .expect("unchecked config path should support atomic persistence")
     }
 
     /// Build a manager over an already-normalized config (the
     /// `load_with_sources` pipeline owns parse/overlay/validate).
-    pub(super) fn with_config(config_path: PathBuf, config: HypercolorConfig) -> Self {
-        Self {
+    pub(super) fn with_config(config_path: PathBuf, config: HypercolorConfig) -> Result<Self> {
+        let persistence = AtomicFileWriter::new(&config_path)
+            .with_context(|| format!("failed to prepare {}", config_path.display()))?;
+        Ok(Self {
             config: Arc::new(ArcSwap::from_pointee(config)),
             config_path,
+            persistence,
             write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
             boot_state: std::sync::OnceLock::new(),
             #[cfg(test)]
             persistence_fault: std::sync::Mutex::new(None),
-        }
+        })
     }
 
     /// Parses a TOML file at `path` into a [`HypercolorConfig`].
@@ -318,8 +321,6 @@ impl ConfigManager {
         mutate(&mut candidate);
         let candidate = Arc::new(normalize_config(candidate));
         self.persist(&candidate)?;
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::AfterDurableWrite)?;
         self.publish_config(&mut writer, &current, Arc::clone(&candidate));
         Ok(Some(candidate))
     }
@@ -582,39 +583,26 @@ impl ConfigManager {
         #[cfg(test)]
         self.persistence_checkpoint(ConfigPersistenceStage::Serialize)?;
         let toml = toml::to_string_pretty(config).context("failed to serialize config")?;
-        if let Some(parent) = self.config_path.parent() {
-            #[cfg(test)]
-            self.persistence_checkpoint(ConfigPersistenceStage::CreateParent)?;
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
+        match self
+            .persistence
+            .reserve()
+            .admit(toml.into_bytes())
+            .commit_stage_aware()
+        {
+            AtomicWriteCommitResult::DurableWritten => Ok(()),
+            AtomicWriteCommitResult::Superseded => {
+                bail!("config persistence was superseded before publication")
+            }
+            AtomicWriteCommitResult::FailedBeforeReplacement(error)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                warn!(
+                    path = %self.config_path.display(),
+                    %error,
+                    "Config mutation is authoritative and persistence will retry"
+                );
+                Ok(())
+            }
         }
-        let tmp_path = self.config_path.with_extension("toml.tmp");
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::CreateTemporary)?;
-        let mut temporary = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&tmp_path)
-            .with_context(|| format!("failed to create {}", tmp_path.display()))?;
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::WriteTemporary)?;
-        temporary
-            .write_all(toml.as_bytes())
-            .with_context(|| format!("failed to write {}", tmp_path.display()))?;
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::SyncTemporary)?;
-        temporary
-            .sync_all()
-            .with_context(|| format!("failed to sync {}", tmp_path.display()))?;
-        drop(temporary);
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::Replace)?;
-        hypercolor_platform_fs::replace_file(&tmp_path, &self.config_path)
-            .with_context(|| format!("failed to replace {}", self.config_path.display()))?;
-        #[cfg(test)]
-        self.persistence_checkpoint(ConfigPersistenceStage::SyncDirectory)?;
-        sync_parent_directory(&self.config_path)
     }
 
     #[cfg(test)]
@@ -691,6 +679,21 @@ impl ConfigManager {
         paths::set_data_dir_override(path);
     }
 
+    /// Returns the platform-appropriate machine-local state directory.
+    ///
+    /// Delegates to [`paths::state_dir`].
+    pub fn state_dir() -> PathBuf {
+        paths::state_dir()
+    }
+
+    /// Override the resolved machine-local state directory.
+    ///
+    /// This is intended for integration tests that need isolated daemon state.
+    #[doc(hidden)]
+    pub fn set_state_dir_override(path: Option<PathBuf>) {
+        paths::set_state_dir_override(path);
+    }
+
     /// Returns the platform-appropriate cache directory.
     ///
     /// Delegates to [`paths::cache_dir`].
@@ -703,8 +706,9 @@ impl ConfigManager {
     /// This is THE config parser: file loads, tooling, and tests all run
     /// the same parse and normalize, so no caller can materialize a
     /// config that skips them. Schema v4 is upgraded in memory by
-    /// renaming `daemon.start_profile` to `daemon.start_scene`; every
-    /// other older or newer schema is refused rather than guessed at.
+    /// renaming `daemon.start_profile` to `daemon.start_scene` and the
+    /// effect fallback value `clear_groups` to `clear_zones`; every other
+    /// older or newer schema is refused rather than guessed at.
     ///
     /// # Errors
     ///
@@ -758,40 +762,24 @@ fn migrate_v4_to_v5(document: &mut toml::Value) -> Result<()> {
             daemon.insert("start_scene".to_owned(), start_scene);
         }
     }
+    if let Some(effect_engine) = root
+        .get_mut("effect_engine")
+        .and_then(toml::Value::as_table_mut)
+        && effect_engine
+            .get("effect_error_fallback")
+            .and_then(toml::Value::as_str)
+            == Some("clear_groups")
+    {
+        effect_engine.insert(
+            "effect_error_fallback".to_owned(),
+            toml::Value::String("clear_zones".to_owned()),
+        );
+    }
     root.insert(
         "schema_version".to_owned(),
         toml::Value::Integer(i64::from(CURRENT_SCHEMA_VERSION)),
     );
     Ok(())
-}
-
-#[cfg_attr(target_os = "windows", allow(clippy::unnecessary_wraps))]
-fn sync_parent_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        let parent = parent_directory(path);
-        std::fs::File::open(parent)
-            .with_context(|| format!("failed to open {} for sync", parent.display()))?
-            .sync_all()
-            .with_context(|| format!("failed to sync {}", parent.display()))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        // The Windows replacement primitive itself requests write-through.
-        let _ = path;
-        Ok(())
-    }
-
-    #[cfg(not(any(unix, target_os = "windows")))]
-    anyhow::bail!("durable config replacement is unsupported on this platform")
-}
-
-#[cfg(any(unix, test))]
-fn parent_directory(path: &Path) -> &Path {
-    path.parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
 }
 
 /// The refusal text for a config file this build cannot read.
@@ -861,99 +849,65 @@ mod persistence_tests {
     }
 
     #[test]
-    fn bare_config_path_syncs_the_current_directory() {
-        assert_eq!(parent_directory(Path::new("config.toml")), Path::new("."));
+    fn serialization_failure_changes_neither_disk_nor_live_snapshot() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "serialize");
+        let expected = manager.get().clone();
+        let original_port = expected.daemon.port;
+        manager.fail_next_persistence_at(ConfigPersistenceStage::Serialize);
+
+        let result = manager.modify_and_save_if_current_snapshot(&expected, |config| {
+            config.daemon.port = UPDATED_PORT;
+        });
+
+        assert!(result.is_err());
+        assert_eq!(manager.get().daemon.port, original_port);
         assert_eq!(
-            parent_directory(Path::new("nested/config.toml")),
-            Path::new("nested")
+            ConfigManager::load(&path)
+                .expect("persisted config")
+                .daemon
+                .port,
+            original_port
         );
     }
 
     #[test]
-    fn persistence_faults_before_replace_change_neither_disk_nor_live_snapshot() {
+    fn admitted_failure_publishes_and_flushes_the_authoritative_config() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let stages = [
-            ConfigPersistenceStage::Serialize,
-            ConfigPersistenceStage::CreateParent,
-            ConfigPersistenceStage::CreateTemporary,
-            ConfigPersistenceStage::WriteTemporary,
-            ConfigPersistenceStage::SyncTemporary,
-            ConfigPersistenceStage::Replace,
-        ];
+        let (manager, path) = manager_with_persisted_default(dir.as_ref(), "retry");
+        let expected = manager.get().clone();
+        let original_port = expected.daemon.port;
+        manager
+            .persistence
+            .set_injected_replace_failures(usize::MAX);
 
-        for stage in stages {
-            let (manager, path) =
-                manager_with_persisted_default(dir.as_ref(), &format!("{stage:?}"));
-            let expected = manager.get().clone();
-            let original_port = expected.daemon.port;
-            manager.fail_next_persistence_at(stage);
+        assert!(
+            manager
+                .modify_and_save_if_current_snapshot(&expected, |config| {
+                    config.daemon.port = UPDATED_PORT;
+                })
+                .expect("admitted mutation should remain authoritative")
+                .is_some()
+        );
+        assert_eq!(manager.get().daemon.port, UPDATED_PORT);
+        assert_eq!(
+            ConfigManager::load(&path)
+                .expect("previous config remains readable")
+                .daemon
+                .port,
+            original_port
+        );
 
-            let result = manager.modify_and_save_if_current_snapshot(&expected, |config| {
-                config.daemon.port = UPDATED_PORT;
-            });
-
-            assert!(result.is_err(), "{stage:?} must fail");
-            assert_eq!(manager.get().daemon.port, original_port, "{stage:?} live");
-            assert_eq!(
-                ConfigManager::load(&path)
-                    .expect("persisted config")
-                    .daemon
-                    .port,
-                original_port,
-                "{stage:?} disk"
-            );
-            assert!(
-                manager
-                    .modify_and_save_if_current_snapshot(&expected, |config| {
-                        config.daemon.port = UPDATED_PORT;
-                    })
-                    .expect("retry")
-                    .is_some(),
-                "{stage:?} retry"
-            );
-        }
-    }
-
-    #[test]
-    fn post_replace_failures_keep_memory_unpublished_and_visible_file_parseable() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let stages = [
-            ConfigPersistenceStage::SyncDirectory,
-            ConfigPersistenceStage::AfterDurableWrite,
-        ];
-
-        for stage in stages {
-            let (manager, path) =
-                manager_with_persisted_default(dir.as_ref(), &format!("{stage:?}"));
-            let expected = manager.get().clone();
-            let original_port = expected.daemon.port;
-            manager.fail_next_persistence_at(stage);
-
-            let result = manager.modify_and_save_if_current_snapshot(&expected, |config| {
-                config.daemon.port = UPDATED_PORT;
-            });
-
-            assert!(result.is_err(), "{stage:?} must fail");
-            assert_eq!(manager.get().daemon.port, original_port, "{stage:?} live");
-            assert_eq!(
-                ConfigManager::new(path.clone())
-                    .expect("reopen visible replacement")
-                    .get()
-                    .daemon
-                    .port,
-                UPDATED_PORT,
-                "{stage:?} reopened disk"
-            );
-            assert!(
-                manager
-                    .modify_and_save_if_current_snapshot(&expected, |config| {
-                        config.daemon.port = UPDATED_PORT;
-                    })
-                    .expect("same-process retry")
-                    .is_some(),
-                "{stage:?} retry"
-            );
-            assert_eq!(manager.get().daemon.port, UPDATED_PORT, "{stage:?} live");
-        }
+        manager.persistence.set_injected_replace_failures(0);
+        let report = crate::persistence::flush_all(std::time::Duration::from_secs(5));
+        assert!(report.is_complete());
+        assert!(report.written() >= 1);
+        assert_eq!(
+            ConfigManager::load(&path)
+                .expect("converged config should read")
+                .daemon
+                .port,
+            UPDATED_PORT
+        );
     }
 }

@@ -22,7 +22,7 @@
     <div class="nav-links" id="nav-links" role="menubar">
       {% set cp = current_path | default(value="") %}
       {% for item in config.extra.menu %}
-        {% set is_active = (item.prefix == "$home" and cp == "/") or (item.prefix != "$home" and cp is starting_with(item.prefix)) %}
+        {% set is_active = (item.prefix == "$home" and cp == "/") or (item.prefix != "$home" and cp is starting_with(pat=item.prefix)) %}
         <a class="nav-link{% if is_active %} nav-link--active{% endif %}" href="{{ config.base_url | safe }}{{ item.url }}" role="menuitem"{% if is_active %} aria-current="page"{% endif %}>{{ item.name }}</a>
       {% endfor %}
     </div>

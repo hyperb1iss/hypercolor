@@ -2,32 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
 use crate::attachment::{
     ComponentCanvasSize, ComponentCategory, ComponentCompatibility, ComponentOrigin,
 };
 use crate::spatial::{LedTopology, NormalizedPosition};
-
-/// Accept an absent `origin`, an explicit `null`, or a real value.
-///
-/// The daemon always sends a value, so this only widens what clients
-/// tolerate. It exists because the hand-rolled web UI mirrors these
-/// types replaced declared `origin` as an `Option<ComponentOrigin>` and
-/// so decoded an explicit `null` happily. `#[serde(default)]` alone
-/// covers the absent key but not a present null, which would make the
-/// shared type stricter than the mirror it replaced.
-fn origin_tolerating_null<'de, D>(deserializer: D) -> Result<ComponentOrigin, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<ComponentOrigin>::deserialize(deserializer)?.unwrap_or_default())
-}
 
 /// Query parameters for `GET /api/v1/attachments/templates`.
 ///
 /// Every field narrows the catalog; an empty query lists everything the
 /// registry knows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema, utoipa::IntoParams))]
 pub struct ListTemplatesQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<usize>,
@@ -60,13 +46,7 @@ pub struct ListTemplatesQuery {
 // proves transitively that nothing in this response is a float. A float
 // here would be a wire hazard, because the shapes these types replace
 // were built with `json!`, which widens f32 to f64 and reprints it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TemplateListResponse {
-    #[serde(default)]
-    pub items: Vec<TemplateSummary>,
-    #[serde(default)]
-    pub pagination: Pagination,
-}
+pub type TemplateListResponse = ListResponse<TemplateSummary>;
 
 /// One template in the catalog listing.
 ///
@@ -74,12 +54,12 @@ pub struct TemplateListResponse {
 /// topology rather than stored, so it is always present even for
 /// templates whose topology is generated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct TemplateSummary {
     pub id: String,
     pub name: String,
     pub vendor: String,
     pub category: ComponentCategory,
-    #[serde(default, deserialize_with = "origin_tolerating_null")]
     pub origin: ComponentOrigin,
     pub led_count: u32,
     pub description: String,
@@ -107,12 +87,12 @@ pub struct TemplateSummary {
 // never exposed to the f32-to-f64 reprint the fence guards against. Its
 // serialization path is unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct TemplateDetail {
     pub id: String,
     pub name: String,
     pub vendor: String,
     pub category: ComponentCategory,
-    #[serde(default, deserialize_with = "origin_tolerating_null")]
     pub origin: ComponentOrigin,
     pub led_count: u32,
     pub description: String,
@@ -132,5 +112,6 @@ pub struct TemplateDetail {
     pub image_url: Option<String>,
     /// Physical footprint in millimeters, as `[width, height]`.
     #[serde(default)]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<Vec<f32>>, min_items = 2, max_items = 2))]
     pub physical_size_mm: Option<(f32, f32)>,
 }

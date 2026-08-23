@@ -50,10 +50,7 @@ The root `HypercolorConfig` struct has these sections:
 | `[discovery]`     | mDNS, scan interval, ROLI Blocks                         |
 | `[network]`       | Remote access modes and client scope                     |
 | `[drivers.<id>]`  | Per-driver enable/settings (keyed by driver ID)          |
-| `[dbus]`          | D-Bus session bus integration (Linux)                    |
-| `[tui]`           | Terminal UI theme, preview FPS, keybindings              |
 | `[session]`       | Idle, lock, suspend, and lid lighting behavior (Linux)   |
-| `[features]`      | Opt-in experimental flags                                |
 
 ---
 
@@ -140,7 +137,7 @@ preferred_renderer           = "auto"   # "auto" | "servo" | "wgpu"
 servo_enabled                = true     # Enable Servo path for HTML/Canvas effects
 wgpu_backend                 = "auto"   # "auto" | "vulkan" | "opengl"
 compositor_acceleration_mode = "auto"   # "cpu" | "auto" | "gpu"
-effect_error_fallback        = "none"   # "none" | "clear_groups"
+effect_error_fallback        = "none"   # "none" | "clear_zones"
 extra_effect_dirs            = []       # Additional directories scanned for effects
 watch_effects                = true     # Hot-reload effects on file change
 watch_config                 = true     # Hot-reload hypercolor.toml on file change
@@ -152,7 +149,7 @@ watch_config                 = true     # Hot-reload hypercolor.toml on file cha
 
 **`extra_effect_dirs`**: list of absolute or config-relative paths. Each directory is scanned for `.html` effect bundles on startup and watched for changes when `watch_effects = true`.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Add your effect development directory here to get live hot-reload without a daemon restart:
 
 ```toml
@@ -160,7 +157,7 @@ Add your effect development directory here to get live hot-reload without a daem
 extra_effect_dirs = ["/home/you/dev/my-effects/dist"]
 ```
 
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -351,9 +348,9 @@ instance_name                     = ""              # mDNS instance name (defaul
 | `lan_protected` | All interfaces | Yes (API key required)                                                    |
 | `custom`        | All interfaces | Controlled by `allow_unauthenticated_remote_access` and `allowed_clients` |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `lan_trusted` exposes full control to anyone on your network with no authentication. Use `lan_protected` and set `HYPERCOLOR_API_KEY` if you need LAN access with some protection.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -378,31 +375,6 @@ enabled = false
 ```
 
 Driver IDs correspond to the names registered in the driver registry. Available IDs include `govee`, `hue`, `nanoleaf`, `wled`, plus compile-time HAL driver IDs for USB/HID families.
-
----
-
-## `[dbus]`
-
-D-Bus integration for Linux desktop session events (screen lock, media players, power events).
-
-```toml
-[dbus]
-enabled  = true
-bus_name = "tech.hyperbliss.hypercolor1"
-```
-
----
-
-## `[tui]`
-
-Terminal UI preferences.
-
-```toml
-[tui]
-theme        = "silkcircuit"  # "silkcircuit" | "default" | "minimal"
-preview_fps  = 15             # LED preview refresh rate in the TUI canvas
-keybindings  = "default"      # "default" | "vim" | path to a custom keymap file
-```
 
 ---
 
@@ -452,19 +424,6 @@ off_output_color    = "#000000"   # Frame held when off_output_behavior = "stati
 ```
 
 `static` holds a solid color frame (black by default) on the device; `release` disconnects and lets the device return to its native firmware behavior.
-
----
-
-## `[features]`
-
-Opt-in experimental features. All default to `false`.
-
-```toml
-[features]
-wasm_plugins     = false  # Experimental WASM effect plugin system
-hue_entertainment = false  # Philips Hue Entertainment API (low-latency streaming)
-midi_input       = false  # MIDI controller input for effect control
-```
 
 ---
 
@@ -553,6 +512,6 @@ Keys are addressed with dotted paths matching the TOML structure (`daemon.target
 
 Reads mask what the key registry classifies as secret. Every `drivers` entry renders as `{"redacted": true}` on `/api/v1/config` and on a key read; driver settings are read and edited through `/api/v1/drivers/{id}/config` instead.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Which keys reload live is the key registry's answer, not a list to memorize: `GET /api/v1/config/schema` reports `live` (with the subsystem the daemon re-applies), `live_on_read`, `next_scan`, `restart`, or `inert` for every key. Today the live sections are audio, screen capture, host input, and the render loop (`daemon.target_fps`, `daemon.canvas_width`, `daemon.canvas_height`). Every live section honors the same `?live=` flag, which defaults to applying; the CLI's `--live` maps onto it.
-{% end %}
+{% </callout> %}

@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_core::types::canvas::{
+use hypercolor_types::canvas::{
     PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceStateCounts,
 };
 
@@ -1887,10 +1887,10 @@ impl ProjectedLookupAllocationFixture {
             keys,
             zero_screen_layers: [
                 CompositionLayer::replace_opaque(ProducerFrame::Canvas(
-                    hypercolor_core::types::canvas::Canvas::new(4, 4),
+                    hypercolor_types::canvas::Canvas::new(4, 4),
                 )),
                 CompositionLayer::replace_opaque(ProducerFrame::Canvas(
-                    hypercolor_core::types::canvas::Canvas::new(4, 4),
+                    hypercolor_types::canvas::Canvas::new(4, 4),
                 )),
             ],
         }

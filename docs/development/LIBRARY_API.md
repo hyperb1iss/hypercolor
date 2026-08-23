@@ -34,7 +34,7 @@ Errors use:
 ```json
 {
   "error": {
-    "code": "not_found",
+    "code": "preset_not_found",
     "message": "preset not found: foo"
   },
   "meta": {}
@@ -113,7 +113,7 @@ Response:
 
 `GET /api/v1/library/favorites`
 
-Returns `data.items` plus pagination metadata. Current implementation is not paged on the server and returns all items with `offset=0`, `limit=50`, `has_more=false`.
+Returns `data.items` and `data.total`. The route answers complete, so it omits the `data.page` block that paging routes carry.
 
 ### Delete
 
@@ -150,11 +150,11 @@ Behavior:
 
 Accepted `controls` input JSON types:
 
-- integer -> `ControlValue::Integer`
+- integer -> `ControlValue::Int`
 - float -> `ControlValue::Float`
-- boolean -> `ControlValue::Boolean`
+- boolean -> `ControlValue::Bool`
 - string -> `ControlValue::Text`
-- RGBA array of 4 numbers -> `ControlValue::Color`
+- RGBA array of 4 numbers -> `ControlValue::ColorLinear`
 
 ### Stored / Returned Controls Shape
 
@@ -163,9 +163,12 @@ Preset responses are strongly typed enums, for example:
 ```json
 {
   "controls": {
-    "speed": { "float": 7.5 },
-    "enabled": { "boolean": true },
-    "accent": { "color": [1.0, 0.4, 0.0, 1.0] }
+    "speed": { "kind": "float", "value": 7.5 },
+    "enabled": { "kind": "bool", "value": true },
+    "accent": {
+      "kind": "color_linear",
+      "value": { "r": 1.0, "g": 0.4, "b": 0.0, "a": 1.0 }
+    }
   }
 }
 ```

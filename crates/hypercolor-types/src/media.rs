@@ -2,13 +2,13 @@
 //! injected into display faces as `engine.media`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// Snapshot of the active media player.
 ///
 /// Album art travels as a bounded JPEG data URL and is refreshed only on
 /// track change, so cloning this state is cheap in the steady state.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct MediaState {
     /// Whether any media player is currently reachable.
     pub available: bool,

@@ -9,9 +9,10 @@ import msgspec
 import pytest
 import respx
 
+from hypercolor._generated.types import Unset
 from hypercolor.client import HypercolorClient
 from hypercolor.exceptions import HypercolorPreconditionError
-from hypercolor.models.scene import SceneDocument
+from hypercolor.models import SceneDocument
 
 SCENE_ID = "0193d2c0-0000-7000-8000-00000000aaaa"
 ZONE_ID = "0193d2c0-0000-7000-8000-000000000001"
@@ -54,14 +55,26 @@ ZONE = {
             "source": {
                 "type": "effect",
                 "effect_id": "aurora",
-                "controls": {"speed": {"integer": 50}},
+                "controls": {"speed": {"kind": "int", "value": 50}},
                 "control_bindings": {},
                 "preset_id": None,
             },
             "blend": "replace",
             "opacity": 1.0,
-            "transform": {},
-            "adjust": {},
+            "transform": {
+                "anchor": {"x": 0.5, "y": 0.5},
+                "scale": [1.0, 1.0],
+                "rotation": 0.0,
+                "fit": "cover",
+            },
+            "adjust": {
+                "brightness": 1.0,
+                "saturation": 1.0,
+                "hue_shift": 0.0,
+                "tint": [1.0, 1.0, 1.0, 1.0],
+                "tint_strength": 0.0,
+                "contrast": 0.0,
+            },
             "bindings": [],
             "enabled": True,
         }
@@ -122,7 +135,7 @@ async def test_get_scenes_decodes_mutation_mode(client: HypercolorClient) -> Non
                             "mutation_mode": "snapshot",
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
                 }
             ),
         )
@@ -131,7 +144,6 @@ async def test_get_scenes_decodes_mutation_mode(client: HypercolorClient) -> Non
     scenes = await client.get_scenes()
 
     assert scenes[0].mutation_mode == "snapshot"
-    assert scenes[0].snapshot_locked is True
 
 
 @respx.mock
@@ -144,7 +156,7 @@ async def test_get_live_scene_uses_canonical_singleton(client: HypercolorClient)
     scene = await client.get_live_scene()
 
     assert scene.revision == 12
-    assert scene.zones[0].layers[0].id == LAYER_ID
+    assert str(scene.zones[0].layers[0].id) == LAYER_ID
 
 
 @respx.mock
@@ -158,8 +170,10 @@ async def test_stored_scene_get_returns_complete_document(client: HypercolorClie
 
     assert scene.description == "Daily desk scene"
     assert scene.activation_brightness == 0.75
-    assert scene.transition["color_interpolation"] == "Oklab"
-    assert scene.metadata == {"room": "office"}
+    assert not isinstance(scene.transition, Unset)
+    assert scene.transition.to_dict()["color_interpolation"] == "Oklab"
+    assert not isinstance(scene.metadata, Unset)
+    assert scene.metadata.to_dict() == {"room": "office"}
     assert scene.zones[0].description == "Main desk lighting"
 
 
@@ -171,7 +185,7 @@ async def test_stored_scene_put_replaces_the_complete_document(
     route = respx.put(f"http://hyperia.test:9420/api/v1/scenes/{SCENE_ID}").mock(
         return_value=httpx.Response(200, content=_envelope(LIVE_SCENE))
     )
-    scene = msgspec.convert(LIVE_SCENE, type=SceneDocument)
+    scene = SceneDocument.from_dict(LIVE_SCENE)
 
     updated = await client.update_scene(SCENE_ID, scene, if_match=scene.revision)
 
@@ -183,7 +197,7 @@ async def test_stored_scene_put_replaces_the_complete_document(
     assert replacement == {
         key: value for key, value in LIVE_SCENE.items() if key not in {"is_default", "revision"}
     }
-    assert updated.zones[0].layers[0].id == LAYER_ID
+    assert str(updated.zones[0].layers[0].id) == LAYER_ID
 
 
 @respx.mock
@@ -387,7 +401,9 @@ async def test_set_zone_layout_uses_compact_placements(client: HypercolorClient)
     zone = await client.set_zone_layout(ZONE_ID, layout, if_match=16)
 
     assert json.loads(route.calls[0].request.content) == layout
-    assert zone.layout == layout
+    assert zone.layout is not None
+    assert not isinstance(zone.layout, Unset)
+    assert zone.layout.to_dict() == layout
 
 
 @respx.mock

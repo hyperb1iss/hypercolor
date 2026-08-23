@@ -5,9 +5,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::effect::EffectRegistry;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -83,28 +84,35 @@ fn sample_layout() -> SpatialLayout {
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
 
 #[tokio::test]
-async fn install_effect_invalidates_active_render_group_revision() {
+async fn install_effect_invalidates_resolved_zone_revision() {
     let (state, _tempdir) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let app = api::build_router(Arc::clone(&state), None);
     let metadata = sample_effect_metadata("seed");
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
-            .expect("primary group should be created");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            sample_layout(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should be created");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("primary zone should commit");
 
     let revision_before = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager.active_render_groups_revision()
+        let scene_manager = state.scene_manager.snapshot().await;
+        scene_manager.resolved_zones_revision()
     };
 
     let html = r#"<!DOCTYPE html>
@@ -132,40 +140,44 @@ async fn install_effect_invalidates_active_render_group_revision() {
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let revision_after = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager.active_render_groups_revision()
+        let scene_manager = state.scene_manager.snapshot().await;
+        scene_manager.resolved_zones_revision()
     };
 
     assert!(
         revision_after > revision_before,
-        "effect registry updates should invalidate active render-group caches"
+        "effect registry updates should invalidate resolved-zone caches"
     );
 }
 
 #[tokio::test]
-async fn rescan_effects_invalidates_active_render_group_revision() {
+async fn rescan_effects_invalidates_resolved_zone_revision() {
     let (state, tempdir) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let app = api::build_router(Arc::clone(&state), None);
     let metadata = sample_effect_metadata("seed");
 
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, HashMap::new(), None, sample_layout())
-            .expect("primary group should be created");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &metadata,
+            HashMap::new(),
+            None,
+            sample_layout(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should be created");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("primary zone should commit");
 
     let revision_before = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager.active_render_groups_revision()
+        let scene_manager = state.scene_manager.snapshot().await;
+        scene_manager.resolved_zones_revision()
     };
 
-    let user_effects_dir = tempdir.path().join("effects");
-    {
-        let mut registry = state.effect_registry.write().await;
-        *registry = EffectRegistry::new(vec![user_effects_dir.clone()]);
-    }
+    let user_effects_dir = tempdir.path().join("data/effects");
     std::fs::create_dir_all(&user_effects_dir).expect("user effects dir should be created");
     std::fs::write(
         user_effects_dir.join("rescan.html"),
@@ -185,20 +197,48 @@ async fn rescan_effects_invalidates_active_render_group_revision() {
     )
     .expect("effect file should be written");
 
+    let mut events = state.event_bus.subscribe_all();
     let response = app
         .oneshot(rescan_request())
         .await
         .expect("rescan request should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("rescan response body should read");
+    let response: serde_json::Value =
+        serde_json::from_slice(&body).expect("rescan response should be JSON");
+    let expected = (
+        response["data"]["added"]
+            .as_u64()
+            .expect("added count should be present") as usize,
+        response["data"]["removed"]
+            .as_u64()
+            .expect("removed count should be present") as usize,
+        response["data"]["updated"]
+            .as_u64()
+            .expect("updated count should be present") as usize,
+    );
+    let registry_updates = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event.event {
+            HypercolorEvent::EffectRegistryUpdated {
+                added,
+                removed,
+                updated,
+            } => Some((added, removed, updated)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(registry_updates, vec![expected]);
 
     let revision_after = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager.active_render_groups_revision()
+        let scene_manager = state.scene_manager.snapshot().await;
+        scene_manager.resolved_zones_revision()
     };
 
     assert!(
         revision_after > revision_before,
-        "manual rescans should invalidate active render-group caches"
+        "manual rescans should invalidate resolved-zone caches"
     );
 }

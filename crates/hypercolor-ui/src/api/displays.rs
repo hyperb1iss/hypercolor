@@ -3,29 +3,27 @@
 //! Covers display discovery, face assignment, face control updates, and the
 //! preview JPEG URL.
 
-use hypercolor_types::scene::DisplayFaceBlendMode;
-use std::collections::HashMap;
+use hypercolor_types::layer::BlendMode;
+use std::collections::{BTreeMap, HashMap};
 
-use super::client;
+use super::{ApiResult, client};
 
 pub use hypercolor_types::api::displays::{
     DisplayFaceResponse, DisplayFaceScope, DisplaySummary, SetDisplayFaceRequest,
-    UpdateDisplayFaceCompositionRequest, UpdateDisplayFaceControlsRequest,
+    UpdateDisplayFaceCompositionRequest,
 };
+use hypercolor_types::api::scene::PatchControlsRequest;
+use hypercolor_types::control::ControlValue;
 
 /// `GET /api/v1/displays` — list display-capable devices.
-pub async fn fetch_displays() -> Result<Vec<DisplaySummary>, String> {
-    client::fetch_json::<Vec<DisplaySummary>>("/api/v1/displays")
-        .await
-        .map_err(Into::into)
+pub async fn fetch_displays() -> ApiResult<Vec<DisplaySummary>> {
+    client::fetch_json::<Vec<DisplaySummary>>("/api/v1/displays").await
 }
 
 /// `GET /api/v1/displays/{id}/face` — fetch the current face assignment.
-pub async fn fetch_display_face(display_id: &str) -> Result<Option<DisplayFaceResponse>, String> {
+pub async fn fetch_display_face(display_id: &str) -> ApiResult<Option<DisplayFaceResponse>> {
     let url = format!("/api/v1/displays/{display_id}/face");
-    client::fetch_json::<Option<DisplayFaceResponse>>(&url)
-        .await
-        .map_err(|error| error.to_string())
+    client::fetch_json::<Option<DisplayFaceResponse>>(&url).await
 }
 
 /// `PUT /api/v1/displays/{id}/face` — assign a display face on the chosen layer.
@@ -33,7 +31,7 @@ pub async fn set_display_face(
     display_id: &str,
     effect_id: &str,
     scope: DisplayFaceScope,
-) -> Result<DisplayFaceResponse, String> {
+) -> ApiResult<DisplayFaceResponse> {
     let url = format!("/api/v1/displays/{display_id}/face");
     let body = SetDisplayFaceRequest {
         effect_id: effect_id.to_owned(),
@@ -42,44 +40,41 @@ pub async fn set_display_face(
         // over the live effect — transparent regions reveal it — instead of
         // blacking the effect out. Replace stays available in the
         // composition panel for face-only looks.
-        blend_mode: Some(DisplayFaceBlendMode::Alpha),
+        blend_mode: Some(BlendMode::Alpha),
         opacity: Some(1.0),
         scope,
     };
-    client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body)
-        .await
-        .map_err(Into::into)
+    client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body).await
 }
 
 /// `DELETE /api/v1/displays/{id}/face?scope=...` — clear one layer's assignment.
-pub async fn delete_display_face(display_id: &str, scope: DisplayFaceScope) -> Result<(), String> {
+pub async fn delete_display_face(display_id: &str, scope: DisplayFaceScope) -> ApiResult<()> {
     let url = format!(
         "/api/v1/displays/{display_id}/face?scope={}",
         scope.as_str()
     );
-    client::delete_empty(&url).await.map_err(Into::into)
+    client::delete_empty(&url).await
 }
 
 /// `PATCH /api/v1/displays/{id}/face/controls` — merge control overrides.
 pub async fn update_display_face_controls(
     display_id: &str,
-    controls: &serde_json::Value,
-) -> Result<DisplayFaceResponse, String> {
+    values: BTreeMap<String, ControlValue>,
+) -> ApiResult<DisplayFaceResponse> {
     let url = format!("/api/v1/displays/{display_id}/face/controls");
-    let body = UpdateDisplayFaceControlsRequest {
-        controls: Some(controls.clone()),
+    let body = PatchControlsRequest {
+        values,
+        clear_bindings: Vec::new(),
     };
-    client::patch_json::<UpdateDisplayFaceControlsRequest, DisplayFaceResponse>(&url, &body)
-        .await
-        .map_err(Into::into)
+    client::patch_json::<PatchControlsRequest, DisplayFaceResponse>(&url, &body).await
 }
 
 /// `PATCH /api/v1/displays/{id}/face/composition` — update face/effect composition.
 pub async fn update_display_face_composition(
     display_id: &str,
-    blend_mode: Option<DisplayFaceBlendMode>,
+    blend_mode: Option<BlendMode>,
     opacity: Option<f32>,
-) -> Result<DisplayFaceResponse, String> {
+) -> ApiResult<DisplayFaceResponse> {
     let url = format!("/api/v1/displays/{display_id}/face/composition");
     let body = UpdateDisplayFaceCompositionRequest {
         blend_mode,
@@ -87,7 +82,6 @@ pub async fn update_display_face_composition(
     };
     client::patch_json::<UpdateDisplayFaceCompositionRequest, DisplayFaceResponse>(&url, &body)
         .await
-        .map_err(Into::into)
 }
 
 /// URL of the latest composited preview JPEG for a display.

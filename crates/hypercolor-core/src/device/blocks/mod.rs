@@ -5,7 +5,6 @@
 //! surfaces. See spec 30 for full protocol details.
 
 mod backend;
-#[allow(dead_code)] // Phase 3 methods (subscribe, read_event) not yet used
 mod connection;
 mod scanner;
 mod types;

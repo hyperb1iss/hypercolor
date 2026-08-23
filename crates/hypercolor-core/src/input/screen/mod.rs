@@ -81,14 +81,15 @@ pub use frame::{
 };
 pub use hub::{
     PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,
-    ScreenBranchLease, ScreenBranchPayload, ScreenBranchPublication, ScreenBranchPublisher,
-    ScreenCommittedState, ScreenContinuityActivationFailure, ScreenContinuityError,
-    ScreenContinuityLease, ScreenContinuityStageFailure, ScreenGpuSurfacePayload,
-    ScreenLiveBranchReceipt, ScreenNativeWorkPayload, ScreenPayloadKind,
-    ScreenPublicationColorimetry, ScreenPublicationFreshness, ScreenPublicationHealth,
-    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationMetadata,
-    ScreenPublicationRetirement, ScreenPublicationSlotPolicy, ScreenSurfacePayload,
-    ScreenTwoPlanContinuityLease, ScreenZonesPayload,
+    ScreenBranchLease, ScreenBranchObserver, ScreenBranchObserverSnapshot, ScreenBranchPayload,
+    ScreenBranchPublication, ScreenBranchPublisher, ScreenCommittedState,
+    ScreenContinuityActivationFailure, ScreenContinuityError, ScreenContinuityLease,
+    ScreenContinuityStageFailure, ScreenGpuSurfacePayload, ScreenLiveBranchReceipt,
+    ScreenNativeWorkPayload, ScreenPayloadKind, ScreenPublicationColorimetry,
+    ScreenPublicationFreshness, ScreenPublicationHealth, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRetirement,
+    ScreenPublicationSlotPolicy, ScreenSurfacePayload, ScreenTwoPlanContinuityLease,
+    ScreenZonesPayload,
 };
 pub use ledger::{
     ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,
@@ -103,7 +104,8 @@ pub use materialize::{
 pub use plan::{
     ArmedScreenPlan, AwaitingBackendScreenPlan, CommittedScreenPlan,
     InputPublicationDemandRevision, PreparingScreenPlan, ScreenAdmissionCapacity,
-    ScreenBranchDemand, ScreenCapturePlan, ScreenCompatibilitySelection, ScreenExactResource,
+    ScreenBranchDemand, ScreenCapturePlan, ScreenCompatibilitySelection,
+    ScreenConsumerBranchRevision, ScreenConsumerBranchRoute, ScreenExactResource,
     ScreenExactResourceLedger, ScreenInputGraphGeneration, ScreenPhysicalReductionDemand,
     ScreenPlanAbort, ScreenPlanAdmissionLedger, ScreenPlanArmFailure, ScreenPlanBuilder,
     ScreenPlanCommitFailure, ScreenPlanError, ScreenPlanGeneration, ScreenPlanTransactionId,
@@ -118,22 +120,21 @@ pub use publication::{
     ResolvedScreenColorTransform, ResolvedScreenGeometry, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ResolvedScreenToneMap, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBoundedExtent, ScreenCaptureBackend,
-    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenContentBarsPolicy,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
-    ScreenExtentRequest, ScreenGamutMapPolicy, ScreenGridPolicy, ScreenHdrPolicy,
-    ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetAllocation,
-    ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
+    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenConsumerBranchId,
+    ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenGamutMapPolicy, ScreenGridPolicy,
+    ScreenHdrPolicy, ScreenLetterboxFill, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenNativePreparationPayload, ScreenNativeRetentionQuote,
+    ScreenNativeTargetAllocation, ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
     ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
     ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPhysicalReductionDescriptor, ScreenPhysicalReductionKey, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationError,
-    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
-    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenPublicationResidency, ScreenRational, ScreenReductionFilter, ScreenResourceApi,
-    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenSubpixelRect, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
-    ScreenUnknownColorPolicy, ScreenUpscalePolicy,
+    ScreenPhysicalReductionDescriptor, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenProfileScalar, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency, ScreenRational,
+    ScreenReductionFilter, ScreenResourceApi, ScreenSceneCutPolicy, ScreenSmoothingPolicy,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect, ScreenTargetColorimetry,
+    ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy,
 };
 pub use reducer::{
     CpuFallbackNeed, CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError,
@@ -160,20 +161,21 @@ pub use wayland::WaylandScreenCaptureInput;
 #[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
 pub use windows::WindowsScreenCaptureFixture;
 #[cfg(target_os = "windows")]
-pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
+pub use windows::WindowsScreenCaptureInput;
 
 use crate::input::traits::{InputData, InputSource, ScreenData, ScreenZoneColors};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
-use crate::types::canvas::{
+use hypercolor_types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
     SurfaceDescriptor, SurfaceResourceError, SurfaceResourceOwner,
 };
-use crate::types::event::ZoneColors;
+use hypercolor_types::event::ZoneColors;
 use std::fmt::Write as _;
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 
 /// Acquisition cadence requested from a native screen backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -465,8 +467,8 @@ pub struct CaptureConfig {
     /// XDG portal restore token from a previous session, if any.
     pub restore_token: Option<String>,
 
-    /// Persisted capture source. Windows accepts `auto`, stable monitor ids,
-    /// and legacy numeric indices; the XDG portal owns selection on Linux.
+    /// Persisted capture source. Windows accepts `auto` or a stable monitor
+    /// id; the XDG portal owns selection on Linux.
     pub source: String,
 }
 
@@ -493,6 +495,136 @@ impl Default for CaptureConfig {
             restore_token: None,
             source: "auto".to_owned(),
         }
+    }
+}
+
+/// Failure to derive an exact publication profile from runtime capture settings.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum CaptureProcessingProfileError {
+    /// A byte-changing processing scalar was not finite.
+    #[error(transparent)]
+    Publication(#[from] ScreenPublicationError),
+    /// The configured LED tone-map target was invalid.
+    #[error(transparent)]
+    ToneMapCalibration(#[from] LedToneMapCalibrationError),
+}
+
+impl CaptureConfig {
+    /// Apply runtime capture controls to one consumer's exact processing profile.
+    ///
+    /// Cursor policy and output color/storage contracts remain owned by the
+    /// consumer request. Grid and raster reduction use the managed high-quality
+    /// policies because runtime configuration does not expose lower-quality
+    /// policy switches.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for non-finite controls or invalid LED calibration.
+    pub fn exact_processing_profile(
+        &self,
+        requested: &ScreenProcessingProfile,
+    ) -> Result<ScreenProcessingProfile, CaptureProcessingProfileError> {
+        let alpha = ScreenProfileScalar::try_new(self.smoothing_alpha)?
+            .value()
+            .clamp(0.0, 1.0);
+        let scene_cut = ScreenSceneCutPolicy::MeanAbsoluteDelta {
+            threshold: ScreenProfileScalar::try_new(
+                self.scene_cut_threshold.clamp(0.0, 765.0) / 765.0,
+            )?,
+        };
+        let smoothing = if alpha == 0.0 {
+            ScreenSmoothingPolicy::Frozen { scene_cut }
+        } else if alpha == 1.0 {
+            ScreenSmoothingPolicy::Disabled
+        } else {
+            let seconds = -1.0 / (60.0 * (-f64::from(alpha)).ln_1p());
+            ScreenSmoothingPolicy::Exponential {
+                time_constant: Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX),
+                scene_cut,
+            }
+        };
+        let content_bars = if self.letterbox_enabled {
+            ScreenContentBarsPolicy::DetectAndCrop {
+                luminance_threshold: ScreenProfileScalar::try_new(
+                    self.letterbox_threshold.clamp(0.0, 1.0),
+                )?,
+            }
+        } else {
+            ScreenContentBarsPolicy::Disabled
+        };
+        let tuning = self.tuning.clamped();
+        let calibration = LedToneMapCalibration::try_new(
+            self.target_led_white_x,
+            self.target_led_white_y,
+            self.target_led_reference_white_nits,
+            self.target_led_peak_nits,
+            self.exposure_ev,
+        )?;
+        Ok(ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            content_bars,
+            letterbox_fill: requested.letterbox_fill(),
+            smoothing,
+            tuning: ScreenColorTuning::try_new(tuning.saturation, tuning.brightness, tuning.gamma)?,
+            cursor: requested.cursor(),
+            grid: ScreenGridPolicy::AreaWeighted,
+            reduction_filter: ScreenReductionFilter::Area,
+            target_pixel_format: requested.target_pixel_format(),
+            target_colorimetry: requested.target_colorimetry(),
+            unknown_color: requested.unknown_color(),
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                calibration,
+            )),
+            gamut: requested.gamut(),
+            algorithm_revision: requested.algorithm_revision(),
+        })
+        .with_led_tone_map(calibration))
+    }
+
+    fn bind_exact_processing_profile(
+        &self,
+        demand: &RegisteredScreenBranchDemand,
+    ) -> Result<RegisteredScreenBranchDemand, CaptureProcessingProfileError> {
+        let request = demand.request();
+        let processing_profile = self.exact_processing_profile(request.processing_profile())?;
+        Ok(RegisteredScreenBranchDemand::with_id(
+            demand.consumer_branch_id(),
+            ScreenPublicationRequest::new(
+                request.selector().clone(),
+                request.kind(),
+                request.executor().clone(),
+                request.extent(),
+                request.aspect(),
+                Arc::new(processing_profile),
+            ),
+            demand.requested_hz(),
+        ))
+    }
+
+    fn processing_controls_differ(&self, other: &Self) -> bool {
+        self.smoothing_alpha != other.smoothing_alpha
+            || self.scene_cut_threshold != other.scene_cut_threshold
+            || self.letterbox_threshold != other.letterbox_threshold
+            || self.letterbox_enabled != other.letterbox_enabled
+            || self.tuning != other.tuning
+            || self.target_led_white_x != other.target_led_white_x
+            || self.target_led_white_y != other.target_led_white_y
+            || self.target_led_reference_white_nits != other.target_led_reference_white_nits
+            || self.target_led_peak_nits != other.target_led_peak_nits
+            || self.exposure_ev != other.exposure_ev
+    }
+
+    fn copy_processing_controls_from(&mut self, other: &Self) {
+        self.smoothing_alpha = other.smoothing_alpha;
+        self.scene_cut_threshold = other.scene_cut_threshold;
+        self.letterbox_threshold = other.letterbox_threshold;
+        self.letterbox_enabled = other.letterbox_enabled;
+        self.tuning = other.tuning;
+        self.target_led_white_x = other.target_led_white_x;
+        self.target_led_white_y = other.target_led_white_y;
+        self.target_led_reference_white_nits = other.target_led_reference_white_nits;
+        self.target_led_peak_nits = other.target_led_peak_nits;
+        self.exposure_ev = other.exposure_ev;
     }
 }
 
@@ -746,7 +878,7 @@ pub fn fit_within(width: u32, height: u32, max_width: u32, max_height: u32) -> (
 /// One display output the capture backend can address directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenMonitor {
-    /// Legacy zero-based enumeration index for display ordering.
+    /// Zero-based enumeration index for display ordering.
     pub index: usize,
     /// Stable capture source id suitable for persistence.
     pub id: String,
@@ -792,9 +924,8 @@ pub fn available_monitors() -> Vec<ScreenMonitor> {
 ///
 /// `capture.source` is a free-form string shared across backends. The XDG
 /// portal picks its own source and leaves the value at "auto", so this only
-/// matters on Windows, which addresses display outputs directly. Stable ids
-/// survive adapter/output enumeration reorder; numeric values remain accepted
-/// for configuration compatibility.
+/// matters on Windows, which addresses display outputs directly. Every value
+/// except `auto` is a stable identity that survives enumeration reorder.
 #[must_use]
 pub fn monitor_selector_from_source(source: &str) -> hypercolor_windows_capture::MonitorSelector {
     hypercolor_windows_capture::MonitorSelector::parse(source)
@@ -1177,14 +1308,6 @@ impl ScreenCaptureInput {
     #[must_use]
     pub fn config(&self) -> &CaptureConfig {
         &self.config
-    }
-
-    pub(crate) fn set_led_tone_map_calibration(&mut self, calibration: LedToneMapCalibration) {
-        self.config.target_led_white_x = calibration.target_white_x();
-        self.config.target_led_white_y = calibration.target_white_y();
-        self.config.target_led_reference_white_nits = calibration.target_reference_white_nits();
-        self.config.target_led_peak_nits = calibration.target_peak_nits();
-        self.config.exposure_ev = calibration.exposure_ev();
     }
 
     /// Update the requested publication extent for the next analyzed frame.

@@ -37,8 +37,7 @@
     const applyAudio = function(engine, audio) {
       if (typeof audio !== 'object' || audio === null) { return; }
       if (typeof engine.audio !== 'object' || engine.audio === null) { engine.audio = {}; }
-      engine.audio.level = finiteNumber(audio.levelDb, 0);
-      engine.audio.levelRaw = finiteNumber(audio.levelDb, 0);
+      engine.audio.levelDb = finiteNumber(audio.levelDb, -100);
       engine.audio.levelLinear = finiteNumber(audio.levelLinear, 0);
       engine.audio.levelShort = finiteNumber(audio.levelShort, 0);
       engine.audio.levelLong = finiteNumber(audio.levelLong, 0);
@@ -174,7 +173,6 @@
       engine.mouse.ny = finiteNumber(mouse.ny, 0);
       engine.mouse.mode = typeof mouse.mode === 'string' ? mouse.mode : 'none';
       engine.mouse.available = engine.mouse.mode !== 'none';
-      engine.mouse.wheel = finiteNumber(mouse.wheel, 0);
       const scroll = typeof mouse.scroll === 'object' && mouse.scroll !== null ? mouse.scroll : {};
       engine.mouse.scroll = {
         line120X: finiteNumber(scroll.line120X, 0),
@@ -203,9 +201,6 @@
           keyEvents.push(entry);
         } else if (entry.kind === 'button') {
           entry.button = typeof event.button === 'string' ? event.button : '';
-          mouseEvents.push(entry);
-        } else if (entry.kind === 'wheel') {
-          entry.delta = finiteNumber(event.delta, 0);
           mouseEvents.push(entry);
         } else if (entry.kind === 'scroll') {
           entry.deltaX = finiteNumber(event.deltaX, 0);

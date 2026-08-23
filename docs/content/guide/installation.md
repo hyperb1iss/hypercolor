@@ -37,11 +37,11 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 `<prefix>/bin`). A system-wide prefix such as `/opt/hypercolor` works too, but
 the script then needs root privileges to write there.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If you installed the system hooks, **re-plug your USB devices or log out and
 back in** so the new udev rules take effect. If your devices are still not
 detected, see [Devices not found](@/troubleshooting/devices-not-found.md).
-{% end %}
+{% </callout> %}
 
 ### Debian and Ubuntu (.deb)
 
@@ -99,10 +99,10 @@ administrator elevation (UAC). In that one elevated pass the installer:
 
 Run the installer and launch Hypercolor from the Start menu. The app supervises the daemon automatically, so there is no separate daemon window to manage.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Windows builds are currently unsigned, so SmartScreen may warn when you run the
 installer. Choose "More info" and then "Run anyway" to continue.
-{% end %}
+{% </callout> %}
 
 If hardware setup did not complete during install (the installer notes this in
 its details log), USB and network lighting still work. Re-run the SMBus setup
@@ -117,15 +117,15 @@ the [download page](@/download.md). Open the DMG, drag Hypercolor to
 Applications, and launch it. The app registers a LaunchAgent for autostart and
 supervises the daemon; no terminal setup is required.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Public CI does not publish unsigned macOS packages. macOS artifacts are
 promoted manually only after Developer ID signing, notarization, and the signed
 physical acceptance checkpoint pass.
-{% end %}
+{% </callout> %}
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, Govee). SMBus/motherboard RGB is Linux and Windows only.
-{% end %}
+{% </callout> %}
 
 Homebrew users can install the desktop app as a cask
 (`brew install --cask hyperb1iss/tap/hypercolor-app`) or the daemon and CLI as

@@ -7,7 +7,7 @@
 
 use hypercolor_color::LinearRgba;
 
-use crate::types::canvas::{Rgb, linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::canvas::{Rgb, linear_to_srgb_u8, srgb_u8_to_linear};
 use rayon::prelude::*;
 use thiserror::Error;
 

@@ -9,9 +9,9 @@ A native effect is a Rust renderer compiled directly into the engine. It produce
 
 You reach for this path when an effect needs to be fast, dependency-free, and present even before any HTML effect loads. Most creative work belongs in the [TypeScript SDK](@/effects/typescript-effects.md) or as a [GLSL shader](@/effects/glsl-effects.md). Native effects are the floor everything else stands on.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 "Native" means *compiled-in Rust*, not *GPU shader*. `EffectSource::Native` dispatches only to CPU canvas renderers. There is no runnable wgpu/WGSL effect lane today: `EffectSource::Shader` bails with "shader effect is not runnable yet", and the GPU acceleration mode falls back to CPU. GLSL effects authored through the SDK run as WebGL2 inside Servo, not as native Rust. Treat the GPU effect path as future work.
-{% end %}
+{% </callout> %}
 
 ## Where native effects live
 
@@ -36,7 +36,7 @@ crates/hypercolor-core/src/effect/builtin/
 
 Each module owns its renderer struct, its `EffectRenderer` impl, its `controls()` / `presets()` helpers, and a `metadata()` constructor that builds the registry entry.
 
-{{ img(path="img/ui/effects.webp", alt="Built-in effects in the web UI") }}
+{{< img path="img/ui/effects.webp" alt="Built-in effects in the web UI" />}}
 
 ## The EffectRenderer trait
 
@@ -47,36 +47,38 @@ pub trait EffectRenderer: Send {
     fn init(&mut self, metadata: &EffectMetadata) -> anyhow::Result<()>;
     fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas)
         -> anyhow::Result<()>;
-    fn set_control(&mut self, name: &str, value: &ControlValue);
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>)
+        -> anyhow::Result<()>;
     fn destroy(&mut self);
     // defaulted: init_with_canvas_size, render_output, advance_output,
-    // tick, bind_asset_library, set_display_descriptor, preview_canvas
+    // initialize_controls, bind_asset_library, set_display_descriptor,
+    // preview_canvas
 }
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The trait is `Send` but **not** `Sync`. The daemon wraps active renderers in a `Mutex`, never an `RwLock`, because Servo's renderer is single-threaded by design and the trait object has to stay safe to move across threads without shared concurrent access. Your native renderer inherits that contract; do not assume concurrent `render_into` calls.
-{% end %}
+{% </callout> %}
 
 ### Lifecycle
 
 The engine drives a renderer through a fixed sequence:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
   A[init] --> B[render_into per frame]
   B --> B
-  B --> C[set_control between frames]
+  B --> C[apply_controls between frames]
   C --> B
   B --> D[destroy]
-{% end %}
+{% </mermaid> %}
 
 1. **`init`** runs once when the effect activates. Compile, allocate, and read whatever you need from `EffectMetadata`. Return an error and the engine transitions the effect to a failed state.
 2. **`render_into`** runs once per render-loop tick while the effect is running. It writes pixels into a caller-owned `Canvas`.
-3. **`set_control`** can fire at any point between frames when a user moves a slider, a preset loads, or the API pushes a value. Store the new value; apply it on the next `render_into`.
+3. **`apply_controls`** receives an ordered atomic batch between frames when authored or resolved values change. Store the derived values and apply them on the next `render_into`.
 4. **`destroy`** runs on deactivation. Release anything `init` acquired.
 
-The per-frame method is `render_into`, not `tick`. `tick` still exists as a legacy convenience wrapper that allocates a fresh canvas and calls `render_into` for you, but new effects should implement `render_into` and write into the target the engine hands them. That avoids a per-frame allocation and lets the compositor reuse buffers.
+`render_into` is the CPU canvas contract. The engine owns and reuses the target, so renderers resize it with `prepare_target_canvas` and write into the supplied storage instead of allocating a fresh canvas per frame.
 
 ## FrameInput
 
@@ -84,7 +86,7 @@ Every `render_into` call receives a `FrameInput` carrying all per-frame data. Th
 
 ```rust
 pub struct FrameInput<'a> {
-    pub time_secs: f32,            // seconds since the effect activated
+    pub time_secs: f64,            // seconds since the effect activated
     pub delta_secs: f32,          // seconds since the previous frame
     pub frame_number: u64,        // monotonic counter, starts at 0
     pub audio: &'a AudioData,     // always present; silence() when no source
@@ -97,9 +99,9 @@ pub struct FrameInput<'a> {
 }
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Always drive animation off `time_secs` or accumulated `delta_secs`, never `frame_number`. The render loop runs an adaptive FPS controller that shifts between five tiers (10/20/30/45/60). A frame counter ties your motion to the current tier and stutters when it shifts; elapsed time stays correct at every tier.
-{% end %}
+{% </callout> %}
 
 `audio` is never `None`. When no audio source is active the engine passes `AudioData::silence()`, a zero-filled snapshot, so you can read `input.audio.rms_level` unconditionally without a guard.
 
@@ -125,9 +127,9 @@ fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
 
 Core methods: `Canvas::new`, `fill`, `set_pixel`, `get_pixel` (out-of-bounds reads return `Rgba::BLACK`), `pixels()`, `clear()`, `width()` / `height()`, and `sample` / `sample_nearest` / `sample_bilinear` for normalized `[0,1]` lookups.
 
-{% callout(type="warning") %}
-Color controls arrive as `ControlValue::Color([f32; 4])` in **linear** RGBA (0.0-1.0), not sRGB. The UI picker is sRGB; the API converts to linear before it reaches your renderer. Do your math in linear space with `LinearRgba`, then call `to_encoded()` to land sRGB u8 for the canvas. Blending or scaling in sRGB produces muddy, perceptually wrong color. There is no `scale_rgb` helper; multiply the `LinearRgba` fields directly.
-{% end %}
+{% <callout type="warning"> %}
+Color controls arrive as `ControlValue::ColorLinear(LinearRgba)` in **linear** RGBA (0.0-1.0), not sRGB. The UI picker is sRGB; the API converts to linear before it reaches your renderer. Do your math in linear space with `LinearRgba`, then call `to_encoded()` to land sRGB u8 for the canvas. Blending or scaling in sRGB produces muddy, perceptually wrong color. There is no `scale_rgb` helper; multiply the `LinearRgba` fields directly.
+{% </callout> %}
 
 ### Color types
 
@@ -158,9 +160,9 @@ Native effects see the Rust `AudioData` struct in **snake_case**. This differs f
 | `mel_bands` | `Vec<f32>` | 24 perceptual bands (`MEL_BANDS`) |
 | `chromagram` | `Vec<f32>` | 12 pitch-class bins, C..B (`CHROMA_BINS`) |
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Never map the boolean `beat_detected` straight to brightness; that produces a harsh strobe. Use `beat_pulse`, the decaying envelope, and steer beat energy into motion rather than raw brightness. On non-rhythmic material, gate the response by `beat_confidence` so quiet passages stay calm. The full per-frame audio surface, native and SDK side by side, is in the [Audio API](@/effects/audio.md).
-{% end %}
+{% </callout> %}
 
 A minimal audio-reactive render reads loudness and modulates output:
 
@@ -184,36 +186,39 @@ fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas)
 }
 ```
 
-{{ img(path="img/effects/audio-pulse.webp", alt="Audio pulse") }}
+{{< img path="img/effects/audio-pulse.webp" alt="Audio pulse" />}}
 
 ## Handling controls
 
-Controls reach the renderer through `set_control(name, value)`. Match on the control name, narrow the `ControlValue` variant, and store the result. The breathing renderer is a clean template:
+Controls reach the renderer through `apply_controls`. Each batch carries the authoritative set revision, a resolution sequence, and ordered changes that have already passed canonical and effect-definition validation. The breathing renderer is a clean template:
 
 ```rust
-fn set_control(&mut self, name: &str, value: &ControlValue) {
-    match name {
-        "color" => {
-            if let ControlValue::Color(c) = value {
-                self.color = *c;
+fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+    for (control_id, value) in batch.changes {
+        match control_id.as_str() {
+            "color" => {
+                if let ControlValue::ColorLinear(color) = value {
+                    self.color = [color.r, color.g, color.b, color.a];
+                }
             }
-        }
-        "speed" => {
-            if let Some(v) = value.as_f32() {
-                self.speed_bpm = v.max(0.1);
+            "speed" => {
+                if let Some(value) = value.as_effect_f32() {
+                    self.speed_bpm = value.max(0.1);
+                }
             }
-        }
-        "min_brightness" => {
-            if let Some(v) = value.as_f32() {
-                self.min_brightness = v.clamp(0.0, 1.0);
+            "min_brightness" => {
+                if let Some(value) = value.as_effect_f32() {
+                    self.min_brightness = value.clamp(0.0, 1.0);
+                }
             }
+            _ => {}
         }
-        _ => {}
     }
+    Ok(())
 }
 ```
 
-`ControlValue` variants are `Float(f32)`, `Integer(i32)`, `Boolean(bool)`, `Color([f32; 4])`, `Gradient(Vec<GradientStop>)`, `Enum(String)`, `Text(String)`, and `Rect(ViewportRect)`. The helper `value.as_f32()` returns `Some` only for `Float`. Clamp or sanitize on the way in; an out-of-range value should be tamed here, not in the hot render path.
+Effect controls use the effect-capable members of the canonical `ControlValue` algebra: `Bool`, `Int`, `Float`, `Text`, `ColorLinear`, `Gradient`, `Rect`, and `Enum`. The helper `as_effect_f32()` performs the checked `f64` to `f32` projection used by renderers. Keep only renderer-derived state here; the owning `ControlSet` remains authoritative.
 
 You declare the controls in a `controls()` function using the shared constructors in `common.rs`, so the registry, the UI, and the API all see the same schema:
 
@@ -230,7 +235,7 @@ fn controls() -> Vec<ControlDefinition> {
 
 `common.rs` ships `color_control`, `slider_control`, `toggle_control`, `dropdown_control`, `asset_control`, and `rect_control`. Use them rather than hand-building `ControlDefinition` so every field (group, tooltip, step) stays consistent.
 
-{{ img(path="img/ui/ui-effect-controls.webp", alt="Live controls in the UI") }}
+{{< img path="img/ui/ui-effect-controls.webp" alt="Live controls in the UI" />}}
 
 ## Registration
 
@@ -282,6 +287,7 @@ pub(super) fn metadata() -> EffectMetadata {
         presets: presets(),
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/my_effect"),
         },
@@ -290,9 +296,9 @@ pub(super) fn metadata() -> EffectMetadata {
 }
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The effect's stable ID comes from `builtin_effect_id("my_effect")`, a deterministic hash of the stem. Saved scene references resolve through that ID, so it must stay stable across daemon restarts. Never swap to a random UUID for a built-in, and never rename the stem without understanding that it orphans saved references.
-{% end %}
+{% </callout> %}
 
 `EffectCategory` variants are `Ambient`, `Audio`, `Generative`, `Particle`, `Scenic`, `Interactive`, `Fun`, `Source`, `Utility`, and `Display` (full-fidelity HTML faces for LCD surfaces). Pick the one that matches how a user would browse for the effect. Set `audio_reactive: true` when the renderer reads `input.audio`, so the UI and the engine know to surface and feed the audio pipeline.
 
@@ -315,7 +321,7 @@ renderer.render_into(&input, &mut canvas).expect("render");
 assert_eq!(canvas.width(), 32);
 ```
 
-The test harness provides helpers (`frame`, `frame_with_size`, `frame_with_audio`, `frame_with_screen`) that construct a full `FrameInput` with silence, default interaction, and empty sensors. Cover at least init, a render at default controls, a render after `set_control`, and, for audio effects, a render under synthetic `AudioData`.
+The test harness provides helpers (`frame`, `frame_with_size`, `frame_with_audio`, `frame_with_screen`) that construct a full `FrameInput` with silence, default interaction, and empty sensors. Cover at least init, a render at default controls, a render after `apply_controls`, and, for audio effects, a render under synthetic `AudioData`.
 
 Verify with the workspace gates before you call it done:
 

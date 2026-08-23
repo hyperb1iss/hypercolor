@@ -9,24 +9,22 @@ from attrs import field as _attrs_field
 from ..models.input_source_platform_status_type_1_type import (
     InputSourcePlatformStatusType1Type,
 )
-from ..models.macos_authorization_state_api import MacosAuthorizationStateApi
-from ..models.macos_capability_owner_api import MacosCapabilityOwnerApi
-from ..models.macos_protected_source_state_api import MacosProtectedSourceStateApi
+from ..models.macos_authorization_state import MacosAuthorizationState
+from ..models.macos_capability_owner import MacosCapabilityOwner
+from ..models.macos_protected_source_state import MacosProtectedSourceState
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.macos_daemon_owner_conflict_api_status import (
-        MacosDaemonOwnerConflictApiStatus,
+    from ..models.macos_daemon_owner_conflict_status import (
+        MacosDaemonOwnerConflictStatus,
     )
-    from ..models.macos_screen_telemetry_api_status import MacosScreenTelemetryApiStatus
-    from ..models.macos_selection_state_api_type_0 import MacosSelectionStateApiType0
-    from ..models.macos_selection_state_api_type_1 import MacosSelectionStateApiType1
-    from ..models.macos_selection_state_api_type_2 import MacosSelectionStateApiType2
-    from ..models.macos_tahoe_capabilities_api_status import (
-        MacosTahoeCapabilitiesApiStatus,
-    )
-    from ..models.macos_tahoe_selection_capabilities_api_status import (
-        MacosTahoeSelectionCapabilitiesApiStatus,
+    from ..models.macos_screen_telemetry import MacosScreenTelemetry
+    from ..models.macos_selection_state_type_0 import MacosSelectionStateType0
+    from ..models.macos_selection_state_type_1 import MacosSelectionStateType1
+    from ..models.macos_selection_state_type_2 import MacosSelectionStateType2
+    from ..models.macos_tahoe_capabilities import MacosTahoeCapabilities
+    from ..models.macos_tahoe_selection_capabilities import (
+        MacosTahoeSelectionCapabilities,
     )
 
 
@@ -37,52 +35,46 @@ T = TypeVar("T", bound="InputSourcePlatformStatusType1")
 class InputSourcePlatformStatusType1:
     """
     Attributes:
-        owner (MacosCapabilityOwnerApi):
-        selection (MacosSelectionStateApiType0 | MacosSelectionStateApiType1 | MacosSelectionStateApiType2):
-        state (MacosProtectedSourceStateApi):
-        tahoe (MacosTahoeCapabilitiesApiStatus):
-        tcc (MacosAuthorizationStateApi):
-        telemetry (MacosScreenTelemetryApiStatus):
+        owner (MacosCapabilityOwner):
+        selection (MacosSelectionStateType0 | MacosSelectionStateType1 | MacosSelectionStateType2):
+        state (MacosProtectedSourceState):
+        tahoe (MacosTahoeCapabilities):
+        tcc (MacosAuthorizationState):
+        telemetry (MacosScreenTelemetry):
         type_ (InputSourcePlatformStatusType1Type):
-        owner_conflict (MacosDaemonOwnerConflictApiStatus | None | Unset):
-        tahoe_selection (MacosTahoeSelectionCapabilitiesApiStatus | None | Unset):
+        owner_conflict (MacosDaemonOwnerConflictStatus | None | Unset):
+        tahoe_selection (MacosTahoeSelectionCapabilities | None | Unset):
     """
 
-    owner: MacosCapabilityOwnerApi
+    owner: MacosCapabilityOwner
     selection: (
-        MacosSelectionStateApiType0
-        | MacosSelectionStateApiType1
-        | MacosSelectionStateApiType2
+        MacosSelectionStateType0 | MacosSelectionStateType1 | MacosSelectionStateType2
     )
-    state: MacosProtectedSourceStateApi
-    tahoe: MacosTahoeCapabilitiesApiStatus
-    tcc: MacosAuthorizationStateApi
-    telemetry: MacosScreenTelemetryApiStatus
+    state: MacosProtectedSourceState
+    tahoe: MacosTahoeCapabilities
+    tcc: MacosAuthorizationState
+    telemetry: MacosScreenTelemetry
     type_: InputSourcePlatformStatusType1Type
-    owner_conflict: MacosDaemonOwnerConflictApiStatus | None | Unset = UNSET
-    tahoe_selection: MacosTahoeSelectionCapabilitiesApiStatus | None | Unset = UNSET
+    owner_conflict: MacosDaemonOwnerConflictStatus | None | Unset = UNSET
+    tahoe_selection: MacosTahoeSelectionCapabilities | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.macos_daemon_owner_conflict_api_status import (
-            MacosDaemonOwnerConflictApiStatus,
+        from ..models.macos_daemon_owner_conflict_status import (
+            MacosDaemonOwnerConflictStatus,
         )
-        from ..models.macos_selection_state_api_type_0 import (
-            MacosSelectionStateApiType0,
-        )
-        from ..models.macos_selection_state_api_type_1 import (
-            MacosSelectionStateApiType1,
-        )
-        from ..models.macos_tahoe_selection_capabilities_api_status import (
-            MacosTahoeSelectionCapabilitiesApiStatus,
+        from ..models.macos_selection_state_type_0 import MacosSelectionStateType0
+        from ..models.macos_selection_state_type_1 import MacosSelectionStateType1
+        from ..models.macos_tahoe_selection_capabilities import (
+            MacosTahoeSelectionCapabilities,
         )
 
         owner = self.owner.value
 
         selection: dict[str, Any]
-        if isinstance(self.selection, MacosSelectionStateApiType0):
+        if isinstance(self.selection, MacosSelectionStateType0):
             selection = self.selection.to_dict()
-        elif isinstance(self.selection, MacosSelectionStateApiType1):
+        elif isinstance(self.selection, MacosSelectionStateType1):
             selection = self.selection.to_dict()
         else:
             selection = self.selection.to_dict()
@@ -100,7 +92,7 @@ class InputSourcePlatformStatusType1:
         owner_conflict: dict[str, Any] | None | Unset
         if isinstance(self.owner_conflict, Unset):
             owner_conflict = UNSET
-        elif isinstance(self.owner_conflict, MacosDaemonOwnerConflictApiStatus):
+        elif isinstance(self.owner_conflict, MacosDaemonOwnerConflictStatus):
             owner_conflict = self.owner_conflict.to_dict()
         else:
             owner_conflict = self.owner_conflict
@@ -108,7 +100,7 @@ class InputSourcePlatformStatusType1:
         tahoe_selection: dict[str, Any] | None | Unset
         if isinstance(self.tahoe_selection, Unset):
             tahoe_selection = UNSET
-        elif isinstance(self.tahoe_selection, MacosTahoeSelectionCapabilitiesApiStatus):
+        elif isinstance(self.tahoe_selection, MacosTahoeSelectionCapabilities):
             tahoe_selection = self.tahoe_selection.to_dict()
         else:
             tahoe_selection = self.tahoe_selection
@@ -135,81 +127,71 @@ class InputSourcePlatformStatusType1:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.macos_daemon_owner_conflict_api_status import (
-            MacosDaemonOwnerConflictApiStatus,
+        from ..models.macos_daemon_owner_conflict_status import (
+            MacosDaemonOwnerConflictStatus,
         )
-        from ..models.macos_screen_telemetry_api_status import (
-            MacosScreenTelemetryApiStatus,
-        )
-        from ..models.macos_selection_state_api_type_0 import (
-            MacosSelectionStateApiType0,
-        )
-        from ..models.macos_selection_state_api_type_1 import (
-            MacosSelectionStateApiType1,
-        )
-        from ..models.macos_selection_state_api_type_2 import (
-            MacosSelectionStateApiType2,
-        )
-        from ..models.macos_tahoe_capabilities_api_status import (
-            MacosTahoeCapabilitiesApiStatus,
-        )
-        from ..models.macos_tahoe_selection_capabilities_api_status import (
-            MacosTahoeSelectionCapabilitiesApiStatus,
+        from ..models.macos_screen_telemetry import MacosScreenTelemetry
+        from ..models.macos_selection_state_type_0 import MacosSelectionStateType0
+        from ..models.macos_selection_state_type_1 import MacosSelectionStateType1
+        from ..models.macos_selection_state_type_2 import MacosSelectionStateType2
+        from ..models.macos_tahoe_capabilities import MacosTahoeCapabilities
+        from ..models.macos_tahoe_selection_capabilities import (
+            MacosTahoeSelectionCapabilities,
         )
 
         d = dict(src_dict)
-        owner = MacosCapabilityOwnerApi(d.pop("owner"))
+        owner = MacosCapabilityOwner(d.pop("owner"))
 
         def _parse_selection(
             data: object,
         ) -> (
-            MacosSelectionStateApiType0
-            | MacosSelectionStateApiType1
-            | MacosSelectionStateApiType2
+            MacosSelectionStateType0
+            | MacosSelectionStateType1
+            | MacosSelectionStateType2
         ):
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_macos_selection_state_api_type_0 = (
-                    MacosSelectionStateApiType0.from_dict(data)
+                componentsschemas_macos_selection_state_type_0 = (
+                    MacosSelectionStateType0.from_dict(data)
                 )
 
-                return componentsschemas_macos_selection_state_api_type_0
+                return componentsschemas_macos_selection_state_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                componentsschemas_macos_selection_state_api_type_1 = (
-                    MacosSelectionStateApiType1.from_dict(data)
+                componentsschemas_macos_selection_state_type_1 = (
+                    MacosSelectionStateType1.from_dict(data)
                 )
 
-                return componentsschemas_macos_selection_state_api_type_1
+                return componentsschemas_macos_selection_state_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_macos_selection_state_api_type_2 = (
-                MacosSelectionStateApiType2.from_dict(data)
+            componentsschemas_macos_selection_state_type_2 = (
+                MacosSelectionStateType2.from_dict(data)
             )
 
-            return componentsschemas_macos_selection_state_api_type_2
+            return componentsschemas_macos_selection_state_type_2
 
         selection = _parse_selection(d.pop("selection"))
 
-        state = MacosProtectedSourceStateApi(d.pop("state"))
+        state = MacosProtectedSourceState(d.pop("state"))
 
-        tahoe = MacosTahoeCapabilitiesApiStatus.from_dict(d.pop("tahoe"))
+        tahoe = MacosTahoeCapabilities.from_dict(d.pop("tahoe"))
 
-        tcc = MacosAuthorizationStateApi(d.pop("tcc"))
+        tcc = MacosAuthorizationState(d.pop("tcc"))
 
-        telemetry = MacosScreenTelemetryApiStatus.from_dict(d.pop("telemetry"))
+        telemetry = MacosScreenTelemetry.from_dict(d.pop("telemetry"))
 
         type_ = InputSourcePlatformStatusType1Type(d.pop("type"))
 
         def _parse_owner_conflict(
             data: object,
-        ) -> MacosDaemonOwnerConflictApiStatus | None | Unset:
+        ) -> MacosDaemonOwnerConflictStatus | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -217,20 +199,18 @@ class InputSourcePlatformStatusType1:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                owner_conflict_type_1 = MacosDaemonOwnerConflictApiStatus.from_dict(
-                    data
-                )
+                owner_conflict_type_1 = MacosDaemonOwnerConflictStatus.from_dict(data)
 
                 return owner_conflict_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(MacosDaemonOwnerConflictApiStatus | None | Unset, data)
+            return cast(MacosDaemonOwnerConflictStatus | None | Unset, data)
 
         owner_conflict = _parse_owner_conflict(d.pop("owner_conflict", UNSET))
 
         def _parse_tahoe_selection(
             data: object,
-        ) -> MacosTahoeSelectionCapabilitiesApiStatus | None | Unset:
+        ) -> MacosTahoeSelectionCapabilities | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
@@ -238,14 +218,12 @@ class InputSourcePlatformStatusType1:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
-                tahoe_selection_type_1 = (
-                    MacosTahoeSelectionCapabilitiesApiStatus.from_dict(data)
-                )
+                tahoe_selection_type_1 = MacosTahoeSelectionCapabilities.from_dict(data)
 
                 return tahoe_selection_type_1
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(MacosTahoeSelectionCapabilitiesApiStatus | None | Unset, data)
+            return cast(MacosTahoeSelectionCapabilities | None | Unset, data)
 
         tahoe_selection = _parse_tahoe_selection(d.pop("tahoe_selection", UNSET))
 

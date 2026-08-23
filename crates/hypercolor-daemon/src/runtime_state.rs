@@ -8,10 +8,17 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{SceneId, Zone};
 use serde::{Deserialize, Serialize};
 
-use crate::persistence::{
-    AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation, PersistenceError,
-    serialize_json_pretty,
+use crate::domain::effect::{EffectIdMigrations, remap_zones};
+use crate::path_migration::{
+    MigratedStore, MigrationOutcome, PathMigrationEntry, PathMigrationError, VersionedDocument,
+    migrate,
 };
+use crate::persistence::{
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
+    AtomicWriteReservation, PersistenceError, serialize_json_pretty,
+};
+
+const STORE_SUBJECT: &str = "runtime session state";
 
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -22,16 +29,20 @@ pub struct RuntimeSessionSnapshot {
     pub active_scene_id: Option<String>,
 
     /// Full zones for the synthesized default scene.
-    pub default_scene_groups: Vec<Zone>,
+    pub default_scene_zones: Vec<Zone>,
 
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,
 
-    /// User-configured global output brightness.
-    pub global_brightness: f32,
-
     /// Explicit user pause state. Transient OS sleep is never persisted.
     pub manual_paused: bool,
+}
+
+impl RuntimeSessionSnapshot {
+    /// Rewrite path-derived effect IDs in the persisted default scene.
+    pub fn migrate_effect_ids(&mut self, migrations: &EffectIdMigrations) -> usize {
+        remap_zones(&mut self.default_scene_zones, migrations)
+    }
 }
 
 /// A runtime snapshot write ordered at the owning mutation boundary.
@@ -41,9 +52,22 @@ pub struct RuntimeSnapshotSave {
     write: AtomicWriteReservation,
 }
 
+#[derive(Debug)]
+pub(crate) struct PreparedRuntimeSnapshotSave {
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub(crate) struct AdmittedRuntimeSnapshotSave {
+    write: AdmittedAtomicWrite,
+}
+
 /// Errors produced while loading/saving runtime snapshots.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeSessionError {
+    #[error(transparent)]
+    Migration(#[from] PathMigrationError),
     #[error("failed to read runtime snapshot at {path}: {source}")]
     Read {
         path: PathBuf,
@@ -69,16 +93,15 @@ pub enum RuntimeSessionError {
 #[must_use]
 pub fn snapshot_from_scene_manager(manager: &SceneManager) -> RuntimeSessionSnapshot {
     let active_scene_id = manager.active_scene_id().map(ToString::to_string);
-    let default_scene_groups = manager
+    let default_scene_zones = manager
         .get(&SceneId::DEFAULT)
-        .map(|scene| scene.groups.clone())
+        .map(|scene| scene.zones.clone())
         .unwrap_or_default();
 
     RuntimeSessionSnapshot {
         active_scene_id,
-        default_scene_groups,
+        default_scene_zones,
         active_layout_id: None,
-        global_brightness: 1.0,
         manual_paused: false,
     }
 }
@@ -91,6 +114,46 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
         return Ok(None);
     }
 
+    let document = read_document(path)?;
+    if document.needs_rewrite {
+        save(path, &document.snapshot)?;
+    }
+    Ok(Some(document.snapshot))
+}
+
+/// Relocate a legacy data-tier snapshot and load the state-tier document.
+///
+/// # Errors
+///
+/// Returns an error when either snapshot cannot be read or decoded, the state
+/// destination cannot be prepared, or a durable import cannot be retired.
+pub fn load_migrated(
+    legacy_path: &Path,
+    canonical_path: &Path,
+) -> Result<(Option<RuntimeSessionSnapshot>, MigrationOutcome), RuntimeSessionError> {
+    let writer =
+        AtomicFileWriter::new(canonical_path).map_err(|source| RuntimeSessionError::Persist {
+            path: canonical_path.to_path_buf(),
+            source,
+        })?;
+    let entry = PathMigrationEntry::new(
+        STORE_SUBJECT,
+        legacy_path.to_path_buf(),
+        canonical_path.to_path_buf(),
+    );
+    let migrated = migrate(&RuntimeSessionCodec, &entry, &writer)?;
+    let outcome = migrated.outcome;
+    let document = migrated.document;
+    if matches!(outcome, MigrationOutcome::AlreadyMigrated)
+        && let Some(document) = document.as_ref()
+        && document.needs_rewrite
+    {
+        save(canonical_path, &document.snapshot)?;
+    }
+    Ok((document.map(|document| document.snapshot), outcome))
+}
+
+fn read_document(path: &Path) -> Result<RuntimeSessionDocument, RuntimeSessionError> {
     let raw = std::fs::read_to_string(path).map_err(|source| RuntimeSessionError::Read {
         path: path.to_path_buf(),
         source,
@@ -100,16 +163,53 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
             path: path.to_path_buf(),
             source,
         })?;
+    let mut decoded = original.clone();
+    if let Some(object) = decoded.as_object_mut() {
+        object.remove("global_brightness");
+    }
     let snapshot: RuntimeSessionSnapshot =
-        serde_json::from_value(original.clone()).map_err(|source| RuntimeSessionError::Parse {
+        serde_json::from_value(decoded).map_err(|source| RuntimeSessionError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
     let normalized = serde_json::to_value(&snapshot).map_err(RuntimeSessionError::Serialize)?;
-    if normalized != original {
-        save(path, &snapshot)?;
+    Ok(RuntimeSessionDocument {
+        snapshot,
+        needs_rewrite: normalized != original,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeSessionDocument {
+    snapshot: RuntimeSessionSnapshot,
+    needs_rewrite: bool,
+}
+
+struct RuntimeSessionCodec;
+
+impl MigratedStore for RuntimeSessionCodec {
+    type Document = RuntimeSessionDocument;
+    type Error = RuntimeSessionError;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        read_document(path).map(VersionedDocument::unversioned)
     }
-    Ok(Some(snapshot))
+
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        read_document(path)
+            .map(VersionedDocument::unversioned)
+            .map(Some)
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        serialize_json_pretty(&document.snapshot).map_err(RuntimeSessionError::Serialize)
+    }
 }
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
@@ -135,17 +235,39 @@ pub fn save_reserved(
     pending: RuntimeSnapshotSave,
     snapshot: &RuntimeSessionSnapshot,
 ) -> Result<AtomicWriteOutcome, RuntimeSessionError> {
-    let bytes = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    let outcome =
-        pending
-            .write
-            .admit(bytes)
-            .commit()
-            .map_err(|source| RuntimeSessionError::Persist {
-                path: pending.path,
-                source,
-            })?;
+    let path = pending.path.clone();
+    let prepared = prepare_reserved(pending, snapshot)?;
+    let outcome = prepared
+        .admit()
+        .write
+        .commit()
+        .map_err(|source| RuntimeSessionError::Persist { path, source })?;
     Ok(outcome)
+}
+
+pub(crate) fn prepare_reserved(
+    pending: RuntimeSnapshotSave,
+    snapshot: &RuntimeSessionSnapshot,
+) -> Result<PreparedRuntimeSnapshotSave, RuntimeSessionError> {
+    let payload = serialize_json_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
+    Ok(PreparedRuntimeSnapshotSave {
+        write: pending.write,
+        payload,
+    })
+}
+
+impl PreparedRuntimeSnapshotSave {
+    pub(crate) fn admit(self) -> AdmittedRuntimeSnapshotSave {
+        AdmittedRuntimeSnapshotSave {
+            write: self.write.admit(self.payload),
+        }
+    }
+}
+
+impl AdmittedRuntimeSnapshotSave {
+    pub(crate) fn commit_stage_aware(self) -> AtomicWriteCommitResult {
+        self.write.commit_stage_aware()
+    }
 }
 
 #[cfg(test)]
@@ -168,30 +290,51 @@ mod tests {
 
         let expected = RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: Vec::new(),
+            default_scene_zones: Vec::new(),
             active_layout_id: Some("layout_abc123".to_owned()),
-            global_brightness: 0.42,
             manual_paused: true,
         };
 
         save(&path, &expected).expect("save snapshot");
+        let serialized = std::fs::read_to_string(&path).expect("saved snapshot should read");
+        assert!(serialized.contains("\"default_scene_zones\""));
+        assert!(!serialized.contains("default_scene_groups"));
         let loaded = load(&path).expect("load snapshot");
         let loaded = loaded.expect("snapshot should exist");
 
         assert_eq!(loaded.active_scene_id, expected.active_scene_id);
-        assert_eq!(loaded.default_scene_groups, expected.default_scene_groups);
-        assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
+        assert_eq!(loaded.default_scene_zones, expected.default_scene_zones);
         assert_eq!(loaded.manual_paused, expected.manual_paused);
     }
 
     #[test]
-    fn runtime_snapshot_persists_a_fresh_legacy_layer_id() {
+    fn runtime_snapshot_refuses_the_retired_default_scene_groups_key() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "active_scene_id": null,
+                "default_scene_groups": [],
+                "active_layout_id": null,
+                "manual_paused": false,
+            }))
+            .expect("retired snapshot should serialize"),
+        )
+        .expect("retired snapshot should write");
+
+        let error = load(&path).expect_err("retired runtime key must be refused");
+        assert!(matches!(error, RuntimeSessionError::Parse { .. }));
+    }
+
+    #[test]
+    fn runtime_snapshot_preserves_the_authored_layer_id() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("runtime-state.json");
         let manager = SceneManager::with_default();
         let mut zone = manager
             .get(&SceneId::DEFAULT)
-            .and_then(|scene| scene.groups.first())
+            .and_then(|scene| scene.zones.first())
             .cloned()
             .expect("default scene should have a primary zone");
         let zone_id = zone.id;
@@ -203,7 +346,7 @@ mod tests {
             None,
         )];
         let snapshot = RuntimeSessionSnapshot {
-            default_scene_groups: vec![zone],
+            default_scene_zones: vec![zone],
             ..RuntimeSessionSnapshot::default()
         };
         let payload = serde_json::to_value(snapshot).expect("snapshot should serialize");
@@ -214,15 +357,64 @@ mod tests {
         .expect("legacy snapshot should write");
 
         let loaded = load(&path)
-            .expect("legacy snapshot should migrate")
+            .expect("snapshot should load")
             .expect("snapshot should exist");
-        let migrated_id = loaded.default_scene_groups[0].layers[0].id;
-        assert_ne!(migrated_id.as_uuid(), zone_id.0);
+        let loaded_id = loaded.default_scene_zones[0].layers[0].id;
+        assert_eq!(loaded_id.as_uuid(), zone_id.0);
 
         let reloaded = load(&path)
-            .expect("migrated snapshot should reload")
+            .expect("snapshot should reload")
             .expect("snapshot should exist");
-        assert_eq!(reloaded.default_scene_groups[0].layers[0].id, migrated_id);
+        assert_eq!(reloaded.default_scene_zones[0].layers[0].id, loaded_id);
+    }
+
+    #[test]
+    fn runtime_snapshot_effect_id_migration_is_durable() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("runtime-state.json");
+        let legacy_id = EffectId::from(Uuid::now_v7());
+        let canonical_id = EffectId::from(Uuid::now_v7());
+        let mut zone = SceneManager::with_default()
+            .get(&SceneId::DEFAULT)
+            .and_then(|scene| scene.zones.first())
+            .cloned()
+            .expect("default scene should have a primary zone");
+        zone.layers = vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            legacy_id,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+            None,
+        )];
+        let mut snapshot = RuntimeSessionSnapshot {
+            default_scene_zones: vec![zone],
+            ..RuntimeSessionSnapshot::default()
+        };
+        save(&path, &snapshot).expect("legacy snapshot should persist");
+
+        assert_eq!(
+            snapshot.migrate_effect_ids(&std::collections::HashMap::from([(
+                legacy_id,
+                canonical_id,
+            )])),
+            1
+        );
+        save(&path, &snapshot).expect("migrated snapshot should persist");
+
+        let reopened = load(&path)
+            .expect("snapshot should reload")
+            .expect("snapshot should exist");
+        assert_eq!(
+            reopened.default_scene_zones[0]
+                .effect_ids()
+                .collect::<Vec<_>>(),
+            vec![canonical_id]
+        );
+        assert!(
+            !std::fs::read_to_string(path)
+                .expect("snapshot should read")
+                .contains(&legacy_id.to_string())
+        );
     }
 
     #[test]
@@ -233,7 +425,7 @@ mod tests {
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "active_scene_id": null,
-                "default_scene_groups": [],
+                "default_scene_zones": [],
                 "active_layout_id": null,
                 "global_brightness": 1.0,
                 "manual_paused": false,
@@ -266,8 +458,8 @@ mod tests {
     ///
     /// This is forward evolution, not legacy-shape support: a new field
     /// lands with a default so the running daemon keeps reading the file
-    /// it wrote last boot. Removing a field is the other direction and is
-    /// a refusal, covered above.
+    /// it wrote last boot. Retired authority fields are explicitly discarded;
+    /// every other removed field remains a refusal, covered above.
     #[test]
     fn an_absent_field_defaults_rather_than_failing_the_snapshot() {
         let tempdir = TempDir::new().expect("tempdir");
@@ -276,7 +468,7 @@ mod tests {
             &path,
             serde_json::to_vec(&serde_json::json!({
                 "active_scene_id": null,
-                "default_scene_groups": [],
+                "default_scene_zones": [],
                 "active_layout_id": null,
                 "global_brightness": 1.0,
             }))
@@ -297,9 +489,8 @@ mod tests {
         let path = Arc::new(tempdir.path().join("runtime-state.json"));
         let snapshot = Arc::new(RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: Vec::new(),
+            default_scene_zones: Vec::new(),
             active_layout_id: None,
-            global_brightness: 1.0,
             manual_paused: false,
         });
 
@@ -338,7 +529,7 @@ mod tests {
             &path,
             serde_json::to_string_pretty(&serde_json::json!({
                 "active_scene_id": SceneId::DEFAULT.to_string(),
-                "default_scene_groups": [],
+                "default_scene_zones": [],
                 "active_effect_id": "0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3",
             }))
             .expect("snapshot json should serialize"),

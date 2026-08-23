@@ -59,6 +59,11 @@ fn bootstrap_script_contains_runtime_shape_and_frame_adapter() {
     assert!(script.contains("window.engine.height = 200"));
     assert!(script.contains("window.engine.audio.freq = new Int8Array(200)"));
     assert!(script.contains("window.engine.audio.frequencyWeighted = new Float32Array(200)"));
+    assert!(script.contains("window.engine.audio.levelDb = -100"));
+    assert!(script.contains("window.engine.audio.levelLinear = 0"));
+    assert!(script.contains("engine.audio.levelDb = finiteNumber(audio.levelDb, -100)"));
+    assert!(!script.contains("window.engine.audio.level ="));
+    assert!(!script.contains("window.engine.audio.levelRaw ="));
     assert!(script.contains("window.engine.zone.hue = new Int16Array(560)"));
     assert!(script.contains("window.engine.getSensorValue = function(name)"));
     assert!(script.contains("window.engine.keyboard.isKeyDown = function(key)"));
@@ -97,7 +102,7 @@ fn frame_payload_json_serializes_typed_payload_only() {
         .expect("first quiet frame should emit payload JSON");
 
     assert!(!payload.contains("window.__hypercolorApplyFramePayload"));
-    assert!(!payload.contains("window.engine.audio.level ="));
+    assert!(!payload.contains("window.engine.audio.levelDb ="));
     assert_eq!(
         payload_from_json(&payload)["timing"]["frameNumber"],
         serde_json::json!(42)
@@ -125,17 +130,33 @@ fn frame_payload_emits_control_deltas_only() {
     let first = runtime
         .frame_payload(&input, &controls, options)
         .expect("changed control should emit");
-    assert_eq!(first.controls["speed"], LightScriptControlValue::Float(0.5));
+    assert_eq!(first.controls["speed"], serde_json::json!(0.5));
     assert!(runtime.frame_payload(&input, &controls, options).is_none());
 
     controls.insert("speed".to_owned(), ControlValue::Float(0.8));
     let changed = runtime
         .frame_payload(&input, &controls, options)
         .expect("updated control should emit");
-    assert_eq!(
-        changed.controls["speed"],
-        LightScriptControlValue::Float(0.8)
-    );
+    let speed = changed.controls["speed"]
+        .as_f64()
+        .expect("speed should project as a number");
+    assert!((speed - 0.8).abs() < f64::from(f32::EPSILON));
+}
+
+#[test]
+#[should_panic(expected = "effect pool admits only renderer-compatible controls")]
+fn frame_payload_treats_non_projectable_controls_as_a_broken_pool_invariant() {
+    let mut runtime = LightscriptRuntime::new(320, 200);
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let input = quiet_frame(&audio, &interaction, &sensors);
+    let controls = HashMap::from([(
+        "count".to_owned(),
+        ControlValue::Int(i64::from(i32::MAX) + 1),
+    )]);
+
+    let _ = runtime.frame_payload(&input, &controls, default_options());
 }
 
 #[test]

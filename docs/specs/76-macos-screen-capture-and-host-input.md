@@ -860,18 +860,15 @@ axis fields, both point-delta fields, scroll phase, and momentum phase. The
 fixed-point values are authoritative; point deltas are retained as diagnostic
 cross-checks. A non-continuous event arrives as 16.16 notches. Core multiplies
 that signed fixed-point value by 120 with checked arithmetic to produce Q16.16
-`Line120` units, where one integral unit is exactly 1/120 notch. Projecting to
-`wheel_hi_res` divides by 65536 and carries the signed fractional remainder
-across events. No slow wheel movement is lost.
+`Line120` units, where one integral unit is exactly 1/120 notch. The Q16.16
+representation preserves every signed fractional movement directly.
 
-A continuous event has pixel units and never enters `wheel_hi_res`, because
-macOS defines no universal pixels-per-notch conversion. The canonical input
-vocabulary gains a two-axis `PointerScroll` event and `ScrollAggregate` with
-explicit `Line120` or `Pixels` units, scroll phase, and momentum phase. Existing
-effects keep their vertical `wheel_hi_res` compatibility signal for physical
-wheel movement. New effects can consume exact horizontal, trackpad, phase, and
-momentum data without a guessed scale. Coalescing adds only like units and
-preserves phase boundaries.
+A continuous event has pixel units because macOS defines no universal
+pixels-per-notch conversion. The canonical input vocabulary uses a two-axis
+`PointerScroll` event and `ScrollAggregate` with explicit `Line120` or `Pixels`
+units, scroll phase, and momentum phase. Effects consume exact horizontal,
+trackpad, phase, and momentum data without a guessed scale. Coalescing adds
+only like units and preserves phase boundaries.
 
 ## 9. ScreenCaptureKit acquisition
 
@@ -1684,33 +1681,21 @@ pub struct ScrollAggregate {
 
 Signed Q16.16 integers preserve fractional motion while keeping `InputEvent`
 `Eq` and its JSON representation deterministic. `Line120` uses 1/120 notch as
-its integral unit, while `Pixels` uses one pixel. `MouseWheel` remains
-deserializable and published for compatibility through the next API major, but
-W2 migrates every platform producer to `PointerScroll`; no platform producer
-emits both for one native event. After canonical folding, core's
-`LegacyWheelProjector` uses a per-source signed remainder accumulator and emits
-one `MouseWheel` shadow with a fresh daemon sequence immediately after each
-nonzero integral vertical `Line120` projection. The shadow never contributes to
-held state or aggregates, so compatibility cannot double-count motion.
-Core projects vertical line motion into `wheel_hi_res` with the remainder rule
-from section 8.5. `InteractionBatch` gains `scroll: ScrollAggregate`, includes
-all four totals in emptiness and every coalescing path, and saturates on
-overflow. Phase and momentum remain on ordered events; event coalescing never
-crosses their boundaries.
+its integral unit, while `Pixels` uses one pixel. W2 migrates every platform
+producer to `PointerScroll`, with no synthesized compatibility shadow.
+`InteractionBatch` carries `scroll: ScrollAggregate`, includes all four totals
+in emptiness and every coalescing path, and saturates on overflow. Phase and
+momentum remain on ordered events; event coalescing never crosses their
+boundaries.
 
 The effect path changes end to end:
 
 - `LightScriptInputEventPayload` maps `PointerScroll` to `kind: "scroll"` with
-  floating `deltaX`, `deltaY`, `unit`, `phase`, and `momentumPhase` fields. Its
-  existing `MouseWheel` mapping continues to publish the core-generated legacy
-  `kind: "wheel"` shadow.
+  floating `deltaX`, `deltaY`, `unit`, `phase`, and `momentumPhase` fields.
 - `LightScriptMousePayload` adds a `scroll` object with `line120X`, `line120Y`,
-  `pixelX`, and `pixelY` aggregate fields while retaining `wheel` as vertical
-  motion in integral 1/120-notch units for existing effects. The value equals
-  `line120Y` projected through the section 8.5 signed-remainder rule.
+  `pixelX`, and `pixelY` aggregate fields.
 - `sdk/packages/core` turns `MouseInputEvent` into a discriminated union with a
-  typed scroll member, retains the wheel member as deprecated through the next
-  API major, and exposes the new aggregates on `MouseInputState`.
+  typed scroll member and exposes exact aggregates on `MouseInputState`.
 - The WebSocket `input_events` envelope stays at schema 1 because
   `TimedInputEventPayload.event` is intentionally opaque, retains unknown JSON,
   and changes no envelope field. New tests prove an older schema-1 decoder
@@ -1727,11 +1712,12 @@ Every host follows one producer rule:
 - Windows maps each signed `RI_MOUSE_WHEEL` and `RI_MOUSE_HWHEEL` delta as
   `value << 16` in `Line120` inside `hypercolor-windows-input`, instead of
   dropping horizontal wheel data; and
-- browser injection accepts two-axis `Line120` or pixel Q16.16 values, maps its
-  legacy vertical `delta_hi_res` shape as `value << 16` in `Line120`, and uses
-  `None` phases when the sender supplies no lifecycle.
+- browser injection accepts two-axis `Line120` or pixel Q16.16 values and uses
+  `None` phases when the sender supplies no lifecycle. Each connection-scoped
+  browser child publishes directly to its selected route; no manager-sampled
+  aggregate or fallback exists.
 
-The inbound `input_inject` wire adds this tagged edge beside the legacy edge:
+The inbound `input_inject` wire uses this tagged edge:
 
 ```rust
 BrowserInputEdgeWire::Scroll {
@@ -1744,20 +1730,16 @@ BrowserInputEdgeWire::Scroll {
 ```
 
 `unit` is required. Both phase fields default to `none` when absent. The daemon
-defines `MAX_INPUT_SCROLL_Q16_16` as `MAX_INPUT_WHEEL_DELTA << 16`, validates
-both axes with checked absolute-value arithmetic, and rejects values outside
-that inclusive bound before conversion into a core edge. The UI's
-`InputInjectEdge` mirrors the same tagged shape and enum spellings. The legacy
-`Wheel { delta_hi_res: i32 }` variant remains accepted through the next API
-major, retains its existing `MAX_INPUT_WHEEL_DELTA` validator, and maps to a
-vertical `PointerScroll` as `delta_hi_res << 16` in `Line120` with `None`
-phases. Integration tests deserialize both inbound shapes, prove their exact
-canonical events and legacy projections, and serialize the UI mirror back to
-the daemon contract.
+validates both axes against `MAX_INPUT_SCROLL_Q16_16` with checked
+absolute-value arithmetic and rejects values outside that inclusive bound
+before conversion into a core edge. The UI's `InputInjectEdge` mirrors the same
+tagged shape and enum spellings. Integration tests deserialize the inbound
+shape, prove its exact canonical event, and serialize the UI mirror back to the
+daemon contract.
 
-Pure parity fixtures assert sign, axis orientation, units, legacy projection,
-serde shape, WebSocket round-trip, LightScript payloads, SDK parsing, and
-coalescing for all four producer families.
+Pure parity fixtures assert sign, axis orientation, units, serde shape,
+WebSocket round-trip, LightScript payloads, SDK parsing, and coalescing for all
+four producer families.
 
 ## 14. User experience and API
 
@@ -1971,8 +1953,7 @@ Cross-platform tests cover:
 - pointer-only `Live` while Input Monitoring is denied;
 - buttons, two-axis line wheel, continuous pixel scroll, scroll phase, and
   momentum phase;
-- signed 16.16 remainder accumulation where repeated sub-unit wheel events
-  produce the exact expected `wheel_hi_res` total;
+- signed 16.16 preservation for repeated sub-unit scroll events;
 - bounded queue overflow and ordered `StateGap`;
 - timeout disable, user-input disable, revocation, stop, and synthetic releases;
 - epoch fencing after restart; and
@@ -2099,9 +2080,10 @@ Repository integration tests prove:
 - the fixture CPU oracle fences stale native frames and accepts only matching
   source and session generations without registering a production publisher;
 - `PointerScroll` round-trips through serde and the schema-1 WebSocket envelope,
-  maps into LightScript, parses in the SDK, and preserves legacy `wheel`;
-- browser injection accepts and validates both the legacy `wheel` edge and new
-  two-axis Q16.16 `scroll` edge, while the UI serializes the matching forms;
+  maps into LightScript, and parses in the SDK without a synthesized shadow;
+- browser injection accepts and validates the two-axis Q16.16 `scroll` edge,
+  while the UI serializes the matching form, and exact browser child routes
+  preserve held state, edges, and motion without an aggregate publication;
 - screen and interaction WebSocket privacy gates remain unchanged;
 - packaged, direct launchd, Homebrew, terminal, and broker restart remedies
   target only the recorded TCC owner;

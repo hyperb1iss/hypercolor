@@ -2,9 +2,10 @@
 //! session: outcome reconciliation (version adoption, the single
 //! Stale rebase-and-retry) and retry-batch merging.
 
+use hypercolor_types::control::ControlValue;
 use hypercolor_ui::api::client::MutationOutcome;
 use hypercolor_ui::control_session::{ReconcileAction, merge_retry_batch, reconcile_outcome};
-use hypercolor_ui::optimistic_controls::RawControlUpdates;
+use hypercolor_ui::optimistic_controls::ControlValueMap;
 
 #[test]
 fn applied_outcome_adopts_returned_version() {
@@ -48,11 +49,11 @@ fn second_stale_reply_gives_up_with_the_fresh_token() {
 
 #[test]
 fn merge_retry_batch_keeps_failed_edits_no_newer_edit_touched() {
-    let failed = RawControlUpdates::from([
-        ("speed".to_owned(), serde_json::json!(0.5)),
-        ("hue".to_owned(), serde_json::json!(120)),
+    let failed = ControlValueMap::from([
+        ("speed".to_owned(), ControlValue::Float(0.5)),
+        ("hue".to_owned(), ControlValue::Int(120)),
     ]);
-    let newer = RawControlUpdates::new();
+    let newer = ControlValueMap::new();
 
     let merged = merge_retry_batch(failed.clone(), newer);
     assert_eq!(merged, failed);
@@ -60,25 +61,25 @@ fn merge_retry_batch_keeps_failed_edits_no_newer_edit_touched() {
 
 #[test]
 fn merge_retry_batch_prefers_newer_edits_per_key() {
-    let failed = RawControlUpdates::from([
-        ("speed".to_owned(), serde_json::json!(0.5)),
-        ("hue".to_owned(), serde_json::json!(120)),
+    let failed = ControlValueMap::from([
+        ("speed".to_owned(), ControlValue::Float(0.5)),
+        ("hue".to_owned(), ControlValue::Int(120)),
     ]);
-    let newer = RawControlUpdates::from([("speed".to_owned(), serde_json::json!(0.9))]);
+    let newer = ControlValueMap::from([("speed".to_owned(), ControlValue::Float(0.9))]);
 
     let merged = merge_retry_batch(failed, newer);
     assert_eq!(merged.len(), 2);
-    assert_eq!(merged.get("speed"), Some(&serde_json::json!(0.9)));
-    assert_eq!(merged.get("hue"), Some(&serde_json::json!(120)));
+    assert_eq!(merged.get("speed"), Some(&ControlValue::Float(0.9)));
+    assert_eq!(merged.get("hue"), Some(&ControlValue::Int(120)));
 }
 
 #[test]
 fn merge_retry_batch_carries_brand_new_keys_from_the_newer_batch() {
-    let failed = RawControlUpdates::from([("speed".to_owned(), serde_json::json!(0.5))]);
-    let newer = RawControlUpdates::from([("brightness".to_owned(), serde_json::json!(0.8))]);
+    let failed = ControlValueMap::from([("speed".to_owned(), ControlValue::Float(0.5))]);
+    let newer = ControlValueMap::from([("brightness".to_owned(), ControlValue::Float(0.8))]);
 
     let merged = merge_retry_batch(failed, newer);
     assert_eq!(merged.len(), 2);
-    assert_eq!(merged.get("speed"), Some(&serde_json::json!(0.5)));
-    assert_eq!(merged.get("brightness"), Some(&serde_json::json!(0.8)));
+    assert_eq!(merged.get("speed"), Some(&ControlValue::Float(0.5)));
+    assert_eq!(merged.get("brightness"), Some(&ControlValue::Float(0.8)));
 }

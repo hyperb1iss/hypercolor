@@ -22,9 +22,10 @@ This section goes deep on how that works: the crate boundaries that keep the sys
 
 The project is split into focused crates with strict one-way dependency boundaries. The shared vocabulary lives at the bottom; application binaries sit at the top and never import each other.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
-    T[hypercolor-types] --> HAL[hypercolor-hal]
+    C[hypercolor-color] --> T[hypercolor-types]
+    T --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
     T --> LGI[hypercolor-linux-gpu-interop]
     T --> WPI[hypercolor-windows-pawnio]
@@ -45,13 +46,13 @@ graph TD
     APP[hypercolor-app] --> D & TRAY
     T --> UI["hypercolor-ui (excluded from workspace)"]
     LE[hypercolor-leptos-ext] --> UI & D & TUI
-{% end %}
+{% </mermaid> %}
 
 **Golden rule:** `hypercolor-hal` must never depend on `hypercolor-core`; that would be circular. Network drivers depend on `driver-api`, not on `core` directly.
 
 | Crate | Role |
 |---|---|
-| `hypercolor-types` | Zero-dependency shared vocabulary: canvas, effect, color, and API types |
+| `hypercolor-types` | Shared vocabulary above `hypercolor-color`: canvas, effect, control, and API types |
 | `hypercolor-core` | Engine: render loop, effect registry, spatial sampler, input pipeline, scene management |
 | `hypercolor-hal` | Hardware abstraction: USB/HID/SMBus protocol encoding and transport |
 | `hypercolor-linux-gpu-interop` | Linux zero-copy GL to wgpu texture import; stubbed on other platforms |
@@ -67,9 +68,9 @@ graph TD
 | `hypercolor-leptos-ext` | Leptos 0.8 extension helpers for the web UI and TUI |
 | `hypercolor-ui` | Leptos 0.8 CSR web app compiled to WASM via Trunk; excluded from the workspace |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `hypercolor-ui` targets `wasm32-unknown-unknown` and is excluded from the Cargo workspace. `cargo check --workspace` does not cover it. Build the UI separately with `just ui-dev` or `just ui-build`.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -97,7 +98,7 @@ pub const DEFAULT_CANVAS_WIDTH: u32 = 640;
 pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 ```
 
-At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent; tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries via `SceneTransaction::ResizeCanvas`; never hardcode pixel dimensions in effects or drivers.
+At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent; tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries; never hardcode pixel dimensions in effects or drivers.
 
 Sampling from the canvas to LED positions supports three interpolation strategies: nearest-neighbor, bilinear (the default), and area averaging. Bilinear reads 4 surrounding pixels and blends by distance; it is gamma-correct via precomputed sRGB LUTs, which makes it essentially free in the hot path.
 
@@ -179,7 +180,7 @@ The daemon maintains a library of saved presets, favorites, and playlists. Playl
 |---|---|---|
 | Language | Rust | Performance for the render thread, safety for USB HID, ecosystem match for Servo and Ratatui |
 | Effect renderer | Servo HTML + native Rust | Web platform for authoring, compiled Rust for built-in utilities; the native shader-effect lane is future work (the compositor's GPU lane ships) |
-| Frame compositor | SparkleFlinger | Decouples producer cadence from frame deadlines; enables mixed-rate sources and render groups |
+| Frame compositor | SparkleFlinger | Decouples producer cadence from frame deadlines; enables mixed-rate sources and render zones |
 | Canvas resolution | 640x480 (configurable) | Resolution-independent normalized coordinates; tune per hardware density |
 | Adaptive FPS | Five tiers, 10-60 fps | Fast downshift on budget miss; slow upshift to prevent oscillation |
 | Event bus | `broadcast` + `watch` | Discrete events need history; high-frequency frame data needs only the latest value |

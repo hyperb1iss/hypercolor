@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use hypercolor_core::input::screen::{
     CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CommittedScreenPlan, InputPublicationDemandRevision, PhysicalOrigin,
-    PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedScreenPublication,
+    CaptureSourceId, CommittedScreenPlan, InputPublicationDemandRevision, LetterboxBars,
+    PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedScreenPublication,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
@@ -659,7 +659,7 @@ fn writable_zone_slots_have_exact_shape_and_publish_immutable_colors() {
 }
 
 #[test]
-fn writable_zone_slots_publish_only_the_effective_compacted_prefix() {
+fn exact_zone_publication_preserves_compacted_color_order() {
     let fixture = Fixture::new(
         3840,
         2160,
@@ -684,11 +684,17 @@ fn writable_zone_slots_publish_only_the_effective_compacted_prefix() {
         )
         .expect("zone slot reserves");
     assert!(matches!(
-        prepared.set_effective_zone_shape(non_zero(8), non_zero(1)),
+        prepared.set_effective_zone_layout(non_zero(8), non_zero(1), LetterboxBars::default()),
         Err(ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor { .. })
     ));
+    let bars = LetterboxBars {
+        top: 1,
+        bottom: 2,
+        left: 1,
+        right: 3,
+    };
     prepared
-        .set_effective_zone_shape(non_zero(3), non_zero(2))
+        .set_effective_zone_layout(non_zero(3), non_zero(2), bars)
         .expect("dynamic crop selects an admitted compact prefix");
     let colors = prepared
         .zone_colors_mut()
@@ -715,9 +721,168 @@ fn writable_zone_slots_publish_only_the_effective_compacted_prefix() {
     };
     assert_eq!(zones.columns(), non_zero(3));
     assert_eq!(zones.rows(), non_zero(2));
+    assert_eq!(zones.bars(), bars);
     assert_eq!(zones.colors().len(), 6);
-    assert_eq!(zones.colors()[5], [16, 17, 18]);
+    assert_eq!(
+        zones.colors(),
+        &[
+            [1, 2, 3],
+            [4, 5, 6],
+            [7, 8, 9],
+            [10, 11, 12],
+            [13, 14, 15],
+            [16, 17, 18],
+        ]
+    );
     assert!(!zones.colors().contains(&[0xA5; 3]));
+}
+
+#[test]
+fn exact_zone_layout_rejects_incoherent_bars() {
+    let fixture = Fixture::new(
+        3840,
+        2160,
+        ScreenPublicationKind::Zones {
+            columns: non_zero(7),
+            rows: non_zero(5),
+        },
+        ScreenPublicationSlotPolicy::default(),
+        60,
+    );
+    let binding = binding(&fixture.builder);
+    let publisher = fixture
+        .hub
+        .publisher(&fixture.descriptor, &binding)
+        .expect("active worker owns the zone branch");
+    let mut prepared = fixture
+        .hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(&fixture.descriptor, &binding, 1),
+        )
+        .expect("zone slot reserves");
+    let incoherent = LetterboxBars {
+        top: 1,
+        bottom: 1,
+        left: 1,
+        right: 1,
+    };
+    assert_eq!(
+        prepared.set_effective_zone_layout(non_zero(3), non_zero(2), incoherent),
+        Err(ScreenPublicationHubError::EffectiveZoneLayoutMismatch {
+            requested_columns: non_zero(7),
+            requested_rows: non_zero(5),
+            observed_columns: non_zero(3),
+            observed_rows: non_zero(2),
+            bars: incoherent,
+        })
+    );
+    finalize(&fixture.hub, prepared).expect("rejected layout leaves the slot publishable");
+
+    let publication = fixture
+        .hub
+        .lease(&fixture.descriptor)
+        .expect("zone branch has a lease")
+        .read()
+        .expect("zone branch is live");
+    let ScreenBranchPayload::Zones(zones) = publication.payload() else {
+        panic!("zone branch publishes zone payloads");
+    };
+    assert_eq!(zones.columns(), non_zero(7));
+    assert_eq!(zones.rows(), non_zero(5));
+    assert_eq!(zones.bars(), LetterboxBars::default());
+    assert_eq!(zones.colors().len(), 35);
+}
+
+#[test]
+fn exact_zone_slot_reuse_resets_dynamic_layout() {
+    let policy = ScreenPublicationSlotPolicy::try_new(NonZeroU32::MIN, 1)
+        .expect("two publication slots are valid");
+    let fixture = Fixture::new(
+        3840,
+        2160,
+        ScreenPublicationKind::Zones {
+            columns: non_zero(7),
+            rows: non_zero(5),
+        },
+        policy,
+        60,
+    );
+    let binding = binding(&fixture.builder);
+    let publisher = fixture
+        .hub
+        .publisher(&fixture.descriptor, &binding)
+        .expect("active worker owns the zone branch");
+
+    let mut first = fixture
+        .hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(&fixture.descriptor, &binding, 1),
+        )
+        .expect("first zone slot reserves");
+    let first_address = first
+        .zone_colors_mut()
+        .expect("first zone slot exposes scratch")
+        .as_ptr();
+    first
+        .set_effective_zone_layout(
+            non_zero(3),
+            non_zero(2),
+            LetterboxBars {
+                top: 1,
+                bottom: 2,
+                left: 2,
+                right: 2,
+            },
+        )
+        .expect("first dynamic layout is coherent");
+    let first_receipt = finalize(&fixture.hub, first).expect("first zone slot publishes");
+    drop(first_receipt);
+
+    let second = fixture
+        .hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(&fixture.descriptor, &binding, 2),
+        )
+        .expect("second zone slot reserves");
+    let second_receipt = finalize(&fixture.hub, second).expect("second zone slot publishes");
+    drop(second_receipt);
+
+    let mut third = fixture
+        .hub
+        .prepare_writable_publication(
+            &publisher,
+            ScreenPayloadKind::Zones,
+            &intent(&fixture.descriptor, &binding, 3),
+        )
+        .expect("superseded zone slot returns to the pool");
+    assert_eq!(
+        third
+            .zone_colors_mut()
+            .expect("reused zone slot exposes scratch")
+            .as_ptr(),
+        first_address
+    );
+    finalize(&fixture.hub, third).expect("reused zone slot publishes");
+
+    let publication = fixture
+        .hub
+        .lease(&fixture.descriptor)
+        .expect("zone branch has a lease")
+        .read()
+        .expect("zone branch is live");
+    let ScreenBranchPayload::Zones(zones) = publication.payload() else {
+        panic!("zone branch publishes zone payloads");
+    };
+    assert_eq!(zones.columns(), non_zero(7));
+    assert_eq!(zones.rows(), non_zero(5));
+    assert_eq!(zones.bars(), LetterboxBars::default());
+    assert_eq!(zones.colors().len(), 35);
 }
 
 #[test]

@@ -1,5 +1,7 @@
 //! Pure Razer protocol encoder/decoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
@@ -12,7 +14,6 @@ use tracing::warn;
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone,
 };
 
 use super::activation::CustomEffectActivationStyle;
@@ -769,7 +770,7 @@ impl Protocol for RazerProtocol {
         packet::parse_response(data)
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let total_leds = self.total_leds();
         let zone_matrix_size = self.reported_matrix_size.unwrap_or(self.matrix_size);
         let topology = match self.matrix_type {
@@ -783,7 +784,7 @@ impl Protocol for RazerProtocol {
             },
         };
 
-        vec![ProtocolZone {
+        vec![SegmentInfo {
             name: self.zone_name().to_owned(),
             led_count: total_leds,
             topology,

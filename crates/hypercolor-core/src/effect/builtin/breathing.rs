@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{Canvas, LinearRgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{builtin_effect_id, color_control, preset, preset_with_desc, slider_control};
@@ -74,32 +75,34 @@ impl EffectRenderer for BreathingRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color" => {
-                if let ControlValue::Color(c) = value {
-                    self.color = *c;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.speed_bpm = v.max(0.1);
+                "speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.speed_bpm = value.max(0.1);
+                    }
                 }
-            }
-            "min_brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.min_brightness = v.clamp(0.0, 1.0);
+                "min_brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.min_brightness = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "max_brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.max_brightness = v.clamp(0.0, 1.0);
+                "max_brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.max_brightness = value.clamp(0.0, 1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 
@@ -151,7 +154,7 @@ fn presets() -> Vec<PresetTemplate> {
             "Warm Ember",
             "Slow amber glow like dying embers",
             &[
-                ("color", ControlValue::Color([1.0, 0.4, 0.1, 1.0])),
+                ("color", ControlValue::linear_color([1.0, 0.4, 0.1, 1.0])),
                 ("speed", ControlValue::Float(8.0)),
                 ("min_brightness", ControlValue::Float(0.05)),
                 ("max_brightness", ControlValue::Float(0.8)),
@@ -161,7 +164,7 @@ fn presets() -> Vec<PresetTemplate> {
             "Ocean Calm",
             "Deep blue with slow tidal rhythm",
             &[
-                ("color", ControlValue::Color([0.1, 0.3, 1.0, 1.0])),
+                ("color", ControlValue::linear_color([0.1, 0.3, 1.0, 1.0])),
                 ("speed", ControlValue::Float(6.0)),
                 ("min_brightness", ControlValue::Float(0.08)),
                 ("max_brightness", ControlValue::Float(0.7)),
@@ -170,7 +173,7 @@ fn presets() -> Vec<PresetTemplate> {
         preset(
             "Alert Pulse",
             &[
-                ("color", ControlValue::Color([1.0, 0.1, 0.1, 1.0])),
+                ("color", ControlValue::linear_color([1.0, 0.1, 0.1, 1.0])),
                 ("speed", ControlValue::Float(40.0)),
                 ("min_brightness", ControlValue::Float(0.2)),
                 ("max_brightness", ControlValue::Float(1.0)),

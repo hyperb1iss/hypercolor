@@ -25,11 +25,9 @@ export function getAudioData(): AudioData {
     const hasEngine = typeof engine !== 'undefined' && engine?.audio
     if (!hasEngine) return createSilentAudioData()
 
-    const audio = engine.audio as any
-    const levelLinear = resolveAudioLevelLinear(audio)
+    const audio = engine.audio
 
     return {
-        // Legacy
         bass: audio.bass ?? 0,
         bassEnv: audio.bassEnv ?? 0,
         beat: Number(audio.beat ?? 0),
@@ -46,9 +44,9 @@ export function getAudioData(): AudioData {
         frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
         frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
         harmonicHue: audio.harmonicHue ?? 0,
-        level: levelLinear,
+        levelDb: Number.isFinite(audio.levelDb) ? audio.levelDb : -100,
+        levelLinear: Number.isFinite(audio.levelLinear) ? Math.max(0, Math.min(1, audio.levelLinear)) : 0,
         levelLong: audio.levelLong ?? 0,
-        levelRaw: resolveAudioLevelRaw(audio),
         levelShort: audio.levelShort ?? 0,
         melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
         melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
@@ -99,14 +97,6 @@ export function getScreenZoneData(): ScreenZoneData {
     return { height, hue, lightness, saturation, width }
 }
 
-/** Normalize either daemon dB levels or pre-normalized linear levels to 0..1. */
-export function normalizeAudioLevel(level: number): number {
-    if (!Number.isFinite(level)) return 0
-    if (level >= 0 && level <= 1) return level
-    if (level <= -100) return 0
-    return Math.max(0, Math.min(1, 10 ** (level / 20)))
-}
-
 function createSilentAudioData(): AudioData {
     return {
         bass: 0,
@@ -125,9 +115,9 @@ function createSilentAudioData(): AudioData {
         frequencyRaw: new Int8Array(FFT_SIZE),
         frequencyWeighted: new Float32Array(FFT_SIZE),
         harmonicHue: 0,
-        level: 0,
+        levelDb: -100,
+        levelLinear: 0,
         levelLong: 0,
-        levelRaw: -100,
         levelShort: 0,
         melBands: new Float32Array(MEL_BANDS),
         melBandsNormalized: new Float32Array(MEL_BANDS),
@@ -147,37 +137,4 @@ function createSilentAudioData(): AudioData {
         trebleEnv: 0,
         width: 0.5,
     }
-}
-
-function resolveAudioLevelRaw(audio: Record<string, unknown>): number {
-    const levelRaw = audio.levelRaw
-    if (typeof levelRaw === 'number' && Number.isFinite(levelRaw)) {
-        return levelRaw
-    }
-
-    const levelLinear = audio.levelLinear
-    if (typeof levelLinear === 'number' && Number.isFinite(levelLinear)) {
-        return levelLinear > 0 ? 20 * Math.log10(levelLinear) : -100
-    }
-
-    const level = audio.level
-    if (typeof level === 'number' && Number.isFinite(level)) {
-        return level >= 0 && level <= 1 ? (level > 0 ? 20 * Math.log10(level) : -100) : level
-    }
-
-    return -100
-}
-
-function resolveAudioLevelLinear(audio: Record<string, unknown>): number {
-    const levelLinear = audio.levelLinear
-    if (typeof levelLinear === 'number' && Number.isFinite(levelLinear)) {
-        return Math.max(0, Math.min(1, levelLinear))
-    }
-
-    const level = audio.level
-    if (typeof level === 'number' && Number.isFinite(level)) {
-        return normalizeAudioLevel(level)
-    }
-
-    return 0
 }

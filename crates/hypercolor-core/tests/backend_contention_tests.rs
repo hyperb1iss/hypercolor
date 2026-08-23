@@ -1,10 +1,9 @@
 //! Concurrency and contention tests for [`BackendManager`] frame dispatch.
 //!
-//! The frame-write hot path funnels every async write through
-//! `Arc<Mutex<Box<dyn DeviceBackend>>>`, which means multiple render-loop
-//! tasks writing to different backends should run in parallel, while writes
-//! to the same backend must serialize without dropping frames. Existing
-//! tests cover these paths synchronously; this file stresses them under
+//! Each backend owns its synchronization, while the frame-write hot path uses
+//! independent per-device output lanes. Writes to different backends should
+//! run in parallel, while actor-backed devices must serialize their own
+//! transport without dropping frames. These tests stress the contract under
 //! real concurrent workload using `#[tokio::test]`.
 
 #![allow(clippy::unwrap_used, reason = "test assertions")]
@@ -15,17 +14,22 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceFrameSink};
-use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
-};
+use hypercolor_core::device::BackendManager;
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DeviceFrameSink};
+use hypercolor_types::device::{DeviceError, DeviceId};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use tokio::sync::Notify;
+
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::protocol("test backend", format!($($arg)*)))
+    };
+}
 
 // ── ContentionMockBackend ───────────────────────────────────────────────────
 //
@@ -94,7 +98,6 @@ impl DeviceFrameSink for BlockingFrameSink {
 
 struct MultiDeviceSinkBackend {
     backend_id: String,
-    devices: Vec<DeviceId>,
     sinks: HashMap<DeviceId, Arc<BlockingFrameSink>>,
     fallback_count: Arc<AtomicUsize>,
 }
@@ -116,7 +119,6 @@ impl MultiDeviceSinkBackend {
 
         Self {
             backend_id: backend_id.into(),
-            devices: vec![slow_device, fast_device],
             sinks,
             fallback_count,
         }
@@ -145,15 +147,14 @@ impl DeviceBackend for MultiDeviceSinkBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(self
-            .devices
-            .iter()
-            .map(|device_id| test_device_info(*device_id, &self.backend_id))
-            .collect())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if self.sinks.contains_key(id) {
             Ok(())
         } else {
@@ -161,11 +162,11 @@ impl DeviceBackend for MultiDeviceSinkBackend {
         }
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         self.fallback_count.fetch_add(1, Ordering::AcqRel);
         let Some(sink) = self.sinks.get(id) else {
             bail!("unexpected device id {id}");
@@ -220,41 +221,14 @@ impl DeviceBackend for ContentionMockBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![DeviceInfo {
-            id: self.device_id,
-            name: format!("contention-{}", self.backend_id),
-            vendor: "hypercolor-test".to_owned(),
-            family: DeviceFamily::named("Contention"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native(
-                "contention",
-                self.backend_id.clone(),
-                ConnectionType::Network,
-            ),
-            segments: vec![SegmentInfo {
-                name: "Main".to_owned(),
-                led_count: 8,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: None,
-            capabilities: DeviceCapabilities {
-                led_count: 8,
-                supports_direct: true,
-                supports_brightness: false,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        }])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.device_id {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
@@ -262,7 +236,7 @@ impl DeviceBackend for ContentionMockBackend {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.device_id {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
@@ -270,7 +244,7 @@ impl DeviceBackend for ContentionMockBackend {
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         if *id != self.device_id {
             bail!("unexpected device id {id} for backend {}", self.backend_id);
         }
@@ -321,14 +295,12 @@ async fn build_manager_with_backends(
         let backend = ContentionMockBackend::new(&backend_id, device_id).with_delay(delay);
         write_counts.push(backend.write_count_handle());
         records.push(backend.records_handle());
-        manager.register_backend(Box::new(backend));
+        manager.register_backend(Arc::new(backend));
 
         let io = manager
             .backend_io(&backend_id)
             .expect("backend was just registered");
-        io.connect_with_refresh(device_id)
-            .await
-            .expect("connect should succeed");
+        io.connect(device_id).await.expect("connect should succeed");
 
         ids.push((backend_id, device_id));
     }
@@ -338,36 +310,6 @@ async fn build_manager_with_backends(
 
 fn u8_tag(value: usize) -> u8 {
     u8::try_from(value).expect("test tag must fit in u8")
-}
-
-fn test_device_info(device_id: DeviceId, backend_id: &str) -> DeviceInfo {
-    DeviceInfo {
-        id: device_id,
-        name: format!("sink-device-{device_id}"),
-        vendor: "hypercolor-test".to_owned(),
-        family: DeviceFamily::named("Contention"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("contention", backend_id.to_owned(), ConnectionType::Network),
-        segments: vec![SegmentInfo {
-            name: "Main".to_owned(),
-            led_count: 4,
-            topology: DeviceTopologyHint::Strip,
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: None,
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities {
-            led_count: 4,
-            supports_direct: true,
-            supports_brightness: false,
-            has_display: false,
-            display_resolution: None,
-            max_fps: 60,
-            color_space: hypercolor_types::device::DeviceColorSpace::default(),
-            features: DeviceFeatures::default(),
-        },
-    }
 }
 
 fn make_layout(zones: Vec<Output>) -> SpatialLayout {
@@ -380,7 +322,6 @@ fn make_layout(zones: Vec<Output>) -> SpatialLayout {
         zones,
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -447,7 +388,7 @@ async fn same_backend_frame_sinks_do_not_block_each_other() {
     let slow_sink = backend.sink(slow_device);
     let fast_sink = backend.sink(fast_device);
     let fallback_count = backend.fallback_count();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("sink-lanes", slow_device, "sink:slow")
@@ -473,7 +414,7 @@ async fn same_backend_frame_sinks_do_not_block_each_other() {
         },
     ];
 
-    let stats = manager.write_frame(&frame, &layout).await;
+    let stats = manager.write_frame(&frame, &layout);
     assert_eq!(stats.devices_written, 2);
     assert!(stats.errors.is_empty());
 
@@ -518,7 +459,7 @@ async fn remapping_same_backend_device_preserves_frame_sink_isolation() {
     let slow_sink = backend.sink(slow_device);
     let fast_sink = backend.sink(fast_device);
     let fallback_count = backend.fallback_count();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     manager
         .connect_device("sink-lanes", slow_device, "sink:slow")
@@ -555,7 +496,7 @@ async fn remapping_same_backend_device_preserves_frame_sink_isolation() {
         },
     ];
 
-    let stats = manager.write_frame(&frame, &layout).await;
+    let stats = manager.write_frame(&frame, &layout);
     assert_eq!(stats.devices_written, 2);
     assert!(stats.errors.is_empty());
 
@@ -744,16 +685,16 @@ async fn slow_backend_does_not_block_fast_backend() {
     let fast_device = DeviceId::new();
     let fast_backend = ContentionMockBackend::new("fast", fast_device);
     let fast_count = fast_backend.write_count_handle();
-    manager.register_backend(Box::new(fast_backend));
+    manager.register_backend(Arc::new(fast_backend));
     let fast_io = manager.backend_io("fast").unwrap();
-    fast_io.connect_with_refresh(fast_device).await.unwrap();
+    fast_io.connect(fast_device).await.unwrap();
 
     let slow_device = DeviceId::new();
     let slow_backend = ContentionMockBackend::new("slow", slow_device).with_delay(SLOW_DELAY);
     let slow_count = slow_backend.write_count_handle();
-    manager.register_backend(Box::new(slow_backend));
+    manager.register_backend(Arc::new(slow_backend));
     let slow_io = manager.backend_io("slow").unwrap();
-    slow_io.connect_with_refresh(slow_device).await.unwrap();
+    slow_io.connect(slow_device).await.unwrap();
 
     let start = Instant::now();
 

@@ -291,7 +291,6 @@ fn set_zone_rotation_updates_single_zone_without_moving_it() {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 

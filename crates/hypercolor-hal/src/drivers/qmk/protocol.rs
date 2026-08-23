@@ -3,6 +3,8 @@
 //! Implements the QMK vendor HID protocol for per-key RGB control of
 //! QMK-firmware keyboards. Supports protocol revisions 9, B/C, and D/E.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
@@ -14,8 +16,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 use super::types::{Command, PACKET_SIZE, ProtocolRevision, SPEED_NORMAL, STATUS_FAILURE};
@@ -283,7 +285,7 @@ impl Protocol for QmkProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let mut zones = Vec::with_capacity(2);
 
         let key_count = self.config.key_led_count();
@@ -292,7 +294,7 @@ impl Protocol for QmkProtocol {
             None => DeviceTopologyHint::Strip,
         };
 
-        zones.push(ProtocolZone {
+        zones.push(SegmentInfo {
             name: "Keyboard".to_owned(),
             led_count: u32::try_from(key_count).unwrap_or(u32::MAX),
             topology,
@@ -301,7 +303,7 @@ impl Protocol for QmkProtocol {
         });
 
         if self.config.has_underglow && self.config.underglow_count > 0 {
-            zones.push(ProtocolZone {
+            zones.push(SegmentInfo {
                 name: "Underglow".to_owned(),
                 led_count: u32::try_from(self.config.underglow_count).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,

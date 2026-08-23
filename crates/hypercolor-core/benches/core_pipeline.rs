@@ -1,17 +1,13 @@
 use std::collections::HashMap;
 use std::hint::black_box;
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use anyhow::Result;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-#[path = "../tests/support/effect_engine.rs"]
-mod effect_engine;
-
 use hypercolor_core::bus::CanvasFrame;
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
+use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::builtin::{
     ColorWaveRenderer, GradientRenderer, RainbowRenderer, SolidColorRenderer,
     register_builtin_effects,
@@ -21,26 +17,26 @@ use hypercolor_core::input::InputSource;
 use hypercolor_core::input::InteractionData;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::beat::{BeatDetector, BeatFrame};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_types::device::DeviceError;
+
+type Result<T> = std::result::Result<T, DeviceError>;
 use hypercolor_core::input::audio::fft::FftPipeline;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource,
-};
+use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 
-use effect_engine::EffectEngine;
 use hypercolor_types::sensor::SystemSnapshot;
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
-use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 const CANVAS_WIDTH: u32 = 320;
@@ -51,41 +47,6 @@ const SAMPLE_RATE_HZ: u32 = 48_000;
 static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
 static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
-static BINDING_SNAPSHOTS: LazyLock<[SystemSnapshot; 2]> =
-    LazyLock::new(|| [binding_snapshot(false), binding_snapshot(true)]);
-
-struct BindingBenchRenderer {
-    controls: HashMap<String, ControlValue>,
-}
-
-impl BindingBenchRenderer {
-    fn new() -> Self {
-        Self {
-            controls: HashMap::new(),
-        }
-    }
-}
-
-impl EffectRenderer for BindingBenchRenderer {
-    fn init(&mut self, _metadata: &EffectMetadata) -> Result<()> {
-        Ok(())
-    }
-
-    fn render_into(&mut self, input: &FrameInput<'_>, target: &mut Canvas) -> Result<()> {
-        if target.width() != input.canvas_width || target.height() != input.canvas_height {
-            *target = Canvas::new(input.canvas_width, input.canvas_height);
-        }
-        black_box(self.controls.len());
-        Ok(())
-    }
-
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        self.controls.insert(name.to_owned(), value.clone());
-    }
-
-    fn destroy(&mut self) {}
-}
-
 struct NullBenchBackend;
 
 #[async_trait::async_trait]
@@ -98,19 +59,22 @@ impl DeviceBackend for NullBenchBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
-        Ok(Vec::new())
-    }
-
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }
 }
@@ -140,61 +104,6 @@ fn ambient_metadata(name: &str) -> EffectMetadata {
             path: PathBuf::from(format!("builtin/{name}")),
         },
         license: None,
-    }
-}
-
-fn binding_metadata(binding_count: usize) -> EffectMetadata {
-    const SENSOR_LABELS: [&str; 5] = ["cpu_temp", "gpu_temp", "gpu_load", "ram_used", "cpu_load"];
-
-    let mut metadata = ambient_metadata("binding_bench");
-    metadata.controls = SENSOR_LABELS
-        .iter()
-        .enumerate()
-        .map(|(index, sensor)| ControlDefinition {
-            id: format!("control_{index}"),
-            name: format!("Control {index}"),
-            kind: ControlKind::Number,
-            control_type: ControlType::Slider,
-            default_value: ControlValue::Float(0.5),
-            min: Some(0.0),
-            max: Some(1.0),
-            step: Some(0.01),
-            labels: Vec::new(),
-            group: Some("Bench".to_owned()),
-            tooltip: None,
-            aspect_lock: None,
-            preview_source: None,
-            binding: (index < binding_count).then(|| ControlBinding {
-                sensor: (*sensor).to_owned(),
-                sensor_min: 0.0,
-                sensor_max: 100.0,
-                target_min: 0.0,
-                target_max: 1.0,
-                deadband: 0.0,
-                smoothing: 0.0,
-            }),
-        })
-        .collect();
-    metadata
-}
-
-fn binding_snapshot(hot: bool) -> SystemSnapshot {
-    SystemSnapshot {
-        cpu_load_percent: if hot { 71.0 } else { 41.0 },
-        cpu_loads: if hot {
-            vec![68.0, 72.0, 70.0, 74.0]
-        } else {
-            vec![38.0, 44.0, 40.0, 42.0]
-        },
-        cpu_temp_celsius: Some(if hot { 84.0 } else { 58.0 }),
-        gpu_temp_celsius: Some(if hot { 79.0 } else { 63.0 }),
-        gpu_load_percent: Some(if hot { 91.0 } else { 72.0 }),
-        gpu_vram_used_mb: Some(if hot { 3_072.0 } else { 2_048.0 }),
-        ram_used_percent: if hot { 73.0 } else { 54.0 },
-        ram_used_mb: if hot { 22_528.0 } else { 16_384.0 },
-        ram_total_mb: 32_768.0,
-        components: Vec::new(),
-        polled_at_ms: 1_715_000_000,
     }
 }
 
@@ -278,7 +187,6 @@ fn layout_with_zone(zone: Output) -> SpatialLayout {
         zones: vec![zone],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -296,22 +204,18 @@ fn builtin_effect_id(registry: &EffectRegistry, stem: &str) -> EffectId {
         .expect("builtin effect should be registered")
 }
 
-fn render_group(
+fn render_zone(
     zone_id: &str,
     device_id: &str,
     led_count: u32,
     color: [f32; 4],
     effect_id: EffectId,
 ) -> Zone {
-    let controls = HashMap::from([("color".to_owned(), ControlValue::Color(color))]);
+    let controls = HashMap::from([("color".to_owned(), ControlValue::linear_color(color))]);
     Zone {
         id: ZoneId::new(),
         name: zone_id.to_owned(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: controls.clone(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer::from_effect(
             SceneLayerId::new(),
             effect_id,
@@ -402,10 +306,6 @@ fn synthetic_beat_frame(frame_number: u64) -> BeatFrame {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the benchmark wires up a representative matrix of renderer entry points"
-)]
 fn bench_builtin_renderers(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_render");
     group.throughput(Throughput::Elements(
@@ -417,38 +317,17 @@ fn bench_builtin_renderers(c: &mut Criterion) {
         .init(&ambient_metadata("solid_color"))
         .expect("solid color renderer should initialize");
     let mut solid_frame = 0_u64;
+    let mut solid_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     group.bench_function(
         BenchmarkId::new("solid_color", format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}")),
         |b| {
             b.iter(|| {
                 let input = frame_input(frame_time(solid_frame), solid_frame, &SILENCE);
                 solid_frame += 1;
-                let canvas = solid
-                    .tick(black_box(&input))
-                    .expect("solid color renderer should tick");
-                black_box(canvas);
-            });
-        },
-    );
-    let mut solid_into = SolidColorRenderer::new();
-    solid_into
-        .init(&ambient_metadata("solid_color"))
-        .expect("solid color renderer should initialize");
-    let mut solid_into_frame = 0_u64;
-    let mut solid_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    group.bench_function(
-        BenchmarkId::new(
-            "solid_color_render_into",
-            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
-        ),
-        |b| {
-            b.iter(|| {
-                let input = frame_input(frame_time(solid_into_frame), solid_into_frame, &SILENCE);
-                solid_into_frame += 1;
-                solid_into
-                    .render_into(black_box(&input), black_box(&mut solid_into_canvas))
+                solid
+                    .render_into(black_box(&input), black_box(&mut solid_canvas))
                     .expect("solid color renderer should render into target");
-                black_box(solid_into_canvas.as_rgba_bytes());
+                black_box(solid_canvas.as_rgba_bytes());
             });
         },
     );
@@ -458,42 +337,17 @@ fn bench_builtin_renderers(c: &mut Criterion) {
         .init(&ambient_metadata("gradient"))
         .expect("gradient renderer should initialize");
     let mut gradient_frame = 0_u64;
+    let mut gradient_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     group.bench_function(
         BenchmarkId::new("gradient", format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}")),
         |b| {
             b.iter(|| {
                 let input = frame_input(frame_time(gradient_frame), gradient_frame, &SILENCE);
                 gradient_frame += 1;
-                let canvas = gradient
-                    .tick(black_box(&input))
-                    .expect("gradient renderer should tick");
-                black_box(canvas);
-            });
-        },
-    );
-    let mut gradient_into = GradientRenderer::new();
-    gradient_into
-        .init(&ambient_metadata("gradient"))
-        .expect("gradient renderer should initialize");
-    let mut gradient_into_frame = 0_u64;
-    let mut gradient_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    group.bench_function(
-        BenchmarkId::new(
-            "gradient_render_into",
-            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
-        ),
-        |b| {
-            b.iter(|| {
-                let input = frame_input(
-                    frame_time(gradient_into_frame),
-                    gradient_into_frame,
-                    &SILENCE,
-                );
-                gradient_into_frame += 1;
-                gradient_into
-                    .render_into(black_box(&input), black_box(&mut gradient_into_canvas))
+                gradient
+                    .render_into(black_box(&input), black_box(&mut gradient_canvas))
                     .expect("gradient renderer should render into target");
-                black_box(gradient_into_canvas.as_rgba_bytes());
+                black_box(gradient_canvas.as_rgba_bytes());
             });
         },
     );
@@ -503,39 +357,17 @@ fn bench_builtin_renderers(c: &mut Criterion) {
         .init(&ambient_metadata("rainbow"))
         .expect("rainbow renderer should initialize");
     let mut rainbow_frame = 0_u64;
+    let mut rainbow_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     group.bench_function(
         BenchmarkId::new("rainbow", format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}")),
         |b| {
             b.iter(|| {
                 let input = frame_input(frame_time(rainbow_frame), rainbow_frame, &SILENCE);
                 rainbow_frame += 1;
-                let canvas = rainbow
-                    .tick(black_box(&input))
-                    .expect("rainbow renderer should tick");
-                black_box(canvas);
-            });
-        },
-    );
-    let mut rainbow_into = RainbowRenderer::new();
-    rainbow_into
-        .init(&ambient_metadata("rainbow"))
-        .expect("rainbow renderer should initialize");
-    let mut rainbow_into_frame = 0_u64;
-    let mut rainbow_into_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-    group.bench_function(
-        BenchmarkId::new(
-            "rainbow_render_into",
-            format!("{CANVAS_WIDTH}x{CANVAS_HEIGHT}"),
-        ),
-        |b| {
-            b.iter(|| {
-                let input =
-                    frame_input(frame_time(rainbow_into_frame), rainbow_into_frame, &SILENCE);
-                rainbow_into_frame += 1;
-                rainbow_into
-                    .render_into(black_box(&input), black_box(&mut rainbow_into_canvas))
+                rainbow
+                    .render_into(black_box(&input), black_box(&mut rainbow_canvas))
                     .expect("rainbow renderer should render into target");
-                black_box(rainbow_into_canvas.as_rgba_bytes());
+                black_box(rainbow_canvas.as_rgba_bytes());
             });
         },
     );
@@ -544,10 +376,11 @@ fn bench_builtin_renderers(c: &mut Criterion) {
     color_wave
         .init(&ambient_metadata("color_wave"))
         .expect("color wave renderer should initialize");
+    let mut color_wave_canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
     for warmup_frame in 0..60_u64 {
         let input = frame_input(frame_time(warmup_frame), warmup_frame, &SILENCE);
-        let _ = color_wave
-            .tick(&input)
+        color_wave
+            .render_into(&input, &mut color_wave_canvas)
             .expect("color wave warmup frame should render");
     }
     let mut color_wave_frame = 60_u64;
@@ -557,10 +390,10 @@ fn bench_builtin_renderers(c: &mut Criterion) {
             b.iter(|| {
                 let input = frame_input(frame_time(color_wave_frame), color_wave_frame, &SILENCE);
                 color_wave_frame += 1;
-                let canvas = color_wave
-                    .tick(black_box(&input))
-                    .expect("color wave renderer should tick");
-                black_box(canvas);
+                color_wave
+                    .render_into(black_box(&input), black_box(&mut color_wave_canvas))
+                    .expect("color wave renderer should render into target");
+                black_box(color_wave_canvas.as_rgba_bytes());
             });
         },
     );
@@ -627,13 +460,13 @@ fn bench_spatial_sampling(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_render_groups(c: &mut Criterion) {
-    let mut group = c.benchmark_group("core_render_groups");
+fn bench_render_zones(c: &mut Criterion) {
+    let mut group = c.benchmark_group("core_render_zones");
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
 
-    for group_count in [2_usize, 4_usize] {
-        let groups = (0..group_count)
+    for zone_count in [2_usize, 4_usize] {
+        let zones = (0..zone_count)
             .map(|index| {
                 let color = match index % 4 {
                     0 => [1.0, 0.0, 0.0, 1.0],
@@ -641,37 +474,37 @@ fn bench_render_groups(c: &mut Criterion) {
                     2 => [0.0, 0.0, 1.0, 1.0],
                     _ => [1.0, 1.0, 0.0, 1.0],
                 };
-                render_group(
-                    &format!("zone_group_{index}"),
-                    &format!("bench:group-{index}"),
+                render_zone(
+                    &format!("render_zone_{index}"),
+                    &format!("bench:zone-{index}"),
                     120,
                     color,
                     solid_id,
                 )
             })
             .collect::<Vec<_>>();
-        let throughput_leds = u64::try_from(group_count)
+        let throughput_leds = u64::try_from(zone_count)
             .unwrap_or(u64::MAX)
             .saturating_mul(120);
         let mut pool = EffectPool::new();
-        pool.reconcile(&groups, &registry, &std::collections::HashMap::new())
-            .expect("group pool should reconcile");
-        let mut canvases = groups
+        pool.reconcile(&zones, &registry, &std::collections::HashMap::new())
+            .expect("zone pool should reconcile");
+        let mut canvases = zones
             .iter()
-            .map(|group| Canvas::new(group.layout.canvas_width, group.layout.canvas_height))
+            .map(|zone| Canvas::new(zone.layout.canvas_width, zone.layout.canvas_height))
             .collect::<Vec<_>>();
-        let spatial_engines = groups
+        let spatial_engines = zones
             .iter()
-            .map(|group| SpatialEngine::new(group.layout.clone()))
+            .map(|zone| SpatialEngine::new(zone.layout.clone()))
             .collect::<Vec<_>>();
-        let mut sampled = vec![Vec::<ZoneColors>::new(); group_count];
+        let mut sampled = vec![Vec::<ZoneColors>::new(); zone_count];
 
         group.throughput(Throughput::Elements(throughput_leds));
-        group.bench_function(BenchmarkId::new("render_sample", group_count), |b| {
+        group.bench_function(BenchmarkId::new("render_sample", zone_count), |b| {
             b.iter(|| {
-                for (index, render_group) in groups.iter().enumerate() {
-                    pool.render_group_into(
-                        black_box(render_group),
+                for (index, render_zone) in zones.iter().enumerate() {
+                    pool.render_zone_into(
+                        black_box(render_zone),
                         FRAME_DT_SECONDS,
                         black_box(&SILENCE),
                         black_box(&DEFAULT_INTERACTION),
@@ -687,44 +520,6 @@ fn bench_render_groups(c: &mut Criterion) {
                 black_box(&sampled);
             });
         });
-    }
-
-    group.finish();
-}
-
-fn bench_sensor_control_bindings(c: &mut Criterion) {
-    let mut group = c.benchmark_group("core_effect_bindings");
-
-    for binding_count in [0_usize, 1, 5] {
-        let mut engine = EffectEngine::new().with_canvas_size(CANVAS_WIDTH, CANVAS_HEIGHT);
-        engine
-            .activate(
-                Box::new(BindingBenchRenderer::new()),
-                binding_metadata(binding_count),
-            )
-            .expect("binding benchmark effect should activate");
-        let mut canvas = Canvas::new(CANVAS_WIDTH, CANVAS_HEIGHT);
-        let mut iteration = 0_usize;
-
-        group.bench_function(
-            BenchmarkId::new("tick_with_sensor_bindings", binding_count),
-            |b| {
-                b.iter(|| {
-                    let sensors = &BINDING_SNAPSHOTS[iteration % BINDING_SNAPSHOTS.len()];
-                    iteration = iteration.wrapping_add(1);
-                    engine
-                        .tick_with_inputs_and_sensors_into(
-                            FRAME_DT_SECONDS,
-                            &SILENCE,
-                            &DEFAULT_INTERACTION,
-                            None,
-                            black_box(sensors),
-                            black_box(&mut canvas),
-                        )
-                        .expect("binding benchmark tick should succeed");
-                });
-            },
-        );
     }
 
     group.finish();
@@ -863,11 +658,9 @@ fn bench_backend_routing(c: &mut Criterion) {
     let mut group = c.benchmark_group("core_backend_routing");
     group.throughput(Throughput::Elements(120));
 
-    let runtime = Runtime::new().expect("benchmark runtime should initialize");
-
     let cached_device_id = DeviceId::new();
     let mut cached_manager = BackendManager::new();
-    cached_manager.register_backend(Box::new(NullBenchBackend));
+    cached_manager.register_backend(Arc::new(NullBenchBackend));
     cached_manager.map_device("bench:cached-strip", "bench", cached_device_id);
     let cached_layout = layout_with_zone(bench_routing_zone(
         "zone_0",
@@ -879,13 +672,12 @@ fn bench_backend_routing(c: &mut Criterion) {
         zone_id: "zone_0".to_owned(),
         colors: vec![[255, 0, 0]; 120],
     }];
-    let _ = runtime.block_on(cached_manager.write_frame(&zone_colors, &cached_layout));
+    let _ = cached_manager.write_frame(&zone_colors, &cached_layout);
 
     group.bench_function("write_frame_cached_layout", |b| {
         b.iter(|| {
-            let stats = runtime.block_on(
-                cached_manager.write_frame(black_box(&zone_colors), black_box(&cached_layout)),
-            );
+            let stats =
+                cached_manager.write_frame(black_box(&zone_colors), black_box(&cached_layout));
             black_box(stats.devices_written);
             black_box(cached_manager.routing_plan_rebuild_count());
         });
@@ -893,7 +685,7 @@ fn bench_backend_routing(c: &mut Criterion) {
 
     let churn_device_id = DeviceId::new();
     let mut churn_manager = BackendManager::new();
-    churn_manager.register_backend(Box::new(NullBenchBackend));
+    churn_manager.register_backend(Arc::new(NullBenchBackend));
     churn_manager.map_device("bench:churn-strip", "bench", churn_device_id);
     let base_layout =
         layout_with_zone(bench_routing_zone("zone_0", "bench:churn-strip", 120, None));
@@ -913,8 +705,7 @@ fn bench_backend_routing(c: &mut Criterion) {
                 &base_layout
             };
             use_remapped_layout = !use_remapped_layout;
-            let stats = runtime
-                .block_on(churn_manager.write_frame(black_box(&zone_colors), black_box(layout)));
+            let stats = churn_manager.write_frame(black_box(&zone_colors), black_box(layout));
             black_box(stats.devices_written);
             black_box(churn_manager.routing_plan_rebuild_count());
         });
@@ -926,6 +717,6 @@ fn bench_backend_routing(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = benchmark_config();
-    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_groups, bench_sensor_control_bindings, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
+    targets = bench_builtin_renderers, bench_spatial_sampling, bench_render_zones, bench_audio_pipeline, bench_canvas_handoff, bench_backend_routing
 }
 criterion_main!(benches);

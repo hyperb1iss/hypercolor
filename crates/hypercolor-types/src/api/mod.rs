@@ -8,25 +8,23 @@
 //! Conventions:
 //! - Field shapes are the daemon's wire truth (`u32` sizes, required
 //!   fields the daemon always sends).
-//! - Client-tolerance `#[serde(default)]`s are kept where they don't
-//!   change what the daemon serializes.
+//! - Required fields stay required in both serde and OpenAPI; lockstep
+//!   clients update with every wire change.
 //! - Everything derives `Clone + PartialEq` so reactive UIs can
 //!   equality-gate on whole responses.
 //!
-//! Scope: the state-bearing and mutating contracts live here. Diagnostic
-//! telemetry (system status internals, metrics payloads) deliberately
-//! does NOT — those shapes move fast with perf work, and clients consume
-//! tolerant subsets of them by design.
+//! Scope includes the complete versioned REST surface, so the daemon and
+//! clients compile against the same field vocabulary.
 
 pub mod assets;
 pub mod attachments;
 pub mod capture;
-pub mod common;
 pub mod config;
 pub mod controls;
 pub mod devices;
 pub mod diagnose;
 pub mod displays;
+pub mod drivers;
 pub mod effects;
 pub mod envelope;
 pub mod layouts;
@@ -35,5 +33,8 @@ pub mod output;
 pub mod scene;
 pub mod scenes;
 pub mod simulators;
+pub mod system;
 
-pub use common::Pagination;
+pub use envelope::{
+    ApiErrorBody, ApiErrorDetail, ApiResponse, ListResponse, PageInfo, ResponseMeta,
+};

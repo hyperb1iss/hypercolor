@@ -2,12 +2,10 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError, CapturePlatform,
-    DaemonConfig, DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig,
-    EffectErrorFallbackPolicy, FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig,
-    InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig, NetworkAccessMode,
-    NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
-    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, TuiConfig, WebConfig,
-    default_driver_configs,
+    DaemonConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
+    HypercolorConfig, InputConfig, InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig,
+    NetworkAccessMode, NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
+    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -174,11 +172,13 @@ fn capture_platform_matches_build_target() {
 }
 
 #[test]
-fn capture_config_tolerates_legacy_monitor_key() {
-    let parsed: CaptureConfig =
-        toml::from_str("enabled = true\nmonitor = 2\n").expect("legacy capture config parses");
-    assert!(parsed.enabled);
-    assert_eq!(parsed.grid_cols, 8);
+fn capture_config_rejects_retired_monitor_key() {
+    let error = toml::from_str::<CaptureConfig>("enabled = true\nmonitor = 2\n")
+        .expect_err("retired monitor key must be rejected");
+    assert!(
+        error.to_string().contains("unknown field `monitor`"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -499,38 +499,6 @@ fn driver_registry_defaults_are_driver_agnostic() {
 }
 
 #[test]
-fn govee_defaults_match_spec() {
-    let g = GoveeConfig::default();
-    assert!(g.known_ips.is_empty());
-    assert!(!g.power_off_on_disconnect);
-    assert_eq!(g.lan_state_fps, 10);
-    assert_eq!(g.razer_fps, 25);
-}
-
-#[test]
-fn dbus_defaults_match_spec() {
-    let d = DbusConfig::default();
-    assert!(d.enabled);
-    assert_eq!(d.bus_name, "tech.hyperbliss.hypercolor1");
-}
-
-#[test]
-fn tui_defaults_match_spec() {
-    let t = TuiConfig::default();
-    assert_eq!(t.theme, "silkcircuit");
-    assert_eq!(t.preview_fps, 15);
-    assert_eq!(t.keybindings, "default");
-}
-
-#[test]
-fn feature_flags_all_false_by_default() {
-    let f = FeatureFlags::default();
-    assert!(!f.wasm_plugins);
-    assert!(!f.hue_entertainment);
-    assert!(!f.midi_input);
-}
-
-#[test]
 fn session_defaults_match_spec() {
     let session = SessionConfig::default();
     assert!(session.enabled);
@@ -591,7 +559,6 @@ fn display_config_defaults_and_clamps_face_fps_cap() {
 fn full_config_toml_roundtrip() {
     let original = HypercolorConfig {
         schema_version: 5,
-        include: vec!["local.toml".into()],
         daemon: DaemonConfig::default(),
         web: WebConfig::default(),
         mcp: McpConfig::default(),
@@ -605,9 +572,6 @@ fn full_config_toml_roundtrip() {
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
         drivers: default_driver_configs(),
-        dbus: DbusConfig::default(),
-        tui: TuiConfig::default(),
-        features: FeatureFlags::default(),
         session: SessionConfig::default(),
         extensions: std::collections::BTreeMap::new(),
     };
@@ -615,7 +579,6 @@ fn full_config_toml_roundtrip() {
     let restored: HypercolorConfig =
         toml::from_str(&toml_str).expect("deserialize HypercolorConfig");
     assert_eq!(restored.schema_version, 5);
-    assert_eq!(restored.include, vec!["local.toml"]);
     assert_eq!(restored.daemon.port, 9420);
     assert!(restored.web.enabled);
     assert_eq!(restored.mcp.base_path, "/mcp");
@@ -636,9 +599,6 @@ fn full_config_toml_roundtrip() {
     assert!(!restored.network.allow_unauthenticated_remote_access);
     assert!(restored.network.allowed_clients.is_empty());
     assert!(restored.drivers.is_empty());
-    assert!(restored.dbus.enabled);
-    assert_eq!(restored.tui.theme, "silkcircuit");
-    assert!(!restored.features.wasm_plugins);
 }
 
 #[test]
@@ -674,7 +634,6 @@ fn minimal_toml_fills_defaults() {
         ServoGpuImportMode::Auto
     );
     assert_eq!(config.media.max_livestream_producers, 1);
-    assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
     assert!(!config.network.allow_unauthenticated_remote_access);
@@ -761,10 +720,12 @@ zones = ["keyboard", "mouse"]
 fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
     let original = EffectEngineConfig {
         compositor_acceleration_mode: RenderAccelerationMode::Auto,
-        effect_error_fallback: EffectErrorFallbackPolicy::ClearGroups,
+        effect_error_fallback: EffectErrorFallbackPolicy::ClearZones,
         ..EffectEngineConfig::default()
     };
     let toml_str = toml::to_string(&original).expect("serialize EffectEngineConfig");
+    assert!(toml_str.contains("effect_error_fallback = \"clear_zones\""));
+    assert!(!toml_str.contains("clear_groups"));
     let restored: EffectEngineConfig =
         toml::from_str(&toml_str).expect("deserialize EffectEngineConfig");
     assert_eq!(
@@ -773,12 +734,12 @@ fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
     );
     assert_eq!(
         restored.effect_error_fallback,
-        EffectErrorFallbackPolicy::ClearGroups
+        EffectErrorFallbackPolicy::ClearZones
     );
 }
 
 #[test]
-fn unknown_fields_ignored() {
+fn closed_nested_config_sections_reject_unknown_fields() {
     let toml_with_future_field = r#"
 schema_version = 5
 
@@ -786,10 +747,58 @@ schema_version = 5
 port = 9420
 some_future_field = "hello from the future"
 "#;
-    let config: HypercolorConfig =
-        toml::from_str(toml_with_future_field).expect("deserialize with unknown fields");
-    assert_eq!(config.schema_version, 5);
-    assert_eq!(config.daemon.port, 9420);
+    let error = toml::from_str::<HypercolorConfig>(toml_with_future_field)
+        .expect_err("unknown nested field must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `some_future_field`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn every_closed_root_section_rejects_unknown_fields() {
+    for section in [
+        "audio",
+        "capture",
+        "daemon",
+        "discovery",
+        "display",
+        "effect_engine",
+        "input",
+        "mcp",
+        "media",
+        "network",
+        "rendering",
+        "session",
+        "web",
+    ] {
+        let source = format!("schema_version = 5\n[{section}]\nunrecognized_config_key = true\n");
+        let error = toml::from_str::<HypercolorConfig>(&source)
+            .expect_err("closed config section must reject unknown fields");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `unrecognized_config_key`"),
+            "section {section}: {error}"
+        );
+    }
+
+    let nested = r"
+schema_version = 5
+
+[rendering.servo_gpu_import]
+unrecognized_config_key = true
+";
+    let error = toml::from_str::<HypercolorConfig>(nested)
+        .expect_err("closed nested config object must reject unknown fields");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `unrecognized_config_key`"),
+        "{error}"
+    );
 }
 
 #[test]

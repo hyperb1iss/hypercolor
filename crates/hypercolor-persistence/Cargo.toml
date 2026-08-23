@@ -1,0 +1,25 @@
+[package]
+name = "hypercolor-persistence"
+description = "Durable file replacement and flush coordination for Hypercolor stores"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+persistence-test-hooks = []
+
+[dependencies]
+hypercolor-platform-fs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

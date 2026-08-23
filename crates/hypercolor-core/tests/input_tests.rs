@@ -15,17 +15,17 @@ use hypercolor_core::input::screen::{
     ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorPolicy,
 };
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, BrowserInputSource, INPUT_EVENT_RING_CAPACITY, InputData,
-    InputManager, InputSource, MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner,
-    MacosDaemonOwnerConflict, MacosProtectedSourceState, MacosScreenPlatformStatus,
-    MacosScreenTimingStatus, MacosSelectionState, MacosTahoeCapabilities, MediaSource, NetSource,
-    ScreenData, ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind,
-    SourcePlatformStatus, SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter,
-    SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    AudioReconfigurationConflict, INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource,
+    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosProtectedSourceState, MacosScreenPlatformStatus, MacosScreenTimingStatus,
+    MacosSelectionState, MacosTahoeCapabilities, MediaSource, NetSource, ScreenData,
+    ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind, SourcePlatformStatus,
+    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
+    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
     SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
 };
-use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
-use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
+use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
+use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
 use std::collections::VecDeque;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -1210,7 +1210,12 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
     let previous_slot_id = graph.snapshot().slots()[0].id();
     let previous_handle = before.handles()[0].clone();
 
-    let replacement = manager.replace_source(0, Box::new(BrowserInputSource::new()));
+    let replacement = manager.replace_source(
+        0,
+        Box::new(RestartingStatusScreenSource::new(Arc::new(Mutex::new(
+            Vec::new(),
+        )))),
+    );
 
     assert!(replacement.is_ok());
     let after = registry.snapshot();
@@ -1224,7 +1229,7 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
     assert_eq!(after.handles().len(), 1);
     assert_eq!(
         after.handles()[0].snapshot().source_id.as_ref(),
-        "browser_input"
+        "restarting_status_screen"
     );
     let retired = previous_handle.snapshot();
     assert!(retired.retired);
@@ -1400,10 +1405,12 @@ fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
 #[test]
 fn manager_restart_uses_a_new_canonical_graph_generation() {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(BrowserInputSource::new()));
+    manager.add_source(Box::new(StatusAwareScreenSource::new(Arc::new(
+        Mutex::new(None),
+    ))));
     let registry = manager.source_status_registry();
 
-    manager.start_all().expect("browser source starts");
+    manager.start_all().expect("status-aware source starts");
     let first = registry.snapshot().statuses()[0].clone();
     assert_eq!(first.state, SourceState::Live);
     manager.stop_all();
@@ -1412,7 +1419,7 @@ fn manager_restart_uses_a_new_canonical_graph_generation() {
         SourceState::Stopped
     );
 
-    manager.start_all().expect("browser source restarts");
+    manager.start_all().expect("status-aware source restarts");
     let second = registry.snapshot().statuses()[0].clone();
     assert_eq!(second.state, SourceState::Live);
     assert!(
@@ -1529,7 +1536,6 @@ fn production_source_constructors_expose_status_handles() {
     let config = AudioPipelineConfig::default();
     let mut sources: Vec<Box<dyn InputSource>> = vec![
         Box::new(AudioInput::new(&config)),
-        Box::new(BrowserInputSource::new()),
         Box::new(MediaSource::new()),
         Box::new(NetSource::new()),
         Box::new(ScreenCaptureInput::new(ScreenCaptureConfig::default())),
@@ -1797,7 +1803,7 @@ fn manager_drains_discrete_input_events_from_all_sources() {
     mgr.add_source(Box::new(EventfulSource::new(vec![
         InputEvent::MidiRealtime {
             source_id: "midi:clock".into(),
-            message: hypercolor_core::types::event::MidiRealtimeMessage::Clock,
+            message: hypercolor_types::event::MidiRealtimeMessage::Clock,
         },
     ])));
     mgr.start_all().expect("eventful sources should start");
@@ -2986,25 +2992,21 @@ fn manager_tracks_and_removes_host_capture_sources() {
     assert!(!mgr.has_host_capture_source());
 
     mgr.add_source(Box::new(CaptureTrackingInteractionSource::new(transitions)));
-    mgr.add_source(Box::new(hypercolor_core::input::BrowserInputSource::new()));
     mgr.add_source(Box::new(MockAudioSource::new(0.5)));
     assert!(mgr.has_host_capture_source());
     assert!(mgr.has_interaction_source());
-    assert_eq!(mgr.source_count(), 3);
+    assert_eq!(mgr.source_count(), 2);
 
     mgr.remove_host_capture_sources();
     assert!(!mgr.has_host_capture_source());
-    assert!(
-        mgr.has_interaction_source(),
-        "browser injection survives host removal"
-    );
-    assert_eq!(mgr.source_count(), 2, "browser + audio survive");
+    assert!(!mgr.has_interaction_source());
+    assert_eq!(mgr.source_count(), 1, "audio survives host removal");
 }
 
 #[test]
 fn interaction_dirty_check_tracks_generation_and_batch() {
     use hypercolor_core::input::{InteractionBatch, InteractionData};
-    use hypercolor_core::types::event::{InputButtonState, TimedInputEvent};
+    use hypercolor_types::event::{InputButtonState, TimedInputEvent};
 
     let mut data = InteractionData::default();
     assert!(data.is_dirty_against(None), "first sight is always dirty");
@@ -3029,14 +3031,14 @@ fn interaction_dirty_check_tracks_generation_and_batch() {
 
     let mut batch = InteractionBatch::default();
     assert!(batch.is_empty());
-    batch.wheel_hi_res = 120;
-    assert!(!batch.is_empty(), "wheel travel is renderer-visible");
+    batch.scroll.line120_y_q16_16 = 120 << 16;
+    assert!(!batch.is_empty(), "scroll travel is renderer-visible");
 }
 
 #[test]
 fn batch_absorb_prior_preserves_order_and_sums() {
     use hypercolor_core::input::InteractionBatch;
-    use hypercolor_core::types::event::TimedInputEvent;
+    use hypercolor_types::event::TimedInputEvent;
 
     fn timed(seq: u64) -> TimedInputEvent {
         TimedInputEvent {
@@ -3054,13 +3056,19 @@ fn batch_absorb_prior_preserves_order_and_sums() {
 
     let mut current = InteractionBatch {
         events: vec![timed(3), timed(4)],
-        wheel_hi_res: 120,
+        scroll: hypercolor_core::input::ScrollAggregate {
+            line120_y_q16_16: 120 << 16,
+            ..Default::default()
+        },
         dropped_events: 1,
         ..Default::default()
     };
     let prior = InteractionBatch {
         events: vec![timed(1), timed(2)],
-        wheel_hi_res: -360,
+        scroll: hypercolor_core::input::ScrollAggregate {
+            line120_y_q16_16: -360 << 16,
+            ..Default::default()
+        },
         dropped_events: 2,
         ..Default::default()
     };
@@ -3068,7 +3076,7 @@ fn batch_absorb_prior_preserves_order_and_sums() {
     current.absorb_prior(prior);
     let seqs = current.events.iter().map(|e| e.seq).collect::<Vec<_>>();
     assert_eq!(seqs, [1, 2, 3, 4]);
-    assert_eq!(current.wheel_hi_res, -240);
+    assert_eq!(current.scroll.line120_y_q16_16, -240 << 16);
     assert_eq!(current.dropped_events, 3);
 
     let mut overflowing = InteractionBatch::default();
@@ -3099,10 +3107,6 @@ fn pointer_snapshot(norm_x: f32, injected: bool) -> hypercolor_core::input::Inte
 
 #[test]
 fn an_injected_pointer_wins_over_a_host_pointer_regardless_of_order() {
-    // Host capture registers before the browser source, and first-non-None
-    // alone would therefore let the desktop cursor shadow the preview canvas
-    // — visibly wrong the moment the host pointer is a real desktop cursor
-    // rather than a virtual one nobody cross-checks.
     let mut host_first = pointer_snapshot(0.1, false);
     host_first.merge_from(pointer_snapshot(0.9, true));
     assert!(

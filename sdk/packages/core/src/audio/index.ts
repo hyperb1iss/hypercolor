@@ -1,4 +1,4 @@
-export { FFT_SIZE, getAudioData, getScreenZoneData, MEL_BANDS, normalizeAudioLevel, PITCH_CLASSES } from './analysis'
+export { FFT_SIZE, getAudioData, getScreenZoneData, MEL_BANDS, PITCH_CLASSES } from './analysis'
 export {
     getBassLevel,
     getBeatAnticipation,

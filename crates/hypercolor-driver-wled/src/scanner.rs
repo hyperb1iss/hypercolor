@@ -1,7 +1,4 @@
-//! mDNS-based discovery scanner for WLED devices.
-//!
-//! Implements [`TransportScanner`] to discover WLED controllers on the
-//! local network via `_wled._tcp.local.` service browsing.
+//! mDNS-based discovery for WLED devices.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
@@ -12,11 +9,12 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tracing::{debug, warn};
 
-use hypercolor_driver_api::MdnsBrowser;
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::MdnsBrowser;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceFingerprint, DeviceInfo, DeviceOrigin, DeviceTopologyHint, FingerprintNamespace,
+    SegmentInfo,
 };
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 
@@ -217,13 +215,9 @@ impl WledScanner {
             DeviceColorFormat::Rgb
         };
 
-        // Use MAC address for fingerprint if available, else hostname
-        let fingerprint_key = if mac.is_empty() {
-            format!("net:wled:{hostname}")
-        } else {
-            format!("net:{mac}")
-        };
-        let fingerprint = DeviceFingerprint(fingerprint_key);
+        let fingerprint_key = if mac.is_empty() { hostname } else { &mac };
+        let fingerprint =
+            DeviceFingerprint::mint(FingerprintNamespace::Net, "wled", fingerprint_key);
         let device_id = fingerprint.stable_device_id();
 
         let device_info = DeviceInfo {
@@ -261,6 +255,9 @@ impl WledScanner {
         if let Some(info) = wled_info {
             metadata.insert("arch".to_owned(), info.arch.clone());
             metadata.insert("firmware".to_owned(), info.firmware_version.clone());
+            if !info.mac.is_empty() {
+                metadata.insert("mac".to_owned(), info.mac.clone());
+            }
         }
 
         DiscoveredDevice {
@@ -291,10 +288,9 @@ impl WledScanner {
 
         let name = target.name.clone().or_else(|| target.hostname.clone())?;
         let fingerprint = target.fingerprint.clone().or_else(|| {
-            target
-                .hostname
-                .as_ref()
-                .map(|hostname| DeviceFingerprint(format!("net:wled:{hostname}")))
+            target.hostname.as_ref().map(|hostname| {
+                DeviceFingerprint::mint(FingerprintNamespace::Net, "wled", hostname)
+            })
         })?;
         let color_format = if target.rgbw.unwrap_or(false) {
             DeviceColorFormat::Rgbw
@@ -380,14 +376,9 @@ impl Default for WledScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for WledScanner {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
-        "WLED mDNS"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl WledScanner {
+    /// Discover configured and mDNS-visible WLED devices.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         let mut candidates: HashMap<IpAddr, WledKnownTarget> = self
             .known_targets
             .iter()

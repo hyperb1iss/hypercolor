@@ -25,10 +25,8 @@ use crate::toasts;
 
 use super::StudioContext;
 
-/// Fallback canvas used when minting an `Output` for an unassigned device
-/// and the target zone's own canvas cannot be read. Minting prefers the
-/// target zone's dimensions, because a seeded hardware footprint is fitted
-/// to a canvas aspect ratio and is then persisted as-is.
+/// Authoring canvas used to normalize a freshly seeded hardware footprint.
+/// Live zone placements are normalized and carry no pixel dimensions.
 const MINT_CANVAS_WIDTH: u32 = 640;
 const MINT_CANVAS_HEIGHT: u32 = 480;
 
@@ -58,16 +56,14 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
                 let outputs_outside_target = scene
                     .zones
                     .iter()
-                    .filter(|group| group.id.to_string() != target)
-                    .flat_map(|group| group.layout.zones.iter())
-                    .filter(|output| output.device_id == device_layout_id)
+                    .filter(|zone| zone.id.to_string() != target)
+                    .flat_map(|zone| zone.members.iter())
+                    .filter(|member| member.device_id == device_layout_id)
                     .count();
-                let any_output = scene.zones.iter().any(|group| {
-                    group
-                        .layout
-                        .zones
+                let any_output = scene.zones.iter().any(|zone| {
+                    zone.members
                         .iter()
-                        .any(|output| output.device_id == device_layout_id)
+                        .any(|member| member.device_id == device_layout_id)
                 });
                 // Already entirely in this zone; nothing to move.
                 if any_output && outputs_outside_target == 0 {
@@ -167,30 +163,21 @@ pub(super) fn assign_device_to_zone(
         return;
     };
     let mut assignments: Vec<OutputAssignment> = Vec::new();
-    for group in &scene.zones {
-        if group.id.to_string() == zone_id {
+    for zone in &scene.zones {
+        if zone.id.to_string() == zone_id {
             continue;
         }
-        for output in &group.layout.zones {
-            if output.device_id == device.layout_device_id {
+        for member in &zone.members {
+            if member.device_id == device.layout_device_id {
                 assignments.push(OutputAssignment::Existing {
-                    id: output.id.clone(),
+                    id: member.id.to_string(),
                 });
             }
         }
     }
     let mut preserve_placement = false;
     if assignments.is_empty() {
-        // A seeded footprint is fitted to a canvas aspect ratio, so it has to
-        // be built against the canvas it will actually live on.
-        let canvas = scene
-            .zones
-            .iter()
-            .find(|group| group.id.to_string() == zone_id)
-            .map_or((MINT_CANVAS_WIDTH, MINT_CANVAS_HEIGHT), |group| {
-                (group.layout.canvas_width, group.layout.canvas_height)
-            });
-        let minted = mint_device_zones(&device, canvas);
+        let minted = mint_device_zones(&device, (MINT_CANVAS_WIDTH, MINT_CANVAS_HEIGHT));
         assignments = minted.assignments;
         preserve_placement = minted.preserve_placement;
     }
@@ -203,8 +190,7 @@ pub(super) fn assign_device_to_zone(
     let revision = scene.revision;
     let device_name = device.name.clone();
     spawn_local(async move {
-        match api::zones::assign_devices(&zone_id, assignments, preserve_placement, Some(revision))
-            .await
+        match api::zones::assign_devices(&zone_id, assignments, preserve_placement, revision).await
         {
             Ok(ZoneOutcome::Applied(_)) => {
                 toasts::toast_success(&format!("{device_name} added to the zone"));
@@ -260,7 +246,7 @@ fn mint_device_zones(
                     // non-alphanumeric character to '_', so device ids that
                     // differ only in punctuation collapse together — two Push
                     // 2s on usb paths `...-0-12` and `...-0-1-2` land on the
-                    // same id. assign_device_zone treats an output id as a
+                    // same id. assign_output_to_zone treats an output id as a
                     // scene-global ownership key, so the second device would
                     // silently take over the first one's outputs.
                     output.id = format!("zone_{}", uuid_v4_hex());
@@ -313,36 +299,35 @@ fn mint_device_zones(
 /// The non-target zone that currently owns a device's outputs, or
 /// "unassigned" if no zone holds any. Drives the location hint in the
 /// picker label so the user sees where the move comes from.
-fn device_location(groups: &[api::LiveZoneView], device_id: &str, target: &str) -> String {
-    for group in groups {
-        if group.role == ZoneRole::Display {
+fn device_location(zones: &[api::ZoneResource], device_id: &str, target: &str) -> String {
+    for zone in zones {
+        if zone.role == ZoneRole::Display {
             continue;
         }
-        if group.id.to_string() == target {
+        if zone.id.to_string() == target {
             continue;
         }
-        if group
-            .layout
-            .zones
+        if zone
+            .members
             .iter()
-            .any(|output| output.device_id == device_id)
+            .any(|member| member.device_id == device_id)
         {
-            return format!("in {}", zone_display_name(group));
+            return format!("in {}", zone_display_name(zone));
         }
     }
     "unassigned".to_owned()
 }
 
 /// Display name for a zone: the user's typed name, or "Default zone" for an
-/// unnamed `Primary` group, so it never surfaces a raw role string. Shared
+/// unnamed `Primary` zone, so it never surfaces a raw role string. Shared
 /// with the device card's move-to-zone picker.
-pub(super) fn zone_display_name(group: &api::LiveZoneView) -> String {
-    let trimmed = group.name.trim();
-    if group.role == ZoneRole::Primary
+pub(super) fn zone_display_name(zone: &api::ZoneResource) -> String {
+    let trimmed = zone.name.trim();
+    if zone.role == ZoneRole::Primary
         && (trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary"))
     {
         "Default zone".to_owned()
     } else {
-        group.name.clone()
+        zone.name.clone()
     }
 }

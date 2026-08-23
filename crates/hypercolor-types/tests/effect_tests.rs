@@ -5,9 +5,11 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use hypercolor_color::LinearRgba;
+use hypercolor_types::control::{ControlValue, ControlValueInvalid};
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource, EffectState, GradientStop,
+    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValidationError,
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState, GradientStop,
 };
 use uuid::Uuid;
 
@@ -229,7 +231,7 @@ fn effect_source_source_stem_uses_file_stem() {
 }
 
 #[test]
-fn effect_metadata_matches_display_name_and_native_source_alias() {
+fn effect_metadata_matches_normalized_display_name() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
         name: "Solid Color".to_owned(),
@@ -257,10 +259,10 @@ fn effect_metadata_matches_display_name_and_native_source_alias() {
 }
 
 #[test]
-fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
+fn effect_metadata_lookup_does_not_admit_source_stem_aliases() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
-        name: "Audio Pulse".to_owned(),
+        name: "Sound Reactive Pulse".to_owned(),
         author: "Hypercolor".to_owned(),
         version: "0.1.0".to_owned(),
         description: "test effect".to_owned(),
@@ -277,9 +279,12 @@ fn effect_metadata_lookup_treats_html_and_native_slugs_equivalently() {
         license: Some("Apache-2.0".to_owned()),
     };
 
-    assert!(metadata.matches_lookup("audio_pulse"));
-    assert!(metadata.matches_lookup("audio-pulse"));
-    assert!(metadata.matches_lookup("audio pulse"));
+    assert!(metadata.matches_lookup("sound_reactive_pulse"));
+    assert!(metadata.matches_lookup("sound-reactive-pulse"));
+    assert!(metadata.matches_lookup("sound reactive pulse"));
+    assert!(!metadata.matches_lookup("audio_pulse"));
+    assert!(!metadata.matches_lookup("audio-pulse"));
+    assert!(!metadata.matches_lookup("audio pulse"));
 }
 
 // ── EffectState ───────────────────────────────────────────────────────────
@@ -400,31 +405,36 @@ fn control_type_serde_round_trip() {
 #[test]
 fn control_value_float() {
     let val = ControlValue::Float(3.5);
-    assert!((val.as_f32().expect("should be numeric") - 3.5).abs() < f32::EPSILON);
+    assert!((val.as_effect_f32().expect("should be numeric") - 3.5).abs() < f32::EPSILON);
 }
 
 #[test]
 fn control_value_integer() {
-    let val = ControlValue::Integer(42);
-    assert!((val.as_f32().expect("should be numeric") - 42.0).abs() < f32::EPSILON);
+    let val = ControlValue::Int(42);
+    assert!((val.as_effect_f32().expect("should be numeric") - 42.0).abs() < f32::EPSILON);
 }
 
 #[test]
-fn control_value_boolean_as_f32() {
-    assert!((ControlValue::Boolean(true).as_f32().expect("numeric") - 1.0).abs() < f32::EPSILON);
+fn control_value_boolean_is_not_numeric() {
+    assert!(ControlValue::Bool(true).as_effect_f32().is_none());
+    assert!(ControlValue::Bool(false).as_effect_f32().is_none());
+}
+
+#[test]
+fn control_value_integer_refuses_lossy_f32_projection() {
+    assert!(ControlValue::Int(16_777_216).as_effect_f32().is_some());
+    assert!(ControlValue::Int(16_777_217).as_effect_f32().is_none());
     assert!(
-        ControlValue::Boolean(false)
-            .as_f32()
-            .expect("numeric")
-            .abs()
-            < f32::EPSILON
+        ControlValue::Int(i64::from(i32::MAX))
+            .as_effect_f32()
+            .is_none()
     );
 }
 
 #[test]
 fn control_value_color_not_numeric() {
-    let val = ControlValue::Color([1.0, 0.0, 0.5, 1.0]);
-    assert!(val.as_f32().is_none());
+    let val = ControlValue::ColorLinear(LinearRgba::new(1.0, 0.0, 0.5, 1.0));
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
@@ -433,102 +443,28 @@ fn control_value_gradient_not_numeric() {
         position: 0.0,
         color: [0.0, 0.0, 0.0, 1.0],
     }]);
-    assert!(val.as_f32().is_none());
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_enum_not_numeric() {
     let val = ControlValue::Enum("option_a".into());
-    assert!(val.as_f32().is_none());
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_text_not_numeric() {
     let val = ControlValue::Text("hello".into());
-    assert!(val.as_f32().is_none());
-}
-
-#[test]
-fn control_value_js_literal_float() {
-    let val = ControlValue::Float(5.0);
-    assert_eq!(val.to_js_literal(), "5");
-}
-
-#[test]
-fn control_value_js_literal_integer() {
-    let val = ControlValue::Integer(42);
-    assert_eq!(val.to_js_literal(), "42");
-}
-
-#[test]
-fn control_value_js_literal_boolean() {
-    assert_eq!(ControlValue::Boolean(true).to_js_literal(), "true");
-    assert_eq!(ControlValue::Boolean(false).to_js_literal(), "false");
-}
-
-#[test]
-fn control_value_js_literal_color() {
-    let val = ControlValue::Color([1.0, 0.5, 0.0, 1.0]);
-    assert_eq!(val.to_js_literal(), "\"#ff8000\"");
-}
-
-#[test]
-fn control_value_js_literal_color_hex_roundtrip() {
-    // #001e01 → Color([0.0, 30/255, 1/255, 1.0]) → "#001e01"
-    let val = ControlValue::Color([0.0_f32, 30.0 / 255.0, 1.0 / 255.0, 1.0]);
-    assert_eq!(val.to_js_literal(), "\"#001e01\"");
-}
-
-#[test]
-fn control_value_js_literal_color_black_white() {
-    assert_eq!(
-        ControlValue::Color([0.0, 0.0, 0.0, 1.0]).to_js_literal(),
-        "\"#000000\""
-    );
-    assert_eq!(
-        ControlValue::Color([1.0, 1.0, 1.0, 1.0]).to_js_literal(),
-        "\"#ffffff\""
-    );
-}
-
-#[test]
-fn control_value_js_literal_enum_escapes_quotes() {
-    let val = ControlValue::Enum("say \"hello\"".into());
-    assert_eq!(val.to_js_literal(), r#""say \"hello\"""#);
-}
-
-#[test]
-fn control_value_js_literal_text_escapes_backslash() {
-    let val = ControlValue::Text(r"path\to\file".into());
-    assert_eq!(val.to_js_literal(), r#""path\\to\\file""#);
-}
-
-#[test]
-fn control_value_js_literal_gradient() {
-    let val = ControlValue::Gradient(vec![
-        GradientStop {
-            position: 0.0,
-            color: [1.0, 0.0, 0.0, 1.0],
-        },
-        GradientStop {
-            position: 1.0,
-            color: [0.0, 0.0, 1.0, 1.0],
-        },
-    ]);
-    let js = val.to_js_literal();
-    assert!(js.starts_with('['));
-    assert!(js.ends_with(']'));
-    assert!(js.contains("pos:0"));
-    assert!(js.contains("pos:1"));
+    assert!(val.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_serde_round_trip() {
     let values = vec![
         ControlValue::Float(2.5),
-        ControlValue::Integer(-10),
-        ControlValue::Boolean(true),
-        ControlValue::Color([0.1, 0.2, 0.3, 0.4]),
+        ControlValue::Int(-10),
+        ControlValue::Bool(true),
+        ControlValue::ColorLinear(LinearRgba::new(0.1, 0.2, 0.3, 0.4)),
         ControlValue::Gradient(vec![
             GradientStop {
                 position: 0.0,
@@ -596,11 +532,39 @@ fn sample_color_picker_control() -> ControlDefinition {
         name: "Zone 1".into(),
         kind: ControlKind::Color,
         control_type: ControlType::ColorPicker,
-        default_value: ControlValue::Color([1.0, 1.0, 1.0, 1.0]),
+        default_value: ControlValue::ColorLinear(LinearRgba::new(1.0, 1.0, 1.0, 1.0)),
         min: None,
         max: None,
         step: None,
         labels: vec![],
+        group: Some("Colors".into()),
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    }
+}
+
+fn sample_gradient_control() -> ControlDefinition {
+    ControlDefinition {
+        id: "palette".into(),
+        name: "Palette".into(),
+        kind: ControlKind::Other("gradient".into()),
+        control_type: ControlType::GradientEditor,
+        default_value: ControlValue::Gradient(vec![
+            GradientStop {
+                position: 0.0,
+                color: [1.0, 0.0, 0.0, 1.0],
+            },
+            GradientStop {
+                position: 1.0,
+                color: [0.0, 0.0, 1.0, 1.0],
+            },
+        ]),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
         group: Some("Colors".into()),
         tooltip: None,
         aspect_lock: None,
@@ -679,6 +643,38 @@ fn control_binding_normalized_clamps_runtime_fields() {
 }
 
 #[test]
+fn numeric_validation_preserves_integer_variant_and_width() {
+    let mut control = sample_slider_control();
+    control.min = None;
+    control.max = None;
+    control.step = None;
+
+    assert_eq!(
+        control
+            .validate_value(&ControlValue::Int(16_777_217))
+            .expect("effect-wire integer should validate without an f32 projection"),
+        ControlValue::Int(16_777_217)
+    );
+    assert!(matches!(
+        control.validate_value(&ControlValue::Bool(true)),
+        Err(ControlValidationError::ExpectedNumeric { got: "bool", .. })
+    ));
+}
+
+#[test]
+fn numeric_validation_refuses_fractional_integer_normalization() {
+    let mut control = sample_slider_control();
+    control.min = Some(0.5);
+    control.max = None;
+    control.step = None;
+
+    assert!(matches!(
+        control.validate_value(&ControlValue::Int(0)),
+        Err(ControlValidationError::IntegerNormalizationWouldChangeVariant { .. })
+    ));
+}
+
+#[test]
 fn control_binding_serde_round_trip() {
     let binding = sample_control_binding();
     let json = serde_json::to_string_pretty(&binding).expect("serialize");
@@ -695,14 +691,35 @@ fn color_picker_validation_normalizes_hex_text_to_color() {
         .expect("hex text should validate");
 
     match validated {
-        ControlValue::Color([r, g, b, a]) => {
-            assert!(r > 0.2, "red should be converted from hex");
-            assert!(g > 0.9, "green should be converted from hex");
-            assert!(b > 0.8, "blue should be converted from hex");
-            assert!((a - 1.0).abs() < f32::EPSILON);
+        ControlValue::ColorLinear(color) => {
+            assert!(color.r > 0.2, "red should be converted from hex");
+            assert!(color.g > 0.9, "green should be converted from hex");
+            assert!(color.b > 0.8, "blue should be converted from hex");
+            assert!((color.a - 1.0).abs() < f32::EPSILON);
         }
         other => panic!("expected normalized color, got {other:?}"),
     }
+}
+
+#[test]
+fn color_picker_admission_disambiguates_four_channel_effect_json() {
+    let admitted = sample_color_picker_control()
+        .admit_effect_json(&serde_json::json!([0.125, 0.25, 0.5, 1.0]))
+        .expect("schema-confirmed color array should be admitted");
+
+    assert_eq!(
+        admitted,
+        ControlValue::linear_color([0.125, 0.25, 0.5, 1.0])
+    );
+}
+
+#[test]
+fn non_color_control_admission_keeps_number_arrays_ambiguous() {
+    assert!(
+        sample_slider_control()
+            .admit_effect_json(&serde_json::json!([0.125, 0.25, 0.5, 1.0]))
+            .is_err()
+    );
 }
 
 #[test]
@@ -715,6 +732,49 @@ fn non_color_picker_color_control_preserves_text_values() {
         .expect("text color token should validate");
 
     assert_eq!(validated, ControlValue::Text("brand-accent".into()));
+}
+
+#[test]
+fn gradient_editor_validates_by_widget_contract() {
+    let control = sample_gradient_control();
+    let value = control.default_value.clone();
+
+    assert_eq!(
+        control
+            .validate_value(&value)
+            .expect("valid gradient should survive definition validation"),
+        value
+    );
+    assert_eq!(
+        control.validate_value(&ControlValue::Text("sunset".into())),
+        Err(ControlValidationError::ExpectedGradient {
+            control: "palette".into(),
+            got: "text",
+        })
+    );
+}
+
+#[test]
+fn gradient_editor_surfaces_canonical_validation_errors() {
+    let control = sample_gradient_control();
+    let invalid = ControlValue::Gradient(vec![
+        GradientStop {
+            position: 0.75,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        GradientStop {
+            position: 0.25,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    ]);
+
+    assert!(matches!(
+        control.validate_value(&invalid),
+        Err(ControlValidationError::InvalidGradient {
+            source: ControlValueInvalid::Nested { source, .. },
+            ..
+        }) if *source == ControlValueInvalid::GradientPositionsOutOfOrder
+    ));
 }
 
 // ── EffectMetadata ────────────────────────────────────────────────────────
@@ -810,9 +870,14 @@ fn effect_metadata_empty_tags_default() {
 }
 
 #[test]
-fn requires_interaction_covers_flag_category_and_legacy_tags() {
+fn requires_interaction_uses_only_the_flag_or_category() {
     let mut metadata = sample_metadata();
-    metadata.tags = vec!["ambient".into()];
+    metadata.tags = vec![
+        "interactive".into(),
+        "input".into(),
+        "Mouse".into(),
+        "KEYBOARD".into(),
+    ];
     assert!(!metadata.requires_interaction());
 
     metadata.input_reactive = true;
@@ -821,15 +886,6 @@ fn requires_interaction_covers_flag_category_and_legacy_tags() {
     metadata.input_reactive = false;
     metadata.category = EffectCategory::Interactive;
     assert!(metadata.requires_interaction());
-
-    metadata.category = EffectCategory::Ambient;
-    for tag in ["interactive", "input", "Mouse", "KEYBOARD"] {
-        metadata.tags = vec![tag.into()];
-        assert!(
-            metadata.requires_interaction(),
-            "tag {tag} should opt into interaction"
-        );
-    }
 }
 
 #[test]

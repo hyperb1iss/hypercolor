@@ -3,7 +3,7 @@ use leptos_icons::Icon;
 
 use hypercolor_types::config::HypercolorConfig;
 
-use crate::api::{self, MacosDaemonOwnershipStatus};
+use crate::api::{self, MacosCapabilityOwner, MacosDaemonOwnershipStatus};
 use crate::app::WsContext;
 use crate::components::settings_controls::*;
 use crate::icons::*;
@@ -332,14 +332,8 @@ fn MacosDaemonOwnershipStatusPanel(
                         <div class="mt-0.5 text-fg-secondary">
                             {format!(
                                 "{} is running now; {} also tried to start. Pick which one should own your lighting.",
-                                conflict.active.as_deref().map_or_else(
-                                    || "An unknown install".to_owned(),
-                                    humanize_owner,
-                                ),
-                                conflict.contender.as_deref().map_or_else(
-                                    || "another install".to_owned(),
-                                    humanize_owner,
-                                ),
+                                humanize_owner(conflict.active.as_str()),
+                                humanize_owner(conflict.contender.as_str()),
                             )}
                         </div>
                     </div>
@@ -386,11 +380,8 @@ fn MacosDaemonOwnershipStatusPanel(
 fn macos_owner_choices(status: &MacosDaemonOwnershipStatus) -> Vec<MacosDaemonOwnerChoice> {
     let mut choices = Vec::new();
     for owner in [
-        status.active_owner.as_deref(),
-        status
-            .conflict
-            .as_ref()
-            .and_then(|conflict| conflict.contender.as_deref()),
+        Some(status.active_owner),
+        status.conflict.as_ref().map(|conflict| conflict.contender),
     ]
     .into_iter()
     .flatten()
@@ -404,12 +395,14 @@ fn macos_owner_choices(status: &MacosDaemonOwnershipStatus) -> Vec<MacosDaemonOw
     choices
 }
 
-fn macos_owner_choice(owner: &str) -> Option<MacosDaemonOwnerChoice> {
+const fn macos_owner_choice(owner: MacosCapabilityOwner) -> Option<MacosDaemonOwnerChoice> {
     match owner {
-        "app_sidecar" => Some(MacosDaemonOwnerChoice::AppSidecar),
-        "launchd_service" | "direct_launchd" => Some(MacosDaemonOwnerChoice::DirectLaunchd),
-        "homebrew_service" | "homebrew" => Some(MacosDaemonOwnerChoice::Homebrew),
-        _ => None,
+        MacosCapabilityOwner::AppSidecar => Some(MacosDaemonOwnerChoice::AppSidecar),
+        MacosCapabilityOwner::LaunchdService => Some(MacosDaemonOwnerChoice::DirectLaunchd),
+        MacosCapabilityOwner::HomebrewService => Some(MacosDaemonOwnerChoice::Homebrew),
+        MacosCapabilityOwner::App
+        | MacosCapabilityOwner::Broker
+        | MacosCapabilityOwner::Standalone => None,
     }
 }
 
@@ -450,6 +443,9 @@ fn owner_remedy_label(remedy: &MacosOwnerRemedy) -> String {
         MacosOwnerRemedy::StopStandaloneOwner { pid } => {
             format!("Quit the terminal-launched daemon (process {pid}), then try again.")
         }
+        MacosOwnerRemedy::RestartStandalone { pid } => {
+            format!("Restart the terminal-launched daemon (process {pid}), then try again.")
+        }
         MacosOwnerRemedy::StartAppSidecar => "Start Hypercolor.app.".to_owned(),
         MacosOwnerRemedy::StartLaunchdService => "Start the launchd service.".to_owned(),
         MacosOwnerRemedy::StartHomebrewService => "Start the Homebrew service.".to_owned(),
@@ -462,6 +458,7 @@ const fn owner_remedy_button_label(remedy: &MacosOwnerRemedy) -> &'static str {
         MacosOwnerRemedy::StartLaunchdService => "Start launchd service",
         MacosOwnerRemedy::StartHomebrewService => "Start Homebrew service",
         MacosOwnerRemedy::StopStandaloneOwner { .. }
+        | MacosOwnerRemedy::RestartStandalone { .. }
         | MacosOwnerRemedy::StartAppSidecar
         | MacosOwnerRemedy::Unknown => "Unavailable",
     }
@@ -530,7 +527,7 @@ fn NativeStartupPanel() -> impl IntoView {
                 Some(Ok(None)) => ().into_any(),
                 Some(Err(error)) => view! {
                     <NativeStartupFrame>
-                        <div class="flex items-center gap-2 text-xs text-error-red/80">
+                        <div class="flex items-center gap-2 text-xs text-status-error/80">
                             <Icon icon=LuTriangleAlert width="13px" height="13px" />
                             {format!("Startup setting unavailable: {error}")}
                         </div>
@@ -626,7 +623,7 @@ fn WindowsDaemonServicePanel() -> impl IntoView {
                 }.into_any(),
                 Some(Err(error)) => view! {
                     <NativeStartupFrame>
-                        <div class="flex items-center gap-2 text-xs text-error-red/80">
+                        <div class="flex items-center gap-2 text-xs text-status-error/80">
                             <Icon icon=LuTriangleAlert width="13px" height="13px" />
                             {format!("Windows service status unavailable: {error}")}
                         </div>
@@ -683,7 +680,9 @@ fn WindowsDaemonServiceStatusPanel(
 
 #[cfg(test)]
 mod tests {
-    use crate::api::{MacosDaemonOwnerConflictStatus, MacosDaemonOwnershipStatus};
+    use crate::api::{
+        MacosCapabilityOwner, MacosDaemonOwnerConflictStatus, MacosDaemonOwnershipStatus,
+    };
     use crate::tauri_bridge::MacosDaemonOwnerChoice;
 
     use super::{humanize_owner, macos_owner_choices};
@@ -691,12 +690,12 @@ mod tests {
     #[test]
     fn owner_choices_follow_only_the_published_conflict() {
         let status = MacosDaemonOwnershipStatus {
-            active_owner: Some("app_sidecar".to_owned()),
-            owner_epoch: Some(8),
+            active_owner: MacosCapabilityOwner::AppSidecar,
+            owner_epoch: 8,
             conflict: Some(MacosDaemonOwnerConflictStatus {
-                active: Some("app_sidecar".to_owned()),
-                contender: Some("homebrew_service".to_owned()),
-                observed_at_ms: Some(42),
+                active: MacosCapabilityOwner::AppSidecar,
+                contender: MacosCapabilityOwner::HomebrewService,
+                observed_at_ms: 42,
             }),
             recovery_required: None,
         };
@@ -713,12 +712,12 @@ mod tests {
     #[test]
     fn standalone_owner_is_named_but_never_offered_as_a_managed_target() {
         let status = MacosDaemonOwnershipStatus {
-            active_owner: Some("standalone".to_owned()),
-            owner_epoch: Some(3),
+            active_owner: MacosCapabilityOwner::Standalone,
+            owner_epoch: 3,
             conflict: Some(MacosDaemonOwnerConflictStatus {
-                active: Some("standalone".to_owned()),
-                contender: Some("launchd_service".to_owned()),
-                observed_at_ms: Some(43),
+                active: MacosCapabilityOwner::Standalone,
+                contender: MacosCapabilityOwner::LaunchdService,
+                observed_at_ms: 43,
             }),
             recovery_required: None,
         };

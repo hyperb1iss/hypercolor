@@ -248,7 +248,7 @@ impl ConfigManager {
             .validate()
             .context("capture configuration is invalid")?;
 
-        let manager = Self::with_config(path, config.clone());
+        let manager = Self::with_config(path, config.clone())?;
         let fingerprint =
             restart_fingerprint(&config).context("boot config does not project to JSON")?;
         manager

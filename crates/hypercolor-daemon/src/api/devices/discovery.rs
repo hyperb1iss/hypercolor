@@ -9,12 +9,12 @@ use axum::response::{IntoResponse, Response};
 
 use hypercolor_types::config::HypercolorConfig;
 
-use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::discovery;
 use crate::domain::DomainError;
 
-pub use hypercolor_types::api::devices::DiscoverRequest;
+pub use hypercolor_types::api::devices::{DiscoverRequest, DiscoverResponse};
 
 /// `POST /api/v1/devices/discover` — Trigger device discovery.
 pub async fn discover_devices(
@@ -29,7 +29,7 @@ pub async fn discover_devices(
     let resolved_targets = match discovery::resolve_targets(
         requested_targets.map(Vec::as_slice),
         config.as_ref(),
-        state.driver_registry.as_ref(),
+        state.driver_registry().as_ref(),
     ) {
         Ok(targets) => targets,
         Err(error) => return DomainError::validation(error).into_response(),
@@ -48,31 +48,27 @@ pub async fn discover_devices(
     let scan_id = format!("scan_{}", uuid::Uuid::now_v7());
     let target_names = discovery::target_names(&resolved_targets);
     if wait_for_completion {
-        let runtime = state.driver_host.discovery_runtime();
+        let runtime = state.driver_host().discovery_runtime();
         let result = discovery::execute_discovery_scan(
             runtime,
-            Arc::clone(&state.driver_registry),
-            Arc::clone(&state.driver_host),
+            Arc::clone(state.driver_registry()),
+            Arc::clone(state.driver_host()),
             config,
             resolved_targets,
             timeout,
         )
         .await;
 
-        return ApiResponse::ok(serde_json::json!({
-            "scan_id": scan_id,
-            "status": "completed",
-            "result": result,
-        }));
+        return envelope::ok(DiscoverResponse::Completed { scan_id, result });
     }
 
     let state_for_task = Arc::clone(&state);
     tokio::spawn(async move {
-        let runtime = state_for_task.driver_host.discovery_runtime();
+        let runtime = state_for_task.driver_host().discovery_runtime();
         let _ = discovery::execute_discovery_scan(
             runtime,
-            Arc::clone(&state_for_task.driver_registry),
-            Arc::clone(&state_for_task.driver_host),
+            Arc::clone(state_for_task.driver_registry()),
+            Arc::clone(state_for_task.driver_host()),
             config,
             resolved_targets,
             timeout,
@@ -80,10 +76,9 @@ pub async fn discover_devices(
         .await;
     });
 
-    ApiResponse::accepted(serde_json::json!({
-        "scan_id": scan_id,
-        "status": "scanning",
-        "targets": target_names,
-        "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-    }))
+    envelope::accepted(DiscoverResponse::Scanning {
+        scan_id,
+        targets: target_names,
+        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+    })
 }

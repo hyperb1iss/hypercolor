@@ -12,44 +12,31 @@ use hypercolor_tui::state::{
 #[test]
 fn control_value_float_as_f32() {
     let v = ControlValue::Float(0.75);
-    assert_eq!(v.as_f32(), Some(0.75));
+    assert_eq!(v.as_effect_f32(), Some(0.75));
 }
 
 #[test]
 fn control_value_integer_as_f32() {
-    let v = ControlValue::Integer(42);
-    assert_eq!(v.as_f32(), Some(42.0));
+    let v = ControlValue::Int(42);
+    assert_eq!(v.as_effect_f32(), Some(42.0));
 }
 
 #[test]
-fn control_value_boolean_as_f32_returns_none() {
-    let v = ControlValue::Boolean(true);
-    assert!(v.as_f32().is_none());
+fn control_value_boolean_is_not_numeric() {
+    let v = ControlValue::Bool(true);
+    assert!(v.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_text_as_f32_returns_none() {
     let v = ControlValue::Text("hello".to_string());
-    assert!(v.as_f32().is_none());
+    assert!(v.as_effect_f32().is_none());
 }
 
 #[test]
 fn control_value_color_as_f32_returns_none() {
-    let v = ControlValue::Color([1.0, 0.0, 0.5, 1.0]);
-    assert!(v.as_f32().is_none());
-}
-
-#[test]
-fn control_value_boolean_as_bool() {
-    assert_eq!(ControlValue::Boolean(true).as_bool(), Some(true));
-    assert_eq!(ControlValue::Boolean(false).as_bool(), Some(false));
-}
-
-#[test]
-fn control_value_non_boolean_as_bool_returns_none() {
-    assert!(ControlValue::Float(1.0).as_bool().is_none());
-    assert!(ControlValue::Integer(1).as_bool().is_none());
-    assert!(ControlValue::Text("true".to_string()).as_bool().is_none());
+    let v = ControlValue::linear_color([1.0, 0.0, 0.5, 1.0]);
+    assert!(v.as_effect_f32().is_none());
 }
 
 // ── Serde round-trip tests ───────────────────────────────────────
@@ -59,15 +46,15 @@ fn control_value_float_serde_roundtrip() {
     let v = ControlValue::Float(2.72);
     let json = serde_json::to_string(&v).expect("serialize");
     let parsed: ControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(parsed.as_f32(), Some(2.72));
+    assert_eq!(parsed.as_effect_f32(), Some(2.72));
 }
 
 #[test]
 fn control_value_boolean_serde_roundtrip() {
-    let v = ControlValue::Boolean(true);
+    let v = ControlValue::Bool(true);
     let json = serde_json::to_string(&v).expect("serialize");
     let parsed: ControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(parsed.as_bool(), Some(true));
+    assert_eq!(parsed, ControlValue::Bool(true));
 }
 
 #[test]
@@ -88,8 +75,6 @@ fn daemon_state_serde_roundtrip() {
         brightness: 75,
         fps_target: 30.0,
         fps_actual: 29.5,
-        scene_name: Some("Focus".to_string()),
-        scene_snapshot_locked: true,
         device_count: 3,
         total_leds: 150,
     };
@@ -98,14 +83,16 @@ fn daemon_state_serde_roundtrip() {
     assert!(parsed.running);
     assert_eq!(parsed.brightness, 75);
     assert_eq!(parsed.device_count, 3);
-    assert_eq!(parsed.scene_name.as_deref(), Some("Focus"));
-    assert!(parsed.scene_snapshot_locked);
 }
 
 #[test]
 fn effect_summary_deserialize_with_defaults() {
-    // Minimal JSON — all #[serde(default)] fields should use defaults
-    let json = r#"{"id": "test", "name": "Test Effect"}"#;
+    let json = r#"{
+        "id": "test",
+        "name": "Test Effect",
+        "category": "ambient",
+        "source": "native"
+    }"#;
     let effect: EffectSummary = serde_json::from_str(json).expect("deserialize");
     assert_eq!(effect.id, "test");
     assert_eq!(effect.name, "Test Effect");
@@ -159,7 +146,7 @@ fn device_summary_serde_roundtrip() {
 fn simulated_display_summary_deserialize_defaults_enabled() {
     let summary: SimulatedDisplaySummary = serde_json::from_str(
         r#"{
-            "id": "sim-1",
+            "id": "0198c5b6-5100-7000-8000-00000000a001",
             "name": "Desk Preview",
             "width": 480,
             "height": 480,
@@ -168,7 +155,10 @@ fn simulated_display_summary_deserialize_defaults_enabled() {
     )
     .expect("deserialize simulator summary");
 
-    assert_eq!(summary.id, "sim-1");
+    assert_eq!(
+        summary.id.to_string(),
+        "0198c5b6-5100-7000-8000-00000000a001"
+    );
     assert!(summary.enabled);
     assert!(summary.circular);
 }
@@ -177,8 +167,8 @@ fn simulated_display_summary_deserialize_defaults_enabled() {
 fn preview_source_reports_selected_simulator_id() {
     assert_eq!(PreviewSource::Canvas.simulator_id(), None);
     assert_eq!(
-        PreviewSource::Simulator("sim-1".to_string()).simulator_id(),
-        Some("sim-1")
+        PreviewSource::Simulator("0198c5b6-5100-7000-8000-00000000a001".to_string()).simulator_id(),
+        Some("0198c5b6-5100-7000-8000-00000000a001")
     );
 }
 
@@ -200,7 +190,7 @@ fn control_definition_full_roundtrip() {
     let parsed: ControlDefinition = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(parsed.id, "speed");
     assert_eq!(parsed.control_type, "slider");
-    assert_eq!(parsed.default_value.as_f32(), Some(0.5));
+    assert_eq!(parsed.default_value.as_effect_f32(), Some(0.5));
     assert_eq!(parsed.min, Some(0.0));
     assert_eq!(parsed.max, Some(1.0));
 }
@@ -274,73 +264,96 @@ fn canvas_preview_state_captures_frame_metadata_without_pixels() {
 
 // ── Scene & zone state tests ─────────────────────────────────────
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_tui::state::{ActiveScene, AppState, ZoneSummary};
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
+use hypercolor_tui::state::{
+    AppState, SceneDocument, ZoneResource, primary_zone, scene_is_multi_zone,
+};
 
-fn zone(id: &str, name: &str, is_primary: bool) -> ZoneSummary {
-    ZoneSummary {
-        id: id.to_string(),
-        name: name.to_string(),
-        layer_id: None,
-        effect_id: None,
-        brightness: 1.0,
-        enabled: true,
-        is_primary,
-        color: None,
-        controls: HashMap::new(),
-    }
+const SCENE_ID: &str = "0198c5b6-1111-7000-8000-000000000001";
+const ZONE_A: &str = "0198c5b6-1111-7000-8000-000000000002";
+const ZONE_B: &str = "0198c5b6-1111-7000-8000-000000000003";
+
+fn zone(id: &str, name: &str, is_primary: bool) -> ZoneResource {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "name": name,
+        "role": if is_primary { "primary" } else { "custom" },
+        "enabled": true,
+        "brightness": 1.0,
+        "members": [],
+        "layers": []
+    }))
+    .expect("zone fixture should decode")
 }
 
-fn scene_with(zones: Vec<ZoneSummary>) -> ActiveScene {
-    ActiveScene {
-        id: "scene-1".to_string(),
-        name: "Desk".to_string(),
-        kind: SceneKind::Named,
-        mutation_mode: SceneMutationMode::Live,
-        snapshot_locked: false,
-        revision: 1,
-        zones,
-    }
+fn scene_with(zones: Vec<ZoneResource>) -> SceneDocument {
+    serde_json::from_value(serde_json::json!({
+        "id": SCENE_ID,
+        "name": "Desk",
+        "kind": "named",
+        "is_default": false,
+        "revision": 1,
+        "zones": zones
+    }))
+    .expect("scene fixture should decode")
 }
 
 #[test]
 fn active_scene_multi_zone_requires_two_zones() {
-    assert!(!scene_with(vec![zone("a", "A", true)]).multi_zone());
-    assert!(scene_with(vec![zone("a", "A", true), zone("b", "B", false)]).multi_zone());
+    assert!(!scene_is_multi_zone(&scene_with(vec![zone(
+        ZONE_A, "A", true
+    )])));
+    assert!(scene_is_multi_zone(&scene_with(vec![
+        zone(ZONE_A, "A", true),
+        zone(ZONE_B, "B", false),
+    ])));
 }
 
 #[test]
 fn active_scene_primary_prefers_primary_role_then_first() {
-    let scene = scene_with(vec![zone("a", "A", false), zone("b", "B", true)]);
-    assert_eq!(scene.primary().map(|z| z.id.as_str()), Some("b"));
+    let scene = scene_with(vec![zone(ZONE_A, "A", false), zone(ZONE_B, "B", true)]);
+    assert_eq!(
+        primary_zone(&scene).map(|z| z.id.to_string()),
+        Some(ZONE_B.to_owned())
+    );
 
-    let no_primary = scene_with(vec![zone("a", "A", false), zone("b", "B", false)]);
-    assert_eq!(no_primary.primary().map(|z| z.id.as_str()), Some("a"));
+    let no_primary = scene_with(vec![zone(ZONE_A, "A", false), zone(ZONE_B, "B", false)]);
+    assert_eq!(
+        primary_zone(&no_primary).map(|z| z.id.to_string()),
+        Some(ZONE_A.to_owned())
+    );
 }
 
 #[test]
 fn target_zone_uses_focus_with_primary_fallback() {
     let mut state = AppState {
         active_scene: Some(Arc::new(scene_with(vec![
-            zone("a", "A", true),
-            zone("b", "B", false),
+            zone(ZONE_A, "A", true),
+            zone(ZONE_B, "B", false),
         ]))),
         ..AppState::default()
     };
 
     // No focus → primary
-    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("a"));
+    assert_eq!(
+        state.target_zone().map(|z| z.id.to_string()),
+        Some(ZONE_A.to_owned())
+    );
 
     // Focused zone wins
-    state.focused_zone = Some("b".to_string());
-    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("b"));
+    state.focused_zone = Some(ZONE_B.to_owned());
+    assert_eq!(
+        state.target_zone().map(|z| z.id.to_string()),
+        Some(ZONE_B.to_owned())
+    );
 
     // Stale focus falls back to primary
     state.focused_zone = Some("gone".to_string());
-    assert_eq!(state.target_zone().map(|z| z.id.as_str()), Some("a"));
+    assert_eq!(
+        state.target_zone().map(|z| z.id.to_string()),
+        Some(ZONE_A.to_owned())
+    );
 
     // No scene → no target
     state.active_scene = None;

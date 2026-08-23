@@ -26,14 +26,12 @@ use hypercolor_core::input::screen::wayland::{
 };
 use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput, TemporalSmoother};
 use hypercolor_core::input::{
-    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputSource,
-    BrowserPreviewId, InputData, InputManager, InputSource, InteractionBatch, InteractionData,
-    MotionAggregate, ScreenData, SourceKind, SourceSessionWriter, SourceStatusHandle,
-    SourceStatusWriter,
+    InputData, InputManager, InputSource, InteractionBatch, InteractionData, MotionAggregate,
+    ScreenData, SourceKind, SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
 };
-use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig};
-use hypercolor_core::types::event::TimedInputEvent;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::audio::{AudioData, AudioPipelineConfig};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::event::TimedInputEvent;
 use hypercolor_types::layer::{LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -84,21 +82,16 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let controls = HashMap::from([(
         "color".to_owned(),
-        ControlValue::Color([1.0, 0.0, 0.0, 1.0]),
+        ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
     )]);
     let mut group = Zone {
         id: ZoneId::new(),
         name: "Allocation Group".to_owned(),
         description: None,
-        effect_id: Some(effect_id),
-        controls: controls.clone(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
         layers: vec![SceneLayer::from_effect(
             SceneLayerId::new(),
             effect_id,
@@ -119,12 +112,12 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
     pool.reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
         .expect("live effect pool should prepare");
     if change_controls {
-        let updated = ControlValue::Color([0.0, 0.0, 1.0, 1.0]);
-        group.controls.insert("color".to_owned(), updated.clone());
+        let updated = ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]);
         let LayerSource::Effect { controls, .. } = &mut group.layers[0].source else {
             panic!("fixture should store an effect layer");
         };
         controls.insert("color".to_owned(), updated);
+        group.controls_version += 1;
     }
     let prepared = pool
         .prepare_reconcile(std::slice::from_ref(&group), &registry, &HashMap::new())
@@ -132,7 +125,9 @@ fn prepared_effect_pool_commit_round(change_controls: bool) -> Stats {
 
     let mut region = Region::new(GLOBAL);
     region.reset();
-    black_box(&mut pool).commit_reconcile(black_box(prepared));
+    black_box(&mut pool)
+        .commit_reconcile(black_box(prepared))
+        .expect("prepared reconcile should commit");
     region.change()
 }
 
@@ -486,52 +481,6 @@ fn steady_audio_manager_sampling_control() -> (Stats, Stats) {
     )
 }
 
-fn browser_sample_round(
-    source: &mut BrowserInputSource,
-    events: &mut Vec<TimedInputEvent>,
-) -> Stats {
-    let mut region = Region::new(GLOBAL);
-    region.reset();
-    for _ in 0..128 {
-        events.clear();
-        let sample = black_box(&mut *source)
-            .sample_shared_and_drain_into(1.0 / 60.0, black_box(events))
-            .expect("browser allocation sample should succeed");
-        black_box(sample);
-    }
-    region.change()
-}
-
-fn steady_browser_sampling_control() -> (Stats, Stats) {
-    let mut source = BrowserInputSource::new();
-    source
-        .start()
-        .expect("browser allocation source should start");
-    let attachment = source
-        .handle()
-        .attach(BrowserInputChildKey::new(
-            BrowserConnectionIncarnation::new(1),
-            BrowserPreviewId::new("allocation-preview"),
-        ))
-        .expect("browser allocation preview should attach");
-    attachment
-        .inject([BrowserInputEdge::Move {
-            norm_x: 0.25,
-            norm_y: 0.75,
-        }])
-        .expect("browser allocation motion should inject");
-    let mut events = Vec::with_capacity(4);
-    let warm = source
-        .sample_shared_and_drain_into(1.0 / 60.0, &mut events)
-        .expect("browser allocation warmup should succeed");
-    drop(warm);
-
-    (
-        browser_sample_round(&mut source, &mut events),
-        browser_sample_round(&mut source, &mut events),
-    )
-}
-
 fn router_resolution_round(
     manager: &mut InputManager,
     router: &mut InteractionRouter,
@@ -741,10 +690,6 @@ fn counting_allocator_is_active_and_scoped() {
     let (first_audio_samples, second_audio_samples) = steady_audio_manager_sampling_control();
     assert_eq!(first_audio_samples, Stats::default());
     assert_eq!(second_audio_samples, first_audio_samples);
-
-    let (first_browser_samples, second_browser_samples) = steady_browser_sampling_control();
-    assert_eq!(first_browser_samples, Stats::default());
-    assert_eq!(second_browser_samples, first_browser_samples);
 
     for (first_smoother, second_smoother) in steady_smoother_control() {
         assert_eq!(first_smoother, Stats::default());

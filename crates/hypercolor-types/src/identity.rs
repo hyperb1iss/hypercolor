@@ -12,6 +12,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "schema")]
 use utoipa::{PartialSchema, ToSchema};
 
 use crate::device::DeviceId;
@@ -44,8 +45,8 @@ macro_rules! uuid_id {
             Hash,
             ::serde::Serialize,
             ::serde::Deserialize,
-            ::utoipa::ToSchema,
         )]
+        #[cfg_attr(feature = "schema", derive(::utoipa::ToSchema))]
         pub struct $name(pub ::uuid::Uuid);
 
         impl $name {
@@ -120,8 +121,8 @@ macro_rules! string_id {
             Hash,
             ::serde::Serialize,
             ::serde::Deserialize,
-            ::utoipa::ToSchema,
         )]
+        #[cfg_attr(feature = "schema", derive(::utoipa::ToSchema))]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -288,6 +289,7 @@ pub struct OutputRef {
     pub device: DeviceId,
 }
 
+#[cfg(feature = "schema")]
 impl PartialSchema for OutputRef {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
         // The wire form is the "backend:device" string, not the struct.
@@ -295,6 +297,7 @@ impl PartialSchema for OutputRef {
     }
 }
 
+#[cfg(feature = "schema")]
 impl ToSchema for OutputRef {}
 
 impl fmt::Display for OutputRef {

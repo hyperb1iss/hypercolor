@@ -1,5 +1,25 @@
 //! Safe wrapper around PawnIO SMBus modules on Windows.
 
+/// Stable error classification preserved across the local broker boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    target_os = "windows",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
+pub enum PawnIoErrorKind {
+    /// Host policy denied the operation.
+    PermissionDenied,
+    /// Required PawnIO installation, module, or device was not found.
+    NotFound,
+    /// The local broker transport is unavailable.
+    Unavailable,
+    /// The caller supplied invalid input.
+    InvalidInput,
+    /// All other PawnIO I/O failures.
+    Io,
+}
+
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -17,6 +37,8 @@ mod stubs {
 
     use thiserror::Error;
 
+    use crate::PawnIoErrorKind;
+
     /// PawnIO result type.
     pub type PawnIoResult<T> = Result<T, PawnIoError>;
 
@@ -26,6 +48,14 @@ mod stubs {
         /// PawnIO is only supported on Windows.
         #[error("PawnIO SMBus support is only available on Windows")]
         UnsupportedPlatform,
+    }
+
+    impl PawnIoError {
+        /// Return the stable error classification.
+        #[must_use]
+        pub const fn kind(&self) -> PawnIoErrorKind {
+            PawnIoErrorKind::Unavailable
+        }
     }
 
     /// SMBus transfer direction.

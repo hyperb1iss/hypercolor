@@ -145,6 +145,7 @@ hypercolor-color = { path = "crates/hypercolor-color" }
 hypercolor-types = { path = "crates/hypercolor-types" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
+hypercolor-persistence = { path = "crates/hypercolor-persistence" }
 hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
@@ -154,6 +155,7 @@ hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner" }
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
+hypercolor-driver-support = { path = "crates/hypercolor-driver-support" }
 hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", default-features = false }
 hypercolor-driver-hue = { path = "crates/hypercolor-driver-hue" }
 hypercolor-driver-nanoleaf = { path = "crates/hypercolor-driver-nanoleaf" }
@@ -199,6 +201,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 rmcp = { version = "1.1.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 utoipa = { version = "5.4.0", features = ["axum_extras", "preserve_path_order", "uuid"] }
+utoipa-axum = "0.2.0"
 utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"] }
 
 # CLI

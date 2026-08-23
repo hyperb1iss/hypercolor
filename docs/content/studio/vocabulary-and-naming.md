@@ -8,9 +8,9 @@ The Studio vocabulary is locked. A **scene** is a whole-rig config, a **zone** i
 
 The internal Rust type names that back these concepts are documented in [Studio architecture](@/studio/architecture.md). They differ from the user-facing words by design; which wire surface spells the concept which way is summarized at the end of this page.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 This is not a style preference. The model and its naming were locked by the project owner in design doc 55 to keep one term per concept across the UI, the API, the TUI, the CLI, and the docs. A new label for an existing concept is a regression, not a synonym.
-{% end %}
+{% </callout> %}
 
 ## The locked model 💜
 
@@ -32,7 +32,7 @@ Load-bearing consequences of the hierarchy:
 
 - **A scene owns everything.** Pick a scene and you have its zones, their layers, and their device placement. Nothing meaningful exists outside a scene. See [Scenes](@/studio/scenes.md).
 - **Each zone owns its own layout.** A zone's layout is its own spatial canvas; switching zones switches the canvas. See [Layouts](@/studio/layouts.md).
-- **A device output lives in exactly one zone's layout at a time.** Adding it to another zone removes it from the first. See [Device grouping](@/studio/device-grouping.md).
+- **A device output lives in exactly one zone's layout at a time.** Adding it to another zone removes it from the first. See [Device assignment](@/studio/device-assignment.md).
 - **The default zone is just a zone.** A fresh scene has one, holding every device, named "Default zone." The user can rename it. There is no "All Lights." See [Zones](@/studio/zones.md).
 - **There is no standalone "layouts library."** A saved arrangement is part of a scene. What the user picks is a scene.
 
@@ -65,9 +65,9 @@ These strings are banned from user-facing surfaces. They are smart-home vocabula
 - **"Primary" (user-facing).** `ZoneRole::Primary` is the internal role of the default zone. Fresh scenes seed the zone's stored name as `"Default zone"` already, but older persisted scenes may still carry the legacy `"Primary"` seed; either way the UI substitutes **"Default zone"** before showing a blank-or-legacy name (see the rendering rules below). "Primary" must never reach the screen.
 - Any other smart-home framing: "scenes for the living room," "turn the lights on," "the lighting group." Scenes are whole-rig configs and zones are canvas partitions. Keep the home-automation register out.
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 "Scene" and "zone" are not interchangeable and not smart-home words here. A scene is the entire rig's configuration with exactly one active at a time. A zone is one partition of that scene's canvas. Writing "scene" where you mean "zone" (or vice versa) breaks the model for the reader.
-{% end %}
+{% </callout> %}
 
 ## Plain-words rendering rules
 

@@ -3,17 +3,21 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
+use hypercolor_core::device::DeviceLifecycleManager;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
-use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveryConnectBehavior};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
+};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
+    DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
+    FingerprintNamespace, SegmentInfo,
 };
 
 use crate::discovery::{
@@ -27,21 +31,23 @@ pub const SIMULATED_DISPLAY_BACKEND_ID: &str = "simulator";
 const SIMULATED_DISPLAY_FAMILY: &str = "simulator";
 const DEFAULT_SIMULATED_DISPLAY_FPS: u32 = 15;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SimulatedDisplayConfig {
-    pub id: DeviceId,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub circular: bool,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
+pub use hypercolor_types::api::simulators::SimulatedDisplay as SimulatedDisplayConfig;
+
+/// Daemon-side behavior of a simulated display resource.
+pub trait SimulatedDisplayExt: Sized {
+    /// Clamp the geometry and fill an empty name.
+    #[must_use]
+    fn normalized(self) -> Self;
+    /// The device the simulator presents to the registry.
+    #[must_use]
+    fn device_info(&self) -> DeviceInfo;
+    /// The stable identity a simulator keeps across restarts.
+    #[must_use]
+    fn fingerprint(&self) -> DeviceFingerprint;
 }
 
-impl SimulatedDisplayConfig {
-    #[must_use]
-    pub fn normalized(mut self) -> Self {
+impl SimulatedDisplayExt for SimulatedDisplayConfig {
+    fn normalized(mut self) -> Self {
         self.name = self.name.trim().to_owned();
         if self.name.is_empty() {
             self.name = format!("Simulated Display {}", self.id);
@@ -51,8 +57,7 @@ impl SimulatedDisplayConfig {
         self
     }
 
-    #[must_use]
-    pub fn device_info(&self) -> DeviceInfo {
+    fn device_info(&self) -> DeviceInfo {
         DeviceInfo {
             id: self.id,
             name: self.name.clone(),
@@ -90,9 +95,12 @@ impl SimulatedDisplayConfig {
         }
     }
 
-    #[must_use]
-    pub fn fingerprint(&self) -> DeviceFingerprint {
-        DeviceFingerprint(format!("{SIMULATED_DISPLAY_BACKEND_ID}:{}", self.id))
+    fn fingerprint(&self) -> DeviceFingerprint {
+        DeviceFingerprint::mint(
+            FingerprintNamespace::Bridge,
+            SIMULATED_DISPLAY_BACKEND_ID,
+            &self.id.to_string(),
+        )
     }
 }
 
@@ -175,10 +183,6 @@ impl SimulatedDisplayStore {
     }
 }
 
-fn default_enabled() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimulatedDisplayFrame {
     pub jpeg_data: Arc<Vec<u8>>,
@@ -215,7 +219,7 @@ impl SimulatedDisplayRuntime {
 pub struct SimulatedDisplayBackend {
     store: Arc<RwLock<SimulatedDisplayStore>>,
     runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
-    connected: HashSet<DeviceId>,
+    connected: StdMutex<HashSet<DeviceId>>,
 }
 
 impl SimulatedDisplayBackend {
@@ -227,12 +231,17 @@ impl SimulatedDisplayBackend {
         Self {
             store,
             runtime,
-            connected: HashSet::new(),
+            connected: StdMutex::new(HashSet::new()),
         }
     }
 
     async fn store_display_frame(&self, id: &DeviceId, jpeg_data: Arc<Vec<u8>>) -> Result<()> {
-        if !self.connected.contains(id) {
+        if !self
+            .connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(id)
+        {
             bail!("simulated display {id} is not connected");
         }
         let store = self.store.read().await;
@@ -263,17 +272,20 @@ impl DeviceBackend for SimulatedDisplayBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        let store = self.store.read().await;
-        Ok(store
-            .list()
-            .into_iter()
-            .filter(|config| config.enabled)
-            .map(|config| config.device_info())
-            .collect())
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        if discovered.info.output_backend_id() == SIMULATED_DISPLAY_BACKEND_ID {
+            Ok(())
+        } else {
+            Err(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })
+        }
     }
 
-    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+    async fn connected_device_info(
+        &self,
+        id: &DeviceId,
+    ) -> Result<Option<DeviceInfo>, DeviceError> {
         let store = self.store.read().await;
         Ok(store
             .get(*id)
@@ -281,43 +293,59 @@ impl DeviceBackend for SimulatedDisplayBackend {
             .map(|config| config.device_info()))
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let store = self.store.read().await;
         let Some(config) = store.get(*id) else {
-            bail!("simulated display {id} is not configured");
+            return Err(DeviceError::NotAdopted { device_id: *id });
         };
         if !config.enabled {
-            bail!("simulated display {id} is disabled");
+            return Err(DeviceError::connection(id, "simulated display is disabled"));
         }
-        self.connected.insert(*id);
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(*id);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        self.connected.remove(id);
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        self.connected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(id);
         self.runtime.write().await.remove(*id);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if colors.is_empty() {
             return Ok(());
         }
 
-        bail!("simulated display {id} does not accept LED color writes");
+        Err(DeviceError::Unsupported {
+            backend: SIMULATED_DISPLAY_BACKEND_ID.to_owned(),
+            operation: "LED color output",
+        })
     }
 
-    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_frame(
+        &self,
+        id: &DeviceId,
+        jpeg_data: &[u8],
+    ) -> Result<(), DeviceError> {
         self.store_display_frame(id, Arc::new(jpeg_data.to_vec()))
             .await
+            .map_err(|error| DeviceError::write(id, error))
     }
 
     async fn write_display_frame_owned(
-        &mut self,
+        &self,
         id: &DeviceId,
         jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<()> {
-        self.store_display_frame(id, jpeg_data).await
+    ) -> Result<(), DeviceError> {
+        self.store_display_frame(id, jpeg_data)
+            .await
+            .map_err(|error| DeviceError::write(id, error))
     }
 
     fn target_fps(&self, _id: &DeviceId) -> Option<u32> {
@@ -382,7 +410,10 @@ pub async fn activate_simulated_displays(
 
 #[must_use]
 pub fn default_layout_device_id(config: &SimulatedDisplayConfig) -> String {
-    format!("{SIMULATED_DISPLAY_BACKEND_ID}:{}", config.id)
+    DeviceLifecycleManager::canonical_layout_device_id(
+        &config.device_info(),
+        Some(&config.fingerprint()),
+    )
 }
 
 #[must_use]
@@ -407,6 +438,6 @@ pub async fn register_backend_for_tests(
     runtime: Arc<RwLock<SimulatedDisplayRuntime>>,
 ) -> bool {
     let mut manager = backend_manager.lock().await;
-    manager.register_backend(Box::new(SimulatedDisplayBackend::new(store, runtime)));
+    manager.register_backend(Arc::new(SimulatedDisplayBackend::new(store, runtime)));
     true
 }

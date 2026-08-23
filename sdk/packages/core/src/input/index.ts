@@ -23,5 +23,4 @@ export type {
     MouseScrollPhase,
     MouseScrollState,
     MouseScrollUnit,
-    MouseWheelInputEvent,
 } from './types'

@@ -1,18 +1,8 @@
-//! The spatial layout editor.
+//! The Studio Stage spatial layout editor.
 //!
-//! `LayoutBuilder` is a thin shell: it mounts `LayoutEditorProvider`
-//! (all editor state, persistence, and history wiring), its own
-//! `PageHeader`, and the headless `LayoutWorkspace` body.
-//!
-//! The provider and workspace are split apart so the Studio Stage can
-//! compose its *own* header around the same editor — it mounts a
-//! `LayoutEditorProvider` on an ancestor, reads the lifted
-//! [`LayoutEditorState`] from context, and renders a bare
-//! `LayoutWorkspace`. Editing `/layout` and editing inside Studio drive
-//! one shared editor; only the header chrome differs.
-//!
-//! Edits are pushed to the spatial engine immediately for live preview.
-//! Save persists to disk. Revert restores to the last saved state.
+//! [`ZoneLayoutProvider`] owns the selected zone's editor session,
+//! persistence, history, and live preview. [`LayoutWorkspace`] renders
+//! that session inside the Stage.
 
 use leptos::ev;
 use leptos::prelude::*;
@@ -20,20 +10,17 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::app::{DevicesContext, WsContext};
-use crate::components::control_panel::ControlDropdownDismissHandlers;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
-use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
-use crate::components::silk_select::SilkSelect;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState};
+use crate::layout_history::{LayoutEditorSnapshot, LayoutHistoryState, RemovedOutputCache};
 use crate::storage;
 use crate::toasts;
-use hypercolor_leptos_ext::events::{Input, target_is_text_entry};
+use hypercolor_leptos_ext::events::target_is_text_entry;
 use hypercolor_types::scene::ZoneRole;
-use hypercolor_types::spatial::{Output, SpatialLayout};
+use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
 // Panel size defaults and constraints
 const SIDEBAR_DEFAULT: f64 = 280.0;
@@ -87,8 +74,8 @@ pub struct LayoutWriteHandle {
     set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
     compound_depth: ReadSignal<crate::compound_selection::CompoundDepth>,
     set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
-    removed_zone_cache: ReadSignal<crate::layout_utils::ZoneCache>,
-    set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
+    removed_zone_cache: ReadSignal<RemovedOutputCache>,
+    set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     history: RwSignal<LayoutHistoryState>,
     set_dirty: WriteSignal<bool>,
 }
@@ -238,331 +225,13 @@ impl LayoutWriteHandle {
 }
 
 mod editor_session;
-mod library_provider;
 
 pub(crate) use editor_session::{LayoutEditorContext, LayoutZoneDisplayContext};
 use editor_session::{LayoutEditorSession, embedded_attachment_profiles};
-pub(crate) use library_provider::{LayoutEditorProvider, LayoutEditorState};
 
-/// The `/layout` page header — the saved-layout picker, rename / new
-/// controls, undo / redo, Revert / Save, and the per-layout action
-/// kebab, wrapped in a `PageHeader`. Reads everything from the
-/// context-provided [`LayoutEditorState`]; the Studio Stage composes a
-/// different header around the same state.
-#[component]
-fn LayoutBuilderHeader() -> impl IntoView {
-    let state = expect_context::<LayoutEditorState>();
-    let layout = state.layout;
-    let is_dirty = state.is_dirty;
-    let can_undo = state.can_undo;
-    let can_redo = state.can_redo;
-    let renaming = state.renaming;
-    let creating = state.creating;
-    let layout_menu_open = state.menu_open;
-    let selected_layout_is_active = state.is_active;
-
-    view! {
-        <PageHeader
-            icon=LuLayoutTemplate
-            title="Layout"
-            accent=PageAccent::Coral
-        >
-            <HeaderTrailing slot>
-                // Single-line action cluster: [Undo][Redo]  [Revert][Save].
-                // Save doubles as the dirty indicator — glows when there
-                // are unsaved changes, dims when clean. Revert follows the
-                // same active/disabled pattern. No separate dirty strip.
-                {move || layout.get().map(|_| {
-                    let dirty = is_dirty.get();
-                    let save_style = if dirty {
-                        "background: rgba(80, 250, 123, 0.14); border-color: rgba(80, 250, 123, 0.35); color: rgb(80, 250, 123); \
-                         box-shadow: 0 0 14px rgba(80, 250, 123, 0.18)"
-                    } else {
-                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                    };
-                    let revert_style = if dirty {
-                        "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.25); color: rgb(241, 250, 140)"
-                    } else {
-                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
-                    };
-                    view! {
-                        <div class="flex items-center gap-2">
-                            <div class="flex items-center gap-1">
-                                <button
-                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
-                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
-                                           disabled:opacity-30 disabled:pointer-events-none"
-                                    title="Undo (Ctrl+Z)"
-                                    on:click=move |_| state.write.undo()
-                                    disabled=move || !can_undo.get()
-                                >
-                                    <Icon icon=LuUndo2 width="15px" height="15px" />
-                                </button>
-                                <button
-                                    class="w-8 h-8 flex items-center justify-center rounded-md text-fg-tertiary
-                                           hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press
-                                           disabled:opacity-30 disabled:pointer-events-none"
-                                    title="Redo (Ctrl+Shift+Z)"
-                                    on:click=move |_| state.write.redo()
-                                    disabled=move || !can_redo.get()
-                                >
-                                    <Icon icon=LuRedo2 width="15px" height="15px" />
-                                </button>
-                            </div>
-                            <div class="w-px h-5 bg-edge-subtle/40 mx-1" />
-                            <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                style=revert_style
-                                on:click=move |_| state.revert.run(())
-                                disabled=move || !is_dirty.get()
-                            >
-                                <Icon icon=LuUndo2 width="14px" height="14px" />
-                                "Revert"
-                            </button>
-                            <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                style=save_style
-                                on:click=move |_| state.save.run(())
-                                disabled=move || !is_dirty.get()
-                            >
-                                <Icon icon=LuSave width="14px" height="14px" />
-                                "Save"
-                            </button>
-                        </div>
-                    }
-                })}
-            </HeaderTrailing>
-            <HeaderToolbar slot>
-                <div class="flex items-center gap-3">
-
-                {move || if renaming.get() {
-                    // Inline rename input
-                    view! {
-                        <div class="flex items-center gap-2 animate-enter-down">
-                            <input
-                                type="text"
-                                class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                       placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-52 transition-all"
-                                prop:value=move || state.rename_value.get()
-                                autofocus=true
-                                on:input=move |ev| {
-                                    let event = Input::from_event(ev);
-                                    if let Some(value) = event.value_string() {
-                                        state.set_rename_value.set(value);
-                                    }
-                                }
-                                on:blur=move |_| state.commit_rename.run(())
-                                on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                    if ev.key() == "Enter" {
-                                        state.commit_rename.run(());
-                                    } else if ev.key() == "Escape" {
-                                        state.set_renaming.set(false);
-                                    }
-                                }
-                            />
-                        </div>
-                    }.into_any()
-                } else {
-                    // Normal dropdown selector + rename button
-                    view! {
-                        <div class="flex items-center gap-2">
-                            <div class="min-w-[200px]">
-                                <SilkSelect
-                                    value=state.layout_value
-                                    options=state.layout_options
-                                    on_change=Callback::new(move |val: String| {
-                                        if val.is_empty() {
-                                            state.set_selected_layout_id.set(None);
-                                        } else {
-                                            state.set_selected_layout_id.set(Some(val));
-                                        }
-                                    })
-                                    placeholder="Loading layouts…"
-                                    class="bg-surface-sunken border border-edge-subtle px-3 py-1.5 text-sm text-fg-primary glow-ring"
-                                />
-                            </div>
-
-                            // Rename button — only when a layout is selected
-                            <Show when=move || layout.with(|l| l.is_some())>
-                                <button
-                                    class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
-                                           transition-all btn-press"
-                                    title="Rename layout"
-                                    on:click=move |_| {
-                                        if let Some(current) = layout.get_untracked() {
-                                            state.set_rename_value.set(current.name.clone());
-                                            state.set_renaming.set(true);
-                                        }
-                                    }
-                                >
-                                    <Icon icon=LuPencil width="14px" height="14px" />
-                                </button>
-                            </Show>
-                        </div>
-                    }.into_any()
-                }}
-
-            </div>
-
-            // New layout button / inline form
-            {move || if creating.get() {
-                view! {
-                    <div class="flex items-center gap-2 animate-enter-down">
-                        <input
-                            type="text"
-                            placeholder="Layout name"
-                            class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                   placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-40 transition-all"
-                            prop:value=move || state.new_layout_name.get()
-                            on:input=move |ev| {
-                                let event = Input::from_event(ev);
-                                if let Some(value) = event.value_string() {
-                                    state.set_new_layout_name.set(value);
-                                }
-                            }
-                            on:keydown=move |ev| {
-                                if ev.key() == "Enter" { state.create.run(()); }
-                                if ev.key() == "Escape" { state.set_creating.set(false); }
-                            }
-                        />
-                        <button
-                            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                            style="background: rgba(80, 250, 123, 0.1); border-color: rgba(80, 250, 123, 0.2); color: rgb(80, 250, 123)"
-                            on:click=move |_| state.create.run(())
-                        >"Create"</button>
-                        <button
-                            class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-overlay/40 border border-edge-subtle
-                                   text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press"
-                            on:click=move |_| state.set_creating.set(false)
-                        >"Cancel"</button>
-                    </div>
-                }.into_any()
-            } else {
-                view! {
-                    <button
-                        class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap transition-all btn-press"
-                        style="background: rgba(225, 53, 255, 0.08); border-color: rgba(225, 53, 255, 0.2); color: rgb(225, 53, 255)"
-                        on:click=move |_| state.set_creating.set(true)
-                    >
-                        <Icon icon=LuPlus width="12px" height="12px" />
-                        "New"
-                    </button>
-                }.into_any()
-            }}
-
-            <div class="flex-1" />
-
-            // Overflow menu — per-layout actions (Apply, Duplicate, Delete)
-            // collapsed into a single kebab. Keeps the toolbar row quiet
-            // during normal use; the popover opens on demand.
-            {move || layout.get().map(|_| view! {
-                <div class="relative layout-action-menu">
-                    <button
-                        class="w-8 h-8 flex items-center justify-center rounded-md
-                               text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
-                               transition-all btn-press"
-                        title="Layout actions"
-                        on:click=move |_| state.set_menu_open.update(|v| *v = !*v)
-                    >
-                        <Icon icon=LuEllipsis width="15px" height="15px" />
-                    </button>
-                    <Show when=move || layout_menu_open.get()>
-                        <ControlDropdownDismissHandlers
-                            class_name="layout-action-menu".to_string()
-                            is_open=layout_menu_open
-                            set_open=state.set_menu_open
-                        />
-                        <div
-                            class="absolute right-0 top-full mt-1 z-[100] w-48
-                                   rounded-lg overflow-hidden
-                                   bg-surface-overlay/98 backdrop-blur-xl
-                                   border border-edge-subtle dropdown-glow
-                                   animate-enter-down"
-                            on:keydown=move |ev: web_sys::KeyboardEvent| {
-                                if ev.key() == "Escape" {
-                                    state.set_menu_open.set(false);
-                                }
-                            }
-                        >
-                            // Apply / Active — reflects the live state of this layout.
-                            // When active, shows as a green read-only marker.
-                            // When inactive + clean, shows "Apply" as an actionable button.
-                            // When inactive + dirty, hides (save first).
-                            <Show when=move || selected_layout_is_active.get()>
-                                <div class="w-full px-3 py-2 text-xs flex items-center gap-2
-                                            text-fg-tertiary cursor-default">
-                                    <Icon icon=LuCheck width="12px" height="12px"
-                                          style="color: rgb(80, 250, 123); flex-shrink: 0" />
-                                    <span>"Active"</span>
-                                </div>
-                            </Show>
-                            <Show when=move || !selected_layout_is_active.get() && !is_dirty.get()>
-                                <button
-                                    class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                           flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
-                                    on:click=move |_| {
-                                        state.apply.run(());
-                                        state.set_menu_open.set(false);
-                                    }
-                                >
-                                    <Icon icon=LuCheck width="12px" height="12px"
-                                          style="color: rgb(128, 255, 234); flex-shrink: 0" />
-                                    <span>"Apply"</span>
-                                </button>
-                            </Show>
-                            <button
-                                class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                       flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
-                                on:click=move |_| {
-                                    if let Some(current) = layout.get_untracked() {
-                                        state.set_rename_value.set(current.name.clone());
-                                        state.set_renaming.set(true);
-                                    }
-                                    state.set_menu_open.set(false);
-                                }
-                            >
-                                <Icon icon=LuPencil width="12px" height="12px"
-                                      style="color: rgba(139, 133, 160, 0.7); flex-shrink: 0" />
-                                <span>"Rename"</span>
-                            </button>
-                            <button
-                                class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                       flex items-center gap-2 text-fg-secondary hover:text-fg-primary"
-                                on:click=move |_| {
-                                    state.duplicate.run(());
-                                    state.set_menu_open.set(false);
-                                }
-                            >
-                                <Icon icon=LuCopy width="12px" height="12px"
-                                      style="color: rgba(128, 255, 234, 0.7); flex-shrink: 0" />
-                                <span>"Duplicate"</span>
-                            </button>
-                            <div class="h-px bg-edge-subtle/40 mx-2 my-1" />
-                            <button
-                                class="dropdown-option w-full text-left px-3 py-2 text-xs cursor-pointer
-                                       flex items-center gap-2 text-status-error/70 hover:text-status-error"
-                                on:click=move |_| {
-                                    state.delete.run(());
-                                    state.set_menu_open.set(false);
-                                }
-                            >
-                                <Icon icon=LuTrash2 width="12px" height="12px"
-                                      style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0" />
-                                <span>"Delete"</span>
-                            </button>
-                        </div>
-                    </Show>
-                </div>
-            })}
-            </HeaderToolbar>
-        </PageHeader>
-    }
-}
-
-/// The headless layout editor body — the device palette, the canvas
-/// viewport, and the zone-properties panel, with their resizable-panel
-/// state. Carries no header; mount it under a [`LayoutEditorProvider`]
-/// beside whatever header the host wants.
+/// The layout editor body with its device palette, canvas viewport,
+/// zone-properties panel, and resizable-panel state. It consumes the
+/// [`LayoutEditorContext`] provided by [`ZoneLayoutProvider`].
 #[component]
 pub(crate) fn LayoutWorkspace(
     /// Compact embedding (Studio Stage). The device palette collapses
@@ -763,24 +432,6 @@ pub(crate) fn LayoutWorkspace(
     }
 }
 
-/// Layout builder — the `/layout` page: editor state, its `PageHeader`,
-/// and the headless `LayoutWorkspace`, all under one provider.
-#[component]
-pub fn LayoutBuilder(
-    /// Compact embedding (Studio Stage). Forwarded to [`LayoutWorkspace`].
-    #[prop(optional)]
-    compact: bool,
-) -> impl IntoView {
-    view! {
-        <LayoutEditorProvider>
-            <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <LayoutBuilderHeader />
-                <LayoutWorkspace compact=compact />
-            </div>
-        </LayoutEditorProvider>
-    }
-}
-
 /// The Studio Stage's zone-canvas actions — Save and Revert plus the
 /// dirty and has-layout flags. Provided by [`ZoneLayoutProvider`]; the
 /// Stage header consumes it. Undo / redo and the editor write handle come
@@ -797,14 +448,27 @@ pub(crate) struct ZoneCanvasActions {
     pub has_layout: Signal<bool>,
 }
 
+fn editor_layout_for_zone(zone: &api::ZoneResource) -> SpatialLayout {
+    SpatialLayout {
+        id: zone.id.to_string(),
+        name: zone.name.clone(),
+        description: zone.description.clone(),
+        canvas_width: 1,
+        canvas_height: 1,
+        zones: api::zone_outputs(zone),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    }
+}
+
 /// Sets up the editor signals, history, and live-preview wiring for the
-/// Studio Stage, scoped to the **selected zone's** own `SpatialLayout`.
+/// Studio Stage, scoped to the selected zone's canonical placements.
 ///
-/// Where [`LayoutEditorProvider`] edits the standalone layouts library,
-/// this provider loads the selected zone's `Zone.layout` and
-/// persists it through the per-zone layout API (`PUT
-/// .../zones/{id}/layout` — a placement merge, plan 55 §5.1). Switching
-/// zones switches the canvas. Mount it once above the Stage; it provides
+/// This provider adapts the selected zone's normalized placements and
+/// persists them through the per-zone layout API at `PUT
+/// .../zones/{id}/layout`. Switching zones switches the canvas. Mount it
+/// once above the Stage; it provides
 /// [`LayoutEditorContext`], [`LayoutZoneDisplayContext`], and
 /// [`ZoneCanvasActions`].
 #[component]
@@ -812,7 +476,7 @@ pub(crate) fn ZoneLayoutProvider(
     /// The active scene — the source of the zone set and the
     /// scene revision carried as each save's `If-Match` precondition.
     #[prop(into)]
-    active_scene: Signal<Option<api::LiveSceneView>>,
+    active_scene: Signal<Option<api::SceneDocument>>,
     /// The selected zone's id (a `Zone` id). `None`, an unknown
     /// id, or a Display zone leaves the canvas empty.
     #[prop(into)]
@@ -879,19 +543,18 @@ pub(crate) fn ZoneLayoutProvider(
     let zone_signature = Memo::new(move |_| {
         let zone_id = selected_zone_id.get()?;
         active_scene.with(|scene| {
-            let group = scene
+            let zone = scene
                 .as_ref()?
                 .zones
                 .iter()
-                .find(|group| group.id.to_string() == zone_id)?;
-            if group.role == ZoneRole::Display {
+                .find(|zone| zone.id.to_string() == zone_id)?;
+            if zone.role == ZoneRole::Display {
                 return None;
             }
-            let mut output_ids: Vec<String> = group
-                .layout
-                .zones
+            let mut output_ids: Vec<String> = zone
+                .members
                 .iter()
-                .map(|output| output.id.clone())
+                .map(|member| member.id.to_string())
                 .collect();
             output_ids.sort();
             Some((zone_id, output_ids))
@@ -914,8 +577,8 @@ pub(crate) fn ZoneLayoutProvider(
                 scene
                     .zones
                     .iter()
-                    .find(|group| group.id.to_string() == zone_id)
-                    .map(|group| group.layout.clone())
+                    .find(|zone| zone.id.to_string() == zone_id)
+                    .map(editor_layout_for_zone)
             })
         });
         match loaded {
@@ -944,7 +607,7 @@ pub(crate) fn ZoneLayoutProvider(
         let generation = save_generation.get_value().wrapping_add(1);
         save_generation.set_value(generation);
         leptos::task::spawn_local(async move {
-            match api::zones::update_zone_layout(&zone_id, &current, Some(revision)).await {
+            match api::zones::update_zone_layout(&zone_id, &current, revision).await {
                 Ok(api::zones::ZoneOutcome::Applied(_)) => {
                     let completion = zone_save_completion(
                         selected_zone_id.get_untracked().as_deref(),

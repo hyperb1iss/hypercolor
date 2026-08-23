@@ -11,10 +11,13 @@ use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferenc
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
 use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
+use hypercolor_daemon::path_migration::MigrationOutcome;
 use hypercolor_daemon::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, PersistenceError, write_atomic,
 };
-use hypercolor_daemon::runtime_state::{RuntimeSessionSnapshot, load, reserve_save, save_reserved};
+use hypercolor_daemon::runtime_state::{
+    RuntimeSessionSnapshot, load, load_migrated, reserve_save, save, save_reserved,
+};
 use hypercolor_types::device::DeviceId;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_types::effect::EffectId;
@@ -353,6 +356,50 @@ fn runtime_reservations_prevent_stale_snapshot_resurrection() {
 }
 
 #[test]
+fn runtime_snapshot_moves_to_state_with_a_durable_backup() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let legacy = directory.path().join("data/runtime-state.json");
+    let canonical = directory.path().join("state/runtime-state.json");
+    let expected = RuntimeSessionSnapshot {
+        active_scene_id: Some("active".to_owned()),
+        ..RuntimeSessionSnapshot::default()
+    };
+    save(&legacy, &expected).expect("seed legacy runtime snapshot");
+
+    let (loaded, outcome) = load_migrated(&legacy, &canonical).expect("runtime migration succeeds");
+    let MigrationOutcome::Imported {
+        backup: Some(backup),
+    } = outcome
+    else {
+        panic!("expected an imported backup, got {outcome:?}");
+    };
+
+    let loaded = loaded.expect("runtime snapshot exists");
+    assert_eq!(loaded.active_scene_id, expected.active_scene_id);
+    assert!(canonical.exists());
+    assert!(!legacy.exists());
+    assert!(backup.exists());
+
+    let (_, second) = load_migrated(&legacy, &canonical).expect("restart is idempotent");
+    assert_eq!(second, MigrationOutcome::AlreadyMigrated);
+}
+
+#[test]
+fn invalid_legacy_runtime_snapshot_never_replaces_state() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let legacy = directory.path().join("data/runtime-state.json");
+    let canonical = directory.path().join("state/runtime-state.json");
+    fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    fs::write(&legacy, b"not json").expect("write invalid legacy snapshot");
+
+    let error = load_migrated(&legacy, &canonical).expect_err("invalid legacy is refused");
+
+    assert!(error.to_string().contains("failed to parse"));
+    assert_eq!(fs::read(&legacy).expect("legacy survives"), b"not json");
+    assert!(!canonical.exists());
+}
+
+#[test]
 fn flush_reports_clean_after_a_direct_success() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("state.json");
@@ -521,7 +568,7 @@ fn dropped_admitted_payload_is_retained_by_the_shared_supervisor() {
 async fn scene_creation_rolls_back_when_serialization_fails_before_admission() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let data_dir = directory.path().join("data");
-    let state = Arc::new(hypercolor_daemon::api::AppState::new_with_data_dir(
+    let state = Arc::new(hypercolor_daemon::app_state::AppState::new_with_data_dir(
         data_dir,
     ));
     let app = hypercolor_daemon::api::build_router(Arc::clone(&state), None);
@@ -540,7 +587,7 @@ async fn scene_creation_rolls_back_when_serialization_fails_before_admission() {
         .expect("scene response");
 
     assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .list()
@@ -591,7 +638,7 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
             DisplayPreference {
                 effect_id: retained_effect,
                 controls: HashMap::new(),
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+                blend_mode: hypercolor_types::layer::BlendMode::Alpha,
                 opacity: 1.0,
             },
         )
@@ -604,7 +651,7 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
             DisplayPreference {
                 effect_id: EffectId::new(uuid::Uuid::now_v7()),
                 controls: HashMap::new(),
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                blend_mode: hypercolor_types::layer::BlendMode::Replace,
                 opacity: 1.0,
             },
         )
@@ -699,8 +746,12 @@ fn failed_logical_device_delete_does_not_resurrect_after_reload() {
         enabled: true,
         kind: LogicalDeviceKind::Segment,
     };
-    logical_devices::save_segments(&path, &HashMap::from([("segment".to_owned(), entry)]))
-        .expect("seed logical devices");
+    let seed = logical_devices::reserve_save_segments(
+        &path,
+        &HashMap::from([("segment".to_owned(), entry)]),
+    )
+    .expect("reserve logical device seed");
+    logical_devices::save_reserved_segments(seed).expect("seed logical devices");
     let writer = AtomicFileWriter::new(&path).expect("atomic writer");
     writer.set_injected_replace_failures(usize::MAX);
 
@@ -789,4 +840,33 @@ async fn library_failed_delete_returns_error_and_retry_converges() {
 
     let reloaded = JsonLibraryStore::open(path).expect("reload library store");
     assert!(reloaded.list_favorites().await.is_empty());
+}
+
+#[test]
+fn app_state_fixtures_resolve_state_tier_stores_beside_the_data_tier() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let data_dir = directory.path().join("data");
+    let state_dir = data_dir.join("state");
+    let state = hypercolor_daemon::app_state::AppState::new_with_data_dir(data_dir.clone());
+
+    assert_eq!(
+        state.runtime_state_path,
+        state_dir.join("runtime-state.json")
+    );
+    assert!(
+        state_dir.is_dir(),
+        "state tier should be created for the fixture"
+    );
+    for state_file in [
+        "device-settings.json",
+        "display-preferences.json",
+        "runtime-state.json",
+        hypercolor_daemon::driver_inventory::DRIVER_INVENTORY_FILENAME,
+        hypercolor_daemon::device_aliases::DEVICE_ALIASES_FILE,
+    ] {
+        assert!(
+            !data_dir.join(state_file).exists(),
+            "{state_file} should not land on the data tier"
+        );
+    }
 }

@@ -1,6 +1,7 @@
 //! Subsystem initialization: bus, engines, managers, stores, and input sources.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -10,7 +11,7 @@ use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, ArcSwapOption};
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
 use hypercolor_core::asset::{AssetLibrary, StreamUrlPolicy};
@@ -40,32 +41,44 @@ use hypercolor_core::input::screen::MacosScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
 #[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::{
-    CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput,
-};
+use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisResourcePlan};
-use hypercolor_core::input::{InputManager, SensorPoller, SourceStatusHandle};
+use hypercolor_core::input::{
+    InputManager, SensorPoller, SourceStatusHandle, SourceStatusRegistry,
+};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::CredentialStore;
-use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
+use hypercolor_driver_support::CredentialStore;
+use hypercolor_network::DriverModuleRegistry;
+use hypercolor_types::audio::AudioPipelineConfig;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::ComponentProfileStore;
-use crate::device_metrics::DeviceMetricsSnapshot;
+use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
+use crate::display_frames::DisplayFrameRuntime;
+use crate::display_preferences::DisplayPreferencesStore;
+use crate::domain::context::{
+    DeviceContext, DomainContextResources, DomainContexts, PlatformContext,
+    RuntimeSessionProjection, RuntimeSessionService, SceneContext,
+};
+use crate::domain::effect::EffectIdentityResources;
+use crate::domain::layout::{LayoutContext, LayoutContextResources};
+use crate::domain::output::OutputContext;
+use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
 use crate::driver_inventory::{DRIVER_INVENTORY_FILENAME, DriverInventoryStore};
 use crate::extensions::ExtensionRegistry;
 use crate::interaction_routing::InteractionRoutingControl;
-use crate::layout_auto_exclusions;
 use crate::network::{self, DaemonDriverHost};
+use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
+use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_store::SceneStore;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::{OutputPowerState, set_global_brightness};
 use crate::simulators::{SimulatedDisplayBackend, SimulatedDisplayRuntime, SimulatedDisplayStore};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -74,17 +87,44 @@ use super::config::resolve_server_identity;
 use super::resolve_compositor_acceleration_mode;
 use crate::render_thread::ConfiguredFpsTier;
 
+#[cfg(test)]
 fn open_persisted_library_store(
     path: &std::path::Path,
-) -> Result<Arc<dyn crate::library::LibraryStore>> {
-    Ok(Arc::new(
+) -> Result<(
+    Arc<dyn crate::library::LibraryStore>,
+    Arc<dyn crate::library::LibraryIdentityMigration>,
+)> {
+    let store = Arc::new(
         crate::library::JsonLibraryStore::open(path.to_owned()).with_context(|| {
             format!(
                 "failed to open persisted library store at {}",
                 path.display()
             )
         })?,
-    ))
+    );
+    Ok((store.clone(), store))
+}
+
+fn open_persisted_library_store_with_effect_id_migrations(
+    path: &std::path::Path,
+    migrations: &crate::domain::effect::EffectIdMigrations,
+) -> Result<(
+    Arc<dyn crate::library::LibraryStore>,
+    Arc<dyn crate::library::LibraryIdentityMigration>,
+)> {
+    let store = Arc::new(
+        crate::library::JsonLibraryStore::open_with_effect_id_migrations(
+            path.to_owned(),
+            migrations,
+        )
+        .with_context(|| {
+            format!(
+                "failed to migrate persisted library store at {}",
+                path.display()
+            )
+        })?,
+    );
+    Ok((store.clone(), store))
 }
 
 impl DaemonState {
@@ -127,6 +167,8 @@ impl DaemonState {
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
     ) -> Result<Self> {
         let config: &HypercolorConfig = &boot;
+        let data_dir = ConfigManager::data_dir();
+        let state_dir = ConfigManager::state_dir();
         info!("Initializing daemon subsystems");
         #[cfg(not(target_os = "macos"))]
         let _ = macos_owner_snapshot;
@@ -220,9 +262,7 @@ impl DaemonState {
         let asset_library = Arc::new(RwLock::new(asset_library));
         info!(path = %asset_library_path.display(), "Asset library ready");
 
-        let (power_state, _) = watch::channel(OutputPowerState::default());
         let scene_transactions = SceneTransactionQueue::default();
-        info!("Session power state channel created");
 
         // ── Device Registry ─────────────────────────────────────────────
         let device_registry = DeviceRegistry::new();
@@ -245,6 +285,7 @@ impl DaemonState {
             html_failed = html_report.failed_files(),
             "Effect registry created"
         );
+        let effect_id_migrations = html_report.legacy_effect_ids;
 
         let default_layout = SpatialLayout {
             id: "default".into(),
@@ -255,66 +296,26 @@ impl DaemonState {
             zones: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         };
 
         // ── Layout Store ─────────────────────────────────────────────
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
-        let mut persisted_layouts = match crate::layout_store::load(&layouts_path) {
-            Ok(entries) => entries,
-            Err(error) => {
-                warn!(
-                    path = %layouts_path.display(),
-                    %error,
-                    "Failed to load persisted layouts; starting with empty store"
-                );
-                HashMap::new()
-            }
-        };
-        if crate::layout_store::ensure_default_layout(&mut persisted_layouts, &default_layout) {
-            if let Err(error) = crate::layout_store::save(&layouts_path, &persisted_layouts) {
-                warn!(
-                    path = %layouts_path.display(),
-                    %error,
-                    "Failed to persist inserted default layout"
-                );
-            } else {
-                info!(
-                    path = %layouts_path.display(),
-                    "Inserted missing default layout into persisted layout store"
-                );
-            }
-        }
+        let layout_auto_exclusions_path =
+            ConfigManager::data_dir().join("layout-auto-exclusions.json");
+        let layout_resources = crate::domain::layout::LayoutContextResources::load(
+            layouts_path,
+            layout_auto_exclusions_path,
+            &default_layout,
+        );
 
         // ── Scene Manager / Store ──────────────────────────────────────
         let scenes_path = ConfigManager::data_dir().join("scenes.json");
         let profiles_path = ConfigManager::data_dir().join("profiles.json");
-        let mut scene_store_inner = match SceneStore::load(&scenes_path) {
-            Ok(store) => store,
-            Err(error) if profiles_path.exists() => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to load scenes before importing {}",
-                        profiles_path.display()
-                    )
-                });
-            }
-            Err(error) => {
-                warn!(
-                    path = %scenes_path.display(),
-                    %error,
-                    cause = %error.root_cause(),
-                    "Failed to load scenes; starting with empty store"
-                );
-                SceneStore::new(scenes_path.clone())
-                    .context("failed to prepare empty scene persistence")?
-            }
-        };
         match crate::profile_import::import_profiles(
             &profiles_path,
-            &mut scene_store_inner,
-            &persisted_layouts,
+            &scenes_path,
+            layout_resources.catalog(),
             &default_layout,
         )
         .context("failed to import legacy profiles")?
@@ -324,14 +325,39 @@ impl DaemonState {
                 info!(profiles, backup = %backup.display(), "Imported legacy profiles as scenes");
             }
         }
+        let mut scene_store_inner = SceneStore::load(&scenes_path)
+            .with_context(|| format!("failed to load scenes from {}", scenes_path.display()))?;
+        if scene_store_inner
+            .persist_normalization()
+            .context("failed to persist normalized scene store")?
+        {
+            info!(
+                path = %scenes_path.display(),
+                "Persisted normalized scene store"
+            );
+        }
+        let migrated_scene_effect_ids = scene_store_inner
+            .migrate_effect_ids(&effect_id_migrations)
+            .context("failed to migrate persisted scene effect IDs")?;
+        if migrated_scene_effect_ids > 0 {
+            info!(
+                migrated = migrated_scene_effect_ids,
+                path = %scenes_path.display(),
+                "Migrated persisted scene effect IDs"
+            );
+        }
         let mut scene_manager_inner = SceneManager::with_default_layout(default_layout.clone());
         for scene in scene_store_inner.list().cloned() {
             if let Err(error) = scene_manager_inner.create(scene) {
                 warn!(%error, "Failed to install persisted named scene");
             }
         }
-        let scene_manager = Arc::new(RwLock::new(scene_manager_inner));
-        let scene_store = Arc::new(RwLock::new(scene_store_inner));
+        let scene_manager = crate::domain::scene::SceneService::new(
+            scene_manager_inner,
+            Arc::clone(&event_bus),
+            scene_store_inner,
+            Arc::clone(&zone_layout_previews),
+        );
         info!(path = %scenes_path.display(), "Scene manager created");
 
         // ── Render Loop ─────────────────────────────────────────────────
@@ -347,15 +373,23 @@ impl DaemonState {
         info!("Device metrics snapshot store created");
 
         // ── Spatial Engine ──────────────────────────────────────────────
-        let spatial_engine = Arc::new(RwLock::new(
+        let spatial_engine = crate::domain::spatial::SpatialService::new(
             SpatialEngine::try_new(default_layout.clone())
                 .context("failed to prepare the default spatial layout")?,
-        ));
+        );
         info!("Spatial engine created (empty default layout)");
 
-        let driver_inventory = Arc::new(
-            DriverInventoryStore::open(ConfigManager::data_dir().join(DRIVER_INVENTORY_FILENAME))
-                .context("failed to open driver inventory store")?,
+        let driver_inventory_path = state_dir.join(DRIVER_INVENTORY_FILENAME);
+        let (driver_inventory, driver_inventory_migration) = DriverInventoryStore::open_migrated(
+            data_dir.join(DRIVER_INVENTORY_FILENAME),
+            driver_inventory_path.clone(),
+        )
+        .context("failed to open driver inventory store")?;
+        let driver_inventory = Arc::new(driver_inventory);
+        info!(
+            path = %driver_inventory_path.display(),
+            migration = ?driver_inventory_migration,
+            "Driver inventory store ready"
         );
         let credential_store = Arc::new(
             CredentialStore::open_blocking(&ConfigManager::data_dir())
@@ -475,12 +509,31 @@ impl DaemonState {
         info!("Attachment profile store ready");
 
         // ── Display Preferences Store ─────────────────────────────
-        let display_preferences_path = ConfigManager::data_dir().join("display-preferences.json");
+        let display_preferences_path = state_dir.join("display-preferences.json");
         let display_preferences_inner =
-            match crate::display_preferences::DisplayPreferencesStore::load(
+            match crate::display_preferences::DisplayPreferencesStore::load_migrated(
+                &data_dir.join("display-preferences.json"),
                 &display_preferences_path,
             ) {
-                Ok(store) => store,
+                Ok((store, migration)) => {
+                    info!(
+                        path = %display_preferences_path.display(),
+                        ?migration,
+                        "Display preferences store ready"
+                    );
+                    let mut store = store;
+                    let migrated = store
+                        .migrate_effect_ids(&effect_id_migrations)
+                        .context("failed to migrate display preference effect IDs")?;
+                    if migrated > 0 {
+                        info!(
+                            migrated,
+                            path = %display_preferences_path.display(),
+                            "Migrated display preference effect IDs"
+                        );
+                    }
+                    store
+                }
                 Err(error) => {
                     warn!(
                         path = %display_preferences_path.display(),
@@ -497,19 +550,29 @@ impl DaemonState {
         info!("Display preferences store ready");
 
         // ── Output Settings Store ───────────────────────────────────
-        let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
-        let device_settings_inner = DeviceSettingsStore::load(&device_settings_path)
-            .unwrap_or_else(|error| {
-                warn!(
-                    path = %device_settings_path.display(),
-                    %error,
-                    "Failed to load device settings; starting with defaults"
-                );
-                DeviceSettingsStore::new(device_settings_path)
-            });
-        let initial_global_brightness = device_settings_inner.global_brightness();
-        let device_settings = Arc::new(RwLock::new(device_settings_inner));
-        set_global_brightness(&power_state, initial_global_brightness);
+        let device_settings_path = state_dir.join("device-settings.json");
+        let device_settings_inner = DeviceSettingsStore::load_migrated(
+            &data_dir.join("device-settings.json"),
+            &device_settings_path,
+        )
+        .map(|(store, migration)| {
+            info!(
+                path = %device_settings_path.display(),
+                ?migration,
+                "Device settings store ready"
+            );
+            store
+        })
+        .unwrap_or_else(|error| {
+            warn!(
+                path = %device_settings_path.display(),
+                %error,
+                "Failed to load device settings; starting with defaults"
+            );
+            DeviceSettingsStore::new(device_settings_path)
+        });
+        let output_power = OutputPower::new(device_settings_inner);
+        let device_settings = output_power.device_settings();
         info!("Device settings store ready");
 
         // ── Simulator Store ─────────────────────────────────────────
@@ -527,75 +590,147 @@ impl DaemonState {
         let simulated_display_runtime = Arc::new(RwLock::new(SimulatedDisplayRuntime::new()));
         info!("Simulated display store ready");
 
-        let layout_count = persisted_layouts.len();
-        let layouts = Arc::new(RwLock::new(persisted_layouts));
-        info!(
-            path = %layouts_path.display(),
-            count = layout_count,
-            "Layout store ready"
-        );
-
-        // ── Layout Auto-Exclusion Store ─────────────────────────────
-        let layout_auto_exclusions_path =
-            ConfigManager::data_dir().join("layout-auto-exclusions.json");
-        let persisted_layout_auto_exclusions =
-            match layout_auto_exclusions::load(&layout_auto_exclusions_path) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    warn!(
-                        path = %layout_auto_exclusions_path.display(),
-                        %error,
-                        "Failed to load layout auto-exclusions; starting with empty store"
-                    );
-                    HashMap::new()
-                }
-            };
-        let layout_auto_exclusions = Arc::new(RwLock::new(persisted_layout_auto_exclusions));
-        info!(
-            path = %layout_auto_exclusions_path.display(),
-            "Layout auto-exclusion store ready"
-        );
-
         // ── Runtime Session Store ───────────────────────────────────
-        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
-        info!(
-            path = %runtime_state_path.display(),
-            "Runtime session store ready"
-        );
+        let runtime_state_path = state_dir.join("runtime-state.json");
+        let mut startup_runtime_snapshot = match crate::runtime_state::load_migrated(
+            &data_dir.join("runtime-state.json"),
+            &runtime_state_path,
+        ) {
+            Ok((snapshot, migration)) => {
+                info!(
+                    path = %runtime_state_path.display(),
+                    ?migration,
+                    "Runtime session store ready"
+                );
+                snapshot
+            }
+            Err(error) => {
+                warn!(
+                    path = %runtime_state_path.display(),
+                    %error,
+                    "Failed to load runtime session snapshot"
+                );
+                None
+            }
+        };
+        if let Some(snapshot) = startup_runtime_snapshot.as_mut() {
+            let migrated = snapshot.migrate_effect_ids(&effect_id_migrations);
+            if migrated > 0 {
+                crate::runtime_state::save(&runtime_state_path, snapshot)
+                    .context("failed to migrate runtime session effect IDs")?;
+                info!(
+                    migrated,
+                    path = %runtime_state_path.display(),
+                    "Migrated runtime session effect IDs"
+                );
+            }
+        }
 
+        let device_aliases_path = state_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE);
+        let startup_device_aliases = match crate::device_aliases::load_migrated(
+            &data_dir.join(crate::device_aliases::DEVICE_ALIASES_FILE),
+            &device_aliases_path,
+        ) {
+            Ok((aliases, migration)) => {
+                info!(
+                    path = %device_aliases_path.display(),
+                    ?migration,
+                    "Device alias store ready"
+                );
+                aliases
+            }
+            Err(error) => {
+                warn!(
+                    path = %device_aliases_path.display(),
+                    %error,
+                    "Failed to load device aliases; starting with an empty overlay"
+                );
+                crate::device_aliases::DeviceAliasFile::default()
+            }
+        };
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let driver_registry = Arc::new(
-            network::build_builtin_driver_module_registry(config, Arc::clone(&credential_store))
-                .context("failed to build driver module registry")?,
+            network::build_builtin_driver_module_registry(
+                config,
+                Arc::clone(&credential_store),
+                usb_protocol_configs.clone(),
+            )
+            .context("failed to build driver module registry")?,
         );
-        let driver_host = Arc::new(DaemonDriverHost::new(
-            device_registry.clone(),
-            Arc::clone(&backend_manager),
-            Arc::clone(&lifecycle_manager),
-            Arc::clone(&reconnect_tasks),
-            Arc::clone(&event_bus),
-            Arc::clone(&spatial_engine),
-            Arc::clone(&scene_manager),
-            Arc::clone(&layouts),
-            layouts_path.clone(),
-            Arc::clone(&layout_auto_exclusions),
-            Arc::clone(&logical_devices),
-            Arc::clone(&attachment_registry),
-            Arc::clone(&attachment_profiles),
-            Arc::clone(&device_settings),
-            runtime_state_path.clone(),
-            driver_inventory,
-            usb_protocol_configs.clone(),
-            Arc::clone(&credential_store),
-            Arc::clone(&driver_registry),
-            Arc::clone(&discovery_in_progress),
-            scene_transactions.clone(),
-            Some(Arc::clone(&config_manager)),
-        ));
+        let library_path = ConfigManager::data_dir().join("library.json");
+        let (library_store, library_identity) =
+            open_persisted_library_store_with_effect_id_migrations(
+                &library_path,
+                &effect_id_migrations,
+            )?;
+        let playlist_runtime = Arc::new(Mutex::new(PlaylistRuntimeState::new()));
+        let start_time = Instant::now();
+        let display_frames = Arc::new(RwLock::new(DisplayFrameRuntime::new()));
+        let AssembledDomains {
+            domains,
+            driver_host,
+        } = assemble_domains(
+            DomainAssemblyResources {
+                scene_manager: scene_manager.clone(),
+                spatial_engine: spatial_engine.clone(),
+                output_power: output_power.clone(),
+                layout_resources,
+                scene_transactions: scene_transactions.clone(),
+                runtime_state_path: runtime_state_path.clone(),
+                config_manager: Some(Arc::clone(&config_manager)),
+                driver_registry: Arc::clone(&driver_registry),
+                asset_library: Arc::clone(&asset_library),
+                render_loop: Arc::clone(&render_loop),
+                event_bus: Arc::clone(&event_bus),
+                performance: Arc::clone(&performance),
+                backend_manager: Arc::clone(&backend_manager),
+                preview_runtime: Arc::clone(&preview_runtime),
+                start_time,
+                input_status: input_status.clone(),
+                effect_registry: Arc::clone(&effect_registry),
+                effect_identity: EffectIdentityResources::new(
+                    Arc::clone(&display_preferences),
+                    Arc::clone(&library_identity),
+                    Arc::clone(&playlist_runtime),
+                ),
+                display_preferences: Arc::clone(&display_preferences),
+                display_frames: Arc::clone(&display_frames),
+                device_metrics: Arc::clone(&device_metrics),
+                input_manager: Arc::clone(&input_manager),
+            },
+            |layout| {
+                let discovery_runtime = crate::discovery::DiscoveryRuntime {
+                    device_registry: device_registry.clone(),
+                    backend_manager: Arc::clone(&backend_manager),
+                    lifecycle_manager: Arc::clone(&lifecycle_manager),
+                    reconnect_tasks: Arc::clone(&reconnect_tasks),
+                    event_bus: Arc::clone(&event_bus),
+                    layout: layout.clone(),
+                    logical_devices: Arc::clone(&logical_devices),
+                    attachment_registry: Arc::clone(&attachment_registry),
+                    attachment_profiles: Arc::clone(&attachment_profiles),
+                    device_settings: device_settings.clone(),
+                    runtime_state_path: runtime_state_path.clone(),
+                    device_aliases_path: device_aliases_path.clone(),
+                    usb_protocol_configs: usb_protocol_configs.clone(),
+                    credential_store: Arc::clone(&credential_store),
+                    in_progress: Arc::clone(&discovery_in_progress),
+                    pending_scans: Arc::default(),
+                    task_spawner: tokio::runtime::Handle::current(),
+                };
+                Ok(Arc::new(DaemonDriverHost::new(
+                    discovery_runtime,
+                    driver_inventory,
+                    Arc::clone(&driver_registry),
+                    Some(Arc::clone(&config_manager)),
+                )))
+            },
+        )?;
         info!(
             drivers = ?driver_registry.ids(),
             "Driver module registry ready"
         );
+        info!("All subsystems initialized");
 
         {
             // `initialize()` is invoked from `tokio::main` and `#[tokio::test]`,
@@ -605,27 +740,23 @@ impl DaemonState {
                     "backend manager lock unexpectedly contended during daemon initialization"
                 )
             })?;
-            backend_manager_inner.register_backend(Box::new(SimulatedDisplayBackend::new(
+            backend_manager_inner.register_backend(Arc::new(SimulatedDisplayBackend::new(
                 Arc::clone(&simulated_displays),
                 Arc::clone(&simulated_display_runtime),
             )));
-            backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
+            backend_manager_inner.register_backend(Arc::new(MockDeviceBackend::new()));
             network::register_enabled_device_backends(
                 &mut backend_manager_inner,
                 driver_registry.as_ref(),
                 driver_host.as_ref(),
                 config,
-                usb_protocol_configs.clone(),
             )
             .context("failed to register enabled device backends")?;
         }
         info!("Device backends registered");
 
-        let library_path = ConfigManager::data_dir().join("library.json");
-        let library_store = open_persisted_library_store(&library_path)?;
-        info!("All subsystems initialized");
-
         Ok(Self {
+            domains,
             config_manager,
             extensions: ExtensionRegistry::default(),
             api_extensions,
@@ -633,14 +764,13 @@ impl DaemonState {
             device_registry,
             effect_registry,
             scene_manager,
-            scene_store,
-            scene_commits: Arc::new(crate::domain::commit::SceneCommitSequencer::new()),
             event_bus,
             macos_daemon_ownership,
             #[cfg(target_os = "macos")]
             _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
+            playlist_runtime,
             preview_runtime,
             zone_layout_previews,
             render_loop,
@@ -669,17 +799,13 @@ impl DaemonState {
             device_settings,
             simulated_displays,
             simulated_display_runtime,
-            display_frames: Arc::new(RwLock::new(
-                crate::display_frames::DisplayFrameRuntime::new(),
-            )),
-            layouts_path,
-            layouts,
-            layout_auto_exclusions,
-            layout_auto_exclusions_path,
+            display_frames,
             runtime_state_path,
+            device_aliases_path,
+            startup_device_aliases: Some(startup_device_aliases),
+            startup_runtime_snapshot,
             discovery_in_progress,
-            power_state,
-            output_power_transition: Arc::new(Mutex::new(())),
+            output_power,
             scene_transactions,
             render_thread: None,
             display_output_thread: None,
@@ -691,7 +817,7 @@ impl DaemonState {
             device_metrics_collector_task: None,
             input_status_event_publisher: None,
             session_controller: None,
-            start_time: Instant::now(),
+            start_time,
             server_identity,
         })
     }
@@ -718,24 +844,14 @@ pub(crate) fn build_input_manager(
     if let Some(source) = build_interaction_source(&config.input) {
         input_manager.add_source(source);
     }
-    // Browser-preview injection is always registered: it has no hardware and
-    // no privacy surface (the user drives their own browser), and its edges
-    // only reach effects that declare input reactivity.
-    let browser_source = hypercolor_core::input::BrowserInputSource::new();
-    let browser_input = browser_source.handle();
-    input_manager.add_source(Box::new(browser_source));
+    // Browser-preview injection is an always-live direct publication registry.
+    // Its children stay outside the manager's sampled source graph.
+    let browser_input = hypercolor_core::input::BrowserInputHandle::new();
     input_manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
     input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
 
     if config.audio.enabled {
-        let audio_pipeline_config = AudioPipelineConfig {
-            source: audio_source_from_device(&config.audio.device),
-            fft_size: usize::try_from(config.audio.fft_size).unwrap_or(1024),
-            smoothing: config.audio.smoothing.clamp(0.0, 1.0),
-            gain: 1.0,
-            noise_floor: noise_gate_to_db(config.audio.noise_gate),
-            beat_sensitivity: config.audio.beat_sensitivity.max(0.01),
-        };
+        let audio_pipeline_config = AudioPipelineConfig::from(&config.audio);
         let audio_input = AudioInput::new(&audio_pipeline_config)
             .with_name(format!("AudioInput({})", config.audio.device));
         input_manager.add_source(Box::new(audio_input));
@@ -907,12 +1023,7 @@ fn build_platform_screen_capture_source_with_persistence(
     capacity: ScreenAdmissionCapacity,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
     #[cfg(target_os = "windows")]
-    let source = build_windows_screen_capture_source(
-        capture,
-        persistence.clone(),
-        admission_coordinator,
-        capacity,
-    )?;
+    let source = build_windows_screen_capture_source(capture, admission_coordinator, capacity)?;
     #[cfg(target_os = "linux")]
     let source = build_screen_capture_source(
         capture,
@@ -960,21 +1071,23 @@ impl Drop for CaptureConfigPersistenceInner {
 }
 
 struct CaptureConfigPersistenceState {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     committed: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     revoked: bool,
     epoch: CapturePersistenceEpoch,
     source_status: Option<SourceStatusHandle>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pending: Option<CaptureConfigPersistenceUpdate>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 enum CaptureConfigPersistenceUpdate {
     #[cfg(target_os = "macos")]
     MacosSource {
         configured: String,
         resolved: String,
     },
-    #[cfg(target_os = "windows")]
-    WindowsSource(ResolvedCaptureSource),
     #[cfg(target_os = "linux")]
     RestoreToken {
         configured: Option<String>,
@@ -999,10 +1112,13 @@ impl CaptureConfigPersistenceGate {
             inner: Arc::new(CaptureConfigPersistenceInner {
                 config_manager,
                 state: StdMutex::new(CaptureConfigPersistenceState {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     committed,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     revoked: false,
                     epoch,
                     source_status: None,
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     pending: None,
                 }),
             }),
@@ -1054,7 +1170,7 @@ impl CaptureConfigPersistenceGate {
         source_identity(&state)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn publish(&self, update: CaptureConfigPersistenceUpdate) {
         let persistence = {
             let mut state = self
@@ -1067,31 +1183,17 @@ impl CaptureConfigPersistenceGate {
             } else if !state.committed {
                 state.pending = Some(update);
                 None
-            } else if !requires_source_identity(&update) {
-                // A newer update supersedes anything parked earlier.
-                state.pending = None;
-                Some((state.epoch, None, update))
-            } else if let Some(source) = source_identity(&state) {
-                state.pending = None;
-                Some((state.epoch, Some(source), update))
             } else {
-                // The status snapshot has not caught up with the live
-                // session yet. Losing the update here replays stale
-                // state on the next reconnect; park it until an
-                // identity-bearing publish or commit can flush it.
-                warn!(
-                    "capture persistence update parked: source identity \
-                     not yet observable"
-                );
-                state.pending = Some(update);
-                None
+                state.pending = None;
+                Some((state.epoch, update))
             }
         };
-        if let Some((epoch, source, update)) = persistence {
-            self.persist(epoch, source, update, false);
+        if let Some((epoch, update)) = persistence {
+            self.persist(epoch, update, false);
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn commit(&self) {
         let persistence = {
             let mut state = self
@@ -1103,35 +1205,18 @@ impl CaptureConfigPersistenceGate {
                 return;
             }
             state.committed = true;
-            let identity = match state.pending.as_ref() {
-                Some(update) if !requires_source_identity(update) => Some(None),
-                Some(_) => source_identity(&state).map(Some),
-                None => None,
-            };
-            if let Some(source) = identity {
-                state
-                    .pending
-                    .take()
-                    .map(|update| (state.epoch, source, update))
-            } else {
-                // Keep the parked update: taking it here without an
-                // identity would silently drop a freshly rotated restore
-                // token and force re-consent on the next reconnect.
-                if state.pending.is_some() {
-                    warn!(
-                        "capture persistence commit deferred: source \
-                         identity not yet observable"
-                    );
-                }
-                None
-            }
+            state.pending.take().map(|update| (state.epoch, update))
         };
-        if let Some((epoch, source, update)) = persistence {
-            self.persist(epoch, source, update, true);
+        if let Some((epoch, update)) = persistence {
+            self.persist(epoch, update, true);
         }
     }
 
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(crate) const fn commit(&self) {}
+
     pub(crate) fn revoke(&self) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let epoch = {
             let mut state = self
                 .inner
@@ -1139,17 +1224,21 @@ impl CaptureConfigPersistenceGate {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.revoked = true;
-            state.pending = None;
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                state.pending = None;
+            }
             state.epoch
         };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let epoch = self.epoch();
         self.inner.config_manager.revoke_capture_persistence(epoch);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn persist(
         &self,
         epoch: CapturePersistenceEpoch,
-        source: Option<CapturePersistenceSource>,
         update: CaptureConfigPersistenceUpdate,
         deferred: bool,
     ) {
@@ -1161,10 +1250,6 @@ impl CaptureConfigPersistenceGate {
             #[cfg(target_os = "macos")]
             CaptureConfigPersistenceUpdate::MacosSource { configured, .. } => {
                 snapshot.capture.source == *configured
-            }
-            #[cfg(target_os = "windows")]
-            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
-                snapshot.capture.source == resolved.configured_source
             }
             #[cfg(target_os = "linux")]
             CaptureConfigPersistenceUpdate::RestoreToken {
@@ -1188,19 +1273,12 @@ impl CaptureConfigPersistenceGate {
             CaptureConfigPersistenceUpdate::MacosSource { resolved, .. } => {
                 capture.source = resolved;
             }
-            #[cfg(target_os = "windows")]
-            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
-                capture.source = resolved.stable_source;
-            }
             #[cfg(target_os = "linux")]
             CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
                 capture.restore_token = resolved;
             }
         };
-        let result = match source {
-            Some(source) => config_manager.modify_capture_if_authorized(epoch, source, mutate),
-            None => config_manager.modify_capture_if_epoch_current(epoch, mutate),
-        };
+        let result = config_manager.modify_capture_if_epoch_current(epoch, mutate);
         match result {
             Ok(Some(_)) => {}
             // A rejection here is a stale epoch or a superseded source, and
@@ -1214,17 +1292,6 @@ impl CaptureConfigPersistenceGate {
                 warn!(%error, "Failed to persist resolved screen capture identity");
             }
         }
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    fn persist(
-        &self,
-        _epoch: CapturePersistenceEpoch,
-        _source: Option<CapturePersistenceSource>,
-        update: CaptureConfigPersistenceUpdate,
-        _deferred: bool,
-    ) {
-        match update {}
     }
 }
 
@@ -1240,41 +1307,9 @@ fn source_identity(state: &CaptureConfigPersistenceState) -> Option<CapturePersi
     ))
 }
 
-/// Whether an update's authorization must pin a source identity.
-///
-/// Restore tokens authorize by persistence epoch because their session
-/// generations legitimately advance across reconnects. macOS picker updates
-/// also authorize by epoch: the observer is bound to one exact status handle
-/// and accepts only the first strictly newer native selection revision, even
-/// while capture has no active session generation.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn requires_source_identity(update: &CaptureConfigPersistenceUpdate) -> bool {
-    match update {
-        #[cfg(target_os = "macos")]
-        CaptureConfigPersistenceUpdate::MacosSource { .. } => false,
-        #[cfg(target_os = "windows")]
-        CaptureConfigPersistenceUpdate::WindowsSource(_) => true,
-        #[cfg(target_os = "linux")]
-        CaptureConfigPersistenceUpdate::RestoreToken { .. } => false,
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-const fn requires_source_identity(_update: &CaptureConfigPersistenceUpdate) -> bool {
-    false
-}
-
-#[cfg(target_os = "windows")]
-fn windows_capture_source_sink(persistence: CaptureConfigPersistenceGate) -> CaptureSourceSink {
-    Arc::new(move |resolved: ResolvedCaptureSource| {
-        persistence.publish(CaptureConfigPersistenceUpdate::WindowsSource(resolved));
-    })
-}
-
 #[cfg(target_os = "windows")]
 pub(crate) fn build_windows_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
-    persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
 ) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
@@ -1282,8 +1317,7 @@ pub(crate) fn build_windows_screen_capture_source(
         WindowsScreenCaptureInput::with_admission_coordinator(
             windows_screen_capture_config_from(capture, capacity)?,
             admission_coordinator,
-        )
-        .with_capture_source_sink(windows_capture_source_sink(persistence)),
+        ),
     ))
 }
 
@@ -1447,22 +1481,140 @@ fn screen_capture_config_with_capacity_from(
         ..screen_capture_config_from(capture)?
     })
 }
-fn audio_source_from_device(device: &str) -> AudioSourceType {
-    let normalized = device.trim();
-    if normalized.eq_ignore_ascii_case("none") {
-        AudioSourceType::None
-    } else if normalized.eq_ignore_ascii_case("default") {
-        AudioSourceType::SystemMonitor
-    } else if normalized.eq_ignore_ascii_case("microphone") {
-        AudioSourceType::Microphone
-    } else {
-        AudioSourceType::Named(normalized.to_owned())
-    }
+/// Authorities fixed before the daemon domain graph is assembled.
+///
+/// Both composition roots fill this in, so the graph can only ever be
+/// wired one way.
+pub(crate) struct DomainAssemblyResources {
+    pub scene_manager: SceneService,
+    pub spatial_engine: SpatialService,
+    pub output_power: OutputPower,
+    pub layout_resources: LayoutContextResources,
+    pub scene_transactions: SceneTransactionQueue,
+    pub runtime_state_path: PathBuf,
+    pub config_manager: Option<Arc<ConfigManager>>,
+    pub driver_registry: Arc<DriverModuleRegistry>,
+    pub asset_library: Arc<RwLock<AssetLibrary>>,
+    pub render_loop: Arc<RwLock<RenderLoop>>,
+    pub event_bus: Arc<HypercolorBus>,
+    pub performance: Arc<RwLock<PerformanceTracker>>,
+    pub backend_manager: Arc<Mutex<BackendManager>>,
+    pub preview_runtime: Arc<PreviewRuntime>,
+    pub start_time: Instant,
+    pub input_status: SourceStatusRegistry,
+    pub effect_registry: Arc<RwLock<EffectRegistry>>,
+    pub effect_identity: EffectIdentityResources,
+    pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+    pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
+    pub device_metrics: DeviceMetricsSnapshotStore,
+    pub input_manager: Arc<Mutex<InputManager>>,
 }
 
-fn noise_gate_to_db(noise_gate: f32) -> f32 {
-    let linear = noise_gate.clamp(0.000_001, 1.0);
-    20.0 * linear.log10()
+/// The assembled domain graph and the driver host it was wired around.
+pub(crate) struct AssembledDomains {
+    pub domains: DomainContexts,
+    pub driver_host: Arc<DaemonDriverHost>,
+}
+
+/// Assemble the one domain graph every composition root shares.
+///
+/// The driver host is built through a callback because it needs the
+/// layout context assembled here, while each root reaches discovery
+/// with its own inventory and task spawner.
+pub(crate) fn assemble_domains(
+    resources: DomainAssemblyResources,
+    build_driver_host: impl FnOnce(&LayoutContext) -> Result<Arc<DaemonDriverHost>>,
+) -> Result<AssembledDomains> {
+    let DomainAssemblyResources {
+        scene_manager,
+        spatial_engine,
+        output_power,
+        layout_resources,
+        scene_transactions,
+        runtime_state_path,
+        config_manager,
+        driver_registry,
+        asset_library,
+        render_loop,
+        event_bus,
+        performance,
+        backend_manager,
+        preview_runtime,
+        start_time,
+        input_status,
+        effect_registry,
+        effect_identity,
+        display_preferences,
+        display_frames,
+        device_metrics,
+        input_manager,
+    } = resources;
+
+    let runtime_projection = RuntimeSessionProjection::new(
+        scene_manager.clone(),
+        spatial_engine.clone(),
+        output_power.clone(),
+    );
+    let layout = LayoutContext::new(
+        layout_resources,
+        spatial_engine.clone(),
+        scene_manager.clone(),
+        scene_transactions,
+        runtime_state_path.clone(),
+        runtime_projection.clone(),
+    );
+    let driver_host = build_driver_host(&layout)?;
+    let runtime_session =
+        RuntimeSessionService::new(runtime_state_path, runtime_projection, &driver_host);
+    let devices = DeviceContext::new(
+        Arc::clone(&driver_host),
+        driver_registry,
+        config_manager.clone(),
+    );
+    let scene = SceneContext::new(
+        scene_manager,
+        runtime_session.clone(),
+        asset_library,
+        config_manager.clone(),
+        Arc::clone(&render_loop),
+        layout.clone(),
+        devices.layout_runtime(),
+    );
+    let output = OutputContext::new(
+        output_power,
+        Arc::clone(&event_bus),
+        runtime_session.clone(),
+        performance,
+        render_loop,
+        spatial_engine.clone(),
+        backend_manager,
+        preview_runtime,
+        devices.clone(),
+        start_time,
+    );
+    let domains = DomainContexts::assemble(
+        runtime_session,
+        devices,
+        scene,
+        layout,
+        output,
+        PlatformContext::new(input_status, config_manager),
+        DomainContextResources {
+            effect_registry,
+            effect_identity,
+            spatial: spatial_engine,
+            event_bus,
+            display_preferences,
+            display_frames,
+            device_metrics,
+            input_manager,
+        },
+    );
+
+    Ok(AssembledDomains {
+        domains,
+        driver_host,
+    })
 }
 
 #[cfg(all(

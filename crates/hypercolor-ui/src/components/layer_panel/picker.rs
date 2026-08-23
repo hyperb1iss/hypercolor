@@ -187,7 +187,7 @@ fn PickerSearch(placeholder: &'static str, value: RwSignal<String>) -> impl Into
 
 #[component]
 fn EffectTab(
-    effects: LocalResource<Result<Vec<api::EffectSummary>, String>>,
+    effects: LocalResource<api::ApiResult<Vec<api::EffectSummary>>>,
     #[prop(into)] mode: Signal<EffectPickerMode>,
     on_pick: Callback<NewLayerDraft>,
 ) -> impl IntoView {
@@ -201,10 +201,10 @@ fn EffectTab(
         let mut items = items
             .into_iter()
             .filter(|effect| effect.runnable)
-            .filter(|effect| mode.includes_category(&effect.category))
-            .filter(|effect| effect_picker_matches_query(&effect.name, &effect.category, &query))
+            .filter(|effect| mode.includes_category(effect.category))
+            .filter(|effect| effect_picker_matches_query(&effect.name, effect.category, &query))
             .collect::<Vec<_>>();
-        items.sort_by_key(|item| (mode.sort_bucket(&item.category), item.name.to_lowercase()));
+        items.sort_by_key(|item| (mode.sort_bucket(item.category), item.name.to_lowercase()));
         items
     });
 
@@ -215,7 +215,7 @@ fn EffectTab(
         <Suspense fallback=move || view! { <PickerLoading /> }>
             {move || match effects.get() {
                 None => view! { <PickerLoading /> }.into_any(),
-                Some(Err(error)) => view! { <PickerError detail=error /> }.into_any(),
+                Some(Err(error)) => view! { <PickerError detail=error.to_string() /> }.into_any(),
                 Some(Ok(_)) => {
                     let items = filtered.get();
                     if items.is_empty() {
@@ -226,7 +226,7 @@ fn EffectTab(
                                 {items.into_iter().map(|effect| {
                                     let id = effect.id.clone();
                                     let name = effect.name.clone();
-                                    let category = effect_category_label(&effect.category);
+                                    let category = effect_category_label(effect.category);
                                     let pick = move |_| {
                                         match effect_layer_source(&id) {
                                             Ok(source) => on_pick.run(NewLayerDraft::named(name.clone(), source)),

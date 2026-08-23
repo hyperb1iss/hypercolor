@@ -101,7 +101,7 @@ export default effect(
             const fallbackBeat = Math.max(0, Math.sin(time * (0.92 + speed * 0.66))) ** 6 * 0.14
 
             const beatConfidence = audio?.beatConfidence ?? 0
-            const levelTarget = audio ? Math.max(audio.levelShort, audio.level * 0.88) : fallbackLevel
+            const levelTarget = audio ? Math.max(audio.levelShort, audio.levelLinear * 0.88) : fallbackLevel
             const bassTarget = audio ? Math.max(audio.bassEnv, audio.bass * 0.9) : fallbackBass
             const midTarget = audio ? Math.max(audio.midEnv, audio.mid * 0.86) : fallbackMid
             const trebleTarget = audio ? Math.max(audio.trebleEnv, audio.treble * 0.82) : fallbackTreble

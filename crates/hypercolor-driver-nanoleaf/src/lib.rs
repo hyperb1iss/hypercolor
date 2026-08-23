@@ -19,31 +19,33 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
-use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::control_apply;
-use hypercolor_driver_api::control_surface;
-use hypercolor_driver_api::support::{
-    activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
-    push_lookup_key,
-};
-use hypercolor_driver_api::validation::validate_ip;
+use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverCredentialStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
-use hypercolor_driver_api::{DeviceBackend, TransportScanner};
+use hypercolor_driver_support::network::{
+    metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
+};
+use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
+use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
     ActionConfirmation, ActionConfirmationLevel, ApplyControlChangesResponse, ApplyImpact,
     ControlActionDescriptor, ControlActionResult, ControlActionStatus, ControlAvailabilityExpr,
     ControlChange, ControlFieldDescriptor, ControlGroupKind, ControlOwner, ControlSurfaceDocument,
-    ControlValue, ControlValueMap, ControlValueType,
+    ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
+use hypercolor_types::identity::BackendId;
+use hypercolor_types::pairing::{
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
+    PairDeviceStatus, PairingDescriptor, PairingFlowKind,
+};
 use reqwest::StatusCode;
 use serde::Deserialize;
 
@@ -169,7 +171,7 @@ fn nanoleaf_pair_device_key(info: &NanoleafDeviceInfo) -> String {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NanoleafPairResponse {
-    #[serde(alias = "auth_token")]
+    #[serde(rename = "auth_token")]
     auth_token: Option<String>,
 }
 
@@ -216,16 +218,12 @@ async fn fetch_panel_layout(
 #[derive(Clone)]
 pub struct NanoleafDriverModule {
     credential_store: Arc<CredentialStore>,
-    mdns_enabled: bool,
 }
 
 impl NanoleafDriverModule {
     #[must_use]
-    pub fn new(credential_store: Arc<CredentialStore>, mdns_enabled: bool) -> Self {
-        Self {
-            credential_store,
-            mdns_enabled,
-        }
+    pub fn new(credential_store: Arc<CredentialStore>) -> Self {
+        Self { credential_store }
     }
 }
 
@@ -234,20 +232,11 @@ impl DriverModule for NanoleafDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(NanoleafBackend::with_mdns_enabled(
-            config.parse_settings::<NanoleafConfig>()?,
-            Arc::clone(&self.credential_store),
-            self.mdns_enabled,
-        ))))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("Nanoleaf backend ID must be valid"),
+            factory: self,
+        }
     }
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
@@ -271,6 +260,20 @@ impl DriverModule for NanoleafDriverModule {
     }
 }
 
+impl DeviceBackendFactory for NanoleafDriverModule {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let config = config.parse_settings::<NanoleafConfig>()?;
+        Ok(Arc::new(NanoleafBackend::new(
+            config,
+            Arc::clone(&self.credential_store),
+        )))
+    }
+}
+
 impl DriverPresentationProvider for NanoleafDriverModule {
     fn presentation(&self) -> DriverPresentation {
         DriverPresentation {
@@ -291,7 +294,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<DiscoveryResult> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<NanoleafConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_devices = resolve_nanoleaf_probe_devices_from_sources(&config, &tracked_devices);
@@ -301,14 +304,7 @@ impl DiscoveryCapability for NanoleafDriverModule {
             request.timeout,
             request.mdns_enabled,
         );
-        let devices = scanner
-            .scan()
-            .await?
-            .into_iter()
-            .map(DriverDiscoveredDevice::from)
-            .collect();
-
-        Ok(DiscoveryResult { devices })
+        scanner.scan().await.map_err(DriverError::discovery)
     }
 }
 
@@ -320,14 +316,16 @@ impl DriverConfigProvider for NanoleafDriverModule {
         ]))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<NanoleafConfig>()?;
         for ip in config.device_ips {
-            validate_ip(ip).with_context(|| format!("invalid Nanoleaf device IP: {ip}"))?;
+            validate_ip(ip).map_err(|error| DriverError::Configuration {
+                message: format!("invalid Nanoleaf device IP {ip}: {error}"),
+            })?;
         }
         Ok(())
     }
@@ -456,7 +454,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "IP Address",
             "connection",
             ControlValueType::IpAddress,
-            ControlValue::IpAddress,
+            |raw| IpText::new(raw).ok().map(ControlValue::Ip),
             0,
         );
         if let Some(api_port) = metadata
@@ -470,7 +468,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
                 "API Port",
                 "connection",
                 control_surface::integer_value_type(0, Some(i64::from(u16::MAX))),
-                ControlValue::Integer(api_port),
+                ControlValue::Int(api_port),
                 10,
             );
         }
@@ -482,7 +480,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "Device Key",
             "diagnostics",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             20,
         );
     }
@@ -495,7 +493,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "Model",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(model.clone()),
+            ControlValue::Text(model.clone()),
             30,
         );
     }
@@ -507,7 +505,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
             "Firmware",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(firmware_version.clone()),
+            ControlValue::Text(firmware_version.clone()),
             40,
         );
     }
@@ -519,7 +517,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
         "LED Count",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ControlValue::Int(i64::from(device.info.total_led_count())),
         50,
     );
     control_surface::push_readonly_value(
@@ -529,7 +527,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
         "Max FPS",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ControlValue::Int(i64::from(device.info.capabilities.max_fps)),
         60,
     );
     control_surface::push_readonly_value(
@@ -539,7 +537,7 @@ pub fn nanoleaf_device_control_surface(device: &TrackedDeviceCtx<'_>) -> Control
         "State",
         "diagnostics",
         control_surface::string_value_type(Some(32)),
-        ControlValue::String(device.current_state.to_string()),
+        ControlValue::Text(device.current_state.to_string()),
         70,
     );
     document.actions.push(ControlActionDescriptor {
@@ -624,13 +622,13 @@ fn nanoleaf_config_values(config: &NanoleafConfig) -> ControlValueMap {
                 config
                     .device_ips
                     .iter()
-                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .map(|ip| ControlValue::Ip(IpText::from(*ip)))
                     .collect(),
             ),
         ),
         (
             FIELD_TRANSITION_TIME.to_owned(),
-            ControlValue::Integer(i64::from(config.transition_time)),
+            ControlValue::Int(i64::from(config.transition_time)),
         ),
     ])
 }
@@ -655,15 +653,15 @@ impl PairingCapability for NanoleafDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary> {
+    ) -> std::result::Result<Option<DeviceAuthSummary>, DriverError> {
         let last_error = device
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
         let configured = nanoleaf_credentials_present(host.credentials(), device.metadata)
             .await
-            .unwrap_or_default();
+            .map_err(DriverError::pairing)?;
 
-        Some(DeviceAuthSummary {
+        Ok(Some(DeviceAuthSummary {
             state: if last_error.is_some() {
                 DeviceAuthState::Error
             } else if configured {
@@ -674,7 +672,7 @@ impl PairingCapability for NanoleafDriverModule {
             can_pair: true,
             descriptor: Some(nanoleaf_pairing_descriptor()),
             last_error,
-        })
+        }))
     }
 
     async fn pair(
@@ -682,10 +680,10 @@ impl PairingCapability for NanoleafDriverModule {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome> {
+    ) -> std::result::Result<PairDeviceOutcome, DriverError> {
         if nanoleaf_credentials_present(host.credentials(), device.metadata)
             .await
-            .unwrap_or_default()
+            .map_err(DriverError::pairing)?
         {
             let activated = activate_if_requested(
                 host,
@@ -718,7 +716,10 @@ impl PairingCapability for NanoleafDriverModule {
         let api_port = network_port_from_metadata(device.metadata, "api_port")
             .unwrap_or(DEFAULT_NANOLEAF_API_PORT);
 
-        match pair_nanoleaf_device_at_ip(&self.credential_store, device_ip, api_port).await? {
+        match pair_nanoleaf_device_at_ip(&self.credential_store, device_ip, api_port)
+            .await
+            .map_err(DriverError::pairing)?
+        {
             Some(_) => {
                 let activated = activate_if_requested(
                     host,
@@ -753,8 +754,10 @@ impl PairingCapability for NanoleafDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome> {
-        clear_nanoleaf_credentials(host.credentials(), device.metadata).await?;
+    ) -> std::result::Result<ClearPairingOutcome, DriverError> {
+        clear_nanoleaf_credentials(host.credentials(), device.metadata)
+            .await
+            .map_err(DriverError::pairing)?;
         let disconnected = disconnect_after_unpair(host, device.device_id, DESCRIPTOR.id).await;
 
         Ok(ClearPairingOutcome {
@@ -923,5 +926,21 @@ fn nanoleaf_pairing_descriptor() -> PairingDescriptor {
             .collect(),
         action_label: "Pair Device".to_owned(),
         fields: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NanoleafPairResponse;
+
+    #[test]
+    fn pairing_response_accepts_only_vendor_token_key() {
+        let canonical = serde_json::from_str::<NanoleafPairResponse>(r#"{"auth_token":"token"}"#)
+            .expect("vendor pairing response should decode");
+        assert_eq!(canonical.auth_token.as_deref(), Some("token"));
+
+        let speculative = serde_json::from_str::<NanoleafPairResponse>(r#"{"authToken":"token"}"#)
+            .expect("unknown pairing fields remain ignorable");
+        assert_eq!(speculative.auth_token, None);
     }
 }

@@ -6,13 +6,13 @@ use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LayerRuntimeKey {
-    pub(crate) group_id: ZoneId,
+    pub(crate) zone_id: ZoneId,
     pub(crate) layer_id: SceneLayerId,
 }
 
 impl LayerRuntimeKey {
-    pub(crate) const fn new(group_id: ZoneId, layer_id: SceneLayerId) -> Self {
-        Self { group_id, layer_id }
+    pub(crate) const fn new(zone_id: ZoneId, layer_id: SceneLayerId) -> Self {
+        Self { zone_id, layer_id }
     }
 }
 
@@ -44,10 +44,10 @@ impl LayerRuntimeRegistry {
     pub(crate) fn prepare_reconcile(
         &self,
         active_scene_id: Option<SceneId>,
-        groups: &[Zone],
+        zones: &[Zone],
     ) -> Result<PreparedLayerRuntimeRegistry, std::collections::TryReserveError> {
         let scene_id = active_scene_id.unwrap_or(SceneId::DEFAULT);
-        let active_keys = active_layer_keys(groups);
+        let active_keys = active_layer_keys(zones);
         let mut states = HashMap::new();
         states.try_reserve(active_keys.len())?;
         for (key, state) in &self.states {
@@ -79,12 +79,12 @@ impl LayerRuntimeRegistry {
     pub(crate) fn note_health(
         &mut self,
         active_scene_id: Option<SceneId>,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         layer_id: SceneLayerId,
         health: LayerHealth,
     ) {
         let scene_id = active_scene_id.unwrap_or(SceneId::DEFAULT);
-        let key = LayerRuntimeKey::new(group_id, layer_id);
+        let key = LayerRuntimeKey::new(zone_id, layer_id);
         if self
             .states
             .get(&key)
@@ -114,7 +114,7 @@ impl LayerRuntimeRegistry {
             .drain(..)
             .map(|event| HypercolorEvent::LayerHealthChanged {
                 scene_id: event.scene_id,
-                zone_id: event.key.group_id,
+                zone_id: event.key.zone_id,
                 layer_id: event.key.layer_id,
                 health: event.health,
             })
@@ -132,16 +132,15 @@ impl LayerRuntimeRegistry {
     }
 }
 
-fn active_layer_keys(groups: &[Zone]) -> HashSet<LayerRuntimeKey> {
-    groups
+fn active_layer_keys(zones: &[Zone]) -> HashSet<LayerRuntimeKey> {
+    zones
         .iter()
-        .filter(|group| group.enabled)
-        .flat_map(|group| {
-            group
-                .effective_layers()
-                .into_iter()
+        .filter(|zone| zone.enabled)
+        .flat_map(|zone| {
+            zone.layers
+                .iter()
                 .filter(|layer| layer.enabled)
-                .map(|layer| LayerRuntimeKey::new(group.id, layer.id))
+                .map(|layer| LayerRuntimeKey::new(zone.id, layer.id))
         })
         .collect()
 }
@@ -157,16 +156,12 @@ mod tests {
 
     use super::*;
 
-    fn sample_group() -> Zone {
+    fn sample_zone() -> Zone {
         let effect_id = EffectId::from(Uuid::now_v7());
         Zone {
             id: ZoneId::new(),
             name: "Layer Runtime".into(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
                 effect_id,
@@ -183,7 +178,6 @@ mod tests {
                 zones: Vec::new(),
                 default_sampling_mode: SamplingMode::Bilinear,
                 default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
                 version: 1,
             },
             brightness: 1.0,
@@ -198,19 +192,19 @@ mod tests {
 
     #[test]
     fn layer_health_events_coalesce_per_layer() {
-        let group = sample_group();
-        let layer_id = group.layers[0].id;
+        let zone = sample_zone();
+        let layer_id = zone.layers[0].id;
         let mut registry = LayerRuntimeRegistry::default();
 
         registry.note_health(
             Some(SceneId::DEFAULT),
-            group.id,
+            zone.id,
             layer_id,
             LayerHealth::Loading,
         );
         registry.note_health(
             Some(SceneId::DEFAULT),
-            group.id,
+            zone.id,
             layer_id,
             LayerHealth::Active,
         );
@@ -229,20 +223,20 @@ mod tests {
 
     #[test]
     fn unchanged_layer_health_does_not_emit_again() {
-        let group = sample_group();
-        let layer_id = group.layers[0].id;
+        let zone = sample_zone();
+        let layer_id = zone.layers[0].id;
         let mut registry = LayerRuntimeRegistry::default();
 
         registry.note_health(
             Some(SceneId::DEFAULT),
-            group.id,
+            zone.id,
             layer_id,
             LayerHealth::Active,
         );
         assert_eq!(registry.drain_events().len(), 1);
         registry.note_health(
             Some(SceneId::DEFAULT),
-            group.id,
+            zone.id,
             layer_id,
             LayerHealth::Active,
         );
@@ -252,12 +246,12 @@ mod tests {
 
     #[test]
     fn removed_layers_clear_runtime_state() {
-        let group = sample_group();
-        let key = LayerRuntimeKey::new(group.id, group.layers[0].id);
+        let zone = sample_zone();
+        let key = LayerRuntimeKey::new(zone.id, zone.layers[0].id);
         let mut registry = LayerRuntimeRegistry::default();
         registry.note_health(
             Some(SceneId::DEFAULT),
-            key.group_id,
+            key.zone_id,
             key.layer_id,
             LayerHealth::Active,
         );

@@ -7,9 +7,9 @@ template = "page.html"
 
 The [MCP Registry](https://registry.modelcontextprotocol.io/) is the public discovery index for Model Context Protocol servers. Publishing Hypercolor there puts it in front of every MCP-aware client that browses the registry, so an assistant can find and connect to the lighting engine without anyone hand-editing a config file. This page walks through the `server.json` manifest, the namespace convention, and the submission flow.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 This is a maintainer task, not a user setup step. To connect your own assistant to a daemon you already run, you do not need the registry at all. Head to [MCP setup](@/agents/mcp-setup.md) for the copy-paste config. The registry matters when you want the world to discover Hypercolor's MCP server.
-{% end %}
+{% </callout> %}
 
 ## What the registry is for 🔮
 
@@ -25,9 +25,9 @@ Confirm the live server first. The manifest you submit must match what the daemo
 - The surface clients discover through it is **17 tools, 5 resources, and 3 prompts**. The [tools reference](@/agents/tools-reference.md), [resources reference](@/agents/resources-reference.md), and [prompt templates](@/agents/prompt-templates.md) are the authoritative lists.
 - The server identifies itself as `hypercolor`, titled "Hypercolor RGB Lighting Controller", with its website set to the GitHub repository. The daemon reports its crate version (`CARGO_PKG_VERSION`) as the server version, so the manifest version should track the release you are publishing.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Hypercolor binds to loopback (`127.0.0.1:9420`) by default and local clients need no credentials. A registry listing is a public pointer, so think carefully about what URL you advertise. A `127.0.0.1` endpoint only resolves on the same machine; a remote endpoint requires a reachable host and a bearer token from `HYPERCOLOR_API_KEY`. Do not publish a manifest that points at a private address as if it were globally reachable.
-{% end %}
+{% </callout> %}
 
 ## The namespace
 
@@ -71,9 +71,9 @@ A few fields are load-bearing and worth getting right.
 - **`remotes[].type`** is `streamable-http`. Hypercolor has no stdio binary and no separate bridge process, so there is no `packages` block with a `command` and `args`. The whole point is that a client POSTs to the daemon's HTTP endpoint directly.
 - **`remotes[].url`** is the endpoint clients connect to. The loopback URL above is correct for a same-machine listing; a publicly discoverable server needs a routable host and the bearer-token note below.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Validate the manifest against the published schema before submitting. The `$schema` URL points at the version the registry expects, and most JSON tooling can lint against it locally so you catch a malformed `remotes` block before the registry does.
-{% end %}
+{% </callout> %}
 
 ### Remote endpoints and auth
 
@@ -100,7 +100,7 @@ The flow, in order:
 
 Once published, any MCP client that browses the registry can discover Hypercolor and learn that it speaks Streamable HTTP at the advertised endpoint.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
 A[Author server.json] --> B[Validate against schema]
 B --> C[mcp-publisher login github]
@@ -108,7 +108,7 @@ C --> D[mcp-publisher publish]
 D --> E[Registry verifies namespace]
 E --> F[Listed under io.github.hyperb1iss/hypercolor]
 F --> G[MCP clients discover the server]
-{% end %}
+{% </mermaid> %}
 
 ## Keeping the listing honest
 

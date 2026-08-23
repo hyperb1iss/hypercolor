@@ -312,7 +312,7 @@ pub fn ComponentPicker(
                                                 type="button"
                                                 data-template-id=tid.clone()
                                                 class=if is_selected {
-                                                    "w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg bg-surface-hover/30 ring-1 ring-neon-cyan/20 transition-colors text-left"
+                                                    "w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg bg-surface-hover/30 ring-1 ring-cyan/20 transition-colors text-left"
                                                 } else {
                                                     "w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg hover:bg-surface-hover/40 transition-colors text-left"
                                                 }

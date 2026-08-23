@@ -15,9 +15,8 @@ use hypercolor_types::attachment::{
     ComponentCategory, ComponentOrigin, ComponentTemplate, ComponentTemplateManifest,
 };
 
-use crate::api::AppState;
-use crate::api::devices::Pagination;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope;
+use crate::app_state::AppState;
 use crate::domain::DomainError;
 
 // Wire contracts live in hypercolor-types::api::attachments — shared
@@ -53,14 +52,14 @@ pub async fn list_templates(
         .collect::<Vec<_>>();
     let has_more = offset.saturating_add(limit) < total;
 
-    ApiResponse::ok(TemplateListResponse {
+    envelope::ok(TemplateListResponse {
         items,
-        pagination: Pagination {
-            offset,
-            limit,
-            total,
+        total: u64::try_from(total).expect("attachment template count fits in u64"),
+        page: Some(hypercolor_types::api::PageInfo {
+            offset: u64::try_from(offset).expect("attachment template offset fits in u64"),
+            limit: u64::try_from(limit).expect("attachment template limit fits in u64"),
             has_more,
-        },
+        }),
     })
 }
 
@@ -84,7 +83,7 @@ pub async fn create_template(
         return error.into_response();
     }
 
-    ApiResponse::created(template_detail(&template))
+    envelope::created(template_detail(&template))
 }
 
 fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, DomainError> {

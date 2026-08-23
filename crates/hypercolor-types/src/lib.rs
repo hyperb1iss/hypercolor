@@ -1,7 +1,8 @@
 //! Shared type definitions for the Hypercolor RGB lighting engine.
 //!
-//! This crate contains all data types used across crate boundaries.
-//! No logic, no I/O, no async — pure data structures with serde derives.
+//! This crate contains domain types used across crate boundaries together
+//! with their validation and canonicalization. It performs no I/O and owns
+//! no async runtime.
 pub mod api;
 pub mod asset;
 pub mod attachment;

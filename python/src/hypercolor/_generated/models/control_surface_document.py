@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
 if TYPE_CHECKING:
     from ..models.b_tree_map import BTreeMap
     from ..models.control_action_descriptor import ControlActionDescriptor
@@ -25,6 +23,7 @@ class ControlSurfaceDocument:
     """Complete API document for a driver or device control surface.
 
     Attributes:
+        action_availability (BTreeMap):
         actions (list[ControlActionDescriptor]): Action descriptors.
         availability (BTreeMap):
         fields (list[ControlFieldDescriptor]): Field descriptors.
@@ -34,9 +33,9 @@ class ControlSurfaceDocument:
         scope (ControlSurfaceScope): Scope owned by a control surface.
         surface_id (str):
         values (ControlSurfaceDocumentValues): Current field values keyed by field ID.
-        action_availability (BTreeMap | Unset):
     """
 
+    action_availability: BTreeMap
     actions: list[ControlActionDescriptor]
     availability: BTreeMap
     fields: list[ControlFieldDescriptor]
@@ -46,10 +45,11 @@ class ControlSurfaceDocument:
     scope: ControlSurfaceScope
     surface_id: str
     values: ControlSurfaceDocumentValues
-    action_availability: BTreeMap | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        action_availability = self.action_availability.to_dict()
+
         actions = []
         for actions_item_data in self.actions:
             actions_item = actions_item_data.to_dict()
@@ -77,14 +77,11 @@ class ControlSurfaceDocument:
 
         values = self.values.to_dict()
 
-        action_availability: dict[str, Any] | Unset = UNSET
-        if not isinstance(self.action_availability, Unset):
-            action_availability = self.action_availability.to_dict()
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "action_availability": action_availability,
                 "actions": actions,
                 "availability": availability,
                 "fields": fields,
@@ -96,8 +93,6 @@ class ControlSurfaceDocument:
                 "values": values,
             }
         )
-        if action_availability is not UNSET:
-            field_dict["action_availability"] = action_availability
 
         return field_dict
 
@@ -113,6 +108,8 @@ class ControlSurfaceDocument:
         from ..models.control_surface_scope import ControlSurfaceScope
 
         d = dict(src_dict)
+        action_availability = BTreeMap.from_dict(d.pop("action_availability"))
+
         actions = []
         _actions = d.pop("actions")
         for actions_item_data in _actions:
@@ -146,14 +143,8 @@ class ControlSurfaceDocument:
 
         values = ControlSurfaceDocumentValues.from_dict(d.pop("values"))
 
-        _action_availability = d.pop("action_availability", UNSET)
-        action_availability: BTreeMap | Unset
-        if isinstance(_action_availability, Unset):
-            action_availability = UNSET
-        else:
-            action_availability = BTreeMap.from_dict(_action_availability)
-
         control_surface_document = cls(
+            action_availability=action_availability,
             actions=actions,
             availability=availability,
             fields=fields,
@@ -163,7 +154,6 @@ class ControlSurfaceDocument:
             scope=scope,
             surface_id=surface_id,
             values=values,
-            action_availability=action_availability,
         )
 
         control_surface_document.additional_properties = d

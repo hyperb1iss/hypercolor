@@ -10,11 +10,11 @@ pub use presets::*;
 
 use std::sync::Arc;
 
-use axum::response::{IntoResponse, Response};
-use hypercolor_types::effect::{EffectId, EffectMetadata};
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::library::PresetId;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
+use crate::domain::effect::ResolvedEffect;
 use crate::domain::{DomainError, ResourceKind};
 use crate::library::LibraryStoreError;
 
@@ -26,7 +26,7 @@ pub(crate) async fn resolve_preset_id(state: &Arc<AppState>, id_or_name: &str) -
     }
 
     state
-        .library_store
+        .library_store()
         .list_presets()
         .await
         .iter()
@@ -37,30 +37,27 @@ pub(crate) async fn resolve_preset_id(state: &Arc<AppState>, id_or_name: &str) -
 pub(crate) async fn metadata_for_effect_id(
     state: &Arc<AppState>,
     effect_id: EffectId,
-) -> Result<EffectMetadata, String> {
-    let registry = state.effect_registry.read().await;
-    let Some(entry) = registry.get(&effect_id) else {
+) -> Result<ResolvedEffect, String> {
+    let Some(metadata) = state.domains.effects.metadata_for_mutation(effect_id).await else {
         return Err(format!("effect not found: {effect_id}"));
     };
-    Ok(entry.metadata.clone())
+    Ok(metadata)
 }
 
-pub(crate) fn store_error_to_response(error: &LibraryStoreError) -> Response {
+pub(crate) fn store_error(error: &LibraryStoreError) -> DomainError {
     match error {
-        LibraryStoreError::PresetNotFound(id) => {
-            DomainError::not_found(ResourceKind::Preset, id).into_response()
-        }
+        LibraryStoreError::PresetNotFound(id) => DomainError::not_found(ResourceKind::Preset, id),
         LibraryStoreError::PresetConflict(id) => {
-            DomainError::conflict(format!("Preset already exists: {id}")).into_response()
+            DomainError::conflict(format!("Preset already exists: {id}"))
         }
         LibraryStoreError::PlaylistNotFound(id) => {
-            DomainError::not_found(ResourceKind::Playlist, id).into_response()
+            DomainError::not_found(ResourceKind::Playlist, id)
         }
         LibraryStoreError::PlaylistConflict(id) => {
-            DomainError::conflict(format!("Playlist already exists: {id}")).into_response()
+            DomainError::conflict(format!("Playlist already exists: {id}"))
         }
         LibraryStoreError::Persistence(message) => {
-            DomainError::Internal(anyhow::anyhow!(message.clone())).into_response()
+            DomainError::Internal(anyhow::anyhow!(message.clone()))
         }
     }
 }

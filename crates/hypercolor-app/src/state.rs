@@ -20,7 +20,7 @@ pub struct AppState {
     /// Global brightness percentage (0-100).
     pub brightness: u8,
     /// Currently active effect, if any.
-    pub current_effect: Option<EffectInfo>,
+    pub active_effect: Option<EffectInfo>,
     /// Currently active scene name, if known.
     pub active_scene_name: Option<String>,
     /// Whether the active scene blocks live mutation.
@@ -48,7 +48,7 @@ impl AppState {
             running: false,
             paused: false,
             brightness: 0,
-            current_effect: None,
+            active_effect: None,
             active_scene_name: None,
             scene_snapshot_locked: false,
             device_count: 0,
@@ -68,7 +68,7 @@ impl AppState {
                 self.connected = false;
                 self.running = false;
                 self.paused = false;
-                self.current_effect = None;
+                self.active_effect = None;
                 self.active_scene_name = None;
                 self.scene_snapshot_locked = false;
                 self.device_count = 0;
@@ -85,11 +85,11 @@ impl AppState {
     fn apply_state_update(&mut self, update: StateUpdate) {
         match update {
             StateUpdate::EffectChanged { id, name } => {
-                self.current_effect = Some(EffectInfo { id, name });
+                self.active_effect = Some(EffectInfo { id, name });
                 self.paused = false;
             }
             StateUpdate::EffectStopped => {
-                self.current_effect = None;
+                self.active_effect = None;
                 self.paused = false;
             }
             StateUpdate::SceneChanged {
@@ -228,65 +228,7 @@ pub enum TrayCommand {
     Quit,
 }
 
-// ── Daemon API response types (deserialization only) ────────────────────
-
-/// Envelope wrapper for daemon API responses.
-#[derive(Debug, Deserialize)]
-pub struct ApiEnvelope<T> {
-    pub data: Option<T>,
-}
-
-/// Authenticated status carried by `GET /api/v1/system`.
-#[derive(Debug, Deserialize)]
-pub struct StatusResponse {
-    pub running: bool,
-    pub active_effect: Option<String>,
-    pub active_scene: Option<String>,
-    pub active_scene_snapshot_locked: bool,
-    pub global_brightness: u8,
-    pub device_count: usize,
-}
-
-/// Public daemon identity carried by `GET /api/v1/system`.
-#[derive(Debug, Deserialize)]
-pub struct ServerResponse {
-    pub instance_id: String,
-    pub instance_name: String,
-    pub version: String,
-}
-
-/// Unified identity and optional authenticated status.
-#[derive(Debug, Deserialize)]
-pub struct SystemResponse {
-    pub identity: ServerResponse,
-    pub status: Option<StatusResponse>,
-}
-
-/// Response from `GET /api/v1/effects`.
-#[derive(Debug, Deserialize)]
-pub struct EffectListResponse {
-    pub items: Vec<EffectSummary>,
-}
-
-/// A single effect from the effect list.
-#[derive(Debug, Deserialize)]
-pub struct EffectSummary {
-    pub id: String,
-    pub name: String,
-}
-
-/// Response from `GET /api/v1/scenes`.
-#[derive(Debug, Deserialize)]
-pub struct SceneListResponse {
-    pub items: Vec<SceneSummary>,
-}
-
-/// A single scene from the scene list.
-#[derive(Debug, Deserialize)]
-pub struct SceneSummary {
-    pub id: String,
-    pub name: String,
-}
+// ── WebSocket response types (deserialization only) ────────────────────
 
 /// WebSocket hello message from the daemon.
 #[derive(Debug, Deserialize)]

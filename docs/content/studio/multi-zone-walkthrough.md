@@ -10,18 +10,18 @@ when you change scenes and tunable independently while they play. You will build
 a second zone, move device outputs into it, give each zone its own effect, hop
 between zones, and decide what happens to any output you leave behind.
 
-{{ img(path="img/ui/studio.webp", alt="Hypercolor Studio with the zone tree, the live Stage canvas, and the composition panel") }}
+{{< img path="img/ui/studio.webp" alt="Hypercolor Studio with the zone tree, the live Stage canvas, and the composition panel" />}}
 
 This is the end-to-end version of the focused pages. If you want the model
-first, read [Zones](@/studio/zones.md), [Device grouping](@/studio/device-grouping.md),
+first, read [Zones](@/studio/zones.md), [Device assignment](@/studio/device-assignment.md),
 and [Layers](@/studio/layers.md), then come back here to put it together.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 A **scene** is the whole-rig configuration. A **zone** is a flexible partition
 of that scene's canvas. One scene holds many zones, each driving a disjoint set
 of device outputs. Switching scenes swaps every zone together; this walkthrough
 lives entirely inside one scene.
-{% end %}
+{% </callout> %}
 
 ## Before you start
 
@@ -51,12 +51,12 @@ The new zone starts empty: no device outputs, no layers. Your original **Default
 zone** still owns everything. Creating a zone never moves devices on its own;
 that is the next step, and it is deliberate.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The moment a scene has more than one LED zone, Studio switches on the multi-zone
 affordances: the zone-assignment strip docks under the Stage canvas, and a
 synthetic **Unassigned** entry appears in the tree. In a single-zone scene
 neither shows, because there is nothing to partition.
-{% end %}
+{% </callout> %}
 
 ## 2. Split devices across the two zones
 
@@ -91,12 +91,12 @@ toolbar shows your selection count and clears it after a successful move.
 This is the path for partially assigning a multi-channel device: select just the
 channels you want, send them to the new zone, and leave the rest where they are.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Each device output belongs to exactly one zone at a time. Assigning an output to
 a new zone always removes it from its previous owner. There is no "copy an output
 into two zones"; exclusivity is the invariant that keeps each zone's output
 correct.
-{% end %}
+{% </callout> %}
 
 ## 3. Re-place outputs on each zone's canvas
 
@@ -127,12 +127,12 @@ controls work the same as on any single-zone scene; see
 [Effects and controls](@/studio/effects-and-controls.md) and [Layers](@/studio/layers.md)
 for blend modes, opacity, and live tuning.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Every zone shares the daemon's global audio, screen-capture, and sensor inputs.
 An audio-reactive effect in one zone and a static effect in another both read
 the same audio; the static one simply ignores it. Per-zone input routing (a
 zone capturing its own monitor) is future work.
-{% end %}
+{% </callout> %}
 
 ## 5. Switch between zones
 
@@ -172,18 +172,18 @@ The policy is editable only when the daemon advertises the
 shows read-only. The Unassigned Stage also points you back to the zone-assignment
 strip so you can pull those outputs into a real zone at any time.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 A partially assigned multi-channel device is handled per output. Its assigned
 channels render from their zone; its unassigned channels follow the
 unassigned-lights policy. You never have to assign a whole device just to satisfy
 one channel.
-{% end %}
+{% </callout> %}
 
 ## What you built
 
 One scene, two zones, two effects, a defined fate for everything in between:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     SCENE[Active scene] --> Z1[Default zone<br/>keyboard + case]
     SCENE --> Z2[Desk strips zone]
@@ -191,7 +191,7 @@ graph TD
     Z1 --> E1[Effect A]
     Z2 --> E2[Effect B]
     UN --> POL[Unassigned-lights policy:<br/>off / hold / follow a zone]
-{% end %}
+{% </mermaid> %}
 
 Both zones render concurrently and switch together when the scene changes.
 Per-zone control edits change one zone without disturbing the others. To make
@@ -202,7 +202,7 @@ whenever you want it back.
 
 - [Zones](@/studio/zones.md): the full zone lifecycle: rename, color, enable,
   make-default, delete.
-- [Device grouping](@/studio/device-grouping.md): the device card, channels,
+- [Device assignment](@/studio/device-assignment.md): the device card, channels,
   hide, identify, and remove.
 - [Scenes](@/studio/scenes.md): saving and switching whole-rig configurations.
 - [Zone API and concurrency](@/studio/zone-api-and-concurrency.md): the REST

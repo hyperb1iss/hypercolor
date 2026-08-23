@@ -5,9 +5,9 @@ use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_ui::ws::messages::{
     EFFECT_STARTED_EVENTS, EFFECT_STOPPED_EVENTS, InitialSubscriptionAdmission,
     OutputPowerReconciler, PerformanceMetrics, SCENE_EVENTS, extract_effect_error_hint,
-    extract_layer_health, extract_scene_event_hint, group_has_degraded_layer,
-    initial_subscription_admission, is_resync_required, layer_health_key, reset_layer_health_cache,
-    scene_event_affects_active_effect, sequence_scene_event_hint,
+    extract_layer_health, extract_scene_event_hint, initial_subscription_admission,
+    is_resync_required, layer_health_key, reset_layer_health_cache,
+    scene_event_affects_active_effect, sequence_scene_event_hint, zone_has_degraded_layer,
 };
 
 #[test]
@@ -133,7 +133,7 @@ fn extract_scene_event_hint_parses_active_scene_payload() {
 }
 
 #[test]
-fn extract_scene_event_hint_parses_render_group_zone_identity() {
+fn extract_scene_event_hint_parses_zone_identity() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({
@@ -185,7 +185,6 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "ceiling": 60,
             "capacity": 60.0,
             "delivered": 58.4,
-            "actual": 60.0,
             "dropped": 1
         },
         "frame_time": { "avg_ms": 8.1, "p95_ms": 12.4, "p99_ms": 15.9, "max_ms": 18.2 },
@@ -201,15 +200,13 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "producer_preview_compose_ms": 3.4,
             "composition_ms": 4.2,
             "publish_frame_data_ms": 0.1,
-            "publish_group_canvas_ms": 0.2,
+            "publish_zone_canvas_ms": 0.2,
             "publish_preview_ms": 0.3,
             "publish_events_ms": 0.4
         },
         "pacing": {
             "gpu_zone_sampling": 114,
             "gpu_sample_cpu_fallback": 2,
-            "cpu_sampling_late_readback": 0,
-            "led_sampling_readback": 0,
             "gpu_readback_failed_frames": 4,
             "scene_canvas_forced_surface": 5,
             "full_frame_copy_frames": 6
@@ -237,11 +234,9 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "budget_ms": 16.67
         },
         "render_surfaces": {
-            "slot_count": 6,
-            "free_slots": 2,
-            "preview_pool_saturation_reallocs": 7,
+            "scene_pool_saturation_reallocs": 7,
             "direct_pool_saturation_reallocs": 8,
-            "preview_pool_grown_slots": 1,
+            "scene_pool_grown_slots": 1,
             "scene_pool_slot_count": 4,
             "scene_pool_shared_published_slots": 2
         },
@@ -283,7 +278,7 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
 
     assert_eq!(metrics.fps.ceiling, 60);
     assert_eq!(metrics.fps.capacity, 60.0);
-    assert_eq!(metrics.fps.delivered_or_legacy(), 58.4);
+    assert_eq!(metrics.fps.delivered, 58.4);
     assert_eq!(metrics.input_latency.sample_count, 600);
     assert_eq!(metrics.input_latency.p99_ms, 0.91);
     assert_eq!(metrics.stages.producer_scene_compose_ms, 3.4);
@@ -324,13 +319,12 @@ fn performance_metrics_preserves_zero_delivered_fps() {
         "fps": {
             "target": 60,
             "capacity": 60.0,
-            "delivered": 0.0,
-            "actual": 60.0
+            "delivered": 0.0
         }
     }))
     .expect("new metrics payload should deserialize");
 
-    assert_eq!(metrics.fps.delivered_or_legacy(), 0.0);
+    assert_eq!(metrics.fps.delivered, 0.0);
 }
 
 #[test]
@@ -354,7 +348,7 @@ fn performance_metrics_decodes_hidden_stage_durations() {
 }
 
 #[test]
-fn performance_metrics_defaults_hidden_stage_durations_for_legacy_daemon() {
+fn performance_metrics_defaults_missing_optional_stage_durations() {
     let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
         "timeline": {
             "input_done_ms": 0.32,
@@ -363,7 +357,7 @@ fn performance_metrics_defaults_hidden_stage_durations_for_legacy_daemon() {
             "sampling_done_ms": 2.9
         }
     }))
-    .expect("legacy timeline payload should deserialize");
+    .expect("partial timeline payload should deserialize");
 
     assert_eq!(metrics.timeline.deferred_sample_ms, 0.0);
     assert_eq!(metrics.timeline.preview_advance_ms, 0.0);
@@ -371,25 +365,12 @@ fn performance_metrics_defaults_hidden_stage_durations_for_legacy_daemon() {
 }
 
 #[test]
-fn performance_metrics_falls_back_for_legacy_payload_without_delivered_fps() {
-    let metrics: PerformanceMetrics = serde_json::from_value(serde_json::json!({
-        "fps": {
-            "target": 60,
-            "actual": 60.0
-        }
-    }))
-    .expect("legacy metrics payload should deserialize");
-
-    assert_eq!(metrics.fps.delivered_or_legacy(), 60.0);
-}
-
-#[test]
-fn extract_scene_event_hint_parses_display_render_group_metadata() {
+fn extract_scene_event_hint_parses_display_zone_metadata() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "role": "display",
             "kind": "controls_patched",
         }),
@@ -402,12 +383,12 @@ fn extract_scene_event_hint_parses_display_render_group_metadata() {
 }
 
 #[test]
-fn scene_event_affects_active_effect_ignores_display_render_group_changes() {
+fn scene_event_affects_active_effect_ignores_display_zone_changes() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "role": "display",
             "kind": "updated",
         }),
@@ -417,12 +398,12 @@ fn scene_event_affects_active_effect_ignores_display_render_group_changes() {
 }
 
 #[test]
-fn scene_event_affects_active_effect_keeps_primary_render_group_changes() {
+fn scene_event_affects_active_effect_keeps_primary_zone_changes() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({
             "scene_id": "scene-1",
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "role": "primary",
             "kind": "updated",
         }),
@@ -440,7 +421,7 @@ fn extract_effect_error_hint_parses_fallback_payload() {
         &serde_json::json!({
             "effect_id": "effect-1",
             "error": "render exploded",
-            "fallback": "clear_groups",
+            "fallback": "clear_zones",
         }),
     )
     .expect("effect error hint");
@@ -448,20 +429,32 @@ fn extract_effect_error_hint_parses_fallback_payload() {
     assert_eq!(hint.event_type, "effect_error");
     assert_eq!(hint.effect_id, "effect-1");
     assert_eq!(hint.error, "render exploded");
-    assert_eq!(hint.fallback.as_deref(), Some("clear_groups"));
+    assert_eq!(hint.fallback.as_deref(), Some("clear_zones"));
 }
 
 #[test]
-fn extract_layer_health_keys_by_scene_group_and_layer() {
+fn effect_fallback_ui_consumers_keep_zone_vocabulary() {
+    for source in [
+        include_str!("../src/app/effect_state.rs"),
+        include_str!("../src/components/settings_sections.rs"),
+        include_str!("../src/pages/effects.rs"),
+    ] {
+        assert!(!source.contains("clear_groups"));
+        assert!(!source.contains("ClearGroups"));
+    }
+}
+
+#[test]
+fn extract_layer_health_keys_by_scene_zone_and_layer() {
     let (key, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
-        "zone_id": "group-1",
+        "zone_id": "zone-1",
         "layer_id": "layer-7",
         "health": "stalled",
     }))
     .expect("layer health hint");
 
-    assert_eq!(key, layer_health_key("scene-1", "group-1", "layer-7"));
+    assert_eq!(key, layer_health_key("scene-1", "zone-1", "layer-7"));
     assert_eq!(health, LayerHealth::Stalled);
 }
 
@@ -469,7 +462,7 @@ fn extract_layer_health_keys_by_scene_group_and_layer() {
 fn extract_layer_health_parses_a_failure_reason() {
     let (_, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
-        "zone_id": "group-1",
+        "zone_id": "zone-1",
         "layer_id": "layer-7",
         "health": { "failed": { "reason": "decode error" } },
     }))
@@ -490,7 +483,7 @@ fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
     assert!(extract_layer_health(&serde_json::json!({ "health": "active" })).is_none());
     assert!(
         extract_layer_health(&serde_json::json!({
-            "zone_id": "group-1",
+            "zone_id": "zone-1",
             "layer_id": "layer-7",
             "health": "active",
         }))
@@ -507,92 +500,92 @@ fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
 }
 
 #[test]
-fn layer_health_key_separates_groups_that_share_a_layer_id() {
-    // A SceneLayerId is unique only within its zone; two groups can
+fn layer_health_key_separates_zones_that_share_a_layer_id() {
+    // A SceneLayerId is unique only within its zone; two zones can
     // hold the same id, so the composite key must keep their rows distinct.
     let shared_layer = "layer-7";
-    let group_a = layer_health_key("scene-1", "group-a", shared_layer);
-    let group_b = layer_health_key("scene-1", "group-b", shared_layer);
-    assert_ne!(group_a, group_b);
+    let zone_a = layer_health_key("scene-1", "zone-a", shared_layer);
+    let zone_b = layer_health_key("scene-1", "zone-b", shared_layer);
+    assert_ne!(zone_a, zone_b);
 }
 
-/// The group's live layer-id set, as `group_has_degraded_layer` expects it.
+/// The zone's live layer-id set, as `zone_has_degraded_layer` expects it.
 fn ids(list: &[&str]) -> Vec<String> {
     list.iter().map(|id| (*id).to_owned()).collect()
 }
 
 #[test]
-fn group_has_degraded_layer_flags_only_the_owning_group() {
+fn zone_has_degraded_layer_flags_only_the_owning_zone() {
     let mut map = HashMap::new();
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-1"),
+        layer_health_key("scene-1", "zone-a", "layer-1"),
         LayerHealth::Failed {
             reason: "boom".to_owned(),
         },
     );
     map.insert(
-        layer_health_key("scene-1", "group-b", "layer-2"),
+        layer_health_key("scene-1", "zone-b", "layer-2"),
         LayerHealth::Active,
     );
 
-    // group-a owns the failed layer; group-b and an unrelated scene do not.
-    assert!(group_has_degraded_layer(
+    // zone-a owns the failed layer; zone-b and an unrelated scene do not.
+    assert!(zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1"]),
     ));
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-b",
+        "zone-b",
         &ids(&["layer-2"]),
     ));
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-2",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1"]),
     ));
 }
 
 #[test]
-fn group_has_degraded_layer_ignores_transient_states() {
+fn zone_has_degraded_layer_ignores_transient_states() {
     let mut map = HashMap::new();
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-1"),
+        layer_health_key("scene-1", "zone-a", "layer-1"),
         LayerHealth::Stalled,
     );
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-2"),
+        layer_health_key("scene-1", "zone-a", "layer-2"),
         LayerHealth::Loading,
     );
     // Loading and Stalled are transient — not a degraded surface.
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1", "layer-2"]),
     ));
 
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-3"),
+        layer_health_key("scene-1", "zone-a", "layer-3"),
         LayerHealth::AssetMissing,
     );
     // A missing asset does count as degraded.
-    assert!(group_has_degraded_layer(
+    assert!(zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1", "layer-2", "layer-3"]),
     ));
 }
 
 #[test]
-fn group_has_degraded_layer_ignores_stale_removed_layers() {
+fn zone_has_degraded_layer_ignores_stale_removed_layers() {
     let mut map = HashMap::new();
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-gone"),
+        layer_health_key("scene-1", "zone-a", "layer-gone"),
         LayerHealth::Failed {
             reason: "boom".to_owned(),
         },
@@ -601,19 +594,19 @@ fn group_has_degraded_layer_ignores_stale_removed_layers() {
     // The failed layer was removed from the stack. The daemon drops its
     // health silently, leaving a stale map entry — but with the layer no
     // longer in the live set, the surface must not read as degraded.
-    assert!(!group_has_degraded_layer(&map, "scene-1", "group-a", &[]));
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(&map, "scene-1", "zone-a", &[]));
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-still-here"]),
     ));
 
     // It does flag while the failed layer is still in the stack.
-    assert!(group_has_degraded_layer(
+    assert!(zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-gone"]),
     ));
 }

@@ -9,7 +9,7 @@ The Hypercolor desktop app (`hypercolor-app`) is the native shell that wraps the
 
 The app does three things the raw daemon cannot: it supervises the daemon process (auto-restarts on crash), registers the system tray icon, and presents the web UI in a native window. Everything it controls is ultimately talking to the daemon on `:9420`; the shell itself has no rendering logic.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard" />}}
 
 ---
 
@@ -142,13 +142,13 @@ The desktop app can register itself to launch at login. When autostart is enable
 
 Toggle autostart in the Settings page inside the app.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 If you want to start the app hidden from the command line (for example in a session startup script), pass `--minimized` or `--hidden` directly:
 
 ```bash
 hypercolor-app --minimized
 ```
-{% end %}
+{% </callout> %}
 
 ---
 

@@ -106,7 +106,7 @@ crates/hypercolor-driver-govee/
     lib.rs                    — DriverModule plus discovery, pairing, config, controls, presentation, runtime cache
     backend.rs                — GoveeBackend: DeviceBackend
     capabilities.rs           — SKU → GoveeCapabilities table (port of govee-local-api)
-    config.rs                 — GoveeConfig (mirrors types crate for local use)
+    config.rs                 # GoveeConfig owned by the driver crate
     error.rs                  — thiserror-based GoveeError, plus From impls
     fingerprint.rs            — Fingerprint builders for LAN/Cloud/BLE paths
     lan/
@@ -368,7 +368,7 @@ pub struct SkuProfile {
 
 ### Frame pacing
 
-We target 25 frames per second per device by default. Minimum frame interval is enforced at 40 milliseconds. If the render loop calls `write_colors` faster, the backend coalesces and drops the older frame. The latest-frame semantics match the `write_colors_shared` API contract (`hypercolor-core::device::traits::DeviceBackend::write_colors_shared`).
+We target 25 frames per second per device by default. Minimum frame interval is enforced at 40 milliseconds. If the render loop calls `write_colors` faster, the backend coalesces and drops the older frame. The latest-frame semantics match the `DeviceBackend::write_colors` contract from `hypercolor-driver-api`.
 
 ### Multi-device coordination
 
@@ -730,9 +730,9 @@ No core credential enum is extended. Govee stores the user's account key as encr
 
 Storage key convention: driver `"govee"`, key `"account"` (single per-user, unlike per-device pairing keys).
 
-### `hypercolor-types::config::GoveeConfig`
+### `hypercolor-driver-govee::GoveeConfig`
 
-Type in `crates/hypercolor-types/src/config.rs`:
+Type in `crates/hypercolor-driver-govee/src/config.rs`:
 
 ```rust
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -984,4 +984,4 @@ Internal:
 - Spec 51 — Unified Driver Module API. Current driver module contract.
 - `crates/hypercolor-driver-govee/src/lib.rs` — current module, pairing, config, controls, presentation, and runtime-cache implementation.
 - `crates/hypercolor-driver-builtin/src/lib.rs` — built-in module bundle registration.
-- `crates/hypercolor-driver-api/src/net/credentials.rs` — encrypted driver-scoped credential store.
+- `crates/hypercolor-driver-support/src/credential_store.rs` contains the encrypted driver-scoped credential store.

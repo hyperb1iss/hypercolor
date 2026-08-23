@@ -6,19 +6,20 @@
 
 use std::collections::HashMap;
 
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_types::layer::WebViewportRender;
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{ZoneId, ZoneRole};
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
+use hypercolor_ui::components::layer_panel::row::{layer_title, source_meta};
 use hypercolor_ui::components::layer_panel::source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, available_add_layer_scopes, blend_options,
     blend_value, default_blend_for_added_layer, effect_category_label, effect_layer_source,
-    effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, layer_source_label,
-    media_layer_source, parse_blend, parse_fit, resolve_add_layer_targets,
+    effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, media_layer_source,
+    parse_blend, parse_fit, resolve_add_layer_targets,
 };
 
 /// A valid UUID string for effect/media id parsing.
@@ -32,7 +33,7 @@ fn layer_replacement_uses_the_canonical_creation_shape() {
         source: LayerSource::ColorFill {
             rgba: [0.2, 0.4, 0.6, 1.0],
         },
-        blend: LayerBlendMode::Screen,
+        blend: BlendMode::Screen,
         opacity: 0.75,
         transform: LayerTransform::default(),
         adjust: LayerAdjust::default(),
@@ -106,42 +107,54 @@ fn effect_picker_mode_tracks_surface_and_scope() {
         EffectPickerMode::Faces.empty_detail(),
         "No matching faces or effects"
     );
-    assert!(EffectPickerMode::Faces.includes_category("display"));
-    assert!(EffectPickerMode::Faces.includes_category("source"));
-    assert!(EffectPickerMode::Faces.includes_category("utility"));
-    assert!(EffectPickerMode::Faces.includes_category("ambient"));
-    assert!(EffectPickerMode::Effects.includes_category("source"));
-    assert!(!EffectPickerMode::Effects.includes_category("display"));
-    assert!(EffectPickerMode::Mixed.includes_category("display"));
-    assert!(EffectPickerMode::Mixed.includes_category("ambient"));
-    assert_eq!(EffectPickerMode::Faces.sort_bucket("display"), 0);
-    assert_eq!(EffectPickerMode::Faces.sort_bucket("source"), 1);
-    assert_eq!(EffectPickerMode::Effects.sort_bucket("display"), 1);
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Source));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Utility));
+    assert!(EffectPickerMode::Faces.includes_category(EffectCategory::Ambient));
+    assert!(EffectPickerMode::Effects.includes_category(EffectCategory::Source));
+    assert!(!EffectPickerMode::Effects.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Display));
+    assert!(EffectPickerMode::Mixed.includes_category(EffectCategory::Ambient));
+    assert_eq!(
+        EffectPickerMode::Faces.sort_bucket(EffectCategory::Display),
+        0
+    );
+    assert_eq!(
+        EffectPickerMode::Faces.sort_bucket(EffectCategory::Source),
+        1
+    );
+    assert_eq!(
+        EffectPickerMode::Effects.sort_bucket(EffectCategory::Display),
+        1
+    );
 }
 
 #[test]
 fn effect_category_label_renames_display_to_face() {
-    assert_eq!(effect_category_label("display"), "face");
-    assert_eq!(effect_category_label("DiSpLaY"), "face");
-    assert_eq!(effect_category_label("source"), "source");
+    assert_eq!(effect_category_label(EffectCategory::Display), "face");
+    assert_eq!(effect_category_label(EffectCategory::Source), "source");
 }
 
 #[test]
 fn effect_picker_query_matches_display_by_face_label() {
-    assert!(effect_picker_matches_query("LCD Gauge", "display", "face"));
+    assert!(effect_picker_matches_query(
+        "LCD Gauge",
+        EffectCategory::Display,
+        "face"
+    ));
     assert!(effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "cast"
     ));
     assert!(effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "utility"
     ));
     assert!(!effect_picker_matches_query(
         "Screen Cast",
-        "utility",
+        EffectCategory::Utility,
         "face"
     ));
 }
@@ -149,17 +162,17 @@ fn effect_picker_query_matches_display_by_face_label() {
 #[test]
 fn blend_modes_round_trip_through_their_wire_tokens() {
     let modes = [
-        LayerBlendMode::Replace,
-        LayerBlendMode::Alpha,
-        LayerBlendMode::Add,
-        LayerBlendMode::Screen,
-        LayerBlendMode::Multiply,
-        LayerBlendMode::Overlay,
-        LayerBlendMode::SoftLight,
-        LayerBlendMode::ColorDodge,
-        LayerBlendMode::Difference,
-        LayerBlendMode::Tint,
-        LayerBlendMode::LumaReveal,
+        BlendMode::Replace,
+        BlendMode::Alpha,
+        BlendMode::Add,
+        BlendMode::Screen,
+        BlendMode::Multiply,
+        BlendMode::Overlay,
+        BlendMode::SoftLight,
+        BlendMode::ColorDodge,
+        BlendMode::Difference,
+        BlendMode::Tint,
+        BlendMode::LumaReveal,
     ];
     for mode in modes {
         assert_eq!(parse_blend(blend_value(mode)), mode);
@@ -174,7 +187,7 @@ fn blend_modes_round_trip_through_their_wire_tokens() {
 
 #[test]
 fn unknown_blend_token_falls_back_to_alpha() {
-    assert_eq!(parse_blend("not-a-blend"), LayerBlendMode::Alpha);
+    assert_eq!(parse_blend("not-a-blend"), BlendMode::Alpha);
 }
 
 #[test]
@@ -237,139 +250,122 @@ fn added_effect_layers_screen_over_existing_content_by_default() {
     let effect = effect_layer_source(SAMPLE_ID).expect("valid uuid is accepted");
     let media = media_layer_source(SAMPLE_ID).expect("valid uuid is accepted");
 
-    assert_eq!(
-        default_blend_for_added_layer(&effect, 0),
-        LayerBlendMode::Alpha
-    );
-    assert_eq!(
-        default_blend_for_added_layer(&effect, 1),
-        LayerBlendMode::Screen
-    );
-    assert_eq!(
-        default_blend_for_added_layer(&media, 1),
-        LayerBlendMode::Alpha
-    );
+    assert_eq!(default_blend_for_added_layer(&effect, 0), BlendMode::Alpha);
+    assert_eq!(default_blend_for_added_layer(&effect, 1), BlendMode::Screen);
+    assert_eq!(default_blend_for_added_layer(&media, 1), BlendMode::Alpha);
 }
 
 #[test]
-fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
+fn layer_row_titles_resolve_names_and_never_leak_raw_types() {
     let mut media_names = HashMap::new();
     media_names.insert(SAMPLE_ID.to_owned(), "paimon.gif".to_owned());
     let mut effect_names = HashMap::new();
     effect_names.insert(SAMPLE_ID.to_owned(), "Aurora".to_owned());
 
+    let titled = |source: LayerSource| {
+        let layer = layer_with_source(source, None);
+        let (_, _, kind_word) = source_meta(&layer.source);
+        (
+            layer_title(&layer, &media_names, &effect_names, kind_word),
+            kind_word,
+        )
+    };
+
     let known_media = media_layer_source(SAMPLE_ID).expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&known_media, &media_names, &effect_names),
-        "Media paimon.gif"
-    );
+    assert_eq!(titled(known_media), ("paimon.gif".to_owned(), "Media"));
 
     // An unresolved id reads as the bare kind — never the raw UUID (§15.2).
     let unknown_media =
         media_layer_source("0192f5a0-aaaa-7890-abcd-ef0123456789").expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&unknown_media, &media_names, &effect_names),
-        "Media"
-    );
+    assert_eq!(titled(unknown_media), ("Media".to_owned(), "Media"));
 
     // An effect id resolves to its registry name, never the raw UUID.
     let known_effect = effect_layer_source(SAMPLE_ID).expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&known_effect, &media_names, &effect_names),
-        "Effect Aurora"
-    );
+    assert_eq!(titled(known_effect), ("Aurora".to_owned(), "Effect"));
 
     // An unmatched effect id falls back to the bare kind, never the UUID —
     // the case a native display face outside the HTML catalog hits.
     let unknown_effect =
         effect_layer_source("0192f5a0-bbbb-7890-abcd-ef0123456789").expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&unknown_effect, &media_names, &effect_names),
-        "Effect"
-    );
+    assert_eq!(titled(unknown_effect), ("Effect".to_owned(), "Effect"));
 
     assert_eq!(
-        layer_source_label(
-            &LayerSource::ScreenRegion {
-                viewport: ViewportRect::default()
-            },
-            &media_names,
-            &effect_names
-        ),
-        "Screen region"
+        titled(LayerSource::ScreenRegion {
+            viewport: ViewportRect::default()
+        }),
+        ("Screen capture".to_owned(), "Screen capture")
     );
     assert_eq!(
-        layer_source_label(
-            &LayerSource::WebViewport {
-                url: "https://hyperb1iss.dev".to_owned(),
-                viewport: ViewportRect::default(),
-                render: WebViewportRender::default(),
-            },
-            &media_names,
-            &effect_names,
-        ),
-        "Web https://hyperb1iss.dev"
+        titled(LayerSource::WebViewport {
+            url: "https://hyperb1iss.dev".to_owned(),
+            viewport: ViewportRect::default(),
+            render: WebViewportRender::default(),
+        }),
+        ("https://hyperb1iss.dev".to_owned(), "Web page")
     );
     assert_eq!(
-        layer_source_label(
-            &LayerSource::ColorFill { rgba: [0.0; 4] },
-            &media_names,
-            &effect_names
-        ),
-        "Color fill"
+        titled(LayerSource::ColorFill { rgba: [0.0; 4] }),
+        ("Color".to_owned(), "Color")
     );
+
+    // A user-typed name outranks every resolved content name.
+    let named = layer_with_source(
+        effect_layer_source(SAMPLE_ID).expect("valid uuid"),
+        Some("Front Wash"),
+    );
+    let (_, _, kind_word) = source_meta(&named.source);
+    assert_eq!(
+        layer_title(&named, &media_names, &effect_names, kind_word),
+        "Front Wash"
+    );
+}
+
+fn layer_with_source(source: LayerSource, name: Option<&str>) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: name.map(ToOwned::to_owned),
+        source,
+        blend: BlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
 }
 
 // ── Add-layer target scope (§6.6) ───────────────────────────────────────
 
-fn sample_layout() -> SpatialLayout {
-    SpatialLayout {
-        id: "layout".to_owned(),
-        name: "Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    }
-}
-
-fn group(name: &str, role: ZoneRole) -> hypercolor_ui::api::LiveZoneView {
-    hypercolor_ui::api::LiveZoneView {
+fn zone_resource(name: &str, role: ZoneRole) -> hypercolor_ui::api::ZoneResource {
+    hypercolor_ui::api::ZoneResource {
         id: ZoneId::new(),
         name: name.to_owned(),
         description: None,
-        effect_id: None,
-        controls: HashMap::new(),
-        control_bindings: HashMap::new(),
-        preset_id: None,
-        layers: Vec::new(),
-        layout: sample_layout(),
         brightness: 1.0,
         enabled: true,
         color: None,
         display_target: None,
         role,
+        members: Vec::new(),
+        layout: None,
+        layers: Vec::new(),
     }
 }
 
 #[test]
 fn a_single_surface_offers_no_target_scope() {
-    let scopes = available_add_layer_scopes(&[group("Zone A", ZoneRole::Primary)]);
+    let scopes = available_add_layer_scopes(&[zone_resource("Zone A", ZoneRole::Primary)]);
     assert!(scopes.is_empty());
 }
 
 #[test]
 fn a_light_and_screen_scene_offers_every_relevant_scope() {
-    let groups = [
-        group("Zone A", ZoneRole::Primary),
-        group("AIO Screen", ZoneRole::Display),
+    let zones = [
+        zone_resource("Zone A", ZoneRole::Primary),
+        zone_resource("AIO Screen", ZoneRole::Display),
     ];
     assert_eq!(
-        available_add_layer_scopes(&groups),
+        available_add_layer_scopes(&zones),
         [
             AddLayerScope::ThisSurface,
             AddLayerScope::AllZones,
@@ -381,38 +377,38 @@ fn a_light_and_screen_scene_offers_every_relevant_scope() {
 
 #[test]
 fn all_screens_scope_is_dropped_when_no_screens_exist() {
-    let groups = [
-        group("Zone A", ZoneRole::Primary),
-        group("Zone B", ZoneRole::Custom),
+    let zones = [
+        zone_resource("Zone A", ZoneRole::Primary),
+        zone_resource("Zone B", ZoneRole::Custom),
     ];
-    let scopes = available_add_layer_scopes(&groups);
+    let scopes = available_add_layer_scopes(&zones);
     assert!(!scopes.contains(&AddLayerScope::AllScreens));
     assert!(scopes.contains(&AddLayerScope::AllZones));
 }
 
 #[test]
 fn scope_resolution_picks_the_right_surfaces() {
-    let groups = [
-        group("Zone A", ZoneRole::Primary),
-        group("Zone B", ZoneRole::Custom),
-        group("AIO Screen", ZoneRole::Display),
+    let zones = [
+        zone_resource("Zone A", ZoneRole::Primary),
+        zone_resource("Zone B", ZoneRole::Custom),
+        zone_resource("AIO Screen", ZoneRole::Display),
     ];
-    let selected = groups[0].id.to_string();
+    let selected = zones[0].id.to_string();
 
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::ThisSurface, &groups, &selected),
+        resolve_add_layer_targets(AddLayerScope::ThisSurface, &zones, &selected),
         vec![selected.clone()]
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::AllZones, &groups, &selected).len(),
+        resolve_add_layer_targets(AddLayerScope::AllZones, &zones, &selected).len(),
         2
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::AllScreens, &groups, &selected),
-        [groups[2].id.to_string()]
+        resolve_add_layer_targets(AddLayerScope::AllScreens, &zones, &selected),
+        [zones[2].id.to_string()]
     );
     assert_eq!(
-        resolve_add_layer_targets(AddLayerScope::WholeScene, &groups, &selected).len(),
+        resolve_add_layer_targets(AddLayerScope::WholeScene, &zones, &selected).len(),
         3
     );
 }

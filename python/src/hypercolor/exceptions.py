@@ -7,7 +7,7 @@ from typing import Any
 import msgspec
 
 
-class ApiErrorDetails(msgspec.Struct, kw_only=True):
+class ApiErrorDetails(msgspec.Struct, kw_only=True, forbid_unknown_fields=True):
     """Structured API error details."""
 
     code: str

@@ -445,7 +445,7 @@ pub fn SettingPathList(
                                     <span class="text-xs text-fg-secondary font-mono flex-1 truncate">{path}</span>
                                     <button
                                         class="w-5 h-5 rounded flex items-center justify-center text-fg-tertiary/30
-                                               hover:text-error-red transition-colors opacity-0 group-hover:opacity-100"
+                                               hover:text-status-error transition-colors opacity-0 group-hover:opacity-100"
                                         on:click=move |_| {
                                             let mut updated = paths.get();
                                             if i < updated.len() {

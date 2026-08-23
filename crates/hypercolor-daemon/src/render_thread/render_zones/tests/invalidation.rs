@@ -1,0 +1,365 @@
+use super::*;
+
+#[test]
+fn effect_registry_snapshot_reuses_generation_and_refreshes_after_rescan() {
+    let temp = tempfile::tempdir().expect("effect registry tempdir should be created");
+    let root = temp.path().join("effects");
+    std::fs::create_dir_all(&root).expect("effect registry root should be created");
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut registry = EffectRegistry::new(vec![root.clone()]);
+
+    let empty = runtime.effect_registry_snapshot(&registry);
+    let reused = runtime.effect_registry_snapshot(&registry);
+
+    assert!(Arc::ptr_eq(&empty, &reused));
+
+    let effect_path = root.join("aurora.html");
+    std::fs::write(
+        &effect_path,
+        r#"<head><title>Aurora</title><meta description="Northern lights" /></head>"#,
+    )
+    .expect("effect source should be written");
+    let added = registry.rescan();
+    let installed = runtime.effect_registry_snapshot(&registry);
+
+    assert_eq!(added.added, 1);
+    assert_eq!(installed.len(), 1);
+    assert!(!Arc::ptr_eq(&empty, &installed));
+    assert_ne!(
+        SceneDependencyKey::new(7, empty.generation()),
+        SceneDependencyKey::new(7, installed.generation())
+    );
+    assert!(Arc::ptr_eq(
+        &installed,
+        &runtime.effect_registry_snapshot(&registry)
+    ));
+
+    std::fs::remove_file(effect_path).expect("effect source should be removed");
+    let removed = registry.rescan();
+    let pruned = runtime.effect_registry_snapshot(&registry);
+
+    assert_eq!(removed.removed, 1);
+    assert!(pruned.is_empty());
+    assert!(!Arc::ptr_eq(&installed, &pruned));
+}
+
+#[test]
+fn retained_scene_invalidates_when_registry_generation_changes() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut replacement = builtin_entry(&registry, "rainbow");
+    replacement.metadata.id = solid_id;
+    let mut zone = sample_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
+        solid_id,
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
+    );
+    let display_zone_target_fps = HashMap::new();
+    let mut zones = Vec::new();
+
+    let first = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        0,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("single zone should render");
+    let ProducerFrame::Surface(first_surface) = &first.scene_frame else {
+        panic!("single zone should publish a surface-backed scene frame");
+    };
+
+    assert!(
+        runtime
+            .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
+            .is_some(),
+        "retained scene should be reusable before the registry changes"
+    );
+
+    registry.register(replacement);
+
+    assert!(
+        runtime
+            .reuse_scene(SceneDependencyKey::new(1, registry.generation()))
+            .is_none(),
+        "registry generation changes should invalidate retained scene reuse"
+    );
+
+    let second = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        1,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("registry generation change should force a rerender");
+    let ProducerFrame::Surface(second_surface) = &second.scene_frame else {
+        panic!("single zone should keep publishing a surface-backed scene frame");
+    };
+
+    assert_ne!(
+        second_surface.get_pixel(0, 0),
+        first_surface.get_pixel(0, 0),
+        "same zone revision should still rebuild when the registry entry changes"
+    );
+}
+
+#[test]
+fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let mut registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut replacement = builtin_entry(&registry, "rainbow");
+    replacement.metadata.id = solid_id;
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
+        solid_id,
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
+    );
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
+    let mut zones = Vec::new();
+
+    let first = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        0,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("display zone should render");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
+    };
+
+    registry.register(replacement);
+
+    let second = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        10,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("registry generation change should bypass retained direct-canvas reuse");
+    let [(_, second_frame)] = &second.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
+    };
+
+    assert_ne!(
+        second_frame.surface_for_test().get_pixel(0, 0),
+        first_frame.surface_for_test().get_pixel(0, 0),
+        "direct canvases should rerender immediately when the active registry entry changes"
+    );
+    assert!(
+        second_frame.surface_for_test().storage_identity()
+            != first_frame.surface_for_test().storage_identity()
+            || second_frame.surface_for_test().generation()
+                != first_frame.surface_for_test().generation(),
+        "the retained direct surface should not be reused across registry generations"
+    );
+}
+
+#[test]
+fn retained_direct_canvas_invalidates_when_zones_revision_changes() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
+        solid_id,
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
+    );
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
+    let mut zones = Vec::new();
+
+    let first = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        0,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("display zone should render");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
+    };
+
+    let second = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        2,
+        10,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("zone revision change should bypass retained direct-canvas reuse");
+    let [(_, second_frame)] = &second.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
+    };
+
+    assert!(
+        second_frame.surface_for_test().storage_identity()
+            != first_frame.surface_for_test().storage_identity()
+            || second_frame.surface_for_test().generation()
+                != first_frame.surface_for_test().generation(),
+        "the retained direct surface should not be reused across zone revisions"
+    );
+}
+
+#[test]
+fn empty_display_zone_does_not_reuse_previous_face_surface() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
+        solid_id,
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
+    );
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
+    let mut zones = Vec::new();
+
+    let first = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        0,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("display zone should render the assigned face");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
+    };
+    assert_eq!(
+        first_frame.surface_for_test().get_pixel(0, 0),
+        Rgba::new(0, 255, 0, 255)
+    );
+    zone.layers.clear();
+
+    let cleared = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        10,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("empty display zone should clear its direct route");
+
+    assert!(cleared.display_zone_frames.is_empty());
+    assert!(cleared.active_display_zone_ids.is_empty());
+}
+
+#[test]
+fn zero_zone_display_zone_reuses_retained_surface_until_target_interval() {
+    let mut runtime = ZoneRuntime::new(4, 4);
+    let registry = builtin_registry();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
+        solid_id,
+        HashMap::from([(
+            "color".into(),
+            ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
+        )]),
+    );
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
+    let mut zones = Vec::new();
+
+    let first = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        0,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("display zone should render");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
+    };
+
+    let second = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        10,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("display zone should reuse retained surface");
+    let [(_, second_frame)] = &second.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
+    };
+
+    let third = render_scene_for_test(
+        &mut runtime,
+        std::slice::from_ref(&zone),
+        1,
+        40,
+        &display_zone_target_fps,
+        &registry,
+        &mut zones,
+    )
+    .expect("display zone should rerender once its interval elapses");
+    let [(_, third_frame)] = &third.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
+    };
+
+    assert_eq!(
+        first_frame.surface_for_test().storage_identity(),
+        second_frame.surface_for_test().storage_identity()
+    );
+    assert_eq!(
+        first_frame.surface_for_test().generation(),
+        second_frame.surface_for_test().generation()
+    );
+    assert_eq!(
+        first_frame.surface_for_test().get_pixel(0, 0),
+        Rgba::new(0, 255, 0, 255)
+    );
+    assert_eq!(
+        third_frame.surface_for_test().get_pixel(0, 0),
+        Rgba::new(0, 255, 0, 255)
+    );
+    assert!(
+        third_frame.surface_for_test().storage_identity()
+            != second_frame.surface_for_test().storage_identity()
+            || third_frame.surface_for_test().generation()
+                != second_frame.surface_for_test().generation()
+    );
+}

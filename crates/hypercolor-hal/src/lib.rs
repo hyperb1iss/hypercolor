@@ -14,9 +14,7 @@ pub mod transport;
 
 pub use attachment_profile::{effective_attachment_slots, normalize_attachment_profile_slots};
 pub use database::ProtocolDatabase;
-pub use protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-};
+pub use protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};
 pub use protocol_config::{ProtocolRuntimeConfig, runtime_config_for_attachment_profile};
 pub use registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
 pub use smbus_registry::{

@@ -10,10 +10,12 @@ use hypercolor_core::input::routing::{
 };
 use hypercolor_core::input::{
     InputEventRead, InteractionBatch, InteractionData, InteractionTransientTotals, KeyboardData,
-    MotionAggregate, MouseData,
+    MotionAggregate, MouseData, ScrollAggregate,
 };
-use hypercolor_core::types::config::InteractionRoutePolicy;
-use hypercolor_core::types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::config::InteractionRoutePolicy;
+use hypercolor_types::event::{
+    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+};
 
 trait ResolveForTest {
     fn resolve(
@@ -115,10 +117,13 @@ impl FakeSlot {
         self.state.lock().expect("fake slot lock").latest = None;
     }
 
-    fn publish_wheel_snapshot(&self, generation: u64, delta_hi_res: i32) {
+    fn publish_scroll_snapshot(&self, generation: u64, delta_line120: i64) {
         self.state.lock().expect("fake slot lock").latest = Some(Arc::new(InteractionData {
             batch: InteractionBatch {
-                wheel_hi_res: delta_hi_res,
+                scroll: ScrollAggregate {
+                    line120_y_q16_16: delta_line120 << 16,
+                    ..ScrollAggregate::default()
+                },
                 ..InteractionBatch::default()
             },
             generation,
@@ -223,11 +228,15 @@ fn key_event(source_id: &str, key: &str, state: InputButtonState, seq: u64) -> T
     }
 }
 
-fn wheel_event(source_id: &str, delta_hi_res: i32, seq: u64) -> TimedInputEvent {
+fn scroll_event(source_id: &str, delta_line120: i64, seq: u64) -> TimedInputEvent {
     TimedInputEvent {
-        event: InputEvent::MouseWheel {
+        event: InputEvent::PointerScroll {
             source_id: source_id.to_owned(),
-            delta_hi_res,
+            delta_x_q16_16: 0,
+            delta_y_q16_16: delta_line120 << 16,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
         },
         at_ms: seq,
         seq,
@@ -253,13 +262,11 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
     let host_id = SourceIncarnation::host_slot(7);
     let browser_a_id = SourceIncarnation::browser_child(7);
     let browser_b_id = SourceIncarnation::browser_child(8);
-    let compatibility_id = SourceIncarnation::compatibility_aggregate(7);
     assert_ne!(host_id, browser_a_id, "source namespaces must never alias");
 
     let host = FakeSlot::with_capacity(16);
     let browser_a = FakeSlot::with_capacity(16);
     let browser_b = FakeSlot::with_capacity(16);
-    let compatibility = FakeSlot::with_capacity(16);
     let sources = vec![
         source(
             host_id,
@@ -281,13 +288,6 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
             InteractionRouteSourceClass::Browser,
             1,
             &browser_b,
-        ),
-        source(
-            compatibility_id,
-            "browser:compatibility-aggregate",
-            InteractionRouteSourceClass::CompatibilityAggregate,
-            1,
-            &compatibility,
         ),
     ];
     let mut router = InteractionRouter::default();
@@ -327,14 +327,6 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
     browser_a.publish(1, &["a"], &[]);
     browser_b.push(key_event("b", "b", InputButtonState::Pressed, 3));
     browser_b.publish(1, &["b"], &[]);
-    compatibility.push(key_event(
-        "compatibility",
-        "leak",
-        InputButtonState::Pressed,
-        4,
-    ));
-    compatibility.publish(1, &["leak"], &[]);
-
     let host_result = router.resolve(
         host_consumer,
         request(InteractionRoutePolicy::Host, None),
@@ -382,24 +374,8 @@ fn policies_select_exact_host_and_connection_scoped_browser_sources() {
     assert_eq!(merged_result.diagnostics.selected.len(), 2);
     assert_eq!(
         merged_result.diagnostics.suppressed.as_ref(),
-        [
-            Arc::<str>::from("browser:b"),
-            Arc::<str>::from("browser:compatibility-aggregate")
-        ]
+        [Arc::<str>::from("browser:b")]
     );
-    for result in [
-        &host_result,
-        &preview_a_result,
-        &preview_b_result,
-        &merged_result,
-    ] {
-        assert!(
-            !event_keys(&result.interaction)
-                .iter()
-                .any(|(key, _)| *key == "leak"),
-            "compatibility aggregate must never be routable"
-        );
-    }
 }
 
 #[test]
@@ -963,7 +939,7 @@ fn transient_baselines_reset_on_detach_and_source_replacement() {
 }
 
 #[test]
-fn wheel_is_reconstructed_from_retained_events_without_snapshot_double_counting() {
+fn scroll_is_reconstructed_from_retained_events_without_snapshot_double_counting() {
     let host_id = SourceIncarnation::host_slot(1);
     let host = FakeSlot::with_capacity(4);
     let sources = vec![source(
@@ -982,10 +958,10 @@ fn wheel_is_reconstructed_from_retained_events_without_snapshot_double_counting(
         context(0),
     );
 
-    host.push(wheel_event("host", 120, 1));
-    host.push(wheel_event("host", -30, 2));
-    host.publish_wheel_snapshot(1, 90);
-    let wheel = router.resolve(
+    host.push(scroll_event("host", 120, 1));
+    host.push(scroll_event("host", -30, 2));
+    host.publish_scroll_snapshot(1, 90);
+    let scroll = router.resolve(
         consumer,
         InteractionRouteRequest::host(),
         &sources,
@@ -998,8 +974,8 @@ fn wheel_is_reconstructed_from_retained_events_without_snapshot_double_counting(
         context(3),
     );
 
-    assert_eq!(wheel.interaction.batch.wheel_hi_res, 90);
-    assert_eq!(replay.interaction.batch.wheel_hi_res, 0);
+    assert_eq!(scroll.interaction.batch.scroll.line120_y_q16_16, 90 << 16);
+    assert_eq!(replay.interaction.batch.scroll, ScrollAggregate::default());
 }
 
 #[test]
@@ -1030,9 +1006,9 @@ fn reuse_key_advances_for_transients_when_source_generation_is_unchanged() {
         &sources,
         context(1),
     );
-    host.push(wheel_event("host", 120, 2));
-    host.publish_wheel_snapshot(7, 120);
-    let wheel = router.resolve(
+    host.push(scroll_event("host", 120, 2));
+    host.publish_scroll_snapshot(7, 120);
+    let scroll = router.resolve(
         consumer,
         InteractionRouteRequest::host(),
         &sources,
@@ -1040,19 +1016,19 @@ fn reuse_key_advances_for_transients_when_source_generation_is_unchanged() {
     );
 
     assert_eq!(baseline.reuse_key.sources, motion.reuse_key.sources);
-    assert_eq!(motion.reuse_key.sources, wheel.reuse_key.sources);
+    assert_eq!(motion.reuse_key.sources, scroll.reuse_key.sources);
     assert_eq!(
         baseline.reuse_key.route_generation,
         motion.reuse_key.route_generation
     );
     assert_eq!(
         motion.reuse_key.route_generation,
-        wheel.reuse_key.route_generation
+        scroll.reuse_key.route_generation
     );
     assert_ne!(baseline.reuse_key, motion.reuse_key);
-    assert_ne!(motion.reuse_key, wheel.reuse_key);
+    assert_ne!(motion.reuse_key, scroll.reuse_key);
     assert_eq!(motion.interaction.batch.motion.dx, 0.25);
-    assert_eq!(wheel.interaction.batch.wheel_hi_res, 120);
+    assert_eq!(scroll.interaction.batch.scroll.line120_y_q16_16, 120 << 16);
 }
 
 #[test]
@@ -1076,8 +1052,8 @@ fn equal_timestamp_events_keep_selected_source_order() {
     let route = request(InteractionRoutePolicy::Merge, Some(browser_id));
     let _ = router.resolve(consumer, route, &sources, context(0));
 
-    host.push(wheel_event("host", 120, 5));
-    browser.push(wheel_event("browser", -120, 5));
+    host.push(scroll_event("host", 120, 5));
+    browser.push(scroll_event("browser", -120, 5));
     let resolved = router.resolve(consumer, route, &sources, context(5));
     let source_ids = resolved
         .interaction
