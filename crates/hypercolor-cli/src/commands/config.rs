@@ -178,7 +178,7 @@ pub async fn execute(args: &ConfigArgs, client: &DaemonClient, ctx: &OutputConte
 }
 
 async fn execute_show(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/config").await?;
+    let response: serde_json::Value = client.get("/config").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -197,7 +197,7 @@ async fn execute_get(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let response = client.get(&config_key_path(&args.key)).await?;
+    let response: serde_json::Value = client.get(&config_key_path(&args.key)).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -244,7 +244,7 @@ async fn execute_set(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = config_key_path_with_live(&args.key, args.live_request());
-    let response = client.put(&path, &parse_cli_value(&args.value)).await?;
+    let response: serde_json::Value = client.put(&path, &parse_cli_value(&args.value)).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -276,7 +276,11 @@ async fn execute_reset(
     }
 
     let response = match &args.key {
-        Some(key) => client.delete(&config_key_path(key)).await?,
+        Some(key) => {
+            client
+                .delete::<serde_json::Value>(&config_key_path(key))
+                .await?
+        }
         None => {
             client
                 .post("/config/reset", &serde_json::Value::Null)

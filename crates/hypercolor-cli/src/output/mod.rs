@@ -98,7 +98,10 @@ impl OutputContext {
     }
 
     /// Print JSON output to stdout.
-    pub fn print_json(&self, value: &serde_json::Value) -> anyhow::Result<()> {
+    ///
+    /// Callers pass the typed response they already hold, so `--json`
+    /// renders the same field vocabulary the daemon published.
+    pub fn print_json<T: serde::Serialize + ?Sized>(&self, value: &T) -> anyhow::Result<()> {
         let output = serde_json::to_string_pretty(value)?;
         let mut stdout = std::io::stdout().lock();
         writeln!(stdout, "{output}")?;

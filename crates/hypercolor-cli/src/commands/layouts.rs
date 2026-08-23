@@ -104,53 +104,52 @@ pub async fn execute(args: &LayoutsArgs, client: &DaemonClient, ctx: &OutputCont
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get_list("/layouts").await?;
+    let response: hypercolor_types::api::ListResponse<serde_json::Value> =
+        client.get_list("/layouts").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(layouts) = response.get("items").and_then(serde_json::Value::as_array) {
-                for layout in layouts {
-                    if let Some(name) = layout.get("name").and_then(serde_json::Value::as_str) {
-                        println!("{name}");
-                    }
+            let layouts = &response.items;
+            for layout in layouts {
+                if let Some(name) = layout.get("name").and_then(serde_json::Value::as_str) {
+                    println!("{name}");
                 }
             }
         }
         OutputFormat::Table => {
-            if let Some(layouts) = response.get("items").and_then(serde_json::Value::as_array) {
-                let headers = ["ID", "Layout", "Canvas", "Zones"];
-                let rows: Vec<Vec<String>> = layouts
-                    .iter()
-                    .map(|l| {
-                        let width = l
-                            .get("canvas_width")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(0);
-                        let height = l
-                            .get("canvas_height")
-                            .and_then(serde_json::Value::as_u64)
-                            .unwrap_or(0);
-                        vec![
-                            ctx.painter.id(&extract_str(l, "id")),
-                            ctx.painter.name(&extract_str(l, "name")),
-                            ctx.painter.number(&format!("{width}x{height}")),
-                            ctx.painter.number(
-                                &l.get("zone_count")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .map_or_else(|| "?".to_string(), |c| c.to_string()),
-                            ),
-                        ]
-                    })
-                    .collect();
+            let layouts = &response.items;
+            let headers = ["ID", "Layout", "Canvas", "Zones"];
+            let rows: Vec<Vec<String>> = layouts
+                .iter()
+                .map(|l| {
+                    let width = l
+                        .get("canvas_width")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    let height = l
+                        .get("canvas_height")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    vec![
+                        ctx.painter.id(&extract_str(l, "id")),
+                        ctx.painter.name(&extract_str(l, "name")),
+                        ctx.painter.number(&format!("{width}x{height}")),
+                        ctx.painter.number(
+                            &l.get("zone_count")
+                                .and_then(serde_json::Value::as_u64)
+                                .map_or_else(|| "?".to_string(), |c| c.to_string()),
+                        ),
+                    ]
+                })
+                .collect();
 
-                ctx.print_table(&headers, &rows);
-                println!();
-                ctx.info(&format!(
-                    "{} layouts",
-                    ctx.painter.number(&layouts.len().to_string())
-                ));
-            }
+            ctx.print_table(&headers, &rows);
+            println!();
+            ctx.info(&format!(
+                "{} layouts",
+                ctx.painter.number(&layouts.len().to_string())
+            ));
         }
     }
 
@@ -163,7 +162,7 @@ async fn execute_show(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}", urlencoded(&args.name));
-    let response = client.get(&path).await?;
+    let response: serde_json::Value = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -206,7 +205,7 @@ async fn execute_update(
     let path = format!("/layouts/{}", urlencoded(&args.name));
     let body: serde_json::Value =
         serde_json::from_str(&args.data).map_err(|e| anyhow::anyhow!("Invalid JSON data: {e}"))?;
-    let response = client.put(&path, &body).await?;
+    let response: serde_json::Value = client.put(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -231,7 +230,7 @@ async fn execute_create(
             serde_json::Value::String(args.name.clone()),
         );
     }
-    let response = client.post("/layouts", &body).await?;
+    let response: serde_json::Value = client.post("/layouts", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -249,7 +248,7 @@ async fn execute_delete(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}", urlencoded(&args.name));
-    let response = client.delete(&path).await?;
+    let response: serde_json::Value = client.delete(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -262,7 +261,7 @@ async fn execute_delete(
 }
 
 async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/layouts/active").await?;
+    let response: serde_json::Value = client.get("/layouts/active").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -284,7 +283,7 @@ async fn execute_apply(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}/apply", urlencoded(&args.name));
-    let response = client.post(&path, &serde_json::json!({})).await?;
+    let response: serde_json::Value = client.post(&path, &serde_json::json!({})).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -302,8 +301,8 @@ async fn execute_preview(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/layouts/{}", urlencoded(&args.name));
-    let layout_data = client.get(&path).await?;
-    let response = client.put("/layouts/active/preview", &layout_data).await?;
+    let layout_data: serde_json::Value = client.get(&path).await?;
+    let response: serde_json::Value = client.put("/layouts/active/preview", &layout_data).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

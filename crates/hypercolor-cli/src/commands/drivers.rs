@@ -84,7 +84,7 @@ pub async fn execute(args: &DriversArgs, client: &DaemonClient, ctx: &OutputCont
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/drivers").await?;
+    let response: serde_json::Value = client.get("/drivers").await?;
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
@@ -119,7 +119,7 @@ async fn execute_controls(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let response = client
+    let response: serde_json::Value = client
         .get(&format!("/drivers/{}/controls", urlencoded(&args.driver)))
         .await?;
     controls::render_surface(&response, ctx)
@@ -137,7 +137,7 @@ async fn execute_set_control(
         clear_bindings: Vec::new(),
     };
 
-    let response = client
+    let response: serde_json::Value = client
         .patch(
             &format!("/control-surfaces/{}/values", urlencoded(&surface_id)),
             &body,
@@ -155,7 +155,7 @@ async fn execute_action(
     controls::ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
     let surface_id = extract_str(&surface, "surface_id");
     let input = controls::assignments_to_map(&args.input)?;
-    let response = client
+    let response: serde_json::Value = client
         .post(
             &format!(
                 "/control-surfaces/{}/actions/{}",

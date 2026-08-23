@@ -30,7 +30,7 @@ pub async fn execute(args: &ServerArgs, client: &DaemonClient, ctx: &OutputConte
 }
 
 async fn execute_info(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let system = client.get("/system").await?;
+    let system: serde_json::Value = client.get("/system").await?;
     let response = system
         .get("identity")
         .ok_or_else(|| anyhow::anyhow!("System response is missing daemon identity"))?;
@@ -65,7 +65,7 @@ async fn execute_info(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
 }
 
 async fn execute_health(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get_unversioned("/health").await?;
+    let response: serde_json::Value = client.get_unversioned("/health").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

@@ -106,7 +106,7 @@ pub async fn execute(args: &StatusArgs, client: &DaemonClient, ctx: &OutputConte
         return watch_status(args, client, ctx).await;
     }
 
-    let response = status_from_system(client.get("/system").await?)?;
+    let response = status_from_system(client.get::<serde_json::Value>("/system").await?)?;
     render_status(&response, ctx)?;
 
     Ok(())

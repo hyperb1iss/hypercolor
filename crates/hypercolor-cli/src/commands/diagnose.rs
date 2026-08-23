@@ -40,7 +40,7 @@ pub async fn execute(
         system: Some(args.system),
     };
 
-    let response = client.post("/diagnose", &body).await?;
+    let response: serde_json::Value = client.post("/diagnose", &body).await?;
 
     // Write report file if requested
     if let Some(report_path) = &args.report {

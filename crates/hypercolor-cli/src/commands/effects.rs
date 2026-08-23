@@ -159,7 +159,7 @@ async fn execute_list(
         path = format!("{path}?{}", query_parts.join("&"));
     }
 
-    let response = client.get(&path).await?;
+    let response: serde_json::Value = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -235,7 +235,7 @@ async fn execute_activate(
     // The daemon's apply endpoint uses effect IDs in the path.
     // URL-encode the effect name/slug for path-based lookup.
     let path = format!("/effects/{}/apply", urlencoded(&args.effect));
-    let response = client.post(&path, &body).await?;
+    let response: serde_json::Value = client.post(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -248,7 +248,7 @@ async fn execute_activate(
 }
 
 async fn execute_stop(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client
+    let response: serde_json::Value = client
         .post("/scene/clear", &ClearSceneRequest::default())
         .await?;
 
@@ -267,7 +267,7 @@ async fn execute_output_power(
     ctx: &OutputContext,
     state: OutputPowerMode,
 ) -> Result<()> {
-    let response = client
+    let response: serde_json::Value = client
         .patch(
             "/output",
             &OutputPatchRequest {
@@ -296,7 +296,7 @@ async fn execute_info(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/effects/{}", urlencoded(&args.effect));
-    let response = client.get(&path).await?;
+    let response: serde_json::Value = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -344,7 +344,7 @@ async fn execute_patch(
     }
 
     let path = format!("/scene/zones/{zone}/layers/{}/controls", layer.id);
-    let response = client
+    let response: serde_json::Value = client
         .patch(
             &path,
             &PatchControlsRequest {
@@ -367,8 +367,11 @@ async fn execute_patch(
 
 async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     let (zone, layer, effect_id, _) = active_effect_layer(client).await?;
-    let detail: EffectDetailResponse =
-        serde_json::from_value(client.get(&format!("/effects/{effect_id}")).await?)?;
+    let detail: EffectDetailResponse = serde_json::from_value(
+        client
+            .get::<serde_json::Value>(&format!("/effects/{effect_id}"))
+            .await?,
+    )?;
     let values: std::collections::HashMap<_, _> = detail
         .controls
         .into_iter()
@@ -382,7 +385,7 @@ async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()>
     else {
         anyhow::bail!("The active zone has no effect layer");
     };
-    let response = client
+    let response: serde_json::Value = client
         .put(
             &format!("/scene/zones/{zone}/layers/{}", layer.id),
             &ReplaceLayerRequest {
@@ -414,7 +417,7 @@ async fn execute_reset(client: &DaemonClient, ctx: &OutputContext) -> Result<()>
 }
 
 async fn execute_rescan(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client
+    let response: serde_json::Value = client
         .post("/effects/rescan", &serde_json::json!({}))
         .await?;
 
@@ -436,7 +439,7 @@ async fn active_effect_layer(
     client: &DaemonClient,
 ) -> Result<(ZoneId, SceneLayer, String, Vec<String>)> {
     let scene: hypercolor_types::api::scene::SceneDocument =
-        serde_json::from_value(client.get("/scene").await?)?;
+        serde_json::from_value(client.get::<serde_json::Value>("/scene").await?)?;
     let zone = scene
         .zones
         .iter()
@@ -469,7 +472,7 @@ async fn effect_control_definitions(
 ) -> Result<Vec<ControlDefinition>> {
     let detail: EffectDetailResponse = serde_json::from_value(
         client
-            .get(&format!("/effects/{}", urlencoded(effect)))
+            .get::<serde_json::Value>(&format!("/effects/{}", urlencoded(effect)))
             .await?,
     )?;
     Ok(detail.controls)

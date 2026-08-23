@@ -185,56 +185,55 @@ async fn execute_list(
         path = format!("{path}?{}", query_parts.join("&"));
     }
 
-    let response = client.get_list(&path).await?;
+    let response: hypercolor_types::api::ListResponse<serde_json::Value> =
+        client.get_list(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(devices) = response.get("items").and_then(serde_json::Value::as_array) {
-                for device in devices {
-                    if let Some(name) = device.get("name").and_then(serde_json::Value::as_str) {
-                        println!("{name}");
-                    }
+            let devices = &response.items;
+            for device in devices {
+                if let Some(name) = device.get("name").and_then(serde_json::Value::as_str) {
+                    println!("{name}");
                 }
             }
         }
         OutputFormat::Table => {
-            if let Some(devices) = response.get("items").and_then(serde_json::Value::as_array) {
-                let headers = ["Device", "Driver", "Route", "LEDs", "Status", "Firmware"];
-                let rows: Vec<Vec<String>> = devices
-                    .iter()
-                    .map(|d| {
-                        vec![
-                            ctx.painter.name(&extract_str(d, "name")),
-                            ctx.painter.muted(&origin_field(d, "driver_id")),
-                            ctx.painter.muted(&origin_field(d, "backend_id")),
-                            ctx.painter.number(
-                                &d.get("total_leds")
-                                    .and_then(serde_json::Value::as_u64)
-                                    .map_or_else(|| "?".to_string(), |l| l.to_string()),
-                            ),
-                            ctx.painter.device_state(&extract_str(d, "status")),
-                            ctx.painter.muted(
-                                d.get("firmware_version")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("-"),
-                            ),
-                        ]
-                    })
-                    .collect();
+            let devices = &response.items;
+            let headers = ["Device", "Driver", "Route", "LEDs", "Status", "Firmware"];
+            let rows: Vec<Vec<String>> = devices
+                .iter()
+                .map(|d| {
+                    vec![
+                        ctx.painter.name(&extract_str(d, "name")),
+                        ctx.painter.muted(&origin_field(d, "driver_id")),
+                        ctx.painter.muted(&origin_field(d, "backend_id")),
+                        ctx.painter.number(
+                            &d.get("total_leds")
+                                .and_then(serde_json::Value::as_u64)
+                                .map_or_else(|| "?".to_string(), |l| l.to_string()),
+                        ),
+                        ctx.painter.device_state(&extract_str(d, "status")),
+                        ctx.painter.muted(
+                            d.get("firmware_version")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("-"),
+                        ),
+                    ]
+                })
+                .collect();
 
-                ctx.print_table(&headers, &rows);
-                println!();
-                let total_leds: u64 = devices
-                    .iter()
-                    .filter_map(|d| d.get("total_leds").and_then(serde_json::Value::as_u64))
-                    .sum();
-                ctx.info(&format!(
-                    "{} devices \u{00b7} {} LEDs",
-                    ctx.painter.number(&devices.len().to_string()),
-                    ctx.painter.number(&total_leds.to_string()),
-                ));
-            }
+            ctx.print_table(&headers, &rows);
+            println!();
+            let total_leds: u64 = devices
+                .iter()
+                .filter_map(|d| d.get("total_leds").and_then(serde_json::Value::as_u64))
+                .sum();
+            ctx.info(&format!(
+                "{} devices \u{00b7} {} LEDs",
+                ctx.painter.number(&devices.len().to_string()),
+                ctx.painter.number(&total_leds.to_string()),
+            ));
         }
     }
 
@@ -247,7 +246,7 @@ async fn execute_pair(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/devices/{}/pair", urlencoded(&args.device));
-    let response = client
+    let response: serde_json::Value = client
         .post(
             &path,
             &PairDeviceRequest {
@@ -272,7 +271,7 @@ async fn execute_discover(
     };
 
     ctx.info("Discovering devices...");
-    let response = client.post("/devices/discover", &body).await?;
+    let response: serde_json::Value = client.post("/devices/discover", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -298,7 +297,7 @@ async fn execute_info(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/devices/{}", urlencoded(&args.device));
-    let response = client.get(&path).await?;
+    let response: serde_json::Value = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -359,7 +358,7 @@ async fn execute_controls(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let response = client
+    let response: serde_json::Value = client
         .get(&format!(
             "/control-surfaces?device_id={}",
             urlencoded(&args.device)
@@ -380,7 +379,7 @@ async fn execute_set_control(
         clear_bindings: Vec::new(),
     };
 
-    let response = client
+    let response: serde_json::Value = client
         .patch(
             &format!("/control-surfaces/{}/values", urlencoded(&surface_id)),
             &body,
@@ -398,7 +397,7 @@ async fn execute_action(
     controls::ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
     let surface_id = extract_str(&surface, "surface_id");
     let input = controls::assignments_to_map(&args.input)?;
-    let response = client
+    let response: serde_json::Value = client
         .post(
             &format!(
                 "/control-surfaces/{}/actions/{}",
@@ -421,7 +420,7 @@ async fn execute_identify(
         duration_ms: Some(u64::from(args.duration).saturating_mul(1000)),
         color: None,
     };
-    let response = client.post(&path, &body).await?;
+    let response: serde_json::Value = client.post(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -493,7 +492,7 @@ async fn device_control_surface_for_action(
 }
 
 async fn device_control_surfaces(client: &DaemonClient, device: &str) -> Result<Vec<Value>> {
-    let response = client
+    let response: serde_json::Value = client
         .get(&format!(
             "/control-surfaces?device_id={}",
             urlencoded(device)

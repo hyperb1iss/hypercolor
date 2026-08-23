@@ -136,7 +136,7 @@ async fn execute_snapshot(
         "name": args.name,
         "description": args.description,
     });
-    let response = client.post("/scenes/snapshot", &body).await?;
+    let response: serde_json::Value = client.post("/scenes/snapshot", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -149,7 +149,7 @@ async fn execute_snapshot(
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/scenes").await?;
+    let response: serde_json::Value = client.get("/scenes").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -211,7 +211,7 @@ async fn execute_create(
         mutation_mode: Some(args.mutation_mode.as_scene_mutation_mode()),
     };
 
-    let response = client.post("/scenes", &body).await?;
+    let response: serde_json::Value = client.post("/scenes", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -224,7 +224,7 @@ async fn execute_create(
 }
 
 async fn execute_active(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/scene").await?;
+    let response: serde_json::Value = client.get("/scene").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -261,7 +261,7 @@ async fn execute_activate(
     let body = ActivateSceneRequest {
         transition_ms: args.transition.map(u64::from),
     };
-    let response = client.post(&path, &body).await?;
+    let response: serde_json::Value = client.post(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -274,7 +274,7 @@ async fn execute_activate(
 }
 
 async fn execute_deactivate(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client
+    let response: serde_json::Value = client
         .post("/scene/deactivate", &serde_json::json!({}))
         .await?;
 
@@ -302,7 +302,7 @@ async fn execute_delete(
     }
 
     let path = format!("/scenes/{}", urlencoded(&args.name));
-    let response = client.delete(&path).await?;
+    let response: serde_json::Value = client.delete(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -320,7 +320,7 @@ async fn execute_info(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/scenes/{}", urlencoded(&args.name));
-    let response = client.get(&path).await?;
+    let response: serde_json::Value = client.get(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

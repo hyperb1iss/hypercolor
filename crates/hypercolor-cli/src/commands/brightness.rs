@@ -42,7 +42,7 @@ pub async fn execute(
 }
 
 async fn execute_get(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/output").await?;
+    let response: serde_json::Value = client.get("/output").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -68,7 +68,7 @@ async fn execute_set(
         power: None,
         brightness: Some(f32::from(u16::try_from(percent).unwrap_or(100)) / 100.0),
     };
-    let response = client.patch("/output", &body).await?;
+    let response: serde_json::Value = client.patch("/output", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

@@ -72,7 +72,7 @@ fn grant_owner_label(owner: &str) -> &str {
 /// cannot execute the requested action. Headless picker failures preserve the
 /// daemon's typed `requires_app_ui` response.
 pub async fn execute(args: &AccessArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = match args.command {
+    let response: serde_json::Value = match args.command {
         AccessCommand::ChooseScreenSource => {
             client
                 .put(args.command.route(), &serde_json::json!({}))

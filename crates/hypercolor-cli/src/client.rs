@@ -6,8 +6,9 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use hypercolor_types::api::envelope::ApiErrorBody;
+use hypercolor_types::api::envelope::{ApiErrorBody, ListResponse};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -46,13 +47,13 @@ impl DaemonClient {
         }
     }
 
-    /// Send a GET request to the daemon and parse the JSON response.
+    /// Send a GET request to the daemon and decode the payload as `T`.
     ///
     /// # Errors
     ///
-    /// Returns an error if the daemon is unreachable or returns a non-success
-    /// status code.
-    pub async fn get(&self, path: &str) -> Result<serde_json::Value> {
+    /// Returns an error if the daemon is unreachable, returns a non-success
+    /// status code, or answers with a payload that does not match `T`.
+    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
             .with_auth(self.http.get(&url))
@@ -61,48 +62,44 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-        parse_api_response(response).await
+        parse_api_response(response, path).await
     }
 
     /// Fetch every page of a list route, following `page.has_more` until the
     /// daemon reports the listing complete.
     ///
-    /// The pages are merged back into one `{ items, total }` object so
+    /// The pages are merged back into one complete [`ListResponse`] so
     /// callers and `--json` output see the same shape a single-page reply
     /// would have produced.
     ///
     /// # Errors
     ///
     /// Returns an error if any page request fails.
-    pub async fn get_list(&self, path: &str) -> Result<serde_json::Value> {
-        let mut items: Vec<serde_json::Value> = Vec::new();
-        let mut total: Option<serde_json::Value> = None;
+    pub async fn get_list<T: DeserializeOwned>(&self, path: &str) -> Result<ListResponse<T>> {
+        let mut items: Vec<T> = Vec::new();
+        let mut total: Option<u64> = None;
         let mut offset = 0_u64;
 
         loop {
-            let page = self.get(&paged_list_path(path, offset)).await?;
-            let fetched = match page.get("items").and_then(serde_json::Value::as_array) {
-                Some(array) => {
-                    items.extend(array.iter().cloned());
-                    array.len() as u64
-                }
-                None => 0,
-            };
+            let page: ListResponse<T> = self.get(&paged_list_path(path, offset)).await?;
+            let fetched = page.items.len() as u64;
+            items.extend(page.items);
             if total.is_none() {
-                total = page.get("total").cloned();
+                total = Some(page.total);
             }
-            let has_more = page
-                .pointer("/page/has_more")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
+            let has_more = page.page.is_some_and(|info| info.has_more);
             if !has_more || fetched == 0 {
                 break;
             }
             offset += fetched;
         }
 
-        let total = total.unwrap_or_else(|| serde_json::Value::from(items.len()));
-        Ok(serde_json::json!({ "items": items, "total": total }))
+        let total = total.unwrap_or(items.len() as u64);
+        Ok(ListResponse {
+            items,
+            total,
+            page: None,
+        })
     }
 
     /// Subscribe to the daemon's event channel.
@@ -125,7 +122,7 @@ impl DaemonClient {
     ///
     /// Returns an error if the daemon is unreachable or returns a non-success
     /// status code.
-    pub async fn get_unversioned(&self, path: &str) -> Result<serde_json::Value> {
+    pub async fn get_unversioned<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}{path}", self.base_url);
         let response = self
             .with_auth(self.http.get(&url))
@@ -134,7 +131,7 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-        parse_api_response(response).await
+        parse_api_response(response, path).await
     }
 
     /// Send a POST request with a JSON body and parse the response.
@@ -143,7 +140,7 @@ impl DaemonClient {
     ///
     /// Returns an error if the daemon is unreachable, the body cannot be
     /// serialized, or the daemon returns a non-success status code.
-    pub async fn post(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
+    pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
             .with_auth(self.http.post(&url))
@@ -153,7 +150,7 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-        parse_api_response(response).await
+        parse_api_response(response, path).await
     }
 
     /// Send a POST request with a JSON body, extra headers, and parse the response.
@@ -162,12 +159,12 @@ impl DaemonClient {
     ///
     /// Returns an error if the daemon is unreachable, the body cannot be
     /// serialized, or the daemon returns a non-success status code.
-    pub async fn post_with_headers(
+    pub async fn post_with_headers<T: DeserializeOwned>(
         &self,
         path: &str,
         body: &impl Serialize,
         headers: &[(&str, &str)],
-    ) -> Result<serde_json::Value> {
+    ) -> Result<T> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let request = headers.iter().fold(
             self.with_auth(self.http.post(&url)),
@@ -176,7 +173,7 @@ impl DaemonClient {
         let response = request.json(body).send().await.with_context(|| {
             format!("Failed to connect to daemon at {url}. Is the daemon running?")
         })?;
-        parse_api_response(response).await
+        parse_api_response(response, path).await
     }
 
     /// Send a PUT request with a JSON body and parse the response.
@@ -185,7 +182,7 @@ impl DaemonClient {
     ///
     /// Returns an error if the daemon is unreachable, the body cannot be
     /// serialized, or the daemon returns a non-success status code.
-    pub async fn put(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
+    pub async fn put<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
             .with_auth(self.http.put(&url))
@@ -195,7 +192,7 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-        parse_api_response(response).await
+        parse_api_response(response, path).await
     }
 
     /// Send a PATCH request with a JSON body and parse the response.
@@ -204,7 +201,7 @@ impl DaemonClient {
     ///
     /// Returns an error if the daemon is unreachable, the body cannot be
     /// serialized, or the daemon returns a non-success status code.
-    pub async fn patch(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
+    pub async fn patch<T: DeserializeOwned>(&self, path: &str, body: &impl Serialize) -> Result<T> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
             .with_auth(self.http.patch(&url))
@@ -214,7 +211,7 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-        parse_api_response(response).await
+        parse_api_response(response, path).await
     }
 
     /// Send a DELETE request and parse the response.
@@ -223,7 +220,7 @@ impl DaemonClient {
     ///
     /// Returns an error if the daemon is unreachable or returns a non-success
     /// status code.
-    pub async fn delete(&self, path: &str) -> Result<serde_json::Value> {
+    pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
             .with_auth(self.http.delete(&url))
@@ -232,7 +229,7 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-        parse_api_response(response).await
+        parse_api_response(response, path).await
     }
 
     fn with_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -397,7 +394,10 @@ pub fn paged_list_path(path: &str, offset: u64) -> String {
     format!("{path}{separator}limit={LIST_PAGE_LIMIT}&offset={offset}")
 }
 
-async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::Value> {
+async fn parse_api_response<T: DeserializeOwned>(
+    response: reqwest::Response,
+    path: &str,
+) -> Result<T> {
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
@@ -409,7 +409,11 @@ async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::V
         .await
         .context("Failed to parse daemon response as JSON")?;
 
-    Ok(json.get("data").cloned().unwrap_or(json))
+    // Versioned routes answer `{ data, meta }`; the unversioned probes
+    // answer the payload directly.
+    let payload = json.get("data").cloned().unwrap_or(json);
+    serde_json::from_value(payload)
+        .with_context(|| format!("Daemon response for {path} did not match the expected shape"))
 }
 
 /// Render a failed response as one line a human can act on.

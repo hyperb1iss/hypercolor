@@ -133,7 +133,7 @@ async fn execute_list(
         query_parts.push("include_driver=true".to_string());
     }
 
-    let response = client
+    let response: serde_json::Value = client
         .get(&format!("/control-surfaces?{}", query_parts.join("&")))
         .await?;
     render_surface_list(&response, ctx)
@@ -145,7 +145,7 @@ async fn execute_show(
     ctx: &OutputContext,
 ) -> Result<()> {
     if is_driver_device_surface(&args.target) {
-        let response = client
+        let response: serde_json::Value = client
             .get(&format!("/control-surfaces/{}", urlencoded(&args.target)))
             .await?;
         return render_surface(&response, ctx);
@@ -161,7 +161,7 @@ async fn execute_show(
         bail!("surface target must be driver:<id>, device:<id>, --driver <id>, or --device <id>");
     };
 
-    let response = client.get(&path).await?;
+    let response: serde_json::Value = client.get(&path).await?;
     render_surface(&response, ctx)
 }
 
@@ -176,7 +176,7 @@ async fn execute_set(
     };
 
     let path = format!("/control-surfaces/{}/values", urlencoded(&args.surface));
-    let response = client.patch(&path, &body).await?;
+    let response: serde_json::Value = client.patch(&path, &body).await?;
     render_apply_response(&response, ctx)
 }
 
@@ -185,7 +185,7 @@ async fn execute_action(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let surface = client
+    let surface: serde_json::Value = client
         .get(&format!("/control-surfaces/{}", urlencoded(&args.surface)))
         .await?;
     ensure_action_confirmed(&surface, &args.action, args.yes, ctx)?;
@@ -198,7 +198,7 @@ async fn execute_action(
         urlencoded(&args.surface),
         urlencoded(&args.action)
     );
-    let response = client.post(&path, &body).await?;
+    let response: serde_json::Value = client.post(&path, &body).await?;
     render_action_response(&response, ctx)
 }
 

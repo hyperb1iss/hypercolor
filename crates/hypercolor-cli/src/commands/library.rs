@@ -254,7 +254,7 @@ async fn execute_favorites(
 ) -> Result<()> {
     match &args.command {
         FavoritesCommand::List => {
-            let response = client.get("/library/favorites").await?;
+            let response: serde_json::Value = client.get("/library/favorites").await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
@@ -299,7 +299,7 @@ async fn execute_favorites(
             let body = AddFavoriteRequest {
                 effect: add_args.effect.clone(),
             };
-            let response = client.post("/library/favorites", &body).await?;
+            let response: serde_json::Value = client.post("/library/favorites", &body).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -322,7 +322,7 @@ async fn execute_favorites(
         }
         FavoritesCommand::Remove(remove_args) => {
             let path = format!("/library/favorites/{}", urlencoded(&remove_args.effect));
-            let response = client.delete(&path).await?;
+            let response: serde_json::Value = client.delete(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -346,7 +346,7 @@ async fn execute_presets(
 ) -> Result<()> {
     match &args.command {
         PresetsCommand::List => {
-            let response = client.get("/library/presets").await?;
+            let response: serde_json::Value = client.get("/library/presets").await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
@@ -408,7 +408,7 @@ async fn execute_presets(
         }
         PresetsCommand::Info(info_args) => {
             let path = format!("/library/presets/{}", urlencoded(&info_args.preset));
-            let response = client.get(&path).await?;
+            let response: serde_json::Value = client.get(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
@@ -449,14 +449,15 @@ async fn execute_presets(
         }
         PresetsCommand::Apply(apply_args) => {
             let preset_path = format!("/library/presets/{}", urlencoded(&apply_args.preset));
-            let preset = client.get(&preset_path).await?;
+            let preset: serde_json::Value = client.get(&preset_path).await?;
             let effect_id = extract_str(&preset, "effect_id");
             let path = format!(
                 "/effects/{}/presets/{}/apply",
                 urlencoded(&effect_id),
                 urlencoded(&apply_args.preset)
             );
-            let response = client.post(&path, &ApplyEffectRequest::default()).await?;
+            let response: serde_json::Value =
+                client.post(&path, &ApplyEffectRequest::default()).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -477,7 +478,7 @@ async fn execute_presets(
             }
 
             let path = format!("/library/presets/{}", urlencoded(&delete_args.preset));
-            let response = client.delete(&path).await?;
+            let response: serde_json::Value = client.delete(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -489,7 +490,7 @@ async fn execute_presets(
             let path = format!("/library/presets/{}", urlencoded(&update_args.preset));
             let body: serde_json::Value = serde_json::from_str(&update_args.data)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
-            let response = client.put(&path, &body).await?;
+            let response: serde_json::Value = client.put(&path, &body).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -516,7 +517,7 @@ async fn execute_playlists(
             execute_create_playlist(create_args, client, ctx).await?;
         }
         PlaylistsCommand::List => {
-            let response = client.get("/library/playlists").await?;
+            let response: serde_json::Value = client.get("/library/playlists").await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
@@ -572,7 +573,7 @@ async fn execute_playlists(
         }
         PlaylistsCommand::Info(info_args) => {
             let path = format!("/library/playlists/{}", urlencoded(&info_args.playlist));
-            let response = client.get(&path).await?;
+            let response: serde_json::Value = client.get(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => println!("{}", extract_str(&response, "name")),
@@ -604,7 +605,7 @@ async fn execute_playlists(
                 "/library/playlists/{}/activate",
                 urlencoded(&activate_args.playlist)
             );
-            let response = client.post(&path, &serde_json::json!({})).await?;
+            let response: serde_json::Value = client.post(&path, &serde_json::json!({})).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -618,7 +619,7 @@ async fn execute_playlists(
             }
         }
         PlaylistsCommand::Active => {
-            let response = client.get("/library/playlists/active").await?;
+            let response: serde_json::Value = client.get("/library/playlists/active").await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain => {
@@ -657,7 +658,7 @@ async fn execute_playlists(
             }
         }
         PlaylistsCommand::Deactivate => {
-            let response = client
+            let response: serde_json::Value = client
                 .post("/library/playlists/deactivate", &serde_json::json!({}))
                 .await?;
             match ctx.format {
@@ -682,7 +683,7 @@ async fn execute_playlists(
             }
 
             let path = format!("/library/playlists/{}", urlencoded(&delete_args.playlist));
-            let response = client.delete(&path).await?;
+            let response: serde_json::Value = client.delete(&path).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -694,7 +695,7 @@ async fn execute_playlists(
             let path = format!("/library/playlists/{}", urlencoded(&update_args.playlist));
             let body: serde_json::Value = serde_json::from_str(&update_args.data)
                 .map_err(|e| anyhow::anyhow!("Invalid JSON: {e}"))?;
-            let response = client.put(&path, &body).await?;
+            let response: serde_json::Value = client.put(&path, &body).await?;
             match ctx.format {
                 OutputFormat::Json => ctx.print_json(&response)?,
                 OutputFormat::Plain | OutputFormat::Table => {
@@ -724,7 +725,7 @@ async fn execute_create_preset(
         controls: Some(serde_json::Value::Object(controls)),
         tags: Some(args.tag.clone()),
     };
-    let response = client.post("/library/presets", &body).await?;
+    let response: serde_json::Value = client.post("/library/presets", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -768,7 +769,7 @@ async fn execute_create_playlist(
         loop_enabled: Some(!args.no_loop),
         items: Some(items),
     };
-    let response = client.post("/library/playlists", &body).await?;
+    let response: serde_json::Value = client.post("/library/playlists", &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
