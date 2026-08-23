@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use thiserror::Error;
+use tokio::sync::watch;
 
 use super::plan::{
     InputPublicationDemandRevision, ScreenCapturePlan, ScreenPlanError, ScreenPlanGeneration,
@@ -17,8 +18,9 @@ use super::plan::{
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat, CaptureSourceId,
     CaptureTransferFunction, LetterboxBars, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
-    ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationExecutor,
-    ScreenPublicationKind, ScreenPublicationResidency,
+    RegisteredScreenBranchDemand, ResolvedScreenPublicationDescriptor, ScreenByteLease,
+    ScreenConsumerBranchId, ScreenConsumerBranchRevision, ScreenConsumerBranchRoute,
+    ScreenPublicationExecutor, ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
@@ -1519,6 +1521,12 @@ impl ScreenCommittedState {
         self.worker_bindings.as_slice()
     }
 
+    /// Committed routes from consumer registrations to canonical branches.
+    #[must_use]
+    pub fn route_catalog(&self) -> &[ScreenConsumerBranchRoute] {
+        self.plan.consumer_routes()
+    }
+
     pub(crate) fn runtime_binding(
         &self,
         source_id: &CaptureSourceId,
@@ -1746,6 +1754,7 @@ impl ScreenCommitActivation {
 /// Coordinator-owned atomic screen runtime authority.
 pub struct ScreenPublicationHub {
     state: Arc<ArcSwap<ScreenCommittedState>>,
+    plan_generation: watch::Sender<ScreenPlanGeneration>,
     pending_retired_bytes: Arc<AtomicU64>,
     next_invalidation_epoch: AtomicU64,
 }
@@ -1753,11 +1762,13 @@ pub struct ScreenPublicationHub {
 impl ScreenPublicationHub {
     pub(crate) fn new(slot_policy: ScreenPublicationSlotPolicy) -> Self {
         let pending_retired_bytes = Arc::new(AtomicU64::new(0));
+        let (plan_generation, _) = watch::channel(ScreenPlanGeneration::default());
         Self {
             state: Arc::new(ArcSwap::from_pointee(ScreenCommittedState::initial(
                 slot_policy,
                 Arc::clone(&pending_retired_bytes),
             ))),
+            plan_generation,
             pending_retired_bytes,
             next_invalidation_epoch: AtomicU64::new(1),
         }
@@ -1793,6 +1804,19 @@ impl ScreenPublicationHub {
                 authority: Arc::clone(&self.state),
             });
         (generation, lease)
+    }
+
+    /// Bind a registration-owned observer to its exact committed route.
+    #[must_use]
+    pub fn branch_observer(
+        &self,
+        consumer_branch_id: ScreenConsumerBranchId,
+    ) -> ScreenBranchObserver {
+        ScreenBranchObserver {
+            consumer_branch_id,
+            authority: Arc::clone(&self.state),
+            plan_generation: self.plan_generation.subscribe(),
+        }
     }
 
     /// Currently committed demand revision.
@@ -2241,6 +2265,7 @@ impl ScreenPublicationHub {
         for lifetime in &activation.retired_resource_lifetimes {
             lifetime.arm_retirement();
         }
+        let plan_generation = state.plan.generation();
         self.state.store(state);
         for entry in &activation.retired_entries {
             entry.retire();
@@ -2254,6 +2279,13 @@ impl ScreenPublicationHub {
         for entry in &activation.retired_entries {
             entry.reap_releasable_gpu_payloads();
         }
+        self.plan_generation.send_if_modified(|current| {
+            if *current == plan_generation {
+                return false;
+            }
+            *current = plan_generation;
+            true
+        });
         let ScreenCommitActivation {
             activation: _,
             barrier_bindings: _,
@@ -2387,6 +2419,106 @@ impl fmt::Debug for ScreenPublicationHub {
 pub struct ScreenBranchLease {
     branch: Arc<ScreenBranchEntry>,
     authority: Arc<ArcSwap<ScreenCommittedState>>,
+}
+
+/// One coherent observation of a registration's current exact route.
+#[derive(Clone, Debug)]
+pub struct ScreenBranchObserverSnapshot {
+    consumer_branch_id: ScreenConsumerBranchId,
+    plan_generation: ScreenPlanGeneration,
+    branch_revision: Option<ScreenConsumerBranchRevision>,
+    lease: Option<ScreenBranchLease>,
+}
+
+impl ScreenBranchObserverSnapshot {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Committed plan generation observed with the route.
+    #[must_use]
+    pub const fn plan_generation(&self) -> ScreenPlanGeneration {
+        self.plan_generation
+    }
+
+    /// Revision of the active exact route, or `None` after removal.
+    #[must_use]
+    pub const fn branch_revision(&self) -> Option<ScreenConsumerBranchRevision> {
+        self.branch_revision
+    }
+
+    /// Exact active branch lease, or `None` after removal.
+    #[must_use]
+    pub const fn lease(&self) -> Option<&ScreenBranchLease> {
+        self.lease.as_ref()
+    }
+
+    /// Consume the observation and return its exact active lease.
+    #[must_use]
+    pub fn into_lease(self) -> Option<ScreenBranchLease> {
+        self.lease
+    }
+}
+
+/// Registration-owned latest-value observer for one exact consumer route.
+pub struct ScreenBranchObserver {
+    consumer_branch_id: ScreenConsumerBranchId,
+    authority: Arc<ArcSwap<ScreenCommittedState>>,
+    plan_generation: watch::Receiver<ScreenPlanGeneration>,
+}
+
+impl ScreenBranchObserver {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Read one coherent committed route snapshot without retaining old routes.
+    #[must_use]
+    pub fn snapshot(&self) -> ScreenBranchObserverSnapshot {
+        let state = self.authority.load_full();
+        let route = state.plan.consumer_route(self.consumer_branch_id);
+        let lease = route.map(|route| {
+            let branch = &state.branches[route.branch_index()];
+            ScreenBranchLease {
+                branch: Arc::clone(&branch.entry),
+                authority: Arc::clone(&self.authority),
+            }
+        });
+        ScreenBranchObserverSnapshot {
+            consumer_branch_id: self.consumer_branch_id,
+            plan_generation: state.plan.generation(),
+            branch_revision: route.map(ScreenConsumerBranchRoute::revision),
+            lease,
+        }
+    }
+
+    /// Wait for the next committed screen-plan generation.
+    pub async fn changed(&mut self) -> Option<ScreenBranchObserverSnapshot> {
+        self.plan_generation.changed().await.ok()?;
+        Some(self.snapshot())
+    }
+}
+
+impl fmt::Debug for ScreenBranchObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScreenBranchObserver")
+            .field("consumer_branch_id", &self.consumer_branch_id)
+            .field("plan_generation", &*self.plan_generation.borrow())
+            .finish_non_exhaustive()
+    }
+}
+
+impl RegisteredScreenBranchDemand {
+    /// Observe the exact route owned by this registration.
+    #[must_use]
+    pub fn observer(&self, hub: &ScreenPublicationHub) -> ScreenBranchObserver {
+        hub.branch_observer(self.consumer_branch_id())
+    }
 }
 
 impl ScreenBranchLease {

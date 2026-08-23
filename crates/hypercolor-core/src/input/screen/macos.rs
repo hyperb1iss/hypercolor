@@ -1527,7 +1527,8 @@ impl InputSource for MacosScreenCaptureInput {
             .as_ref()
             .clone()
             .with_led_tone_map(calibration);
-        let calibrated = RegisteredScreenBranchDemand::new(
+        let calibrated = RegisteredScreenBranchDemand::with_id(
+            demand.consumer_branch_id(),
             ScreenPublicationRequest::new(
                 request.selector().clone(),
                 request.kind(),
