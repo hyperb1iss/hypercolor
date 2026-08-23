@@ -259,6 +259,58 @@ impl From<&SceneLayer> for ReplaceSceneLayerRequest {
     }
 }
 
+/// Hard media-producer caps a scene is measured against.
+///
+/// Rides the canonical error envelope's `error.details` when a scene
+/// exceeds them, beside the counts and the offending layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct MediaProducerCaps {
+    /// How many distinct video assets a scene may drive at once.
+    pub video: usize,
+    /// How many distinct livestream assets a scene may drive at once.
+    pub livestream: usize,
+}
+
+/// What a scene candidate actually asks of the media producers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct MediaProducerCounts {
+    /// Distinct video assets the scene drives.
+    pub video: usize,
+    /// Distinct livestream assets the scene drives.
+    pub livestream: usize,
+}
+
+/// One layer that contributes to a media-producer count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct MediaLayerDetail {
+    /// The zone holding the layer.
+    pub zone_id: String,
+    /// That zone's name, so a client can name it without a second read.
+    pub zone_name: String,
+    /// The layer itself.
+    pub layer_id: String,
+    /// That layer's name, when the layer carries one.
+    #[serde(default)]
+    pub layer_name: Option<String>,
+    /// The media asset the layer sources.
+    pub asset_id: String,
+    /// The asset's MIME type, which decides which cap it counts against.
+    pub mime_type: String,
+}
+
+/// The layers behind each media-producer count, grouped by producer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct MediaProducerLayers {
+    /// Layers counting against the video cap.
+    pub video: Vec<MediaLayerDetail>,
+    /// Layers counting against the livestream cap.
+    pub livestream: Vec<MediaLayerDetail>,
+}
+
 const fn default_layer_opacity() -> f32 {
     1.0
 }

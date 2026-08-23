@@ -31,7 +31,9 @@ use hypercolor_core::scene::{
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::api::scene::SideEffectOutcome;
 use hypercolor_types::api::scenes::{
-    ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest, SceneLayoutActivationOutcome,
+    MediaLayerDetail, MediaProducerCaps, MediaProducerCounts, MediaProducerLayers,
+    ReplaceSceneLayerRequest, ReplaceSceneRequest, ReplaceZoneRequest,
+    SceneLayoutActivationOutcome,
 };
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::config::MediaConfig;
@@ -1663,9 +1665,9 @@ const LIVESTREAM_PRODUCER_COST_US: u64 = 25_000;
 #[derive(Debug)]
 pub struct MediaAdmissionViolationDetails {
     pub message: String,
-    pub caps: serde_json::Value,
-    pub counts: serde_json::Value,
-    pub layers: serde_json::Value,
+    pub caps: MediaProducerCaps,
+    pub counts: MediaProducerCounts,
+    pub layers: MediaProducerLayers,
 }
 
 #[derive(Debug, Default)]
@@ -1674,8 +1676,8 @@ struct MediaAdmissionCounts {
     livestream_asset_ids: HashSet<AssetId>,
     lottie_asset_ids: HashSet<AssetId>,
     estimated_cost_us: u64,
-    video_layers: Vec<serde_json::Value>,
-    livestream_layers: Vec<serde_json::Value>,
+    video_layers: Vec<MediaLayerDetail>,
+    livestream_layers: Vec<MediaLayerDetail>,
 }
 
 impl MediaAdmissionCounts {
@@ -1808,18 +1810,18 @@ fn scene_media_admission_violation_details(
             "Scene exceeds media producer caps: {}",
             violations.join(", ")
         ),
-        caps: serde_json::json!({
-            "video": video_cap,
-            "livestream": livestream_cap,
-        }),
-        counts: serde_json::json!({
-            "video": video_count,
-            "livestream": livestream_count,
-        }),
-        layers: serde_json::json!({
-            "video": counts.video_layers,
-            "livestream": counts.livestream_layers,
-        }),
+        caps: MediaProducerCaps {
+            video: video_cap,
+            livestream: livestream_cap,
+        },
+        counts: MediaProducerCounts {
+            video: video_count,
+            livestream: livestream_count,
+        },
+        layers: MediaProducerLayers {
+            video: counts.video_layers.clone(),
+            livestream: counts.livestream_layers.clone(),
+        },
     })
 }
 
@@ -1877,15 +1879,15 @@ fn media_admission_layer_detail(
     layer: &SceneLayer,
     asset_id: AssetId,
     mime_type: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "zone_id": zone.id.to_string(),
-        "zone_name": &zone.name,
-        "layer_id": layer.id.to_string(),
-        "layer_name": &layer.name,
-        "asset_id": asset_id.to_string(),
-        "mime_type": mime_type,
-    })
+) -> MediaLayerDetail {
+    MediaLayerDetail {
+        zone_id: zone.id.to_string(),
+        zone_name: zone.name.clone(),
+        layer_id: layer.id.to_string(),
+        layer_name: layer.name.clone(),
+        asset_id: asset_id.to_string(),
+        mime_type: mime_type.to_owned(),
+    }
 }
 
 // ── activate_scene ───────────────────────────────────────────────────────
