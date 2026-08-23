@@ -11063,7 +11063,8 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
         .await
         .expect("device should exist");
     let layout_device_id = {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let discovery = state.driver_host().discovery_runtime();
+        let mut lifecycle = discovery.lifecycle_manager.lock().await;
         let _actions = lifecycle.on_discovered(device_id, &tracked.info, None);
         lifecycle
             .layout_device_id_for(device_id)
@@ -11080,7 +11081,8 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
         .expect("device should connect for disable flow");
 
     {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let discovery = state.driver_host().discovery_runtime();
+        let mut lifecycle = discovery.lifecycle_manager.lock().await;
         lifecycle
             .on_connected(device_id)
             .expect("connect transition should succeed");
@@ -11824,7 +11826,8 @@ async fn list_devices_includes_hue_auth_summary_when_configured() {
     let _device_id =
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "hue",
             "test-bridge",
@@ -12449,7 +12452,8 @@ async fn pair_device_route_pairs_hue_by_device_id() {
 
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("hue", "test-bridge")
             .await,
         Some(serde_json::json!({
@@ -12568,7 +12572,8 @@ async fn pair_device_route_pairs_nanoleaf_by_device_id() {
 
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("nanoleaf", "serial42")
             .await,
         Some(serde_json::json!({
@@ -12587,7 +12592,8 @@ async fn delete_pairing_removes_hue_credentials() {
     let device_id =
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "hue",
             "test-bridge",
@@ -12599,7 +12605,8 @@ async fn delete_pairing_removes_hue_credentials() {
         .await
         .expect("store Hue credentials");
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "hue",
             "ip:10.0.0.5",
@@ -12629,14 +12636,16 @@ async fn delete_pairing_removes_hue_credentials() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "required");
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("hue", "test-bridge")
             .await,
         None
     );
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("hue", "ip:10.0.0.5")
             .await,
         None
@@ -12652,7 +12661,8 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
         insert_test_nanoleaf_device(&state, "Living Room Shapes", "serial42", "10.0.0.8", 16021)
             .await;
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "nanoleaf",
             "serial42",
@@ -12663,7 +12673,8 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
         .await
         .expect("store Nanoleaf credentials");
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "nanoleaf",
             "ip:10.0.0.8",
@@ -12692,14 +12703,16 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "required");
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("nanoleaf", "serial42")
             .await,
         None
     );
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("nanoleaf", "ip:10.0.0.8")
             .await,
         None

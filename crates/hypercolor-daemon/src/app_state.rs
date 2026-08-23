@@ -13,7 +13,6 @@ use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use tokio::sync::{Mutex, RwLock};
-use tokio::task::JoinHandle;
 use tracing::warn;
 
 use hypercolor_core::asset::AssetLibrary;
@@ -32,7 +31,6 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{HypercolorConfig, RenderAccelerationMode};
-use hypercolor_types::device::DeviceId;
 use hypercolor_types::server::ServerIdentity;
 
 use crate::attachment_profiles::ComponentProfileStore;
@@ -151,12 +149,6 @@ pub struct AppState {
     /// Rolling per-device metrics snapshot shared with device metrics endpoints.
     pub device_metrics: DeviceMetricsSnapshotStore,
 
-    /// Device lifecycle state/action orchestration.
-    pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
-
-    /// Active reconnect tasks keyed by device ID.
-    pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
-
     /// Configuration manager for config API endpoints.
     pub(crate) config_manager: Option<Arc<ConfigManager>>,
 
@@ -220,9 +212,6 @@ pub struct AppState {
 
     /// Latest composited display frames captured per device for preview surfaces.
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
-
-    /// Shared encrypted credential store for driver-authenticated backends.
-    pub credential_store: Arc<CredentialStore>,
 
     /// Narrow host adapter shared with built-in driver modules.
     driver_host: Arc<DaemonDriverHost>,
@@ -649,8 +638,6 @@ impl AppState {
             performance,
             render_acceleration: crate::startup::cpu_compositor_acceleration_resolution(),
             device_metrics,
-            lifecycle_manager,
-            reconnect_tasks,
             config_manager,
             data_dir,
             extensions: ExtensionRegistry::default(),
@@ -674,7 +661,6 @@ impl AppState {
             simulated_displays,
             simulated_display_runtime,
             display_frames,
-            credential_store,
             driver_host,
             driver_registry,
             logical_devices,
@@ -757,8 +743,6 @@ impl AppState {
             performance: Arc::clone(&daemon.performance),
             render_acceleration: daemon.render_acceleration.clone(),
             device_metrics: Arc::clone(&daemon.device_metrics),
-            lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
-            reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             data_dir,
             extensions: daemon.extensions.clone(),
@@ -784,7 +768,6 @@ impl AppState {
             simulated_displays: Arc::clone(&daemon.simulated_displays),
             simulated_display_runtime: Arc::clone(&daemon.simulated_display_runtime),
             display_frames: Arc::clone(&daemon.display_frames),
-            credential_store: Arc::clone(&daemon.credential_store),
             driver_host,
             driver_registry,
             logical_devices: Arc::clone(&daemon.logical_devices),

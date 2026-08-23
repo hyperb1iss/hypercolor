@@ -668,7 +668,8 @@ async fn activation_persists_zones_after_auto_layout_convergence() {
             .await
     );
     let layout_device_id = {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let discovery = state.driver_host().discovery_runtime();
+        let mut lifecycle = discovery.lifecycle_manager.lock().await;
         let _ = lifecycle.on_discovered(device_id, &info, Some(&fingerprint));
         lifecycle
             .on_connected(device_id)
