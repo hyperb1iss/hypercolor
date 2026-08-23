@@ -6,7 +6,9 @@
 
 use std::f32::consts::{PI, TAU};
 
-use hypercolor_types::spatial::{LedTopology, NormalizedPosition, SpatialLayout, StripDirection};
+use hypercolor_types::spatial::{
+    LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneShape,
+};
 
 #[path = "layout_geometry/compounds.rs"]
 mod compounds;
@@ -46,25 +48,66 @@ pub enum ResizeHandle {
 }
 
 pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
+    let aspect = canvas_pixel_aspect(layout.canvas_width, layout.canvas_height);
     for zone in &mut layout.zones {
-        zone.size = normalize_zone_size_for_editor(zone.position, zone.size, &zone.topology);
+        zone.size = normalize_zone_size_for_editor(
+            zone.position,
+            zone.size,
+            &zone.topology,
+            zone.shape.as_ref(),
+            aspect,
+        );
     }
     layout
+}
+
+/// Whether a zone renders and samples as a circle. The explicit shape
+/// wins when present; a bare Ring topology is circular by default. This
+/// is THE circularity predicate: locked resize, release normalization,
+/// and the canvas CSS all key off it so they can never disagree.
+pub fn is_circular_zone(shape: Option<&ZoneShape>, topology: &LedTopology) -> bool {
+    match shape {
+        Some(ZoneShape::Ring | ZoneShape::Arc { .. }) => true,
+        Some(_) => false,
+        None => matches!(topology, LedTopology::Ring { .. }),
+    }
+}
+
+/// Pixel aspect (width / height) of a canvas extent.
+pub(crate) fn canvas_pixel_aspect(canvas_width: u32, canvas_height: u32) -> f32 {
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    let ratio = canvas_width.max(1) as f32 / canvas_height.max(1) as f32;
+    ratio.max(GRID_EPSILON)
 }
 
 pub fn normalize_zone_size_for_editor(
     position: NormalizedPosition,
     size: NormalizedPosition,
     topology: &LedTopology,
+    shape: Option<&ZoneShape>,
+    canvas_aspect: f32,
 ) -> NormalizedPosition {
+    if is_circular_zone(shape, topology) {
+        return pixel_square_size(size, canvas_aspect);
+    }
     match topology {
         LedTopology::Strip { direction, .. } => clamp_strip_size(position, size, *direction),
-        LedTopology::Ring { .. } => {
-            let side = size.x.min(size.y).max(RESIZE_MIN_SIZE);
-            NormalizedPosition::new(side, side)
-        }
         _ => size,
     }
+}
+
+/// Square in canvas *pixels*, matching both the CSS (`aspect-ratio: 1`)
+/// and the sampled LED circle, which lives in the zone's pixel rect. A
+/// normalized square on a non-square canvas is an ellipse in both.
+fn pixel_square_size(size: NormalizedPosition, canvas_aspect: f32) -> NormalizedPosition {
+    let aspect = canvas_aspect.max(GRID_EPSILON);
+    let mut width = size.x.min(size.y / aspect).max(RESIZE_MIN_SIZE);
+    let mut height = width * aspect;
+    if height > 1.0 {
+        height = 1.0;
+        width = height / aspect;
+    }
+    NormalizedPosition::new(width, height)
 }
 
 pub(crate) fn drag_zone_to_position(

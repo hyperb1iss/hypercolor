@@ -27,7 +27,7 @@ use crate::render_canvas;
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::style_utils::device_accent_colors;
-use hypercolor_types::spatial::{NormalizedPosition, Output, ZoneShape};
+use hypercolor_types::spatial::{NormalizedPosition, Output};
 
 mod interaction;
 mod overlays;
@@ -280,13 +280,20 @@ pub fn LayoutCanvas() -> impl IntoView {
                 return;
             }
 
-            // Apply size normalization (strip aspect / ring squaring) once
-            // at release. Doing this mid-drag would fight the pointer.
+            // Apply size normalization (strip aspect / circle squaring)
+            // once at release. Doing this mid-drag would fight the pointer.
+            let aspect = layout.with_untracked(|current| {
+                current.as_ref().map_or(1.0, |l| {
+                    layout_geometry::canvas_pixel_aspect(l.canvas_width, l.canvas_height)
+                })
+            });
             for zone in &mut runtime.current_zones {
                 zone.size = layout_geometry::normalize_zone_size_for_editor(
                     zone.position,
                     zone.size,
                     &zone.topology,
+                    zone.shape.as_ref(),
+                    aspect,
                 );
             }
             let final_zones = std::mem::take(&mut runtime.current_zones);
@@ -472,9 +479,9 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         // For Ring/Arc zones, omit explicit height and use
                                         // aspect-ratio: 1 so the browser enforces a perfect
                                         // circle regardless of canvas aspect ratio.
-                                        let is_circular = matches!(
-                                            zone.shape,
-                                            Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
+                                        let is_circular = layout_geometry::is_circular_zone(
+                                            zone.shape.as_ref(),
+                                            &zone.topology,
                                         );
                                         let position_style = if is_circular {
                                             format!(

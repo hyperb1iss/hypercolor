@@ -154,10 +154,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id)
                 {
                     updater(zone);
+                    let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
                         zone.position,
                         zone.size,
                         &zone.topology,
+                        zone.shape.as_ref(),
+                        layout_geometry::canvas_pixel_aspect(canvas_w, canvas_h),
                     );
                 }
             });
@@ -170,10 +173,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let changed =
                     layout_geometry::set_zone_rotation(layout, &zone_id, rotation_radians);
                 if changed && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                    let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
                         zone.position,
                         zone.size,
                         &zone.topology,
+                        zone.shape.as_ref(),
+                        layout_geometry::canvas_pixel_aspect(canvas_w, canvas_h),
                     );
                 }
             }
@@ -592,6 +598,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                         zone.position,
                                                         defaults.size,
                                                         &defaults.topology,
+                                                        defaults.shape.as_ref(),
+                                                        crate::layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height),
                                                     );
                                                     zone.rotation = 0.0;
                                                     zone.scale = 1.0;

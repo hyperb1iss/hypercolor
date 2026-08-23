@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::layout_geometry::{self, ResizeHandle};
-use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout, ZoneShape};
+use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
 /// Drag/resize runtime — non-reactive state machine for an in-flight pointer
 /// interaction. Owns cached DOM refs, the immutable base snapshot, and a
@@ -129,10 +129,8 @@ impl DragRuntime {
                     self.current_zones = working.zones;
                     return false;
                 };
-                let force_locked = matches!(
-                    zone.shape,
-                    Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
-                );
+                let force_locked =
+                    layout_geometry::is_circular_zone(zone.shape.as_ref(), &zone.topology);
                 let (position, size) = layout_geometry::resize_zone_from_handle(
                     *start_center,
                     *start_size,
@@ -179,10 +177,8 @@ impl DragRuntime {
             let _ = style.set_property("left", &format!("{x_pct:.2}%"));
             let _ = style.set_property("top", &format!("{y_pct:.2}%"));
             let _ = style.set_property("width", &format!("{w_pct:.2}%"));
-            let is_circular = matches!(
-                zone.shape,
-                Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
-            );
+            let is_circular =
+                layout_geometry::is_circular_zone(zone.shape.as_ref(), &zone.topology);
             if is_circular {
                 let _ = style.set_property("aspect-ratio", "1");
                 // Browsers ignore stale `height` in the presence of

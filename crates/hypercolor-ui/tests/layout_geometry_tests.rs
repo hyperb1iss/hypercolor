@@ -408,6 +408,7 @@ fn seeded_attachment_layout_arranges_multi_fan_slots_into_horizontal_rows() {
             ),
         ],
         7,
+        640.0 / 480.0,
     );
 
     assert_eq!(seeded.zones.len(), 3);
@@ -436,6 +437,7 @@ fn seeded_attachment_layout_handles_single_slot_attachments() {
             },
         )],
         3,
+        640.0 / 480.0,
     );
 
     assert_eq!(seeded.zones.len(), 1);
@@ -451,6 +453,8 @@ fn editor_normalization_gives_horizontal_strips_visible_height() {
             count: 60,
             direction: StripDirection::LeftToRight,
         },
+        None,
+        640.0 / 480.0,
     );
 
     assert!((size.x - 0.24).abs() < 0.001);
@@ -467,6 +471,8 @@ fn editor_normalization_gives_vertical_strips_visible_width() {
             count: 60,
             direction: StripDirection::TopToBottom,
         },
+        None,
+        640.0 / 480.0,
     );
 
     assert!((size.x - 0.03).abs() < 0.001);
@@ -613,4 +619,52 @@ fn resizing_a_rotated_box_keeps_the_opposite_corner_anchored() {
         (anchor_after.y - anchor_before.y).abs() < 1e-3,
         "{anchor_after:?} vs {anchor_before:?}"
     );
+}
+
+#[test]
+fn circular_zones_normalize_to_a_pixel_square() {
+    // 640x480 canvas: a pixel square must be taller in normalized units
+    // (height fraction = width fraction * 4/3), matching both the CSS
+    // aspect-ratio: 1 box and the sampled LED circle.
+    let size = layout_geometry::normalize_zone_size_for_editor(
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(0.2, 0.2),
+        &LedTopology::Ring {
+            count: 20,
+            start_angle: 0.0,
+            direction: hypercolor_types::spatial::Winding::Clockwise,
+        },
+        Some(&ZoneShape::Ring),
+        640.0 / 480.0,
+    );
+    assert!((size.y - size.x * (640.0 / 480.0)).abs() < 1e-4, "{size:?}");
+    // The smaller pixel extent wins: 0.2 of height is the pixel-smaller side.
+    assert!((size.y - 0.2).abs() < 1e-4, "{size:?}");
+}
+
+#[test]
+fn explicit_rectangle_shape_overrides_ring_topology_circularity() {
+    assert!(layout_geometry::is_circular_zone(
+        None,
+        &LedTopology::Ring {
+            count: 8,
+            start_angle: 0.0,
+            direction: hypercolor_types::spatial::Winding::Clockwise,
+        },
+    ));
+    assert!(!layout_geometry::is_circular_zone(
+        Some(&ZoneShape::Rectangle),
+        &LedTopology::Ring {
+            count: 8,
+            start_angle: 0.0,
+            direction: hypercolor_types::spatial::Winding::Clockwise,
+        },
+    ));
+    assert!(layout_geometry::is_circular_zone(
+        Some(&ZoneShape::Ring),
+        &LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+    ));
 }

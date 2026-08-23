@@ -96,6 +96,8 @@ pub fn create_default_zone(
             NormalizedPosition::new(0.5, 0.5),
             defaults.size,
             &defaults.topology,
+            defaults.shape.as_ref(),
+            layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height),
         ),
         rotation: 0.0,
         scale: 1.0,

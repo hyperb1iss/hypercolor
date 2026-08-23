@@ -280,6 +280,7 @@ pub fn seeded_attachment_layout(
     _device_name: &str,
     suggested_zones: &[ComponentSuggestedZone],
     display_order_start: i32,
+    canvas_aspect: f32,
 ) -> SeededAttachmentLayout {
     if suggested_zones.is_empty() {
         return SeededAttachmentLayout { zones: Vec::new() };
@@ -324,7 +325,8 @@ pub fn seeded_attachment_layout(
         );
         let max_size = NormalizedPosition::new(cell_width * 0.86, cell_height * 0.82);
 
-        let placements = attachment_slot_placements(&slot_zones, cell_center, max_size);
+        let placements =
+            attachment_slot_placements(&slot_zones, cell_center, max_size, canvas_aspect);
         let slot_display_order_start =
             display_order_start + i32::try_from(zones.len()).unwrap_or(i32::MAX);
         for (slot_offset, (suggested, (position, size))) in
@@ -822,6 +824,7 @@ fn attachment_slot_placements(
     zones: &[ComponentSuggestedZone],
     center: NormalizedPosition,
     max_size: NormalizedPosition,
+    canvas_aspect: f32,
 ) -> Vec<(NormalizedPosition, NormalizedPosition)> {
     if zones.len() <= 1 {
         return zones
@@ -831,6 +834,8 @@ fn attachment_slot_placements(
                     center,
                     attachment_zone_size(zone, max_size),
                     &zone.topology,
+                    attachment_zone_shape(&zone.category).as_ref(),
+                    canvas_aspect,
                 );
                 (center, size)
             })
@@ -865,6 +870,8 @@ fn attachment_slot_placements(
                 position,
                 NormalizedPosition::new(width, row_height),
                 &zone.topology,
+                attachment_zone_shape(&zone.category).as_ref(),
+                canvas_aspect,
             );
             cursor += width + slot_gap;
             (position, size)
