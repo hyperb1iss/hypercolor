@@ -2,13 +2,10 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use hypercolor_types::api::ApiResponse;
 use hypercolor_types::api::controls::{
     ControlSurfaceListQuery, ControlSurfaceListResponse, InvokeControlActionRequest,
 };
-use hypercolor_types::api::devices::{
-    DeviceListResponse as ApiDeviceListResponse, DeviceSummary as ApiDeviceSummary,
-};
+use hypercolor_types::api::devices::DeviceSummary as ApiDeviceSummary;
 use hypercolor_types::api::effects::{
     EffectDetailResponse, EffectListResponse as ApiEffectListResponse,
     EffectSummary as ApiEffectSummary,
@@ -22,6 +19,7 @@ use hypercolor_types::api::scenes::{
     ActivateSceneRequest, SceneListResponse as ApiSceneListResponse,
 };
 use hypercolor_types::api::system::SystemResource;
+use hypercolor_types::api::{ApiResponse, ListResponse};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument, ControlValueMap,
 };
@@ -103,8 +101,8 @@ impl DaemonClient {
 
     /// Fetch all connected devices.
     pub async fn get_devices(&self) -> Result<Vec<DeviceSummary>> {
-        let response: ApiDeviceListResponse = self.get_data("/devices").await?;
-        Ok(response.items.into_iter().map(map_device_summary).collect())
+        let items: Vec<ApiDeviceSummary> = self.get_all_pages("/devices").await?;
+        Ok(items.into_iter().map(map_device_summary).collect())
     }
 
     /// Fetch control surfaces selected by device, driver, or both.
@@ -491,6 +489,23 @@ impl DaemonClient {
         Ok(envelope.data)
     }
 
+    /// Fetch every page of a list route, following `page.has_more` until the
+    /// daemon reports the listing complete.
+    async fn get_all_pages<T: DeserializeOwned>(&self, path: &str) -> Result<Vec<T>> {
+        let mut items: Vec<T> = Vec::new();
+        let mut offset = 0_u64;
+        loop {
+            let page: ListResponse<T> = self.get_data(&paged_list_path(path, offset)).await?;
+            let fetched = page.items.len() as u64;
+            items.extend(page.items);
+            let has_more = page.page.is_some_and(|info| info.has_more);
+            if !has_more || fetched == 0 {
+                return Ok(items);
+            }
+            offset += fetched;
+        }
+    }
+
     async fn get_optional_data<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
@@ -641,6 +656,18 @@ fn decode_simulated_display_frame(bytes: &[u8]) -> Result<CanvasFrame> {
         height,
         pixels: Bytes::from(rgb.into_raw()),
     })
+}
+
+/// Page size requested from every list route. The daemon defaults to 50 and
+/// rejects anything above 200, so asking for the ceiling keeps the number of
+/// round trips down without tripping validation.
+pub const LIST_PAGE_LIMIT: u64 = 200;
+
+/// Build the path for one page of a list route.
+#[must_use]
+pub fn paged_list_path(path: &str, offset: u64) -> String {
+    let separator = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{separator}limit={LIST_PAGE_LIMIT}&offset={offset}")
 }
 
 async fn ensure_success(response: reqwest::Response, context: &str) -> Result<()> {

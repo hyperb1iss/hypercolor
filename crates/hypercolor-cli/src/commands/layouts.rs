@@ -104,7 +104,7 @@ pub async fn execute(args: &LayoutsArgs, client: &DaemonClient, ctx: &OutputCont
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response = client.get("/layouts").await?;
+    let response = client.get_list("/layouts").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

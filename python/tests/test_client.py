@@ -366,6 +366,99 @@ async def test_get_devices_preserves_included_attachments(client: HypercolorClie
     }
 
 
+def _device_page(offset: int, names: list[str], has_more: bool) -> dict[str, object]:
+    return {
+        "items": [
+            {
+                "id": name,
+                "layout_device_id": name,
+                "name": name,
+                "origin": {
+                    "driver_id": "wled",
+                    "backend_id": "wled",
+                    "transport": "network",
+                },
+                "presentation": {"label": "WLED"},
+                "status": "connected",
+                "brightness": 100,
+                "total_leds": 30,
+                "segments": [],
+            }
+            for name in names
+        ],
+        "total": 3,
+        "page": {"offset": offset, "limit": 200, "has_more": has_more},
+    }
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_devices_requests_the_ceiling_and_follows_has_more(
+    client: HypercolorClient,
+) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        side_effect=[
+            httpx.Response(200, content=_envelope(_device_page(0, ["desk", "shelf"], True))),
+            httpx.Response(200, content=_envelope(_device_page(2, ["ceiling"], False))),
+        ]
+    )
+
+    devices = await client.get_devices()
+
+    assert [device.id for device in devices] == ["desk", "shelf", "ceiling"]
+    assert route.calls[0].request.url.params["limit"] == "200"
+    assert route.calls[0].request.url.params["offset"] == "0"
+    assert route.calls[1].request.url.params["offset"] == "2"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_devices_honours_an_explicit_page_request(
+    client: HypercolorClient,
+) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        return_value=httpx.Response(200, content=_envelope(_device_page(0, ["desk"], True)))
+    )
+
+    devices = await client.get_devices(limit=1)
+
+    assert len(route.calls) == 1
+    assert route.calls[0].request.url.params["limit"] == "1"
+    assert [device.id for device in devices] == ["desk"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_layouts_follows_pagination(client: HypercolorClient) -> None:
+    def layout_page(offset: int, ids: list[str], has_more: bool) -> dict[str, object]:
+        return {
+            "items": [
+                {
+                    "id": layout_id,
+                    "name": layout_id,
+                    "canvas_width": 640,
+                    "canvas_height": 480,
+                    "zone_count": 2,
+                }
+                for layout_id in ids
+            ],
+            "total": 3,
+            "page": {"offset": offset, "limit": 200, "has_more": has_more},
+        }
+
+    route = respx.get("http://hyperia.test:9420/api/v1/layouts").mock(
+        side_effect=[
+            httpx.Response(200, content=_envelope(layout_page(0, ["desk", "rack"], True))),
+            httpx.Response(200, content=_envelope(layout_page(2, ["shelf"], False))),
+        ]
+    )
+
+    layouts = await client.get_layouts()
+
+    assert [layout.id for layout in layouts] == ["desk", "rack", "shelf"]
+    assert route.calls[1].request.url.params["offset"] == "2"
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_device_quotes_generated_path_parameters(client: HypercolorClient) -> None:

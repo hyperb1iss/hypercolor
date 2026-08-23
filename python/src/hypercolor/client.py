@@ -140,6 +140,11 @@ from .websocket import HypercolorEventStream
 ModelT = TypeVar("ModelT")
 DiscoverResponse = DiscoveryCompletedResponse | DiscoveryScanningResponse
 
+#: Page size requested from every list route. The daemon defaults to 50 and
+#: rejects anything above 200, so asking for the ceiling keeps the number of
+#: round trips down without tripping validation.
+LIST_PAGE_LIMIT = 200
+
 
 class _Unset:
     """Marker type distinguishing "leave unchanged" from an explicit ``None``."""
@@ -307,19 +312,30 @@ class HypercolorClient:
         q: str | None = None,
         include: str | None = None,
     ) -> list[DeviceSummary]:
-        """List devices."""
-        return await self._generated_items(
-            generated_list_devices._get_kwargs(
-                offset=_generated_param(offset),
-                limit=_generated_param(limit),
+        """List devices.
+
+        With neither ``offset`` nor ``limit`` set, this follows
+        ``page.has_more`` until the daemon reports the listing complete.
+        Passing either one requests exactly that page and returns it.
+        """
+
+        def page_kwargs(page_offset: int, page_limit: int) -> Mapping[str, Any]:
+            return generated_list_devices._get_kwargs(
+                offset=page_offset,
+                limit=page_limit,
                 status=_generated_param(status),
                 backend_id=_generated_param(backend_id),
                 driver=_generated_param(driver),
                 q=_generated_param(q),
                 include=_generated_param(include),
-            ),
-            DeviceSummary.from_dict,
-        )
+            )
+
+        if offset is not None or limit is not None:
+            return await self._generated_items(
+                page_kwargs(offset or 0, limit or LIST_PAGE_LIMIT),
+                DeviceSummary.from_dict,
+            )
+        return await self._all_pages(page_kwargs, DeviceSummary.from_dict)
 
     async def get_device(self, device_id: str) -> DeviceSummary:
         """Fetch a single device."""
@@ -648,11 +664,15 @@ class HypercolorClient:
         )
 
     async def get_layouts(self) -> list[LayoutSummary]:
-        """List layouts."""
-        return await self._generated_items(
-            generated_list_layouts._get_kwargs(),
-            LayoutSummary.from_dict,
-        )
+        """List layouts, following `page.has_more` until the listing ends."""
+
+        def page_kwargs(page_offset: int, page_limit: int) -> Mapping[str, Any]:
+            return generated_list_layouts._get_kwargs(
+                offset=page_offset,
+                limit=page_limit,
+            )
+
+        return await self._all_pages(page_kwargs, LayoutSummary.from_dict)
 
     async def get_active_layout(self) -> SpatialLayout | None:
         """Return the active layout if one exists."""
@@ -1091,6 +1111,25 @@ class HypercolorClient:
     ) -> ModelT:
         payload = await self._generated_payload(kwargs, envelope=envelope)
         return self._decode(payload, decoder)
+
+    async def _all_pages(
+        self,
+        page_kwargs: Callable[[int, int], Mapping[str, Any]],
+        decoder: Callable[[Mapping[str, Any]], ModelT],
+    ) -> list[ModelT]:
+        items: list[ModelT] = []
+        offset = 0
+        while True:
+            data = await self._generated_payload(page_kwargs(offset, LIST_PAGE_LIMIT))
+            page = data if isinstance(data, dict) else {}
+            raw_items = page.get("items")
+            fetched: list[Any] = raw_items if isinstance(raw_items, list) else []
+            items.extend(self._decode(item, decoder) for item in fetched)
+            paging = page.get("page")
+            has_more = isinstance(paging, dict) and bool(paging.get("has_more"))
+            if not has_more or not fetched:
+                return items
+            offset += len(fetched)
 
     async def _generated_items(
         self,

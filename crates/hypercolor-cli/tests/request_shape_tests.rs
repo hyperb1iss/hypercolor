@@ -1258,3 +1258,122 @@ async fn capture_scene_snapshot(
 fn test_device_id() -> &'static str {
     "00000000-0000-0000-0000-000000000001"
 }
+
+type SharedUris = Arc<Mutex<Vec<String>>>;
+
+fn cli_device_page(offset: u64, names: &[&str], has_more: bool) -> serde_json::Value {
+    let items: Vec<serde_json::Value> = names
+        .iter()
+        .map(|name| {
+            serde_json::json!({
+                "id": name,
+                "layout_device_id": name,
+                "name": name,
+                "origin": {
+                    "driver_id": "wled",
+                    "backend_id": "wled",
+                    "transport": "network"
+                },
+                "presentation": { "label": "WLED" },
+                "status": "connected",
+                "brightness": 100,
+                "total_leds": 30,
+                "segments": []
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "data": {
+            "items": items,
+            "total": 3,
+            "page": { "offset": offset, "limit": 200, "has_more": has_more }
+        }
+    })
+}
+
+#[tokio::test]
+async fn devices_list_requests_the_route_ceiling_and_follows_has_more() -> Result<()> {
+    let captured_uris: SharedUris = Arc::new(Mutex::new(Vec::new()));
+    let router = Router::new()
+        .route(
+            "/api/v1/devices",
+            get(|State(seen): State<SharedUris>, uri: Uri| async move {
+                let query = uri.query().unwrap_or_default().to_owned();
+                let first_page = !query.contains("offset=2");
+                seen.lock().await.push(query);
+                if first_page {
+                    Json(cli_device_page(0, &["desk", "shelf"], true))
+                } else {
+                    Json(cli_device_page(2, &["ceiling"], false))
+                }
+            }),
+        )
+        .with_state(Arc::clone(&captured_uris));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_output = run_hyper_output(port, &["devices", "list"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    let cli_output = cli_output?;
+    assert!(cli_output.status.success());
+
+    assert_eq!(
+        captured_uris.lock().await.as_slice(),
+        ["limit=200&offset=0", "limit=200&offset=2"]
+    );
+
+    let rendered: serde_json::Value = serde_json::from_slice(&cli_output.stdout)
+        .context("devices list --json should emit one JSON document")?;
+    let items = rendered["items"]
+        .as_array()
+        .context("merged listing should carry items")?;
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[2]["name"], "ceiling");
+    assert_eq!(rendered["total"], 3);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn layouts_list_requests_the_route_ceiling() -> Result<()> {
+    let captured_uris: SharedUris = Arc::new(Mutex::new(Vec::new()));
+    let router = Router::new()
+        .route(
+            "/api/v1/layouts",
+            get(|State(seen): State<SharedUris>, uri: Uri| async move {
+                seen.lock()
+                    .await
+                    .push(uri.query().unwrap_or_default().to_owned());
+                Json(serde_json::json!({
+                    "data": {
+                        "items": [{
+                            "id": "desk",
+                            "name": "Desk",
+                            "canvas_width": 640,
+                            "canvas_height": 480,
+                            "zone_count": 2
+                        }],
+                        "total": 1,
+                        "page": { "offset": 0, "limit": 200, "has_more": false }
+                    }
+                }))
+            }),
+        )
+        .with_state(Arc::clone(&captured_uris));
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let cli_result = run_hyper(port, &["layouts", "list"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+    cli_result?;
+
+    assert_eq!(
+        captured_uris.lock().await.as_slice(),
+        ["limit=200&offset=0"]
+    );
+
+    Ok(())
+}

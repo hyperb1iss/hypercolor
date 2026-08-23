@@ -64,6 +64,47 @@ impl DaemonClient {
         parse_api_response(response).await
     }
 
+    /// Fetch every page of a list route, following `page.has_more` until the
+    /// daemon reports the listing complete.
+    ///
+    /// The pages are merged back into one `{ items, total }` object so
+    /// callers and `--json` output see the same shape a single-page reply
+    /// would have produced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any page request fails.
+    pub async fn get_list(&self, path: &str) -> Result<serde_json::Value> {
+        let mut items: Vec<serde_json::Value> = Vec::new();
+        let mut total: Option<serde_json::Value> = None;
+        let mut offset = 0_u64;
+
+        loop {
+            let page = self.get(&paged_list_path(path, offset)).await?;
+            let fetched = match page.get("items").and_then(serde_json::Value::as_array) {
+                Some(array) => {
+                    items.extend(array.iter().cloned());
+                    array.len() as u64
+                }
+                None => 0,
+            };
+            if total.is_none() {
+                total = page.get("total").cloned();
+            }
+            let has_more = page
+                .pointer("/page/has_more")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if !has_more || fetched == 0 {
+                break;
+            }
+            offset += fetched;
+        }
+
+        let total = total.unwrap_or_else(|| serde_json::Value::from(items.len()));
+        Ok(serde_json::json!({ "items": items, "total": total }))
+    }
+
     /// Subscribe to the daemon's event channel.
     ///
     /// The returned stream is acknowledged before this method completes, so
@@ -342,6 +383,18 @@ fn websocket_request(base_url: &str, api_key: Option<&str>) -> Result<http::Requ
             .insert(http::header::AUTHORIZATION, authorization);
     }
     Ok(request)
+}
+
+/// Page size requested from every list route. The daemon defaults to 50 and
+/// rejects anything above 200, so asking for the ceiling keeps the number of
+/// round trips down without tripping validation.
+pub const LIST_PAGE_LIMIT: u64 = 200;
+
+/// Build the path for one page of a list route.
+#[must_use]
+pub fn paged_list_path(path: &str, offset: u64) -> String {
+    let separator = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{separator}limit={LIST_PAGE_LIMIT}&offset={offset}")
 }
 
 async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::Value> {

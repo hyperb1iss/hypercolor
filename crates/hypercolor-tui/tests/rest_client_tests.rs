@@ -1003,3 +1003,88 @@ async fn reset_controls_replaces_the_layer_without_apply_side_effects() {
     assert_eq!(body["blend"], "replace");
     assert_eq!(body["enabled"], true);
 }
+
+fn device_page(offset: u64, ids: &[&str], has_more: bool) -> Value {
+    let items: Vec<Value> = ids
+        .iter()
+        .map(|id| {
+            json!({
+                "id": id,
+                "layout_device_id": id,
+                "name": id,
+                "origin": {
+                    "driver_id": "wled",
+                    "backend_id": "wled",
+                    "transport": "network"
+                },
+                "presentation": { "label": "WLED" },
+                "status": "connected",
+                "brightness": 100,
+                "total_leds": 30,
+                "segments": []
+            })
+        })
+        .collect();
+
+    json!({
+        "data": {
+            "items": items,
+            "total": 3,
+            "page": { "offset": offset, "limit": 200, "has_more": has_more }
+        }
+    })
+}
+
+#[tokio::test]
+async fn get_devices_requests_the_route_ceiling_and_follows_has_more() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let router = Router::new()
+        .route(
+            "/api/v1/devices",
+            get(
+                |State(seen): State<Arc<Mutex<Vec<String>>>>, uri: Uri| async move {
+                    let query = uri.query().unwrap_or_default().to_owned();
+                    let first_page = !query.contains("offset=2");
+                    seen.lock().await.push(query);
+                    if first_page {
+                        canonical_json(device_page(0, &["desk", "shelf"], true))
+                    } else {
+                        canonical_json(device_page(2, &["ceiling"], false))
+                    }
+                },
+            ),
+        )
+        .with_state(Arc::clone(&queries));
+
+    let client = client_for(spawn_server(router).await);
+    let devices = client.get_devices().await.expect("fetch devices");
+
+    assert_eq!(devices.len(), 3);
+    assert_eq!(devices[2].id, "ceiling");
+    assert_eq!(
+        queries.lock().await.as_slice(),
+        ["limit=200&offset=0", "limit=200&offset=2"]
+    );
+}
+
+#[tokio::test]
+async fn get_devices_stops_when_the_daemon_reports_a_complete_listing() {
+    let calls: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let router = Router::new()
+        .route(
+            "/api/v1/devices",
+            get(|State(calls): State<Arc<Mutex<u32>>>| async move {
+                *calls.lock().await += 1;
+                canonical_json(json!({
+                    "data": { "items": [], "total": 0 }
+                }))
+            }),
+        )
+        .with_state(Arc::clone(&calls));
+
+    let client = client_for(spawn_server(router).await);
+    let devices = client.get_devices().await.expect("fetch devices");
+
+    assert!(devices.is_empty());
+    assert_eq!(*calls.lock().await, 1);
+}

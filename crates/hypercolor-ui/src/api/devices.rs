@@ -31,9 +31,7 @@ pub use hypercolor_types::api::attachments::{
 
 /// Fetch all tracked devices.
 pub async fn fetch_devices() -> ApiResult<Vec<DeviceSummary>> {
-    let list: DeviceListResponse =
-        client::fetch_json("/api/v1/devices?include=attachments").await?;
-    Ok(list.items)
+    client::fetch_all_pages("/api/v1/devices?include=attachments").await
 }
 
 /// Trigger device discovery scan.
@@ -103,12 +101,11 @@ pub async fn fetch_device_attachments(device_id: &str) -> ApiResult<DeviceCompon
 
 /// Fetch attachment templates, optionally filtered by category.
 pub async fn fetch_attachment_templates(category: Option<&str>) -> ApiResult<Vec<TemplateSummary>> {
-    let mut url = "/api/v1/attachments/templates?limit=200".to_string();
+    let mut url = "/api/v1/attachments/templates".to_string();
     if let Some(cat) = category {
-        url.push_str(&format!("&category={cat}"));
+        url.push_str(&format!("?category={cat}"));
     }
-    let list: TemplateListResponse = client::fetch_json(&url).await?;
-    Ok(list.items)
+    client::fetch_all_pages(&url).await
 }
 
 /// Update attachment bindings for a device.

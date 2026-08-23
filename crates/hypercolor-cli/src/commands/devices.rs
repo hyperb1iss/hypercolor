@@ -185,7 +185,7 @@ async fn execute_list(
         path = format!("{path}?{}", query_parts.join("&"));
     }
 
-    let response = client.get(&path).await?;
+    let response = client.get_list(&path).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,

@@ -8,7 +8,7 @@
 use std::{cell::RefCell, fmt};
 
 use gloo_net::http::{Method, RequestBuilder, Response};
-use hypercolor_types::api::ApiResponse;
+use hypercolor_types::api::{ApiResponse, ListResponse};
 use serde::{Serialize, de::DeserializeOwned};
 
 #[cfg(target_arch = "wasm32")]
@@ -382,6 +382,41 @@ where
     T: DeserializeOwned,
 {
     send_json::<(), T>(Method::GET, url, None).await
+}
+
+/// Page size requested from every list route. The daemon defaults to 50 and
+/// rejects anything above 200, so asking for the ceiling keeps the number of
+/// round trips down without tripping validation.
+pub const LIST_PAGE_LIMIT: u64 = 200;
+
+/// Build the URL for one page of a list route.
+#[must_use]
+pub fn paged_list_url(base_url: &str, offset: u64) -> String {
+    let separator = if base_url.contains('?') { '&' } else { '?' };
+    format!("{base_url}{separator}limit={LIST_PAGE_LIMIT}&offset={offset}")
+}
+
+/// GET every page of a list route, following `page.has_more` until the daemon
+/// says the listing is complete.
+///
+/// A route that reports `page: None` is already complete, so this costs one
+/// request there.
+pub async fn fetch_all_pages<T>(base_url: &str) -> ApiResult<Vec<T>>
+where
+    T: DeserializeOwned,
+{
+    let mut items: Vec<T> = Vec::new();
+    let mut offset = 0_u64;
+    loop {
+        let page: ListResponse<T> = fetch_json(&paged_list_url(base_url, offset)).await?;
+        let fetched = page.items.len() as u64;
+        items.extend(page.items);
+        let has_more = page.page.is_some_and(|info| info.has_more);
+        if !has_more || fetched == 0 {
+            return Ok(items);
+        }
+        offset += fetched;
+    }
 }
 
 /// GET `url`, returning `Ok(None)` on HTTP 404 and `Ok(Some(data))` on success.

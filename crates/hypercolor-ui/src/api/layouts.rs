@@ -8,8 +8,7 @@ pub use hypercolor_types::api::layouts::{LayoutListResponse, LayoutSummary, Upda
 
 /// Fetch all spatial layouts.
 pub async fn fetch_layouts() -> ApiResult<Vec<LayoutSummary>> {
-    let list: LayoutListResponse = client::fetch_json("/api/v1/layouts").await?;
-    Ok(list.items)
+    client::fetch_all_pages("/api/v1/layouts").await
 }
 
 /// Fetch the currently active layout.
