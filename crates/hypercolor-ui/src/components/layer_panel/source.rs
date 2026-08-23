@@ -249,43 +249,6 @@ pub fn default_blend_for_added_layer(
     }
 }
 
-/// Human-readable description of a layer's content source. `media_names`
-/// resolves asset ids to filenames and `effect_names` resolves effect ids
-/// to their registry display name; an id with no match falls back to the
-/// bare kind ("Effect", "Media") — a raw UUID is never shown to the user
-/// (Spec 65 §15.2). An effect outside the HTML catalog, such as a native
-/// display face, has no resolvable name and reads simply as "Effect".
-// Superseded in the live UI by the row's split title/kind rendering, but
-// kept as the leptos-free pinned-contract function the §15.2 no-raw-UUID
-// test exercises.
-#[allow(dead_code)]
-#[must_use]
-pub fn layer_source_label(
-    source: &LayerSource,
-    media_names: &HashMap<String, String>,
-    effect_names: &HashMap<String, String>,
-) -> String {
-    match source {
-        LayerSource::Effect { effect_id, .. } => {
-            let id = effect_id.to_string();
-            effect_names
-                .get(&id)
-                .map(|name| format!("Effect {name}"))
-                .unwrap_or_else(|| "Effect".to_owned())
-        }
-        LayerSource::Media { asset_id, .. } => {
-            let id = asset_id.to_string();
-            media_names
-                .get(&id)
-                .map(|name| format!("Media {name}"))
-                .unwrap_or_else(|| "Media".to_owned())
-        }
-        LayerSource::ScreenRegion { .. } => "Screen region".to_owned(),
-        LayerSource::WebViewport { url, .. } => format!("Web {url}"),
-        LayerSource::ColorFill { .. } => "Color fill".to_owned(),
-    }
-}
-
 /// Snake-case wire token for a blend mode.
 #[must_use]
 pub fn blend_value(mode: BlendMode) -> &'static str {

@@ -14,11 +14,12 @@ use hypercolor_types::layer::{
 use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
+use hypercolor_ui::components::layer_panel::row::{layer_title, source_meta};
 use hypercolor_ui::components::layer_panel::source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, available_add_layer_scopes, blend_options,
     blend_value, default_blend_for_added_layer, effect_category_label, effect_layer_source,
-    effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, layer_source_label,
-    media_layer_source, parse_blend, parse_fit, resolve_add_layer_targets,
+    effect_picker_matches_query, effect_picker_mode, fit_options, fit_value, media_layer_source,
+    parse_blend, parse_fit, resolve_add_layer_targets,
 };
 
 /// A valid UUID string for effect/media id parsing.
@@ -255,72 +256,82 @@ fn added_effect_layers_screen_over_existing_content_by_default() {
 }
 
 #[test]
-fn layer_source_label_resolves_names_and_never_leaks_raw_types() {
+fn layer_row_titles_resolve_names_and_never_leak_raw_types() {
     let mut media_names = HashMap::new();
     media_names.insert(SAMPLE_ID.to_owned(), "paimon.gif".to_owned());
     let mut effect_names = HashMap::new();
     effect_names.insert(SAMPLE_ID.to_owned(), "Aurora".to_owned());
 
+    let titled = |source: LayerSource| {
+        let layer = layer_with_source(source, None);
+        let (_, _, kind_word) = source_meta(&layer.source);
+        (
+            layer_title(&layer, &media_names, &effect_names, kind_word),
+            kind_word,
+        )
+    };
+
     let known_media = media_layer_source(SAMPLE_ID).expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&known_media, &media_names, &effect_names),
-        "Media paimon.gif"
-    );
+    assert_eq!(titled(known_media), ("paimon.gif".to_owned(), "Media"));
 
     // An unresolved id reads as the bare kind — never the raw UUID (§15.2).
     let unknown_media =
         media_layer_source("0192f5a0-aaaa-7890-abcd-ef0123456789").expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&unknown_media, &media_names, &effect_names),
-        "Media"
-    );
+    assert_eq!(titled(unknown_media), ("Media".to_owned(), "Media"));
 
     // An effect id resolves to its registry name, never the raw UUID.
     let known_effect = effect_layer_source(SAMPLE_ID).expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&known_effect, &media_names, &effect_names),
-        "Effect Aurora"
-    );
+    assert_eq!(titled(known_effect), ("Aurora".to_owned(), "Effect"));
 
     // An unmatched effect id falls back to the bare kind, never the UUID —
     // the case a native display face outside the HTML catalog hits.
     let unknown_effect =
         effect_layer_source("0192f5a0-bbbb-7890-abcd-ef0123456789").expect("valid uuid");
-    assert_eq!(
-        layer_source_label(&unknown_effect, &media_names, &effect_names),
-        "Effect"
-    );
+    assert_eq!(titled(unknown_effect), ("Effect".to_owned(), "Effect"));
 
     assert_eq!(
-        layer_source_label(
-            &LayerSource::ScreenRegion {
-                viewport: ViewportRect::default()
-            },
-            &media_names,
-            &effect_names
-        ),
-        "Screen region"
+        titled(LayerSource::ScreenRegion {
+            viewport: ViewportRect::default()
+        }),
+        ("Screen capture".to_owned(), "Screen capture")
     );
     assert_eq!(
-        layer_source_label(
-            &LayerSource::WebViewport {
-                url: "https://hyperb1iss.dev".to_owned(),
-                viewport: ViewportRect::default(),
-                render: WebViewportRender::default(),
-            },
-            &media_names,
-            &effect_names,
-        ),
-        "Web https://hyperb1iss.dev"
+        titled(LayerSource::WebViewport {
+            url: "https://hyperb1iss.dev".to_owned(),
+            viewport: ViewportRect::default(),
+            render: WebViewportRender::default(),
+        }),
+        ("https://hyperb1iss.dev".to_owned(), "Web page")
     );
     assert_eq!(
-        layer_source_label(
-            &LayerSource::ColorFill { rgba: [0.0; 4] },
-            &media_names,
-            &effect_names
-        ),
-        "Color fill"
+        titled(LayerSource::ColorFill { rgba: [0.0; 4] }),
+        ("Color".to_owned(), "Color")
     );
+
+    // A user-typed name outranks every resolved content name.
+    let named = layer_with_source(
+        effect_layer_source(SAMPLE_ID).expect("valid uuid"),
+        Some("Front Wash"),
+    );
+    let (_, _, kind_word) = source_meta(&named.source);
+    assert_eq!(
+        layer_title(&named, &media_names, &effect_names, kind_word),
+        "Front Wash"
+    );
+}
+
+fn layer_with_source(source: LayerSource, name: Option<&str>) -> SceneLayer {
+    SceneLayer {
+        id: SceneLayerId::new(),
+        name: name.map(ToOwned::to_owned),
+        source,
+        blend: BlendMode::Alpha,
+        opacity: 1.0,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    }
 }
 
 // ── Add-layer target scope (§6.6) ───────────────────────────────────────

@@ -22,7 +22,8 @@ use crate::icons::*;
 
 /// Icon, accent RGB triplet, and kind word for a layer source — the
 /// header chip's vocabulary. Never an internal enum name (§4).
-fn source_meta(source: &LayerSource) -> (icondata_core::Icon, &'static str, &'static str) {
+#[must_use]
+pub fn source_meta(source: &LayerSource) -> (icondata_core::Icon, &'static str, &'static str) {
     match source {
         LayerSource::Effect { .. } => (LuZap, "225, 53, 255", "Effect"),
         LayerSource::Media { .. } => (LuFolder, "128, 255, 234", "Media"),
@@ -34,7 +35,8 @@ fn source_meta(source: &LayerSource) -> (icondata_core::Icon, &'static str, &'st
 
 /// The display title for a layer: the user's typed name, else the
 /// resolved content name (effect / media), else the kind word.
-fn layer_title(
+#[must_use]
+pub fn layer_title(
     layer: &SceneLayer,
     media_names: &HashMap<String, String>,
     effect_names: &HashMap<String, String>,

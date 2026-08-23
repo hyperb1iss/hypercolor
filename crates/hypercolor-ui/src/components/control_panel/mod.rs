@@ -653,7 +653,7 @@ pub(super) fn normalize_hex(raw_hex: &str) -> Option<String> {
     }
 }
 
-pub(super) fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
+pub(super) fn hex_to_opaque_rgba(hex: &str) -> Option<[f32; 4]> {
     // normalize_hex still gates the grammar to 3 and 6 digits, so the
     // alpha-bearing forms the kernel would otherwise accept stay out.
     let color = LinearRgba::from_hex_srgb(&normalize_hex(hex)?).ok()?;
