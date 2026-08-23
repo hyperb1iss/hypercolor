@@ -35,13 +35,13 @@ T = TypeVar("T", bound="Output")
 
 @_attrs_define
 class Output:
-    """A device zone: the spatial binding between a physical device and a
+    """A device output: the spatial binding between a physical device and a
     region of the effect canvas.
 
-    The zone's bounding rectangle is defined by `position` (center) and
+    The output's bounding rectangle is defined by `position` (center) and
     `size` (width, height), both in normalized `[0.0, 1.0]` canvas coordinates.
-    LED positions within the zone are computed from the `topology` and stored
-    in `led_positions` as zone-local normalized coordinates.
+    LED positions within the output are computed from the `topology` and stored
+    in `led_positions` as output-local normalized coordinates.
 
         Attributes:
             device_id (str): Backend device identifier.

@@ -546,8 +546,6 @@ from .response_meta import ResponseMeta
 from .rgb import Rgb
 from .rgba import Rgba
 from .ring_def import RingDef
-from .room_adjacency import RoomAdjacency
-from .room_dimensions import RoomDimensions
 from .run_diagnostics_response_200 import RunDiagnosticsResponse200
 from .sampling_mode_type_0 import SamplingModeType0
 from .sampling_mode_type_0_type import SamplingModeType0Type
@@ -596,7 +594,6 @@ from .simulated_display_config import SimulatedDisplayConfig
 from .simulated_display_config_list_item import SimulatedDisplayConfigListItem
 from .snapshot_scene_request import SnapshotSceneRequest
 from .snapshot_scene_response_201 import SnapshotSceneResponse201
-from .space_definition import SpaceDefinition
 from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
 from .system_resource import SystemResource
@@ -624,7 +621,6 @@ from .update_simulated_display_request import UpdateSimulatedDisplayRequest
 from .upload_asset_response_200 import UploadAssetResponse200
 from .upload_asset_response_201 import UploadAssetResponse201
 from .viewport_rect import ViewportRect
-from .wall import Wall
 from .web_viewport_render import WebViewportRender
 from .winding import Winding
 from .zone_layout_request import ZoneLayoutRequest
@@ -1130,8 +1126,6 @@ __all__ = (
     "Rgb",
     "Rgba",
     "RingDef",
-    "RoomAdjacency",
-    "RoomDimensions",
     "RunDiagnosticsResponse200",
     "SamplingModeType0",
     "SamplingModeType0Type",
@@ -1180,7 +1174,6 @@ __all__ = (
     "SimulatedDisplayConfigListItem",
     "SnapshotSceneRequest",
     "SnapshotSceneResponse201",
-    "SpaceDefinition",
     "SpatialLayout",
     "StripDirection",
     "SystemResource",
@@ -1208,7 +1201,6 @@ __all__ = (
     "UploadAssetResponse200",
     "UploadAssetResponse201",
     "ViewportRect",
-    "Wall",
     "WebViewportRender",
     "Winding",
     "ZoneLayoutRequest",

@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from ..models.sampling_mode_type_1 import SamplingModeType1
     from ..models.sampling_mode_type_2 import SamplingModeType2
     from ..models.sampling_mode_type_3 import SamplingModeType3
-    from ..models.space_definition import SpaceDefinition
 
 
 T = TypeVar("T", bound="SpatialLayout")
@@ -40,8 +39,6 @@ class SpatialLayout:
             default_sampling_mode (SamplingModeType0 | SamplingModeType1 | SamplingModeType2 | SamplingModeType3 | Unset):
                 Sampling algorithm for canvas-to-LED color extraction.
             description (None | str | Unset): Optional description for the layout editor UI.
-            spaces (list[SpaceDefinition] | None | Unset): Space hierarchy for multi-room layouts.
-                `None` means all zones live in a flat canvas (device/desk scale).
     """
 
     canvas_height: int
@@ -59,7 +56,6 @@ class SpatialLayout:
         | Unset
     ) = UNSET
     description: None | str | Unset = UNSET
-    spaces: list[SpaceDefinition] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,18 +100,6 @@ class SpatialLayout:
         else:
             description = self.description
 
-        spaces: list[dict[str, Any]] | None | Unset
-        if isinstance(self.spaces, Unset):
-            spaces = UNSET
-        elif isinstance(self.spaces, list):
-            spaces = []
-            for spaces_type_0_item_data in self.spaces:
-                spaces_type_0_item = spaces_type_0_item_data.to_dict()
-                spaces.append(spaces_type_0_item)
-
-        else:
-            spaces = self.spaces
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -134,8 +118,6 @@ class SpatialLayout:
             field_dict["default_sampling_mode"] = default_sampling_mode
         if description is not UNSET:
             field_dict["description"] = description
-        if spaces is not UNSET:
-            field_dict["spaces"] = spaces
 
         return field_dict
 
@@ -147,7 +129,6 @@ class SpatialLayout:
         from ..models.sampling_mode_type_1 import SamplingModeType1
         from ..models.sampling_mode_type_2 import SamplingModeType2
         from ..models.sampling_mode_type_3 import SamplingModeType3
-        from ..models.space_definition import SpaceDefinition
 
         d = dict(src_dict)
         canvas_height = d.pop("canvas_height")
@@ -234,30 +215,6 @@ class SpatialLayout:
 
         description = _parse_description(d.pop("description", UNSET))
 
-        def _parse_spaces(data: object) -> list[SpaceDefinition] | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, list):
-                    raise TypeError()
-                spaces_type_0 = []
-                _spaces_type_0 = data
-                for spaces_type_0_item_data in _spaces_type_0:
-                    spaces_type_0_item = SpaceDefinition.from_dict(
-                        spaces_type_0_item_data
-                    )
-
-                    spaces_type_0.append(spaces_type_0_item)
-
-                return spaces_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(list[SpaceDefinition] | None | Unset, data)
-
-        spaces = _parse_spaces(d.pop("spaces", UNSET))
-
         spatial_layout = cls(
             canvas_height=canvas_height,
             canvas_width=canvas_width,
@@ -268,7 +225,6 @@ class SpatialLayout:
             default_edge_behavior=default_edge_behavior,
             default_sampling_mode=default_sampling_mode,
             description=description,
-            spaces=spaces,
         )
 
         spatial_layout.additional_properties = d
