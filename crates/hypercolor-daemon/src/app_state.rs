@@ -89,7 +89,7 @@ fn test_constructor_task_spawner() -> tokio::runtime::Handle {
 }
 
 #[cfg(target_os = "macos")]
-type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, JoinHandle<()>)>>>;
+type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, tokio::task::JoinHandle<()>)>>>;
 
 /// Shared application state injected into every API handler.
 ///
