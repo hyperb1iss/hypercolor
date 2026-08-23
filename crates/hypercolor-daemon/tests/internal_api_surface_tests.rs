@@ -79,6 +79,60 @@ fn persisted_scene_and_fallback_vocabulary_stays_zone_native() {
 }
 
 #[test]
+fn scene_domain_source_uses_zone_vocabulary() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in [
+        "../hypercolor-types/src/scene.rs",
+        "../hypercolor-core/src/scene/mod.rs",
+    ] {
+        let source = std::fs::read_to_string(manifest.join(relative))
+            .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"));
+        assert!(
+            !source.to_ascii_lowercase().contains("group"),
+            "scene domain source contains retired group vocabulary: {relative}"
+        );
+    }
+
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let retired = [
+        "|group| group.",
+        "let mut groups =",
+        "zones: groups",
+        "let Some(group) = scene.zones",
+        "group: &Zone",
+        "let (group, effect)",
+        "let (scene_id, group)",
+        "mut group: Zone",
+        "group.effect_ids()",
+        "group.layout",
+        "removed_groups",
+    ];
+    for relative in [
+        "api/config/live/audio.rs",
+        "domain/layout/convergence.rs",
+        "profile_import.rs",
+        "api/ws/session.rs",
+        "api/mod.rs",
+        "api/displays.rs",
+        "mcp/tools/displays.rs",
+    ] {
+        for term in retired {
+            assert!(
+                !source(relative).contains(term),
+                "daemon source {relative} contains retired scene-zone term {term}"
+            );
+        }
+    }
+}
+
+#[test]
 fn app_state_has_one_module_identity() {
     let banned = [
         "crate::api::AppState",

@@ -133,7 +133,7 @@ impl LayoutConvergence {
             .await
             .resolved_zones()
             .iter()
-            .flat_map(|group| group.layout.zones.iter())
+            .flat_map(|zone| zone.layout.zones.iter())
             .any(|zone| candidate_ids.contains(&zone.device_id))
     }
 

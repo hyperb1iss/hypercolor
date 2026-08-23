@@ -58,13 +58,13 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
 pub(crate) fn publish_render_zone_changed(
     state: &AppState,
     scene_id: SceneId,
-    group: &Zone,
+    zone: &Zone,
     kind: ZoneChangeKind,
 ) {
     state.event_bus.publish(HypercolorEvent::ZoneChanged {
         scene_id,
-        zone_id: group.id,
-        role: group.role,
+        zone_id: zone.id,
+        role: zone.role,
         kind,
     });
 }

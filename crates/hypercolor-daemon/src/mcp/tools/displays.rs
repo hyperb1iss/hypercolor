@@ -290,7 +290,7 @@ async fn handle_default_scope(
             .map_err(|error| ToolError::Internal(error.to_string()))?;
     }
     drop(admission);
-    let Some(group) =
+    let Some(zone) =
         crate::api::displays::apply_display_preference_overlay_checked(state, device_id).await
     else {
         return Err(ToolError::Internal(
@@ -306,7 +306,7 @@ async fn handle_default_scope(
                 .map(|scene| scene.id)
                 .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT)
         };
-        publish_render_zone_changed(state, scene_id, &group, ZoneChangeKind::Updated);
+        publish_render_zone_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
     }
 
     serialize_result(DisplayFaceResult {
@@ -316,7 +316,7 @@ async fn handle_default_scope(
         cleared: false,
         scene_id: None,
         effect: Some(crate::api::effects::effect_summary_with_details(&effect)),
-        zone: Some(crate::domain::scene_tree::zone_resource(&group)),
+        zone: Some(crate::domain::scene_tree::zone_resource(&zone)),
     })
 }
 

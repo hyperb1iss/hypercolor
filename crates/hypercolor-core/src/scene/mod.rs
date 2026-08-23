@@ -1279,7 +1279,7 @@ impl SceneManager {
     #[must_use]
     pub fn remove_display_zones_for_device(&mut self, device_id: DeviceId) -> Vec<(SceneId, Zone)> {
         let active_scene_id = self.active_scene_id().copied();
-        let mut removed_groups = Vec::new();
+        let mut removed_zones = Vec::new();
 
         for scene in self.scenes.values_mut() {
             let mut index = 0;
@@ -1290,7 +1290,7 @@ impl SceneManager {
                         .as_ref()
                         .is_some_and(|target| target.device_id == device_id);
                 if matches_device {
-                    removed_groups.push((scene.id, scene.zones.remove(index)));
+                    removed_zones.push((scene.id, scene.zones.remove(index)));
                 } else {
                     index += 1;
                 }
@@ -1298,14 +1298,14 @@ impl SceneManager {
         }
 
         if active_scene_id.is_some_and(|scene_id| {
-            removed_groups
+            removed_zones
                 .iter()
                 .any(|(removed_scene_id, _)| *removed_scene_id == scene_id)
         }) {
             self.refresh_resolved_zones();
         }
 
-        removed_groups
+        removed_zones
     }
 
     pub fn patch_zone_controls(

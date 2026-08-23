@@ -1601,13 +1601,13 @@ pub(super) fn validated_zone_layout_preview(
         )));
     }
 
-    let Some(group) = scene.zones.iter().find(|group| group.id == zone_id) else {
+    let Some(zone) = scene.zones.iter().find(|zone| zone.id == zone_id) else {
         return Err(WsProtocolError::invalid_request(format!(
             "Zone not found: {zone_id}"
         )));
     };
 
-    let stored_ids = group
+    let stored_ids = zone
         .layout
         .zones
         .iter()
@@ -1624,14 +1624,14 @@ pub(super) fn validated_zone_layout_preview(
         ));
     }
 
-    let mut stored = group
+    let mut stored = zone
         .layout
         .zones
         .iter()
         .cloned()
         .map(|zone| (zone.id.clone(), zone))
         .collect::<HashMap<_, _>>();
-    let mut preview = group.layout.clone();
+    let mut preview = zone.layout.clone();
     preview.zones = layout
         .zones
         .into_iter()

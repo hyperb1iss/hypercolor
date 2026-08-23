@@ -119,7 +119,7 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
         scene_manager
             .resolved_zones()
             .iter()
-            .filter(|group| group.enabled)
+            .filter(|zone| zone.enabled)
             .flat_map(hypercolor_types::scene::Zone::effect_ids)
             .collect::<Vec<_>>()
     };

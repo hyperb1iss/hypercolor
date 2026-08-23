@@ -386,7 +386,7 @@ pub async fn patch_display_face_composition(
         };
     }
 
-    let (group, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
+    let (zone, effect) = match current_display_face_assignment(state.as_ref(), device_id).await {
         Ok(response) => (response.zone, response.effect),
         Err(error) => return error.into_response(),
     };
@@ -394,7 +394,7 @@ pub async fn patch_display_face_composition(
     let written = match crate::domain::display::patch_display_composition(
         &state.domains.scene,
         crate::domain::display::PatchDisplayComposition {
-            zone_id: group.id,
+            zone_id: zone.id,
             blend_mode: body.blend_mode,
             opacity: body.opacity,
         },
@@ -621,7 +621,7 @@ pub async fn patch_display_face_controls(
         };
     }
 
-    let group = match current_display_face_assignment(state.as_ref(), device_id).await {
+    let zone = match current_display_face_assignment(state.as_ref(), device_id).await {
         Ok(response) => response.zone,
         Err(error) => return error.into_response(),
     };
@@ -629,7 +629,7 @@ pub async fn patch_display_face_controls(
     let written = match crate::domain::display::patch_display_face_controls(
         &state.domains.effects,
         crate::domain::display::PatchDisplayFaceControls {
-            zone_id: group.id,
+            zone_id: zone.id,
             controls: requested_controls,
         },
     )
@@ -754,24 +754,24 @@ async fn current_display_face_assignment(
     state: &AppState,
     device_id: DeviceId,
 ) -> Result<DisplayFaceResponse, DomainError> {
-    let (scene_id, group) = {
+    let (scene_id, zone) = {
         let scene_manager = state.scene_manager.snapshot().await;
         let Some(active_scene) = scene_manager.active_scene() else {
             return Err(DomainError::not_found(ResourceKind::Scene, "active"));
         };
-        let Some(group) = active_scene.display_zone_for(device_id).cloned() else {
+        let Some(zone) = active_scene.display_zone_for(device_id).cloned() else {
             return Err(DomainError::not_found(
                 ResourceKind::Zone,
                 format!("display-face:{device_id}"),
             ));
         };
-        (active_scene.id, group)
+        (active_scene.id, zone)
     };
 
-    let Some(effect_id) = group.effect_ids().next() else {
+    let Some(effect_id) = zone.effect_ids().next() else {
         return Err(DomainError::not_found(
             ResourceKind::Effect,
-            format!("zone:{}", group.id),
+            format!("zone:{}", zone.id),
         ));
     };
     let Some(effect) = state.domains.effects.metadata(effect_id).await else {
@@ -787,7 +787,7 @@ async fn current_display_face_assignment(
         default_assigned,
         device_id: device_id.to_string(),
         effect,
-        zone: group,
+        zone,
         live_scope: DisplayFaceScope::Scene,
         scene_assigned: true,
         scene_id: scene_id.to_string(),
@@ -1010,18 +1010,18 @@ async fn current_default_face_assignment(
     })
 }
 
-fn compact_display_face_assignment_zone(mut group: Zone) -> Zone {
-    if let Some(target) = group.display_target.as_mut()
+fn compact_display_face_assignment_zone(mut zone: Zone) -> Zone {
+    if let Some(target) = zone.display_target.as_mut()
         && target.blend_mode == BlendMode::Replace
         && (target.opacity - 1.0).abs() <= f32::EPSILON
     {
         target.blend_mode = BlendMode::Alpha;
     }
-    group
+    zone
 }
 
-fn display_zone_has_face_assignment(group: &Zone) -> bool {
-    group.effect_ids().next().is_some()
+fn display_zone_has_face_assignment(zone: &Zone) -> bool {
+    zone.effect_ids().next().is_some()
 }
 
 pub(crate) async fn sync_connected_display_surfaces(state: &AppState) {

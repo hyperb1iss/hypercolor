@@ -187,20 +187,20 @@ fn convert_profile(
         .and_then(|id| layouts.get(id))
         .unwrap_or(default_layout);
 
-    let mut groups =
+    let mut zones =
         Vec::with_capacity(usize::from(profile.primary.is_some()) + profile.displays.len());
     if let Some(primary) = profile.primary {
-        groups.push(primary_zone(scene_id, primary, primary_layout.clone()));
+        zones.push(primary_zone(scene_id, primary, primary_layout.clone()));
     }
     for display in profile.displays {
-        groups.push(display_zone(scene_id, display));
+        zones.push(display_zone(scene_id, display));
     }
 
     let scene = Scene {
         id: scene_id,
         name,
         description: profile.description,
-        zones: groups,
+        zones,
         zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
