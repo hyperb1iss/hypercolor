@@ -58,14 +58,20 @@ pub fn ScreenCompositionSection(
     // optimistically so the select and slider track the drag.
     let (blend_mode, set_blend_mode) = signal(BlendMode::Alpha);
     let (opacity, set_opacity) = signal(1.0_f32);
+    // What this panel last sent. A refetch that merely echoes it back must
+    // not overwrite a newer local value mid-drag; only a genuinely
+    // different server value (another client, the CLI) re-seeds.
+    let last_committed = StoredValue::new(None::<(BlendMode, u32)>);
+    let opacity_key = |amount: f32| (amount.clamp(0.0, 1.0) * 1000.0).round() as u32;
     Effect::new(move |_| {
         let target = face.get().and_then(|face| face.zone.display_target);
-        if let Some(target) = target {
-            set_blend_mode.set(target.blend_mode);
-            set_opacity.set(target.opacity.clamp(0.0, 1.0));
-        } else {
-            set_blend_mode.set(BlendMode::Alpha);
-            set_opacity.set(1.0);
+        let (mode, amount) = target.map_or((BlendMode::Alpha, 1.0), |target| {
+            (target.blend_mode, target.opacity.clamp(0.0, 1.0))
+        });
+        let echo = last_committed.get_value() == Some((mode, opacity_key(amount)));
+        if !echo {
+            set_blend_mode.set(mode);
+            set_opacity.set(amount);
         }
     });
 
@@ -73,6 +79,10 @@ pub fn ScreenCompositionSection(
         let Some(device_id) = display_device_id.get_untracked() else {
             return;
         };
+        last_committed.set_value(Some((
+            mode.unwrap_or_else(|| blend_mode.get_untracked()),
+            opacity_key(amount.unwrap_or_else(|| opacity.get_untracked())),
+        )));
         let refresh_scene = studio.refresh_scene;
         spawn_local(async move {
             match api::update_display_face_composition(&device_id, mode, amount).await {

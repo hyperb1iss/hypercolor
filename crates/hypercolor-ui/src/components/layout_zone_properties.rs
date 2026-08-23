@@ -3,6 +3,7 @@
 use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
 use crate::async_helpers::spawn_identify;
@@ -190,8 +191,33 @@ pub fn LayoutZoneProperties() -> impl IntoView {
             set_is_dirty.set(true);
         };
 
+    // A slider drag is one edit, not one per pixel: the press on a range
+    // input opens an interaction and the release (anywhere) closes it, so
+    // undo steps back over the whole drag. Keyboard nudges on a slider
+    // still record per step, which is what a keyboard user expects.
+    let slider_interaction = StoredValue::new(false);
+    let release = window_event_listener(leptos::ev::pointerup, move |_| {
+        if slider_interaction.get_value() {
+            slider_interaction.set_value(false);
+            set_layout.finish_interaction();
+        }
+    });
+    on_cleanup(move || release.remove());
+
     view! {
-        <div class="h-full px-5 py-2.5 overflow-y-auto">
+        <div
+            class="h-full px-5 py-2.5 overflow-y-auto"
+            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                let is_range = ev
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+                    .is_some_and(|input| input.type_() == "range");
+                if is_range {
+                    slider_interaction.set_value(true);
+                    set_layout.begin_interaction();
+                }
+            }
+        >
             {move || {
                 let ids = selected_zone_ids.get();
                 if ids.len() > 1 {
