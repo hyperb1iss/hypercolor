@@ -3,8 +3,10 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
+use hypercolor_types::api::system::{HealthResponse, SystemResource};
+
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat, extract_str};
+use crate::output::{OutputContext, OutputFormat};
 
 /// Daemon identity and health commands.
 #[derive(Debug, Args)]
@@ -30,32 +32,31 @@ pub async fn execute(args: &ServerArgs, client: &DaemonClient, ctx: &OutputConte
 }
 
 async fn execute_info(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let system: serde_json::Value = client.get("/system").await?;
-    let response = system
-        .get("identity")
-        .ok_or_else(|| anyhow::anyhow!("System response is missing daemon identity"))?;
+    let system: SystemResource = client.get("/system").await?;
+    let identity = &system.identity;
 
     match ctx.format {
-        OutputFormat::Json => ctx.print_json(response)?,
+        OutputFormat::Json => ctx.print_json(identity)?,
         OutputFormat::Plain => {
-            println!("{}", extract_str(&response, "version"));
+            println!("{}", identity.version);
         }
         OutputFormat::Table => {
             println!();
-            ctx.info(&format!("Version    {}", extract_str(&response, "version")));
+            ctx.info(&format!("Version    {}", identity.version));
+            ctx.info(&format!("Name       {}", identity.instance_name));
+            ctx.info(&format!("Devices    {}", identity.device_count));
             ctx.info(&format!(
-                "Name       {}",
-                extract_str(response, "instance_name")
+                "Auth       {}",
+                if identity.auth_required {
+                    "required"
+                } else {
+                    "open"
+                }
             ));
-            if let Some(features) = response
-                .get("features")
-                .and_then(serde_json::Value::as_array)
+            if let Some(status) = &system.status
+                && !status.capabilities.is_empty()
             {
-                let feature_list: Vec<&str> = features
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .collect();
-                ctx.info(&format!("Features   {}", feature_list.join(", ")));
+                ctx.info(&format!("Features   {}", status.capabilities.join(", ")));
             }
             println!();
         }
@@ -65,16 +66,12 @@ async fn execute_info(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
 }
 
 async fn execute_health(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response: serde_json::Value = client.get_unversioned("/health").await?;
+    let response: HealthResponse = client.get_unversioned("/health").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            let status = response
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            let styled = ctx.painter.device_state(status);
+            let styled = ctx.painter.device_state(&response.status);
             ctx.success(&format!("Daemon is {styled}"));
         }
     }

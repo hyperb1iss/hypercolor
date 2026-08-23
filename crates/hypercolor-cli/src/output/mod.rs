@@ -116,13 +116,18 @@ impl OutputContext {
 
 // ── Shared Helpers ──────────────────────────────────────────────────────
 
-/// Extract a string field from a JSON value, returning "?" if missing.
-pub fn extract_str(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("?")
-        .to_string()
+/// Render a unit-variant wire enum by its serde spelling.
+///
+/// A closed enum with many variants would otherwise need its variant
+/// list copied into the CLI to be printed; serde already holds the
+/// canonical spelling, so asking it keeps the label and the wire in
+/// step by construction.
+pub fn wire_label<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(label)) => label,
+        Ok(other) => other.to_string(),
+        Err(_) => "?".to_string(),
+    }
 }
 
 /// Simple percent-encoding for URL path segments.

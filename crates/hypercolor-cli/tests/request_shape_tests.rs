@@ -8,6 +8,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::Uri;
 use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
+use hypercolor_types::api::system::{ServerInfo, SystemResource, SystemStatus};
 use tokio::sync::{Mutex, oneshot};
 
 type SharedBody = Arc<Mutex<Option<serde_json::Value>>>;
@@ -1694,6 +1695,89 @@ async fn library_presets_list_json_output_preserves_the_daemon_payload() -> Resu
     task.await.context("test server task join failed")?;
 
     assert_eq!(rendered?, expected);
+
+    Ok(())
+}
+
+/// The daemon's system resource, built from the canonical contract so the
+/// fixture cannot drift from the shape the daemon serializes.
+fn system_resource_fixture() -> serde_json::Value {
+    let resource = SystemResource {
+        identity: ServerInfo {
+            instance_id: "0198c5b6-6666-7000-8000-000000000001".to_owned(),
+            instance_name: "studio".to_owned(),
+            version: "0.9.0".to_owned(),
+            server_session_id: None,
+            device_count: 2,
+            auth_required: false,
+        },
+        status: Some(SystemStatus {
+            running: true,
+            version: "0.9.0".to_owned(),
+            uptime_seconds: 3_661,
+            device_count: 2,
+            effect_count: 18,
+            scene_count: 4,
+            active_effect: Some("Aurora".to_owned()),
+            active_scene: Some("Movie Night".to_owned()),
+            global_brightness: 80,
+            audio_available: true,
+            capabilities: vec!["effects".to_owned(), "scenes".to_owned()],
+            ..SystemStatus::default()
+        }),
+    };
+    serde_json::to_value(resource).expect("the system resource should serialize")
+}
+
+#[tokio::test]
+async fn status_json_output_preserves_the_daemon_status_payload() -> Result<()> {
+    let expected = system_resource_fixture()["status"].clone();
+    let router = Router::new().route(
+        "/api/v1/system",
+        get(|| async { Json(serde_json::json!({ "data": system_resource_fixture() })) }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let rendered = run_hyper_json(port, &["status"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    assert_eq!(rendered?, expected);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn audio_devices_reads_the_daemon_device_list() -> Result<()> {
+    let router = Router::new().route(
+        "/api/v1/system/audio-devices",
+        get(|| async {
+            Json(serde_json::json!({
+                "data": {
+                    "devices": [
+                        { "id": "default", "name": "System default", "description": "Follows the host" },
+                        { "id": "hw:1", "name": "Scarlett 2i2", "description": "USB interface" }
+                    ],
+                    "current": "hw:1"
+                }
+            }))
+        }),
+    );
+    let (port, shutdown_tx, task) = spawn_server(router).await?;
+
+    let output = run_hyper_output(port, &["--format", "plain", "audio", "devices"]).await;
+
+    let _ = shutdown_tx.send(());
+    task.await.context("test server task join failed")?;
+
+    let output = output?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "audio devices should succeed");
+    assert!(
+        stdout.contains("System default") && stdout.contains("Scarlett 2i2"),
+        "every enumerated device should render, got: {stdout}"
+    );
 
     Ok(())
 }

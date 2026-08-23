@@ -3,8 +3,10 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
+use hypercolor_types::api::system::AudioDevicesResponse;
+
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat, extract_str};
+use crate::output::{OutputContext, OutputFormat};
 
 /// Audio input management.
 #[derive(Debug, Args)]
@@ -27,48 +29,40 @@ pub async fn execute(args: &AudioArgs, client: &DaemonClient, ctx: &OutputContex
 }
 
 async fn execute_devices(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response: serde_json::Value = client.get("/system/audio-devices").await?;
+    let response: AudioDevicesResponse = client.get("/system/audio-devices").await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(devices) = response.get("items").and_then(serde_json::Value::as_array) {
-                for device in devices {
-                    if let Some(name) = device.get("name").and_then(serde_json::Value::as_str) {
-                        println!("{name}");
-                    }
-                }
+            for device in &response.devices {
+                println!("{}", device.name);
             }
         }
         OutputFormat::Table => {
-            if let Some(devices) = response.get("items").and_then(serde_json::Value::as_array) {
-                let rows: Vec<Vec<String>> = devices
-                    .iter()
-                    .map(|d| {
-                        let active = d
-                            .get("active")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        let marker = if active {
-                            ctx.painter.success("\u{2726}")
-                        } else {
-                            " ".to_string()
-                        };
-                        let name_display = if active {
-                            ctx.painter.keyword(&extract_str(d, "name"))
-                        } else {
-                            ctx.painter.name(&extract_str(d, "name"))
-                        };
-                        vec![
-                            marker,
-                            name_display,
-                            ctx.painter.number(&extract_str(d, "sample_rate")),
-                            ctx.painter.number(&extract_str(d, "channels")),
-                        ]
-                    })
-                    .collect();
-                ctx.print_table(&["", "Device", "Rate", "Ch"], &rows);
-            }
+            let rows: Vec<Vec<String>> = response
+                .devices
+                .iter()
+                .map(|device| {
+                    let active = device.id == response.current;
+                    let marker = if active {
+                        ctx.painter.success("\u{2726}")
+                    } else {
+                        " ".to_string()
+                    };
+                    let name_display = if active {
+                        ctx.painter.keyword(&device.name)
+                    } else {
+                        ctx.painter.name(&device.name)
+                    };
+                    vec![
+                        marker,
+                        name_display,
+                        ctx.painter.id(&device.id),
+                        ctx.painter.muted(&device.description),
+                    ]
+                })
+                .collect();
+            ctx.print_table(&["", "Device", "ID", "Description"], &rows);
         }
     }
 
