@@ -1,14 +1,10 @@
 use async_trait::async_trait;
 
-use crate::{DriverError, DriverHost, TrackedDeviceCtx};
-
-// Pairing data vocabulary lives in hypercolor-types (shared with the
-// daemon API contracts and every client); re-exported here so drivers
-// and the daemon keep their existing import paths.
-pub use hypercolor_types::pairing::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
-    PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
+use hypercolor_types::pairing::{
+    ClearPairingOutcome, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
 };
+
+use crate::{DriverError, DriverHost, TrackedDeviceCtx};
 
 /// Driver capability for pairing and auth summaries.
 #[async_trait]

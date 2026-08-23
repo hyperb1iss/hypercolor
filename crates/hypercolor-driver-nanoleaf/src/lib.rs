@@ -21,13 +21,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
-    DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
-    DriverConfigProvider, DriverConfigView, DriverControlProvider, DriverCredentialStore,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverTrackedDevice, OutputBinding, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
-    ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverCredentialStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
+    TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::{
     metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
@@ -44,6 +42,10 @@ use hypercolor_types::controls::{
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
 use hypercolor_types::identity::BackendId;
+use hypercolor_types::pairing::{
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
+    PairDeviceStatus, PairingDescriptor, PairingFlowKind,
+};
 use reqwest::StatusCode;
 use serde::Deserialize;
 

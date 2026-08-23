@@ -2,12 +2,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
-    ClearPairingOutcome, ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceAuthSummary,
-    DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryRequest,
-    DriverConfigView, DriverControlProvider, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveryState, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverProtocolCatalog, DriverRuntimeActions, OutputBinding, PairDeviceOutcome,
-    PairDeviceRequest, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DRIVER_API_SCHEMA_VERSION, DeviceBackendFactory, DiscoveredDevice,
+    DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverControlProvider,
+    DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverError, DriverHost,
+    DriverModule, DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions,
+    OutputBinding, PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_network::{DriverModuleRegistry, DriverModuleRegistryError};
 use hypercolor_types::config::DriverConfigEntry;
@@ -20,6 +19,9 @@ use hypercolor_types::device::{
     DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
 };
 use hypercolor_types::identity::BackendId;
+use hypercolor_types::pairing::{
+    ClearPairingOutcome, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
+};
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 

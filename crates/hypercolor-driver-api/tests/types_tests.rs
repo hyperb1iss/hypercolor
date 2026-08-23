@@ -5,11 +5,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverConfigView, DriverControlProvider,
+    ControlApplyTarget, DiscoveryRequest, DriverConfigView, DriverControlProvider,
     DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
     DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputCadence,
-    PairDeviceRequest, PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor,
-    PairingFlowKind, ValidatedControlChanges,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
@@ -23,6 +22,10 @@ use hypercolor_types::device::{
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
     DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
     FingerprintNamespace, SegmentInfo,
+};
+use hypercolor_types::pairing::{
+    DeviceAuthState, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind,
 };
 use serde::Deserialize;
 

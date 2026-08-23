@@ -13,13 +13,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary, DeviceBackend,
-    DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability, DiscoveryConnectBehavior,
-    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
-    DriverDescriptor, DriverError, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFieldDescriptor, PairingFlowKind, TrackedDeviceCtx, ValidatedControlChanges,
+    ControlApplyTarget, DeviceBackend, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigProvider, DriverConfigView,
+    DriverControlProvider, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverRuntimeCacheProvider, DriverTrackedDevice, OutputBinding,
+    PairingCapability, TrackedDeviceCtx, ValidatedControlChanges,
 };
 use hypercolor_driver_support::network::validate_ip;
 use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
@@ -36,6 +34,10 @@ use hypercolor_types::device::{
     DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::identity::BackendId;
+use hypercolor_types::pairing::{
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
+    PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor, PairingFlowKind,
+};
 use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 use serde_json::json;
 use tracing::warn;

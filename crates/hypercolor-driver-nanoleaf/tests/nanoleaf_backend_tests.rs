@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_driver_api::DeviceBackend;
-use hypercolor_driver_api::{DeviceError, DiscoveryConnectBehavior};
+use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_nanoleaf::{
     NanoleafBackend, NanoleafConfig, NanoleafDiscoveredDevice, build_device_info,
 };
 use hypercolor_driver_support::CredentialStore;
+use hypercolor_types::device::DeviceError;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::time::timeout;

@@ -34,13 +34,8 @@ pub use host::{
     DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
     DriverTrackedDevice, TrackedDeviceCtx,
 };
-pub use hypercolor_types::device::DeviceError;
 pub use module::{
     DeviceBackendFactory, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
     DriverRuntimeCacheProvider, OutputBinding,
 };
-pub use pairing::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
-    PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFieldDescriptor,
-    PairingFlowKind,
-};
+pub use pairing::PairingCapability;

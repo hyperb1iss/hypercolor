@@ -8,12 +8,12 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
-use hypercolor_driver_api::{
-    DeviceAuthState, DeviceAuthSummary, DriverError, PairDeviceRequest, PairDeviceStatus,
-    TrackedDeviceCtx,
-};
+use hypercolor_driver_api::{DriverError, TrackedDeviceCtx};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::HypercolorEvent;
+use hypercolor_types::pairing::{
+    DeviceAuthState, DeviceAuthSummary, PairDeviceRequest, PairDeviceStatus,
+};
 
 use crate::api::envelope;
 use crate::app_state::AppState;

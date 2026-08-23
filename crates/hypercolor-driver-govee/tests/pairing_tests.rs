@@ -4,11 +4,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceAuthState, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverRuntimeActions, PairDeviceRequest, PairDeviceStatus, PairingFlowKind, TrackedDeviceCtx,
+    DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions,
+    TrackedDeviceCtx,
 };
 use hypercolor_driver_govee::{GoveeConfig, GoveeDriverModule, GoveeLanDevice, build_device_info};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::pairing::{
+    DeviceAuthState, PairDeviceRequest, PairDeviceStatus, PairingFlowKind,
+};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
