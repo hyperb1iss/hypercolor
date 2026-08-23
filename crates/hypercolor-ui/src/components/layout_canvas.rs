@@ -310,6 +310,7 @@ pub fn LayoutCanvas() -> impl IntoView {
             node_ref=canvas_slot_ref
             class="relative w-full h-full overflow-hidden"
             style="background: var(--color-surface-base)"
+            on:mousedown=move |_| swallow_next_click.set_value(false)
             on:mouseup=move |_| finish_for_mouseup()
             on:mouseleave=move |_| finish_for_leave()
             on:mousemove=move |ev| {
@@ -633,6 +634,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     on:mousedown=move |ev| {
                                         ev.stop_propagation();
                                         ev.prevent_default();
+                                        swallow_next_click.set_value(false);
                                         primary_zone_id.set(Some(zid_select.clone()));
 
                                         // Compound-aware selection
@@ -786,6 +788,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     }
                                     on:click=move |ev| {
                                         ev.stop_propagation();
+                                        // The release landed on the box, so the viewport never
+                                        // sees this click; disarm here or the next empty-canvas
+                                        // click would be eaten.
+                                        swallow_next_click.set_value(false);
                                     }
                                 >
                                     {move || {
