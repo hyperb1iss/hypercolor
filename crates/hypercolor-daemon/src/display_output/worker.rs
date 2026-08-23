@@ -8,7 +8,7 @@ use tokio::sync::{RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame};
 use hypercolor_core::device::DisplayOutputLane;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat, OwnedDisplayFramePayload};
 use hypercolor_types::session::OffOutputBehavior;
@@ -125,7 +125,7 @@ impl CapturedDisplayFrameSource {
                 display_source_matches(Some(captured), Some(frame))
             }
             (Self::Direct(captured), DisplayWorkerFrameSource::Direct(frame)) => {
-                display_group_source_matches(Some(captured), Some(frame))
+                display_zone_source_matches(Some(captured), Some(frame))
             }
             (
                 Self::Face {
@@ -157,7 +157,7 @@ impl CapturedDisplayFrameSource {
                     .expect("display worker should only capture a valid scene frame"),
             ),
             DisplayWorkerFrameSource::Direct(frame) => Self::Direct(
-                capture_display_group_source(Some(frame))
+                capture_display_zone_source(Some(frame))
                     .expect("display worker should only capture a valid direct frame"),
             ),
             DisplayWorkerFrameSource::Face {
@@ -208,16 +208,16 @@ fn display_source_matches(
     }
 }
 
-fn display_group_source_matches(
+fn display_zone_source_matches(
     captured: Option<&CapturedDisplaySource>,
-    source: Option<&Arc<DisplayGroupFrame>>,
+    source: Option<&Arc<DisplayZoneFrame>>,
 ) -> bool {
     match (captured, source) {
         (None, None) => true,
         (Some(captured), Some(source)) => {
-            let source_identity = display_group_source_identity(source.as_ref());
+            let source_identity = display_zone_source_identity(source.as_ref());
             captured.identity == source_identity
-                || display_group_source_content_matches(captured, source.as_ref())
+                || display_zone_source_content_matches(captured, source.as_ref())
         }
         _ => false,
     }
@@ -234,15 +234,15 @@ fn capture_display_source(source: Option<&Arc<CanvasFrame>>) -> Option<CapturedD
     })
 }
 
-fn capture_display_group_source(
-    source: Option<&Arc<DisplayGroupFrame>>,
+fn capture_display_zone_source(
+    source: Option<&Arc<DisplayZoneFrame>>,
 ) -> Option<CapturedDisplaySource> {
     source.map(|source| {
-        let identity = display_group_source_identity(source.as_ref());
+        let identity = display_zone_source_identity(source.as_ref());
         CapturedDisplaySource {
             identity,
             content_hash: should_hash_display_source_identity(identity)
-                .then(|| display_group_source_content_hash(source.as_ref())),
+                .then(|| display_zone_source_content_hash(source.as_ref())),
         }
     })
 }
@@ -256,10 +256,10 @@ fn display_source_identity(source: &CanvasFrame) -> DisplaySourceIdentity {
     }
 }
 
-fn display_group_source_identity(source: &DisplayGroupFrame) -> DisplaySourceIdentity {
+fn display_zone_source_identity(source: &DisplayZoneFrame) -> DisplaySourceIdentity {
     match source {
-        DisplayGroupFrame::Canvas(source) => display_source_identity(source),
-        DisplayGroupFrame::Yuv420(source) => DisplaySourceIdentity::Yuv420 {
+        DisplayZoneFrame::Canvas(source) => display_source_identity(source),
+        DisplayZoneFrame::Yuv420(source) => DisplaySourceIdentity::Yuv420 {
             storage: source.storage_identity(),
             width: source.width,
             height: source.height,
@@ -281,13 +281,13 @@ fn display_source_content_matches(captured: &CapturedDisplaySource, source: &Can
         && captured_hash == display_source_content_hash(source)
 }
 
-fn display_group_source_content_matches(
+fn display_zone_source_content_matches(
     captured: &CapturedDisplaySource,
-    source: &DisplayGroupFrame,
+    source: &DisplayZoneFrame,
 ) -> bool {
     match source {
-        DisplayGroupFrame::Canvas(source) => display_source_content_matches(captured, source),
-        DisplayGroupFrame::Yuv420(_) => false,
+        DisplayZoneFrame::Canvas(source) => display_source_content_matches(captured, source),
+        DisplayZoneFrame::Yuv420(_) => false,
     }
 }
 
@@ -306,10 +306,10 @@ fn display_source_content_hash(source: &CanvasFrame) -> u64 {
     source.surface().content_digest()
 }
 
-fn display_group_source_content_hash(source: &DisplayGroupFrame) -> u64 {
+fn display_zone_source_content_hash(source: &DisplayZoneFrame) -> u64 {
     match source {
-        DisplayGroupFrame::Canvas(source) => display_source_content_hash(source),
-        DisplayGroupFrame::Yuv420(source) => source.storage_identity().id,
+        DisplayZoneFrame::Canvas(source) => display_source_content_hash(source),
+        DisplayZoneFrame::Yuv420(source) => source.storage_identity().id,
     }
 }
 
@@ -593,14 +593,14 @@ async fn run_display_worker(
                     &mut encode_state,
                 ),
                 DisplayWorkerFrameSource::Direct(frame) => match frame.as_ref() {
-                    DisplayGroupFrame::Canvas(frame) => encode_finalized_canvas_frame(
+                    DisplayZoneFrame::Canvas(frame) => encode_finalized_canvas_frame(
                         frame,
                         &geometry,
                         frame_format,
                         include_preview_jpeg,
                         &mut encode_state,
                     ),
-                    DisplayGroupFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
+                    DisplayZoneFrame::Yuv420(frame) => encode_finalized_yuv420_frame(
                         frame,
                         frame_format,
                         include_preview_jpeg,

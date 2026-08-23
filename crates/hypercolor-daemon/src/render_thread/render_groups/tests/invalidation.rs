@@ -59,7 +59,7 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
@@ -67,7 +67,7 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
@@ -97,7 +97,7 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
         std::slice::from_ref(&group),
         1,
         1,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
@@ -120,7 +120,7 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut replacement = builtin_entry(&registry, "rainbow");
     replacement.metadata.id = solid_id;
-    let mut group = sample_display_group(4, 4);
+    let mut group = sample_display_zone(4, 4);
     set_effect_group(
         &mut group,
         solid_id,
@@ -129,7 +129,7 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_group_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
@@ -137,13 +137,13 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("display group should render");
-    let [(_, first_frame)] = &first.group_canvases[..] else {
-        panic!("display group should publish a direct surface");
+    .expect("display zone should render");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
     };
 
     registry.register(replacement);
@@ -153,13 +153,13 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
         std::slice::from_ref(&group),
         1,
         10,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
     .expect("registry generation change should bypass retained direct-canvas reuse");
-    let [(_, second_frame)] = &second.group_canvases[..] else {
-        panic!("display group should keep publishing a direct surface");
+    let [(_, second_frame)] = &second.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
     };
 
     assert_ne!(
@@ -181,7 +181,7 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = sample_display_group(4, 4);
+    let mut group = sample_display_zone(4, 4);
     set_effect_group(
         &mut group,
         solid_id,
@@ -190,7 +190,7 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_group_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
@@ -198,13 +198,13 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("display group should render");
-    let [(_, first_frame)] = &first.group_canvases[..] else {
-        panic!("display group should publish a direct surface");
+    .expect("display zone should render");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
     };
 
     let second = render_scene_for_test(
@@ -212,13 +212,13 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
         std::slice::from_ref(&group),
         2,
         10,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
     .expect("group revision change should bypass retained direct-canvas reuse");
-    let [(_, second_frame)] = &second.group_canvases[..] else {
-        panic!("display group should keep publishing a direct surface");
+    let [(_, second_frame)] = &second.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
     };
 
     assert!(
@@ -231,11 +231,11 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
 }
 
 #[test]
-fn empty_display_group_does_not_reuse_previous_face_surface() {
+fn empty_display_zone_does_not_reuse_previous_face_surface() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = sample_display_group(4, 4);
+    let mut group = sample_display_zone(4, 4);
     set_effect_group(
         &mut group,
         solid_id,
@@ -244,7 +244,7 @@ fn empty_display_group_does_not_reuse_previous_face_surface() {
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_group_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
@@ -252,13 +252,13 @@ fn empty_display_group_does_not_reuse_previous_face_surface() {
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("display group should render the assigned face");
-    let [(_, first_frame)] = &first.group_canvases[..] else {
-        panic!("display group should publish a direct surface");
+    .expect("display zone should render the assigned face");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
     };
     assert_eq!(
         first_frame.surface_for_test().get_pixel(0, 0),
@@ -271,22 +271,22 @@ fn empty_display_group_does_not_reuse_previous_face_surface() {
         std::slice::from_ref(&group),
         1,
         10,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("empty display group should clear its direct route");
+    .expect("empty display zone should clear its direct route");
 
-    assert!(cleared.group_canvases.is_empty());
-    assert!(cleared.active_group_canvas_ids.is_empty());
+    assert!(cleared.display_zone_frames.is_empty());
+    assert!(cleared.active_display_zone_ids.is_empty());
 }
 
 #[test]
-fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
+fn zero_zone_display_zone_reuses_retained_surface_until_target_interval() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = sample_display_group(4, 4);
+    let mut group = sample_display_zone(4, 4);
     set_effect_group(
         &mut group,
         solid_id,
@@ -295,7 +295,7 @@ fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_group_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
@@ -303,13 +303,13 @@ fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("display group should render");
-    let [(_, first_frame)] = &first.group_canvases[..] else {
-        panic!("display group should publish a direct surface");
+    .expect("display zone should render");
+    let [(_, first_frame)] = &first.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
     };
 
     let second = render_scene_for_test(
@@ -317,13 +317,13 @@ fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
         std::slice::from_ref(&group),
         1,
         10,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("display group should reuse retained surface");
-    let [(_, second_frame)] = &second.group_canvases[..] else {
-        panic!("display group should keep publishing a direct surface");
+    .expect("display zone should reuse retained surface");
+    let [(_, second_frame)] = &second.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
     };
 
     let third = render_scene_for_test(
@@ -331,13 +331,13 @@ fn zero_zone_display_group_reuses_retained_surface_until_target_interval() {
         std::slice::from_ref(&group),
         1,
         40,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("display group should rerender once its interval elapses");
-    let [(_, third_frame)] = &third.group_canvases[..] else {
-        panic!("display group should keep publishing a direct surface");
+    .expect("display zone should rerender once its interval elapses");
+    let [(_, third_frame)] = &third.display_zone_frames[..] else {
+        panic!("display zone should keep publishing a direct surface");
     };
 
     assert_eq!(

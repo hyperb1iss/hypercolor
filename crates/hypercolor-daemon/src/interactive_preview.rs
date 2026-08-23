@@ -1172,8 +1172,8 @@ fn render_preview_scene(
         active_scene_id: scene.scene_id,
         dependency_key: SceneDependencyKey::new(scene.groups_revision, scene.catalog_generation),
         elapsed_ms,
-        display_group_target_fps: &HashMap::new(),
-        display_group_descriptors: display_descriptors,
+        display_zone_target_fps: &HashMap::new(),
+        display_zone_descriptors: display_descriptors,
         registry: &scene.registry,
         authoritative_spatial_engine: None,
         inputs: ZoneFrameInputs {

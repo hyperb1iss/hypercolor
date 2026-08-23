@@ -224,7 +224,7 @@ fn missing_media_layer_renders_transparent_black_and_reports_health() {
 fn screen_region_layer_uses_latest_capture_canvas() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = EffectRegistry::new(Vec::new());
-    let mut group = sample_display_group(2, 1);
+    let mut group = sample_display_zone(2, 1);
     group.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("Screen".into()),
@@ -260,11 +260,11 @@ fn screen_region_layer_uses_latest_capture_canvas() {
         &mut zones,
         Some(&screen),
     )
-    .expect("screen region display group should render");
+    .expect("screen region display zone should render");
     let (_, frame) = result
-        .group_canvases
+        .display_zone_frames
         .first()
-        .expect("display group should publish a direct frame");
+        .expect("display zone should publish a direct frame");
     let surface = frame.surface_for_test();
 
     assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
@@ -279,7 +279,7 @@ fn screen_region_layer_uses_latest_capture_canvas() {
 }
 
 #[test]
-fn gif_asset_layer_can_drive_direct_display_group() {
+fn gif_asset_layer_can_drive_direct_display_zone() {
     let tempdir = tempfile::tempdir().expect("test asset tempdir should be created");
     let mut library =
         AssetLibrary::open(tempdir.path().join("assets")).expect("asset library should open");
@@ -289,7 +289,7 @@ fn gif_asset_layer_can_drive_direct_display_group() {
     let asset_library = Arc::new(RwLock::new(library));
     let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
     let registry = EffectRegistry::new(Vec::new());
-    let mut group = sample_display_group(2, 2);
+    let mut group = sample_display_zone(2, 2);
     group.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("GIF".into()),
@@ -315,11 +315,11 @@ fn gif_asset_layer_can_drive_direct_display_group() {
         &registry,
         &mut zones,
     )
-    .expect("GIF media display group should render");
+    .expect("GIF media display zone should render");
     let (_, frame) = result
-        .group_canvases
+        .display_zone_frames
         .first()
-        .expect("display group should publish a direct frame");
+        .expect("display zone should publish a direct frame");
     let surface = frame.surface_for_test();
     let canvas = Canvas::from_rgba(surface.rgba_bytes(), surface.width(), surface.height());
 

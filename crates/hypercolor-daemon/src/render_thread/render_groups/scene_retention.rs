@@ -37,8 +37,8 @@ impl ZoneRuntime {
         self.retained_frame = Some(RetainedRenderGroupFrame {
             dependency_key,
             scene_frame: result.scene_frame.clone(),
-            group_canvases: result.group_canvases.clone(),
-            active_group_canvas_ids: result.active_group_canvas_ids.clone(),
+            display_zone_frames: result.display_zone_frames.clone(),
+            active_display_zone_ids: result.active_display_zone_ids.clone(),
             zone_canvases: result.zone_canvases.clone(),
             led_sampling_strategy: result.led_sampling_strategy.retain(zones, recycled),
             logical_layer_count: result.logical_layer_count,
@@ -49,9 +49,9 @@ impl ZoneRuntime {
 fn zone_result_from_retained(retained: &RetainedRenderGroupFrame) -> ZoneResult {
     ZoneResult {
         scene_frame: retained.scene_frame.clone(),
-        group_canvases: retained.group_canvases.clone(),
+        display_zone_frames: retained.display_zone_frames.clone(),
         zone_canvases: retained.zone_canvases.clone(),
-        active_group_canvas_ids: retained.active_group_canvas_ids.clone(),
+        active_display_zone_ids: retained.active_display_zone_ids.clone(),
         led_sampling_strategy: LedSamplingStrategy::from_retained(&retained.led_sampling_strategy),
         producer_full_frame_copy: FullFrameCopyMetrics::default(),
         render_us: 0,

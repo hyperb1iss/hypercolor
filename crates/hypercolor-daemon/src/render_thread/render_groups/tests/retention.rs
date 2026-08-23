@@ -4,11 +4,11 @@ use super::*;
 fn clear_inactive_groups_releases_cached_group_state() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let group = sample_group(4, 4);
-    let display_group = sample_display_group(4, 4);
-    let display_target = display_group
+    let display_zone = sample_display_zone(4, 4);
+    let display_target = display_zone
         .display_target
         .as_ref()
-        .expect("display group should have a target")
+        .expect("display zone should have a target")
         .clone();
     let display_route = sample_display_route(display_target.device_id);
     let group_canvas_frame = sample_group_canvas_frame(&display_target, true);
@@ -17,7 +17,7 @@ fn clear_inactive_groups_releases_cached_group_state() {
         .spatial_engines
         .insert(group.id, SpatialEngine::new(group.layout.clone()));
     runtime.retain_materialized_group_frame(
-        display_group.id,
+        display_zone.id,
         100,
         SceneDependencyKey::new(1, 1),
         &display_target,
@@ -38,11 +38,11 @@ fn clear_inactive_groups_releases_cached_group_state() {
 #[test]
 fn materialized_group_reuse_obeys_cadence_and_route_identity() {
     let mut runtime = ZoneRuntime::new(4, 4);
-    let group = sample_display_group(4, 4);
+    let group = sample_display_zone(4, 4);
     let display_target = group
         .display_target
         .as_ref()
-        .expect("display group should have a target")
+        .expect("display zone should have a target")
         .clone();
     let display_route = sample_display_route(display_target.device_id);
     let dependency_key = SceneDependencyKey::new(1, 1);
@@ -143,11 +143,11 @@ fn materialized_group_reuse_obeys_cadence_and_route_identity() {
             .is_none()
     );
 
-    let unfinalized_group = sample_display_group(4, 4);
+    let unfinalized_group = sample_display_zone(4, 4);
     let unfinalized_target = unfinalized_group
         .display_target
         .as_ref()
-        .expect("display group should have a target")
+        .expect("display zone should have a target")
         .clone();
     let unfinalized_route = sample_display_route(unfinalized_target.device_id);
     let unfinalized_frame = sample_group_canvas_frame(&unfinalized_target, false);
@@ -178,13 +178,13 @@ fn materialized_group_reuse_obeys_cadence_and_route_identity() {
 #[test]
 fn display_retention_allows_thirty_fps_on_sixty_fps_ticks() {
     let mut runtime = ZoneRuntime::new(4, 4);
-    let group = sample_display_group(4, 4);
+    let group = sample_display_zone(4, 4);
     let display_target = group
         .display_target
         .as_ref()
-        .expect("display group should have a target")
+        .expect("display zone should have a target")
         .clone();
-    let direct_frame = PendingGroupCanvasFrame {
+    let direct_frame = PendingDisplayZoneFrame {
         frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
         display_target: display_target.clone(),
         empty_direct_shell: false,
@@ -246,13 +246,13 @@ fn display_retention_allows_thirty_fps_on_sixty_fps_ticks() {
 #[test]
 fn latest_direct_group_reuse_keeps_display_face_visible_across_dependency_change() {
     let mut runtime = ZoneRuntime::new(4, 4);
-    let group = sample_display_group(4, 4);
+    let group = sample_display_zone(4, 4);
     let display_target = group
         .display_target
         .as_ref()
-        .expect("display group should have a target")
+        .expect("display zone should have a target")
         .clone();
-    let retained = PendingGroupCanvasFrame {
+    let retained = PendingDisplayZoneFrame {
         frame: ProducerFrame::Canvas(Canvas::new(4, 4)),
         display_target: display_target.clone(),
         empty_direct_shell: false,
@@ -269,7 +269,7 @@ fn latest_direct_group_reuse_keeps_display_face_visible_across_dependency_change
     changed_target
         .display_target
         .as_mut()
-        .expect("display group should have a target")
+        .expect("display zone should have a target")
         .opacity = 0.5;
     assert!(
         runtime
@@ -289,11 +289,11 @@ fn latest_direct_group_reuse_keeps_display_face_visible_across_dependency_change
 #[test]
 fn latest_materialized_group_reuse_ignores_cadence_for_missed_frames() {
     let mut runtime = ZoneRuntime::new(4, 4);
-    let group = sample_display_group(4, 4);
+    let group = sample_display_zone(4, 4);
     let display_target = group
         .display_target
         .as_ref()
-        .expect("display group should have a target")
+        .expect("display zone should have a target")
         .clone();
     let display_route = sample_display_route(display_target.device_id);
     let dependency_key = SceneDependencyKey::new(1, 1);

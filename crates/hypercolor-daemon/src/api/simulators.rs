@@ -209,7 +209,7 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
         .await
         .remove(device_id);
     state.display_frames.write().await.remove(device_id);
-    crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
+    crate::api::prune_scene_display_zones_for_device(&state, device_id).await;
     #[cfg(feature = "persistence-test-hooks")]
     state
         .domains

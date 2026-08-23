@@ -84,14 +84,14 @@ fn single_full_scene_group_renders_directly_into_surface() {
         layers_version: 0,
     };
     let mut zones = Vec::new();
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
 
     let result = render_scene_for_test(
         &mut runtime,
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
@@ -130,11 +130,11 @@ fn single_full_scene_group_renders_directly_into_surface() {
 }
 
 #[test]
-fn single_full_display_group_keeps_shared_scene_canvas_blank() {
+fn single_full_display_zone_keeps_shared_scene_canvas_blank() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = sample_display_group(4, 4);
+    let mut group = sample_display_zone(4, 4);
     group.name = "Display".into();
     set_effect_group(
         &mut group,
@@ -145,24 +145,24 @@ fn single_full_display_group_keeps_shared_scene_canvas_blank() {
         )]),
     );
     let mut zones = Vec::new();
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
 
     let result = render_scene_for_test(
         &mut runtime,
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("single display group should render");
+    .expect("single display zone should render");
 
     let ProducerFrame::Surface(scene_surface) = result.scene_frame else {
-        panic!("single display group should render into a surface");
+        panic!("single display zone should render into a surface");
     };
-    let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
-        panic!("display group should publish a surface-backed direct canvas");
+    let [(_, group_canvas_frame)] = &result.display_zone_frames[..] else {
+        panic!("display zone should publish a surface-backed direct canvas");
     };
 
     assert_eq!(result.logical_layer_count, 0);
@@ -175,34 +175,34 @@ fn single_full_display_group_keeps_shared_scene_canvas_blank() {
 }
 
 #[test]
-fn empty_display_group_does_not_publish_direct_surface() {
+fn empty_display_zone_does_not_publish_direct_surface() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
-    let mut group = sample_display_group(4, 4);
+    let mut group = sample_display_zone(4, 4);
     group.name = "Display Shell".into();
     group.layers.clear();
     let mut zones = Vec::new();
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
 
     let result = render_scene_for_test(
         &mut runtime,
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("empty display group should be ignored by direct rendering");
+    .expect("empty display zone should be ignored by direct rendering");
 
-    assert!(result.group_canvases.is_empty());
-    assert!(result.active_group_canvas_ids.is_empty());
+    assert!(result.display_zone_frames.is_empty());
+    assert!(result.active_display_zone_ids.is_empty());
     assert_eq!(result.logical_layer_count, 0);
     assert!(zones.is_empty());
 }
 
 #[test]
-fn full_scene_group_with_display_group_keeps_display_faces_out_of_led_sampling() {
+fn full_scene_group_with_display_zone_keeps_display_faces_out_of_led_sampling() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -216,35 +216,35 @@ fn full_scene_group_with_display_group_keeps_display_faces_out_of_led_sampling()
         )]),
     );
     scene_group.layout.zones = vec![point_zone("zone_preview")];
-    let mut display_group = sample_display_group(4, 4);
+    let mut display_zone = sample_display_zone(4, 4);
     set_effect_group(
-        &mut display_group,
+        &mut display_zone,
         solid_id,
         HashMap::from([(
             "color".into(),
             ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
         )]),
     );
-    display_group.layout.zones = vec![point_zone("zone_display")];
+    display_zone.layout.zones = vec![point_zone("zone_display")];
     let mut zones = Vec::new();
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
 
     let result = render_scene_for_test(
         &mut runtime,
-        &[scene_group.clone(), display_group.clone()],
+        &[scene_group.clone(), display_zone.clone()],
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("mixed scene and display groups should render");
+    .expect("mixed scene and display zones should render");
 
     let ProducerFrame::Surface(scene_surface) = &result.scene_frame else {
         panic!("mixed full-scene render should publish a surface-backed scene canvas");
     };
-    let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
-        panic!("display group should publish a direct surface");
+    let [(_, group_canvas_frame)] = &result.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
     };
     let LedSamplingStrategy::SparkleFlinger(spatial_engine) = result.led_sampling_strategy.clone()
     else {
@@ -273,7 +273,7 @@ fn full_scene_group_with_display_group_keeps_display_faces_out_of_led_sampling()
     assert_eq!(sampled.len(), 1);
     assert_eq!(sampled[0].zone_id, "zone_preview");
     assert_eq!(sampled[0].colors.first().copied(), Some([255, 0, 0]));
-    let [(_, reused_group_canvas_frame)] = &reused.group_canvases[..] else {
+    let [(_, reused_group_canvas_frame)] = &reused.display_zone_frames[..] else {
         panic!("retained scene should keep direct display canvases");
     };
     assert_eq!(
@@ -350,14 +350,14 @@ fn multiple_custom_groups_render_distinct_zone_colors() {
         },
     ];
     let mut zones = Vec::new();
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
 
     let result = render_scene_for_test(
         &mut runtime,
         &groups,
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
@@ -489,7 +489,7 @@ fn overlapping_custom_groups_are_order_independent_for_their_own_zones() {
 }
 
 #[test]
-fn multiple_custom_groups_with_display_group_exclude_display_faces_from_led_sampling() {
+fn multiple_custom_groups_with_display_zone_exclude_display_faces_from_led_sampling() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -515,7 +515,7 @@ fn multiple_custom_groups_with_display_group_exclude_display_faces_from_led_samp
         )]),
     );
     right.layout.zones = vec![point_zone_at("zone_right", 0.75, 0.5)];
-    let mut display = sample_display_group(4, 4);
+    let mut display = sample_display_zone(4, 4);
     display.name = "Display".into();
     set_effect_group(
         &mut display,
@@ -527,20 +527,20 @@ fn multiple_custom_groups_with_display_group_exclude_display_faces_from_led_samp
     );
     display.layout.zones = vec![point_zone("zone_display")];
     let mut zones = Vec::new();
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
 
     let result = render_scene_for_test(
         &mut runtime,
         &[left, right, display],
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("mixed scene and display groups should render");
-    let [(_, group_canvas_frame)] = &result.group_canvases[..] else {
-        panic!("display group should publish a direct surface");
+    .expect("mixed scene and display zones should render");
+    let [(_, group_canvas_frame)] = &result.display_zone_frames[..] else {
+        panic!("display zone should publish a direct surface");
     };
     let LedSamplingStrategy::PreSampled(layout) = result.led_sampling_strategy.clone() else {
         panic!("multi-group scene renders should use pre-sampled LED colors");
@@ -576,11 +576,11 @@ fn multiple_custom_groups_with_display_group_exclude_display_faces_from_led_samp
 }
 
 #[test]
-fn multiple_display_groups_publish_surface_backed_direct_canvases() {
+fn multiple_display_zones_publish_surface_backed_direct_canvases() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut left = sample_display_group(4, 4);
+    let mut left = sample_display_zone(4, 4);
     left.name = "Left Display".into();
     set_effect_group(
         &mut left,
@@ -591,7 +591,7 @@ fn multiple_display_groups_publish_surface_backed_direct_canvases() {
         )]),
     );
     left.layout.zones = vec![point_zone("zone_left")];
-    let mut right = sample_display_group(4, 4);
+    let mut right = sample_display_zone(4, 4);
     right.name = "Right Display".into();
     set_effect_group(
         &mut right,
@@ -604,22 +604,22 @@ fn multiple_display_groups_publish_surface_backed_direct_canvases() {
     right.layout.zones = vec![point_zone("zone_right")];
     let groups = vec![left.clone(), right.clone()];
     let mut zones = Vec::new();
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
 
     let result = render_scene_for_test(
         &mut runtime,
         &groups,
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("display groups should render");
+    .expect("display zones should render");
 
     assert!(runtime.target_canvases.is_empty());
-    assert_eq!(result.group_canvases.len(), 2);
-    assert!(result.group_canvases.iter().all(|(_, frame)| {
+    assert_eq!(result.display_zone_frames.len(), 2);
+    assert!(result.display_zone_frames.iter().all(|(_, frame)| {
         frame.surface_for_test().width() > 0 && frame.surface_for_test().height() > 0
     }));
     assert!(zones.is_empty());
@@ -630,7 +630,7 @@ fn multiple_display_groups_publish_surface_backed_direct_canvases() {
     else {
         panic!("display-only scene should keep an empty retained LED layout");
     };
-    assert_eq!(reused.group_canvases.len(), 2);
+    assert_eq!(reused.display_zone_frames.len(), 2);
     assert!(layout.zones.is_empty());
     assert!(zones.is_empty());
 }

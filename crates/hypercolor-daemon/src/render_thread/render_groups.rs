@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use hypercolor_core::asset::AssetLibrary;
 #[cfg(test)]
-use hypercolor_core::bus::{DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupTarget};
+use hypercolor_core::bus::{DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget};
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
 #[cfg(test)]
 use hypercolor_core::input::ScreenData;
@@ -62,7 +62,7 @@ use model::{
     RetainedRenderGroupFrame,
 };
 pub(crate) use model::{
-    GroupCanvasFrame, PendingGroupCanvasFrame, RenderSceneContext, ZoneEffectError,
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RenderSceneContext, ZoneEffectError,
     ZoneFrameInputs, ZoneResult,
 };
 use projection::CachedGroupProjection;

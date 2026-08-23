@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use hypercolor_core::asset::AssetLibrary;
 #[cfg(feature = "wgpu")]
-use hypercolor_core::bus::DisplayGroupOutputRoute;
+use hypercolor_core::bus::DisplayZoneOutputRoute;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::engine::FpsTier;
@@ -1528,7 +1528,7 @@ pub(crate) struct ComposeRuntime<'a> {
 pub(crate) struct PendingDisplayFinalizeWork {
     pub(crate) dependency_key: SceneDependencyKey,
     pub(crate) display_target: DisplayFaceTarget,
-    pub(crate) display_route: DisplayGroupOutputRoute,
+    pub(crate) display_route: DisplayZoneOutputRoute,
     pub(crate) frame_format: DisplayFrameFormat,
     pub(crate) pending: PendingDisplayFinalization,
 }
@@ -1539,7 +1539,7 @@ impl PendingDisplayFinalizeWork {
         &self,
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
+        display_route: &DisplayZoneOutputRoute,
         frame_format: DisplayFrameFormat,
     ) -> bool {
         self.dependency_key == dependency_key
@@ -1640,9 +1640,7 @@ impl ComposeRuntime<'_> {
             scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
             registry,
-            &scene_snapshot
-                .scene_runtime
-                .active_display_group_descriptors,
+            &scene_snapshot.scene_runtime.active_display_zone_descriptors,
             Some(&scene_snapshot.spatial_engine),
             self.sparkleflinger,
         ) {
@@ -1655,10 +1653,8 @@ impl ComposeRuntime<'_> {
             active_scene_id: scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
             elapsed_ms: scene_snapshot.elapsed_ms,
-            display_group_target_fps: &scene_snapshot.scene_runtime.active_display_group_target_fps,
-            display_group_descriptors: &scene_snapshot
-                .scene_runtime
-                .active_display_group_descriptors,
+            display_zone_target_fps: &scene_snapshot.scene_runtime.active_display_zone_target_fps,
+            display_zone_descriptors: &scene_snapshot.scene_runtime.active_display_zone_descriptors,
             registry,
             authoritative_spatial_engine: Some(&scene_snapshot.spatial_engine),
             inputs: ZoneFrameInputs {

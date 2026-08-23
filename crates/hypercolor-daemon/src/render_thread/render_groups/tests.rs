@@ -7,7 +7,7 @@ use gif::{Encoder, Frame, Repeat};
 #[cfg(feature = "media-video")]
 use hypercolor_core::asset::AssetTypeHint;
 use hypercolor_core::asset::{AssetLibrary, AssetUploadOptions};
-use hypercolor_core::bus::DisplayGroupViewport;
+use hypercolor_core::bus::DisplayZoneViewport;
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::input::InteractionData;
@@ -313,7 +313,7 @@ fn patterned_source_canvas(width: u32, height: u32) -> Canvas {
     canvas
 }
 
-fn sample_display_group(width: u32, height: u32) -> Zone {
+fn sample_display_zone(width: u32, height: u32) -> Zone {
     let mut group = sample_group(width, height);
     group.display_target = Some(hypercolor_types::scene::DisplayFaceTarget {
         device_id: hypercolor_types::device::DeviceId::new(),
@@ -327,10 +327,10 @@ fn sample_display_group(width: u32, height: u32) -> Zone {
 fn sample_group_canvas_frame(
     display_target: &DisplayFaceTarget,
     finalized: bool,
-) -> GroupCanvasFrame {
-    GroupCanvasFrame {
-        frame: DisplayGroupFrame::empty(),
-        display_target: DisplayGroupTarget {
+) -> DisplayZoneCanvasFrame {
+    DisplayZoneCanvasFrame {
+        frame: DisplayZoneFrame::empty(),
+        display_target: DisplayZoneTarget {
             device_id: display_target.device_id,
             blend_mode: display_target.blend_mode,
             opacity: display_target.opacity,
@@ -339,15 +339,15 @@ fn sample_group_canvas_frame(
     }
 }
 
-fn sample_display_route(device_id: hypercolor_types::device::DeviceId) -> DisplayGroupOutputRoute {
-    DisplayGroupOutputRoute {
+fn sample_display_route(device_id: hypercolor_types::device::DeviceId) -> DisplayZoneOutputRoute {
+    DisplayZoneOutputRoute {
         device_id,
         width: 480,
         height: 480,
         circular: true,
         brightness: 1.0,
         frame_format: DisplayFrameFormat::Jpeg,
-        viewport: DisplayGroupViewport {
+        viewport: DisplayZoneViewport {
             position: NormalizedPosition { x: 0.5, y: 0.5 },
             size: NormalizedPosition { x: 1.0, y: 1.0 },
             rotation: 0.0,
@@ -425,7 +425,7 @@ fn render_scene_for_test(
     groups: &[Zone],
     groups_revision: u64,
     elapsed_ms: u64,
-    display_group_target_fps: &HashMap<ZoneId, u32>,
+    display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
     zones: &mut Vec<ZoneColors>,
 ) -> Result<ZoneResult> {
@@ -434,7 +434,7 @@ fn render_scene_for_test(
         groups,
         groups_revision,
         elapsed_ms,
-        display_group_target_fps,
+        display_zone_target_fps,
         registry,
         zones,
         None,
@@ -479,7 +479,7 @@ fn render_scene_for_test_with_screen(
     groups: &[Zone],
     groups_revision: u64,
     elapsed_ms: u64,
-    display_group_target_fps: &HashMap<ZoneId, u32>,
+    display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
     zones: &mut Vec<ZoneColors>,
     screen: Option<&ScreenData>,
@@ -490,7 +490,7 @@ fn render_scene_for_test_with_screen(
         groups,
         groups_revision,
         elapsed_ms,
-        display_group_target_fps,
+        display_zone_target_fps,
         registry,
         zones,
         screen,
@@ -503,7 +503,7 @@ fn render_scene_for_test_with_screen_and_sparkleflinger(
     groups: &[Zone],
     groups_revision: u64,
     elapsed_ms: u64,
-    display_group_target_fps: &HashMap<ZoneId, u32>,
+    display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
     zones: &mut Vec<ZoneColors>,
     screen: Option<&ScreenData>,
@@ -535,8 +535,8 @@ fn render_scene_for_test_with_screen_and_sparkleflinger(
         active_scene_id: Some(SceneId::DEFAULT),
         dependency_key,
         elapsed_ms,
-        display_group_target_fps,
-        display_group_descriptors: &HashMap::new(),
+        display_zone_target_fps,
+        display_zone_descriptors: &HashMap::new(),
         registry,
         authoritative_spatial_engine: None,
         inputs,

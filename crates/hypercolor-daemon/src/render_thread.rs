@@ -136,7 +136,7 @@ impl InteractivePreviewZoneRuntime {
             context.active_scene_id,
             context.dependency_key,
             context.registry,
-            context.display_group_descriptors,
+            context.display_zone_descriptors,
             context.authoritative_spatial_engine,
             sparkleflinger,
         )?;

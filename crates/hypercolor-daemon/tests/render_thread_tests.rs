@@ -15,7 +15,7 @@ use tokio::sync::{Mutex, Notify, RwLock, watch};
 
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::attachment::ComponentRegistry;
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, HypercolorBus, PreviewKind};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, HypercolorBus, PreviewKind};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy, UsbProtocolConfigStore,
@@ -207,13 +207,13 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> Output {
 }
 
 fn assert_canvas_group_frame(
-    frame: &DisplayGroupFrame,
+    frame: &DisplayZoneFrame,
     width: u32,
     height: u32,
     first_pixel: [u8; 4],
 ) {
-    let DisplayGroupFrame::Canvas(frame) = frame else {
-        panic!("test display group frame should be a canvas");
+    let DisplayZoneFrame::Canvas(frame) = frame else {
+        panic!("test display zone frame should be a canvas");
     };
     assert_eq!(frame.width, width);
     assert_eq!(frame.height, height);
@@ -476,7 +476,7 @@ fn custom_group(
     }
 }
 
-fn display_group(
+fn display_zone(
     group_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
@@ -2027,7 +2027,7 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
     let display_id = DeviceId::new();
 
     let mut scene = make_scene("Display Face Scene");
-    scene.zones = vec![display_group(
+    scene.zones = vec![display_zone(
         group_id,
         display_id,
         solid_id,
@@ -2046,21 +2046,21 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         rl.start();
     }
 
-    let group_canvas_sender = state.event_bus.group_canvas_sender(group_id);
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(group_id);
     let mut rt = RenderThread::spawn(state.clone());
-    let mut published_group_rx = group_canvas_sender.subscribe();
+    let mut published_group_rx = zone_canvas_sender.subscribe();
     let _ = wait_for_next_frame(&mut frame_rx, 0).await;
     tokio::time::timeout(WAIT_DEADLINE, published_group_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
-    let group_rx = group_canvas_sender.subscribe();
+    let group_rx = zone_canvas_sender.subscribe();
     let frame = group_rx.borrow().clone();
     assert_canvas_group_frame(&frame, 320, 200, [0, 0, 255, 255]);
-    let (_, published_targets) = state.event_bus.display_group_targets_snapshot();
+    let (_, published_targets) = state.event_bus.display_zone_targets_snapshot();
     let published_target = published_targets
         .get(&group_id)
-        .expect("display group target metadata should publish with the face frame");
+        .expect("display zone target metadata should publish with the face frame");
     assert_eq!(published_target.device_id, display_id);
     // The fixture group carries the seed target, which defaults to the
     // blended composition; the published metadata must mirror it.
@@ -2094,7 +2094,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     let group_id = ZoneId::new();
     let display_id = DeviceId::new();
 
-    let mut face_group = display_group(
+    let mut face_group = display_zone(
         group_id,
         display_id,
         solid_id,
@@ -2107,7 +2107,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     face_group
         .display_target
         .as_mut()
-        .expect("display group should carry a display target")
+        .expect("display zone should carry a display target")
         .blend_mode = hypercolor_types::layer::BlendMode::Difference;
 
     let mut scene = make_scene("GPU Display Face Scene");
@@ -2133,8 +2133,8 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     }
 
     let mut scene_canvas_rx = state.event_bus.scene_canvas_receiver();
-    let group_canvas_sender = state.event_bus.group_canvas_sender(group_id);
-    let mut group_canvas_rx = group_canvas_sender.subscribe();
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(group_id);
+    let mut group_canvas_rx = zone_canvas_sender.subscribe();
     let mut rt = RenderThread::spawn(state.clone());
 
     tokio::time::timeout(WAIT_DEADLINE, scene_canvas_rx.changed())
@@ -2182,7 +2182,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let display_id = DeviceId::new();
 
     let mut first_scene = make_scene("Face Scene A");
-    first_scene.zones = vec![display_group(
+    first_scene.zones = vec![display_zone(
         first_group_id,
         display_id,
         solid_id,
@@ -2195,7 +2195,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     first_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut second_scene = make_scene("Face Scene B");
-    second_scene.zones = vec![display_group(
+    second_scene.zones = vec![display_zone(
         second_group_id,
         display_id,
         solid_id,
@@ -2226,12 +2226,12 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     // publishes them, on channels separate from the lighting frame above, so
     // wait for convergence instead of racing the first iteration.
     wait_until("first group canvas stream", || {
-        state.event_bus.group_canvas_stream_count() == 1
+        state.event_bus.zone_canvas_stream_count() == 1
     })
     .await;
-    wait_until("first display group target", || {
-        let (_, targets) = state.event_bus.display_group_targets_snapshot();
-        state.event_bus.display_group_target_count() == 1 && targets.contains_key(&first_group_id)
+    wait_until("first display zone target", || {
+        let (_, targets) = state.event_bus.display_zone_targets_snapshot();
+        state.event_bus.display_zone_target_count() == 1 && targets.contains_key(&first_group_id)
     })
     .await;
 
@@ -2240,16 +2240,16 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let second_frame = wait_for_next_frame(&mut frame_rx, first_frame.frame_number).await;
     assert!(second_frame.frame_number > first_frame.frame_number);
     wait_until("stale group stream pruned", || {
-        let (_, targets) = state.event_bus.display_group_targets_snapshot();
-        state.event_bus.group_canvas_stream_count() == 1
-            && state.event_bus.display_group_target_count() == 1
+        let (_, targets) = state.event_bus.display_zone_targets_snapshot();
+        state.event_bus.zone_canvas_stream_count() == 1
+            && state.event_bus.display_zone_target_count() == 1
             && !targets.contains_key(&first_group_id)
             && targets.contains_key(&second_group_id)
     })
     .await;
 
     wait_until("stale group canvas cleared", || {
-        let stale_rx = state.event_bus.group_canvas_receiver(first_group_id);
+        let stale_rx = state.event_bus.zone_canvas_receiver(first_group_id);
         let stale_frame = stale_rx.borrow().clone();
         stale_frame.width() == 0 && stale_frame.height() == 0
     })

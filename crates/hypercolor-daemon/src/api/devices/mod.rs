@@ -403,7 +403,7 @@ pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<St
     if removed.is_none() {
         return DomainError::not_found(ResourceKind::Device, &id).into_response();
     }
-    crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
+    crate::api::prune_scene_display_zones_for_device(&state, device_id).await;
 
     envelope::ok(DeleteDeviceResponse {
         id: device_id.to_string(),

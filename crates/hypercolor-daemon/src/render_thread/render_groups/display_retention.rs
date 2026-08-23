@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use hypercolor_core::bus::DisplayGroupOutputRoute;
+use hypercolor_core::bus::DisplayZoneOutputRoute;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 
 use super::ZoneRuntime;
 use super::group_state::group_publishes_direct_canvas;
 use super::model::{
-    GroupCanvasFrame, PendingGroupCanvasFrame, RetainedDirectGroupFrame,
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedDirectGroupFrame,
     RetainedMaterializedGroupFrame,
 };
 use crate::render_thread::scene_dependency::SceneDependencyKey;
@@ -16,14 +16,14 @@ impl ZoneRuntime {
         &self,
         group: &Zone,
         elapsed_ms: u64,
-        display_group_target_fps: &HashMap<ZoneId, u32>,
+        display_zone_target_fps: &HashMap<ZoneId, u32>,
         dependency_key: SceneDependencyKey,
-    ) -> Option<PendingGroupCanvasFrame> {
+    ) -> Option<PendingDisplayZoneFrame> {
         if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
             return None;
         }
 
-        let target_fps = *display_group_target_fps.get(&group.id)?;
+        let target_fps = *display_zone_target_fps.get(&group.id)?;
         let retained = self.retained_direct_group_frames.get(&group.id)?;
         if retained.frame.empty_direct_shell {
             return None;
@@ -41,7 +41,7 @@ impl ZoneRuntime {
         group_id: ZoneId,
         elapsed_ms: u64,
         dependency_key: SceneDependencyKey,
-        frame: &PendingGroupCanvasFrame,
+        frame: &PendingDisplayZoneFrame,
     ) {
         self.retained_direct_group_frames.insert(
             group_id,
@@ -56,7 +56,7 @@ impl ZoneRuntime {
     pub(super) fn reuse_latest_direct_group_frame(
         &self,
         group: &Zone,
-    ) -> Option<PendingGroupCanvasFrame> {
+    ) -> Option<PendingDisplayZoneFrame> {
         if !group_publishes_direct_canvas(group) {
             return None;
         }
@@ -82,9 +82,9 @@ impl ZoneRuntime {
         target_fps: Option<u32>,
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
+        display_route: &DisplayZoneOutputRoute,
         empty_direct_shell: bool,
-    ) -> Option<GroupCanvasFrame> {
+    ) -> Option<DisplayZoneCanvasFrame> {
         let target_fps = target_fps?;
         if display_route.device_id != display_target.device_id {
             return None;
@@ -108,9 +108,9 @@ impl ZoneRuntime {
         &self,
         group_id: ZoneId,
         display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
+        display_route: &DisplayZoneOutputRoute,
         empty_direct_shell: bool,
-    ) -> Option<GroupCanvasFrame> {
+    ) -> Option<DisplayZoneCanvasFrame> {
         if display_route.device_id != display_target.device_id {
             return None;
         }
@@ -132,9 +132,9 @@ impl ZoneRuntime {
         elapsed_ms: u64,
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
+        display_route: &DisplayZoneOutputRoute,
         empty_direct_shell: bool,
-        frame: &GroupCanvasFrame,
+        frame: &DisplayZoneCanvasFrame,
     ) {
         if display_route.device_id != display_target.device_id || !frame.display_target.finalized {
             return;

@@ -21,7 +21,7 @@ use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::{
-    CanvasFrame, DisplayGroupFrame, DisplayGroupOutputRoute, DisplayGroupViewport, HypercolorBus,
+    CanvasFrame, DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneViewport, HypercolorBus,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::is_display_zone;
@@ -102,7 +102,7 @@ struct DisplayTarget {
     geometry: DisplayGeometry,
     frame_format: DisplayFrameFormat,
     canvas_source: DisplayCanvasSource,
-    group_canvas_sender: Option<watch::Sender<DisplayGroupFrame>>,
+    zone_canvas_sender: Option<watch::Sender<DisplayZoneFrame>>,
     display_target: Option<DisplayFaceTarget>,
     finalized_face: bool,
     viewport: DisplayViewport,
@@ -139,14 +139,14 @@ struct DisplayTargetCache {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DisplayTargetDependencyKey {
     registry_generation: u64,
-    display_group_targets_revision: u64,
+    display_zone_targets_revision: u64,
 }
 
 impl DisplayTargetDependencyKey {
-    const fn new(registry_generation: u64, display_group_targets_revision: u64) -> Self {
+    const fn new(registry_generation: u64, display_zone_targets_revision: u64) -> Self {
         Self {
             registry_generation,
-            display_group_targets_revision,
+            display_zone_targets_revision,
         }
     }
 }
@@ -217,7 +217,7 @@ struct DisplayTargetsSnapshot {
 #[derive(Clone, Debug)]
 pub(super) enum DisplayWorkerFrameSource {
     Scene(Arc<CanvasFrame>),
-    Direct(Arc<DisplayGroupFrame>),
+    Direct(Arc<DisplayZoneFrame>),
     Face {
         scene_frame: Option<Arc<CanvasFrame>>,
         face_frame: Arc<CanvasFrame>,
@@ -461,11 +461,11 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
             let face_frame = match &target.canvas_source {
                 DisplayCanvasSource::Scene => None,
                 DisplayCanvasSource::GroupDirect { .. } => {
-                    let Some(sender) = target.group_canvas_sender.as_ref() else {
+                    let Some(sender) = target.zone_canvas_sender.as_ref() else {
                         continue;
                     };
                     let frame = sender.borrow();
-                    stable_display_group_source_identity(&frame).map(|_| Arc::new(frame.clone()))
+                    stable_display_zone_source_identity(&frame).map(|_| Arc::new(frame.clone()))
                 }
             };
             let Some((frames, dispatch_identity)) = build_display_worker_frame_set(
@@ -500,12 +500,10 @@ fn stable_display_source_identity(frame: &CanvasFrame) -> Option<DisplaySourceId
     })
 }
 
-fn stable_display_group_source_identity(
-    frame: &DisplayGroupFrame,
-) -> Option<DisplaySourceIdentity> {
+fn stable_display_zone_source_identity(frame: &DisplayZoneFrame) -> Option<DisplaySourceIdentity> {
     match frame {
-        DisplayGroupFrame::Canvas(frame) => stable_display_source_identity(frame),
-        DisplayGroupFrame::Yuv420(frame) => {
+        DisplayZoneFrame::Canvas(frame) => stable_display_source_identity(frame),
+        DisplayZoneFrame::Yuv420(frame) => {
             (frame.width > 0 && frame.height > 0).then_some(DisplaySourceIdentity::Yuv420 {
                 storage: frame.storage_identity(),
                 width: frame.width,
@@ -518,7 +516,7 @@ fn stable_display_group_source_identity(
 fn build_display_worker_frame_set(
     target: &DisplayTarget,
     scene_frame: Option<&(DisplaySourceIdentity, Arc<CanvasFrame>)>,
-    face_frame: Option<&Arc<DisplayGroupFrame>>,
+    face_frame: Option<&Arc<DisplayZoneFrame>>,
 ) -> Option<(DisplayWorkerFrameSet, StableDisplayFrameSetIdentity)> {
     match &target.canvas_source {
         DisplayCanvasSource::Scene => {
@@ -534,7 +532,7 @@ fn build_display_worker_frame_set(
         }
         DisplayCanvasSource::GroupDirect { .. } => {
             let face_frame = face_frame?;
-            let face_identity = stable_display_group_source_identity(face_frame.as_ref())?;
+            let face_identity = stable_display_zone_source_identity(face_frame.as_ref())?;
             if target.finalized_face {
                 return Some((
                     DisplayWorkerFrameSet {
@@ -545,7 +543,7 @@ fn build_display_worker_frame_set(
                     },
                 ));
             }
-            let DisplayGroupFrame::Canvas(face_canvas_frame) = face_frame.as_ref() else {
+            let DisplayZoneFrame::Canvas(face_canvas_frame) = face_frame.as_ref() else {
                 return None;
             };
             let face_identity = stable_display_source_identity(face_canvas_frame)?;
@@ -686,8 +684,8 @@ async fn display_targets(
     face_fps_cap: u32,
 ) -> DisplayTargetsSnapshot {
     let layout = { spatial_engine.layout() };
-    let (display_group_targets_revision, published_display_group_targets) =
-        event_bus.display_group_targets_snapshot();
+    let (display_zone_targets_revision, published_display_zone_targets) =
+        event_bus.display_zone_targets_snapshot();
     let logical_store = logical_devices.read().await;
     let display_preview_subscribers = display_frames.read().await.subscribed_device_ids();
     let registry_generation = registry.generation();
@@ -699,7 +697,7 @@ async fn display_targets(
     let logical_signature = logical_device_store_signature(&logical_store);
     let display_preview_signature = device_id_set_signature(&display_preview_subscribers);
     let dependency_key =
-        DisplayTargetDependencyKey::new(registry_generation, display_group_targets_revision);
+        DisplayTargetDependencyKey::new(registry_generation, display_zone_targets_revision);
     let cache_key = DisplayTargetCacheKey::new(
         dependency_key,
         layout_ptr,
@@ -714,7 +712,7 @@ async fn display_targets(
         };
     }
 
-    let display_face_targets = display_face_targets_by_device(published_display_group_targets);
+    let display_face_targets = display_face_targets_by_device(published_display_zone_targets);
     let mut targets = Vec::new();
     for tracked in registry
         .list()
@@ -766,10 +764,10 @@ async fn display_targets(
             .map_or(DisplayCanvasSource::Scene, |group_id| {
                 DisplayCanvasSource::GroupDirect { group_id }
             });
-        let group_canvas_sender = match &canvas_source {
+        let zone_canvas_sender = match &canvas_source {
             DisplayCanvasSource::Scene => None,
             DisplayCanvasSource::GroupDirect { group_id } => {
-                Some(event_bus.group_canvas_sender(*group_id))
+                Some(event_bus.zone_canvas_sender(*group_id))
             }
         };
         let viewport = display_viewport_for_device(
@@ -803,7 +801,7 @@ async fn display_targets(
             geometry,
             frame_format,
             canvas_source,
-            group_canvas_sender,
+            zone_canvas_sender,
             display_target,
             finalized_face,
             viewport,
@@ -815,7 +813,7 @@ async fn display_targets(
             .cmp(&right.backend_id)
             .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
     });
-    publish_display_group_output_routes(event_bus, &targets);
+    publish_display_zone_output_routes(event_bus, &targets);
     cache.version = cache.version.saturating_add(1);
     cache.cache_key = Some(cache_key);
     cache.targets = Arc::from(targets);
@@ -825,23 +823,23 @@ async fn display_targets(
     }
 }
 
-fn publish_display_group_output_routes(event_bus: &HypercolorBus, targets: &[Arc<DisplayTarget>]) {
+fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<DisplayTarget>]) {
     let mut active_group_ids = Vec::new();
     for target in targets {
         let DisplayCanvasSource::GroupDirect { group_id } = target.canvas_source else {
             continue;
         };
         active_group_ids.push(group_id);
-        event_bus.upsert_display_group_output_route(
+        event_bus.upsert_display_zone_output_route(
             group_id,
-            DisplayGroupOutputRoute {
+            DisplayZoneOutputRoute {
                 device_id: target.device_id,
                 width: target.geometry.width,
                 height: target.geometry.height,
                 circular: target.geometry.circular,
                 brightness: target.brightness,
                 frame_format: target.frame_format,
-                viewport: DisplayGroupViewport {
+                viewport: DisplayZoneViewport {
                     position: target.viewport.position,
                     size: target.viewport.size,
                     rotation: target.viewport.rotation,
@@ -851,11 +849,11 @@ fn publish_display_group_output_routes(event_bus: &HypercolorBus, targets: &[Arc
             },
         );
     }
-    event_bus.retain_display_group_output_routes(&active_group_ids);
+    event_bus.retain_display_zone_output_routes(&active_group_ids);
 }
 
 fn display_face_targets_by_device(
-    targets: HashMap<ZoneId, hypercolor_core::bus::DisplayGroupTarget>,
+    targets: HashMap<ZoneId, hypercolor_core::bus::DisplayZoneTarget>,
 ) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
     let mut by_device = HashMap::new();
     for (group_id, target) in targets {
@@ -1081,7 +1079,7 @@ fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
+    use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, DisplayZoneTarget};
     use hypercolor_types::canvas::Canvas;
     use hypercolor_types::device::DeviceId;
     use uuid::Uuid;
@@ -1096,8 +1094,8 @@ mod tests {
         ))
     }
 
-    fn group_canvas_frame(frame_number: u32) -> Arc<DisplayGroupFrame> {
-        Arc::new(DisplayGroupFrame::Canvas(CanvasFrame::from_owned_canvas(
+    fn group_canvas_frame(frame_number: u32) -> Arc<DisplayZoneFrame> {
+        Arc::new(DisplayZoneFrame::Canvas(CanvasFrame::from_owned_canvas(
             Canvas::new(2, 2),
             frame_number,
             frame_number,
@@ -1122,7 +1120,7 @@ mod tests {
             canvas_source: DisplayCanvasSource::GroupDirect {
                 group_id: ZoneId::new(),
             },
-            group_canvas_sender: None,
+            zone_canvas_sender: None,
             display_target: Some(DisplayFaceTarget {
                 device_id,
                 blend_mode,
@@ -1141,8 +1139,8 @@ mod tests {
         ZoneId(Uuid::from_u128(value))
     }
 
-    fn display_group_target(device_id: DeviceId, finalized: bool) -> DisplayGroupTarget {
-        DisplayGroupTarget {
+    fn display_zone_target(device_id: DeviceId, finalized: bool) -> DisplayZoneTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
@@ -1237,7 +1235,7 @@ mod tests {
         assert!(scene_identity.is_none());
         assert_eq!(
             stable_display_source_identity(published_face.as_ref()),
-            stable_display_group_source_identity(face_frame.as_ref())
+            stable_display_zone_source_identity(face_frame.as_ref())
         );
         assert_eq!(blend_mode, BlendMode::Replace);
         assert_eq!(identity_blend_mode, BlendMode::Replace);
@@ -1282,7 +1280,7 @@ mod tests {
         assert!(scene_frame.is_some());
         assert_eq!(
             stable_display_source_identity(published_face.as_ref()),
-            stable_display_group_source_identity(face_frame.as_ref())
+            stable_display_zone_source_identity(face_frame.as_ref())
         );
         assert_eq!(identity_scene, Some(scene_identity));
         assert_eq!(blend_mode, BlendMode::Alpha);
@@ -1322,7 +1320,7 @@ mod tests {
         assert!(identity_scene.is_none());
         assert_eq!(
             stable_display_source_identity(published_face.as_ref()),
-            stable_display_group_source_identity(face_frame.as_ref())
+            stable_display_zone_source_identity(face_frame.as_ref())
         );
         assert_eq!(blend_mode, BlendMode::Alpha);
         assert_eq!(identity_blend_mode, BlendMode::Alpha);
@@ -1347,12 +1345,12 @@ mod tests {
         };
 
         assert_eq!(
-            stable_display_group_source_identity(published_face.as_ref()),
-            stable_display_group_source_identity(face_frame.as_ref())
+            stable_display_zone_source_identity(published_face.as_ref()),
+            stable_display_zone_source_identity(face_frame.as_ref())
         );
         assert_eq!(
             source_identity,
-            stable_display_group_source_identity(face_frame.as_ref())
+            stable_display_zone_source_identity(face_frame.as_ref())
                 .expect("face should be stable")
         );
     }
@@ -1373,8 +1371,8 @@ mod tests {
         let old_finalized = fixed_zone_id(1);
         let new_pending = fixed_zone_id(2);
         let targets = std::collections::HashMap::from([
-            (new_pending, display_group_target(device_id, false)),
-            (old_finalized, display_group_target(device_id, true)),
+            (new_pending, display_zone_target(device_id, false)),
+            (old_finalized, display_zone_target(device_id, true)),
         ]);
 
         let resolved = display_face_targets_by_device(targets);
@@ -1392,8 +1390,8 @@ mod tests {
         let older = fixed_zone_id(1);
         let newer = fixed_zone_id(2);
         let targets = std::collections::HashMap::from([
-            (older, display_group_target(device_id, true)),
-            (newer, display_group_target(device_id, true)),
+            (older, display_zone_target(device_id, true)),
+            (newer, display_zone_target(device_id, true)),
         ]);
 
         let resolved = display_face_targets_by_device(targets);

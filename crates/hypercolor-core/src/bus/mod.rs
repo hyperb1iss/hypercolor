@@ -8,7 +8,7 @@
 //! - **Spectrum data** — latest audio analysis via `tokio::sync::watch`. Same semantics.
 //! - **Canvas previews** — latest render and screen-source canvases via `tokio::sync::watch`.
 //! - **Authoritative scene canvases** — latest full-scene display surface for non-preview consumers.
-//! - **Per-group canvases** — latest render-group canvases via per-group `tokio::sync::watch`.
+//! - **Per-zone canvases** — latest render-zone canvases via per-zone `tokio::sync::watch`.
 //!
 //! The bus is `Send + Sync` and cloneable. Channel operations are lock-free;
 //! low-frequency status-event deduplication uses a short critical section.
@@ -409,12 +409,12 @@ impl DisplayYuv420Frame {
 }
 
 #[derive(Clone, Debug)]
-pub enum DisplayGroupFrame {
+pub enum DisplayZoneFrame {
     Canvas(CanvasFrame),
     Yuv420(DisplayYuv420Frame),
 }
 
-impl DisplayGroupFrame {
+impl DisplayZoneFrame {
     #[must_use]
     pub fn empty() -> Self {
         Self::Canvas(CanvasFrame::empty())
@@ -465,7 +465,7 @@ impl DisplayGroupFrame {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DisplayGroupTarget {
+pub struct DisplayZoneTarget {
     pub device_id: DeviceId,
     pub blend_mode: BlendMode,
     pub opacity: f32,
@@ -473,18 +473,18 @@ pub struct DisplayGroupTarget {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct DisplayGroupOutputRoute {
+pub struct DisplayZoneOutputRoute {
     pub device_id: DeviceId,
     pub width: u32,
     pub height: u32,
     pub circular: bool,
     pub brightness: f32,
     pub frame_format: DisplayFrameFormat,
-    pub viewport: DisplayGroupViewport,
+    pub viewport: DisplayZoneViewport,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DisplayGroupViewport {
+pub struct DisplayZoneViewport {
     pub position: NormalizedPosition,
     pub size: NormalizedPosition,
     pub rotation: f32,
@@ -492,7 +492,7 @@ pub struct DisplayGroupViewport {
     pub edge_behavior: EdgeBehavior,
 }
 
-impl From<DisplayFaceTarget> for DisplayGroupTarget {
+impl From<DisplayFaceTarget> for DisplayZoneTarget {
     fn from(value: DisplayFaceTarget) -> Self {
         Self {
             device_id: value.device_id,
@@ -503,7 +503,7 @@ impl From<DisplayFaceTarget> for DisplayGroupTarget {
     }
 }
 
-impl From<&DisplayFaceTarget> for DisplayGroupTarget {
+impl From<&DisplayFaceTarget> for DisplayZoneTarget {
     fn from(value: &DisplayFaceTarget) -> Self {
         Self {
             device_id: value.device_id,
@@ -515,15 +515,15 @@ impl From<&DisplayFaceTarget> for DisplayGroupTarget {
 }
 
 #[derive(Debug, Default)]
-struct DisplayGroupTargetRegistry {
+struct DisplayZoneTargetRegistry {
     revision: u64,
-    targets: HashMap<ZoneId, DisplayGroupTarget>,
+    targets: HashMap<ZoneId, DisplayZoneTarget>,
 }
 
 #[derive(Debug, Default)]
-struct DisplayGroupOutputRouteRegistry {
+struct DisplayZoneOutputRouteRegistry {
     revision: u64,
-    routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
+    routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
 }
 
 /// Immutable counters for one latest-value bus lane.
@@ -714,14 +714,14 @@ pub struct HypercolorBus {
     /// Fixed typed latest-value channels and their authoritative telemetry.
     lanes: Arc<BusLanes>,
 
-    /// Latest per-render-group canvases for direct display consumption.
-    group_canvases: Arc<Mutex<HashMap<ZoneId, watch::Sender<DisplayGroupFrame>>>>,
+    /// Latest per-render-zone canvases for direct display consumption.
+    zone_canvases: Arc<Mutex<HashMap<ZoneId, watch::Sender<DisplayZoneFrame>>>>,
 
-    /// Render-thread-authored display-face routing metadata keyed by group id.
-    display_group_targets: Arc<Mutex<DisplayGroupTargetRegistry>>,
+    /// Render-thread-authored display-face routing metadata keyed by zone id.
+    display_zone_targets: Arc<Mutex<DisplayZoneTargetRegistry>>,
 
-    /// Display-output-authored final display surface metadata keyed by group id.
-    display_group_output_routes: Arc<Mutex<DisplayGroupOutputRouteRegistry>>,
+    /// Display-output-authored final display surface metadata keyed by zone id.
+    display_zone_output_routes: Arc<Mutex<DisplayZoneOutputRouteRegistry>>,
 
     /// Monotonic clock base for `mono_ms` timestamps.
     start_instant: Instant,
@@ -736,10 +736,10 @@ impl HypercolorBus {
             events,
             input_status_events: Arc::new(Mutex::new(HashMap::new())),
             lanes: Arc::new(BusLanes::new()),
-            group_canvases: Arc::new(Mutex::new(HashMap::new())),
-            display_group_targets: Arc::new(Mutex::new(DisplayGroupTargetRegistry::default())),
-            display_group_output_routes: Arc::new(Mutex::new(
-                DisplayGroupOutputRouteRegistry::default(),
+            zone_canvases: Arc::new(Mutex::new(HashMap::new())),
+            display_zone_targets: Arc::new(Mutex::new(DisplayZoneTargetRegistry::default())),
+            display_zone_output_routes: Arc::new(Mutex::new(
+                DisplayZoneOutputRouteRegistry::default(),
             )),
             start_instant: Instant::now(),
         }
@@ -955,36 +955,36 @@ impl HypercolorBus {
         self.zone_preview_lane().stats().receivers
     }
 
-    /// Access or create the per-group canvas sender for a zone.
+    /// Access or create the per-zone canvas sender for a zone.
     #[must_use]
-    pub fn group_canvas_sender(&self, id: ZoneId) -> watch::Sender<DisplayGroupFrame> {
-        let mut group_canvases = self
-            .group_canvases
+    pub fn zone_canvas_sender(&self, id: ZoneId) -> watch::Sender<DisplayZoneFrame> {
+        let mut zone_canvases = self
+            .zone_canvases
             .lock()
-            .expect("group canvas registry should not be poisoned");
-        group_canvases
+            .expect("zone canvas registry should not be poisoned");
+        zone_canvases
             .entry(id)
             .or_insert_with(|| {
-                let (sender, _) = watch::channel(DisplayGroupFrame::empty());
+                let (sender, _) = watch::channel(DisplayZoneFrame::empty());
                 sender
             })
             .clone()
     }
 
-    /// Retain the active per-group canvas streams and collect their senders in one lock pass.
+    /// Retain the active per-zone canvas streams and collect their senders in one lock pass.
     #[must_use]
-    pub fn retain_group_canvases_and_collect_senders(
+    pub fn retain_zone_canvases_and_collect_senders(
         &self,
         active_ids: &[ZoneId],
-    ) -> Vec<(ZoneId, watch::Sender<DisplayGroupFrame>)> {
-        let mut group_canvases = self
-            .group_canvases
+    ) -> Vec<(ZoneId, watch::Sender<DisplayZoneFrame>)> {
+        let mut zone_canvases = self
+            .zone_canvases
             .lock()
-            .expect("group canvas registry should not be poisoned");
+            .expect("zone canvas registry should not be poisoned");
         if active_ids.is_empty() {
-            group_canvases.clear();
-            drop(group_canvases);
-            self.retain_display_group_targets(active_ids);
+            zone_canvases.clear();
+            drop(zone_canvases);
+            self.retain_display_zone_targets(active_ids);
             return Vec::new();
         }
 
@@ -992,112 +992,112 @@ impl HypercolorBus {
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        group_canvases.retain(|group_id, _| active_set.contains(group_id));
+        zone_canvases.retain(|group_id, _| active_set.contains(group_id));
 
         let senders = active_ids
             .iter()
             .copied()
             .map(|group_id| {
-                let sender = group_canvases
+                let sender = zone_canvases
                     .entry(group_id)
                     .or_insert_with(|| {
-                        let (sender, _) = watch::channel(DisplayGroupFrame::empty());
+                        let (sender, _) = watch::channel(DisplayZoneFrame::empty());
                         sender
                     })
                     .clone();
                 (group_id, sender)
             })
             .collect();
-        drop(group_canvases);
-        self.retain_display_group_targets(active_ids);
+        drop(zone_canvases);
+        self.retain_display_zone_targets(active_ids);
         senders
     }
 
     /// Subscribe to a zone's canvas updates.
     #[must_use]
-    pub fn group_canvas_receiver(&self, id: ZoneId) -> watch::Receiver<DisplayGroupFrame> {
-        self.group_canvas_sender(id).subscribe()
+    pub fn zone_canvas_receiver(&self, id: ZoneId) -> watch::Receiver<DisplayZoneFrame> {
+        self.zone_canvas_sender(id).subscribe()
     }
 
-    /// Number of tracked per-group canvas streams.
+    /// Number of tracked per-zone canvas streams.
     #[must_use]
-    pub fn group_canvas_stream_count(&self) -> usize {
-        self.group_canvases
+    pub fn zone_canvas_stream_count(&self) -> usize {
+        self.zone_canvases
             .lock()
-            .expect("group canvas registry should not be poisoned")
+            .expect("zone canvas registry should not be poisoned")
             .len()
     }
 
     /// Insert or update render-thread-authored display-face routing metadata.
-    pub fn upsert_display_group_target(&self, id: ZoneId, target: DisplayGroupTarget) {
-        let mut display_group_targets = self
-            .display_group_targets
+    pub fn upsert_display_zone_target(&self, id: ZoneId, target: DisplayZoneTarget) {
+        let mut display_zone_targets = self
+            .display_zone_targets
             .lock()
-            .expect("display group target registry should not be poisoned");
-        let changed = display_group_targets.targets.get(&id) != Some(&target);
+            .expect("display zone target registry should not be poisoned");
+        let changed = display_zone_targets.targets.get(&id) != Some(&target);
         if changed {
-            display_group_targets.targets.insert(id, target);
-            display_group_targets.revision = display_group_targets.revision.saturating_add(1);
+            display_zone_targets.targets.insert(id, target);
+            display_zone_targets.revision = display_zone_targets.revision.saturating_add(1);
         }
     }
 
     /// Drop any render-thread-authored display-face routes not present in the active set.
-    pub fn retain_display_group_targets(&self, active_ids: &[ZoneId]) {
-        let mut display_group_targets = self
-            .display_group_targets
+    pub fn retain_display_zone_targets(&self, active_ids: &[ZoneId]) {
+        let mut display_zone_targets = self
+            .display_zone_targets
             .lock()
-            .expect("display group target registry should not be poisoned");
+            .expect("display zone target registry should not be poisoned");
         let changed = if active_ids.is_empty() {
-            let changed = !display_group_targets.targets.is_empty();
-            display_group_targets.targets.clear();
+            let changed = !display_zone_targets.targets.is_empty();
+            display_zone_targets.targets.clear();
             changed
         } else {
             let active_ids = active_ids
                 .iter()
                 .copied()
                 .collect::<std::collections::HashSet<_>>();
-            let original_len = display_group_targets.targets.len();
-            display_group_targets
+            let original_len = display_zone_targets.targets.len();
+            display_zone_targets
                 .targets
                 .retain(|group_id, _| active_ids.contains(group_id));
-            original_len != display_group_targets.targets.len()
+            original_len != display_zone_targets.targets.len()
         };
         if changed {
-            display_group_targets.revision = display_group_targets.revision.saturating_add(1);
+            display_zone_targets.revision = display_zone_targets.revision.saturating_add(1);
         }
-        drop(display_group_targets);
-        self.retain_display_group_output_routes(active_ids);
+        drop(display_zone_targets);
+        self.retain_display_zone_output_routes(active_ids);
     }
 
     /// Snapshot the active render-thread-authored display-face routes.
     #[must_use]
-    pub fn display_group_targets_snapshot(&self) -> (u64, HashMap<ZoneId, DisplayGroupTarget>) {
-        let display_group_targets = self
-            .display_group_targets
+    pub fn display_zone_targets_snapshot(&self) -> (u64, HashMap<ZoneId, DisplayZoneTarget>) {
+        let display_zone_targets = self
+            .display_zone_targets
             .lock()
-            .expect("display group target registry should not be poisoned");
+            .expect("display zone target registry should not be poisoned");
         (
-            display_group_targets.revision,
-            display_group_targets.targets.clone(),
+            display_zone_targets.revision,
+            display_zone_targets.targets.clone(),
         )
     }
 
     /// Number of tracked render-thread-authored display-face routes.
     #[must_use]
-    pub fn display_group_target_count(&self) -> usize {
-        self.display_group_targets
+    pub fn display_zone_target_count(&self) -> usize {
+        self.display_zone_targets
             .lock()
-            .expect("display group target registry should not be poisoned")
+            .expect("display zone target registry should not be poisoned")
             .targets
             .len()
     }
 
     /// Insert or update display-output-authored final display surface metadata.
-    pub fn upsert_display_group_output_route(&self, id: ZoneId, route: DisplayGroupOutputRoute) {
+    pub fn upsert_display_zone_output_route(&self, id: ZoneId, route: DisplayZoneOutputRoute) {
         let mut routes = self
-            .display_group_output_routes
+            .display_zone_output_routes
             .lock()
-            .expect("display group output route registry should not be poisoned");
+            .expect("display zone output route registry should not be poisoned");
         let changed = routes.routes.get(&id) != Some(&route);
         if changed {
             routes.routes.insert(id, route);
@@ -1105,12 +1105,12 @@ impl HypercolorBus {
         }
     }
 
-    /// Drop display-output-authored routes that no longer have active display groups.
-    pub fn retain_display_group_output_routes(&self, active_ids: &[ZoneId]) {
+    /// Drop display-output-authored routes that no longer have active display zones.
+    pub fn retain_display_zone_output_routes(&self, active_ids: &[ZoneId]) {
         let mut routes = self
-            .display_group_output_routes
+            .display_zone_output_routes
             .lock()
-            .expect("display group output route registry should not be poisoned");
+            .expect("display zone output route registry should not be poisoned");
         let changed = if active_ids.is_empty() {
             let changed = !routes.routes.is_empty();
             routes.routes.clear();
@@ -1133,50 +1133,50 @@ impl HypercolorBus {
 
     /// Snapshot the active display-output-authored final display surface routes.
     #[must_use]
-    pub fn display_group_output_routes_snapshot(
+    pub fn display_zone_output_routes_snapshot(
         &self,
-    ) -> (u64, HashMap<ZoneId, DisplayGroupOutputRoute>) {
+    ) -> (u64, HashMap<ZoneId, DisplayZoneOutputRoute>) {
         let routes = self
-            .display_group_output_routes
+            .display_zone_output_routes
             .lock()
-            .expect("display group output route registry should not be poisoned");
+            .expect("display zone output route registry should not be poisoned");
         (routes.revision, routes.routes.clone())
     }
 
     /// Remove one display-output-authored final display surface route.
-    pub fn remove_display_group_output_route(&self, id: ZoneId) {
+    pub fn remove_display_zone_output_route(&self, id: ZoneId) {
         let mut routes = self
-            .display_group_output_routes
+            .display_zone_output_routes
             .lock()
-            .expect("display group output route registry should not be poisoned");
+            .expect("display zone output route registry should not be poisoned");
         if routes.routes.remove(&id).is_some() {
             routes.revision = routes.revision.saturating_add(1);
         }
     }
 
     /// Remove the render-thread-authored display-face route for a zone.
-    pub fn remove_display_group_target(&self, id: ZoneId) {
-        let mut display_group_targets = self
-            .display_group_targets
+    pub fn remove_display_zone_target(&self, id: ZoneId) {
+        let mut display_zone_targets = self
+            .display_zone_targets
             .lock()
-            .expect("display group target registry should not be poisoned");
-        if display_group_targets.targets.remove(&id).is_some() {
-            display_group_targets.revision = display_group_targets.revision.saturating_add(1);
+            .expect("display zone target registry should not be poisoned");
+        if display_zone_targets.targets.remove(&id).is_some() {
+            display_zone_targets.revision = display_zone_targets.revision.saturating_add(1);
         }
-        drop(display_group_targets);
-        self.remove_display_group_output_route(id);
+        drop(display_zone_targets);
+        self.remove_display_zone_output_route(id);
     }
 
-    /// Drop any per-group canvas streams not present in the active set.
-    pub fn retain_group_canvases(&self, active_ids: &[ZoneId]) {
-        let mut group_canvases = self
-            .group_canvases
+    /// Drop any per-zone canvas streams not present in the active set.
+    pub fn retain_zone_canvases(&self, active_ids: &[ZoneId]) {
+        let mut zone_canvases = self
+            .zone_canvases
             .lock()
-            .expect("group canvas registry should not be poisoned");
+            .expect("zone canvas registry should not be poisoned");
         if active_ids.is_empty() {
-            group_canvases.clear();
-            drop(group_canvases);
-            self.retain_display_group_targets(active_ids);
+            zone_canvases.clear();
+            drop(zone_canvases);
+            self.retain_display_zone_targets(active_ids);
             return;
         }
 
@@ -1184,20 +1184,20 @@ impl HypercolorBus {
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        group_canvases.retain(|group_id, _| active_set.contains(group_id));
-        drop(group_canvases);
-        self.retain_display_group_targets(active_ids);
+        zone_canvases.retain(|group_id, _| active_set.contains(group_id));
+        drop(zone_canvases);
+        self.retain_display_zone_targets(active_ids);
     }
 
-    /// Remove the per-group canvas stream for a zone.
-    pub fn remove_group_canvas(&self, id: ZoneId) {
-        let mut group_canvases = self
-            .group_canvases
+    /// Remove the per-zone canvas stream for a zone.
+    pub fn remove_zone_canvas(&self, id: ZoneId) {
+        let mut zone_canvases = self
+            .zone_canvases
             .lock()
-            .expect("group canvas registry should not be poisoned");
-        group_canvases.remove(&id);
-        drop(group_canvases);
-        self.remove_display_group_target(id);
+            .expect("zone canvas registry should not be poisoned");
+        zone_canvases.remove(&id);
+        drop(zone_canvases);
+        self.remove_display_zone_target(id);
     }
 
     /// Number of active broadcast subscribers.

@@ -69,10 +69,10 @@ fn single_group_preview_scales_group_canvas_to_preview_extent() {
 }
 
 #[test]
-fn compose_preview_ignores_display_groups() {
+fn compose_preview_ignores_display_zones() {
     let mut runtime = cpu_backed_runtime(4, 4);
     let preview_group = sample_group(4, 4);
-    let display_group = sample_display_group(4, 4);
+    let display_zone = sample_display_zone(4, 4);
     let mut preview_canvas = Canvas::new(4, 4);
     preview_canvas.fill(Rgba::new(255, 0, 0, 255));
     let mut display_canvas = Canvas::new(4, 4);
@@ -82,9 +82,9 @@ fn compose_preview_ignores_display_groups() {
         .insert(preview_group.id, preview_canvas);
     runtime
         .target_canvases
-        .insert(display_group.id, display_canvas);
+        .insert(display_zone.id, display_canvas);
 
-    let preview = runtime.compose_preview_grid_for_test(&[preview_group, display_group]);
+    let preview = runtime.compose_preview_grid_for_test(&[preview_group, display_zone]);
     let ProducerFrame::Surface(surface) = preview else {
         panic!("mixed preview should publish a pooled surface");
     };
@@ -198,7 +198,7 @@ fn render_scene_caches_compact_projection_metadata_until_layout_changes() {
         )]),
     );
     group.layout.zones = vec![point_zone_at("zone_cached", 0.25, 0.5)];
-    let display_group_target_fps = HashMap::new();
+    let display_zone_target_fps = HashMap::new();
     let mut zones = Vec::new();
 
     render_scene_for_test(
@@ -206,7 +206,7 @@ fn render_scene_caches_compact_projection_metadata_until_layout_changes() {
         std::slice::from_ref(&group),
         1,
         0,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
@@ -223,7 +223,7 @@ fn render_scene_caches_compact_projection_metadata_until_layout_changes() {
         std::slice::from_ref(&group),
         1,
         16,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
@@ -245,7 +245,7 @@ fn render_scene_caches_compact_projection_metadata_until_layout_changes() {
         std::slice::from_ref(&group),
         2,
         32,
-        &display_group_target_fps,
+        &display_zone_target_fps,
         &registry,
         &mut zones,
     )
@@ -577,8 +577,8 @@ fn projected_contributors_refresh_current_cpu_replay() {
         active_scene_id: Some(SceneId::DEFAULT),
         dependency_key,
         elapsed_ms: 0,
-        display_group_target_fps: &target_fps,
-        display_group_descriptors: &HashMap::new(),
+        display_zone_target_fps: &target_fps,
+        display_zone_descriptors: &HashMap::new(),
         registry: &registry,
         authoritative_spatial_engine: None,
         inputs: ZoneFrameInputs {
@@ -901,8 +901,8 @@ fn two_gpu_resident_groups_produce_stable_projected_scene_frame() {
         active_scene_id: Some(SceneId::DEFAULT),
         dependency_key,
         elapsed_ms: 0,
-        display_group_target_fps: &target_fps,
-        display_group_descriptors: &HashMap::new(),
+        display_zone_target_fps: &target_fps,
+        display_zone_descriptors: &HashMap::new(),
         registry: &registry,
         authoritative_spatial_engine: None,
         inputs: ZoneFrameInputs {
@@ -1130,8 +1130,8 @@ fn projected_bind_groups_retire_by_exact_source_lease_and_surface_generation() {
         active_scene_id: Some(SceneId::DEFAULT),
         dependency_key: first_dependency,
         elapsed_ms: 0,
-        display_group_target_fps: &target_fps,
-        display_group_descriptors: &display_descriptors,
+        display_zone_target_fps: &target_fps,
+        display_zone_descriptors: &display_descriptors,
         registry: &registry,
         authoritative_spatial_engine: None,
         inputs: ZoneFrameInputs {
@@ -2164,8 +2164,8 @@ fn render_projected_layers_for_test(
         active_scene_id: Some(SceneId::DEFAULT),
         dependency_key,
         elapsed_ms,
-        display_group_target_fps: &target_fps,
-        display_group_descriptors: &display_descriptors,
+        display_zone_target_fps: &target_fps,
+        display_zone_descriptors: &display_descriptors,
         registry,
         authoritative_spatial_engine: None,
         inputs: ZoneFrameInputs {

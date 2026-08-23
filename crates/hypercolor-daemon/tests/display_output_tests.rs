@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tokio::time::timeout;
 
 use hypercolor_core::bus::{
-    CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, HypercolorBus, PreviewKind,
+    CanvasFrame, DisplayZoneFrame, DisplayZoneTarget, HypercolorBus, PreviewKind,
 };
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::scene::SceneManager;
@@ -62,7 +62,7 @@ async fn display_output_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
     display_output_test_lock().lock().await
 }
 
-fn display_group_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> CanvasFrame {
+fn display_zone_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> CanvasFrame {
     CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms)
 }
 
@@ -866,9 +866,9 @@ fn publish_display_face_route(
     display_target: DisplayFaceTarget,
 ) {
     let display_target = display_target.normalized();
-    event_bus.upsert_display_group_target(
+    event_bus.upsert_display_zone_target(
         group_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id: display_target.device_id,
             blend_mode: display_target.blend_mode,
             opacity: display_target.opacity,
@@ -2631,7 +2631,7 @@ async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_
 }
 
 #[tokio::test]
-async fn display_group_canvas_routes_to_device_worker() {
+async fn display_zone_canvas_routes_to_device_worker() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -2677,8 +2677,8 @@ async fn display_group_canvas_routes_to_device_worker() {
     });
 
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
@@ -2754,8 +2754,8 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     });
 
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
@@ -2766,8 +2766,8 @@ async fn automatic_display_output_updates_direct_faces_without_scene_canvas_tick
     assert!(first_pixel[2] > 200);
 
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 255, 0, 255)),
             2,
             32,
@@ -2836,8 +2836,8 @@ async fn display_preview_survives_display_face_worker_config_restart() {
     });
 
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
@@ -2847,9 +2847,9 @@ async fn display_preview_survives_display_face_worker_config_restart() {
 
     let mut preview_rx = display_frames.write().await.subscribe(device_id);
     assert!(preview_rx.borrow_and_update().is_some());
-    event_bus.upsert_display_group_target(
+    event_bus.upsert_display_zone_target(
         group_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
@@ -2887,7 +2887,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
 }
 
 #[tokio::test]
-async fn display_group_alpha_blends_face_with_effect_canvas() {
+async fn display_zone_alpha_blends_face_with_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -2952,8 +2952,8 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
@@ -2976,7 +2976,7 @@ async fn display_group_alpha_blends_face_with_effect_canvas() {
 }
 
 #[tokio::test]
-async fn display_group_alpha_composes_against_black_before_effect_frame() {
+async fn display_zone_alpha_composes_against_black_before_effect_frame() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -3032,8 +3032,8 @@ async fn display_group_alpha_composes_against_black_before_effect_frame() {
     wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
 
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
@@ -3115,9 +3115,9 @@ async fn display_output_uses_render_published_face_route_metadata() {
         display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
     });
 
-    event_bus.upsert_display_group_target(
+    event_bus.upsert_display_zone_target(
         group_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
@@ -3135,8 +3135,8 @@ async fn display_output_uses_render_published_face_route_metadata() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
@@ -3159,7 +3159,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
 }
 
 #[tokio::test]
-async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effect_canvas() {
+async fn display_zone_replace_keeps_transparent_face_pixels_from_bleeding_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -3218,8 +3218,8 @@ async fn display_group_replace_keeps_transparent_face_pixels_from_bleeding_effec
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &transparent_white_canvas(),
             2,
             32,
@@ -3295,8 +3295,8 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
     });
 
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             1,
             16,
@@ -3347,7 +3347,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
 }
 
 #[tokio::test]
-async fn display_group_screen_blends_face_color_with_effect_canvas() {
+async fn display_zone_screen_blends_face_color_with_effect_canvas() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -3412,8 +3412,8 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
@@ -3436,7 +3436,7 @@ async fn display_group_screen_blends_face_color_with_effect_canvas() {
 }
 
 #[tokio::test]
-async fn display_group_tint_turns_face_into_effect_tinted_material() {
+async fn display_zone_tint_turns_face_into_effect_tinted_material() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -3501,8 +3501,8 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(0, 0, 255, 255)),
             2,
             32,
@@ -3525,7 +3525,7 @@ async fn display_group_tint_turns_face_into_effect_tinted_material() {
 }
 
 #[tokio::test]
-async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color() {
+async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -3590,8 +3590,8 @@ async fn display_group_luma_reveal_lets_bright_face_regions_adopt_effect_color()
     tokio::time::sleep(Duration::from_millis(40)).await;
     display_writes.lock().await.clear();
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(
             &solid_canvas(Rgba::new(255, 255, 255, 255)),
             2,
             32,
@@ -4629,8 +4629,8 @@ async fn automatic_display_output_refreshes_cached_targets_when_display_face_rou
 
     publish_direct_display_face_route(event_bus.as_ref(), device_id, group_id);
     event_bus
-        .group_canvas_sender(group_id)
-        .send_replace(DisplayGroupFrame::Canvas(display_group_frame(&blue, 2, 32)));
+        .zone_canvas_sender(group_id)
+        .send_replace(DisplayZoneFrame::Canvas(display_zone_frame(&blue, 2, 32)));
     event_bus
         .scene_canvas_lane()
         .send_replace(CanvasFrame::from_canvas(&red, 3, 48));

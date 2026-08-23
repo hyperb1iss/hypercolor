@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::{DisplayGroupFrame, HypercolorBus};
+use hypercolor_core::bus::{DisplayZoneFrame, HypercolorBus};
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -117,7 +117,7 @@ fn render_group(name: &str, _effect_id: EffectId, layers: Vec<SceneLayer>) -> Zo
     }
 }
 
-fn display_group(
+fn display_zone(
     group_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
@@ -265,10 +265,10 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let display_group_id = ZoneId::new();
+    let display_zone_id = ZoneId::new();
     let display_device_id = DeviceId::new();
-    let group_canvas_sender = state.event_bus.group_canvas_sender(display_group_id);
-    let mut group_canvas_rx = group_canvas_sender.subscribe();
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(display_zone_id);
+    let mut group_canvas_rx = zone_canvas_sender.subscribe();
     let scene_group = render_group(
         "Scene",
         solid_id,
@@ -279,8 +279,8 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
             1.0,
         )],
     );
-    let face_group = display_group(
-        display_group_id,
+    let face_group = display_zone(
+        display_zone_id,
         display_device_id,
         solid_id,
         vec![solid_layer(
@@ -295,15 +295,15 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
     let scene_frame = run_until_canvas_frame(&state).await;
     tokio::time::timeout(Duration::from_secs(2), group_canvas_rx.changed())
         .await
-        .expect("expected display group frame within 2 seconds")
+        .expect("expected display zone frame within 2 seconds")
         .expect("group canvas sender should remain connected");
 
     assert_eq!(
         scene_frame.surface().get_pixel(160, 100),
         Rgba::new(255, 0, 0, 255)
     );
-    let DisplayGroupFrame::Canvas(face_frame) = group_canvas_rx.borrow().clone() else {
-        panic!("display group should publish a canvas frame");
+    let DisplayZoneFrame::Canvas(face_frame) = group_canvas_rx.borrow().clone() else {
+        panic!("display zone should publish a canvas frame");
     };
     assert_eq!(&face_frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());
 }

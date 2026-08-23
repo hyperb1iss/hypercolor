@@ -61,7 +61,7 @@ impl ZoneRuntime {
             project_scene_with_sparkleflinger,
             &mut rendered_groups,
         )?;
-        self.render_display_group_frames(context, sparkleflinger, None, &mut rendered_groups)?;
+        self.render_display_zone_frames(context, sparkleflinger, None, &mut rendered_groups)?;
         let logical_layer_count = scene_logical_layer_count(context.groups);
         let scene_compose_start = Instant::now();
         #[cfg(feature = "wgpu")]
@@ -112,9 +112,9 @@ impl ZoneRuntime {
             .into_parts_for_group_order(context.groups);
         let result = ZoneResult {
             scene_frame,
-            group_canvases: rendered_parts.group_canvases,
+            display_zone_frames: rendered_parts.display_zone_frames,
             zone_canvases: rendered_parts.zone_canvases,
-            active_group_canvas_ids: rendered_parts.active_group_canvas_ids,
+            active_display_zone_ids: rendered_parts.active_display_zone_ids,
             led_sampling_strategy,
             producer_full_frame_copy: rendered_groups.producer_full_frame_copy,
             render_us: rendered_groups.render_us,
@@ -181,7 +181,7 @@ impl ZoneRuntime {
         rendered_groups
             .rendered_groups
             .push_fresh_scene_group_frame(scene_group.id, scene_frame.clone());
-        self.render_display_group_frames(
+        self.render_display_zone_frames(
             context,
             sparkleflinger,
             Some(scene_group.id),
@@ -192,9 +192,9 @@ impl ZoneRuntime {
         let rendered_parts = rendered_groups.rendered_groups.into_parts();
         Ok(Some(ZoneResult {
             scene_frame,
-            group_canvases: rendered_parts.group_canvases,
+            display_zone_frames: rendered_parts.display_zone_frames,
             zone_canvases: rendered_parts.zone_canvases,
-            active_group_canvas_ids: rendered_parts.active_group_canvas_ids,
+            active_display_zone_ids: rendered_parts.active_display_zone_ids,
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(spatial_engine),
             producer_full_frame_copy: rendered_groups.producer_full_frame_copy,
             render_us: rendered_groups.render_us,

@@ -29,7 +29,7 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, DisplayZoneTarget};
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
@@ -158,15 +158,15 @@ fn assert_canvas_frame_color(frame: &CanvasFrame, color: [u8; 3]) {
     );
 }
 
-fn assert_display_group_frame_black(frame: &DisplayGroupFrame) {
-    let DisplayGroupFrame::Canvas(frame) = frame else {
-        panic!("test display group frame should be a canvas");
+fn assert_display_zone_frame_black(frame: &DisplayZoneFrame) {
+    let DisplayZoneFrame::Canvas(frame) = frame else {
+        panic!("test display zone frame should be a canvas");
     };
     assert_canvas_frame_black(frame);
 }
 
-fn display_group_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> DisplayGroupFrame {
-    DisplayGroupFrame::Canvas(CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms))
+fn display_zone_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> DisplayZoneFrame {
+    DisplayZoneFrame::Canvas(CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms))
 }
 
 fn isolated_state() -> AppState {
@@ -6129,22 +6129,22 @@ async fn get_effect_cover_returns_webp_image() {
 }
 
 #[tokio::test]
-async fn pausing_output_darkens_display_groups_without_an_active_effect() {
+async fn pausing_output_darkens_display_zones_without_an_active_effect() {
     let state = Arc::new(isolated_state());
     let group_id = hypercolor_types::scene::ZoneId::new();
-    state.event_bus.upsert_display_group_target(
+    state.event_bus.upsert_display_zone_target(
         group_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id: DeviceId::new(),
             blend_mode: BlendMode::Alpha,
             opacity: 1.0,
             finalized: false,
         },
     );
-    let group_sender = state.event_bus.group_canvas_sender(group_id);
+    let group_sender = state.event_bus.zone_canvas_sender(group_id);
     let mut red_canvas = Canvas::new(2, 2);
     red_canvas.fill(Rgba::new(255, 0, 0, 255));
-    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
+    group_sender.send_replace(display_zone_frame(&red_canvas, 7, 7));
     let group_receiver = group_sender.subscribe();
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -6158,7 +6158,7 @@ async fn pausing_output_darkens_display_groups_without_an_active_effect() {
     let response_json = body_json(response).await;
     assert_eq!(response_json["data"]["power"], "paused");
     assert!(state.output_power.snapshot().manually_paused());
-    assert_display_group_frame_black(&group_receiver.borrow());
+    assert_display_zone_frame_black(&group_receiver.borrow());
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("pause should persist runtime state");
@@ -11224,7 +11224,7 @@ async fn delete_face_idempotent_when_no_group_present() {
 }
 
 #[tokio::test]
-async fn get_face_returns_null_when_no_display_group() {
+async fn get_face_returns_null_when_no_display_zone() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -11245,7 +11245,7 @@ async fn get_face_returns_null_when_no_display_group() {
 }
 
 #[tokio::test]
-async fn patch_face_controls_updates_display_group() {
+async fn patch_face_controls_updates_display_zone() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let mut face = test_display_face_effect_metadata("System Monitor");
@@ -11316,12 +11316,12 @@ async fn patch_face_controls_updates_display_group() {
     );
 
     let manager = state.scene_manager.snapshot().await;
-    let display_group = manager
+    let display_zone = manager
         .active_scene()
         .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
     assert_eq!(
-        zone_effect_controls(display_group).and_then(|controls| controls.get("label")),
+        zone_effect_controls(display_zone).and_then(|controls| controls.get("label")),
         Some(&ControlValue::Text("gpu".to_owned()))
     );
 }
@@ -12296,7 +12296,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
 }
 
 #[tokio::test]
-async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanup() {
+async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame};
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::input::screen::PixelExtent;
 use hypercolor_types::canvas::{Canvas, Rgba};
@@ -26,7 +26,7 @@ use super::pipeline_runtime::{
 use super::scene_snapshot::{
     FrameSceneSnapshot, apply_zone_layout_previews, build_frame_scene_snapshot,
     display_descriptors_for_groups, refresh_effect_scene_snapshot, scene_dependency_key,
-    snapshot_display_group_target_metadata,
+    snapshot_display_zone_target_metadata,
 };
 use super::sparkleflinger::ComposedFrameSet;
 use super::unassigned_output::{UnassignedOutputPlanner, unassigned_behavior_generation};
@@ -155,7 +155,7 @@ pub(crate) async fn service_scene_transactions(
                             (state.zone_layout_previews.generation(), candidate_zones)
                         };
                     let (display_target_fps, display_output_routes) =
-                        snapshot_display_group_target_metadata(
+                        snapshot_display_zone_target_metadata(
                             &state.device_registry,
                             &mut scene.snapshot_cache,
                             resolved_zones_revision,
@@ -700,9 +700,9 @@ pub(crate) async fn execute_frame(
                 screen_capture_active: scene_snapshot.effect_demand.screen_capture_active,
             },
             scene_id: scene_snapshot.scene_runtime.active_scene_id,
-            group_canvases: &render_stage.group_canvases,
+            display_zone_frames: &render_stage.display_zone_frames,
             zone_canvases: &render_stage.zone_canvases,
-            active_group_canvas_ids: &render_stage.active_group_canvas_ids,
+            active_display_zone_ids: &render_stage.active_display_zone_ids,
             frame_number: frame_num_u32,
             elapsed_ms: scene_snapshot.elapsed_ms,
             reuse_existing_frame: reuses_published_frame,
@@ -910,12 +910,12 @@ async fn force_static_sleep_snapshot(
         .saturating_add(1);
     let elapsed_ms = u64_to_u32(scene_snapshot.elapsed_ms);
     let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
-    let group_frame = DisplayGroupFrame::Canvas(canvas_frame.clone());
-    let (_, display_group_targets) = state.event_bus.display_group_targets_snapshot();
-    for group_id in display_group_targets.keys().copied() {
+    let group_frame = DisplayZoneFrame::Canvas(canvas_frame.clone());
+    let (_, display_zone_targets) = state.event_bus.display_zone_targets_snapshot();
+    for group_id in display_zone_targets.keys().copied() {
         state
             .event_bus
-            .group_canvas_sender(group_id)
+            .zone_canvas_sender(group_id)
             .send_replace(group_frame.clone());
     }
     state
@@ -993,9 +993,9 @@ mod tests {
             preview_requested,
             web_viewport_preview: None,
             producer_full_frame_copy: crate::performance::FullFrameCopyMetrics::default(),
-            group_canvases: Vec::new(),
+            display_zone_frames: Vec::new(),
             zone_canvases: Vec::new(),
-            active_group_canvas_ids: Vec::new(),
+            active_display_zone_ids: Vec::new(),
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(SpatialEngine::new(
                 sample_layout(&[]),
             )),

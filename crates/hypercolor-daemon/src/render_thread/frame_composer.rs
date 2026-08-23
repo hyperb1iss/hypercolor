@@ -16,13 +16,13 @@ use self::preview_policy::{
 };
 use super::display_lane::{
     DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
-    display_groups_require_composed_scene,
+    display_zones_require_composed_scene,
 };
 use super::frame_policy::SkipDecision;
 use super::frame_sampling::LedSamplingStrategy;
 use super::pipeline_runtime::{ComposeRuntime, FrameInputs};
 use super::producer_queue::{ProducerFrame, ProducerFrameState, ProducerQueue};
-use super::render_groups::{GroupCanvasFrame, ZoneEffectError, ZoneResult};
+use super::render_groups::{DisplayZoneCanvasFrame, ZoneEffectError, ZoneResult};
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::FrameSceneSnapshot;
 use super::sparkleflinger::{ComposedFrameSet, PreviewSurfaceRequest, SparkleFlinger};
@@ -40,9 +40,9 @@ pub(crate) struct RenderStageStats {
     pub(crate) preview_requested: bool,
     pub(crate) web_viewport_preview: Option<PublishedSurface>,
     pub(crate) producer_full_frame_copy: FullFrameCopyMetrics,
-    pub(crate) group_canvases: Vec<(ZoneId, GroupCanvasFrame)>,
+    pub(crate) display_zone_frames: Vec<(ZoneId, DisplayZoneCanvasFrame)>,
     pub(crate) zone_canvases: Vec<(ZoneId, ProducerFrame)>,
-    pub(crate) active_group_canvas_ids: Vec<ZoneId>,
+    pub(crate) active_display_zone_ids: Vec<ZoneId>,
     pub(crate) led_sampling_strategy: LedSamplingStrategy,
     pub(crate) producer_render_us: u32,
     pub(crate) producer_scene_compose_us: u32,
@@ -320,9 +320,9 @@ impl ComposeContext<'_> {
             preview_requested: preview_request.is_some(),
             web_viewport_preview: None,
             producer_full_frame_copy: FullFrameCopyMetrics::default(),
-            group_canvases: Vec::new(),
+            display_zone_frames: Vec::new(),
             zone_canvases: Vec::new(),
-            active_group_canvas_ids: Vec::new(),
+            active_display_zone_ids: Vec::new(),
             led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                 self.scene_snapshot.spatial_engine.clone(),
             ),
@@ -373,7 +373,7 @@ impl ComposeContext<'_> {
                 let preview_surface_pressure = self.preview_surface_pressure();
                 let scene_canvas_forced_surface = self.scene_canvas_forced_surface();
                 let display_blend_requires_scene =
-                    display_groups_require_composed_scene(&render_group_result.group_canvases);
+                    display_zones_require_composed_scene(&render_group_result.display_zone_frames);
                 let requires_full_composition = render_group_requires_full_composition(
                     compiled_plan.metadata.transition_active,
                     &render_group_result.led_sampling_strategy,
@@ -408,27 +408,27 @@ impl ComposeContext<'_> {
                 let scene_display_frame =
                     self.scene_display_frame_for_groups(&scene_frame, requires_full_composition);
                 let (_, display_routes) =
-                    self.state.event_bus.display_group_output_routes_snapshot();
+                    self.state.event_bus.display_zone_output_routes_snapshot();
                 let display_lane_context = DisplayLaneContext {
                     elapsed_ms: self.scene_snapshot.elapsed_ms,
                     dependency_key,
                     target_fps: &self
                         .scene_snapshot
                         .scene_runtime
-                        .active_display_group_target_fps,
+                        .active_display_zone_target_fps,
                     routes: DisplayLaneRoutes {
                         current: &display_routes,
                         fallback: &self
                             .scene_snapshot
                             .scene_runtime
-                            .active_display_group_output_routes,
+                            .active_display_zone_output_routes,
                     },
                 };
-                let group_canvases =
+                let display_zone_frames =
                     DisplayLaneMaterializer::new(&mut self.compose, display_lane_context)
                         .materialize_group_canvases(
-                            &render_group_result.active_group_canvas_ids,
-                            render_group_result.group_canvases,
+                            &render_group_result.active_display_zone_ids,
+                            render_group_result.display_zone_frames,
                             &scene_display_frame,
                         );
                 let composition_bypassed = composed.bypassed;
@@ -441,9 +441,9 @@ impl ComposeContext<'_> {
                     preview_requested: preview_request.is_some(),
                     web_viewport_preview: None,
                     producer_full_frame_copy: render_group_result.producer_full_frame_copy,
-                    group_canvases,
+                    display_zone_frames,
                     zone_canvases: render_group_result.zone_canvases,
-                    active_group_canvas_ids: render_group_result.active_group_canvas_ids,
+                    active_display_zone_ids: render_group_result.active_display_zone_ids,
                     led_sampling_strategy: render_group_result.led_sampling_strategy,
                     producer_render_us: render_group_result.render_us,
                     producer_scene_compose_us: render_group_result.scene_compose_us,
@@ -523,9 +523,9 @@ impl ComposeContext<'_> {
                     preview_requested: preview_request.is_some(),
                     web_viewport_preview: None,
                     producer_full_frame_copy: FullFrameCopyMetrics::default(),
-                    group_canvases: Vec::new(),
+                    display_zone_frames: Vec::new(),
                     zone_canvases: Vec::new(),
-                    active_group_canvas_ids: Vec::new(),
+                    active_display_zone_ids: Vec::new(),
                     led_sampling_strategy: LedSamplingStrategy::SparkleFlinger(
                         self.scene_snapshot.spatial_engine.clone(),
                     ),

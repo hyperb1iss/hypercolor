@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, WatchLane, ZonePreviewFrame};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, WatchLane, ZonePreviewFrame};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, PublishedSurface, PublishedSurfaceStorageIdentity};
 use hypercolor_types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
@@ -12,7 +12,7 @@ use crate::performance::FullFrameCopyMetrics;
 
 use super::pipeline_runtime::PublicationCadenceState;
 use super::producer_queue::ProducerFrame;
-use super::render_groups::GroupCanvasFrame;
+use super::render_groups::DisplayZoneCanvasFrame;
 use super::{RenderThreadState, micros_u32, u64_to_u32, usize_to_u32};
 
 pub(crate) struct PublishFrameStats {
@@ -71,9 +71,9 @@ pub(crate) struct FramePublicationRequest<'a> {
     pub(crate) audio: &'a AudioData,
     pub(crate) surfaces: FramePublicationSurfaces,
     pub(crate) scene_id: Option<SceneId>,
-    pub(crate) group_canvases: &'a [(ZoneId, GroupCanvasFrame)],
+    pub(crate) display_zone_frames: &'a [(ZoneId, DisplayZoneCanvasFrame)],
     pub(crate) zone_canvases: &'a [(ZoneId, ProducerFrame)],
-    pub(crate) active_group_canvas_ids: &'a [ZoneId],
+    pub(crate) active_display_zone_ids: &'a [ZoneId],
     pub(crate) frame_number: u32,
     pub(crate) elapsed_ms: u64,
     pub(crate) reuse_existing_frame: bool,
@@ -120,9 +120,9 @@ pub(crate) fn publish_frame_updates(
         audio,
         mut surfaces,
         scene_id,
-        group_canvases,
+        display_zone_frames,
         zone_canvases,
-        active_group_canvas_ids,
+        active_display_zone_ids,
         frame_number,
         elapsed_ms,
         reuse_existing_frame,
@@ -167,15 +167,15 @@ pub(crate) fn publish_frame_updates(
     );
     let frame_data_us = micros_u32(frame_data_start.elapsed());
     let group_canvas_start = Instant::now();
-    // Scenes carry at most a handful of display groups, so a linear scan over
+    // Scenes carry at most a handful of display zones, so a linear scan over
     // the collected Vec beats building a fresh HashMap every frame.
     let group_canvas_senders = state
         .event_bus
-        .retain_group_canvases_and_collect_senders(active_group_canvas_ids);
-    for (group_id, group_canvas) in group_canvases {
+        .retain_zone_canvases_and_collect_senders(active_display_zone_ids);
+    for (group_id, group_canvas) in display_zone_frames {
         state
             .event_bus
-            .upsert_display_group_target(*group_id, group_canvas.display_target.clone());
+            .upsert_display_zone_target(*group_id, group_canvas.display_target.clone());
         let Some(sender) = group_canvas_senders
             .iter()
             .find_map(|(id, sender)| (id == group_id).then_some(sender))
@@ -187,7 +187,7 @@ pub(crate) fn publish_frame_updates(
             .with_frame_metadata(frame_number, timestamp_ms);
         let publish_group_canvas = {
             let current = sender.borrow();
-            should_publish_display_group_frame(&current, &frame)
+            should_publish_display_zone_frame(&current, &frame)
         };
         if publish_group_canvas {
             sender.send_replace(frame);
@@ -205,7 +205,7 @@ pub(crate) fn publish_frame_updates(
         state,
         publication_cadence,
         scene_id,
-        group_canvases,
+        display_zone_frames,
         zone_canvases,
         frame_number,
         elapsed_ms,
@@ -397,7 +397,7 @@ fn publish_zone_previews(
     state: &RenderThreadState,
     publication_cadence: &mut PublicationCadenceState,
     scene_id: Option<SceneId>,
-    group_canvases: &[(ZoneId, GroupCanvasFrame)],
+    display_zone_frames: &[(ZoneId, DisplayZoneCanvasFrame)],
     zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
     elapsed_ms: u64,
@@ -424,7 +424,7 @@ fn publish_zone_previews(
 
     let zone_previews = collect_zone_previews(
         scene_id,
-        group_canvases,
+        display_zone_frames,
         zone_canvases,
         frame_number,
         timestamp_ms,
@@ -468,19 +468,19 @@ fn clear_zone_previews(
 
 fn collect_zone_previews(
     scene_id: SceneId,
-    group_canvases: &[(ZoneId, GroupCanvasFrame)],
+    display_zone_frames: &[(ZoneId, DisplayZoneCanvasFrame)],
     zone_canvases: &[(ZoneId, ProducerFrame)],
     frame_number: u32,
     timestamp_ms: u32,
     publication_full_frame_copy: &mut FullFrameCopyMetrics,
 ) -> Vec<ZonePreviewFrame> {
-    let display_group_ids = group_canvases
+    let display_zone_ids = display_zone_frames
         .iter()
         .map(|(group_id, _)| *group_id)
         .collect::<HashSet<_>>();
     let mut previews = Vec::new();
     for (group_id, frame) in zone_canvases {
-        if display_group_ids.contains(group_id) {
+        if display_zone_ids.contains(group_id) {
             continue;
         }
         if let Some(frame) = zone_preview_frame_from_producer(
@@ -496,7 +496,7 @@ fn collect_zone_previews(
             });
         }
     }
-    for (group_id, group_canvas) in group_canvases {
+    for (group_id, group_canvas) in display_zone_frames {
         if let Some(frame) =
             zone_preview_frame_from_display(&group_canvas.frame, frame_number, timestamp_ms)
         {
@@ -555,18 +555,18 @@ fn zone_preview_frame_from_producer(
 }
 
 fn zone_preview_frame_from_display(
-    frame: &DisplayGroupFrame,
+    frame: &DisplayZoneFrame,
     frame_number: u32,
     timestamp_ms: u32,
 ) -> Option<CanvasFrame> {
     match frame {
-        DisplayGroupFrame::Canvas(frame) => Some(CanvasFrame::from_surface(
+        DisplayZoneFrame::Canvas(frame) => Some(CanvasFrame::from_surface(
             frame
                 .surface()
                 .clone()
                 .with_frame_metadata(frame_number, timestamp_ms),
         )),
-        DisplayGroupFrame::Yuv420(_) => None,
+        DisplayZoneFrame::Yuv420(_) => None,
     }
 }
 
@@ -619,17 +619,17 @@ fn should_publish_surface_frame(current: &CanvasFrame, next: &PublishedSurface) 
     canvas_frame_publication_identity(current) != published_surface_publication_identity(next)
 }
 
-fn should_publish_display_group_frame(
-    current: &hypercolor_core::bus::DisplayGroupFrame,
-    next: &hypercolor_core::bus::DisplayGroupFrame,
+fn should_publish_display_zone_frame(
+    current: &hypercolor_core::bus::DisplayZoneFrame,
+    next: &hypercolor_core::bus::DisplayZoneFrame,
 ) -> bool {
-    use hypercolor_core::bus::DisplayGroupFrame;
+    use hypercolor_core::bus::DisplayZoneFrame;
 
     match (current, next) {
-        (DisplayGroupFrame::Canvas(current), DisplayGroupFrame::Canvas(next)) => {
+        (DisplayZoneFrame::Canvas(current), DisplayZoneFrame::Canvas(next)) => {
             should_publish_canvas_frame(current, next)
         }
-        (DisplayGroupFrame::Yuv420(current), DisplayGroupFrame::Yuv420(next)) => {
+        (DisplayZoneFrame::Yuv420(current), DisplayZoneFrame::Yuv420(next)) => {
             current.storage_identity() != next.storage_identity()
                 || current.width != next.width
                 || current.height != next.height
@@ -906,9 +906,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 1,
                 elapsed_ms: 100,
                 reuse_existing_frame: false,
@@ -940,9 +940,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 2,
                 elapsed_ms: 200,
                 reuse_existing_frame: false,
@@ -1095,9 +1095,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: Some(scene_id),
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &zone_canvases,
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 42,
                 reuse_existing_frame: false,
@@ -1146,9 +1146,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 42,
                 reuse_existing_frame: false,
@@ -1193,9 +1193,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 42,
                 reuse_existing_frame: false,
@@ -1221,9 +1221,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 8,
                 elapsed_ms: 50,
                 reuse_existing_frame: false,
@@ -1268,9 +1268,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 42,
                 reuse_existing_frame: false,
@@ -1296,9 +1296,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 8,
                 elapsed_ms: 50,
                 reuse_existing_frame: false,
@@ -1349,9 +1349,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 7,
                 elapsed_ms: 0,
                 reuse_existing_frame: false,
@@ -1387,9 +1387,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 8,
                 elapsed_ms: 100,
                 reuse_existing_frame: false,
@@ -1426,9 +1426,9 @@ mod tests {
                     screen_capture_active: false,
                 },
                 scene_id: None,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: 9,
                 elapsed_ms: 1_000,
                 reuse_existing_frame: false,

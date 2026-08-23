@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use hypercolor_core::bus::{
-    CanvasFrame, DisplayGroupFrame, DisplayGroupTarget, EventFilter, EventTimestamp, HypercolorBus,
+    CanvasFrame, DisplayZoneFrame, DisplayZoneTarget, EventFilter, EventTimestamp, HypercolorBus,
     INPUT_STATUS_EVENT_KIND, INPUT_STATUS_EVENT_SOURCE, PreviewKind, TimestampedEvent, WatchLane,
     ZonePreviewFrame,
 };
@@ -408,26 +408,26 @@ fn zone_preview_clear_is_visible_after_subscriber_reconnects() {
 }
 
 #[tokio::test]
-async fn group_canvas_receiver_roundtrip() {
+async fn zone_canvas_receiver_roundtrip() {
     let bus = HypercolorBus::new();
     let group_id = ZoneId::new();
-    let mut rx = bus.group_canvas_receiver(group_id);
+    let mut rx = bus.zone_canvas_receiver(group_id);
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
     canvas.set_pixel(1, 0, Rgba::new(0, 0, 255, 255));
 
     let _ = bus
-        .group_canvas_sender(group_id)
-        .send(DisplayGroupFrame::Canvas(CanvasFrame::from_canvas(
+        .zone_canvas_sender(group_id)
+        .send(DisplayZoneFrame::Canvas(CanvasFrame::from_canvas(
             &canvas, 7, 123,
         )));
 
     timeout(Duration::from_secs(1), rx.changed())
         .await
-        .expect("group canvas change should arrive")
-        .expect("group canvas sender should stay connected");
-    let DisplayGroupFrame::Canvas(frame) = rx.borrow().clone() else {
-        panic!("group canvas should publish canvas frames");
+        .expect("zone canvas change should arrive")
+        .expect("zone canvas sender should stay connected");
+    let DisplayZoneFrame::Canvas(frame) = rx.borrow().clone() else {
+        panic!("zone canvas should publish canvas frames");
     };
     assert_eq!(frame.frame_number, 7);
     assert_eq!(frame.timestamp_ms, 123);
@@ -437,86 +437,86 @@ async fn group_canvas_receiver_roundtrip() {
 }
 
 #[tokio::test]
-async fn removing_group_canvas_resets_new_subscribers_to_empty() {
+async fn removing_zone_canvas_resets_new_subscribers_to_empty() {
     let bus = HypercolorBus::new();
     let group_id = ZoneId::new();
     let mut canvas = Canvas::new(1, 1);
     canvas.fill(Rgba::new(12, 34, 56, 255));
     let _ = bus
-        .group_canvas_sender(group_id)
-        .send(DisplayGroupFrame::Canvas(CanvasFrame::from_canvas(
+        .zone_canvas_sender(group_id)
+        .send(DisplayZoneFrame::Canvas(CanvasFrame::from_canvas(
             &canvas, 1, 1,
         )));
 
-    bus.remove_group_canvas(group_id);
+    bus.remove_zone_canvas(group_id);
 
-    let rx = bus.group_canvas_receiver(group_id);
+    let rx = bus.zone_canvas_receiver(group_id);
     let frame = rx.borrow().clone();
     assert_eq!(frame.width(), 0);
     assert_eq!(frame.height(), 0);
 }
 
 #[test]
-fn retain_group_canvases_prunes_stale_streams() {
+fn retain_zone_canvases_prunes_stale_streams() {
     let bus = HypercolorBus::new();
     let keep_id = ZoneId::new();
     let stale_id = ZoneId::new();
     let device_id = DeviceId::new();
 
-    let _keep = bus.group_canvas_sender(keep_id);
-    let _stale = bus.group_canvas_sender(stale_id);
-    bus.upsert_display_group_target(
+    let _keep = bus.zone_canvas_sender(keep_id);
+    let _stale = bus.zone_canvas_sender(stale_id);
+    bus.upsert_display_zone_target(
         keep_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
             finalized: false,
         },
     );
-    bus.upsert_display_group_target(
+    bus.upsert_display_zone_target(
         stale_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
             finalized: false,
         },
     );
-    assert_eq!(bus.group_canvas_stream_count(), 2);
-    assert_eq!(bus.display_group_target_count(), 2);
+    assert_eq!(bus.zone_canvas_stream_count(), 2);
+    assert_eq!(bus.display_zone_target_count(), 2);
 
-    bus.retain_group_canvases(&[keep_id]);
+    bus.retain_zone_canvases(&[keep_id]);
 
-    assert_eq!(bus.group_canvas_stream_count(), 1);
-    assert_eq!(bus.display_group_target_count(), 1);
-    let stale = bus.group_canvas_receiver(stale_id);
+    assert_eq!(bus.zone_canvas_stream_count(), 1);
+    assert_eq!(bus.display_zone_target_count(), 1);
+    let stale = bus.zone_canvas_receiver(stale_id);
     let frame = stale.borrow().clone();
     assert_eq!(frame.width(), 0);
     assert_eq!(frame.height(), 0);
 }
 
 #[test]
-fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
+fn retain_zone_canvases_and_collect_senders_reuses_kept_streams() {
     let bus = HypercolorBus::new();
     let keep_id = ZoneId::new();
     let stale_id = ZoneId::new();
     let device_id = DeviceId::new();
 
-    let keep_sender = bus.group_canvas_sender(keep_id);
-    let _stale_sender = bus.group_canvas_sender(stale_id);
-    bus.upsert_display_group_target(
+    let keep_sender = bus.zone_canvas_sender(keep_id);
+    let _stale_sender = bus.zone_canvas_sender(stale_id);
+    bus.upsert_display_zone_target(
         keep_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
             finalized: false,
         },
     );
-    bus.upsert_display_group_target(
+    bus.upsert_display_zone_target(
         stale_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
@@ -524,10 +524,10 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
         },
     );
 
-    let senders = bus.retain_group_canvases_and_collect_senders(&[keep_id]);
+    let senders = bus.retain_zone_canvases_and_collect_senders(&[keep_id]);
 
-    assert_eq!(bus.group_canvas_stream_count(), 1);
-    assert_eq!(bus.display_group_target_count(), 1);
+    assert_eq!(bus.zone_canvas_stream_count(), 1);
+    assert_eq!(bus.display_zone_target_count(), 1);
     assert_eq!(senders.len(), 1);
     assert_eq!(senders[0].0, keep_id);
     assert_eq!(senders[0].1.borrow().width(), 0);
@@ -535,18 +535,18 @@ fn retain_group_canvases_and_collect_senders_reuses_kept_streams() {
 }
 
 #[test]
-fn display_group_targets_roundtrip_and_revision() {
+fn display_zone_targets_roundtrip_and_revision() {
     let bus = HypercolorBus::new();
     let group_id = ZoneId::new();
     let device_id = DeviceId::new();
 
-    let (initial_revision, initial_targets) = bus.display_group_targets_snapshot();
+    let (initial_revision, initial_targets) = bus.display_zone_targets_snapshot();
     assert_eq!(initial_revision, 0);
     assert!(initial_targets.is_empty());
 
-    bus.upsert_display_group_target(
+    bus.upsert_display_zone_target(
         group_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Screen,
             opacity: 0.6,
@@ -554,12 +554,12 @@ fn display_group_targets_roundtrip_and_revision() {
         },
     );
 
-    let (revision, targets) = bus.display_group_targets_snapshot();
+    let (revision, targets) = bus.display_zone_targets_snapshot();
     assert_eq!(revision, 1);
     assert_eq!(targets.len(), 1);
     assert_eq!(
         targets.get(&group_id),
-        Some(&DisplayGroupTarget {
+        Some(&DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Screen,
             opacity: 0.6,
@@ -569,36 +569,36 @@ fn display_group_targets_roundtrip_and_revision() {
 }
 
 #[test]
-fn retain_display_group_targets_prunes_stale_routes() {
+fn retain_display_zone_targets_prunes_stale_routes() {
     let bus = HypercolorBus::new();
     let keep_id = ZoneId::new();
     let stale_id = ZoneId::new();
     let device_id = DeviceId::new();
 
-    bus.upsert_display_group_target(
+    bus.upsert_display_zone_target(
         keep_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
             finalized: false,
         },
     );
-    bus.upsert_display_group_target(
+    bus.upsert_display_zone_target(
         stale_id,
-        DisplayGroupTarget {
+        DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
             finalized: false,
         },
     );
-    assert_eq!(bus.display_group_target_count(), 2);
+    assert_eq!(bus.display_zone_target_count(), 2);
 
-    bus.retain_display_group_targets(&[keep_id]);
+    bus.retain_display_zone_targets(&[keep_id]);
 
-    let (_, targets) = bus.display_group_targets_snapshot();
-    assert_eq!(bus.display_group_target_count(), 1);
+    let (_, targets) = bus.display_zone_targets_snapshot();
+    assert_eq!(bus.display_zone_target_count(), 1);
     assert!(targets.contains_key(&keep_id));
     assert!(!targets.contains_key(&stale_id));
 }

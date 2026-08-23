@@ -12,7 +12,7 @@ use super::frame_helpers::{
 };
 use super::group_state::{enabled_layer_count, group_is_active, group_publishes_direct_canvas};
 use super::model::{
-    GroupFrameContext, GroupFrameRequirements, PendingGroupCanvasFrame, RenderSceneContext,
+    GroupFrameContext, GroupFrameRequirements, PendingDisplayZoneFrame, RenderSceneContext,
     RenderedGroupSet,
 };
 use super::projection::append_projection_composition_layers_for_group;
@@ -54,11 +54,11 @@ impl ZoneRuntime {
         context: GroupFrameContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
         full_frame_copy: &mut FullFrameCopyMetrics,
-    ) -> Result<Option<PendingGroupCanvasFrame>> {
+    ) -> Result<Option<PendingDisplayZoneFrame>> {
         let display_target = group
             .display_target
             .clone()
-            .expect("direct display group should carry a display target");
+            .expect("direct display zone should carry a display target");
 
         let empty_direct_shell = enabled_layer_count(group) == 0;
         let frame = if empty_direct_shell {
@@ -94,7 +94,7 @@ impl ZoneRuntime {
             return Ok(None);
         };
         record_producer_frame(&frame);
-        Ok(Some(PendingGroupCanvasFrame {
+        Ok(Some(PendingDisplayZoneFrame {
             frame,
             display_target,
             empty_direct_shell,
@@ -220,7 +220,7 @@ impl ZoneRuntime {
         Ok(projected_scene)
     }
 
-    pub(super) fn render_display_group_frames(
+    pub(super) fn render_display_zone_frames(
         &mut self,
         context: RenderSceneContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
@@ -240,7 +240,7 @@ impl ZoneRuntime {
             if let Some(retained) = self.reuse_retained_direct_group_frame(
                 group,
                 context.elapsed_ms,
-                context.display_group_target_fps,
+                context.display_zone_target_fps,
                 context.dependency_key,
             ) {
                 let render_start = Instant::now();

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use hypercolor_core::bus::{DisplayGroupOutputRoute, DisplayGroupViewport};
+use hypercolor_core::bus::{DisplayZoneOutputRoute, DisplayZoneViewport};
 use hypercolor_core::scene::ScenePlanSnapshot;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
@@ -53,9 +53,9 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub resolved_zones_revision: u64,
     pub zone_layout_preview_generation: u64,
     pub active_render_group_count: u32,
-    pub active_display_group_target_fps: HashMap<ZoneId, u32>,
-    pub active_display_group_output_routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
-    pub active_display_group_descriptors: HashMap<ZoneId, DisplayDescriptor>,
+    pub active_display_zone_target_fps: HashMap<ZoneId, u32>,
+    pub active_display_zone_output_routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
+    pub active_display_zone_descriptors: HashMap<ZoneId, DisplayDescriptor>,
     pub unassigned_behavior: UnassignedBehavior,
     pub device_registry_generation: u64,
 }
@@ -112,10 +112,10 @@ pub(crate) struct RenderLoopSnapshot {
 }
 
 #[derive(Debug, Clone, Default)]
-struct CachedDisplayGroupTargetMetadata {
+struct CachedDisplayZoneTargetMetadata {
     dependency_key: SceneDependencyKey,
     target_fps: HashMap<ZoneId, u32>,
-    output_routes: HashMap<ZoneId, DisplayGroupOutputRoute>,
+    output_routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -127,38 +127,38 @@ struct CachedEffectDemand {
 
 #[derive(Debug, Default)]
 pub(crate) struct SceneSnapshotCache {
-    cached_display_group_target_metadata: Option<CachedDisplayGroupTargetMetadata>,
+    cached_display_zone_target_metadata: Option<CachedDisplayZoneTargetMetadata>,
     cached_effect_demand: Option<CachedEffectDemand>,
 }
 
 impl SceneSnapshotCache {
     pub const fn new() -> Self {
         Self {
-            cached_display_group_target_metadata: None,
+            cached_display_zone_target_metadata: None,
             cached_effect_demand: None,
         }
     }
 
-    pub(crate) fn cached_display_group_target_metadata(
+    pub(crate) fn cached_display_zone_target_metadata(
         &self,
         dependency_key: SceneDependencyKey,
     ) -> Option<(
         HashMap<ZoneId, u32>,
-        HashMap<ZoneId, DisplayGroupOutputRoute>,
+        HashMap<ZoneId, DisplayZoneOutputRoute>,
     )> {
-        self.cached_display_group_target_metadata
+        self.cached_display_zone_target_metadata
             .as_ref()
             .filter(|cache| cache.dependency_key == dependency_key)
             .map(|cache| (cache.target_fps.clone(), cache.output_routes.clone()))
     }
 
-    pub(crate) fn cache_display_group_target_metadata(
+    pub(crate) fn cache_display_zone_target_metadata(
         &mut self,
         dependency_key: SceneDependencyKey,
         target_fps: &HashMap<ZoneId, u32>,
-        output_routes: &HashMap<ZoneId, DisplayGroupOutputRoute>,
+        output_routes: &HashMap<ZoneId, DisplayZoneOutputRoute>,
     ) {
-        self.cached_display_group_target_metadata = Some(CachedDisplayGroupTargetMetadata {
+        self.cached_display_zone_target_metadata = Some(CachedDisplayZoneTargetMetadata {
             dependency_key,
             target_fps: target_fps.clone(),
             output_routes: output_routes.clone(),
@@ -276,8 +276,8 @@ async fn snapshot_scene_runtime(
     let active_scene_name = plan.active_scene_name.clone();
     let unassigned_behavior = plan.unassigned_behavior.clone();
     let device_registry_generation = state.device_registry.generation();
-    let (active_display_group_target_fps, active_display_group_output_routes) =
-        snapshot_display_group_target_metadata(
+    let (active_display_zone_target_fps, active_display_zone_output_routes) =
+        snapshot_display_zone_target_metadata(
             &state.device_registry,
             scene_snapshot_cache,
             resolved_zones_revision,
@@ -285,9 +285,9 @@ async fn snapshot_scene_runtime(
             state.face_fps_cap,
         )
         .await;
-    let active_display_group_descriptors = display_descriptors_for_groups(
-        &active_display_group_target_fps,
-        &active_display_group_output_routes,
+    let active_display_zone_descriptors = display_descriptors_for_groups(
+        &active_display_zone_target_fps,
+        &active_display_zone_output_routes,
     );
     let active_render_group_count = u32::try_from(
         resolved_zones
@@ -313,9 +313,9 @@ async fn snapshot_scene_runtime(
         resolved_zones_revision,
         zone_layout_preview_generation,
         active_render_group_count,
-        active_display_group_target_fps,
-        active_display_group_output_routes,
-        active_display_group_descriptors,
+        active_display_zone_target_fps,
+        active_display_zone_output_routes,
+        active_display_zone_descriptors,
         unassigned_behavior,
         device_registry_generation,
     }
@@ -392,7 +392,7 @@ fn unassigned_behavior_generation(unassigned_behavior: &UnassignedBehavior) -> u
     }
 }
 
-pub(super) async fn snapshot_display_group_target_metadata(
+pub(super) async fn snapshot_display_zone_target_metadata(
     device_registry: &hypercolor_core::device::DeviceRegistry,
     scene_snapshot_cache: &mut SceneSnapshotCache,
     groups_revision: u64,
@@ -400,11 +400,10 @@ pub(super) async fn snapshot_display_group_target_metadata(
     face_fps_cap: u32,
 ) -> (
     HashMap<ZoneId, u32>,
-    HashMap<ZoneId, DisplayGroupOutputRoute>,
+    HashMap<ZoneId, DisplayZoneOutputRoute>,
 ) {
     let dependency_key = SceneDependencyKey::new(groups_revision, device_registry.generation());
-    if let Some(cached) = scene_snapshot_cache.cached_display_group_target_metadata(dependency_key)
-    {
+    if let Some(cached) = scene_snapshot_cache.cached_display_zone_target_metadata(dependency_key) {
         return cached;
     }
 
@@ -418,14 +417,14 @@ pub(super) async fn snapshot_display_group_target_metadata(
                 tracked.info.id,
                 (
                     tracked.info.capabilities.max_fps,
-                    display_group_output_route_for_device(
+                    display_zone_output_route_for_device(
                         &tracked.info,
                         tracked.user_settings.brightness,
                     ),
                 ),
             )
         })
-        .collect::<HashMap<DeviceId, (u32, Option<DisplayGroupOutputRoute>)>>();
+        .collect::<HashMap<DeviceId, (u32, Option<DisplayZoneOutputRoute>)>>();
 
     let target_fps = groups
         .iter()
@@ -449,7 +448,7 @@ pub(super) async fn snapshot_display_group_target_metadata(
             Some((group.id, route))
         })
         .collect();
-    scene_snapshot_cache.cache_display_group_target_metadata(
+    scene_snapshot_cache.cache_display_zone_target_metadata(
         dependency_key,
         &target_fps,
         &output_routes,
@@ -457,10 +456,10 @@ pub(super) async fn snapshot_display_group_target_metadata(
     (target_fps, output_routes)
 }
 
-fn display_group_output_route_for_device(
+fn display_zone_output_route_for_device(
     info: &DeviceInfo,
     brightness: f32,
-) -> Option<DisplayGroupOutputRoute> {
+) -> Option<DisplayZoneOutputRoute> {
     let resolution_geometry = info
         .capabilities
         .display_resolution
@@ -468,14 +467,14 @@ fn display_group_output_route_for_device(
     let (width, height, circular, frame_format) =
         display_target_geometry_for_device(&info.segments).or(resolution_geometry)?;
 
-    Some(DisplayGroupOutputRoute {
+    Some(DisplayZoneOutputRoute {
         device_id: info.id,
         width,
         height,
         circular,
         brightness: brightness.clamp(0.0, 1.0),
         frame_format,
-        viewport: default_display_group_viewport(),
+        viewport: default_display_zone_viewport(),
     })
 }
 
@@ -503,7 +502,7 @@ fn display_target_geometry_for_device(
 /// face authors can avoid one-pixel colored hairlines.
 pub(super) fn display_descriptors_for_groups(
     target_fps: &HashMap<ZoneId, u32>,
-    routes: &HashMap<ZoneId, DisplayGroupOutputRoute>,
+    routes: &HashMap<ZoneId, DisplayZoneOutputRoute>,
 ) -> HashMap<ZoneId, DisplayDescriptor> {
     routes
         .iter()
@@ -531,8 +530,8 @@ pub(super) fn display_descriptors_for_groups(
         .collect()
 }
 
-fn default_display_group_viewport() -> DisplayGroupViewport {
-    DisplayGroupViewport {
+fn default_display_zone_viewport() -> DisplayZoneViewport {
+    DisplayZoneViewport {
         position: NormalizedPosition::new(0.5, 0.5),
         size: NormalizedPosition::new(1.0, 1.0),
         rotation: 0.0,
@@ -639,7 +638,7 @@ mod tests {
     use uuid::Uuid;
 
     use hypercolor_core::asset::AssetLibrary;
-    use hypercolor_core::bus::{DisplayGroupOutputRoute, HypercolorBus};
+    use hypercolor_core::bus::{DisplayZoneOutputRoute, HypercolorBus};
     use hypercolor_core::device::{BackendManager, DeviceRegistry};
     use hypercolor_core::effect::{EffectEntry, EffectRegistry};
     use hypercolor_core::engine::{FpsTier, RenderLoop};
@@ -662,7 +661,7 @@ mod tests {
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use hypercolor_types::viewport::ViewportRect;
 
-    use super::{default_display_group_viewport, display_descriptors_for_groups};
+    use super::{default_display_zone_viewport, display_descriptors_for_groups};
     use crate::display_output::DISPLAY_FACE_DEFAULT_FPS;
     use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
@@ -675,13 +674,13 @@ mod tests {
     use super::{
         EffectDemand, FrameSceneSnapshot, SceneDependencyKey, SceneRuntimeSnapshot,
         SceneSnapshotCache, build_frame_scene_snapshot, current_effect_scene_snapshot,
-        refresh_effect_scene_snapshot, render_loop_snapshot,
-        snapshot_display_group_target_metadata, snapshot_scene_runtime,
+        refresh_effect_scene_snapshot, render_loop_snapshot, snapshot_display_zone_target_metadata,
+        snapshot_scene_runtime,
     };
     use crate::render_thread::scene_state::RenderSceneState;
 
     #[test]
-    fn scene_snapshot_cache_caches_display_group_target_metadata_by_dependency_key() {
+    fn scene_snapshot_cache_caches_display_zone_target_metadata_by_dependency_key() {
         let mut scheduler = SceneSnapshotCache::new();
         let group_id = ZoneId::new();
         let target_fps = std::collections::HashMap::from([(group_id, 30)]);
@@ -690,24 +689,24 @@ mod tests {
 
         assert!(
             scheduler
-                .cached_display_group_target_metadata(dependency_key)
+                .cached_display_zone_target_metadata(dependency_key)
                 .is_none()
         );
 
-        scheduler.cache_display_group_target_metadata(dependency_key, &target_fps, &output_routes);
+        scheduler.cache_display_zone_target_metadata(dependency_key, &target_fps, &output_routes);
 
         assert_eq!(
-            scheduler.cached_display_group_target_metadata(dependency_key),
+            scheduler.cached_display_zone_target_metadata(dependency_key),
             Some((target_fps.clone(), output_routes.clone()))
         );
         assert!(
             scheduler
-                .cached_display_group_target_metadata(SceneDependencyKey::new(2, 7))
+                .cached_display_zone_target_metadata(SceneDependencyKey::new(2, 7))
                 .is_none()
         );
         assert!(
             scheduler
-                .cached_display_group_target_metadata(SceneDependencyKey::new(1, 8))
+                .cached_display_zone_target_metadata(SceneDependencyKey::new(1, 8))
                 .is_none()
         );
     }
@@ -969,7 +968,7 @@ mod tests {
         let group_id = group.id;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
-        let (target_fps, output_routes) = snapshot_display_group_target_metadata(
+        let (target_fps, output_routes) = snapshot_display_zone_target_metadata(
             &state.device_registry,
             &mut scene_snapshot_cache,
             11,
@@ -981,7 +980,7 @@ mod tests {
         assert_eq!(target_fps.get(&group_id), Some(&30));
         let route = output_routes
             .get(&group_id)
-            .expect("display group should get a fallback output route");
+            .expect("display zone should get a fallback output route");
         assert_eq!(route.device_id, device_id);
         assert_eq!(route.width, 320);
         assert_eq!(route.height, 320);
@@ -993,14 +992,14 @@ mod tests {
     #[test]
     fn display_descriptors_map_routes_to_shared_derivation() {
         let zone_id = ZoneId::new();
-        let route = DisplayGroupOutputRoute {
+        let route = DisplayZoneOutputRoute {
             device_id: DeviceId::new(),
             width: 960,
             height: 160,
             circular: false,
             brightness: 1.0,
             frame_format: DisplayFrameFormat::Rgb,
-            viewport: default_display_group_viewport(),
+            viewport: default_display_zone_viewport(),
         };
         let mut routes = HashMap::new();
         routes.insert(zone_id, route);
@@ -1024,14 +1023,14 @@ mod tests {
     #[test]
     fn display_descriptors_mark_jpeg_routes_as_chroma_subsampled() {
         let zone_id = ZoneId::new();
-        let route = DisplayGroupOutputRoute {
+        let route = DisplayZoneOutputRoute {
             device_id: DeviceId::new(),
             width: 480,
             height: 480,
             circular: true,
             brightness: 1.0,
             frame_format: DisplayFrameFormat::Jpeg,
-            viewport: default_display_group_viewport(),
+            viewport: default_display_zone_viewport(),
         };
         let mut routes = HashMap::new();
         routes.insert(zone_id, route);
@@ -1122,9 +1121,9 @@ mod tests {
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1178,9 +1177,9 @@ mod tests {
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1212,9 +1211,9 @@ mod tests {
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1249,9 +1248,9 @@ mod tests {
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };
@@ -1279,9 +1278,9 @@ mod tests {
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
             active_render_group_count: 1,
-            active_display_group_target_fps: HashMap::new(),
-            active_display_group_output_routes: HashMap::new(),
-            active_display_group_descriptors: HashMap::new(),
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
             unassigned_behavior: UnassignedBehavior::default(),
             device_registry_generation: 0,
         };

@@ -631,7 +631,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
 }
 
 #[tokio::test]
-async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cleanup() {
+async fn deleting_simulated_display_prunes_scene_display_zones_and_persists_cleanup() {
     let (state, _tempdir) = isolated_state();
     let app = api::build_router(Arc::clone(&state), None);
     let created = body_json(

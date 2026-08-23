@@ -1108,13 +1108,13 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
     assert_eq!(clear_snapshot.default_scene_groups.len(), 2);
-    let display_group = clear_snapshot
+    let display_zone = clear_snapshot
         .default_scene_groups
         .iter()
         .find(|group| group.role == hypercolor_types::scene::ZoneRole::Display)
         .expect("display screen surface should survive face clear");
-    assert_eq!(display_group.effect_ids().next(), None);
-    assert!(display_group.layers.is_empty());
+    assert_eq!(display_zone.effect_ids().next(), None);
+    assert!(display_zone.layers.is_empty());
 
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
