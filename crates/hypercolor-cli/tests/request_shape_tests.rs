@@ -1666,7 +1666,8 @@ async fn drivers_list_json_output_preserves_the_daemon_payload() -> Result<()> {
             "config_key": "wled",
             "protocols": [],
             "control_surface_id": "driver:wled"
-        }]
+        }],
+        "total": 1
     });
     let expected = payload.clone();
     let router = Router::new().route(

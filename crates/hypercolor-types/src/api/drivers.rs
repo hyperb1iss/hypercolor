@@ -2,15 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::envelope::ListResponse;
 use crate::config::DriverConfigEntry;
 use crate::device::{DriverModuleDescriptor, DriverPresentation, DriverProtocolDescriptor};
 
 /// Response for `GET /api/v1/drivers`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct DriverListResponse {
-    pub items: Vec<DriverSummary>,
-}
+pub type DriverListResponse = ListResponse<DriverSummary>;
 
 /// One registered driver module.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

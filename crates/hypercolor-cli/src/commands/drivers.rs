@@ -88,7 +88,7 @@ pub async fn execute(args: &DriversArgs, client: &DaemonClient, ctx: &OutputCont
 }
 
 async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
-    let response: DriverListResponse = client.get("/drivers").await?;
+    let response: DriverListResponse = client.get_list("/drivers").await?;
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {

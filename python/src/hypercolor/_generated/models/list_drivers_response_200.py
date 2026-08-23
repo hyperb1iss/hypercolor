@@ -7,7 +7,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
-    from ..models.driver_list_response import DriverListResponse
+    from ..models.driver_summary_list_response import DriverSummaryListResponse
     from ..models.response_meta import ResponseMeta
 
 
@@ -18,11 +18,15 @@ T = TypeVar("T", bound="ListDriversResponse200")
 class ListDriversResponse200:
     """
     Attributes:
-        data (DriverListResponse): Response for `GET /api/v1/drivers`.
+        data (DriverSummaryListResponse): Canonical list payload: honest pagination or none at all.
+
+            `page: None` means the response is complete — no fabricated
+            `limit`/`has_more` block pretending a paging contract that doesn't
+            exist. `page: Some` means the endpoint genuinely pages.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
-    data: DriverListResponse
+    data: DriverSummaryListResponse
     meta: ResponseMeta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -44,11 +48,11 @@ class ListDriversResponse200:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.driver_list_response import DriverListResponse
+        from ..models.driver_summary_list_response import DriverSummaryListResponse
         from ..models.response_meta import ResponseMeta
 
         d = dict(src_dict)
-        data = DriverListResponse.from_dict(d.pop("data"))
+        data = DriverSummaryListResponse.from_dict(d.pop("data"))
 
         meta = ResponseMeta.from_dict(d.pop("meta"))
 

@@ -21,7 +21,7 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
 
     let descriptors = network::module_descriptors(state.driver_registry().as_ref());
 
-    let items = descriptors
+    let items: Vec<DriverSummary> = descriptors
         .into_iter()
         .map(|descriptor| {
             let enabled = network::module_enabled(&config, &descriptor);
@@ -56,7 +56,12 @@ pub async fn list_drivers(State(state): State<Arc<AppState>>) -> Response {
         })
         .collect();
 
-    envelope::ok(DriverListResponse { items })
+    let total = u64::try_from(items.len()).expect("driver count fits in u64");
+    envelope::ok(DriverListResponse {
+        items,
+        total,
+        page: None,
+    })
 }
 
 /// `GET /api/v1/drivers/{id}/config` — Get one driver module's config entry.
