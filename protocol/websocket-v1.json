@@ -144,8 +144,6 @@
     "effect_control_changed",
     "effect_degraded",
     "effect_error",
-    "effect_layer_added",
-    "effect_layer_removed",
     "effect_registry_updated",
     "effect_started",
     "effect_stopped",
@@ -254,15 +252,15 @@
       "schema_version": 1,
       "event": "input_event_received",
       "required_fields": [
-        "event"
+        "event",
+        "at_ms",
+        "seq",
+        "repeat_count"
       ],
       "optional_fields": {
-        "at_ms": 0,
-        "seq": 0,
-        "physical_code": null,
-        "repeat_count": 1
+        "physical_code": null
       },
-      "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+      "description": "Canonical captured input edge with exact timing, ordering, and repeat multiplicity.",
       "topic": "input_events"
     },
     "input_source_status_changed_v1": {

@@ -74,16 +74,18 @@ JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
             {
                 "schema_version": 1,
                 "event": "input_event_received",
-                "required_fields": ("event",),
+                "required_fields": (
+                    "event",
+                    "at_ms",
+                    "seq",
+                    "repeat_count",
+                ),
                 "optional_fields": MappingProxyType(
                     {
-                        "at_ms": 0,
-                        "seq": 0,
                         "physical_code": None,
-                        "repeat_count": 1,
                     }
                 ),
-                "description": "Canonical captured input edge. Missing timing and metadata fields decode with their listed defaults for compatibility with the prior event-only payload.",
+                "description": "Canonical captured input edge with exact timing, ordering, and repeat multiplicity.",
                 "topic": "input_events",
             }
         ),
