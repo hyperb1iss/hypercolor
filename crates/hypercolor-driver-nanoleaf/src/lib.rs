@@ -933,14 +933,12 @@ mod tests {
 
     #[test]
     fn pairing_response_accepts_only_vendor_token_key() {
-        let canonical =
-            serde_json::from_str::<NanoleafPairResponse>(r#"{"auth_token":"token"}"#)
-                .expect("vendor pairing response should decode");
+        let canonical = serde_json::from_str::<NanoleafPairResponse>(r#"{"auth_token":"token"}"#)
+            .expect("vendor pairing response should decode");
         assert_eq!(canonical.auth_token.as_deref(), Some("token"));
 
-        let speculative =
-            serde_json::from_str::<NanoleafPairResponse>(r#"{"authToken":"token"}"#)
-                .expect("unknown pairing fields remain ignorable");
+        let speculative = serde_json::from_str::<NanoleafPairResponse>(r#"{"authToken":"token"}"#)
+            .expect("unknown pairing fields remain ignorable");
         assert_eq!(speculative.auth_token, None);
     }
 }
