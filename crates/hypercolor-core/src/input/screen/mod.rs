@@ -467,8 +467,8 @@ pub struct CaptureConfig {
     /// XDG portal restore token from a previous session, if any.
     pub restore_token: Option<String>,
 
-    /// Persisted capture source. Windows accepts `auto`, stable monitor ids,
-    /// and legacy numeric indices; the XDG portal owns selection on Linux.
+    /// Persisted capture source. Windows accepts `auto` or a stable monitor
+    /// id; the XDG portal owns selection on Linux.
     pub source: String,
 }
 
@@ -878,7 +878,7 @@ pub fn fit_within(width: u32, height: u32, max_width: u32, max_height: u32) -> (
 /// One display output the capture backend can address directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenMonitor {
-    /// Legacy zero-based enumeration index for display ordering.
+    /// Zero-based enumeration index for display ordering.
     pub index: usize,
     /// Stable capture source id suitable for persistence.
     pub id: String,
@@ -924,9 +924,8 @@ pub fn available_monitors() -> Vec<ScreenMonitor> {
 ///
 /// `capture.source` is a free-form string shared across backends. The XDG
 /// portal picks its own source and leaves the value at "auto", so this only
-/// matters on Windows, which addresses display outputs directly. Stable ids
-/// survive adapter/output enumeration reorder; numeric values remain accepted
-/// for configuration compatibility.
+/// matters on Windows, which addresses display outputs directly. Every value
+/// except `auto` is a stable identity that survives enumeration reorder.
 #[must_use]
 pub fn monitor_selector_from_source(source: &str) -> hypercolor_windows_capture::MonitorSelector {
     hypercolor_windows_capture::MonitorSelector::parse(source)

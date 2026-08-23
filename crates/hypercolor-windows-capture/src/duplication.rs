@@ -1004,8 +1004,8 @@ impl DesktopDuplicator {
     /// # Errors
     ///
     /// Returns [`CaptureError::MonitorNotFound`] when no outputs are attached
-    /// or a legacy index is out of range, [`CaptureError::SourceNotFound`] when
-    /// a stable output disappeared, and the same platform errors as [`Self::new`].
+    /// or an index is out of range, [`CaptureError::SourceNotFound`] when a
+    /// stable output disappeared, and the same platform errors as [`Self::new`].
     pub fn open(selector: MonitorSelector, requested_extent: CaptureExtent) -> CaptureResult<Self> {
         Self::open_with_resource_admission(
             selector,

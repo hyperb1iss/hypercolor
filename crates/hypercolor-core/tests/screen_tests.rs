@@ -1250,7 +1250,7 @@ fn monitor_source_strings_are_never_reinterpreted_as_indices() {
     }
 }
 
-/// Auto means the primary display while non-numeric values remain stable ids.
+/// Auto means the primary display while every other value is a stable id.
 #[test]
 fn monitor_sources_preserve_auto_and_stable_ids() {
     use hypercolor_windows_capture::MonitorSelector;
