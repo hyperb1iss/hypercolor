@@ -23,6 +23,25 @@ fn daemon_sources() -> Vec<(PathBuf, String)> {
     sources
 }
 
+/// Every daemon source including the `tests.rs` modules the main walk skips.
+fn daemon_sources_with_tests() -> Vec<(PathBuf, String)> {
+    let mut sources = Vec::new();
+    let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).expect("daemon source directory should read") {
+            let path = entry.expect("daemon source entry should read").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = std::fs::read_to_string(&path)
+                    .expect("daemon Rust source should read as UTF-8");
+                sources.push((path, source));
+            }
+        }
+    }
+    sources
+}
+
 /// Every Rust and TypeScript source in a sibling crate or workspace directory.
 fn sibling_sources(relative: &str) -> Vec<(PathBuf, String)> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -444,13 +463,24 @@ fn transports_use_the_scene_domain_mutation_authority() {
     );
 }
 
+/// The one domain test module allowed to drive transport handlers, and why.
+///
+/// The effect identity tests prove the migration holds while REST
+/// handlers mutate the scene concurrently, which needs the real adapters
+/// and the crate-private test barriers at once. Every other domain test
+/// module must exercise domain services directly.
+const DOMAIN_TRANSPORT_TEST_EXEMPT: [&str; 1] = ["domain/effect/identity/tests.rs"];
+
 #[test]
 fn domain_modules_do_not_depend_on_transport_modules() {
-    let offenders = daemon_sources()
+    let offenders = daemon_sources_with_tests()
         .into_iter()
         .filter(|(path, _)| {
             path.components()
                 .any(|component| component.as_os_str() == "domain")
+                && !DOMAIN_TRANSPORT_TEST_EXEMPT
+                    .iter()
+                    .any(|exempt| path.ends_with(exempt))
         })
         .filter_map(|(path, source)| {
             ["crate::api::", "crate::mcp::"]
