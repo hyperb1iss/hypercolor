@@ -140,13 +140,18 @@ encoders conform to it (round-trip tested in `daemon/src/api/ws/tests.rs`), and
 both the web UI and the TUI decode with it. Never hand-roll those frame layouts.
 
 `hypercolor-types::api` is the single definition of the REST request/response
-contracts for the devices, scenes, zones, and effects domains (plus the shared
-`ListResponse<T>` envelope and its optional `PageInfo`); the daemon serializes
-these types and both UIs deserialize them.
-Diagnostic telemetry (system status internals, metrics) deliberately stays
-daemon-local; clients consume tolerant subsets. When adding or changing an
-endpoint in a shared domain, change the type in `hypercolor-types::api`, never
-a hand-mirrored copy.
+contracts across seventeen domain modules (assets, attachments, capture,
+config, controls, devices, diagnose, displays, drivers, effects, layouts,
+library, output, scene, scenes, simulators, system) plus the shared
+`envelope` module that owns `ApiResponse`, `ListResponse`, `PageInfo`, and
+`ApiErrorBody`. The daemon serializes these types; the web UI, the TUI, the
+CLI, the tray, and the desktop app shell deserialize them, and the Python
+client is generated from the same schemas. Every list route answers
+`ListResponse { items, total, page }`, where `page` is present only on the
+routes that genuinely page. Diagnostic telemetry (system status internals,
+metrics) deliberately stays daemon-local; clients consume tolerant subsets.
+When adding or changing an endpoint in a shared domain, change the type in
+`hypercolor-types::api`, never a hand-mirrored copy.
 
 ## Architecture
 

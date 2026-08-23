@@ -53,6 +53,34 @@ The `meta` fields are fixed by the daemon:
 | `request_id` | string `req_<uuid-v7>` | A `req_` prefix plus a time-ordered UUID v7. Quote it when filing a bug or correlating logs. |
 | `timestamp` | ISO 8601 UTC | Millisecond precision with a trailing `Z`. |
 
+### List responses
+
+Every route that returns a collection puts the same shape under `data`:
+`items`, a `total` count of everything that matched, and an optional
+`page` block.
+
+```json
+{
+  "data": {
+    "items": [],
+    "total": 0,
+    "page": {
+      "offset": 0,
+      "limit": 50,
+      "has_more": false
+    }
+  }
+}
+```
+
+`page` is present only where the route genuinely pages, so its absence
+means the response is complete rather than implying a page size nobody
+enforces. Three routes page today: `GET /api/v1/devices`,
+`GET /api/v1/layouts`, and `GET /api/v1/attachments/templates`. Each
+defaults `limit` to 50 and rejects a `limit` above 200 with
+`validation_error`. Read every item by following `page.has_more`,
+advancing `offset` by the number of items the last page returned.
+
 Error bodies replace `data` with `error`:
 
 ```json
@@ -78,6 +106,7 @@ The `code` is a `snake_case` string that maps to an HTTP status. The full set:
 | `forbidden` | 403 |
 | `not_found` | 404 |
 | `conflict` | 409 |
+| `control_bound` | 409 |
 | `precondition_failed` | 412 |
 | `payload_too_large` | 413 |
 | `unsupported_media_type` | 415 |
@@ -85,6 +114,7 @@ The `code` is a `snake_case` string that maps to an HTTP status. The full set:
 | `rate_limited` | 429 |
 | `internal_error` | 500 |
 | `device_unavailable` | 503 |
+| `service_unavailable` | 503 |
 
 {% <callout type="info"> %}
 `validation_error` is **422 Unprocessable Entity**, not 400. A well-formed
@@ -232,8 +262,14 @@ of your output, not a microphone, if you want lights to follow what's playing.
 {{< img path="img/ui/effects.webp" alt="Browsing the effect catalog in the web UI" />}}
 
 {% <api_endpoint method="GET" path="/api/v1/effects"> %}
-List the effect catalog. Returns `data.items` (effect summaries) plus
-`data.pagination`. Supports the standard `offset` / `limit` query params.
+List the effect catalog. Returns `data.items` (effect summaries) and
+`data.total`.
+
+Filter with `category`, `source`, `audio_reactive`, `screen_reactive`,
+`input_reactive`, and `q` (a case-insensitive substring match over name,
+description, author, and tags). Expand each summary with
+`include=controls,presets`. The catalog route answers complete, so it
+carries no `data.page` block.
 
 **Response:**
 
@@ -254,12 +290,7 @@ List the effect catalog. Returns `data.items` (effect summaries) plus
         "audio_reactive": false
       }
     ],
-    "pagination": {
-      "offset": 0,
-      "limit": 50,
-      "total": 59,
-      "has_more": false
-    }
+    "total": 59
   },
   "meta": {
     "api_version": "1.0",
@@ -270,7 +301,7 @@ List the effect catalog. Returns `data.items` (effect summaries) plus
 ```
 
 The catalog combines around a dozen native Rust built-ins with the HTML/GLSL
-effects discovered on disk. Don't hardcode the count; read `pagination.total`.
+effects discovered on disk. Don't hardcode the count; read `data.total`.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/effects/{id}"> %}
@@ -338,8 +369,11 @@ effects do not carry layout associations.
 {{< img path="img/ui/ui-devices.webp" alt="The devices panel in the web UI" />}}
 
 {% <api_endpoint method="GET" path="/api/v1/devices"> %}
-List discovered and connected devices. Returns `data.items` plus
-`data.pagination`. Add `?include=attachments` to embed each device's attachment
+List discovered and connected devices. Returns `data.items`, `data.total`,
+and a `data.page` block, because this route genuinely pages: `limit`
+defaults to 50 and anything above 200 is rejected. Follow `page.has_more`,
+advancing `offset` by the number of items you received, until it reads
+`false`. Add `?include=attachments` to embed each device's attachment
 profile in the same response.
 
 **Response:**
@@ -358,10 +392,10 @@ profile in the same response.
         "segments": []
       }
     ],
-    "pagination": {
+    "total": 1,
+    "page": {
       "offset": 0,
       "limit": 50,
-      "total": 1,
       "has_more": false
     }
   },

@@ -11,7 +11,7 @@ The catalog is whatever the daemon currently has loaded. Browse it live with `hy
 Two effect families ship out of the box. Eleven native effects are compiled into the daemon (`crates/hypercolor-core/src/effect/builtin/`), and forty-six SDK effects build from `sdk/src/effects/` into self-contained HTML, alongside seven display faces from `sdk/src/faces/`. Those numbers move as the library grows, so the catalog is the source of truth, not a count pinned in a doc. Query the daemon to see what you actually have.
 
 {% <callout type="info"> %}
-Effect counts drift as the library grows and as you install your own work. Never hardcode a total; ask the daemon. `hypercolor effects list -o json` returns the full set with a `pagination` block, and the web UI shows the live count beside the search box.
+Effect counts drift as the library grows and as you install your own work. Never hardcode a total; ask the daemon. `hypercolor effects list -o json` returns the full set with a `total`, and the web UI shows the live count beside the search box.
 {% </callout> %}
 
 ## Browse from the CLI
@@ -53,7 +53,7 @@ After installing a new effect into the daemon's library directory, run `hypercol
 `GET /api/v1/effects` returns the catalog as a list of effect summaries wrapped in the standard `{ data, meta }` envelope.
 
 {% <api_endpoint method="GET" path="/api/v1/effects"> %}
-List the effect catalog. Optional query parameters mirror the CLI filters: `search`, `category`, `engine`, and `audio=true`. The response carries `items` (an array of effect summaries) and a `pagination` block.
+List the effect catalog. Optional query parameters mirror the CLI filters: `q` (a case-insensitive substring match over name, description, author, and tags), `category`, `source`, `audio_reactive`, `screen_reactive`, `input_reactive`, and `include=controls,presets`. The response carries `items` (an array of effect summaries) and a `total`; the catalog answers complete, so there is no `page` block.
 {% </api_endpoint> %}
 
 Each entry in `items` is an effect summary with this shape:

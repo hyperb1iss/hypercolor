@@ -1,4 +1,5 @@
-//! Per-device output telemetry types and REST fetcher.
+//! Per-device output telemetry types decoded from the `device_metrics`
+//! WebSocket topic; there is no REST route behind them.
 //!
 //! Mirrors the daemon's `DeviceMetricsSnapshot` shape. The daemon computes
 //! stable output rates in one shared collector, so every caller sees the same

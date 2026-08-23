@@ -113,7 +113,7 @@ Response:
 
 `GET /api/v1/library/favorites`
 
-Returns `data.items` plus pagination metadata. Current implementation is not paged on the server and returns all items with `offset=0`, `limit=50`, `has_more=false`.
+Returns `data.items` and `data.total`. The route answers complete, so it omits the `data.page` block that paging routes carry.
 
 ### Delete
 
