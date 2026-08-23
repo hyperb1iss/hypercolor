@@ -189,6 +189,7 @@ use crate::preview_runtime::{
     PreviewFrameReceiver, PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand,
 };
 use crate::render_thread::{InputPublicationConsumer, InputPublicationDemandHandle};
+use crate::simulators::SimulatedDisplayExt;
 use crate::startup::input_status_events::InputStatusEventPublisher;
 
 /// Selectors for the authorization tests, in the shape the wire parse

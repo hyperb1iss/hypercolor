@@ -9,22 +9,26 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="SimulatedDisplayConfigListItem")
+T = TypeVar("T", bound="SimulatedDisplayListItem")
 
 
 @_attrs_define
-class SimulatedDisplayConfigListItem:
-    """
-    Attributes:
-        height (int):
-        id (UUID): Opaque, globally unique device identifier.
+class SimulatedDisplayListItem:
+    """One simulated display as `/api/v1/simulators/displays` renders it.
 
-            Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
-            database keys, map keys, and log correlation IDs.
-        name (str):
-        width (int):
-        circular (bool | Unset):
-        enabled (bool | Unset):
+    This is both the stored configuration and the resource every route
+    in the family returns.
+
+        Attributes:
+            height (int):
+            id (UUID): Opaque, globally unique device identifier.
+
+                Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
+                database keys, map keys, and log correlation IDs.
+            name (str):
+            width (int):
+            circular (bool | Unset):
+            enabled (bool | Unset):
     """
 
     height: int
@@ -80,7 +84,7 @@ class SimulatedDisplayConfigListItem:
 
         enabled = d.pop("enabled", UNSET)
 
-        simulated_display_config_list_item = cls(
+        simulated_display_list_item = cls(
             height=height,
             id=id,
             name=name,
@@ -89,8 +93,8 @@ class SimulatedDisplayConfigListItem:
             enabled=enabled,
         )
 
-        simulated_display_config_list_item.additional_properties = d
-        return simulated_display_config_list_item
+        simulated_display_list_item.additional_properties = d
+        return simulated_display_list_item
 
     @property
     def additional_keys(self) -> list[str]:

@@ -590,8 +590,8 @@ from .set_display_face_request_controls import SetDisplayFaceRequestControls
 from .set_display_face_response_200 import SetDisplayFaceResponse200
 from .show_config_response_200 import ShowConfigResponse200
 from .side_effect_outcome import SideEffectOutcome
-from .simulated_display_config import SimulatedDisplayConfig
-from .simulated_display_config_list_item import SimulatedDisplayConfigListItem
+from .simulated_display import SimulatedDisplay
+from .simulated_display_list_item import SimulatedDisplayListItem
 from .snapshot_scene_request import SnapshotSceneRequest
 from .snapshot_scene_response_201 import SnapshotSceneResponse201
 from .spatial_layout import SpatialLayout
@@ -1170,8 +1170,8 @@ __all__ = (
     "SetDisplayFaceResponse200",
     "ShowConfigResponse200",
     "SideEffectOutcome",
-    "SimulatedDisplayConfig",
-    "SimulatedDisplayConfigListItem",
+    "SimulatedDisplay",
+    "SimulatedDisplayListItem",
     "SnapshotSceneRequest",
     "SnapshotSceneResponse201",
     "SpatialLayout",

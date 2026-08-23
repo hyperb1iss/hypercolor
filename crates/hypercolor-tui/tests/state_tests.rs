@@ -146,7 +146,7 @@ fn device_summary_serde_roundtrip() {
 fn simulated_display_summary_deserialize_defaults_enabled() {
     let summary: SimulatedDisplaySummary = serde_json::from_str(
         r#"{
-            "id": "sim-1",
+            "id": "0198c5b6-5100-7000-8000-00000000a001",
             "name": "Desk Preview",
             "width": 480,
             "height": 480,
@@ -155,7 +155,10 @@ fn simulated_display_summary_deserialize_defaults_enabled() {
     )
     .expect("deserialize simulator summary");
 
-    assert_eq!(summary.id, "sim-1");
+    assert_eq!(
+        summary.id.to_string(),
+        "0198c5b6-5100-7000-8000-00000000a001"
+    );
     assert!(summary.enabled);
     assert!(summary.circular);
 }
@@ -164,8 +167,8 @@ fn simulated_display_summary_deserialize_defaults_enabled() {
 fn preview_source_reports_selected_simulator_id() {
     assert_eq!(PreviewSource::Canvas.simulator_id(), None);
     assert_eq!(
-        PreviewSource::Simulator("sim-1".to_string()).simulator_id(),
-        Some("sim-1")
+        PreviewSource::Simulator("0198c5b6-5100-7000-8000-00000000a001".to_string()).simulator_id(),
+        Some("0198c5b6-5100-7000-8000-00000000a001")
     );
 }
 

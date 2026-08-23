@@ -10,7 +10,6 @@ use anyhow::{Context, Result, bail};
 use hypercolor_core::device::DeviceLifecycleManager;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
-use utoipa::ToSchema;
 
 use hypercolor_driver_api::{
     BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
@@ -32,21 +31,23 @@ pub const SIMULATED_DISPLAY_BACKEND_ID: &str = "simulator";
 const SIMULATED_DISPLAY_FAMILY: &str = "simulator";
 const DEFAULT_SIMULATED_DISPLAY_FPS: u32 = 15;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct SimulatedDisplayConfig {
-    pub id: DeviceId,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub circular: bool,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
+pub use hypercolor_types::api::simulators::SimulatedDisplay as SimulatedDisplayConfig;
+
+/// Daemon-side behavior of a simulated display resource.
+pub trait SimulatedDisplayExt: Sized {
+    /// Clamp the geometry and fill an empty name.
+    #[must_use]
+    fn normalized(self) -> Self;
+    /// The device the simulator presents to the registry.
+    #[must_use]
+    fn device_info(&self) -> DeviceInfo;
+    /// The stable identity a simulator keeps across restarts.
+    #[must_use]
+    fn fingerprint(&self) -> DeviceFingerprint;
 }
 
-impl SimulatedDisplayConfig {
-    #[must_use]
-    pub fn normalized(mut self) -> Self {
+impl SimulatedDisplayExt for SimulatedDisplayConfig {
+    fn normalized(mut self) -> Self {
         self.name = self.name.trim().to_owned();
         if self.name.is_empty() {
             self.name = format!("Simulated Display {}", self.id);
@@ -56,8 +57,7 @@ impl SimulatedDisplayConfig {
         self
     }
 
-    #[must_use]
-    pub fn device_info(&self) -> DeviceInfo {
+    fn device_info(&self) -> DeviceInfo {
         DeviceInfo {
             id: self.id,
             name: self.name.clone(),
@@ -95,8 +95,7 @@ impl SimulatedDisplayConfig {
         }
     }
 
-    #[must_use]
-    pub fn fingerprint(&self) -> DeviceFingerprint {
+    fn fingerprint(&self) -> DeviceFingerprint {
         DeviceFingerprint::mint(
             FingerprintNamespace::Bridge,
             SIMULATED_DISPLAY_BACKEND_ID,
@@ -182,10 +181,6 @@ impl SimulatedDisplayStore {
             .context("failed to persist simulated displays")?;
         Ok(())
     }
-}
-
-fn default_enabled() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -11,6 +11,7 @@ use hypercolor_daemon::api;
 use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
 use hypercolor_daemon::path_migration::MigrationOutcome;
+use hypercolor_daemon::simulators::SimulatedDisplayExt;
 use hypercolor_daemon::simulators::{SimulatedDisplayConfig, activate_simulated_displays};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{

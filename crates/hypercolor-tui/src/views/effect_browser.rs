@@ -203,7 +203,7 @@ impl EffectBrowserView {
             self.simulators
                 .iter()
                 .filter(|simulator| simulator.enabled)
-                .map(|simulator| PreviewSource::Simulator(simulator.id.clone())),
+                .map(|simulator| PreviewSource::Simulator(simulator.id.to_string())),
         );
         sources
     }
@@ -235,7 +235,7 @@ impl EffectBrowserView {
             PreviewSource::Simulator(id) => self
                 .simulators
                 .iter()
-                .find(|simulator| simulator.id == *id)
+                .find(|simulator| simulator.id.to_string() == *id)
                 .map_or_else(
                     || "Simulator".to_string(),
                     |simulator| simulator.name.clone(),
@@ -1669,10 +1669,9 @@ impl Component for EffectBrowserView {
             Action::SimulatedDisplaysUpdated(simulators) => {
                 self.simulators.clone_from(simulators.as_ref());
                 if let Some(simulator_id) = self.preview_source.simulator_id()
-                    && !self
-                        .simulators
-                        .iter()
-                        .any(|simulator| simulator.enabled && simulator.id == simulator_id)
+                    && !self.simulators.iter().any(|simulator| {
+                        simulator.enabled && simulator.id.to_string() == simulator_id
+                    })
                 {
                     self.sync_preview_source(PreviewSource::Canvas);
                     return Ok(Some(Action::SetPreviewSource(PreviewSource::Canvas)));

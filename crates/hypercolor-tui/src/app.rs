@@ -718,11 +718,9 @@ impl App {
                     .clone_from(simulators.as_ref());
                 self.simulator_preview.list_requested_at = Some(Instant::now());
                 if let Some(simulator_id) = self.simulator_preview.source.simulator_id()
-                    && !self
-                        .simulator_preview
-                        .simulators
-                        .iter()
-                        .any(|simulator| simulator.enabled && simulator.id == simulator_id)
+                    && !self.simulator_preview.simulators.iter().any(|simulator| {
+                        simulator.enabled && simulator.id.to_string() == simulator_id
+                    })
                 {
                     let _ = self
                         .action_tx
@@ -1685,7 +1683,7 @@ impl App {
             self.simulator_preview
                 .simulators
                 .iter()
-                .find(|simulator| simulator.id == simulator_id)
+                .find(|simulator| simulator.id.to_string() == simulator_id)
                 .map_or("Simulator", |simulator| simulator.name.as_str())
         } else {
             multi_zone_label.as_deref().unwrap_or("—")

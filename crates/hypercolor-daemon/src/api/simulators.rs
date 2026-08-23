@@ -20,7 +20,8 @@ use crate::app_state::AppState;
 use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 use crate::simulators::{
-    SimulatedDisplayConfig, activate_simulated_displays, logical_device_ids_for_simulator,
+    SimulatedDisplayConfig, SimulatedDisplayExt, activate_simulated_displays,
+    logical_device_ids_for_simulator,
 };
 
 pub use hypercolor_types::api::simulators::{

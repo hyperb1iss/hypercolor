@@ -66,7 +66,9 @@ fn preview_pane_cycles_between_canvas_and_simulator_sources() {
         .expect("effects should update");
     view.update(&Action::SimulatedDisplaysUpdated(Arc::new(vec![
         SimulatedDisplaySummary {
-            id: "sim-1".to_string(),
+            id: "0198c5b6-5100-7000-8000-00000000a001"
+                .parse()
+                .expect("simulator id"),
             name: "Desk Preview".to_string(),
             width: 480,
             height: 480,
@@ -84,13 +86,13 @@ fn preview_pane_cycles_between_canvas_and_simulator_sources() {
         .expect("right should be handled");
     match next {
         Some(Action::SetPreviewSource(PreviewSource::Simulator(id))) => {
-            assert_eq!(id, "sim-1");
+            assert_eq!(id, "0198c5b6-5100-7000-8000-00000000a001");
         }
         other => panic!("expected simulator preview selection, got {other:?}"),
     }
 
     view.update(&Action::SetPreviewSource(PreviewSource::Simulator(
-        "sim-1".to_string(),
+        "0198c5b6-5100-7000-8000-00000000a001".to_string(),
     )))
     .expect("preview source should update");
 

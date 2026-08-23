@@ -433,7 +433,7 @@ fn runtime_document_has_complete_operation_contracts() {
         "DeviceSummaryListResponse",
         "DisplaySummaryList",
         "MediaAssetRecordListResponse",
-        "SimulatedDisplayConfigList",
+        "SimulatedDisplayList",
     ] {
         assert!(schemas[schema].is_object(), "missing schema {schema}");
     }

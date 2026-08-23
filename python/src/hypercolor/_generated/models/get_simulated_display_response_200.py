@@ -8,7 +8,7 @@ from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
     from ..models.response_meta import ResponseMeta
-    from ..models.simulated_display_config import SimulatedDisplayConfig
+    from ..models.simulated_display import SimulatedDisplay
 
 
 T = TypeVar("T", bound="GetSimulatedDisplayResponse200")
@@ -18,11 +18,14 @@ T = TypeVar("T", bound="GetSimulatedDisplayResponse200")
 class GetSimulatedDisplayResponse200:
     """
     Attributes:
-        data (SimulatedDisplayConfig):
+        data (SimulatedDisplay): One simulated display as `/api/v1/simulators/displays` renders it.
+
+            This is both the stored configuration and the resource every route
+            in the family returns.
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
-    data: SimulatedDisplayConfig
+    data: SimulatedDisplay
     meta: ResponseMeta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -45,10 +48,10 @@ class GetSimulatedDisplayResponse200:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.response_meta import ResponseMeta
-        from ..models.simulated_display_config import SimulatedDisplayConfig
+        from ..models.simulated_display import SimulatedDisplay
 
         d = dict(src_dict)
-        data = SimulatedDisplayConfig.from_dict(d.pop("data"))
+        data = SimulatedDisplay.from_dict(d.pop("data"))
 
         meta = ResponseMeta.from_dict(d.pop("meta"))
 

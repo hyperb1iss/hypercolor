@@ -243,21 +243,7 @@ pub struct DeviceSummary {
 }
 
 /// Summary of a daemon-managed virtual display simulator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SimulatedDisplaySummary {
-    pub id: String,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub circular: bool,
-    #[serde(default = "simulator_enabled_default")]
-    pub enabled: bool,
-}
-
-const fn simulator_enabled_default() -> bool {
-    true
-}
+pub type SimulatedDisplaySummary = hypercolor_types::api::simulators::SimulatedDisplay;
 
 /// Selected source for the TUI preview surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -8,9 +8,7 @@ from attrs import field as _attrs_field
 
 if TYPE_CHECKING:
     from ..models.response_meta import ResponseMeta
-    from ..models.simulated_display_config_list_item import (
-        SimulatedDisplayConfigListItem,
-    )
+    from ..models.simulated_display_list_item import SimulatedDisplayListItem
 
 
 T = TypeVar("T", bound="ListSimulatedDisplaysResponse200")
@@ -20,21 +18,21 @@ T = TypeVar("T", bound="ListSimulatedDisplaysResponse200")
 class ListSimulatedDisplaysResponse200:
     """
     Attributes:
-        data (list[SimulatedDisplayConfigListItem]):
+        data (list[SimulatedDisplayListItem]):
         meta (ResponseMeta): Response metadata included in every envelope.
     """
 
-    data: list[SimulatedDisplayConfigListItem]
+    data: list[SimulatedDisplayListItem]
     meta: ResponseMeta
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = []
-        for componentsschemas_simulated_display_config_list_item_data in self.data:
-            componentsschemas_simulated_display_config_list_item = (
-                componentsschemas_simulated_display_config_list_item_data.to_dict()
+        for componentsschemas_simulated_display_list_item_data in self.data:
+            componentsschemas_simulated_display_list_item = (
+                componentsschemas_simulated_display_list_item_data.to_dict()
             )
-            data.append(componentsschemas_simulated_display_config_list_item)
+            data.append(componentsschemas_simulated_display_list_item)
 
         meta = self.meta.to_dict()
 
@@ -52,21 +50,19 @@ class ListSimulatedDisplaysResponse200:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.response_meta import ResponseMeta
-        from ..models.simulated_display_config_list_item import (
-            SimulatedDisplayConfigListItem,
-        )
+        from ..models.simulated_display_list_item import SimulatedDisplayListItem
 
         d = dict(src_dict)
         data = []
         _data = d.pop("data")
-        for componentsschemas_simulated_display_config_list_item_data in _data:
-            componentsschemas_simulated_display_config_list_item = (
-                SimulatedDisplayConfigListItem.from_dict(
-                    componentsschemas_simulated_display_config_list_item_data
+        for componentsschemas_simulated_display_list_item_data in _data:
+            componentsschemas_simulated_display_list_item = (
+                SimulatedDisplayListItem.from_dict(
+                    componentsschemas_simulated_display_list_item_data
                 )
             )
 
-            data.append(componentsschemas_simulated_display_config_list_item)
+            data.append(componentsschemas_simulated_display_list_item)
 
         meta = ResponseMeta.from_dict(d.pop("meta"))
 

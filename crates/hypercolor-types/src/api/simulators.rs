@@ -4,6 +4,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::device::DeviceId;
 
+/// One simulated display as `/api/v1/simulators/displays` renders it.
+///
+/// This is both the stored configuration and the resource every route
+/// in the family returns.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SimulatedDisplay {
+    pub id: DeviceId,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    #[serde(default)]
+    pub circular: bool,
+    #[serde(default = "default_simulated_display_enabled")]
+    pub enabled: bool,
+}
+
+const fn default_simulated_display_enabled() -> bool {
+    true
+}
+
 /// Request body for `POST /api/v1/simulators/displays`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

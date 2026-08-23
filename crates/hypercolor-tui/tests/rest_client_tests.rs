@@ -593,7 +593,7 @@ async fn get_simulated_displays_and_frame_decode_preview_image() {
             get(|| async {
                 canonical_json(json!({
                     "data": [{
-                        "id": "sim-1",
+                        "id": "0198c5b6-5100-7000-8000-00000000a001",
                         "name": "Desk Preview",
                         "width": 480,
                         "height": 480,
@@ -608,7 +608,7 @@ async fn get_simulated_displays_and_frame_decode_preview_image() {
             get(move |Path(id): Path<String>| {
                 let bytes = frame_bytes.clone();
                 async move {
-                    assert_eq!(id, "sim-1");
+                    assert_eq!(id, "0198c5b6-5100-7000-8000-00000000a001");
                     (StatusCode::OK, bytes)
                 }
             }),
@@ -620,13 +620,16 @@ async fn get_simulated_displays_and_frame_decode_preview_image() {
         .await
         .expect("fetch simulators");
     let frame = client
-        .get_simulated_display_frame("sim-1")
+        .get_simulated_display_frame("0198c5b6-5100-7000-8000-00000000a001")
         .await
         .expect("fetch simulator frame")
         .expect("simulator frame should exist");
 
     assert_eq!(simulators.len(), 1);
-    assert_eq!(simulators[0].id, "sim-1");
+    assert_eq!(
+        simulators[0].id.to_string(),
+        "0198c5b6-5100-7000-8000-00000000a001"
+    );
     assert_eq!(simulators[0].name, "Desk Preview");
     assert_eq!(frame.width, 2);
     assert_eq!(frame.height, 1);
