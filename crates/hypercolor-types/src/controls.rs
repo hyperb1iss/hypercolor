@@ -84,7 +84,6 @@ pub struct ControlSurfaceDocument {
     pub availability: ControlAvailabilityMap,
 
     /// Resolved availability keyed by action ID.
-    #[serde(default)]
     pub action_availability: ControlActionAvailabilityMap,
 }
 

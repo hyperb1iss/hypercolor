@@ -1,4 +1,4 @@
-use hypercolor_types::device::{DeviceCapabilities, DeviceFeatures};
+use hypercolor_types::device::{DeviceCapabilities, DeviceColorSpace, DeviceFeatures};
 
 #[test]
 fn device_features_default_to_all_disabled() {
@@ -24,19 +24,35 @@ fn device_features_serde_round_trip() {
 }
 
 #[test]
-fn device_capabilities_back_compat_defaults_missing_features() {
-    let json = r#"{
-        "led_count": 11,
-        "supports_direct": true,
-        "supports_brightness": true,
-        "has_display": false,
-        "display_resolution": null,
-        "max_fps": 120
-    }"#;
+fn device_capabilities_round_trip_and_require_current_fields() {
+    let capabilities = DeviceCapabilities {
+        led_count: 11,
+        supports_direct: true,
+        supports_brightness: true,
+        has_display: false,
+        display_resolution: None,
+        max_fps: 120,
+        color_space: DeviceColorSpace::CieXy,
+        features: DeviceFeatures {
+            scroll_mode: true,
+            scroll_smart_reel: false,
+            scroll_acceleration: true,
+        },
+    };
+    let json = serde_json::to_value(capabilities).expect("serialize capabilities");
+    let roundtrip: DeviceCapabilities =
+        serde_json::from_value(json.clone()).expect("deserialize capabilities");
+    assert_eq!(roundtrip, capabilities);
 
-    let capabilities: DeviceCapabilities =
-        serde_json::from_str(json).expect("deserialize legacy capabilities");
-
-    assert_eq!(capabilities.led_count, 11);
-    assert_eq!(capabilities.features, DeviceFeatures::default());
+    for field in ["color_space", "features"] {
+        let mut missing_field = json.clone();
+        missing_field
+            .as_object_mut()
+            .expect("capabilities are an object")
+            .remove(field);
+        let error = serde_json::from_value::<DeviceCapabilities>(missing_field)
+            .expect_err("current capability field is required");
+        let expected = format!("missing field `{field}`");
+        assert!(error.to_string().contains(&expected), "{error}");
+    }
 }

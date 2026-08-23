@@ -155,11 +155,9 @@ pub struct DeviceCapabilities {
     pub max_fps: u32,
 
     /// Native color model expected by the device/backend.
-    #[serde(default)]
     pub color_space: DeviceColorSpace,
 
     /// Optional non-lighting device features.
-    #[serde(default)]
     pub features: DeviceFeatures,
 }
 
@@ -504,7 +502,6 @@ pub struct DriverCapabilitySet {
     pub presentation: bool,
 
     /// Exposes typed dynamic control surfaces.
-    #[serde(default)]
     pub controls: bool,
 }
 

@@ -306,24 +306,29 @@ fn driver_capability_set_empty_has_no_capabilities() {
 }
 
 #[test]
-fn driver_capability_set_defaults_missing_controls_flag() {
-    let json = r#"{
-        "config": false,
-        "discovery": true,
-        "pairing": false,
-        "output_backend": true,
-        "protocol_catalog": false,
-        "runtime_cache": true,
-        "credentials": false,
-        "presentation": false
-    }"#;
+fn driver_capability_set_round_trips_and_requires_controls() {
+    let capabilities = DriverCapabilitySet {
+        discovery: true,
+        output_backend: true,
+        controls: true,
+        ..DriverCapabilitySet::empty()
+    };
+    let json = serde_json::to_value(capabilities).expect("serialize capabilities");
+    let roundtrip: DriverCapabilitySet =
+        serde_json::from_value(json.clone()).expect("deserialize capabilities");
+    assert_eq!(roundtrip, capabilities);
 
-    let capabilities: DriverCapabilitySet =
-        serde_json::from_str(json).expect("legacy capabilities should deserialize");
-
-    assert!(capabilities.discovery);
-    assert!(capabilities.output_backend);
-    assert!(!capabilities.controls);
+    let mut missing_controls = json;
+    missing_controls
+        .as_object_mut()
+        .expect("capabilities are an object")
+        .remove("controls");
+    let error = serde_json::from_value::<DriverCapabilitySet>(missing_controls)
+        .expect_err("controls is required");
+    assert!(
+        error.to_string().contains("missing field `controls`"),
+        "{error}"
+    );
 }
 
 #[test]

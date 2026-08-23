@@ -325,26 +325,29 @@ fn control_surface_document_roundtrips() {
 
     assert_eq!(roundtrip.schema_version, CONTROL_SURFACE_SCHEMA_VERSION);
     assert_eq!(roundtrip, document);
+}
 
-    let legacy_json = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "scope": {
-            "device": {
-                "device_id": device_id,
-                "driver_id": "fixture-driver"
-            }
+#[test]
+fn control_surface_document_requires_action_availability() {
+    let mut json = serde_json::to_value(ControlSurfaceDocument::empty(
+        "driver:fixture-driver",
+        ControlSurfaceScope::Driver {
+            driver_id: "fixture-driver".to_owned(),
         },
-        "schema_version": CONTROL_SURFACE_SCHEMA_VERSION,
-        "revision": 7,
-        "groups": [],
-        "fields": [],
-        "actions": [],
-        "values": {},
-        "availability": {}
-    });
-    let legacy: ControlSurfaceDocument =
-        serde_json::from_value(legacy_json).expect("deserialize legacy document");
-    assert!(legacy.action_availability.is_empty());
+    ))
+    .expect("serialize document");
+    json.as_object_mut()
+        .expect("document is an object")
+        .remove("action_availability");
+
+    let error = serde_json::from_value::<ControlSurfaceDocument>(json)
+        .expect_err("action_availability is required");
+    assert!(
+        error
+            .to_string()
+            .contains("missing field `action_availability`"),
+        "{error}"
+    );
 }
 
 #[test]
