@@ -2942,16 +2942,16 @@ async fn zone_layout_preview_rejects_invalid_sampling_radii() {
     let scene = manager
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    let group = scene.primary_zone().expect("primary zone should exist");
+    let zone = scene.primary_zone().expect("primary zone should exist");
 
     for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        let mut layout = group.layout.clone();
+        let mut layout = zone.layout.clone();
         layout.default_sampling_mode = SamplingMode::AreaAverage {
             radius_x: radius,
             radius_y: 0.0,
         };
 
-        let error = validated_zone_layout_preview(scene, group.id, layout)
+        let error = validated_zone_layout_preview(scene, zone.id, layout)
             .expect_err("invalid radii must be rejected before preview state changes");
         assert_eq!(error.code, "malformed_request");
         assert!(error.message.contains("radius_x"));

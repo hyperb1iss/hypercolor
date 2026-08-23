@@ -83,7 +83,7 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
     }
 }
 
-fn sample_group(name: &str, zone_id: &str, effect_id: EffectId) -> Zone {
+fn sample_zone(name: &str, zone_id: &str, effect_id: EffectId) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: name.into(),
@@ -211,7 +211,7 @@ fn zone_display_target_round_trips_in_scene_json() {
     let scene = Scene {
         zones: vec![Zone {
             display_target: Some(display_target.clone()),
-            ..sample_group("AIO Display", "desk:display", effect_id)
+            ..sample_zone("AIO Display", "desk:display", effect_id)
         }],
         ..sample_scene()
     };
@@ -224,7 +224,7 @@ fn zone_display_target_round_trips_in_scene_json() {
 
 #[test]
 fn zone_rejects_retired_singleton_effect_fields() {
-    let mut json = serde_json::to_value(sample_group(
+    let mut json = serde_json::to_value(sample_zone(
         "Primary",
         "desk:main",
         EffectId::from(Uuid::now_v7()),
@@ -246,7 +246,7 @@ fn scene_rejects_retired_flat_authorities() {
 }
 
 #[test]
-fn scene_json_requires_group_role() {
+fn scene_json_requires_zone_role() {
     let json = serde_json::json!({
         "id": SceneId::new(),
         "name": "Strict Scene",
@@ -279,7 +279,7 @@ fn scene_json_requires_scene_kind() {
     let mut json = serde_json::to_value(Scene {
         zones: vec![Zone {
             role: ZoneRole::Primary,
-            ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
+            ..sample_zone("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
     })
@@ -300,7 +300,7 @@ fn scene_json_requires_mutation_mode() {
     let mut json = serde_json::to_value(Scene {
         zones: vec![Zone {
             role: ZoneRole::Primary,
-            ..sample_group("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
+            ..sample_zone("Primary", "desk:main", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
     })
@@ -318,11 +318,11 @@ fn scene_json_requires_mutation_mode() {
 }
 
 #[test]
-fn scene_validate_group_exclusivity_rejects_duplicates() {
+fn scene_validate_zone_exclusivity_rejects_duplicates() {
     let scene = Scene {
         zones: vec![
-            sample_group("Desk", "shared:zone", EffectId::from(Uuid::now_v7())),
-            sample_group("Room", "shared:zone", EffectId::from(Uuid::now_v7())),
+            sample_zone("Desk", "shared:zone", EffectId::from(Uuid::now_v7())),
+            sample_zone("Room", "shared:zone", EffectId::from(Uuid::now_v7())),
         ],
         ..sample_scene()
     };
@@ -335,16 +335,16 @@ fn scene_validate_group_exclusivity_rejects_duplicates() {
 }
 
 #[test]
-fn scene_validate_rejects_two_primary_groups() {
+fn scene_validate_rejects_two_primary_zones() {
     let scene = Scene {
         zones: vec![
             Zone {
                 role: ZoneRole::Primary,
-                ..sample_group("Desk", "desk:main", EffectId::from(Uuid::now_v7()))
+                ..sample_zone("Desk", "desk:main", EffectId::from(Uuid::now_v7()))
             },
             Zone {
                 role: ZoneRole::Primary,
-                ..sample_group("Room", "room:main", EffectId::from(Uuid::now_v7()))
+                ..sample_zone("Room", "room:main", EffectId::from(Uuid::now_v7()))
             },
         ],
         ..sample_scene()
@@ -352,12 +352,12 @@ fn scene_validate_rejects_two_primary_groups() {
 
     let errors = scene
         .validate()
-        .expect_err("multiple primary groups should be rejected");
+        .expect_err("multiple primary zones should be rejected");
     assert!(
         errors
             .iter()
             .any(|error| error.contains("more than one primary")),
-        "expected primary-group validation error, got {errors:?}"
+        "expected primary-zone validation error, got {errors:?}"
     );
 }
 
@@ -366,14 +366,14 @@ fn scene_validate_rejects_display_without_target() {
     let scene = Scene {
         zones: vec![Zone {
             role: ZoneRole::Display,
-            ..sample_group("Display", "desk:display", EffectId::from(Uuid::now_v7()))
+            ..sample_zone("Display", "desk:display", EffectId::from(Uuid::now_v7()))
         }],
         ..sample_scene()
     };
 
     let errors = scene
         .validate()
-        .expect_err("display groups without a target should be rejected");
+        .expect_err("display zones without a target should be rejected");
     assert!(
         errors
             .iter()
@@ -390,7 +390,7 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
             Zone {
                 role: ZoneRole::Display,
                 display_target: Some(DisplayFaceTarget::new(device_id)),
-                ..sample_group(
+                ..sample_zone(
                     "Display A",
                     "desk:display_a",
                     EffectId::from(Uuid::now_v7()),
@@ -399,7 +399,7 @@ fn scene_validate_rejects_duplicate_display_device_ids() {
             Zone {
                 role: ZoneRole::Display,
                 display_target: Some(DisplayFaceTarget::new(device_id)),
-                ..sample_group(
+                ..sample_zone(
                     "Display B",
                     "desk:display_b",
                     EffectId::from(Uuid::now_v7()),

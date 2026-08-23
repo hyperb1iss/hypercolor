@@ -99,7 +99,7 @@ fn scene_with_zone(
     let mut scene = make_scene(name);
     scene.zones = vec![Zone {
         id: ZoneId::new(),
-        name: format!("{name} Group"),
+        name: format!("{name} Zone"),
         description: None,
         layers: vec![effect_layer(effect_id, 0.5)],
         layout: sample_layout(zone_id),
@@ -204,7 +204,7 @@ fn scene_manager_create_duplicate_fails() {
 #[test]
 fn scene_manager_create_rejects_overlapping_zones() {
     let mut mgr = SceneManager::new();
-    let mut scene = make_scene("Grouped");
+    let mut scene = make_scene("Zoned");
     scene.zones = vec![
         Zone {
             id: ZoneId::new(),
@@ -310,7 +310,7 @@ fn scene_manager_activate_and_active_tracking() {
 #[test]
 fn scene_manager_caches_resolved_zones() {
     let mut mgr = SceneManager::new();
-    let zoned_scene = scene_with_zone("Grouped", "desk:main", EffectId::from(Uuid::now_v7()));
+    let zoned_scene = scene_with_zone("Zoned", "desk:main", EffectId::from(Uuid::now_v7()));
     let zoned_scene_id = zoned_scene.id;
     let plain = make_scene("Plain");
     let plain_id = plain.id;
@@ -335,7 +335,7 @@ fn scene_manager_caches_resolved_zones() {
 #[test]
 fn scene_manager_refreshes_resolved_zone_cache_on_update() {
     let mut mgr = SceneManager::new();
-    let mut scene = scene_with_zone("Grouped", "desk:main", EffectId::from(Uuid::now_v7()));
+    let mut scene = scene_with_zone("Zoned", "desk:main", EffectId::from(Uuid::now_v7()));
     let id = scene.id;
 
     mgr.create(scene.clone()).expect("create zoned_scene");

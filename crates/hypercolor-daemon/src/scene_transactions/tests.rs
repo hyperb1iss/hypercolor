@@ -314,7 +314,7 @@ async fn renderer_and_authoritative_state_reuse_the_exact_prepared_sampling_plan
         manager
             .active_scene()
             .and_then(|scene| scene.primary_zone())
-            .expect("default scene should retain a primary group")
+            .expect("default scene should retain a primary zone")
             .layout
             .id,
         "prepared"
