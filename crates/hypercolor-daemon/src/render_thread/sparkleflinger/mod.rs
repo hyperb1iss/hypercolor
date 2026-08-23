@@ -1378,11 +1378,11 @@ impl SparkleFlinger {
     }
 
     #[cfg(feature = "wgpu")]
-    pub(crate) fn retain_display_finalize_groups(&mut self, active_zone_ids: &[ZoneId]) {
+    pub(crate) fn retain_display_finalize_zones(&mut self, active_zone_ids: &[ZoneId]) {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => {}
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.retain_display_finalize_groups(active_zone_ids);
+                gpu.retain_display_finalize_zones(active_zone_ids);
             }
         }
     }

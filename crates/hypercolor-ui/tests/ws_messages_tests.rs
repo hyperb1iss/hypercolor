@@ -5,9 +5,9 @@ use hypercolor_types::scene::{SceneKind, SceneMutationMode, ZoneRole};
 use hypercolor_ui::ws::messages::{
     EFFECT_STARTED_EVENTS, EFFECT_STOPPED_EVENTS, InitialSubscriptionAdmission,
     OutputPowerReconciler, PerformanceMetrics, SCENE_EVENTS, extract_effect_error_hint,
-    extract_layer_health, extract_scene_event_hint, group_has_degraded_layer,
-    initial_subscription_admission, is_resync_required, layer_health_key, reset_layer_health_cache,
-    scene_event_affects_active_effect, sequence_scene_event_hint,
+    extract_layer_health, extract_scene_event_hint, initial_subscription_admission,
+    is_resync_required, layer_health_key, reset_layer_health_cache,
+    scene_event_affects_active_effect, sequence_scene_event_hint, zone_has_degraded_layer,
 };
 
 #[test]
@@ -445,7 +445,7 @@ fn effect_fallback_ui_consumers_keep_zone_vocabulary() {
 }
 
 #[test]
-fn extract_layer_health_keys_by_scene_group_and_layer() {
+fn extract_layer_health_keys_by_scene_zone_and_layer() {
     let (key, health) = extract_layer_health(&serde_json::json!({
         "scene_id": "scene-1",
         "zone_id": "group-1",
@@ -500,92 +500,92 @@ fn extract_layer_health_rejects_a_payload_missing_an_identity_field() {
 }
 
 #[test]
-fn layer_health_key_separates_groups_that_share_a_layer_id() {
-    // A SceneLayerId is unique only within its zone; two groups can
+fn layer_health_key_separates_zones_that_share_a_layer_id() {
+    // A SceneLayerId is unique only within its zone; two zones can
     // hold the same id, so the composite key must keep their rows distinct.
     let shared_layer = "layer-7";
-    let group_a = layer_health_key("scene-1", "group-a", shared_layer);
-    let group_b = layer_health_key("scene-1", "group-b", shared_layer);
-    assert_ne!(group_a, group_b);
+    let zone_a = layer_health_key("scene-1", "zone-a", shared_layer);
+    let zone_b = layer_health_key("scene-1", "zone-b", shared_layer);
+    assert_ne!(zone_a, zone_b);
 }
 
-/// The group's live layer-id set, as `group_has_degraded_layer` expects it.
+/// The zone's live layer-id set, as `zone_has_degraded_layer` expects it.
 fn ids(list: &[&str]) -> Vec<String> {
     list.iter().map(|id| (*id).to_owned()).collect()
 }
 
 #[test]
-fn group_has_degraded_layer_flags_only_the_owning_group() {
+fn zone_has_degraded_layer_flags_only_the_owning_zone() {
     let mut map = HashMap::new();
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-1"),
+        layer_health_key("scene-1", "zone-a", "layer-1"),
         LayerHealth::Failed {
             reason: "boom".to_owned(),
         },
     );
     map.insert(
-        layer_health_key("scene-1", "group-b", "layer-2"),
+        layer_health_key("scene-1", "zone-b", "layer-2"),
         LayerHealth::Active,
     );
 
-    // group-a owns the failed layer; group-b and an unrelated scene do not.
-    assert!(group_has_degraded_layer(
+    // zone-a owns the failed layer; zone-b and an unrelated scene do not.
+    assert!(zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1"]),
     ));
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-b",
+        "zone-b",
         &ids(&["layer-2"]),
     ));
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-2",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1"]),
     ));
 }
 
 #[test]
-fn group_has_degraded_layer_ignores_transient_states() {
+fn zone_has_degraded_layer_ignores_transient_states() {
     let mut map = HashMap::new();
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-1"),
+        layer_health_key("scene-1", "zone-a", "layer-1"),
         LayerHealth::Stalled,
     );
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-2"),
+        layer_health_key("scene-1", "zone-a", "layer-2"),
         LayerHealth::Loading,
     );
     // Loading and Stalled are transient — not a degraded surface.
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1", "layer-2"]),
     ));
 
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-3"),
+        layer_health_key("scene-1", "zone-a", "layer-3"),
         LayerHealth::AssetMissing,
     );
     // A missing asset does count as degraded.
-    assert!(group_has_degraded_layer(
+    assert!(zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-1", "layer-2", "layer-3"]),
     ));
 }
 
 #[test]
-fn group_has_degraded_layer_ignores_stale_removed_layers() {
+fn zone_has_degraded_layer_ignores_stale_removed_layers() {
     let mut map = HashMap::new();
     map.insert(
-        layer_health_key("scene-1", "group-a", "layer-gone"),
+        layer_health_key("scene-1", "zone-a", "layer-gone"),
         LayerHealth::Failed {
             reason: "boom".to_owned(),
         },
@@ -594,19 +594,19 @@ fn group_has_degraded_layer_ignores_stale_removed_layers() {
     // The failed layer was removed from the stack. The daemon drops its
     // health silently, leaving a stale map entry — but with the layer no
     // longer in the live set, the surface must not read as degraded.
-    assert!(!group_has_degraded_layer(&map, "scene-1", "group-a", &[]));
-    assert!(!group_has_degraded_layer(
+    assert!(!zone_has_degraded_layer(&map, "scene-1", "zone-a", &[]));
+    assert!(!zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-still-here"]),
     ));
 
     // It does flag while the failed layer is still in the stack.
-    assert!(group_has_degraded_layer(
+    assert!(zone_has_degraded_layer(
         &map,
         "scene-1",
-        "group-a",
+        "zone-a",
         &ids(&["layer-gone"]),
     ));
 }

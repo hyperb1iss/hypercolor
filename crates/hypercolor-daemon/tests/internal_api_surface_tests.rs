@@ -944,6 +944,10 @@ fn renderer_and_display_output_keep_zone_vocabulary_canonical() {
         "materialized_group",
         "groups_revision",
         "active_groups",
+        "for_groups",
+        "group_frame",
+        "sample_group",
+        "finalize_groups",
     ];
     let offenders = daemon_sources()
         .into_iter()

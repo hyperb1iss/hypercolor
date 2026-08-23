@@ -401,7 +401,7 @@ impl ComposeContext<'_> {
                         .preview_only_frame(scene_frame.clone(), preview_request)
                 };
                 let scene_display_frame =
-                    self.scene_display_frame_for_groups(&scene_frame, requires_full_composition);
+                    self.scene_display_frame_for_zones(&scene_frame, requires_full_composition);
                 let (_, display_routes) =
                     self.state.event_bus.display_zone_output_routes_snapshot();
                 let display_lane_context = DisplayLaneContext {
@@ -702,7 +702,7 @@ impl ComposeContext<'_> {
         )
     }
 
-    fn scene_display_frame_for_groups(
+    fn scene_display_frame_for_zones(
         &mut self,
         fallback: &ProducerFrame,
         requires_full_composition: bool,

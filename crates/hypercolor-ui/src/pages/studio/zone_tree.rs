@@ -16,7 +16,7 @@ use crate::app::{CapabilitiesContext, DevicesContext, WsContext};
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::icons::*;
 use crate::storage;
-use crate::ws::messages::group_has_degraded_layer;
+use crate::ws::messages::zone_has_degraded_layer;
 
 use super::StudioContext;
 use super::device_card::{CardMode, StudioDeviceCard};
@@ -279,14 +279,14 @@ fn ZoneNode(
         move || !collapsed.with(|set| set.contains(&zone_id))
     });
 
-    let health_group = zone_id.clone();
+    let health_zone = zone_id.clone();
     let health_layer_ids = surface.layer_ids.clone();
     let degraded = Signal::derive(move || {
         let (Some(ws), Some(scene)) = (ws, studio.active_scene.get()) else {
             return false;
         };
         ws.layer_health.with(|map| {
-            group_has_degraded_layer(map, &scene.id.to_string(), &health_group, &health_layer_ids)
+            zone_has_degraded_layer(map, &scene.id.to_string(), &health_zone, &health_layer_ids)
         })
     });
 

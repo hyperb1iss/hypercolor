@@ -1202,16 +1202,16 @@ pub fn extract_effect_error_hint(
 }
 
 /// Compose the health-map key for a layer. A `SceneLayerId` is unique only
-/// within its zone — two groups can carry the same layer id — and
-/// the daemon keys health by group as well, so scene and group ride along
-/// or one group's health would clobber another group's row.
+/// within its zone. Two zones can carry the same layer id, and the daemon
+/// keys health by zone as well, so scene and zone ride along or one zone's
+/// health would clobber another zone's row.
 pub fn layer_health_key(scene_id: &str, zone_id: &str, layer_id: &str) -> String {
     format!("{scene_id}/{zone_id}/{layer_id}")
 }
 
 /// Decode a `layer_health_changed` event into its `(health-map key, health)`.
 /// All three identity fields are required: the daemon always sends them, and
-/// without scene + group the key would collide across zones.
+/// without scene and zone the key would collide across zones.
 pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
     let scene_id = data.get("scene_id")?.as_str()?;
     let zone_id = data.get("zone_id")?.as_str()?;
@@ -1221,16 +1221,16 @@ pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHe
 }
 
 /// Whether any *current* layer in a zone is in a degraded health
-/// state. "Degraded" is the alarming end of `LayerHealth` — a failed
+/// state. "Degraded" is the alarming end of `LayerHealth`: a failed
 /// producer or a missing asset; transient `Loading`/`Stalled` states do not
 /// count, so the §6.7 Screen-row and Stage indicators stay meaningful.
 ///
 /// The health map is append-only and the daemon drops a layer's runtime
 /// state on reconcile without a recovery event, so a removed-but-failed
-/// layer leaves a stale entry behind. `current_layer_ids` is the group's
+/// layer leaves a stale entry behind. `current_layer_ids` is the zone's
 /// live layer set; an entry for a layer no longer in it is ignored, so a
 /// deleted failed layer cannot keep the surface flagged.
-pub fn group_has_degraded_layer(
+pub fn zone_has_degraded_layer(
     layer_health: &HashMap<String, LayerHealth>,
     scene_id: &str,
     zone_id: &str,

@@ -172,12 +172,12 @@ impl OutputContext {
         }
 
         let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
-        let group_frame = hypercolor_core::bus::DisplayZoneFrame::Canvas(canvas_frame.clone());
+        let zone_frame = hypercolor_core::bus::DisplayZoneFrame::Canvas(canvas_frame.clone());
         let (_, display_zone_targets) = self.event_bus.display_zone_targets_snapshot();
-        for group_id in display_zone_targets.keys().copied() {
+        for zone_id in display_zone_targets.keys().copied() {
             self.event_bus
-                .zone_canvas_sender(group_id)
-                .send_replace(group_frame.clone());
+                .zone_canvas_sender(zone_id)
+                .send_replace(zone_frame.clone());
         }
         self.event_bus
             .frame_lane()

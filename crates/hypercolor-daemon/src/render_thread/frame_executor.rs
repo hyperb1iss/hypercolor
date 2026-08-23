@@ -910,13 +910,13 @@ async fn force_static_sleep_snapshot(
         .saturating_add(1);
     let elapsed_ms = u64_to_u32(scene_snapshot.elapsed_ms);
     let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
-    let group_frame = DisplayZoneFrame::Canvas(canvas_frame.clone());
+    let zone_frame = DisplayZoneFrame::Canvas(canvas_frame.clone());
     let (_, display_zone_targets) = state.event_bus.display_zone_targets_snapshot();
     for zone_id in display_zone_targets.keys().copied() {
         state
             .event_bus
             .zone_canvas_sender(zone_id)
-            .send_replace(group_frame.clone());
+            .send_replace(zone_frame.clone());
     }
     state
         .event_bus

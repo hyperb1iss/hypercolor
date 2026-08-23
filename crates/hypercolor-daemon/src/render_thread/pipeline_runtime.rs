@@ -1596,7 +1596,7 @@ impl ComposeRuntime<'_> {
         }
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
-            .retain_display_finalize_groups(&[]);
+            .retain_display_finalize_zones(&[]);
         self.render_zone_runtime.clear_inactive_zones();
         self.effect_delta_clock.clear();
     }
@@ -1608,7 +1608,7 @@ impl ComposeRuntime<'_> {
                 .discard_pending_display_finalization(pending.pending);
         }
         self.display_sparkleflinger
-            .retain_display_finalize_groups(active_zone_ids);
+            .retain_display_finalize_zones(active_zone_ids);
     }
 
     pub(crate) fn reuse_or_render_scene(
@@ -1915,7 +1915,7 @@ impl RenderCaches {
         }
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
-            .retain_display_finalize_groups(&[]);
+            .retain_display_finalize_zones(&[]);
         self.render_zone_runtime.clear_inactive_zones();
         self.effect_delta_clock.clear();
     }

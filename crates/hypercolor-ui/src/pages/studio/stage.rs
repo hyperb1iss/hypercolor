@@ -30,7 +30,7 @@ use crate::display_preview_state::use_display_preview_subscription;
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 use crate::toasts;
-use crate::ws::messages::group_has_degraded_layer;
+use crate::ws::messages::zone_has_degraded_layer;
 
 use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_zones};
 use super::zone_controls::unassigned_behavior_label;
@@ -116,7 +116,7 @@ fn SurfaceStage() -> impl IntoView {
             return false;
         };
         ws.layer_health.with(|map| {
-            group_has_degraded_layer(map, &scene.id.to_string(), &surface.id, &surface.layer_ids)
+            zone_has_degraded_layer(map, &scene.id.to_string(), &surface.id, &surface.layer_ids)
         })
     });
 

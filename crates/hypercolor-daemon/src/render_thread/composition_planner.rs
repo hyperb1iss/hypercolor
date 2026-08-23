@@ -310,7 +310,7 @@ mod tests {
         canvas
     }
 
-    fn sample_group() -> Zone {
+    fn sample_zone() -> Zone {
         let effect_id = EffectId::from(Uuid::now_v7());
         Zone {
             id: ZoneId::new(),
@@ -384,7 +384,7 @@ mod tests {
                     eased_progress: 0.5,
                     color_interpolation: hypercolor_types::scene::ColorInterpolation::Srgb,
                 }),
-                resolved_zones: vec![sample_group()].into(),
+                resolved_zones: vec![sample_zone()].into(),
                 resolved_zones_revision: 1,
                 zone_layout_preview_generation: 0,
                 active_render_zone_count: 1,
