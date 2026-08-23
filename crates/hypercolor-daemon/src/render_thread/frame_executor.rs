@@ -25,7 +25,7 @@ use super::pipeline_runtime::{
 };
 use super::scene_snapshot::{
     FrameSceneSnapshot, apply_zone_layout_previews, build_frame_scene_snapshot,
-    display_descriptors_for_groups, refresh_effect_scene_snapshot, scene_dependency_key,
+    display_descriptors_for_zones, refresh_effect_scene_snapshot, scene_dependency_key,
     snapshot_display_zone_target_metadata,
 };
 use super::sparkleflinger::ComposedFrameSet;
@@ -87,7 +87,7 @@ pub(crate) async fn service_scene_transactions(
                         source_resolved_zones_revision,
                         |spatial_engine| {
                             render
-                                .render_group_runtime
+                                .render_zone_runtime
                                 .commit_reconcile(prepared_zones)
                                 .map_err(|error| LayoutTransactionRejection::PreparationFailed {
                                     message: error.to_string(),
@@ -164,7 +164,7 @@ pub(crate) async fn service_scene_transactions(
                         )
                         .await;
                     let display_descriptors =
-                        display_descriptors_for_groups(&display_target_fps, &display_output_routes);
+                        display_descriptors_for_zones(&display_target_fps, &display_output_routes);
                     let registry = state.effect_registry.read().await;
                     let dependency_key = scene_dependency_key(
                         resolved_zones_revision,
@@ -191,7 +191,7 @@ pub(crate) async fn service_scene_transactions(
                         )
                     };
                     let mut prepared_zones = render
-                        .render_group_runtime
+                        .render_zone_runtime
                         .prepare_reconcile_for_scene_dimensions(
                             candidate_zones.as_ref(),
                             active_scene_id,
@@ -212,7 +212,7 @@ pub(crate) async fn service_scene_transactions(
                     let (scene_width, scene_height) = prepared_zones.scene_dimensions();
                     let prepared_projected_scene =
                         render.sparkleflinger.prepare_projected_scene_resources(
-                            prepared_zones.projected_group_texture_requirements(),
+                            prepared_zones.projected_zone_texture_requirements(),
                             gpu_projection_admitted,
                             scene_width,
                             scene_height,
@@ -227,7 +227,7 @@ pub(crate) async fn service_scene_transactions(
                         prepared_resize.prepare_scene_cpu_backing()?;
                     }
                     prepared_zones.resolve_scene_backing(
-                        &render.render_group_runtime,
+                        &render.render_zone_runtime,
                         gpu_projection_admitted,
                         prepared_resize.is_some(),
                     )?;
@@ -797,7 +797,7 @@ pub(crate) async fn execute_frame(
         total_leds: u32::try_from(write_stats.total_leds).unwrap_or(u32::MAX),
         output_errors,
         logical_layer_count: render_stage.logical_layer_count,
-        render_group_count: render_stage.render_group_count,
+        render_zone_count: render_stage.render_zone_count,
         scene_active: render_stage.scene_active,
         scene_transition_active: render_stage.scene_transition_active,
         effect_retained: render_stage.effect_retained,
@@ -912,10 +912,10 @@ async fn force_static_sleep_snapshot(
     let canvas_frame = CanvasFrame::from_canvas(&canvas, frame_number, elapsed_ms);
     let group_frame = DisplayZoneFrame::Canvas(canvas_frame.clone());
     let (_, display_zone_targets) = state.event_bus.display_zone_targets_snapshot();
-    for group_id in display_zone_targets.keys().copied() {
+    for zone_id in display_zone_targets.keys().copied() {
         state
             .event_bus
-            .zone_canvas_sender(group_id)
+            .zone_canvas_sender(zone_id)
             .send_replace(group_frame.clone());
     }
     state
@@ -1008,7 +1008,7 @@ mod tests {
             composition_done_us: 0,
             total_us: 0,
             logical_layer_count: 0,
-            render_group_count: 0,
+            render_zone_count: 0,
             scene_active: false,
             scene_transition_active: false,
             effect_retained: false,

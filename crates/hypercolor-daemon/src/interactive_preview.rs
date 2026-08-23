@@ -279,22 +279,22 @@ struct PreviewSceneCatalog {
     canvas_width: u32,
     canvas_height: u32,
     active_scene_id: Option<SceneId>,
-    active_groups_revision: u64,
-    active_groups: Arc<[Zone]>,
+    active_zones_revision: u64,
+    active_zones: Arc<[Zone]>,
     scenes: Arc<[PreviewSceneEntry]>,
     registry: Arc<EffectRegistry>,
 }
 
 struct PreviewSceneEntry {
     id: SceneId,
-    groups_revision: u64,
-    groups: Arc<[Zone]>,
+    zones_revision: u64,
+    zones: Arc<[Zone]>,
 }
 
 struct ResolvedPreviewScene {
     scene_id: Option<SceneId>,
-    groups_revision: u64,
-    groups: Arc<[Zone]>,
+    zones_revision: u64,
+    zones: Arc<[Zone]>,
     registry: Arc<EffectRegistry>,
     catalog_generation: u64,
     canvas_width: u32,
@@ -1004,7 +1004,7 @@ impl PreviewLane {
             return;
         }
         let demand = preview_input_demand(&scene, self.spec.fps);
-        if demand != self.current_demand {
+        if !demand.same_publication_request(&self.current_demand) {
             self.demand.update(demand.clone());
             self.current_demand = demand;
         }
@@ -1060,7 +1060,7 @@ impl PreviewLane {
             now.saturating_duration_since(self.last_tick).as_secs_f32(),
         )?;
         let demand = preview_input_demand(&scene, spec.fps);
-        if demand != self.current_demand {
+        if !demand.same_publication_request(&self.current_demand) {
             self.demand.update(demand.clone());
             self.current_demand = demand;
         }
@@ -1168,9 +1168,9 @@ fn render_preview_scene(
     delta_secs: f32,
 ) -> Result<PublishedSurface, String> {
     let context = RenderSceneContext {
-        groups: &scene.groups,
+        zones: &scene.zones,
         active_scene_id: scene.scene_id,
-        dependency_key: SceneDependencyKey::new(scene.groups_revision, scene.catalog_generation),
+        dependency_key: SceneDependencyKey::new(scene.zones_revision, scene.catalog_generation),
         elapsed_ms,
         display_zone_target_fps: &HashMap::new(),
         display_zone_descriptors: display_descriptors,
@@ -1432,25 +1432,25 @@ impl PreviewSceneCatalogSource {
 
 impl PreviewSceneCatalog {
     fn resolve(&self, target: InteractivePreviewTarget) -> Option<ResolvedPreviewScene> {
-        let (scene_id, groups_revision, groups) = match target {
+        let (scene_id, zones_revision, zones) = match target {
             InteractivePreviewTarget::ActiveScene => (
                 self.active_scene_id,
-                self.active_groups_revision,
-                Arc::clone(&self.active_groups),
+                self.active_zones_revision,
+                Arc::clone(&self.active_zones),
             ),
             InteractivePreviewTarget::Scene(scene_id) => {
                 let scene = self.scenes.iter().find(|scene| scene.id == scene_id)?;
                 (
                     Some(scene.id),
-                    scene.groups_revision,
-                    Arc::clone(&scene.groups),
+                    scene.zones_revision,
+                    Arc::clone(&scene.zones),
                 )
             }
         };
         Some(ResolvedPreviewScene {
             scene_id,
-            groups_revision,
-            groups,
+            zones_revision,
+            zones,
             registry: Arc::clone(&self.registry),
             catalog_generation: self.generation,
             canvas_width: self.canvas_width,
@@ -1507,15 +1507,15 @@ async fn capture_catalog(
     canvas_height: u32,
     generation: u64,
 ) -> Arc<PreviewSceneCatalog> {
-    let (active_scene_id, active_groups_revision, active_groups, scenes) = {
+    let (active_scene_id, active_zones_revision, active_zones, scenes) = {
         let manager = scene_manager.snapshot().await;
         let scenes = manager
             .list()
             .into_iter()
             .map(|scene| PreviewSceneEntry {
                 id: scene.id,
-                groups_revision: scene.zones_revision,
-                groups: scene.zones.clone().into(),
+                zones_revision: scene.zones_revision,
+                zones: scene.zones.clone().into(),
             })
             .collect::<Vec<_>>()
             .into();
@@ -1532,8 +1532,8 @@ async fn capture_catalog(
         canvas_width,
         canvas_height,
         active_scene_id,
-        active_groups_revision,
-        active_groups,
+        active_zones_revision,
+        active_zones,
         scenes,
         registry,
     })
@@ -1561,8 +1561,8 @@ fn preview_input_demand(scene: &ResolvedPreviewScene, requested_hz: u32) -> Inpu
         .expect("resolved preview canvas dimensions are non-empty");
     let mut media = false;
     let mut network = false;
-    for group in scene.groups.iter().filter(|group| group.enabled) {
-        for layer in group.layers.iter().filter(|layer| layer.enabled) {
+    for zone in scene.zones.iter().filter(|zone| zone.enabled) {
+        for layer in zone.layers.iter().filter(|layer| layer.enabled) {
             match &layer.source {
                 LayerSource::Effect { effect_id, .. } => {
                     if let Some(entry) = scene.registry.get(effect_id) {

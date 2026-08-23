@@ -883,3 +883,39 @@ fn effect_mutations_require_generation_qualified_admission() {
         .expect("display overlay should commit under effect admission");
     assert!(admission < scene_commit);
 }
+
+#[test]
+fn renderer_and_display_output_keep_zone_vocabulary_canonical() {
+    let retired = [
+        "render_groups",
+        "render_group",
+        "RenderGroup",
+        "GroupDirect",
+        "group_direct",
+        "group_canvas",
+        "route_for_group",
+        "materialized_group",
+        "groups_revision",
+        "active_groups",
+    ];
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.to_string_lossy().contains("/render_thread/")
+                || path.ends_with("display_output/mod.rs")
+        })
+        .flat_map(|(path, source)| {
+            retired
+                .into_iter()
+                .filter(|term| source.contains(term))
+                .map(|term| format!("{} contains {term}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "retired render-group vocabulary remains:\n{}",
+        offenders.join("\n")
+    );
+}

@@ -56,21 +56,21 @@ use frame_helpers::passthrough_effect_layer;
 use frame_helpers::surface_backed_frame;
 #[cfg(test)]
 use frame_helpers::{color_fill_frame, transparent_black_frame};
-use group_state::{combined_led_state, empty_group_layout};
 use model::{
-    CachedMediaProducer, RetainedDirectGroupFrame, RetainedMaterializedGroupFrame,
-    RetainedRenderGroupFrame,
+    CachedMediaProducer, RetainedDirectZoneFrame, RetainedMaterializedZoneFrame,
+    RetainedRenderZoneFrame,
 };
 pub(crate) use model::{
     DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RenderSceneContext, ZoneEffectError,
     ZoneFrameInputs, ZoneResult,
 };
-use projection::CachedGroupProjection;
+use projection::CachedZoneProjection;
 #[cfg(test)]
 use projection::{
     ProjectionBounds, blit_zone_projection, copy_full_scene_identity_projection,
-    projection_composition_layers_for_group, zone_local_position_for_scene_pixel,
+    projection_composition_layers_for_zone, zone_local_position_for_scene_pixel,
 };
+use zone_state::{combined_led_state, empty_zone_layout};
 
 /// Initial slot count for the full-resolution scene surface pool. Sized to absorb
 /// typical downstream pins: the canvas watch channel, display-output
@@ -88,11 +88,11 @@ pub(crate) struct ZoneRuntime {
     effect_pool: EffectPool,
     media_producers: HashMap<AssetId, CachedMediaProducer>,
     target_canvases: HashMap<ZoneId, Canvas>,
-    scene_projection_cache: HashMap<ZoneId, CachedGroupProjection>,
+    scene_projection_cache: HashMap<ZoneId, CachedZoneProjection>,
     spatial_engines: HashMap<ZoneId, SpatialEngine>,
     direct_surface_pools: HashMap<ZoneId, RenderSurfacePool>,
-    retained_direct_group_frames: HashMap<ZoneId, RetainedDirectGroupFrame>,
-    retained_materialized_group_frames: HashMap<ZoneId, RetainedMaterializedGroupFrame>,
+    retained_direct_zone_frames: HashMap<ZoneId, RetainedDirectZoneFrame>,
+    retained_materialized_zone_frames: HashMap<ZoneId, RetainedMaterializedZoneFrame>,
     effect_registry_snapshot: Option<Arc<EffectRegistry>>,
     static_layer_surface_cache: StaticLayerSurfaceCache,
     scene_surface_pool: Option<RenderSurfacePool>,
@@ -102,7 +102,7 @@ pub(crate) struct ZoneRuntime {
     #[cfg(all(test, feature = "wgpu"))]
     projected_scene_layer_allocation_count: usize,
     reconciled_dependency_key: Option<SceneDependencyKey>,
-    retained_frame: Option<RetainedRenderGroupFrame>,
+    retained_frame: Option<RetainedRenderZoneFrame>,
     zone_sampling_scratch: Vec<ZoneColors>,
     last_effect_error: Option<ZoneEffectError>,
     recovered_effect_error: Option<ZoneEffectError>,
@@ -186,7 +186,7 @@ impl ZoneRuntime {
         max_slots: usize,
     ) -> Result<Self, ZoneRuntimePreparationError> {
         let (combined_led_layout, combined_led_spatial_engine) =
-            combined_led_state(empty_group_layout(scene_width, scene_height))?;
+            combined_led_state(empty_zone_layout(scene_width, scene_height))?;
         let empty_led_spatial_engine = combined_led_spatial_engine.clone();
         Ok(Self {
             asset_library: None,
@@ -196,8 +196,8 @@ impl ZoneRuntime {
             scene_projection_cache: HashMap::new(),
             spatial_engines: HashMap::new(),
             direct_surface_pools: HashMap::new(),
-            retained_direct_group_frames: HashMap::new(),
-            retained_materialized_group_frames: HashMap::new(),
+            retained_direct_zone_frames: HashMap::new(),
+            retained_materialized_zone_frames: HashMap::new(),
             effect_registry_snapshot: None,
             static_layer_surface_cache: StaticLayerSurfaceCache::default(),
             // 8 slots absorbs typical downstream fan-out (watch channel +
@@ -248,7 +248,7 @@ impl ZoneRuntime {
             return Ok(None);
         }
         let (empty_led_layout, empty_led_spatial_engine) =
-            combined_led_state(empty_group_layout(scene_width, scene_height))?;
+            combined_led_state(empty_zone_layout(scene_width, scene_height))?;
         Ok(Some(PreparedSceneResize {
             scene_width,
             scene_height,
@@ -332,11 +332,11 @@ impl ZoneRuntime {
 mod display_retention;
 mod effect_errors;
 mod frame_helpers;
-mod group_state;
 mod layer_rendering;
 mod model;
 mod projection;
 mod reconcile;
+mod zone_state;
 pub(crate) use reconcile::PreparedZoneReconcile;
 mod render_pass;
 mod scene_assembly;

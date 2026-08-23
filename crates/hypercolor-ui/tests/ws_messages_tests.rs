@@ -133,7 +133,7 @@ fn extract_scene_event_hint_parses_active_scene_payload() {
 }
 
 #[test]
-fn extract_scene_event_hint_parses_render_group_zone_identity() {
+fn extract_scene_event_hint_parses_zone_identity() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({
@@ -200,7 +200,7 @@ fn performance_metrics_deserializes_renderer_diagnostics() {
             "producer_preview_compose_ms": 3.4,
             "composition_ms": 4.2,
             "publish_frame_data_ms": 0.1,
-            "publish_group_canvas_ms": 0.2,
+            "publish_zone_canvas_ms": 0.2,
             "publish_preview_ms": 0.3,
             "publish_events_ms": 0.4
         },
@@ -365,7 +365,7 @@ fn performance_metrics_defaults_missing_optional_stage_durations() {
 }
 
 #[test]
-fn extract_scene_event_hint_parses_display_render_group_metadata() {
+fn extract_scene_event_hint_parses_display_zone_metadata() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({
@@ -383,7 +383,7 @@ fn extract_scene_event_hint_parses_display_render_group_metadata() {
 }
 
 #[test]
-fn scene_event_affects_active_effect_ignores_display_render_group_changes() {
+fn scene_event_affects_active_effect_ignores_display_zone_changes() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({
@@ -398,7 +398,7 @@ fn scene_event_affects_active_effect_ignores_display_render_group_changes() {
 }
 
 #[test]
-fn scene_event_affects_active_effect_keeps_primary_render_group_changes() {
+fn scene_event_affects_active_effect_keeps_primary_zone_changes() {
     let hint = extract_scene_event_hint(
         "zone_changed",
         &serde_json::json!({

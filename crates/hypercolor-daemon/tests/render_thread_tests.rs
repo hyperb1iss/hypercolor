@@ -206,7 +206,7 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> Output {
     }
 }
 
-fn assert_canvas_group_frame(
+fn assert_canvas_zone_frame(
     frame: &DisplayZoneFrame,
     width: u32,
     height: u32,
@@ -419,7 +419,7 @@ fn solid_color_controls(r: u8, g: u8, b: u8) -> HashMap<String, ControlValue> {
     )])
 }
 
-fn primary_group(
+fn primary_zone(
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
     layout: SpatialLayout,
@@ -447,7 +447,7 @@ fn primary_group(
     }
 }
 
-fn custom_group(
+fn custom_zone(
     name: &str,
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
@@ -477,7 +477,7 @@ fn custom_group(
 }
 
 fn display_zone(
-    group_id: ZoneId,
+    zone_id: ZoneId,
     device_id: DeviceId,
     effect_id: EffectId,
     controls: HashMap<String, ControlValue>,
@@ -491,7 +491,7 @@ fn display_zone(
         None,
     )];
     Zone {
-        id: group_id,
+        id: zone_id,
         name: "Display".into(),
         description: None,
         layers,
@@ -1212,7 +1212,7 @@ fn make_render_state(
                 active_effect.preset_id,
                 spatial_engine.layout().as_ref().clone(),
             )
-            .expect("test render state should seed a default primary group");
+            .expect("test render state should seed a default primary zone");
     }
     let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
         .expect("temporary scene store should open");
@@ -1803,14 +1803,14 @@ async fn render_thread_advances_active_scene_transitions() {
 
     let mut scene_a = make_scene("Scene A");
     scene_a.transition.duration_ms = 0;
-    scene_a.zones = vec![primary_group(
+    scene_a.zones = vec![primary_zone(
         solid_id,
         solid_color_controls(255, 0, 0),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
     )];
     let mut scene_b = make_scene("Scene B");
     scene_b.transition.duration_ms = 60_000;
-    scene_b.zones = vec![primary_group(
+    scene_b.zones = vec![primary_zone(
         solid_id,
         solid_color_controls(0, 0, 255),
         test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]),
@@ -1858,7 +1858,7 @@ async fn render_thread_advances_active_scene_transitions() {
 }
 
 #[tokio::test]
-async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
+async fn pipeline_renders_active_scene_zones_without_global_effect_engine() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -1871,9 +1871,9 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
         builtin_effect_id(&registry, "solid_color")
     };
 
-    let mut scene = make_scene("Grouped Scene");
+    let mut scene = make_scene("Zoneed Scene");
     scene.zones = vec![
-        custom_group(
+        custom_zone(
             "Left",
             solid_id,
             HashMap::from([(
@@ -1882,7 +1882,7 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
             )]),
             test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
         ),
-        custom_group(
+        custom_zone(
             "Right",
             solid_id,
             HashMap::from([(
@@ -1919,19 +1919,19 @@ async fn pipeline_renders_active_scene_groups_without_global_effect_engine() {
         .zones
         .iter()
         .find(|zone| zone.zone_id == "zone_left")
-        .expect("left group zone should be rendered");
+        .expect("left zone zone should be rendered");
     let right_zone = frame
         .zones
         .iter()
         .find(|zone| zone.zone_id == "zone_right")
-        .expect("right group zone should be rendered");
+        .expect("right zone zone should be rendered");
 
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 0, 255]));
 }
 
 #[tokio::test]
-async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
+async fn multi_zone_scene_publishes_authoritative_canvas_and_scene_canvas() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -1945,9 +1945,9 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
         builtin_effect_id(&registry, "solid_color")
     };
 
-    let mut scene = make_scene("Grouped Canvas Scene");
+    let mut scene = make_scene("Zoneed Canvas Scene");
     scene.zones = vec![
-        custom_group(
+        custom_zone(
             "Left",
             solid_id,
             HashMap::from([(
@@ -1956,7 +1956,7 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
             )]),
             test_layout(vec![point_zone("zone_left", "mock:left", 0.25, 0.5)]),
         ),
-        custom_group(
+        custom_zone(
             "Right",
             solid_id,
             HashMap::from([(
@@ -1979,11 +1979,11 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
 
     tokio::time::timeout(WAIT_DEADLINE, canvas_rx.changed())
         .await
-        .expect("expected grouped scene canvas in time")
+        .expect("expected zoneed scene canvas in time")
         .expect("canvas sender should remain connected");
     tokio::time::timeout(WAIT_DEADLINE, scene_canvas_rx.changed())
         .await
-        .expect("expected grouped scene authoritative scene canvas in time")
+        .expect("expected zoneed scene authoritative scene canvas in time")
         .expect("scene canvas sender should remain connected");
 
     {
@@ -2011,7 +2011,7 @@ async fn multi_group_scene_publishes_authoritative_canvas_and_scene_canvas() {
 }
 
 #[tokio::test]
-async fn late_group_canvas_subscribers_see_last_display_face_frame() {
+async fn late_zone_canvas_subscribers_see_last_display_face_frame() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2023,12 +2023,12 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let display_id = DeviceId::new();
 
     let mut scene = make_scene("Display Face Scene");
     scene.zones = vec![display_zone(
-        group_id,
+        zone_id,
         display_id,
         solid_id,
         HashMap::from([(
@@ -2046,23 +2046,23 @@ async fn late_group_canvas_subscribers_see_last_display_face_frame() {
         rl.start();
     }
 
-    let zone_canvas_sender = state.event_bus.zone_canvas_sender(group_id);
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(zone_id);
     let mut rt = RenderThread::spawn(state.clone());
-    let mut published_group_rx = zone_canvas_sender.subscribe();
+    let mut published_zone_rx = zone_canvas_sender.subscribe();
     let _ = wait_for_next_frame(&mut frame_rx, 0).await;
-    tokio::time::timeout(WAIT_DEADLINE, published_group_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, published_zone_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
-    let group_rx = zone_canvas_sender.subscribe();
-    let frame = group_rx.borrow().clone();
-    assert_canvas_group_frame(&frame, 320, 200, [0, 0, 255, 255]);
+    let zone_rx = zone_canvas_sender.subscribe();
+    let frame = zone_rx.borrow().clone();
+    assert_canvas_zone_frame(&frame, 320, 200, [0, 0, 255, 255]);
     let (_, published_targets) = state.event_bus.display_zone_targets_snapshot();
     let published_target = published_targets
-        .get(&group_id)
+        .get(&zone_id)
         .expect("display zone target metadata should publish with the face frame");
     assert_eq!(published_target.device_id, display_id);
-    // The fixture group carries the seed target, which defaults to the
+    // The fixture zone carries the seed target, which defaults to the
     // blended composition; the published metadata must mirror it.
     assert_eq!(
         published_target.blend_mode,
@@ -2091,11 +2091,11 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let display_id = DeviceId::new();
 
-    let mut face_group = display_zone(
-        group_id,
+    let mut face_zone = display_zone(
+        zone_id,
         display_id,
         solid_id,
         HashMap::from([(
@@ -2104,7 +2104,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         )]),
         test_layout(Vec::new()),
     );
-    face_group
+    face_zone
         .display_target
         .as_mut()
         .expect("display zone should carry a display target")
@@ -2112,7 +2112,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
 
     let mut scene = make_scene("GPU Display Face Scene");
     scene.zones = vec![
-        custom_group(
+        custom_zone(
             "Primary",
             solid_id,
             HashMap::from([(
@@ -2121,7 +2121,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
             )]),
             test_layout(Vec::new()),
         ),
-        face_group,
+        face_zone,
     ];
     scene.unassigned_behavior = UnassignedBehavior::Off;
 
@@ -2133,21 +2133,21 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
     }
 
     let mut scene_canvas_rx = state.event_bus.scene_canvas_receiver();
-    let zone_canvas_sender = state.event_bus.zone_canvas_sender(group_id);
-    let mut group_canvas_rx = zone_canvas_sender.subscribe();
+    let zone_canvas_sender = state.event_bus.zone_canvas_sender(zone_id);
+    let mut zone_canvas_rx = zone_canvas_sender.subscribe();
     let mut rt = RenderThread::spawn(state.clone());
 
     tokio::time::timeout(WAIT_DEADLINE, scene_canvas_rx.changed())
         .await
         .expect("authoritative scene canvas should publish within timeout")
         .expect("scene canvas stream should stay open");
-    tokio::time::timeout(WAIT_DEADLINE, group_canvas_rx.changed())
+    tokio::time::timeout(WAIT_DEADLINE, zone_canvas_rx.changed())
         .await
         .expect("display face canvas should publish within timeout")
         .expect("display face canvas stream should stay open");
 
     let scene_frame = scene_canvas_rx.borrow().clone();
-    let face_frame = group_canvas_rx.borrow().clone();
+    let face_frame = zone_canvas_rx.borrow().clone();
 
     assert_eq!(scene_frame.width, 320);
     assert_eq!(scene_frame.height, 200);
@@ -2155,7 +2155,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
         scene_frame.surface().get_pixel(160, 100),
         Rgba::new(255, 0, 0, 255)
     );
-    assert_canvas_group_frame(&face_frame, 320, 200, [0, 0, 255, 255]);
+    assert_canvas_zone_frame(&face_frame, 320, 200, [0, 0, 255, 255]);
 
     {
         let mut rl = state.render_loop.write().await;
@@ -2165,7 +2165,7 @@ async fn blended_display_faces_publish_authoritative_scene_canvas_on_gpu() {
 }
 
 #[tokio::test]
-async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change() {
+async fn render_thread_prunes_stale_zone_canvas_streams_when_face_zones_change() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2177,13 +2177,13 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let first_group_id = ZoneId::new();
-    let second_group_id = ZoneId::new();
+    let first_zone_id = ZoneId::new();
+    let second_zone_id = ZoneId::new();
     let display_id = DeviceId::new();
 
     let mut first_scene = make_scene("Face Scene A");
     first_scene.zones = vec![display_zone(
-        first_group_id,
+        first_zone_id,
         display_id,
         solid_id,
         HashMap::from([(
@@ -2196,7 +2196,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 
     let mut second_scene = make_scene("Face Scene B");
     second_scene.zones = vec![display_zone(
-        second_group_id,
+        second_zone_id,
         display_id,
         solid_id,
         HashMap::from([(
@@ -2222,16 +2222,16 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
     let mut rt = RenderThread::spawn(state.clone());
     let first_frame = wait_for_next_frame(&mut frame_rx, 0).await;
     assert!(first_frame.frame_number > 0);
-    // Group canvas streams and display targets register as the render loop
+    // Zone canvas streams and display targets register as the render loop
     // publishes them, on channels separate from the lighting frame above, so
     // wait for convergence instead of racing the first iteration.
-    wait_until("first group canvas stream", || {
+    wait_until("first zone canvas stream", || {
         state.event_bus.zone_canvas_stream_count() == 1
     })
     .await;
     wait_until("first display zone target", || {
         let (_, targets) = state.event_bus.display_zone_targets_snapshot();
-        state.event_bus.display_zone_target_count() == 1 && targets.contains_key(&first_group_id)
+        state.event_bus.display_zone_target_count() == 1 && targets.contains_key(&first_zone_id)
     })
     .await;
 
@@ -2239,17 +2239,17 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 
     let second_frame = wait_for_next_frame(&mut frame_rx, first_frame.frame_number).await;
     assert!(second_frame.frame_number > first_frame.frame_number);
-    wait_until("stale group stream pruned", || {
+    wait_until("stale zone stream pruned", || {
         let (_, targets) = state.event_bus.display_zone_targets_snapshot();
         state.event_bus.zone_canvas_stream_count() == 1
             && state.event_bus.display_zone_target_count() == 1
-            && !targets.contains_key(&first_group_id)
-            && targets.contains_key(&second_group_id)
+            && !targets.contains_key(&first_zone_id)
+            && targets.contains_key(&second_zone_id)
     })
     .await;
 
-    wait_until("stale group canvas cleared", || {
-        let stale_rx = state.event_bus.zone_canvas_receiver(first_group_id);
+    wait_until("stale zone canvas cleared", || {
+        let stale_rx = state.event_bus.zone_canvas_receiver(first_zone_id);
         let stale_frame = stale_rx.borrow().clone();
         stale_frame.width() == 0 && stale_frame.height() == 0
     })
@@ -2263,7 +2263,7 @@ async fn render_thread_prunes_stale_group_canvas_streams_when_face_groups_change
 }
 
 #[tokio::test]
-async fn audio_capture_enabled_when_any_active_group_is_reactive() {
+async fn audio_capture_enabled_when_any_active_zone_is_reactive() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2293,7 +2293,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     };
 
     let mut audio_scene = make_scene("Audio Scene");
-    audio_scene.zones = vec![primary_group(
+    audio_scene.zones = vec![primary_zone(
         audio_pulse_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
@@ -2301,7 +2301,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
     audio_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.zones = vec![primary_group(
+    solid_scene.zones = vec![primary_zone(
         solid_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_audio", "mock:audio", 0.5, 0.5)]),
@@ -2342,7 +2342,7 @@ async fn audio_capture_enabled_when_any_active_group_is_reactive() {
 }
 
 #[tokio::test]
-async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
+async fn render_thread_gates_screen_capture_to_screen_reactive_scene_zones() {
     let state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2380,7 +2380,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     };
 
     let mut screen_scene = make_scene("Screen Scene");
-    screen_scene.zones = vec![primary_group(
+    screen_scene.zones = vec![primary_zone(
         screen_cast_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
@@ -2388,7 +2388,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
     screen_scene.unassigned_behavior = UnassignedBehavior::Off;
 
     let mut solid_scene = make_scene("Solid Scene");
-    solid_scene.zones = vec![primary_group(
+    solid_scene.zones = vec![primary_zone(
         solid_id,
         HashMap::new(),
         test_layout(vec![point_zone("zone_screen", "mock:screen", 0.5, 0.5)]),
@@ -2631,7 +2631,7 @@ async fn pipeline_publishes_canvas_data_via_preview_runtime() {
 }
 
 #[tokio::test]
-async fn effect_engine_removal_does_not_break_single_group_fast_path() {
+async fn effect_engine_removal_does_not_break_single_zone_fast_path() {
     // Set up a mock device.
     let device_id = DeviceId::new();
     let mock_config = MockDeviceConfig {
@@ -2697,7 +2697,7 @@ async fn effect_engine_removal_does_not_break_single_group_fast_path() {
 }
 
 #[tokio::test]
-async fn primary_group_canvas_published_to_canvas_channel() {
+async fn primary_zone_canvas_published_to_canvas_channel() {
     let state = make_render_state(
         active_builtin_effect("solid_color", solid_color_controls(255, 0, 0)),
         SpatialEngine::new(test_layout(Vec::new())),
@@ -2908,7 +2908,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
             effect_seed.preset_id,
             layout.clone(),
         )
-        .expect("failing-device test should seed a primary group");
+        .expect("failing-device test should seed a primary zone");
     let scene_manager = SceneService::with_temporary_store(scene_manager, Arc::clone(&event_bus))
         .expect("temporary scene store should open");
     let scene_plan = scene_manager.plan_reader();
@@ -3337,7 +3337,7 @@ async fn pipeline_with_no_effect_produces_black_canvas() {
     }
     rt.shutdown().await.expect("shutdown");
 
-    // With no active groups and no zones, the idle pipeline stays black.
+    // With no active zones and no zones, the idle pipeline stays black.
     let frame_data = frame_rx.borrow().clone();
     assert!(frame_data.zones.is_empty());
 }
@@ -4761,7 +4761,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
             effect_seed.preset_id,
             layout.clone(),
         )
-        .expect("release-sleep test should seed a primary group");
+        .expect("release-sleep test should seed a primary zone");
 
     let (power_tx, power_state) = watch::channel(OutputPowerState::default());
     let event_bus = Arc::new(HypercolorBus::new());

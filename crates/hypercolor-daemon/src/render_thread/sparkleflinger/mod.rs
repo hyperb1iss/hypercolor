@@ -69,8 +69,8 @@ use crate::render_thread::sparkleflinger::gpu::{
 use super::producer_queue::ProducerFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProjectedGroupTextureRequirement {
-    pub(crate) group_id: ZoneId,
+pub(crate) struct ProjectedZoneTextureRequirement {
+    pub(crate) zone_id: ZoneId,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -481,7 +481,7 @@ impl MediaTextureSourceKey {
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DisplayFinalizeCacheKey {
-    pub(crate) group_id: ZoneId,
+    pub(crate) zone_id: ZoneId,
     pub(crate) device_id: DeviceId,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -1072,7 +1072,7 @@ impl SparkleFlinger {
 
     pub(crate) fn prepare_projected_scene_resources(
         &self,
-        requirements: &[ProjectedGroupTextureRequirement],
+        requirements: &[ProjectedZoneTextureRequirement],
         gpu_projection_admitted: bool,
         scene_width: u32,
         scene_height: u32,
@@ -1118,20 +1118,20 @@ impl SparkleFlinger {
         }
     }
 
-    pub(crate) fn has_projected_group_resource(
+    pub(crate) fn has_projected_zone_resource(
         &self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         width: u32,
         height: u32,
     ) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => {
-                let _ = (group_id, width, height);
+                let _ = (zone_id, width, height);
                 false
             }
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.has_projected_group_resource(group_id, width, height)
+                gpu.has_projected_zone_resource(zone_id, width, height)
             }
         }
     }
@@ -1140,9 +1140,9 @@ impl SparkleFlinger {
         clippy::unnecessary_wraps,
         reason = "the wrapper preserves the fallible GPU snapshot contract in CPU-only builds"
     )]
-    pub(crate) fn stabilize_projected_group_frame(
+    pub(crate) fn stabilize_projected_zone_frame(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         frame: ProducerFrame,
     ) -> Result<ProducerFrame> {
         #[cfg(feature = "wgpu")]
@@ -1154,7 +1154,7 @@ impl SparkleFlinger {
                 ) if gpu_frame.origin
                     == crate::render_thread::producer_queue::GpuTextureFrameOrigin::CompositorOutput =>
                 {
-                    gpu.snapshot_projected_group_frame(group_id, gpu_frame)
+                    gpu.snapshot_projected_zone_frame(zone_id, gpu_frame)
                         .map(ProducerFrame::GpuTexture)
                 }
                 (_, frame) => Ok(frame),
@@ -1162,7 +1162,7 @@ impl SparkleFlinger {
         }
         #[cfg(not(feature = "wgpu"))]
         {
-            let _ = group_id;
+            let _ = zone_id;
             Ok(frame)
         }
     }
@@ -1378,11 +1378,11 @@ impl SparkleFlinger {
     }
 
     #[cfg(feature = "wgpu")]
-    pub(crate) fn retain_display_finalize_groups(&mut self, active_group_ids: &[ZoneId]) {
+    pub(crate) fn retain_display_finalize_groups(&mut self, active_zone_ids: &[ZoneId]) {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => {}
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.retain_display_finalize_groups(active_group_ids);
+                gpu.retain_display_finalize_groups(active_zone_ids);
             }
         }
     }

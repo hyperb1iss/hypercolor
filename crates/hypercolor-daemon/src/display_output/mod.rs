@@ -76,7 +76,7 @@ pub struct DisplayOutputState {
     pub static_hold_refresh_interval: Duration,
     /// Latest composited JPEG frames published per device for preview surfaces.
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
-    /// Effective `display.face_fps_cap` for group-direct HTML faces.
+    /// Effective `display.face_fps_cap` for zone-direct HTML faces.
     pub face_fps_cap: u32,
 }
 
@@ -112,7 +112,7 @@ type DisplayWorkerKey = (String, DeviceId);
 
 #[derive(Clone, Debug, PartialEq)]
 struct DisplayFaceTargetBinding {
-    group_id: ZoneId,
+    zone_id: ZoneId,
     target: DisplayFaceTarget,
     finalized: bool,
 }
@@ -178,13 +178,13 @@ impl DisplayTargetCacheKey {
 #[derive(Clone, Debug)]
 enum DisplayCanvasSource {
     Scene,
-    GroupDirect { group_id: ZoneId },
+    ZoneDirect { zone_id: ZoneId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DisplayCanvasSourceSignature {
     Scene,
-    GroupDirect { group_id: ZoneId },
+    ZoneDirect { zone_id: ZoneId },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -306,14 +306,14 @@ impl DisplayCanvasSource {
     fn signature(&self) -> DisplayCanvasSourceSignature {
         match self {
             Self::Scene => DisplayCanvasSourceSignature::Scene,
-            Self::GroupDirect { group_id } => DisplayCanvasSourceSignature::GroupDirect {
-                group_id: *group_id,
-            },
+            Self::ZoneDirect { zone_id } => {
+                DisplayCanvasSourceSignature::ZoneDirect { zone_id: *zone_id }
+            }
         }
     }
 
-    fn is_group_direct(&self) -> bool {
-        matches!(self, Self::GroupDirect { .. })
+    fn is_zone_direct(&self) -> bool {
+        matches!(self, Self::ZoneDirect { .. })
     }
 }
 
@@ -460,7 +460,7 @@ async fn run_display_output(state: DisplayOutputState, mut shutdown_rx: oneshot:
         for target in targets.targets.iter() {
             let face_frame = match &target.canvas_source {
                 DisplayCanvasSource::Scene => None,
-                DisplayCanvasSource::GroupDirect { .. } => {
+                DisplayCanvasSource::ZoneDirect { .. } => {
                     let Some(sender) = target.zone_canvas_sender.as_ref() else {
                         continue;
                     };
@@ -530,7 +530,7 @@ fn build_display_worker_frame_set(
                 },
             ))
         }
-        DisplayCanvasSource::GroupDirect { .. } => {
+        DisplayCanvasSource::ZoneDirect { .. } => {
             let face_frame = face_frame?;
             let face_identity = stable_display_zone_source_identity(face_frame.as_ref())?;
             if target.finalized_face {
@@ -760,14 +760,14 @@ async fn display_targets(
             .is_some_and(|binding| binding.finalized);
         let canvas_source = display_face_targets
             .get(&tracked.info.id)
-            .map(|binding| binding.group_id)
-            .map_or(DisplayCanvasSource::Scene, |group_id| {
-                DisplayCanvasSource::GroupDirect { group_id }
+            .map(|binding| binding.zone_id)
+            .map_or(DisplayCanvasSource::Scene, |zone_id| {
+                DisplayCanvasSource::ZoneDirect { zone_id }
             });
         let zone_canvas_sender = match &canvas_source {
             DisplayCanvasSource::Scene => None,
-            DisplayCanvasSource::GroupDirect { group_id } => {
-                Some(event_bus.zone_canvas_sender(*group_id))
+            DisplayCanvasSource::ZoneDirect { zone_id } => {
+                Some(event_bus.zone_canvas_sender(*zone_id))
             }
         };
         let viewport = display_viewport_for_device(
@@ -778,7 +778,7 @@ async fn display_targets(
         )
         .or_else(|| {
             canvas_source
-                .is_group_direct()
+                .is_zone_direct()
                 .then_some(default_display_viewport())
         });
         let Some(viewport) = viewport else {
@@ -824,14 +824,14 @@ async fn display_targets(
 }
 
 fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<DisplayTarget>]) {
-    let mut active_group_ids = Vec::new();
+    let mut active_zone_ids = Vec::new();
     for target in targets {
-        let DisplayCanvasSource::GroupDirect { group_id } = target.canvas_source else {
+        let DisplayCanvasSource::ZoneDirect { zone_id } = target.canvas_source else {
             continue;
         };
-        active_group_ids.push(group_id);
+        active_zone_ids.push(zone_id);
         event_bus.upsert_display_zone_output_route(
-            group_id,
+            zone_id,
             DisplayZoneOutputRoute {
                 device_id: target.device_id,
                 width: target.geometry.width,
@@ -849,16 +849,16 @@ fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<
             },
         );
     }
-    event_bus.retain_display_zone_output_routes(&active_group_ids);
+    event_bus.retain_display_zone_output_routes(&active_zone_ids);
 }
 
 fn display_face_targets_by_device(
     targets: HashMap<ZoneId, hypercolor_core::bus::DisplayZoneTarget>,
 ) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
     let mut by_device = HashMap::new();
-    for (group_id, target) in targets {
+    for (zone_id, target) in targets {
         let binding = DisplayFaceTargetBinding {
-            group_id,
+            zone_id,
             target: DisplayFaceTarget {
                 device_id: target.device_id,
                 blend_mode: target.blend_mode,
@@ -876,11 +876,11 @@ fn display_face_targets_by_device(
                 let replace = display_face_target_binding_preferred(&binding, current);
                 debug!(
                     device_id = %target.device_id,
-                    current_group_id = %current.group_id,
-                    candidate_group_id = %binding.group_id,
+                    current_zone_id = %current.zone_id,
+                    candidate_zone_id = %binding.zone_id,
                     current_finalized = current.finalized,
                     candidate_finalized = binding.finalized,
-                    selected_group_id = %if replace { binding.group_id } else { current.group_id },
+                    selected_zone_id = %if replace { binding.zone_id } else { current.zone_id },
                     "resolved duplicate display face targets for one device"
                 );
                 if replace {
@@ -897,7 +897,7 @@ fn display_face_target_binding_preferred(
     current: &DisplayFaceTargetBinding,
 ) -> bool {
     (candidate.finalized && !current.finalized)
-        || (candidate.finalized == current.finalized && candidate.group_id.0 > current.group_id.0)
+        || (candidate.finalized == current.finalized && candidate.zone_id.0 > current.zone_id.0)
 }
 
 fn display_target_geometry_for_device(
@@ -1010,8 +1010,8 @@ fn capped_display_target_fps(
     frame_format: DisplayFrameFormat,
     face_fps_cap: u32,
 ) -> u32 {
-    if canvas_source.is_group_direct() {
-        return capped_group_direct_display_target_fps(device_max_fps, face_fps_cap);
+    if canvas_source.is_zone_direct() {
+        return capped_zone_direct_display_target_fps(device_max_fps, face_fps_cap);
     }
 
     let max_fps = if frame_format == DisplayFrameFormat::Rgb {
@@ -1028,10 +1028,7 @@ fn capped_display_target_fps(
     device_limit.clamp(1, max_fps)
 }
 
-pub(crate) fn capped_group_direct_display_target_fps(
-    device_max_fps: u32,
-    face_fps_cap: u32,
-) -> u32 {
+pub(crate) fn capped_zone_direct_display_target_fps(device_max_fps: u32, face_fps_cap: u32) -> u32 {
     let device_limit = if device_max_fps == 0 {
         DISPLAY_FACE_DEFAULT_FPS
     } else {
@@ -1094,7 +1091,7 @@ mod tests {
         ))
     }
 
-    fn group_canvas_frame(frame_number: u32) -> Arc<DisplayZoneFrame> {
+    fn zone_canvas_frame(frame_number: u32) -> Arc<DisplayZoneFrame> {
         Arc::new(DisplayZoneFrame::Canvas(CanvasFrame::from_owned_canvas(
             Canvas::new(2, 2),
             frame_number,
@@ -1117,8 +1114,8 @@ mod tests {
                 circular: false,
             },
             frame_format: DisplayFrameFormat::Jpeg,
-            canvas_source: DisplayCanvasSource::GroupDirect {
-                group_id: ZoneId::new(),
+            canvas_source: DisplayCanvasSource::ZoneDirect {
+                zone_id: ZoneId::new(),
             },
             zone_canvas_sender: None,
             display_target: Some(DisplayFaceTarget {
@@ -1149,36 +1146,36 @@ mod tests {
     }
 
     #[test]
-    fn face_fps_cap_default_keeps_group_direct_at_thirty() {
+    fn face_fps_cap_default_keeps_zone_direct_at_thirty() {
         // Default cap, fast panel: today's 30 fps baseline is unchanged.
-        assert_eq!(capped_group_direct_display_target_fps(60, 30), 30);
+        assert_eq!(capped_zone_direct_display_target_fps(60, 30), 30);
         // Default cap, device with no declared limit.
-        assert_eq!(capped_group_direct_display_target_fps(0, 30), 30);
+        assert_eq!(capped_zone_direct_display_target_fps(0, 30), 30);
         // Default cap, slow panel: device limit still wins below the cap.
-        assert_eq!(capped_group_direct_display_target_fps(15, 30), 15);
+        assert_eq!(capped_zone_direct_display_target_fps(15, 30), 15);
     }
 
     #[test]
     fn face_fps_cap_raised_to_sixty_is_honored_when_device_allows() {
-        assert_eq!(capped_group_direct_display_target_fps(60, 60), 60);
+        assert_eq!(capped_zone_direct_display_target_fps(60, 60), 60);
         // Device that never declared a limit stays on the 30 fps default.
-        assert_eq!(capped_group_direct_display_target_fps(0, 60), 30);
+        assert_eq!(capped_zone_direct_display_target_fps(0, 60), 30);
         // Device limit below the cap still wins.
-        assert_eq!(capped_group_direct_display_target_fps(24, 60), 24);
+        assert_eq!(capped_zone_direct_display_target_fps(24, 60), 24);
     }
 
     #[test]
-    fn capped_display_target_fps_group_direct_consults_face_cap() {
-        let group_direct = DisplayCanvasSource::GroupDirect {
-            group_id: fixed_zone_id(1),
+    fn capped_display_target_fps_zone_direct_consults_face_cap() {
+        let zone_direct = DisplayCanvasSource::ZoneDirect {
+            zone_id: fixed_zone_id(1),
         };
 
         assert_eq!(
-            capped_display_target_fps(60, &group_direct, DisplayFrameFormat::Jpeg, 30),
+            capped_display_target_fps(60, &zone_direct, DisplayFrameFormat::Jpeg, 30),
             30
         );
         assert_eq!(
-            capped_display_target_fps(60, &group_direct, DisplayFrameFormat::Jpeg, 60),
+            capped_display_target_fps(60, &zone_direct, DisplayFrameFormat::Jpeg, 60),
             60
         );
     }
@@ -1207,7 +1204,7 @@ mod tests {
     #[test]
     fn direct_display_face_uses_unified_face_frame_source_without_scene() {
         let target = display_target(BlendMode::Replace);
-        let face_frame = group_canvas_frame(1);
+        let face_frame = zone_canvas_frame(1);
 
         let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
             .expect("direct face should not require a scene frame");
@@ -1249,7 +1246,7 @@ mod tests {
         let scene_frame = canvas_frame(1);
         let scene_identity =
             stable_display_source_identity(scene_frame.as_ref()).expect("scene should be stable");
-        let face_frame = group_canvas_frame(2);
+        let face_frame = zone_canvas_frame(2);
 
         let (frames, identity) = build_display_worker_frame_set(
             &target,
@@ -1292,7 +1289,7 @@ mod tests {
     #[test]
     fn blended_display_face_composes_against_black_without_scene_frame() {
         let target = display_target(BlendMode::Alpha);
-        let face_frame = group_canvas_frame(1);
+        let face_frame = zone_canvas_frame(1);
 
         let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
             .expect("blended face should not wait for a scene frame");
@@ -1332,7 +1329,7 @@ mod tests {
     fn finalized_display_face_uses_direct_frame_without_scene() {
         let mut target = display_target(BlendMode::Alpha);
         target.finalized_face = true;
-        let face_frame = group_canvas_frame(1);
+        let face_frame = zone_canvas_frame(1);
 
         let (frames, identity) = build_display_worker_frame_set(&target, None, Some(&face_frame))
             .expect("finalized face should not require a scene frame");
@@ -1380,7 +1377,7 @@ mod tests {
         let binding = resolved
             .get(&device_id)
             .expect("device target should resolve");
-        assert_eq!(binding.group_id, old_finalized);
+        assert_eq!(binding.zone_id, old_finalized);
         assert!(binding.finalized);
     }
 
@@ -1399,7 +1396,7 @@ mod tests {
         let binding = resolved
             .get(&device_id)
             .expect("device target should resolve");
-        assert_eq!(binding.group_id, newer);
+        assert_eq!(binding.zone_id, newer);
         assert!(binding.finalized);
     }
 }

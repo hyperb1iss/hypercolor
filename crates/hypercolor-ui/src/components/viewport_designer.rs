@@ -96,7 +96,7 @@ impl ViewportDraft {
 }
 
 /// Seed values threaded in from the caller: effect UUID, current live
-/// control values, the render-group canvas aspect for the aspect-lock
+/// control values, the render-zone canvas aspect for the aspect-lock
 /// toggle, and the effect-specific mode.
 #[derive(Clone, Debug)]
 pub struct ViewportDesignerContext {

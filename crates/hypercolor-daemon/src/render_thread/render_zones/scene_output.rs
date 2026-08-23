@@ -15,24 +15,24 @@ use super::super::sparkleflinger::{CompositionLayer, SparkleFlinger};
 use super::ZoneRuntime;
 #[cfg(feature = "wgpu")]
 use super::frame_helpers::composed_frame_to_producer_frame;
-use super::group_state::group_contributes_to_scene_canvas;
 use super::projection::compose_authoritative_scene_canvas;
+use super::zone_state::zone_contributes_to_scene_canvas;
 
 impl ZoneRuntime {
-    pub(super) fn sample_scene_group_led_zones(
+    pub(super) fn sample_scene_zone_led_zones(
         &mut self,
-        groups: &[Zone],
-        zones: &mut Vec<ZoneColors>,
+        zones: &[Zone],
+        zone_colors: &mut Vec<ZoneColors>,
     ) -> Result<(), SpatialSamplingError> {
         self.zone_sampling_scratch.clear();
-        for group in groups
+        for zone in zones
             .iter()
-            .filter(|group| group_contributes_to_scene_canvas(group))
+            .filter(|zone| zone_contributes_to_scene_canvas(zone))
         {
-            let Some(target) = self.target_canvases.get(&group.id) else {
+            let Some(target) = self.target_canvases.get(&zone.id) else {
                 continue;
             };
-            let Some(spatial_engine) = self.spatial_engines.get(&group.id) else {
+            let Some(spatial_engine) = self.spatial_engines.get(&zone.id) else {
                 continue;
             };
             let start = self.zone_sampling_scratch.len();
@@ -46,11 +46,11 @@ impl ZoneRuntime {
             }
         }
 
-        std::mem::swap(zones, &mut self.zone_sampling_scratch);
+        std::mem::swap(zone_colors, &mut self.zone_sampling_scratch);
         Ok(())
     }
 
-    pub(super) fn compose_scene_frame(&mut self, groups: &[Zone]) -> Result<ProducerFrame> {
+    pub(super) fn compose_scene_frame(&mut self, zones: &[Zone]) -> Result<ProducerFrame> {
         let scene_surface_pool = self
             .scene_surface_pool
             .as_mut()
@@ -59,7 +59,7 @@ impl ZoneRuntime {
             let mut scene_canvas = Canvas::try_new(self.scene_width, self.scene_height)?;
             compose_authoritative_scene_canvas(
                 &mut scene_canvas,
-                groups,
+                zones,
                 &self.target_canvases,
                 self.scene_width,
                 self.scene_height,
@@ -72,7 +72,7 @@ impl ZoneRuntime {
 
         compose_authoritative_scene_canvas(
             lease.canvas_mut(),
-            groups,
+            zones,
             &self.target_canvases,
             self.scene_width,
             self.scene_height,
@@ -123,12 +123,12 @@ impl ZoneRuntime {
     }
 
     #[cfg(test)]
-    pub(super) fn compose_preview_grid_for_test(&mut self, groups: &[Zone]) -> ProducerFrame {
+    pub(super) fn compose_preview_grid_for_test(&mut self, zones: &[Zone]) -> ProducerFrame {
         let Some(scene_surface_pool) = &mut self.scene_surface_pool else {
             let mut preview_grid = Canvas::new(self.scene_width, self.scene_height);
             compose_preview_grid_canvas(
                 &mut preview_grid,
-                groups,
+                zones,
                 &self.target_canvases,
                 self.scene_width,
                 self.scene_height,
@@ -139,7 +139,7 @@ impl ZoneRuntime {
             let mut preview_grid = Canvas::new(self.scene_width, self.scene_height);
             compose_preview_grid_canvas(
                 &mut preview_grid,
-                groups,
+                zones,
                 &self.target_canvases,
                 self.scene_width,
                 self.scene_height,
@@ -149,7 +149,7 @@ impl ZoneRuntime {
 
         compose_preview_grid_canvas(
             lease.canvas_mut(),
-            groups,
+            zones,
             &self.target_canvases,
             self.scene_width,
             self.scene_height,
@@ -162,14 +162,14 @@ impl ZoneRuntime {
 #[cfg(test)]
 fn compose_preview_grid_canvas(
     preview: &mut Canvas,
-    groups: &[Zone],
+    zones: &[Zone],
     target_canvases: &HashMap<ZoneId, Canvas>,
     preview_width: u32,
     preview_height: u32,
 ) {
-    let preview_count = groups
+    let preview_count = zones
         .iter()
-        .filter(|group| group_contributes_to_scene_canvas(group))
+        .filter(|zone| zone_contributes_to_scene_canvas(zone))
         .count();
 
     if preview_count == 0 {
@@ -178,10 +178,10 @@ fn compose_preview_grid_canvas(
     }
 
     if preview_count == 1
-        && let Some(source) = groups
+        && let Some(source) = zones
             .iter()
-            .find(|group| group_contributes_to_scene_canvas(group))
-            .and_then(|group| target_canvases.get(&group.id))
+            .find(|zone| zone_contributes_to_scene_canvas(zone))
+            .and_then(|zone| target_canvases.get(&zone.id))
     {
         if source.width() == preview_width && source.height() == preview_height {
             preview
@@ -196,12 +196,12 @@ fn compose_preview_grid_canvas(
 
     let columns = tile_columns(preview_count);
     let rows = preview_count.div_ceil(columns);
-    for (index, group) in groups
+    for (index, zone) in zones
         .iter()
-        .filter(|group| group_contributes_to_scene_canvas(group))
+        .filter(|zone| zone_contributes_to_scene_canvas(zone))
         .enumerate()
     {
-        let Some(source) = target_canvases.get(&group.id) else {
+        let Some(source) = target_canvases.get(&zone.id) else {
             continue;
         };
 

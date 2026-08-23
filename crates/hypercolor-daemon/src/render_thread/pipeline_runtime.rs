@@ -56,7 +56,7 @@ use super::input_publication::{
 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
 use super::macos_screen_diagnostics::MacosScreenParityDiagnosticMailbox;
 use super::producer_queue::ProducerQueue;
-use super::render_groups::{
+use super::render_zones::{
     PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
 };
 use super::scene_dependency::SceneDependencyKey;
@@ -1419,14 +1419,14 @@ pub(crate) struct RenderCaches {
     pub(crate) display_finalize_runtime: DisplayFinalizeRuntime,
     pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
-    pub(crate) render_group_runtime: ZoneRuntime,
+    pub(crate) render_zone_runtime: ZoneRuntime,
     pub(crate) output_artifacts: OutputArtifactsState,
     pub(crate) pending_layout_activation: Option<PreparedLayoutActivation>,
     effect_delta_clock: EffectDeltaClock,
 }
 
 pub(crate) struct PreparedCanvasResize {
-    render_group_runtime: super::render_groups::PreparedSceneResize,
+    render_zone_runtime: super::render_zones::PreparedSceneResize,
     static_surfaces: Vec<CachedStaticSurface>,
     sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
     sampling_preparation: SparkleFlingerSamplingPreparation,
@@ -1445,7 +1445,7 @@ impl PreparedCanvasResize {
     }
 
     pub(crate) fn prepare_scene_cpu_backing(&mut self) -> Result<()> {
-        self.render_group_runtime.prepare_cpu_backing()?;
+        self.render_zone_runtime.prepare_cpu_backing()?;
         Ok(())
     }
 }
@@ -1519,7 +1519,7 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) display_sparkleflinger: &'a mut SparkleFlinger,
     #[cfg(feature = "wgpu")]
     pub(crate) display_finalize_runtime: &'a mut DisplayFinalizeRuntime,
-    pub(crate) render_group_runtime: &'a mut ZoneRuntime,
+    pub(crate) render_zone_runtime: &'a mut ZoneRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
     pub(crate) effect_delta_clock: &'a mut EffectDeltaClock,
 }
@@ -1557,12 +1557,12 @@ pub(crate) struct DisplayFinalizeRuntime {
 
 #[cfg(feature = "wgpu")]
 impl DisplayFinalizeRuntime {
-    pub(crate) fn take(&mut self, group_id: ZoneId) -> Option<PendingDisplayFinalizeWork> {
-        self.pending.remove(&group_id)
+    pub(crate) fn take(&mut self, zone_id: ZoneId) -> Option<PendingDisplayFinalizeWork> {
+        self.pending.remove(&zone_id)
     }
 
-    pub(crate) fn insert(&mut self, group_id: ZoneId, work: PendingDisplayFinalizeWork) {
-        self.pending.insert(group_id, work);
+    pub(crate) fn insert(&mut self, zone_id: ZoneId, work: PendingDisplayFinalizeWork) {
+        self.pending.insert(zone_id, work);
     }
 
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = PendingDisplayFinalizeWork> + '_ {
@@ -1571,24 +1571,24 @@ impl DisplayFinalizeRuntime {
 
     pub(crate) fn take_inactive(
         &mut self,
-        active_group_ids: &[ZoneId],
+        active_zone_ids: &[ZoneId],
     ) -> Vec<PendingDisplayFinalizeWork> {
-        let inactive_group_ids = self
+        let inactive_zone_ids = self
             .pending
             .keys()
             .copied()
-            .filter(|group_id| !active_group_ids.iter().any(|active| active == group_id))
+            .filter(|zone_id| !active_zone_ids.iter().any(|active| active == zone_id))
             .collect::<Vec<_>>();
 
-        inactive_group_ids
+        inactive_zone_ids
             .into_iter()
-            .filter_map(|group_id| self.pending.remove(&group_id))
+            .filter_map(|zone_id| self.pending.remove(&zone_id))
             .collect()
     }
 }
 
 impl ComposeRuntime<'_> {
-    pub(crate) fn clear_inactive_groups(&mut self) {
+    pub(crate) fn clear_inactive_zones(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
             self.display_sparkleflinger
@@ -1597,21 +1597,18 @@ impl ComposeRuntime<'_> {
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
             .retain_display_finalize_groups(&[]);
-        self.render_group_runtime.clear_inactive_groups();
+        self.render_zone_runtime.clear_inactive_zones();
         self.effect_delta_clock.clear();
     }
 
     #[cfg(feature = "wgpu")]
-    pub(crate) fn discard_display_finalizations_except(&mut self, active_group_ids: &[ZoneId]) {
-        for pending in self
-            .display_finalize_runtime
-            .take_inactive(active_group_ids)
-        {
+    pub(crate) fn discard_display_finalizations_except(&mut self, active_zone_ids: &[ZoneId]) {
+        for pending in self.display_finalize_runtime.take_inactive(active_zone_ids) {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
         self.display_sparkleflinger
-            .retain_display_finalize_groups(active_group_ids);
+            .retain_display_finalize_groups(active_zone_ids);
     }
 
     pub(crate) fn reuse_or_render_scene(
@@ -1624,7 +1621,7 @@ impl ComposeRuntime<'_> {
         inputs: &FrameInputs,
     ) -> (Result<ZoneResult>, bool) {
         if skip_decision == SkipDecision::ReuseCanvas
-            && let Some(retained) = self.render_group_runtime.reuse_scene(dependency_key)
+            && let Some(retained) = self.render_zone_runtime.reuse_scene(dependency_key)
         {
             self.effect_delta_clock
                 .record_retained_frame(dependency_key, frame_delta);
@@ -1635,7 +1632,7 @@ impl ComposeRuntime<'_> {
             .effect_delta_clock
             .take_render_delta(dependency_key, frame_delta);
 
-        if let Err(error) = self.render_group_runtime.admit_reconcile(
+        if let Err(error) = self.render_zone_runtime.admit_reconcile(
             scene_snapshot.scene_runtime.resolved_zones.as_ref(),
             scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
@@ -1649,7 +1646,7 @@ impl ComposeRuntime<'_> {
 
         let zones = self.output_artifacts.zones_mut();
         let context = RenderSceneContext {
-            groups: scene_snapshot.scene_runtime.resolved_zones.as_ref(),
+            zones: scene_snapshot.scene_runtime.resolved_zones.as_ref(),
             active_scene_id: scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
             elapsed_ms: scene_snapshot.elapsed_ms,
@@ -1670,7 +1667,7 @@ impl ComposeRuntime<'_> {
             },
         };
         (
-            self.render_group_runtime
+            self.render_zone_runtime
                 .render_scene(context, self.sparkleflinger, zones),
             false,
         )
@@ -1821,16 +1818,16 @@ impl SceneSnapshotState {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RenderSurfaceSnapshot {
     pub(crate) canvas_receivers: u32,
-    /// Monotonic counter from the render-group runtime's scene surface pool:
+    /// Monotonic counter from the render-zone runtime's scene surface pool:
     /// how many times a dequeue had to reuse a still-shared Published
     /// slot and allocate a fresh canvas. Only fires at the pool's cap.
     pub(crate) scene_pool_saturation_reallocs: u64,
-    /// Same counter summed across per-group direct-canvas pools.
+    /// Same counter summed across per-zone direct-canvas pools.
     pub(crate) direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size. Grows
     /// once per high-water mark, then settles.
     pub(crate) scene_pool_grown_slots: u32,
-    /// Same gauge summed across per-group direct-canvas pools.
+    /// Same gauge summed across per-zone direct-canvas pools.
     pub(crate) direct_pool_grown_slots: u32,
     pub(crate) scene_pool_slot_count: u32,
     pub(crate) scene_pool_max_slots: u32,
@@ -1910,7 +1907,7 @@ impl RenderCaches {
         );
     }
 
-    pub(crate) fn clear_inactive_groups(&mut self) {
+    pub(crate) fn clear_inactive_zones(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
             self.display_sparkleflinger
@@ -1919,7 +1916,7 @@ impl RenderCaches {
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
             .retain_display_finalize_groups(&[]);
-        self.render_group_runtime.clear_inactive_groups();
+        self.render_zone_runtime.clear_inactive_zones();
         self.effect_delta_clock.clear();
     }
 
@@ -1932,7 +1929,7 @@ impl RenderCaches {
             display_sparkleflinger: &mut self.display_sparkleflinger,
             #[cfg(feature = "wgpu")]
             display_finalize_runtime: &mut self.display_finalize_runtime,
-            render_group_runtime: &mut self.render_group_runtime,
+            render_zone_runtime: &mut self.render_zone_runtime,
             output_artifacts: &mut self.output_artifacts,
             effect_delta_clock: &mut self.effect_delta_clock,
         }
@@ -1960,8 +1957,8 @@ impl RenderCaches {
         off_color: [u8; 3],
         spatial_engine: &SpatialEngine,
     ) -> Result<PreparedCanvasResize> {
-        let render_group_runtime = self
-            .render_group_runtime
+        let render_zone_runtime = self
+            .render_zone_runtime
             .prepare_scene_resize(width, height)?
             .expect("canvas resize preparation requires changed dimensions");
         let static_surfaces =
@@ -1991,7 +1988,7 @@ impl RenderCaches {
             spatial_engine.try_prepare_sampling_canvas(width, height)?;
         }
         Ok(PreparedCanvasResize {
-            render_group_runtime,
+            render_zone_runtime,
             static_surfaces,
             sparkleflinger_preparation,
             sampling_preparation,
@@ -2015,8 +2012,8 @@ impl RenderCaches {
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
             .apply_canvas_resize(prepared.display_sparkleflinger_preparation);
-        self.render_group_runtime
-            .commit_scene_resize(prepared.render_group_runtime);
+        self.render_zone_runtime
+            .commit_scene_resize(prepared.render_zone_runtime);
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.output_artifacts
@@ -2065,8 +2062,8 @@ impl RenderCaches {
         &mut self,
         canvas_receiver_count: usize,
     ) -> RenderSurfaceSnapshot {
-        let scene_counts = self.render_group_runtime.scene_surface_pool_state_counts();
-        let direct_counts = self.render_group_runtime.direct_surface_pool_state_counts();
+        let scene_counts = self.render_zone_runtime.scene_surface_pool_state_counts();
+        let direct_counts = self.render_zone_runtime.direct_surface_pool_state_counts();
         let sparkleflinger_counts = self.sparkleflinger.surface_pool_counts();
         #[cfg(feature = "wgpu")]
         let sparkleflinger_counts =
@@ -2111,31 +2108,28 @@ impl RenderCaches {
             ..RenderSurfaceSnapshot::default()
         };
         snapshot.scene_pool_saturation_reallocs = self
-            .render_group_runtime
+            .render_zone_runtime
             .scene_surface_pool_saturation_reallocs();
         snapshot.direct_pool_saturation_reallocs = self
-            .render_group_runtime
+            .render_zone_runtime
             .direct_surface_pool_saturation_reallocs();
-        snapshot.scene_pool_grown_slots =
-            self.render_group_runtime.scene_surface_pool_grown_slots();
+        snapshot.scene_pool_grown_slots = self.render_zone_runtime.scene_surface_pool_grown_slots();
         snapshot.direct_pool_grown_slots =
-            self.render_group_runtime.direct_surface_pool_grown_slots();
+            self.render_zone_runtime.direct_surface_pool_grown_slots();
         snapshot.scene_pool_slot_count = scene_slot_count;
-        snapshot.scene_pool_max_slots = self.render_group_runtime.scene_surface_pool_max_slots();
-        snapshot.direct_pool_slot_count =
-            self.render_group_runtime.direct_surface_pool_slot_count();
-        snapshot.direct_pool_max_slots = self.render_group_runtime.direct_surface_pool_max_slots();
+        snapshot.scene_pool_max_slots = self.render_zone_runtime.scene_surface_pool_max_slots();
+        snapshot.direct_pool_slot_count = self.render_zone_runtime.direct_surface_pool_slot_count();
+        snapshot.direct_pool_max_slots = self.render_zone_runtime.direct_surface_pool_max_slots();
         snapshot.scene_pool_shared_published_slots = self
-            .render_group_runtime
+            .render_zone_runtime
             .scene_surface_pool_shared_published_slots();
         snapshot.scene_pool_max_ref_count =
-            self.render_group_runtime.scene_surface_pool_max_ref_count();
+            self.render_zone_runtime.scene_surface_pool_max_ref_count();
         snapshot.direct_pool_shared_published_slots = self
-            .render_group_runtime
+            .render_zone_runtime
             .direct_surface_pool_shared_published_slots();
-        snapshot.direct_pool_max_ref_count = self
-            .render_group_runtime
-            .direct_surface_pool_max_ref_count();
+        snapshot.direct_pool_max_ref_count =
+            self.render_zone_runtime.direct_surface_pool_max_ref_count();
 
         snapshot
     }
@@ -2314,7 +2308,7 @@ impl PipelineRuntime {
                 display_finalize_runtime: DisplayFinalizeRuntime::default(),
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
-                render_group_runtime: match asset_library {
+                render_zone_runtime: match asset_library {
                     Some(asset_library) => ZoneRuntime::try_with_asset_library(
                         canvas_width,
                         canvas_height,
@@ -3187,7 +3181,7 @@ mod tests {
 
         runtime
             .render
-            .render_group_runtime
+            .render_zone_runtime
             .try_resize_scene(321, 200)
             .expect("CPU scene resize should prepare its surface pool");
         let snapshot = runtime.render.render_surface_snapshot(3);

@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
 use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
-use crate::api::publish_render_group_changed;
+use crate::api::publish_render_zone_changed;
 use crate::app_state::AppState;
 use crate::domain::display::{
     ClearDisplayFace, SetDisplayFace, clear_display_face, remove_default_display_overlay,
@@ -226,7 +226,7 @@ async fn handle_default_scope(
                     .active_scene()
                     .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
             };
-            publish_render_group_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
+            publish_render_zone_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
         }
         let live_scope = live_scope_payload(state, device_id).await;
         return serialize_result(DisplayFaceResult {
@@ -306,7 +306,7 @@ async fn handle_default_scope(
                 .map(|scene| scene.id)
                 .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT)
         };
-        publish_render_group_changed(state, scene_id, &group, ZoneChangeKind::Updated);
+        publish_render_zone_changed(state, scene_id, &group, ZoneChangeKind::Updated);
     }
 
     serialize_result(DisplayFaceResult {

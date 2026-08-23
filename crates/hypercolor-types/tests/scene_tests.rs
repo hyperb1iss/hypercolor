@@ -202,7 +202,7 @@ fn display_face_target_new_seeds_blended_default() {
 }
 
 #[test]
-fn render_group_display_target_round_trips_in_scene_json() {
+fn zone_display_target_round_trips_in_scene_json() {
     let effect_id = EffectId::from(Uuid::now_v7());
     let device_id = DeviceId::new();
     let mut display_target = DisplayFaceTarget::new(device_id);

@@ -282,7 +282,7 @@ fn gpu_display_finalize_keeps_route_surface_sets_independent() {
     assert_eq!(&small.rgba_bytes()[0..4], &[255, 0, 0, 255]);
     assert_eq!(&large.rgba_bytes()[0..4], &[0, 0, 255, 255]);
 
-    compositor.retain_display_finalize_groups(&[small_params.cache_key.group_id]);
+    compositor.retain_display_finalize_groups(&[small_params.cache_key.zone_id]);
     assert!(
         compositor
             .display_finalize_surfaces

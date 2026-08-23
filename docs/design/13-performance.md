@@ -113,12 +113,12 @@ model is:
 │  Thread 0: Render Thread ─────────────────────────── dedicated   │
 │    - Frame timing + adaptive FPS                                  │
 │    - Scene snapshot + input sampling                              │
-│    - Render-group execution                                       │
+│    - Render-zone execution                                        │
 │    - Spatial sampling + hardware routing                          │
 │    - Scene/display publication to the bus                         │
 │                                                                   │
 │  Thread 1: Display Output ───────────────────────── dedicated    │
-│    - Watches canonical scene canvas + direct group canvases       │
+│    - Watches canonical scene canvas + direct zone canvases       │
 │    - Applies per-display viewport/blend policy                    │
 │    - Rebuilds target routing from explicit device/face/layout     │
 │      dependency keys                                              │
@@ -216,7 +216,7 @@ the frame-critical path."
 | --------------------- | ------------------------------ | ----------------------------- | ------------------------------------ |
 | Frame data            | `tokio::sync::watch`           | render → consumers            | Latest-value, async                  |
 | Scene canvas          | `tokio::sync::watch`           | render → display/UI consumers | Canonical full-scene surface         |
-| Direct group canvases | per-group `tokio::sync::watch` | render → display workers      | Latest-value direct display surfaces |
+| Direct zone canvases | per-zone `tokio::sync::watch` | render → display workers      | Latest-value direct display surfaces |
 | Events                | `tokio::sync::broadcast`       | any → subscribers             | Fan-out, bounded                     |
 | Metrics               | shared snapshots + event bus   | render/runtime → observers    | Latest-value + discrete events       |
 

@@ -1131,7 +1131,7 @@ pub(super) struct MetricsStages {
     pub(super) preview_postprocess_ms: f64,
     pub(super) event_bus_ms: f64,
     pub(super) publish_frame_data_ms: f64,
-    pub(super) publish_group_canvas_ms: f64,
+    pub(super) publish_zone_canvas_ms: f64,
     pub(super) publish_preview_ms: f64,
     pub(super) publish_events_ms: f64,
     pub(super) coordination_overhead_ms: f64,
@@ -1298,7 +1298,7 @@ pub(super) struct MetricsTimeline {
     pub(super) budget_ms: f64,
     pub(super) wake_late_ms: f64,
     pub(super) logical_layer_count: u32,
-    pub(super) render_group_count: u32,
+    pub(super) render_zone_count: u32,
     pub(super) scene_active: bool,
     pub(super) scene_transition_active: bool,
     pub(super) scene_snapshot_done_ms: f64,
@@ -1347,18 +1347,18 @@ pub(super) struct MetricsCopies {
 #[derive(Debug, Serialize)]
 pub(super) struct MetricsRenderSurfaces {
     pub(super) canvas_receivers: u32,
-    /// Monotonic counter: how many times the render-group scene surface pool
+    /// Monotonic counter: how many times the render-zone scene surface pool
     /// hit its growth cap and had to reuse a still-shared slot, forcing
     /// a fresh `Canvas::new` on every frame. A rising value means the
     /// cap is too low for current fan-out.
     pub(super) scene_pool_saturation_reallocs: u64,
-    /// Same counter summed across per-group direct-canvas pools.
+    /// Same counter summed across per-zone direct-canvas pools.
     pub(super) direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size.
     /// Benign when stable — the pool converged on its working set. A
     /// climbing value over time could indicate a pinned-Arc leak.
     pub(super) scene_pool_grown_slots: u32,
-    /// Same gauge summed across per-group direct-canvas pools.
+    /// Same gauge summed across per-zone direct-canvas pools.
     pub(super) direct_pool_grown_slots: u32,
     pub(super) scene_pool_slot_count: u32,
     pub(super) scene_pool_max_slots: u32,

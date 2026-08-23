@@ -26,7 +26,7 @@ impl<'a> UnassignedOutputPlanner<'a> {
         &mut self,
         layout: Arc<SpatialLayout>,
         behavior: &UnassignedBehavior,
-        groups: &[Zone],
+        zones: &[Zone],
         zone_canvases: &[(ZoneId, ProducerFrame)],
     ) -> Result<UnassignedOutputPlan, SpatialPlanError> {
         if matches!(behavior, UnassignedBehavior::Hold) {
@@ -49,9 +49,9 @@ impl<'a> UnassignedOutputPlanner<'a> {
                 UnassignedOutputZones::Cached(Arc::clone(&cached.black_zones))
             }
             UnassignedBehavior::Hold => UnassignedOutputZones::None,
-            UnassignedBehavior::Fallback(group_id) => {
+            UnassignedBehavior::Fallback(zone_id) => {
                 let zones = self
-                    .fallback_zone_colors(*group_id, groups, zone_canvases, &cached.zones)?
+                    .fallback_zone_colors(*zone_id, zones, zone_canvases, &cached.zones)?
                     .unwrap_or_else(|| cached.black_zones.iter().cloned().collect());
                 UnassignedOutputZones::Owned(zones)
             }
@@ -86,25 +86,25 @@ impl<'a> UnassignedOutputPlanner<'a> {
 
     fn fallback_zone_colors(
         &mut self,
-        fallback_group_id: ZoneId,
-        groups: &[Zone],
+        fallback_zone_id: ZoneId,
+        zones: &[Zone],
         zone_canvases: &[(ZoneId, ProducerFrame)],
         unassigned_zones: &[Output],
     ) -> Result<Option<Vec<ZoneColors>>, SpatialPlanError> {
-        let Some(fallback_group) = groups
+        let Some(fallback_zone) = zones
             .iter()
-            .find(|group| group.id == fallback_group_id && group.display_target.is_none())
+            .find(|zone| zone.id == fallback_zone_id && zone.display_target.is_none())
         else {
             return Ok(None);
         };
         let Some(fallback_canvas) = zone_canvases
             .iter()
-            .find(|(group_id, _)| *group_id == fallback_group_id)
+            .find(|(zone_id, _)| *zone_id == fallback_zone_id)
             .and_then(|(_, frame)| producer_frame_canvas(frame))
         else {
             return Ok(None);
         };
-        let mut fallback_layout = fallback_group.layout.clone();
+        let mut fallback_layout = fallback_zone.layout.clone();
         fallback_layout.zones = unassigned_zones.to_vec();
         fallback_layout.canvas_width = fallback_canvas.width();
         fallback_layout.canvas_height = fallback_canvas.height();
@@ -232,8 +232,8 @@ pub(crate) fn unassigned_behavior_generation(behavior: &UnassignedBehavior) -> u
     match behavior {
         UnassignedBehavior::Off => 0,
         UnassignedBehavior::Hold => 1,
-        UnassignedBehavior::Fallback(group_id) => {
-            let raw = group_id.0.as_u128();
+        UnassignedBehavior::Fallback(zone_id) => {
+            let raw = zone_id.0.as_u128();
             2 ^ ((raw >> 64) as u64) ^ (raw as u64)
         }
     }
@@ -293,7 +293,7 @@ mod tests {
         }
     }
 
-    fn render_group(id: ZoneId, layout: SpatialLayout) -> Zone {
+    fn render_zone(id: ZoneId, layout: SpatialLayout) -> Zone {
         Zone {
             id,
             name: "fallback".to_owned(),
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn unassigned_output_plan_samples_fallback_group_canvas() {
+    fn unassigned_output_plan_samples_fallback_zone_canvas() {
         let mut manager = BackendManager::new();
         let device_id = DeviceId::new();
         manager.map_device_with_segment(
@@ -371,28 +371,28 @@ mod tests {
             Some(SegmentRange::new(0, 2)),
         );
 
-        let group_id = ZoneId::new();
+        let zone_id = ZoneId::new();
         let fallback_canvas = Canvas::from_rgba(&[255, 0, 0, 255], 1, 1);
-        let groups = vec![render_group(group_id, sample_layout(&[]))];
-        let zone_canvases = vec![(group_id, ProducerFrame::Canvas(fallback_canvas))];
+        let authored_zones = vec![render_zone(zone_id, sample_layout(&[]))];
+        let zone_canvases = vec![(zone_id, ProducerFrame::Canvas(fallback_canvas))];
         let source_layout = Arc::new(sample_layout(&[]));
         let mut cache = UnassignedOutputCache::default();
         let plan = UnassignedOutputPlanner::new(&manager, &mut cache)
             .plan(
                 Arc::clone(&source_layout),
-                &UnassignedBehavior::Fallback(group_id),
-                &groups,
+                &UnassignedBehavior::Fallback(zone_id),
+                &authored_zones,
                 &zone_canvases,
             )
             .expect("fallback layout should be addressable");
-        let zones = plan.zones_for(&[]);
+        let zone_colors = plan.zones_for(&[]);
 
-        assert_eq!(zones.len(), 1);
-        assert_eq!(zones[0].colors, vec![[255, 0, 0]; 2]);
+        assert_eq!(zone_colors.len(), 1);
+        assert_eq!(zone_colors[0].colors, vec![[255, 0, 0]; 2]);
 
         let cached = UnassignedOutputPlanner::new(&manager, &mut cache)
             .cached_unassigned_outputs(Arc::clone(&source_layout));
-        let mut fallback_layout = groups[0].layout.clone();
+        let mut fallback_layout = authored_zones[0].layout.clone();
         fallback_layout.zones = cached.zones.to_vec();
         fallback_layout.canvas_width = 1;
         fallback_layout.canvas_height = 1;
@@ -404,8 +404,8 @@ mod tests {
         UnassignedOutputPlanner::new(&manager, &mut cache)
             .plan(
                 source_layout,
-                &UnassignedBehavior::Fallback(group_id),
-                &groups,
+                &UnassignedBehavior::Fallback(zone_id),
+                &authored_zones,
                 &zone_canvases,
             )
             .expect("cached fallback layout should remain addressable");

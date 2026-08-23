@@ -410,14 +410,14 @@ fn zone_preview_clear_is_visible_after_subscriber_reconnects() {
 #[tokio::test]
 async fn zone_canvas_receiver_roundtrip() {
     let bus = HypercolorBus::new();
-    let group_id = ZoneId::new();
-    let mut rx = bus.zone_canvas_receiver(group_id);
+    let zone_id = ZoneId::new();
+    let mut rx = bus.zone_canvas_receiver(zone_id);
     let mut canvas = Canvas::new(2, 1);
     canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
     canvas.set_pixel(1, 0, Rgba::new(0, 0, 255, 255));
 
     let _ = bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send(DisplayZoneFrame::Canvas(CanvasFrame::from_canvas(
             &canvas, 7, 123,
         )));
@@ -439,18 +439,18 @@ async fn zone_canvas_receiver_roundtrip() {
 #[tokio::test]
 async fn removing_zone_canvas_resets_new_subscribers_to_empty() {
     let bus = HypercolorBus::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let mut canvas = Canvas::new(1, 1);
     canvas.fill(Rgba::new(12, 34, 56, 255));
     let _ = bus
-        .zone_canvas_sender(group_id)
+        .zone_canvas_sender(zone_id)
         .send(DisplayZoneFrame::Canvas(CanvasFrame::from_canvas(
             &canvas, 1, 1,
         )));
 
-    bus.remove_zone_canvas(group_id);
+    bus.remove_zone_canvas(zone_id);
 
-    let rx = bus.zone_canvas_receiver(group_id);
+    let rx = bus.zone_canvas_receiver(zone_id);
     let frame = rx.borrow().clone();
     assert_eq!(frame.width(), 0);
     assert_eq!(frame.height(), 0);
@@ -537,7 +537,7 @@ fn retain_zone_canvases_and_collect_senders_reuses_kept_streams() {
 #[test]
 fn display_zone_targets_roundtrip_and_revision() {
     let bus = HypercolorBus::new();
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let device_id = DeviceId::new();
 
     let (initial_revision, initial_targets) = bus.display_zone_targets_snapshot();
@@ -545,7 +545,7 @@ fn display_zone_targets_roundtrip_and_revision() {
     assert!(initial_targets.is_empty());
 
     bus.upsert_display_zone_target(
-        group_id,
+        zone_id,
         DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Screen,
@@ -558,7 +558,7 @@ fn display_zone_targets_roundtrip_and_revision() {
     assert_eq!(revision, 1);
     assert_eq!(targets.len(), 1);
     assert_eq!(
-        targets.get(&group_id),
+        targets.get(&zone_id),
         Some(&DisplayZoneTarget {
             device_id,
             blend_mode: BlendMode::Screen,
@@ -566,6 +566,24 @@ fn display_zone_targets_roundtrip_and_revision() {
             finalized: false,
         })
     );
+}
+
+#[test]
+fn bus_source_keeps_zone_vocabulary_canonical() {
+    let source = include_str!("../src/bus/mod.rs");
+
+    for retired in [
+        "group_id",
+        "group_canvas",
+        "render_group",
+        "RenderGroup",
+        "GroupDirect",
+    ] {
+        assert!(
+            !source.contains(retired),
+            "bus source contains retired scene-zone term {retired}"
+        );
+    }
 }
 
 #[test]

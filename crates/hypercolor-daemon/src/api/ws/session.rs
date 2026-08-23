@@ -550,6 +550,9 @@ pub(super) struct WsInputDemandLeases {
     spectrum: Option<InputPublicationDemandRegistration>,
     screen: Option<InputPublicationDemandRegistration>,
     interaction: Option<InputPublicationDemandRegistration>,
+    current_spectrum: Option<InputPublicationDemand>,
+    current_screen: Option<InputPublicationDemand>,
+    current_interaction: Option<InputPublicationDemand>,
     #[cfg(test)]
     screen_requested_extent: Option<PixelExtent>,
 }
@@ -573,6 +576,9 @@ impl WsInputDemandLeases {
             spectrum: None,
             screen: None,
             interaction: None,
+            current_spectrum: None,
+            current_screen: None,
+            current_interaction: None,
             #[cfg(test)]
             screen_requested_extent: None,
         }
@@ -701,9 +707,24 @@ impl WsInputDemandLeases {
     /// Register a projection. Infallible by construction: everything
     /// that could refuse already did.
     pub(super) fn commit(&mut self, projected: ProjectedInputDemand) {
-        Self::synchronize_domain(&self.demands, &mut self.spectrum, projected.spectrum);
-        Self::synchronize_domain(&self.demands, &mut self.screen, projected.screen);
-        Self::synchronize_domain(&self.demands, &mut self.interaction, projected.interaction);
+        Self::synchronize_domain(
+            &self.demands,
+            &mut self.spectrum,
+            &mut self.current_spectrum,
+            projected.spectrum,
+        );
+        Self::synchronize_domain(
+            &self.demands,
+            &mut self.screen,
+            &mut self.current_screen,
+            projected.screen,
+        );
+        Self::synchronize_domain(
+            &self.demands,
+            &mut self.interaction,
+            &mut self.current_interaction,
+            projected.interaction,
+        );
         #[cfg(test)]
         {
             self.screen_requested_extent = projected.screen_requested_extent;
@@ -730,16 +751,29 @@ impl WsInputDemandLeases {
     fn synchronize_domain(
         demands: &InputPublicationDemandHandle,
         registration: &mut Option<InputPublicationDemandRegistration>,
+        current: &mut Option<InputPublicationDemand>,
         demand: Option<InputPublicationDemand>,
     ) {
         match (registration.as_ref(), demand) {
-            (Some(registration), Some(demand)) => registration.update(demand),
+            (Some(registration), Some(demand)) => {
+                if !current
+                    .as_ref()
+                    .is_some_and(|current| current.same_publication_request(&demand))
+                {
+                    registration.update(demand.clone());
+                    *current = Some(demand);
+                }
+            }
             (None, Some(demand)) => {
                 *registration =
-                    Some(demands.register(InputPublicationConsumer::PassiveStream, demand));
+                    Some(demands.register(InputPublicationConsumer::PassiveStream, demand.clone()));
+                *current = Some(demand);
             }
-            (Some(_), None) => *registration = None,
-            (None, None) => {}
+            (Some(_), None) => {
+                *registration = None;
+                *current = None;
+            }
+            (None, None) => *current = None,
         }
     }
 }

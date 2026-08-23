@@ -55,7 +55,7 @@ pub(crate) async fn persist_simulated_displays(state: &Arc<AppState>) {
     }
 }
 
-pub(crate) fn publish_render_group_changed(
+pub(crate) fn publish_render_zone_changed(
     state: &AppState,
     scene_id: SceneId,
     group: &Zone,
@@ -73,7 +73,7 @@ pub(crate) fn publish_render_group_changed(
 /// scene-bound display zones, its runtime default face zone, and its
 /// stored default-face preference. The default zone and preference are
 /// pruned even when scene-store persistence fails — a deleted device must
-/// never keep a live render group demanding face frames, and the deleted
+/// never keep a live render zone demanding face frames, and the deleted
 /// device cannot be resolved later to clear them through the displays API.
 pub(crate) async fn prune_scene_display_zones_for_device(
     state: &Arc<AppState>,

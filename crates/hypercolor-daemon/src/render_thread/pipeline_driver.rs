@@ -106,22 +106,22 @@ async fn handle_inactive_render_loop(
     }
 
     runtime.frame_loop.clear_input_demands();
-    clear_inactive_render_groups(state, runtime).await;
+    clear_inactive_render_zones(state, runtime).await;
     runtime.frame_policy.inactive_loop_execution(loop_state)
 }
 
-async fn clear_inactive_render_groups(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
-    let active_group_count = {
+async fn clear_inactive_render_zones(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
+    let active_zone_count = {
         let manager = state.scene_manager.snapshot().await;
         manager
             .resolved_zones()
             .iter()
-            .filter(|group| group.enabled && group.effect_ids().next().is_some())
+            .filter(|zone| zone.enabled && zone.effect_ids().next().is_some())
             .count()
     };
 
-    if active_group_count == 0 {
-        runtime.render.clear_inactive_groups();
+    if active_zone_count == 0 {
+        runtime.render.clear_inactive_zones();
     }
 }
 

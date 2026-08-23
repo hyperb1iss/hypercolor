@@ -29,7 +29,7 @@ impl ZoneRuntime {
 }
 
 pub(super) fn render_layer_effect_error(
-    group: &Zone,
+    zone: &Zone,
     layer: &SceneLayer,
     registry: &EffectRegistry,
     error: Error,
@@ -39,7 +39,7 @@ pub(super) fn render_layer_effect_error(
         LayerSource::WebViewport { url, .. } => format!("web_viewport:{url}"),
         _ => "unknown".to_owned(),
     };
-    let effect_name = group
+    let effect_name = zone
         .layers
         .iter()
         .find(|candidate| candidate.id == layer.id)
@@ -57,8 +57,8 @@ pub(super) fn render_layer_effect_error(
     ZoneEffectError {
         effect_id,
         effect_name,
-        group_id: group.id,
-        group_name: group.name.clone(),
+        zone_id: zone.id,
+        zone_name: zone.name.clone(),
         error: error.to_string(),
     }
 }

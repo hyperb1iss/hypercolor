@@ -992,20 +992,20 @@ impl HypercolorBus {
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        zone_canvases.retain(|group_id, _| active_set.contains(group_id));
+        zone_canvases.retain(|zone_id, _| active_set.contains(zone_id));
 
         let senders = active_ids
             .iter()
             .copied()
-            .map(|group_id| {
+            .map(|zone_id| {
                 let sender = zone_canvases
-                    .entry(group_id)
+                    .entry(zone_id)
                     .or_insert_with(|| {
                         let (sender, _) = watch::channel(DisplayZoneFrame::empty());
                         sender
                     })
                     .clone();
-                (group_id, sender)
+                (zone_id, sender)
             })
             .collect();
         drop(zone_canvases);
@@ -1059,7 +1059,7 @@ impl HypercolorBus {
             let original_len = display_zone_targets.targets.len();
             display_zone_targets
                 .targets
-                .retain(|group_id, _| active_ids.contains(group_id));
+                .retain(|zone_id, _| active_ids.contains(zone_id));
             original_len != display_zone_targets.targets.len()
         };
         if changed {
@@ -1123,7 +1123,7 @@ impl HypercolorBus {
             let original_len = routes.routes.len();
             routes
                 .routes
-                .retain(|group_id, _| active_ids.contains(group_id));
+                .retain(|zone_id, _| active_ids.contains(zone_id));
             original_len != routes.routes.len()
         };
         if changed {
@@ -1184,7 +1184,7 @@ impl HypercolorBus {
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>();
-        zone_canvases.retain(|group_id, _| active_set.contains(group_id));
+        zone_canvases.retain(|zone_id, _| active_set.contains(zone_id));
         drop(zone_canvases);
         self.retain_display_zone_targets(active_ids);
     }

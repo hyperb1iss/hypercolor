@@ -12,14 +12,14 @@ use crate::performance::FullFrameCopyMetrics;
 
 use super::pipeline_runtime::PublicationCadenceState;
 use super::producer_queue::ProducerFrame;
-use super::render_groups::DisplayZoneCanvasFrame;
+use super::render_zones::DisplayZoneCanvasFrame;
 use super::{RenderThreadState, micros_u32, u64_to_u32, usize_to_u32};
 
 pub(crate) struct PublishFrameStats {
     pub(crate) elapsed_us: u32,
     pub(crate) publication_full_frame_copy: FullFrameCopyMetrics,
     pub(crate) frame_data_us: u32,
-    pub(crate) group_canvas_us: u32,
+    pub(crate) zone_canvas_us: u32,
     pub(crate) preview_us: u32,
     pub(crate) events_us: u32,
 }
@@ -166,34 +166,34 @@ pub(crate) fn publish_frame_updates(
         publish_audio_level,
     );
     let frame_data_us = micros_u32(frame_data_start.elapsed());
-    let group_canvas_start = Instant::now();
+    let zone_canvas_start = Instant::now();
     // Scenes carry at most a handful of display zones, so a linear scan over
     // the collected Vec beats building a fresh HashMap every frame.
-    let group_canvas_senders = state
+    let zone_canvas_senders = state
         .event_bus
         .retain_zone_canvases_and_collect_senders(active_display_zone_ids);
-    for (group_id, group_canvas) in display_zone_frames {
+    for (zone_id, zone_canvas) in display_zone_frames {
         state
             .event_bus
-            .upsert_display_zone_target(*group_id, group_canvas.display_target.clone());
-        let Some(sender) = group_canvas_senders
+            .upsert_display_zone_target(*zone_id, zone_canvas.display_target.clone());
+        let Some(sender) = zone_canvas_senders
             .iter()
-            .find_map(|(id, sender)| (id == group_id).then_some(sender))
+            .find_map(|(id, sender)| (id == zone_id).then_some(sender))
         else {
             continue;
         };
-        let frame = group_canvas
+        let frame = zone_canvas
             .frame
             .with_frame_metadata(frame_number, timestamp_ms);
-        let publish_group_canvas = {
+        let publish_zone_canvas = {
             let current = sender.borrow();
             should_publish_display_zone_frame(&current, &frame)
         };
-        if publish_group_canvas {
+        if publish_zone_canvas {
             sender.send_replace(frame);
         }
     }
-    let group_canvas_us = micros_u32(group_canvas_start.elapsed());
+    let zone_canvas_us = micros_u32(zone_canvas_start.elapsed());
     let preview_start = Instant::now();
     state
         .preview_runtime
@@ -387,7 +387,7 @@ pub(crate) fn publish_frame_updates(
         elapsed_us: micros_u32(publish_start.elapsed()),
         publication_full_frame_copy,
         frame_data_us,
-        group_canvas_us,
+        zone_canvas_us,
         preview_us,
         events_us,
     }
@@ -476,11 +476,11 @@ fn collect_zone_previews(
 ) -> Vec<ZonePreviewFrame> {
     let display_zone_ids = display_zone_frames
         .iter()
-        .map(|(group_id, _)| *group_id)
+        .map(|(zone_id, _)| *zone_id)
         .collect::<HashSet<_>>();
     let mut previews = Vec::new();
-    for (group_id, frame) in zone_canvases {
-        if display_zone_ids.contains(group_id) {
+    for (zone_id, frame) in zone_canvases {
+        if display_zone_ids.contains(zone_id) {
             continue;
         }
         if let Some(frame) = zone_preview_frame_from_producer(
@@ -491,18 +491,18 @@ fn collect_zone_previews(
         ) {
             previews.push(ZonePreviewFrame {
                 scene_id,
-                zone_id: *group_id,
+                zone_id: *zone_id,
                 frame,
             });
         }
     }
-    for (group_id, group_canvas) in display_zone_frames {
+    for (zone_id, zone_canvas) in display_zone_frames {
         if let Some(frame) =
-            zone_preview_frame_from_display(&group_canvas.frame, frame_number, timestamp_ms)
+            zone_preview_frame_from_display(&zone_canvas.frame, frame_number, timestamp_ms)
         {
             previews.push(ZonePreviewFrame {
                 scene_id,
-                zone_id: *group_id,
+                zone_id: *zone_id,
                 frame,
             });
         }

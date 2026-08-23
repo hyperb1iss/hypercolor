@@ -61,10 +61,10 @@ class LatestFrameStatus:
         publication_full_frame_copy_kb (float):
         publish_events_ms (float):
         publish_frame_data_ms (float):
-        publish_group_canvas_ms (float):
         publish_preview_ms (float):
-        render_group_count (int):
+        publish_zone_canvas_ms (float):
         render_surfaces (RenderSurfaceStatus):
+        render_zone_count (int):
         scene_canvas_forced_surface (bool):
         spatial_sampling_ms (float):
         total_leds (int):
@@ -116,10 +116,10 @@ class LatestFrameStatus:
     publication_full_frame_copy_kb: float
     publish_events_ms: float
     publish_frame_data_ms: float
-    publish_group_canvas_ms: float
     publish_preview_ms: float
-    render_group_count: int
+    publish_zone_canvas_ms: float
     render_surfaces: RenderSurfaceStatus
+    render_zone_count: int
     scene_canvas_forced_surface: bool
     spatial_sampling_ms: float
     total_leds: int
@@ -216,13 +216,13 @@ class LatestFrameStatus:
 
         publish_frame_data_ms = self.publish_frame_data_ms
 
-        publish_group_canvas_ms = self.publish_group_canvas_ms
-
         publish_preview_ms = self.publish_preview_ms
 
-        render_group_count = self.render_group_count
+        publish_zone_canvas_ms = self.publish_zone_canvas_ms
 
         render_surfaces = self.render_surfaces.to_dict()
+
+        render_zone_count = self.render_zone_count
 
         scene_canvas_forced_surface = self.scene_canvas_forced_surface
 
@@ -292,10 +292,10 @@ class LatestFrameStatus:
                 "publication_full_frame_copy_kb": publication_full_frame_copy_kb,
                 "publish_events_ms": publish_events_ms,
                 "publish_frame_data_ms": publish_frame_data_ms,
-                "publish_group_canvas_ms": publish_group_canvas_ms,
                 "publish_preview_ms": publish_preview_ms,
-                "render_group_count": render_group_count,
+                "publish_zone_canvas_ms": publish_zone_canvas_ms,
                 "render_surfaces": render_surfaces,
+                "render_zone_count": render_zone_count,
                 "scene_canvas_forced_surface": scene_canvas_forced_surface,
                 "spatial_sampling_ms": spatial_sampling_ms,
                 "total_leds": total_leds,
@@ -405,13 +405,13 @@ class LatestFrameStatus:
 
         publish_frame_data_ms = d.pop("publish_frame_data_ms")
 
-        publish_group_canvas_ms = d.pop("publish_group_canvas_ms")
-
         publish_preview_ms = d.pop("publish_preview_ms")
 
-        render_group_count = d.pop("render_group_count")
+        publish_zone_canvas_ms = d.pop("publish_zone_canvas_ms")
 
         render_surfaces = RenderSurfaceStatus.from_dict(d.pop("render_surfaces"))
+
+        render_zone_count = d.pop("render_zone_count")
 
         scene_canvas_forced_surface = d.pop("scene_canvas_forced_surface")
 
@@ -490,10 +490,10 @@ class LatestFrameStatus:
             publication_full_frame_copy_kb=publication_full_frame_copy_kb,
             publish_events_ms=publish_events_ms,
             publish_frame_data_ms=publish_frame_data_ms,
-            publish_group_canvas_ms=publish_group_canvas_ms,
             publish_preview_ms=publish_preview_ms,
-            render_group_count=render_group_count,
+            publish_zone_canvas_ms=publish_zone_canvas_ms,
             render_surfaces=render_surfaces,
+            render_zone_count=render_zone_count,
             scene_canvas_forced_surface=scene_canvas_forced_surface,
             spatial_sampling_ms=spatial_sampling_ms,
             total_leds=total_leds,

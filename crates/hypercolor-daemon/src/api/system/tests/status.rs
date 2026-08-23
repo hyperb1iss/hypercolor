@@ -72,7 +72,7 @@ async fn status_includes_latest_frame_surface_stats() {
             postprocess_us: 0,
             publish_us: 120,
             publish_frame_data_us: 30,
-            publish_group_canvas_us: 20,
+            publish_zone_canvas_us: 20,
             publish_preview_us: 60,
             publish_events_us: 10,
             overhead_us: 50,
@@ -106,7 +106,7 @@ async fn status_includes_latest_frame_surface_stats() {
             devices_written: 3,
             total_leds: 144,
             logical_layer_count: 2,
-            render_group_count: 1,
+            render_zone_count: 1,
             scene_active: true,
             scene_transition_active: false,
             scene_pool_saturation_reallocs: 0,
@@ -340,9 +340,16 @@ async fn status_includes_latest_frame_surface_stats() {
         0.05
     );
     assert_eq!(json["data"]["latest_frame"]["publish_frame_data_ms"], 0.03);
-    assert_eq!(
-        json["data"]["latest_frame"]["publish_group_canvas_ms"],
-        0.02
+    assert_eq!(json["data"]["latest_frame"]["publish_zone_canvas_ms"], 0.02);
+    assert!(
+        json["data"]["latest_frame"]
+            .get("publish_group_canvas_ms")
+            .is_none()
+    );
+    assert!(
+        json["data"]["latest_frame"]
+            .get("render_group_count")
+            .is_none()
     );
     assert_eq!(json["data"]["latest_frame"]["publish_preview_ms"], 0.06);
     assert_eq!(json["data"]["latest_frame"]["publish_events_ms"], 0.01);

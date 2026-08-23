@@ -3052,7 +3052,7 @@ pub(super) async fn build_metrics_message(
                 preview_postprocess_ms: round_2(us_to_ms(latest_frame.postprocess_us)),
                 event_bus_ms: round_2(us_to_ms(latest_frame.publish_us)),
                 publish_frame_data_ms: round_2(us_to_ms(latest_frame.publish_frame_data_us)),
-                publish_group_canvas_ms: round_2(us_to_ms(latest_frame.publish_group_canvas_us)),
+                publish_zone_canvas_ms: round_2(us_to_ms(latest_frame.publish_zone_canvas_us)),
                 publish_preview_ms: round_2(us_to_ms(latest_frame.publish_preview_us)),
                 publish_events_ms: round_2(us_to_ms(latest_frame.publish_events_us)),
                 coordination_overhead_ms: round_2(us_to_ms(latest_frame.overhead_us)),
@@ -3263,7 +3263,7 @@ pub(super) async fn build_metrics_message(
                 budget_ms: round_2(us_to_ms(latest_frame.timeline.budget_us)),
                 wake_late_ms: round_2(us_to_ms(latest_frame.wake_late_us)),
                 logical_layer_count: latest_frame.logical_layer_count,
-                render_group_count: latest_frame.render_group_count,
+                render_zone_count: latest_frame.render_zone_count,
                 scene_active: latest_frame.scene_active,
                 scene_transition_active: latest_frame.scene_transition_active,
                 scene_snapshot_done_ms: round_2(us_to_ms(

@@ -45,11 +45,11 @@ impl ZoneRuntime {
 
     pub(super) fn surface_backed_direct_frame(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         frame: ProducerFrame,
         full_frame_copy: &mut FullFrameCopyMetrics,
     ) -> anyhow::Result<Option<ProducerFrame>> {
-        let Some(surface_pool) = self.direct_surface_pools.get_mut(&group_id) else {
+        let Some(surface_pool) = self.direct_surface_pools.get_mut(&zone_id) else {
             return Ok(None);
         };
         surface_backed_frame(surface_pool, frame, full_frame_copy)
@@ -67,7 +67,7 @@ impl ZoneRuntime {
     }
 
     /// Same as `scene_surface_pool_saturation_reallocs` but summed across
-    /// every direct-canvas group pool (one per HTML-face zone).
+    /// every direct-canvas zone pool (one per HTML-face zone).
     #[must_use]
     pub(crate) fn direct_surface_pool_saturation_reallocs(&self) -> u64 {
         self.direct_surface_pools
@@ -86,7 +86,7 @@ impl ZoneRuntime {
             .map_or(0, RenderSurfacePool::grown_slots)
     }
 
-    /// Total grown slots across every direct-canvas group pool.
+    /// Total grown slots across every direct-canvas zone pool.
     #[must_use]
     pub(crate) fn direct_surface_pool_grown_slots(&self) -> u32 {
         self.direct_surface_pools

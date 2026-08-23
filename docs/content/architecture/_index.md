@@ -180,7 +180,7 @@ The daemon maintains a library of saved presets, favorites, and playlists. Playl
 |---|---|---|
 | Language | Rust | Performance for the render thread, safety for USB HID, ecosystem match for Servo and Ratatui |
 | Effect renderer | Servo HTML + native Rust | Web platform for authoring, compiled Rust for built-in utilities; the native shader-effect lane is future work (the compositor's GPU lane ships) |
-| Frame compositor | SparkleFlinger | Decouples producer cadence from frame deadlines; enables mixed-rate sources and render groups |
+| Frame compositor | SparkleFlinger | Decouples producer cadence from frame deadlines; enables mixed-rate sources and render zones |
 | Canvas resolution | 640x480 (configurable) | Resolution-independent normalized coordinates; tune per hardware density |
 | Adaptive FPS | Five tiers, 10-60 fps | Fast downshift on budget miss; slow upshift to prevent oscillation |
 | Event bus | `broadcast` + `watch` | Discrete events need history; high-frequency frame data needs only the latest value |

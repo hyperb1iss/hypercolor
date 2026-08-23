@@ -67,21 +67,21 @@ render_thread/
 ├── frame_scheduler.rs         — FrameScheduler, FrameSceneSnapshot,
 │                                 SceneRuntimeSnapshot, SceneTransitionSnapshot
 ├── frame_state.rs             — EffectDemand, build_frame_scene_snapshot,
-│                                 CachedRenderGroupDemand, reconcile_audio_capture,
+│                                 CachedZoneDemand, reconcile_audio_capture,
 │                                 reconcile_screen_capture
 ├── scene_state.rs             — RenderSceneState: drains SceneTransactionQueue
 │                                 into a render-local SpatialEngine
 ├── frame_executor.rs          — execute_frame: the frame lifecycle in one place
 ├── frame_composer.rs          — compose_frame: chooses single-effect vs
-│                                 render-group path, drives SparkleFlinger,
+│                                 render-zone path, drives SparkleFlinger,
 │                                 snapshots actual surface-pool state
 ├── composition_planner.rs     — CompositionPlanner: compiles layered plans,
 │                                 caches last_stable_frame, crossfades
 ├── sparkleflinger.rs          — the compositor itself (see above)
 ├── producer_queue.rs          — ProducerQueue: submit_latest/submit_for_generation
 │                                 with explicit Latest/Tagged(u64) generations
-├── render_groups.rs           — RenderGroupRuntime: per-group canvases,
-│                                 per-group spatial engines, effect pool,
+├── render_zones.rs           — ZoneRuntime: per-zone canvases,
+│                                 per-zone spatial engines, effect pool,
 │                                 pooled preview compose, retention cache
 ├── frame_sources.rs           — render_effect_into, static_surface (cached)
 ├── frame_io.rs                — sample_inputs, publish_frame_updates,
@@ -147,11 +147,11 @@ It then calls `build_frame_scene_snapshot`, which assembles a
 - the render loop's frame token, elapsed ms, and target interval (budget)
 - the current `OutputPowerState` watched from session policy
 - the `EffectDemand` computed from the active effect engine or active render
-  groups. Render-group demand is cached by `active_render_groups_revision`
-  in `CachedRenderGroupDemand` so no-op ticks never re-read the registry.
+  zones. Render-zone demand is cached by `active_render_zones_revision`
+  in `CachedZoneDemand` so no-op ticks never re-read the registry.
 - a `SceneRuntimeSnapshot` built from `SceneManager`: active scene id, active
-  transition progress, and `Arc<[RenderGroup]>` from the manager's cached
-  active-groups snapshot. `tick_transition` only acquires a `write` lock
+  transition progress, and `Arc<[Zone]>` from the manager's cached
+  active-zones snapshot. `tick_transition` only acquires a `write` lock
   when `is_transitioning()` is true; otherwise the snapshot reads through
   a cheap `read` lock.
 - a clone of the current `SpatialEngine` from `RenderSceneState`
@@ -210,7 +210,7 @@ matches the render canvas extent. If `skip_decision` is `ReuseInputs` or
 ### 3.6 Composition
 
 `compose_frame` is where SparkleFlinger actually runs. It branches on whether
-there are active render groups in the scene snapshot.
+there are active render zones in the scene snapshot.
 
 **Single-effect path:**
 
@@ -224,7 +224,7 @@ there are active render groups in the scene snapshot.
    latch succeeds and is marked `Fresh` the first time, `Retained` on every
    subsequent latch of the same submission.
 3. Otherwise clear `effect_queue` and render a fresh producer frame.
-   Render-group outputs move into the bounded scene or per-direct-group
+   Render-zone outputs move into the bounded scene or per-direct-zone
    surface pools before publication. The scene pool starts with eight slots
    and can grow to 64 when downstream consumers pin more surfaces. Static
    color and transparent layers reuse bounded immutable surfaces instead of
@@ -235,30 +235,30 @@ there are active render groups in the scene snapshot.
    base.
 5. Run the compiled plan through `SparkleFlinger::compose`.
 
-**Render-group path** (`compose_render_group_frame_set`):
+**Render-zone path** (`compose_render_zone_frame_set`):
 
-1. If `skip_decision == ReuseCanvas`, try `RenderGroupRuntime::reuse_scene`,
-   which does an equality check on the current `active_render_groups_revision`
-   and, on hit, returns the previously composed `RenderGroupResult` with
+1. If `skip_decision == ReuseCanvas`, try `ZoneRuntime::reuse_scene`,
+   which does an equality check on the current `active_render_zones_revision`
+   and, on hit, returns the previously composed `ZoneResult` with
    `reuse_published_zones: true`. The caller skips sampling entirely and
    reads zones from the last published `FrameData` on the event bus watch
    channel.
-2. Otherwise call `RenderGroupRuntime::render_scene`, which reconciles the
-   per-group canvases and spatial engines (gated by `reconciled_groups_revision`
+2. Otherwise call `ZoneRuntime::render_scene`, which reconciles the
+   per-zone canvases and spatial engines (gated by `reconciled_zones_revision`
    so reconcile is a no-op on unchanged scenes), calls
-   `EffectPool::render_group_into` for each enabled group with an effect,
-   and samples each group's canvas into a shared `zones` buffer via
+   `EffectPool::render_zone_into` for each enabled zone with an effect,
+   and samples each zone's canvas into a shared `zones` buffer via
    `SpatialEngine::sample_append_into_at` (append-in-place, no per-frame
    allocations). The combined layout is cached as an `Arc<SpatialLayout>`.
 3. Compose a tiled preview canvas (`compose_preview`) leased from a
    dedicated `preview_surface_pool` (falls back to an owned canvas only
-   when the pool is exhausted). Single-group previews blit or bilinearly
-   scale the group canvas into the preview extent; multi-group previews
+   when the pool is exhausted). Single-zone previews blit or bilinearly
+   scale the zone canvas into the preview extent; multi-zone previews
    tile into `ceil(sqrt(count))` columns.
 4. Feed the combined preview frame to
    `CompositionPlanner::compile_primary_frame` and
    `SparkleFlinger::compose`.
-5. Return a `RenderGroupResult` that carries the combined layout plus a
+5. Return a `ZoneResult` that carries the combined layout plus a
    `reuse_published_zones` flag, so the sampler stage in `execute_frame`
    can either reuse the previous `FrameData::zones` (on retention) or
    pick up the freshly-sampled zones from the recycled frame buffer.
@@ -267,20 +267,20 @@ Both paths produce `RenderStageStats` containing a `ComposedFrameSet` plus
 stage-by-stage microsecond timings and a handful of booleans for the
 telemetry layer (`effect_retained`, `screen_retained`, `composition_bypassed`,
 `scene_active`, `scene_transition_active`, `logical_layer_count`,
-`render_group_count`). The render-group layer count is computed via
-`effective_render_group_layer_count` so a crossfade over a multi-group
+`render_zone_count`). The render-zone layer count is computed via
+`effective_render_zone_layer_count` so a crossfade over a multi-zone
 scene reports layers + transition overhead without double-counting.
 
 ### 3.7 Spatial sampling
 
 Three routes feed the final zone buffer:
 
-1. **Render-group retention** — if `reuse_published_frame` is true,
+1. **Render-zone retention**: if `reuse_published_frame` is true,
    `execute_frame` borrows the zones from the currently published
    `FrameData` on the event bus watch channel and skips sampling entirely.
-2. **Render-group fresh** — if `sampled_layout` is set and `sampled_zones`
+2. **Render-zone fresh**: if `sampled_layout` is set and `sampled_zones`
    is not, the zones were already written into `recycled_frame.zones` by
-   `RenderGroupRuntime::render_scene`, so only the layout Arc is carried
+   `ZoneRuntime::render_scene`, so only the layout Arc is carried
    forward.
 3. **Single-effect / screen path** — calls
    `scene_snapshot.spatial_engine.sample_into(sampling_canvas,
@@ -344,7 +344,7 @@ as one `LatestFrameMetrics`, which includes:
 - pacing: wake_late_us, jitter_us
 - reuse flags: reused_inputs, reused_canvas, retained_effect, retained_screen,
   composition_bypassed
-- composition structure: logical_layer_count, render_group_count, scene_active,
+- composition structure: logical_layer_count, render_zone_count, scene_active,
   scene_transition_active
 - actual scene, direct-render, preview, and compositor pool state, named by
   pool so every metric has one unambiguous owner
@@ -439,14 +439,14 @@ render_scene_state    build_frame_scene   maybe_sleep_throttle      sample_input
                                         │                            │
             ┌───────────────────────────┴──────────────┐              │
             │                                          │              │
-  single-effect path                        render-group path         │
+  single-effect path                        render-zone path          │
             │                                          │              │
-   latch effect_queue OR                   RenderGroupRuntime          │
+   latch effect_queue OR                   ZoneRuntime          │
    render new effect                       .render_scene or            │
    (fresh ProducerFrame)                   .reuse_scene (cached)       │
             │                                         │               │
             │                                         ▼               │
-            │                             RenderGroupResult           │
+            │                             ZoneResult           │
             │                             (layout + preview frame)    │
             └────────► ProducerFrame ◄────────────────┘               │
                               │                                       │
@@ -463,7 +463,7 @@ render_scene_state    build_frame_scene   maybe_sleep_throttle      sample_input
  SpatialEngine          BackendManager        event_bus publish       │
   .sample_into          .write_frame          (frame, canvas,         │
   (or reuse             _with_brightness       spectrum, screen)      │
-  group zones)                │                     │                 │
+  scene zones)                │                     │                 │
                               │              PreviewRuntime.record    │
                               │              FrameRendered event      │
                               │                     │                 │
@@ -489,7 +489,7 @@ or the render thread will keep running against stale layout data.
 
 **Producers never mutate published surfaces.** `PublishedSurface` (from Spec
 36) is immutable post-submit. `ZoneRuntime` owns an elastic scene pool that
-starts at eight slots and grows to 64, plus bounded per-direct-group pools.
+starts at eight slots and grows to 64, plus bounded per-direct-zone pools.
 SparkleFlinger owns separate preview and compositor pools, including GPU
 preview, sampling, and display-finalize readback surfaces. Telemetry reports
 each role directly; there is no global render pool sized from receiver count.
@@ -507,8 +507,8 @@ explicitly — `Latest` (screen path, untagged) or `Tagged(u64)` (effect
 path, tied to `effect_generation`). `latch_for_generation` only matches a
 tagged submission; a generation mismatch invalidates the queue.
 `ProducerFrameState::Fresh` is returned the first time a submission is
-latched and `Retained` on subsequent latches. `RenderGroupRuntime` has its
-own retention path (`reuse_scene`) that keeps the full `RenderGroupResult`
+latched and `Retained` on subsequent latches. `ZoneRuntime` has its
+own retention path (`reuse_scene`) that keeps the full `ZoneResult`
 plus a pointer to the already-published `FrameData::zones`, so reuse
 doesn't have to re-sample or re-compose.
 
@@ -529,11 +529,11 @@ handles so receiver counts and publication totals are visible without
 touching the watch channel internals.
 
 **Work is amortised when nothing changed.** Idle scene-manager reads use
-the read lock only; cached `active_render_groups` are an `Arc<[RenderGroup]>`
+the read lock only; cached `active_render_zones` are an `Arc<[Zone]>`
 so `SceneRuntimeSnapshot` clones are pointer-cheap; effect demand is
-memoised against `active_render_groups_revision`; the static black/held
-surface is cached by `(width, height, color)`; the render-group reconcile
-is gated by `reconciled_groups_revision`; the zones buffer is recycled
+memoised against `active_render_zones_revision`; the static black/held
+surface is cached by `(width, height, color)`; the render-zone reconcile
+is gated by `reconciled_zones_revision`; the zones buffer is recycled
 through the frame watch channel.
 
 **`unsafe_code` is forbidden here.** SparkleFlinger stays in the safe application
@@ -550,7 +550,7 @@ Three surfaces read from the tracker:
 
 **REST `GET /api/v1/system`** includes authorized `status.latest_frame` data with frame
 token, total ms, wake late ms, frame age ms, logical layer count, render
-group count, copy stats, and a `render_surfaces` sub-object with slot state
+zone count, copy stats, and a `render_surfaces` sub-object with slot state
 
 - canvas receiver count. The `render_loop` object reports `target_fps`,
   `ceiling_fps` (from the admission gate), theoretical `capacity_fps`, measured
@@ -567,7 +567,7 @@ dropped), `frame_time`
 composition, effect_rendering, spatial_sampling, device_output,
 preview_postprocess, event_bus, coordination_overhead), `pacing`
 (jitter/wake-delay summaries, frame_age_ms, reuse counts),
-`timeline` (frame token, budget, layer/group counts, scene flags, all the
+`timeline` (frame token, budget, layer/zone counts, scene flags, all the
 timeline checkpoints), `render_surfaces` (slot state), `preview`
 (`canvas_receivers`, `screen_canvas_receivers`, `canvas_frames_published`,
 `screen_canvas_frames_published`, latest canvas/screen frame numbers),
@@ -659,7 +659,7 @@ document is the map. For per-stage details, read in this order:
 4. `sparkleflinger.rs` — the compositor itself
 5. `composition_planner.rs` — transitions and plan compilation
 6. `producer_queue.rs` — the explicit generation model
-7. `render_groups.rs` — the only real multi-producer feature today
+7. `render_zones.rs` — the only real multi-producer feature today
 8. `frame_admission.rs` — the Full-tier gate
 9. `preview_runtime.rs` — the preview seam and telemetry surface
 10. `scene_transactions.rs` — the frame-boundary transaction queue

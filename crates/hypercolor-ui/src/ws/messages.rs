@@ -134,7 +134,7 @@ pub struct MetricsStages {
     pub preview_postprocess_ms: f64,
     pub event_bus_ms: f64,
     pub publish_frame_data_ms: f64,
-    pub publish_group_canvas_ms: f64,
+    pub publish_zone_canvas_ms: f64,
     pub publish_preview_ms: f64,
     pub publish_events_ms: f64,
     pub coordination_overhead_ms: f64,
@@ -249,7 +249,7 @@ pub struct MetricsTimeline {
     pub budget_ms: f64,
     pub wake_late_ms: f64,
     pub logical_layer_count: u32,
-    pub render_group_count: u32,
+    pub render_zone_count: u32,
     pub scene_active: bool,
     pub scene_transition_active: bool,
     pub scene_snapshot_done_ms: f64,
@@ -430,7 +430,7 @@ pub struct SceneEventHint {
     pub generation: u64,
     pub event_type: String,
     pub scene_id: Option<String>,
-    /// Zone (render group) the event names, for zone-tagged events like
+    /// Zone (render zone) the event names, for zone-tagged events like
     /// `zone_changed` and `layer_stack_changed`.
     pub zone_id: Option<String>,
     pub scene_name: Option<String>,

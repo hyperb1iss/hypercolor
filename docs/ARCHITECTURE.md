@@ -67,7 +67,7 @@ graph TD
 The render loop runs on a dedicated thread with adaptive FPS tiers. Each frame:
 
 1. Samples input sources such as audio, screen, keyboard, MIDI, and sensors.
-2. Captures the active scene, render groups, and live control state.
+2. Captures the active scene, render zones, and live control state.
 3. Renders each producer at its own cadence.
 4. Uses SparkleFlinger to latch the newest producer surfaces and compose one
    canonical RGBA canvas.

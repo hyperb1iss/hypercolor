@@ -16,9 +16,7 @@ use super::frame_helpers::{
     media_layer_producer_frame, passthrough_effect_layer, producer_frame_is_gpu,
     screen_region_layer_frame, transparent_black_frame,
 };
-use super::model::{
-    CachedMediaProducer, GroupFrameContext, GroupFrameRequirements, MediaLayerFrame,
-};
+use super::model::{CachedMediaProducer, MediaLayerFrame, ZoneFrameContext, ZoneFrameRequirements};
 use crate::render_thread::binding_eval::evaluate_layer_runtime;
 use crate::render_thread::producer_queue::{ProducerFrame, record_producer_frame};
 use crate::render_thread::sparkleflinger::{
@@ -26,16 +24,16 @@ use crate::render_thread::sparkleflinger::{
 };
 
 impl ZoneRuntime {
-    pub(super) fn render_group_frame(
+    pub(super) fn render_zone_frame(
         &mut self,
-        group: &Zone,
-        context: GroupFrameContext<'_>,
+        zone: &Zone,
+        context: ZoneFrameContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
-        requirements: GroupFrameRequirements,
+        requirements: ZoneFrameRequirements,
     ) -> Result<Option<ProducerFrame>> {
         let mut composition_layers = Vec::new();
         let mut gpu_source_layers = Vec::new();
-        for layer in &group.layers {
+        for layer in &zone.layers {
             if !layer.enabled {
                 continue;
             }
@@ -48,16 +46,16 @@ impl ZoneRuntime {
             .apply_to_layer(&layer);
             let frame = match &layer_runtime.source {
                 LayerSource::Effect { .. } => {
-                    self.render_effect_layer_frame(group, &layer_runtime, context)?
+                    self.render_effect_layer_frame(zone, &layer_runtime, context)?
                 }
                 #[cfg(feature = "servo")]
                 LayerSource::WebViewport { .. } => {
-                    self.render_effect_layer_frame(group, &layer_runtime, context)?
+                    self.render_effect_layer_frame(zone, &layer_runtime, context)?
                 }
                 LayerSource::ColorFill { rgba } => Some(color_fill_frame(
                     &mut self.static_layer_surface_cache,
-                    group.layout.canvas_width,
-                    group.layout.canvas_height,
+                    zone.layout.canvas_width,
+                    zone.layout.canvas_height,
                     *rgba,
                 )?),
                 LayerSource::Media { asset_id, playback } => {
@@ -71,7 +69,7 @@ impl ZoneRuntime {
                         MediaLayerFrame::Ready { frame, health } => {
                             self.layer_runtime.note_health(
                                 context.active_scene_id,
-                                group.id,
+                                zone.id,
                                 layer_runtime.id,
                                 health,
                             );
@@ -80,40 +78,40 @@ impl ZoneRuntime {
                         MediaLayerFrame::Loading => {
                             self.layer_runtime.note_health(
                                 context.active_scene_id,
-                                group.id,
+                                zone.id,
                                 layer_runtime.id,
                                 LayerHealth::Loading,
                             );
                             Some(transparent_black_frame(
                                 &mut self.static_layer_surface_cache,
-                                group.layout.canvas_width,
-                                group.layout.canvas_height,
+                                zone.layout.canvas_width,
+                                zone.layout.canvas_height,
                             )?)
                         }
                         MediaLayerFrame::Missing => {
                             self.layer_runtime.note_health(
                                 context.active_scene_id,
-                                group.id,
+                                zone.id,
                                 layer_runtime.id,
                                 LayerHealth::AssetMissing,
                             );
                             Some(transparent_black_frame(
                                 &mut self.static_layer_surface_cache,
-                                group.layout.canvas_width,
-                                group.layout.canvas_height,
+                                zone.layout.canvas_width,
+                                zone.layout.canvas_height,
                             )?)
                         }
                         MediaLayerFrame::Failed(reason) => {
                             self.layer_runtime.note_health(
                                 context.active_scene_id,
-                                group.id,
+                                zone.id,
                                 layer_runtime.id,
                                 LayerHealth::Failed { reason },
                             );
                             Some(transparent_black_frame(
                                 &mut self.static_layer_surface_cache,
-                                group.layout.canvas_width,
-                                group.layout.canvas_height,
+                                zone.layout.canvas_width,
+                                zone.layout.canvas_height,
                             )?)
                         }
                     }
@@ -124,7 +122,7 @@ impl ZoneRuntime {
                     {
                         self.layer_runtime.note_health(
                             context.active_scene_id,
-                            group.id,
+                            zone.id,
                             layer_runtime.id,
                             LayerHealth::Active,
                         );
@@ -132,14 +130,14 @@ impl ZoneRuntime {
                     } else {
                         self.layer_runtime.note_health(
                             context.active_scene_id,
-                            group.id,
+                            zone.id,
                             layer_runtime.id,
                             LayerHealth::Loading,
                         );
                         Some(transparent_black_frame(
                             &mut self.static_layer_surface_cache,
-                            group.layout.canvas_width,
-                            group.layout.canvas_height,
+                            zone.layout.canvas_width,
+                            zone.layout.canvas_height,
                         )?)
                     }
                 }
@@ -147,7 +145,7 @@ impl ZoneRuntime {
                 LayerSource::WebViewport { .. } => {
                     self.layer_runtime.note_health(
                         context.active_scene_id,
-                        group.id,
+                        zone.id,
                         layer_runtime.id,
                         LayerHealth::Failed {
                             reason: "web viewport layer source requires the servo feature".into(),
@@ -155,15 +153,15 @@ impl ZoneRuntime {
                     );
                     Some(transparent_black_frame(
                         &mut self.static_layer_surface_cache,
-                        group.layout.canvas_width,
-                        group.layout.canvas_height,
+                        zone.layout.canvas_width,
+                        zone.layout.canvas_height,
                     )?)
                 }
             };
             let Some(frame) = frame else {
                 self.layer_runtime.note_health(
                     context.active_scene_id,
-                    group.id,
+                    zone.id,
                     layer_runtime.id,
                     LayerHealth::Loading,
                 );
@@ -175,7 +173,7 @@ impl ZoneRuntime {
             ) {
                 self.layer_runtime.note_health(
                     context.active_scene_id,
-                    group.id,
+                    zone.id,
                     layer_runtime.id,
                     LayerHealth::Active,
                 );
@@ -196,11 +194,11 @@ impl ZoneRuntime {
                 .into_iter()
                 .next()
                 .expect("single composition layer should exist");
-            CompositionPlan::single(group.layout.canvas_width, group.layout.canvas_height, layer)
+            CompositionPlan::single(zone.layout.canvas_width, zone.layout.canvas_height, layer)
         } else {
             CompositionPlan::with_layers(
-                group.layout.canvas_width,
-                group.layout.canvas_height,
+                zone.layout.canvas_width,
+                zone.layout.canvas_height,
                 composition_layers,
             )
         };
@@ -210,15 +208,15 @@ impl ZoneRuntime {
             requirements
                 .requires_published_surface
                 .then_some(PreviewSurfaceRequest {
-                    width: group.layout.canvas_width,
-                    height: group.layout.canvas_height,
+                    width: zone.layout.canvas_width,
+                    height: zone.layout.canvas_height,
                 }),
         );
         if composed.gpu_readback_failed {
             for layer_id in gpu_source_layers {
                 self.layer_runtime.note_health(
                     context.active_scene_id,
-                    group.id,
+                    zone.id,
                     layer_id,
                     LayerHealth::Failed {
                         reason: "gpu_readback_failed".to_owned(),
@@ -313,25 +311,25 @@ impl ZoneRuntime {
 
     pub(super) fn render_passthrough_effect_layer_frame(
         &mut self,
-        group: &Zone,
-        context: GroupFrameContext<'_>,
+        zone: &Zone,
+        context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
-        let Some(layer) = passthrough_effect_layer(group) else {
+        let Some(layer) = passthrough_effect_layer(zone) else {
             return Ok(None);
         };
 
-        let frame = self.render_effect_layer_frame(group, &layer, context)?;
+        let frame = self.render_effect_layer_frame(zone, &layer, context)?;
         if frame.is_some() {
             self.layer_runtime.note_health(
                 context.active_scene_id,
-                group.id,
+                zone.id,
                 layer.id,
                 LayerHealth::Active,
             );
         } else {
             self.layer_runtime.note_health(
                 context.active_scene_id,
-                group.id,
+                zone.id,
                 layer.id,
                 LayerHealth::Loading,
             );
@@ -339,12 +337,12 @@ impl ZoneRuntime {
         Ok(frame)
     }
 
-    pub(super) fn advance_direct_group_effects(
+    pub(super) fn advance_direct_zone_effects(
         &mut self,
-        group: &Zone,
-        context: GroupFrameContext<'_>,
+        zone: &Zone,
+        context: ZoneFrameContext<'_>,
     ) -> Result<()> {
-        for layer in &group.layers {
+        for layer in &zone.layers {
             if !layer.enabled {
                 continue;
             }
@@ -357,11 +355,11 @@ impl ZoneRuntime {
             .apply_to_layer(&layer);
             match &layer_runtime.source {
                 LayerSource::Effect { .. } => {
-                    self.advance_effect_layer_output(group, &layer_runtime, context)?;
+                    self.advance_effect_layer_output(zone, &layer_runtime, context)?;
                 }
                 #[cfg(feature = "servo")]
                 LayerSource::WebViewport { .. } => {
-                    self.advance_effect_layer_output(group, &layer_runtime, context)?;
+                    self.advance_effect_layer_output(zone, &layer_runtime, context)?;
                 }
                 _ => {}
             }
@@ -372,16 +370,16 @@ impl ZoneRuntime {
 
     fn render_effect_layer_frame(
         &mut self,
-        group: &Zone,
+        zone: &Zone,
         layer: &SceneLayer,
-        context: GroupFrameContext<'_>,
+        context: ZoneFrameContext<'_>,
     ) -> Result<Option<ProducerFrame>> {
         #[cfg(feature = "servo-gpu-import")]
         {
             match self
                 .effect_pool
                 .render_layer_output(
-                    group,
+                    zone,
                     layer,
                     context.inputs.delta_secs,
                     context.inputs.audio,
@@ -392,7 +390,7 @@ impl ZoneRuntime {
                 )
                 .map_err(|error| {
                     anyhow::Error::new(render_layer_effect_error(
-                        group,
+                        zone,
                         layer,
                         context.registry,
                         error,
@@ -406,11 +404,10 @@ impl ZoneRuntime {
 
         #[cfg(not(feature = "servo-gpu-import"))]
         {
-            let mut canvas =
-                Canvas::try_new(group.layout.canvas_width, group.layout.canvas_height)?;
+            let mut canvas = Canvas::try_new(zone.layout.canvas_width, zone.layout.canvas_height)?;
             self.effect_pool
                 .render_layer_into(
-                    group,
+                    zone,
                     layer,
                     context.inputs.delta_secs,
                     context.inputs.audio,
@@ -422,7 +419,7 @@ impl ZoneRuntime {
                 )
                 .map_err(|error| {
                     anyhow::Error::new(render_layer_effect_error(
-                        group,
+                        zone,
                         layer,
                         context.registry,
                         error,
@@ -434,13 +431,13 @@ impl ZoneRuntime {
 
     fn advance_effect_layer_output(
         &mut self,
-        group: &Zone,
+        zone: &Zone,
         layer: &SceneLayer,
-        context: GroupFrameContext<'_>,
+        context: ZoneFrameContext<'_>,
     ) -> Result<()> {
         self.effect_pool
             .advance_layer_output(
-                group,
+                zone,
                 layer,
                 context.inputs.delta_secs,
                 context.inputs.audio,
@@ -451,7 +448,7 @@ impl ZoneRuntime {
             )
             .map_err(|error| {
                 anyhow::Error::new(render_layer_effect_error(
-                    group,
+                    zone,
                     layer,
                     context.registry,
                     error,

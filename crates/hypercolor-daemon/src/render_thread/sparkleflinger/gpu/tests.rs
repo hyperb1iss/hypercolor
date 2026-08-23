@@ -1239,7 +1239,7 @@ fn display_finalize_params_for_format(
 ) -> DisplayFinalizeParams {
     DisplayFinalizeParams {
         cache_key: DisplayFinalizeCacheKey {
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             device_id: DeviceId::new(),
             width,
             height,

@@ -284,9 +284,9 @@ rejects a delta receives one authoritative snapshot replay through
 
 There are two frame production paths on the pool:
 
-- `render_group_into` / `render_layer_into`: writes pixels into a caller-owned
+- `render_zone_into` / `render_layer_into`: writes pixels into a caller-owned
   `Canvas`. Standard path.
-- `render_group_output` / `render_layer_output`: returns an `EffectRenderOutput`,
+- `render_zone_output` / `render_layer_output`: returns an `EffectRenderOutput`,
   enabling GPU-resident frames. Used by the compositor when the `servo-gpu-import`
   feature is active.
 - `advance_layer_output`: ticks a renderer forward without requiring the caller to

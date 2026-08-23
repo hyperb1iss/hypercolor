@@ -63,7 +63,7 @@ fn save_hidden_outputs(map: &HashMap<String, HashSet<String>>) {
 }
 
 /// An empty layer stack at revision 0 — the resource value for a selection
-/// that has no per-group layer endpoint (none selected, or the synthetic
+/// that has no per-zone layer endpoint (none selected, or the synthetic
 /// Unassigned entry).
 fn empty_layer_stack() -> api::LayerStackResponse {
     api::LayerStackResponse {
@@ -187,7 +187,7 @@ pub fn StudioPage() -> impl IntoView {
         async move {
             match (scene, group_id) {
                 // The Unassigned entry is not a surface — it has no layer
-                // stack, so it never hits the per-group layer endpoint.
+                // stack, so it never hits the per-zone layer endpoint.
                 (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => Ok(empty_layer_stack()),
                 (Some(_), Some(group_id)) => api::list_layers(&group_id).await,
                 _ => Ok(empty_layer_stack()),

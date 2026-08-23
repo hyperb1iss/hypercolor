@@ -188,7 +188,7 @@ pub async fn commit_scene(state: &AppState, m: SceneMutation)
                                             // SceneCommit carries CommitDurability for post-admission state.
 ```
 
-Dropping an uncommitted `SceneMutation` discards a local candidate — nothing to roll back. The 49 open-coded rollback/admit/save/publish rituals collapse into `commit_scene`; `controls_version`/`groups_revision` bumps live inside intent methods. Phase 6 re-points commit at the widened frame-boundary transaction without changing callers.
+Dropping an uncommitted `SceneMutation` discards a local candidate. The 49 open-coded rollback/admit/save/publish rituals collapse into `commit_scene`; internal zone and control revisions live inside intent methods. Phase 6 re-points commit at the widened frame-boundary transaction without changing callers.
 
 **Commit ordering:** a commit generation is assigned at admission, under the CAS lock. Plan publication and pending events route through one ordered commit sequencer, so two commits that admit in sequence can never publish in reverse order after their async persistence completes out of order. Events are stamped with the commit generation; a superseded commit's events are dropped by the sequencer. Event ordering and persistence durability (`CommitDurability`) are separate axes.
 
@@ -299,7 +299,7 @@ All routes adopt these at the C1 flip — the fabricated `pagination` blocks and
 
 - `apply` vs `activate` is a real semantic split and both stay: `apply` = layer a thing onto current state (effects, layouts, profiles, presets); `activate` = switch the exclusive current (scenes, playlists). Documented, not renamed.
 - `current` → `active`: routes RENAME (`/effects/current/*` is deleted, not aliased).
-- Scene render groups are `zones` in every path and message; `/groups/` paths are deleted, not aliased.
+- Scene render zones are `zones` in every path and message; `/groups/` paths are deleted, not aliased.
 - Path params: `{id}` for the resource's own id; children as `{zone_id}`-style.
 
 ### 4.5 Unified `ControlValue` — canonical semantic contract
@@ -526,7 +526,7 @@ pub trait DeviceBackendFactory: Send + Sync {
 
 **Wave C1 — the compat-ectomy** (after 2.3a/4.1 merge; before or interleaved with Phase 3; each an atomic PR with all in-repo clients updated in-PR)
 C1a **Error-surface flip**: every route renders the canonical `DomainError` envelope; delete `domain::legacy`, `into_v1_response`, and `ApiError` entirely; rewrite the matrix tests to pin canonical shapes; unblocks wave 2.2's nine deferred helpers (bespoke 404 prose normalizes, `ResourceKind::Driver` exists).
-C1b **Naming flip**: `current`→`active`, `groups`→`zones`, `/config/get|set`→resource routes — old routes deleted, not aliased. The REST half shipped in C1b; the WS half (the `render_group_changed` event name and the `group_id`/`group_name`/`groups_revision` event fields) shipped in wave 3.2c, which owned that surface. Persisted scene files keep `groups`: C1c landed without that migration, so the rename rides Phase 5.1's scene-schema bump alongside the legacy Zone codec deletion.
+C1b **Naming flip**: `current` to `active`, `groups` to `zones`, and `/config/get|set` to resource routes. Old routes were deleted, not aliased. The REST half shipped in C1b. Wave 3.2c replaced the WS `render_group_changed` event and its group-named fields. Phase 5.1 completed the persisted scene-schema migration, so scene files now serialize `zones` and `zones_revision` without legacy aliases.
 C1c **Persisted-legacy deletion**: delete core's `migrate_config` (schema ≤3 path) and driver-inventory's legacy runtime-state import entry (already completed on the only install); update `types::control`'s keep-raw doc paragraph; schema bumps + release notes where shapes require it. (The legacy Zone codec deletes in 5.1, where its consumers restructure.)
 C1d **Deprecated-surface deletion**: migrate remaining callers off `hypercolor-color`'s `compat.rs` and delete it; delete the TS `audio/helpers` color re-export.
 

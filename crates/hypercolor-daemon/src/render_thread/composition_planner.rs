@@ -35,7 +35,7 @@ impl PlannedSceneLayer {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct CompiledCompositionMetadata {
     pub logical_layer_count: u32,
-    pub render_group_count: u32,
+    pub render_zone_count: u32,
     pub scene_active: bool,
     pub transition_active: bool,
 }
@@ -266,7 +266,7 @@ fn composition_metadata(
 
     CompiledCompositionMetadata {
         logical_layer_count,
-        render_group_count: scene_runtime.active_render_group_count(),
+        render_zone_count: scene_runtime.active_render_zone_count(),
         scene_active: scene_runtime.active_scene_id.is_some(),
         transition_active,
     }
@@ -387,7 +387,7 @@ mod tests {
                 resolved_zones: vec![sample_group()].into(),
                 resolved_zones_revision: 1,
                 zone_layout_preview_generation: 0,
-                active_render_group_count: 1,
+                active_render_zone_count: 1,
                 active_display_zone_target_fps: std::collections::HashMap::new(),
                 active_display_zone_output_routes: std::collections::HashMap::new(),
                 active_display_zone_descriptors: std::collections::HashMap::new(),
@@ -401,7 +401,7 @@ mod tests {
         );
 
         assert_eq!(compiled.metadata.logical_layer_count, 1);
-        assert_eq!(compiled.metadata.render_group_count, 1);
+        assert_eq!(compiled.metadata.render_zone_count, 1);
         assert!(compiled.metadata.scene_active);
         assert!(compiled.metadata.transition_active);
     }
@@ -428,7 +428,7 @@ mod tests {
         let composed = sparkleflinger.compose(compiled.plan);
 
         assert_eq!(compiled.metadata.logical_layer_count, 2);
-        assert_eq!(compiled.metadata.render_group_count, 0);
+        assert_eq!(compiled.metadata.render_zone_count, 0);
         assert!(!composed.bypassed);
         let canvas = composed
             .sampling_canvas
@@ -460,7 +460,7 @@ mod tests {
             resolved_zones: Vec::new().into(),
             resolved_zones_revision: 0,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 0,
+            active_render_zone_count: 0,
             active_display_zone_target_fps: std::collections::HashMap::new(),
             active_display_zone_output_routes: std::collections::HashMap::new(),
             active_display_zone_descriptors: std::collections::HashMap::new(),
@@ -473,7 +473,7 @@ mod tests {
         let composed = sparkleflinger.compose(compiled.plan);
 
         assert_eq!(compiled.metadata.logical_layer_count, 2);
-        assert_eq!(compiled.metadata.render_group_count, 0);
+        assert_eq!(compiled.metadata.render_zone_count, 0);
         assert!(!composed.bypassed);
         let pixel = &composed
             .sampling_canvas

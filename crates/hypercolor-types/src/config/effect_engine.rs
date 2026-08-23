@@ -83,7 +83,7 @@ pub enum EffectErrorFallbackPolicy {
     /// Leave the failing assignment in place and surface the error only.
     #[default]
     None,
-    /// Clear every active render-group assignment using the failing effect.
+    /// Clear every active render-zone assignment using the failing effect.
     ClearGroups,
 }
 

@@ -50,9 +50,9 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut replacement = builtin_entry(&registry, "rainbow");
     replacement.metadata.id = solid_id;
-    let mut group = sample_group(4, 4);
-    set_effect_group(
-        &mut group,
+    let mut zone = sample_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
         solid_id,
         HashMap::from([(
             "color".into(),
@@ -64,16 +64,16 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
 
     let first = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         0,
         &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("single group should render");
+    .expect("single zone should render");
     let ProducerFrame::Surface(first_surface) = &first.scene_frame else {
-        panic!("single group should publish a surface-backed scene frame");
+        panic!("single zone should publish a surface-backed scene frame");
     };
 
     assert!(
@@ -94,7 +94,7 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
 
     let second = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         1,
         &display_zone_target_fps,
@@ -103,13 +103,13 @@ fn retained_scene_invalidates_when_registry_generation_changes() {
     )
     .expect("registry generation change should force a rerender");
     let ProducerFrame::Surface(second_surface) = &second.scene_frame else {
-        panic!("single group should keep publishing a surface-backed scene frame");
+        panic!("single zone should keep publishing a surface-backed scene frame");
     };
 
     assert_ne!(
         second_surface.get_pixel(0, 0),
         first_surface.get_pixel(0, 0),
-        "same group revision should still rebuild when the registry entry changes"
+        "same zone revision should still rebuild when the registry entry changes"
     );
 }
 
@@ -120,21 +120,21 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
     let solid_id = builtin_effect_id(&registry, "solid_color");
     let mut replacement = builtin_entry(&registry, "rainbow");
     replacement.metadata.id = solid_id;
-    let mut group = sample_display_zone(4, 4);
-    set_effect_group(
-        &mut group,
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
         solid_id,
         HashMap::from([(
             "color".into(),
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         0,
         &display_zone_target_fps,
@@ -150,7 +150,7 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
 
     let second = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         10,
         &display_zone_target_fps,
@@ -177,25 +177,25 @@ fn retained_direct_canvas_invalidates_when_registry_generation_changes() {
 }
 
 #[test]
-fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
+fn retained_direct_canvas_invalidates_when_zones_revision_changes() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = sample_display_zone(4, 4);
-    set_effect_group(
-        &mut group,
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
         solid_id,
         HashMap::from([(
             "color".into(),
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         0,
         &display_zone_target_fps,
@@ -209,14 +209,14 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
 
     let second = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         2,
         10,
         &display_zone_target_fps,
         &registry,
         &mut zones,
     )
-    .expect("group revision change should bypass retained direct-canvas reuse");
+    .expect("zone revision change should bypass retained direct-canvas reuse");
     let [(_, second_frame)] = &second.display_zone_frames[..] else {
         panic!("display zone should keep publishing a direct surface");
     };
@@ -226,7 +226,7 @@ fn retained_direct_canvas_invalidates_when_groups_revision_changes() {
             != first_frame.surface_for_test().storage_identity()
             || second_frame.surface_for_test().generation()
                 != first_frame.surface_for_test().generation(),
-        "the retained direct surface should not be reused across group revisions"
+        "the retained direct surface should not be reused across zone revisions"
     );
 }
 
@@ -235,21 +235,21 @@ fn empty_display_zone_does_not_reuse_previous_face_surface() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = sample_display_zone(4, 4);
-    set_effect_group(
-        &mut group,
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
         solid_id,
         HashMap::from([(
             "color".into(),
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         0,
         &display_zone_target_fps,
@@ -264,11 +264,11 @@ fn empty_display_zone_does_not_reuse_previous_face_surface() {
         first_frame.surface_for_test().get_pixel(0, 0),
         Rgba::new(0, 255, 0, 255)
     );
-    group.layers.clear();
+    zone.layers.clear();
 
     let cleared = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         10,
         &display_zone_target_fps,
@@ -286,21 +286,21 @@ fn zero_zone_display_zone_reuses_retained_surface_until_target_interval() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = builtin_registry();
     let solid_id = builtin_effect_id(&registry, "solid_color");
-    let mut group = sample_display_zone(4, 4);
-    set_effect_group(
-        &mut group,
+    let mut zone = sample_display_zone(4, 4);
+    set_effect_zone(
+        &mut zone,
         solid_id,
         HashMap::from([(
             "color".into(),
             ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
         )]),
     );
-    let display_zone_target_fps = HashMap::from([(group.id, 30)]);
+    let display_zone_target_fps = HashMap::from([(zone.id, 30)]);
     let mut zones = Vec::new();
 
     let first = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         0,
         &display_zone_target_fps,
@@ -314,7 +314,7 @@ fn zero_zone_display_zone_reuses_retained_surface_until_target_interval() {
 
     let second = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         10,
         &display_zone_target_fps,
@@ -328,7 +328,7 @@ fn zero_zone_display_zone_reuses_retained_surface_until_target_interval() {
 
     let third = render_scene_for_test(
         &mut runtime,
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         1,
         40,
         &display_zone_target_fps,

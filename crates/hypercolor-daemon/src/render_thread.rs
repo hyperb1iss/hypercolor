@@ -10,7 +10,7 @@
 //! loop {
 //!     RenderLoop::tick()                 // timing gate + FPS control
 //!     read immutable input graph         // shared frame inputs
-//!     render active scene groups         // Servo/native/media producers
+//!     render active scene zones          // Servo/native/media producers
 //!     SparkleFlinger::compose_frame()    // canonical scene canvas
 //!     sample LED output                  // CPU or prepared GPU sampler
 //!     publish scene/display canvases     // latest-value bus/watch streams
@@ -44,7 +44,7 @@ mod macos_screen_diagnostics;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
-mod render_groups;
+mod render_zones;
 mod scene_dependency;
 mod scene_snapshot;
 mod scene_state;
@@ -76,7 +76,7 @@ pub(crate) use self::macos_screen_diagnostics::{
 };
 use self::pipeline_driver::run_pipeline;
 pub(crate) use self::producer_queue::ProducerFrame;
-pub(crate) use self::render_groups::{RenderSceneContext, ZoneFrameInputs};
+pub(crate) use self::render_zones::{RenderSceneContext, ZoneFrameInputs};
 pub(crate) use self::scene_dependency::SceneDependencyKey;
 use crate::discovery::DiscoveryRuntime;
 use crate::domain::scene::{ScenePlanReader, SceneService};
@@ -96,11 +96,11 @@ use hypercolor_core::input::InputManager;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 
-pub(crate) struct InteractivePreviewZoneRuntime(render_groups::ZoneRuntime);
+pub(crate) struct InteractivePreviewZoneRuntime(render_zones::ZoneRuntime);
 
 impl InteractivePreviewZoneRuntime {
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Result<Self> {
-        Ok(Self(render_groups::ZoneRuntime::try_new_preview(
+        Ok(Self(render_zones::ZoneRuntime::try_new_preview(
             scene_width,
             scene_height,
         )?))
@@ -112,7 +112,7 @@ impl InteractivePreviewZoneRuntime {
         asset_library: Arc<RwLock<AssetLibrary>>,
     ) -> Result<Self> {
         Ok(Self(
-            render_groups::ZoneRuntime::try_with_asset_library_preview(
+            render_zones::ZoneRuntime::try_with_asset_library_preview(
                 scene_width,
                 scene_height,
                 asset_library,
@@ -132,7 +132,7 @@ impl InteractivePreviewZoneRuntime {
         zones: &mut Vec<ZoneColors>,
     ) -> anyhow::Result<ProducerFrame> {
         self.0.admit_reconcile(
-            context.groups,
+            context.zones,
             context.active_scene_id,
             context.dependency_key,
             context.registry,
@@ -256,7 +256,7 @@ pub struct RenderThread {
 /// duration of each pipeline stage.
 #[derive(Clone)]
 pub struct RenderThreadState {
-    /// Effect catalog used to resolve render-group assignments.
+    /// Effect catalog used to resolve render-zone assignments.
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// User media asset library used by media-backed scene layers.
@@ -323,7 +323,7 @@ pub struct RenderThreadState {
     /// Ceiling derived from user configuration before runtime admission.
     pub configured_max_fps_tier: ConfiguredFpsTier,
 
-    /// Effective `display.face_fps_cap` for group-direct HTML faces.
+    /// Effective `display.face_fps_cap` for zone-direct HTML faces.
     pub face_fps_cap: u32,
 }
 

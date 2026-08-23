@@ -120,7 +120,7 @@ pub(crate) struct LatestFrameMetrics {
     pub postprocess_us: u32,
     pub publish_us: u32,
     pub publish_frame_data_us: u32,
-    pub publish_group_canvas_us: u32,
+    pub publish_zone_canvas_us: u32,
     pub publish_preview_us: u32,
     pub publish_events_us: u32,
     pub overhead_us: u32,
@@ -152,7 +152,7 @@ pub(crate) struct LatestFrameMetrics {
     pub devices_written: u32,
     pub total_leds: u32,
     pub logical_layer_count: u32,
-    pub render_group_count: u32,
+    pub render_zone_count: u32,
     pub scene_active: bool,
     pub scene_transition_active: bool,
     /// Cumulative count of scene-surface-pool dequeues that had to allocate a
@@ -160,13 +160,13 @@ pub(crate) struct LatestFrameMetrics {
     /// the pool was already at its growth cap. A rising value signals
     /// the cap is too low for current subscriber fan-out.
     pub scene_pool_saturation_reallocs: u64,
-    /// Same as above but summed across per-group direct-canvas pools.
+    /// Same as above but summed across per-zone direct-canvas pools.
     pub direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size.
     /// Non-zero values are benign — the pool converged on its working
     /// set. A steadily climbing value could indicate an Arc leak.
     pub scene_pool_grown_slots: u32,
-    /// Same as above but summed across per-group direct-canvas pools.
+    /// Same as above but summed across per-zone direct-canvas pools.
     pub direct_pool_grown_slots: u32,
     pub scene_pool_slot_count: u32,
     pub scene_pool_max_slots: u32,

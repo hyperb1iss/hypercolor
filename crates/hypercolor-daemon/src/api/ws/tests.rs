@@ -708,7 +708,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
             postprocess_us: 0,
             publish_us: 180,
             publish_frame_data_us: 70,
-            publish_group_canvas_us: 20,
+            publish_zone_canvas_us: 20,
             publish_preview_us: 80,
             publish_events_us: 10,
             overhead_us: 70,
@@ -742,7 +742,7 @@ async fn metrics_message_includes_latest_frame_timeline() {
             devices_written: 7,
             total_leds: 512,
             logical_layer_count: 2,
-            render_group_count: 1,
+            render_zone_count: 1,
             scene_active: true,
             scene_transition_active: true,
             scene_pool_saturation_reallocs: 0,
@@ -1242,7 +1242,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     );
     assert!(json["display_output"]["last_failure_age_ms"].is_number());
     assert_eq!(json["timeline"]["logical_layer_count"], 2);
-    assert_eq!(json["timeline"]["render_group_count"], 1);
+    assert_eq!(json["timeline"]["render_zone_count"], 1);
+    assert!(json["timeline"].get("render_group_count").is_none());
     assert_eq!(json["timeline"]["scene_active"], true);
     assert_eq!(json["timeline"]["scene_transition_active"], true);
     assert_eq!(json["timeline"]["scene_snapshot_done_ms"], 0.12);
@@ -1253,7 +1254,8 @@ async fn metrics_message_includes_latest_frame_timeline() {
     assert_eq!(json["stages"]["producer_effect_rendering_ms"], 0.64);
     assert_eq!(json["stages"]["producer_preview_compose_ms"], 0.11);
     assert_eq!(json["stages"]["publish_frame_data_ms"], 0.07);
-    assert_eq!(json["stages"]["publish_group_canvas_ms"], 0.02);
+    assert_eq!(json["stages"]["publish_zone_canvas_ms"], 0.02);
+    assert!(json["stages"].get("publish_group_canvas_ms").is_none());
     assert_eq!(json["stages"]["publish_preview_ms"], 0.08);
     assert_eq!(json["stages"]["publish_events_ms"], 0.01);
     assert_eq!(json["fps"]["ceiling"], 60);

@@ -4,27 +4,27 @@ use hypercolor_core::bus::DisplayZoneOutputRoute;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone, ZoneId};
 
 use super::ZoneRuntime;
-use super::group_state::group_publishes_direct_canvas;
 use super::model::{
-    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedDirectGroupFrame,
-    RetainedMaterializedGroupFrame,
+    DisplayZoneCanvasFrame, PendingDisplayZoneFrame, RetainedDirectZoneFrame,
+    RetainedMaterializedZoneFrame,
 };
+use super::zone_state::zone_publishes_direct_canvas;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
 
 impl ZoneRuntime {
-    pub(super) fn reuse_retained_direct_group_frame(
+    pub(super) fn reuse_retained_direct_zone_frame(
         &self,
-        group: &Zone,
+        zone: &Zone,
         elapsed_ms: u64,
         display_zone_target_fps: &HashMap<ZoneId, u32>,
         dependency_key: SceneDependencyKey,
     ) -> Option<PendingDisplayZoneFrame> {
-        if !group_publishes_direct_canvas(group) || !group.layout.zones.is_empty() {
+        if !zone_publishes_direct_canvas(zone) || !zone.layout.zones.is_empty() {
             return None;
         }
 
-        let target_fps = *display_zone_target_fps.get(&group.id)?;
-        let retained = self.retained_direct_group_frames.get(&group.id)?;
+        let target_fps = *display_zone_target_fps.get(&zone.id)?;
+        let retained = self.retained_direct_zone_frames.get(&zone.id)?;
         if retained.frame.empty_direct_shell {
             return None;
         }
@@ -36,16 +36,16 @@ impl ZoneRuntime {
             .then(|| retained.frame.clone())
     }
 
-    pub(super) fn retain_direct_group_frame(
+    pub(super) fn retain_direct_zone_frame(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         elapsed_ms: u64,
         dependency_key: SceneDependencyKey,
         frame: &PendingDisplayZoneFrame,
     ) {
-        self.retained_direct_group_frames.insert(
-            group_id,
-            RetainedDirectGroupFrame {
+        self.retained_direct_zone_frames.insert(
+            zone_id,
+            RetainedDirectZoneFrame {
                 frame: frame.clone(),
                 rendered_at_ms: elapsed_ms,
                 dependency_key,
@@ -53,21 +53,21 @@ impl ZoneRuntime {
         );
     }
 
-    pub(super) fn reuse_latest_direct_group_frame(
+    pub(super) fn reuse_latest_direct_zone_frame(
         &self,
-        group: &Zone,
+        zone: &Zone,
     ) -> Option<PendingDisplayZoneFrame> {
-        if !group_publishes_direct_canvas(group) {
+        if !zone_publishes_direct_canvas(zone) {
             return None;
         }
-        let retained = self.retained_direct_group_frames.get(&group.id)?;
+        let retained = self.retained_direct_zone_frames.get(&zone.id)?;
         if retained.frame.empty_direct_shell {
             return None;
         }
-        let display_target = group.display_target.as_ref()?;
+        let display_target = zone.display_target.as_ref()?;
         if retained.frame.display_target != *display_target
-            || retained.frame.frame.width() != group.layout.canvas_width
-            || retained.frame.frame.height() != group.layout.canvas_height
+            || retained.frame.frame.width() != zone.layout.canvas_width
+            || retained.frame.frame.height() != zone.layout.canvas_height
         {
             return None;
         }
@@ -75,9 +75,9 @@ impl ZoneRuntime {
         Some(retained.frame.clone())
     }
 
-    pub(crate) fn reuse_retained_materialized_group_frame(
+    pub(crate) fn reuse_retained_materialized_zone_frame(
         &self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         elapsed_ms: u64,
         target_fps: Option<u32>,
         dependency_key: SceneDependencyKey,
@@ -90,7 +90,7 @@ impl ZoneRuntime {
             return None;
         }
 
-        let retained = self.retained_materialized_group_frames.get(&group_id)?;
+        let retained = self.retained_materialized_zone_frames.get(&zone_id)?;
         if retained.dependency_key != dependency_key
             || retained.display_target != *display_target
             || retained.display_route != *display_route
@@ -104,9 +104,9 @@ impl ZoneRuntime {
             .then(|| retained.frame.clone())
     }
 
-    pub(crate) fn reuse_latest_materialized_group_frame(
+    pub(crate) fn reuse_latest_materialized_zone_frame(
         &self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
         empty_direct_shell: bool,
@@ -115,7 +115,7 @@ impl ZoneRuntime {
             return None;
         }
 
-        let retained = self.retained_materialized_group_frames.get(&group_id)?;
+        let retained = self.retained_materialized_zone_frames.get(&zone_id)?;
         if retained.display_target != *display_target
             || retained.display_route != *display_route
             || retained.empty_direct_shell != empty_direct_shell
@@ -126,9 +126,9 @@ impl ZoneRuntime {
         Some(retained.frame.clone())
     }
 
-    pub(crate) fn retain_materialized_group_frame(
+    pub(crate) fn retain_materialized_zone_frame(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         elapsed_ms: u64,
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
@@ -140,9 +140,9 @@ impl ZoneRuntime {
             return;
         }
 
-        self.retained_materialized_group_frames.insert(
-            group_id,
-            RetainedMaterializedGroupFrame {
+        self.retained_materialized_zone_frames.insert(
+            zone_id,
+            RetainedMaterializedZoneFrame {
                 frame: frame.clone(),
                 rendered_at_ms: elapsed_ms,
                 dependency_key,

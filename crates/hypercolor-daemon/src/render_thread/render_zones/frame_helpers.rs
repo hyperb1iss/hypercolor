@@ -78,12 +78,12 @@ impl StaticLayerSurfaceCache {
     }
 }
 
-pub(super) fn passthrough_effect_layer(group: &Zone) -> Option<SceneLayer> {
-    if !group.enabled {
+pub(super) fn passthrough_effect_layer(zone: &Zone) -> Option<SceneLayer> {
+    if !zone.enabled {
         return None;
     }
 
-    let mut layers = group.layers.iter().filter(|layer| layer.enabled);
+    let mut layers = zone.layers.iter().filter(|layer| layer.enabled);
     let layer = layers.next()?;
     if layers.next().is_some() {
         return None;
@@ -305,7 +305,7 @@ pub(super) fn copy_producer_frame_to_canvas(
             target.try_copy_from_published_surface(&surface)?;
             full_frame_copy.record(
                 usize_to_u32(surface.rgba_bytes().len()),
-                "surface_to_group_canvas_materialization",
+                "surface_to_zone_canvas_materialization",
             );
             Ok(true)
         }
@@ -316,7 +316,7 @@ pub(super) fn copy_producer_frame_to_canvas(
                 return Ok(false);
             };
             *target = canvas;
-            full_frame_copy.record(byte_count, "screen_publication_to_group_canvas");
+            full_frame_copy.record(byte_count, "screen_publication_to_zone_canvas");
             Ok(true)
         }
         #[cfg(feature = "servo-gpu-import")]

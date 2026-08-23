@@ -23,7 +23,7 @@ pub(super) fn FrameTimelinePanel(
             m.as_ref()
                 .map(|m| {
                     format!(
-                        "frame #{} · {} · {} layer{} · {} group{}",
+                        "frame #{} · {} · {} layer{} · {} zone{}",
                         m.timeline.frame_token,
                         m.timeline.compositor_backend.replace('_', " "),
                         m.timeline.logical_layer_count,
@@ -32,8 +32,8 @@ pub(super) fn FrameTimelinePanel(
                         } else {
                             "s"
                         },
-                        m.timeline.render_group_count,
-                        if m.timeline.render_group_count == 1 {
+                        m.timeline.render_zone_count,
+                        if m.timeline.render_zone_count == 1 {
                             ""
                         } else {
                             "s"

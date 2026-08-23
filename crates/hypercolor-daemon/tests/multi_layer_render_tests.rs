@@ -100,7 +100,7 @@ fn solid_layer(effect_id: EffectId, color: [f32; 4], blend: BlendMode, opacity: 
     layer
 }
 
-fn render_group(name: &str, _effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
+fn render_zone(name: &str, _effect_id: EffectId, layers: Vec<SceneLayer>) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: name.into(),
@@ -123,12 +123,12 @@ fn display_zone(
     effect_id: EffectId,
     layers: Vec<SceneLayer>,
 ) -> Zone {
-    let mut group = render_group("Display", effect_id, layers);
-    group.id = group_id;
-    group.layout = test_layout(Vec::new());
-    group.display_target = Some(DisplayFaceTarget::new(device_id));
-    group.role = ZoneRole::Display;
-    group
+    let mut zone = render_zone("Display", effect_id, layers);
+    zone.id = group_id;
+    zone.layout = test_layout(Vec::new());
+    zone.display_target = Some(DisplayFaceTarget::new(device_id));
+    zone.role = ZoneRole::Display;
+    zone
 }
 
 fn render_state() -> RenderThreadState {
@@ -172,9 +172,9 @@ fn render_state() -> RenderThreadState {
     }
 }
 
-async fn install_scene(state: &mut RenderThreadState, groups: Vec<Zone>) {
+async fn install_scene(state: &mut RenderThreadState, zones: Vec<Zone>) {
     let mut scene = make_scene("Multi Layer Scene");
-    scene.zones = groups;
+    scene.zones = zones;
     scene.unassigned_behavior = UnassignedBehavior::Off;
     let mut scene_manager = state.scene_manager.snapshot().await;
     scene_manager.create(scene.clone()).expect("create scene");
@@ -212,7 +212,7 @@ async fn duplicate_effect_layers_compose_bottom_to_top() {
         let registry = state.effect_registry.read().await;
         builtin_effect_id(&registry, "solid_color")
     };
-    let group = render_group(
+    let zone = render_zone(
         "Layered",
         solid_id,
         vec![
@@ -220,7 +220,7 @@ async fn duplicate_effect_layers_compose_bottom_to_top() {
             solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], BlendMode::Alpha, 0.5),
         ],
     );
-    install_scene(&mut state, vec![group]).await;
+    install_scene(&mut state, vec![zone]).await;
 
     let frame = run_until_canvas_frame(&state).await;
     let pixel = frame.surface().get_pixel(160, 100);
@@ -240,7 +240,7 @@ async fn disabled_effect_layers_do_not_contribute_to_output() {
     };
     let mut disabled = solid_layer(solid_id, [0.0, 0.0, 1.0, 1.0], BlendMode::Replace, 1.0);
     disabled.enabled = false;
-    let group = render_group(
+    let zone = render_zone(
         "Disabled Overlay",
         solid_id,
         vec![
@@ -248,7 +248,7 @@ async fn disabled_effect_layers_do_not_contribute_to_output() {
             disabled,
         ],
     );
-    install_scene(&mut state, vec![group]).await;
+    install_scene(&mut state, vec![zone]).await;
 
     let frame = run_until_canvas_frame(&state).await;
 
@@ -268,8 +268,8 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
     let display_zone_id = ZoneId::new();
     let display_device_id = DeviceId::new();
     let zone_canvas_sender = state.event_bus.zone_canvas_sender(display_zone_id);
-    let mut group_canvas_rx = zone_canvas_sender.subscribe();
-    let scene_group = render_group(
+    let mut zone_canvas_rx = zone_canvas_sender.subscribe();
+    let scene_zone = render_zone(
         "Scene",
         solid_id,
         vec![solid_layer(
@@ -290,19 +290,19 @@ async fn display_layer_stack_publishes_separately_from_scene_canvas() {
             1.0,
         )],
     );
-    install_scene(&mut state, vec![scene_group, face_group]).await;
+    install_scene(&mut state, vec![scene_zone, face_group]).await;
 
     let scene_frame = run_until_canvas_frame(&state).await;
-    tokio::time::timeout(Duration::from_secs(2), group_canvas_rx.changed())
+    tokio::time::timeout(Duration::from_secs(2), zone_canvas_rx.changed())
         .await
         .expect("expected display zone frame within 2 seconds")
-        .expect("group canvas sender should remain connected");
+        .expect("zone canvas sender should remain connected");
 
     assert_eq!(
         scene_frame.surface().get_pixel(160, 100),
         Rgba::new(255, 0, 0, 255)
     );
-    let DisplayZoneFrame::Canvas(face_frame) = group_canvas_rx.borrow().clone() else {
+    let DisplayZoneFrame::Canvas(face_frame) = zone_canvas_rx.borrow().clone() else {
         panic!("display zone should publish a canvas frame");
     };
     assert_eq!(&face_frame.rgba_bytes()[0..4], [0, 0, 255, 255].as_slice());

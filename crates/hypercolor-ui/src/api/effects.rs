@@ -119,7 +119,7 @@ pub async fn fetch_effect_presets(id: &str) -> ApiResult<Vec<EffectPresetSummary
     Ok(response.items)
 }
 
-/// Apply a bundled or saved preset to an effect and optional render group.
+/// Apply a bundled or saved preset to an effect and optional render zone.
 pub async fn apply_effect_preset(
     effect_id: &str,
     preset_id: &str,

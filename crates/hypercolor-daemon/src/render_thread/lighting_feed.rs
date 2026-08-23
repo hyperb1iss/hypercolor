@@ -2,7 +2,7 @@
 //!
 //! Assembles a [`LightingState`] per frame from the scene snapshot and the
 //! previous frame's sampled zone colors. Effect names refresh only when the
-//! render groups change; dominant colors refresh at 2 Hz from quantized LED
+//! render zones change; dominant colors refresh at 2 Hz from quantized LED
 //! output so the set stays stable while effects animate.
 
 use std::sync::Arc;
@@ -34,13 +34,13 @@ impl LightingFeedState {
     pub(crate) fn lighting_for_frame(
         &mut self,
         scene_name: Option<&str>,
-        groups: &[Zone],
-        groups_revision: u64,
+        zones: &[Zone],
+        zones_revision: u64,
         registry: &EffectRegistry,
     ) -> Arc<LightingState> {
-        let key = (groups_revision, registry.generation());
+        let key = (zones_revision, registry.generation());
         if self.effect_names_key != Some(key) {
-            self.effect_names = effect_names_for_groups(groups, registry);
+            self.effect_names = effect_names_for_zones(zones, registry);
             self.effect_names_key = Some(key);
         }
 
@@ -79,7 +79,7 @@ impl LightingFeedState {
     }
 }
 
-fn effect_names_for_groups(groups: &[Zone], registry: &EffectRegistry) -> Vec<String> {
+fn effect_names_for_zones(zones: &[Zone], registry: &EffectRegistry) -> Vec<String> {
     let mut names = Vec::new();
     let push_effect = |effect_id: &hypercolor_types::effect::EffectId, names: &mut Vec<String>| {
         let Some(entry) = registry.get(effect_id) else {
@@ -90,11 +90,11 @@ fn effect_names_for_groups(groups: &[Zone], registry: &EffectRegistry) -> Vec<St
             names.push(name);
         }
     };
-    for group in groups {
-        if !group.enabled {
+    for zone in zones {
+        if !zone.enabled {
             continue;
         }
-        for layer in &group.layers {
+        for layer in &zone.layers {
             if !layer.enabled {
                 continue;
             }

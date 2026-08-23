@@ -24,7 +24,7 @@ use hypercolor_types::spatial::Corner;
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 use uuid::Uuid;
 
-use super::projection::{build_group_projection, compose_authoritative_scene_canvas};
+use super::projection::{build_zone_projection, compose_authoritative_scene_canvas};
 
 use super::*;
 
@@ -98,34 +98,34 @@ fn failed_scene_resize_preserves_last_good_geometry() {
 }
 
 #[test]
-fn authoritative_group_reuses_the_exact_prepared_sampling_plan() {
+fn authoritative_zone_reuses_the_exact_prepared_sampling_plan() {
     let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
-    let mut group = sample_group(4, 4);
-    make_color_fill_group(&mut group);
-    group.layout.zones.push(point_zone("primary"));
+    let mut zone = sample_zone(4, 4);
+    make_color_fill_zone(&mut zone);
+    zone.layout.zones.push(point_zone("primary"));
     let authoritative =
-        SpatialEngine::try_new(group.layout.clone()).expect("group layout should be addressable");
-    group.layout = authoritative.layout().as_ref().clone();
+        SpatialEngine::try_new(zone.layout.clone()).expect("zone layout should be addressable");
+    zone.layout = authoritative.layout().as_ref().clone();
     let authoritative_plan = authoritative.sampling_plan();
 
     runtime
         .reconcile(
-            std::slice::from_ref(&group),
+            std::slice::from_ref(&zone),
             Some(SceneId::DEFAULT),
             SceneDependencyKey::new(1, 1),
             &EffectRegistry::default(),
             &HashMap::new(),
             Some(&authoritative),
         )
-        .expect("valid authoritative group should reconcile");
+        .expect("valid authoritative zone should reconcile");
 
-    let group_engine = runtime
+    let zone_engine = runtime
         .spatial_engines
-        .get(&group.id)
-        .expect("group engine should be installed");
+        .get(&zone.id)
+        .expect("zone engine should be installed");
     assert!(Arc::ptr_eq(
         &authoritative_plan,
-        &group_engine.sampling_plan()
+        &zone_engine.sampling_plan()
     ));
     assert!(Arc::ptr_eq(
         &authoritative_plan,
@@ -134,35 +134,35 @@ fn authoritative_group_reuses_the_exact_prepared_sampling_plan() {
 }
 
 #[test]
-fn custom_group_plan_failure_preserves_every_installed_spatial_plan() {
+fn custom_zone_plan_failure_preserves_every_installed_spatial_plan() {
     let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
-    let mut group = sample_group(4, 4);
-    make_color_fill_group(&mut group);
-    group.layout.zones.push(point_zone("custom"));
+    let mut zone = sample_zone(4, 4);
+    make_color_fill_zone(&mut zone);
+    zone.layout.zones.push(point_zone("custom"));
     let original_dependency = SceneDependencyKey::new(1, 1);
     runtime
         .reconcile(
-            std::slice::from_ref(&group),
+            std::slice::from_ref(&zone),
             Some(SceneId::DEFAULT),
             original_dependency,
             &EffectRegistry::default(),
             &HashMap::new(),
             None,
         )
-        .expect("valid custom group should reconcile");
-    let original_group_plan = runtime
+        .expect("valid custom zone should reconcile");
+    let original_zone_plan = runtime
         .spatial_engines
-        .get(&group.id)
-        .expect("group engine should be installed")
+        .get(&zone.id)
+        .expect("zone engine should be installed")
         .sampling_plan();
     let original_combined_plan = runtime.combined_led_spatial_engine.sampling_plan();
 
-    group.layout.default_sampling_mode = SamplingMode::GaussianArea {
+    zone.layout.default_sampling_mode = SamplingMode::GaussianArea {
         sigma: 1.0,
         radius: u32::MAX,
     };
     let result = runtime.reconcile(
-        std::slice::from_ref(&group),
+        std::slice::from_ref(&zone),
         Some(SceneId::DEFAULT),
         SceneDependencyKey::new(2, 1),
         &EffectRegistry::default(),
@@ -178,11 +178,11 @@ fn custom_group_plan_failure_preserves_every_installed_spatial_plan() {
     ));
     assert_eq!(runtime.reconciled_dependency_key, Some(original_dependency));
     assert!(Arc::ptr_eq(
-        &original_group_plan,
+        &original_zone_plan,
         &runtime
             .spatial_engines
-            .get(&group.id)
-            .expect("last good group engine should remain installed")
+            .get(&zone.id)
+            .expect("last good zone engine should remain installed")
             .sampling_plan()
     ));
     assert!(Arc::ptr_eq(
@@ -192,30 +192,30 @@ fn custom_group_plan_failure_preserves_every_installed_spatial_plan() {
 }
 
 #[test]
-fn abandoned_prepared_group_resources_preserve_the_installed_generation() {
+fn abandoned_prepared_zone_resources_preserve_the_installed_generation() {
     let mut runtime = ZoneRuntime::try_new(4, 4).expect("small runtime should construct");
-    let mut live_group = sample_group(4, 4);
-    make_color_fill_group(&mut live_group);
-    live_group.layout.zones.push(point_zone("live"));
+    let mut live_zone = sample_zone(4, 4);
+    make_color_fill_zone(&mut live_zone);
+    live_zone.layout.zones.push(point_zone("live"));
     let live_dependency = SceneDependencyKey::new(1, 1);
     runtime
         .reconcile(
-            std::slice::from_ref(&live_group),
+            std::slice::from_ref(&live_zone),
             Some(SceneId::DEFAULT),
             live_dependency,
             &EffectRegistry::default(),
             &HashMap::new(),
             None,
         )
-        .expect("live group should reconcile");
+        .expect("live zone should reconcile");
     let live_plan = runtime.combined_led_spatial_engine.sampling_plan();
 
-    let mut candidate_group = sample_group(8, 8);
-    make_color_fill_group(&mut candidate_group);
-    candidate_group.layout.zones.push(point_zone("candidate"));
+    let mut candidate_zone = sample_zone(8, 8);
+    make_color_fill_zone(&mut candidate_zone);
+    candidate_zone.layout.zones.push(point_zone("candidate"));
     let prepared = runtime
         .prepare_reconcile_for_scene_dimensions(
-            std::slice::from_ref(&candidate_group),
+            std::slice::from_ref(&candidate_zone),
             Some(SceneId::DEFAULT),
             SceneDependencyKey::new(2, 1),
             &EffectRegistry::default(),
@@ -236,16 +236,16 @@ fn abandoned_prepared_group_resources_preserve_the_installed_generation() {
     ));
 }
 
-fn sample_group(width: u32, height: u32) -> Zone {
+fn sample_zone(width: u32, height: u32) -> Zone {
     let effect_id = EffectId::from(Uuid::now_v7());
     Zone {
         id: ZoneId::new(),
-        name: "Preview Group".into(),
+        name: "Preview Zone".into(),
         description: None,
         layers: vec![effect_layer(effect_id, HashMap::new())],
         layout: SpatialLayout {
-            id: "preview-group".into(),
-            name: "Preview Group".into(),
+            id: "preview-zone".into(),
+            name: "Preview Zone".into(),
             description: None,
             canvas_width: width,
             canvas_height: height,
@@ -275,16 +275,12 @@ fn effect_layer(effect_id: EffectId, controls: HashMap<String, ControlValue>) ->
     )
 }
 
-fn set_effect_group(
-    group: &mut Zone,
-    effect_id: EffectId,
-    controls: HashMap<String, ControlValue>,
-) {
-    group.layers = vec![effect_layer(effect_id, controls)];
+fn set_effect_zone(zone: &mut Zone, effect_id: EffectId, controls: HashMap<String, ControlValue>) {
+    zone.layers = vec![effect_layer(effect_id, controls)];
 }
 
-fn make_color_fill_group(group: &mut Zone) {
-    group.layers = vec![hypercolor_types::layer::SceneLayer {
+fn make_color_fill_zone(zone: &mut Zone) {
+    zone.layers = vec![hypercolor_types::layer::SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: None,
         source: hypercolor_types::layer::LayerSource::ColorFill {
@@ -314,17 +310,17 @@ fn patterned_source_canvas(width: u32, height: u32) -> Canvas {
 }
 
 fn sample_display_zone(width: u32, height: u32) -> Zone {
-    let mut group = sample_group(width, height);
-    group.display_target = Some(hypercolor_types::scene::DisplayFaceTarget {
+    let mut zone = sample_zone(width, height);
+    zone.display_target = Some(hypercolor_types::scene::DisplayFaceTarget {
         device_id: hypercolor_types::device::DeviceId::new(),
         blend_mode: hypercolor_types::layer::BlendMode::Replace,
         opacity: 1.0,
     });
-    group.role = ZoneRole::Display;
-    group
+    zone.role = ZoneRole::Display;
+    zone
 }
 
-fn sample_group_canvas_frame(
+fn sample_zone_canvas_frame(
     display_target: &DisplayFaceTarget,
     finalized: bool,
 ) -> DisplayZoneCanvasFrame {
@@ -422,48 +418,45 @@ fn builtin_entry(registry: &EffectRegistry, stem: &str) -> hypercolor_core::effe
 
 fn render_scene_for_test(
     runtime: &mut ZoneRuntime,
-    groups: &[Zone],
-    groups_revision: u64,
+    zones: &[Zone],
+    zones_revision: u64,
     elapsed_ms: u64,
     display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
-    zones: &mut Vec<ZoneColors>,
+    zone_colors: &mut Vec<ZoneColors>,
 ) -> Result<ZoneResult> {
     render_scene_for_test_with_screen(
         runtime,
-        groups,
-        groups_revision,
+        zones,
+        zones_revision,
         elapsed_ms,
         display_zone_target_fps,
         registry,
-        zones,
+        zone_colors,
         None,
     )
 }
 
-fn render_overlapping_groups_for_test(
-    groups: &[Zone],
-    registry: &EffectRegistry,
-) -> Vec<ZoneColors> {
+fn render_overlapping_zones_for_test(zones: &[Zone], registry: &EffectRegistry) -> Vec<ZoneColors> {
     let mut runtime = ZoneRuntime::new(4, 4);
-    let mut zones = Vec::new();
+    let mut zone_colors = Vec::new();
     let result = render_scene_for_test(
         &mut runtime,
-        groups,
+        zones,
         1,
         0,
         &HashMap::new(),
         registry,
-        &mut zones,
+        &mut zone_colors,
     )
     .expect("overlapping multi-zone scene should render");
 
     let LedSamplingStrategy::PreSampled(layout) = result.led_sampling_strategy else {
         panic!("overlapping multi-zone scene should be pre-sampled");
     };
-    assert_eq!(layout.zones.len(), groups.len());
-    assert_eq!(zones.len(), groups.len());
-    zones
+    assert_eq!(layout.zones.len(), zone_colors.len());
+    assert_eq!(zones.len(), zone_colors.len());
+    zone_colors
 }
 
 fn color_by_zone(zones: &[ZoneColors], zone_id: &str) -> [u8; 3] {
@@ -476,23 +469,23 @@ fn color_by_zone(zones: &[ZoneColors], zone_id: &str) -> [u8; 3] {
 
 fn render_scene_for_test_with_screen(
     runtime: &mut ZoneRuntime,
-    groups: &[Zone],
-    groups_revision: u64,
+    zones: &[Zone],
+    zones_revision: u64,
     elapsed_ms: u64,
     display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
-    zones: &mut Vec<ZoneColors>,
+    zone_colors: &mut Vec<ZoneColors>,
     screen: Option<&ScreenData>,
 ) -> Result<ZoneResult> {
     let mut sparkleflinger = SparkleFlinger::cpu();
     render_scene_for_test_with_screen_and_sparkleflinger(
         runtime,
-        groups,
-        groups_revision,
+        zones,
+        zones_revision,
         elapsed_ms,
         display_zone_target_fps,
         registry,
-        zones,
+        zone_colors,
         screen,
         &mut sparkleflinger,
     )
@@ -500,12 +493,12 @@ fn render_scene_for_test_with_screen(
 
 fn render_scene_for_test_with_screen_and_sparkleflinger(
     runtime: &mut ZoneRuntime,
-    groups: &[Zone],
-    groups_revision: u64,
+    zones: &[Zone],
+    zones_revision: u64,
     elapsed_ms: u64,
     display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
-    zones: &mut Vec<ZoneColors>,
+    zone_colors: &mut Vec<ZoneColors>,
     screen: Option<&ScreenData>,
     sparkleflinger: &mut SparkleFlinger,
 ) -> Result<ZoneResult> {
@@ -520,9 +513,9 @@ fn render_scene_for_test_with_screen_and_sparkleflinger(
         net: None,
         lighting: None,
     };
-    let dependency_key = SceneDependencyKey::new(groups_revision, registry.generation());
+    let dependency_key = SceneDependencyKey::new(zones_revision, registry.generation());
     runtime.admit_reconcile(
-        groups,
+        zones,
         Some(SceneId::DEFAULT),
         dependency_key,
         registry,
@@ -531,7 +524,7 @@ fn render_scene_for_test_with_screen_and_sparkleflinger(
         sparkleflinger,
     )?;
     let context = RenderSceneContext {
-        groups,
+        zones,
         active_scene_id: Some(SceneId::DEFAULT),
         dependency_key,
         elapsed_ms,
@@ -541,7 +534,7 @@ fn render_scene_for_test_with_screen_and_sparkleflinger(
         authoritative_spatial_engine: None,
         inputs,
     };
-    runtime.render_scene(context, sparkleflinger, zones)
+    runtime.render_scene(context, sparkleflinger, zone_colors)
 }
 
 fn blit_general_zone_projection(

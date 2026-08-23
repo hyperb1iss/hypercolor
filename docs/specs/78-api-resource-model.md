@@ -60,7 +60,7 @@ All mutations route through `SceneMutation`/`commit_scene` (Spec 76 §2.3) — `
 
 `GET /scene` returns the scene metadata (`id`, `name`, `kind`, `is_default`, `unassigned_behavior`, `layout_id`, `revision`) and every **authored zone** with its full layer stack: layer ids, effect refs, control values, blend/opacity. Clients never synthesize ids: the "synthetic legacy layer" convention (zone id passed as both zone and layer id — `zone_id` post-C1b; receipts `tui/src/client/rest.rs:361-366`, `ui/src/pages/effects/zone_controls.rs:255` from the pre-C1b tree) is deleted along with the routes it forged. A client patches the real layer id it read from `/scene` (or from the apply response, §2.3). No zone-scoped controls route exists — conditional shorthand routes ("valid only when the stack has one layer") are rejected as a class.
 
-**Display faces stay display-domain.** Runtime default display faces materialize as `default_display_groups` outside the authored scene (`core/src/scene/mod.rs:1893-1934`), and their controls live in display preferences. They are deliberately NOT projected into `/scene`: display composition is owned by `/displays/{id}/face` + `face/controls` + `face/composition`, which this spec retains unchanged. One owner per pixel path: authored zones belong to `/scene`, faces belong to `/displays`.
+**Display faces stay display-domain.** Runtime default display faces materialize as `default_display_zones` outside the authored scene (`core/src/scene/mod.rs:1526-1598`), and their controls live in display preferences. They are deliberately NOT projected into `/scene`: display composition is owned by `/displays/{id}/face` + `face/controls` + `face/composition`, which this spec retains unchanged. One owner per pixel path: authored zones belong to `/scene`, faces belong to `/displays`.
 
 ### 1.4 Layer identity lifecycle
 
@@ -209,7 +209,7 @@ MCP stays a curated concierge, but every tool becomes an honest, thin projection
 Spec 76's 3.2 arc landed in full before this lock (registry contract PR #193, wire-stable daemon adoption #196, keyed wire migration #203). Rev 5 wrote this section as amendments to 3.2's acceptance criteria; that ship has sailed, so each item below is now either **struck as landed** (with the PR that shipped it) or **owned by a Spec 78 wave**. Re-verified against main at lock time:
 
 **Landed — struck from the workload:**
-- The zone-vocabulary renames (`group_id`/`group_name`, `RenderGroupChanged`, WS message fields) shipped across C1b (#195) and 3.2c (#203); the 3.2c verifier's sweep confirms zero group-vocabulary survivors on any WS path. `groups_revision` inside persisted scenes remains the deliberate carve-out.
+- The zone-vocabulary renames shipped across C1b (#195), 3.2c (#203), and the scene-schema migration. The current REST, WS, persisted scene, renderer, and telemetry surfaces use `zone` vocabulary without a group-named compatibility carve-out.
 - RPC tags `0x80`/`0x81` and their codec were deleted by wave C1e (#191).
 
 **78.3 owns (verified still open at lock):**

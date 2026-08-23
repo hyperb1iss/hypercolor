@@ -104,22 +104,22 @@ The bus carries several canvas watch senders for different consumers:
 
 `CanvasFrame` stores RGBA bytes regardless of the downstream transport format. Width and height are included per-frame because the canvas is configurable (`daemon.canvas_width` / `daemon.canvas_height`; defaults 640×480).
 
-Per-render-group canvases are keyed by `ZoneId` and created on demand:
+Per-render-zone canvases are keyed by `ZoneId` and created on demand:
 
 ```rust
 // Publisher side (render loop)
-let sender = bus.group_canvas_sender(zone_id);
-sender.send(DisplayGroupFrame::from_surface(surface))?;
+let sender = bus.zone_canvas_sender(zone_id);
+sender.send(DisplayZoneFrame::from_surface(surface))?;
 
 // Consumer side (display output)
-let mut rx = bus.group_canvas_receiver(zone_id);
+let mut rx = bus.zone_canvas_receiver(zone_id);
 rx.changed().await?;
 let frame = rx.borrow_and_update();
 ```
 
-When zones are removed, the daemon calls `retain_group_canvases` to drop stale senders rather than letting them accumulate.
+When zones are removed, the daemon calls `retain_zone_canvases` to drop stale senders rather than letting them accumulate.
 
-`DisplayGroupFrame` is an enum that carries either `Canvas(CanvasFrame)` (RGBA) or `Yuv420(DisplayYuv420Frame)` (planar YUV420 for display output devices). Consumers pattern-match on the variant.
+`DisplayZoneFrame` is an enum that carries either `Canvas(CanvasFrame)` (RGBA) or `Yuv420(DisplayYuv420Frame)` (planar YUV420 for display output devices). Consumers pattern-match on the variant.
 
 ## Screen zones
 

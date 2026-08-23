@@ -178,7 +178,7 @@ pub fn available_add_layer_scopes(groups: &[ZoneResource]) -> Vec<AddLayerScope>
     scopes
 }
 
-/// Resolve a scope to the render-group ids that should receive the layer,
+/// Resolve a scope to the render-zone ids that should receive the layer,
 /// in scene order. Targets are deduplicated so a scope can never queue the
 /// same surface twice.
 #[must_use]

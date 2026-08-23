@@ -187,7 +187,7 @@ async fn default_only_is_live_on_the_default_layer() {
     assert_eq!(payload["data"]["live_scope"], "default");
     assert_eq!(payload["data"]["effect"]["id"], effect_id.to_string());
 
-    // The default zone reaches the render groups.
+    // The default zone reaches the render zones.
     let scene_manager = state.scene_manager.snapshot().await;
     assert!(scene_manager.resolved_zones().iter().any(|zone| {
         zone.display_target

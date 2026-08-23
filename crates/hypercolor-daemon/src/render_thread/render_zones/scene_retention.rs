@@ -1,7 +1,7 @@
 use hypercolor_types::event::ZoneColors;
 
 use super::ZoneRuntime;
-use super::model::{RetainedRenderGroupFrame, ZoneResult};
+use super::model::{RetainedRenderZoneFrame, ZoneResult};
 use crate::performance::FullFrameCopyMetrics;
 use crate::render_thread::frame_sampling::LedSamplingStrategy;
 use crate::render_thread::scene_dependency::SceneDependencyKey;
@@ -34,7 +34,7 @@ impl ZoneRuntime {
             .retained_frame
             .take()
             .map(|frame| frame.led_sampling_strategy);
-        self.retained_frame = Some(RetainedRenderGroupFrame {
+        self.retained_frame = Some(RetainedRenderZoneFrame {
             dependency_key,
             scene_frame: result.scene_frame.clone(),
             display_zone_frames: result.display_zone_frames.clone(),
@@ -46,7 +46,7 @@ impl ZoneRuntime {
     }
 }
 
-fn zone_result_from_retained(retained: &RetainedRenderGroupFrame) -> ZoneResult {
+fn zone_result_from_retained(retained: &RetainedRenderZoneFrame) -> ZoneResult {
     ZoneResult {
         scene_frame: retained.scene_frame.clone(),
         display_zone_frames: retained.display_zone_frames.clone(),

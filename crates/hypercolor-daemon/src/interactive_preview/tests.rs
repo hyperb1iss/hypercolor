@@ -105,7 +105,7 @@ fn resource_ledger_keeps_transport_payload_and_metadata_disjoint() {
 
 fn scene_manager(color: [f32; 4]) -> SceneManager {
     let mut scene = make_scene("Interactive Preview Test");
-    scene.zones = vec![color_group(color)];
+    scene.zones = vec![color_zone(color)];
     scene.unassigned_behavior = UnassignedBehavior::Off;
     let scene_id = scene.id;
     let mut manager = SceneManager::new();
@@ -116,7 +116,7 @@ fn scene_manager(color: [f32; 4]) -> SceneManager {
     manager
 }
 
-fn color_group(color: [f32; 4]) -> Zone {
+fn color_zone(color: [f32; 4]) -> Zone {
     Zone {
         id: ZoneId::new(),
         name: "Preview".to_owned(),
@@ -251,14 +251,14 @@ fn wire_timestamp_wraps_at_u32_boundary() {
 
 #[test]
 fn screen_preview_demands_the_resolved_scene_extent() {
-    let mut group = color_group([0.0, 0.0, 0.0, 1.0]);
-    group.layers[0].source = LayerSource::ScreenRegion {
+    let mut zone = color_zone([0.0, 0.0, 0.0, 1.0]);
+    zone.layers[0].source = LayerSource::ScreenRegion {
         viewport: ViewportRect::default(),
     };
     let scene = ResolvedPreviewScene {
         scene_id: None,
-        groups_revision: 0,
-        groups: Arc::from([group]),
+        zones_revision: 0,
+        zones: Arc::from([zone]),
         registry: Arc::new(EffectRegistry::new(Vec::new())),
         catalog_generation: 0,
         canvas_width: 5_120,

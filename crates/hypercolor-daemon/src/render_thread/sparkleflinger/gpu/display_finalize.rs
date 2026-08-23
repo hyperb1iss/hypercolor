@@ -710,12 +710,12 @@ impl GpuSparkleFlinger {
 
     fn retain_current_display_finalize_route(&mut self, key: DisplayFinalizeCacheKey) {
         self.display_finalize_surfaces
-            .retain(|cached_key, _| cached_key.group_id != key.group_id || *cached_key == key);
+            .retain(|cached_key, _| cached_key.zone_id != key.zone_id || *cached_key == key);
     }
 
-    pub(crate) fn retain_display_finalize_groups(&mut self, active_group_ids: &[ZoneId]) {
+    pub(crate) fn retain_display_finalize_groups(&mut self, active_zone_ids: &[ZoneId]) {
         self.display_finalize_surfaces
-            .retain(|key, _| active_group_ids.contains(&key.group_id));
+            .retain(|key, _| active_zone_ids.contains(&key.zone_id));
     }
 
     fn release_display_finalize_slot(

@@ -13,7 +13,7 @@ use super::pipeline_runtime::ComposeRuntime;
 #[cfg(feature = "wgpu")]
 use super::pipeline_runtime::PendingDisplayFinalizeWork;
 use super::producer_queue::ProducerFrame;
-use super::render_groups::{DisplayZoneCanvasFrame, PendingDisplayZoneFrame};
+use super::render_zones::{DisplayZoneCanvasFrame, PendingDisplayZoneFrame};
 use super::scene_dependency::SceneDependencyKey;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::{
@@ -26,10 +26,10 @@ pub(super) struct DisplayLaneRoutes<'a> {
 }
 
 impl DisplayLaneRoutes<'_> {
-    fn route_for_group(&self, group_id: &ZoneId) -> Option<&DisplayZoneOutputRoute> {
+    fn route_for_zone(&self, zone_id: &ZoneId) -> Option<&DisplayZoneOutputRoute> {
         self.current
-            .get(group_id)
-            .or_else(|| self.fallback.get(group_id))
+            .get(zone_id)
+            .or_else(|| self.fallback.get(zone_id))
     }
 }
 
@@ -53,51 +53,51 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         Self { compose, context }
     }
 
-    pub(super) fn materialize_group_canvases(
+    pub(super) fn materialize_zone_canvases(
         &mut self,
-        active_group_ids: &[ZoneId],
+        active_zone_ids: &[ZoneId],
         zone_canvases: Vec<(ZoneId, PendingDisplayZoneFrame)>,
         scene_frame: &ProducerFrame,
     ) -> Vec<(ZoneId, DisplayZoneCanvasFrame)> {
         #[cfg(feature = "wgpu")]
         self.compose
-            .discard_display_finalizations_except(active_group_ids);
+            .discard_display_finalizations_except(active_zone_ids);
         #[cfg(not(feature = "wgpu"))]
-        let _ = active_group_ids;
+        let _ = active_zone_ids;
 
         zone_canvases
             .into_iter()
-            .filter_map(|(group_id, frame)| {
-                let display_route = self.context.routes.route_for_group(&group_id).cloned();
+            .filter_map(|(zone_id, frame)| {
+                let display_route = self.context.routes.route_for_zone(&zone_id).cloned();
                 let display_target = frame.display_target.clone();
                 let empty_direct_shell = frame.empty_direct_shell;
                 if let Some(route) = display_route.as_ref()
                     && let Some(frame) = self
                         .compose
-                        .render_group_runtime
-                        .reuse_retained_materialized_group_frame(
-                            group_id,
+                        .render_zone_runtime
+                        .reuse_retained_materialized_zone_frame(
+                            zone_id,
                             self.context.elapsed_ms,
-                            self.context.target_fps.get(&group_id).copied(),
+                            self.context.target_fps.get(&zone_id).copied(),
                             self.context.dependency_key,
                             &display_target,
                             route,
                             empty_direct_shell,
                         )
                 {
-                    return Some((group_id, frame));
+                    return Some((zone_id, frame));
                 }
 
                 let (materialized, fresh_materialization) = if let Some(materialized) = self
-                    .materialize_group_canvas(group_id, frame, scene_frame, display_route.as_ref())
+                    .materialize_zone_canvas(zone_id, frame, scene_frame, display_route.as_ref())
                 {
                     (materialized, true)
                 } else {
                     let retained = display_route.as_ref().and_then(|route| {
                         self.compose
-                            .render_group_runtime
-                            .reuse_latest_materialized_group_frame(
-                                group_id,
+                            .render_zone_runtime
+                            .reuse_latest_materialized_zone_frame(
+                                zone_id,
                                 &display_target,
                                 route,
                                 empty_direct_shell,
@@ -109,9 +109,9 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 };
                 if fresh_materialization && let Some(route) = display_route.as_ref() {
                     self.compose
-                        .render_group_runtime
-                        .retain_materialized_group_frame(
-                            group_id,
+                        .render_zone_runtime
+                        .retain_materialized_zone_frame(
+                            zone_id,
                             self.context.elapsed_ms,
                             self.context.dependency_key,
                             &display_target,
@@ -121,15 +121,15 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                         );
                 }
 
-                Some((group_id, materialized))
+                Some((zone_id, materialized))
             })
             .collect()
     }
 
-    fn materialize_group_canvas(
+    fn materialize_zone_canvas(
         &mut self,
-        group_id: ZoneId,
-        group_canvas: PendingDisplayZoneFrame,
+        zone_id: ZoneId,
+        zone_canvas: PendingDisplayZoneFrame,
         scene_frame: &ProducerFrame,
         display_route: Option<&DisplayZoneOutputRoute>,
     ) -> Option<DisplayZoneCanvasFrame> {
@@ -137,9 +137,9 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             frame,
             display_target,
             ..
-        } = group_canvas;
+        } = zone_canvas;
         if let Some(frame) = self.finalize_display_zone_canvas(
-            group_id,
+            zone_id,
             scene_frame,
             &frame,
             &display_target,
@@ -187,7 +187,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
 
     fn finalize_display_zone_canvas(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         scene_frame: &ProducerFrame,
         face_frame: &ProducerFrame,
         display_target: &DisplayFaceTarget,
@@ -200,7 +200,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         };
 
         self.finalize_display_zone_canvas_with_route(
-            group_id,
+            zone_id,
             scene_frame,
             face_frame,
             display_target,
@@ -211,13 +211,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
     #[cfg(not(feature = "wgpu"))]
     fn finalize_display_zone_canvas_with_route(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         scene_frame: &ProducerFrame,
         face_frame: &ProducerFrame,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
     ) -> Option<DisplayZoneFrame> {
-        let _ = group_id;
+        let _ = zone_id;
         let _ = scene_frame;
         let _ = face_frame;
         let _ = display_target;
@@ -228,7 +228,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
     #[cfg(feature = "wgpu")]
     fn finalize_display_zone_canvas_with_route(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         scene_frame: &ProducerFrame,
         face_frame: &ProducerFrame,
         display_target: &DisplayFaceTarget,
@@ -236,7 +236,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
     ) -> Option<DisplayZoneFrame> {
         let params = DisplayFinalizeParams {
             cache_key: DisplayFinalizeCacheKey {
-                group_id,
+                zone_id,
                 device_id: display_route.device_id,
                 width: display_route.width,
                 height: display_route.height,
@@ -256,15 +256,13 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             opacity: display_target.opacity,
         };
 
-        let completed = match self.finish_pending_display_finalize_work(
-            group_id,
-            display_target,
-            display_route,
-        ) {
-            DisplayFinalizeProgress::Ready(frame) => Some(frame),
-            DisplayFinalizeProgress::Pending => return None,
-            DisplayFinalizeProgress::Idle => None,
-        };
+        let completed =
+            match self.finish_pending_display_finalize_work(zone_id, display_target, display_route)
+            {
+                DisplayFinalizeProgress::Ready(frame) => Some(frame),
+                DisplayFinalizeProgress::Pending => return None,
+                DisplayFinalizeProgress::Idle => None,
+            };
 
         let dispatch = if display_route.frame_format == DisplayFrameFormat::Jpeg {
             self.compose
@@ -288,7 +286,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
                 if let Some(frame) = self.try_finish_display_finalize_work(&mut work) {
                     return Some(frame);
                 }
-                self.compose.display_finalize_runtime.insert(group_id, work);
+                self.compose.display_finalize_runtime.insert(zone_id, work);
                 None
             }
             Ok(
@@ -309,11 +307,11 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
     #[cfg(feature = "wgpu")]
     fn finish_pending_display_finalize_work(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
     ) -> DisplayFinalizeProgress {
-        let Some(mut work) = self.compose.display_finalize_runtime.take(group_id) else {
+        let Some(mut work) = self.compose.display_finalize_runtime.take(zone_id) else {
             return DisplayFinalizeProgress::Idle;
         };
         if !work.matches(
@@ -331,7 +329,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
         if let Some(frame) = self.try_finish_display_finalize_work(&mut work) {
             DisplayFinalizeProgress::Ready(frame)
         } else {
-            self.compose.display_finalize_runtime.insert(group_id, work);
+            self.compose.display_finalize_runtime.insert(zone_id, work);
             DisplayFinalizeProgress::Pending
         }
     }
@@ -346,7 +344,7 @@ impl<'a, 'runtime> DisplayLaneMaterializer<'a, 'runtime> {
             .display_sparkleflinger
             .try_finish_pending_display_finalization(&mut work.pending)
         {
-            Ok(Some(frame)) => display_finalize_frame_to_group(frame, work.frame_format),
+            Ok(Some(frame)) => display_finalize_frame_to_zone(frame, work.frame_format),
             Ok(None) => None,
             Err(error) => {
                 debug!(%error, "GPU display-face finalization deferred to retained frame");
@@ -387,7 +385,7 @@ fn display_finalize_dispatch_reuses_retained_frame(dispatch: &DisplayFinalizeDis
 }
 
 #[cfg(feature = "wgpu")]
-fn display_finalize_frame_to_group(
+fn display_finalize_frame_to_zone(
     frame: DisplayFinalizeFrame,
     frame_format: DisplayFrameFormat,
 ) -> Option<DisplayZoneFrame> {
@@ -423,7 +421,7 @@ mod tests {
     #[cfg(feature = "wgpu")]
     use super::{
         DisplayLaneContext, DisplayLaneMaterializer, DisplayLaneRoutes,
-        display_finalize_dispatch_reuses_retained_frame, display_finalize_frame_to_group,
+        display_finalize_dispatch_reuses_retained_frame, display_finalize_frame_to_zone,
         display_zones_require_composed_scene,
     };
     #[cfg(not(feature = "wgpu"))]
@@ -437,9 +435,9 @@ mod tests {
     use crate::render_thread::producer_queue::ProducerFrame;
     #[cfg(feature = "wgpu")]
     use crate::render_thread::producer_queue::ProducerQueue;
-    use crate::render_thread::render_groups::PendingDisplayZoneFrame;
+    use crate::render_thread::render_zones::PendingDisplayZoneFrame;
     #[cfg(feature = "wgpu")]
-    use crate::render_thread::render_groups::{DisplayZoneCanvasFrame, ZoneRuntime};
+    use crate::render_thread::render_zones::{DisplayZoneCanvasFrame, ZoneRuntime};
     #[cfg(feature = "wgpu")]
     use crate::render_thread::scene_dependency::SceneDependencyKey;
     #[cfg(feature = "wgpu")]
@@ -500,55 +498,53 @@ mod tests {
     }
 
     #[test]
-    fn display_route_for_group_falls_back_to_snapshot_route_when_bus_route_is_absent() {
-        let group_id = ZoneId::new();
+    fn display_route_for_zone_falls_back_to_snapshot_route_when_bus_route_is_absent() {
+        let zone_id = ZoneId::new();
         let fallback_device = DeviceId::new();
         let bus_device = DeviceId::new();
         let fallback_route = display_route(fallback_device, 0.8);
         let mut bus_route = fallback_route.clone();
         bus_route.device_id = bus_device;
 
-        let fallback_routes = HashMap::from([(group_id, fallback_route.clone())]);
+        let fallback_routes = HashMap::from([(zone_id, fallback_route.clone())]);
         let empty_bus_routes = HashMap::new();
         let routes = DisplayLaneRoutes {
             current: &empty_bus_routes,
             fallback: &fallback_routes,
         };
-        assert_eq!(routes.route_for_group(&group_id), Some(&fallback_route));
+        assert_eq!(routes.route_for_zone(&zone_id), Some(&fallback_route));
 
-        let bus_routes = HashMap::from([(group_id, bus_route.clone())]);
+        let bus_routes = HashMap::from([(zone_id, bus_route.clone())]);
         let routes = DisplayLaneRoutes {
             current: &bus_routes,
             fallback: &fallback_routes,
         };
-        assert_eq!(routes.route_for_group(&group_id), Some(&bus_route));
+        assert_eq!(routes.route_for_zone(&zone_id), Some(&bus_route));
     }
 
     #[cfg(feature = "wgpu")]
     #[test]
     fn display_lane_reuses_retained_materialized_frame_within_route_cadence() {
-        let group_id = ZoneId::new();
+        let zone_id = ZoneId::new();
         let device_id = DeviceId::new();
         let display_target = DisplayFaceTarget::new(device_id);
         let display_route = display_route(device_id, 1.0);
-        let retained_frame = group_canvas_frame(&display_target, [255, 0, 0], true);
+        let retained_frame = zone_canvas_frame(&display_target, [255, 0, 0], true);
         let dependency_key = SceneDependencyKey::new(1, 1);
         let mut harness = DisplayLaneHarness::new();
-        harness
-            .render_group_runtime
-            .retain_materialized_group_frame(
-                group_id,
-                100,
-                dependency_key,
-                &display_target,
-                &display_route,
-                false,
-                &retained_frame,
-            );
+        harness.render_zone_runtime.retain_materialized_zone_frame(
+            zone_id,
+            100,
+            dependency_key,
+            &display_target,
+            &display_route,
+            false,
+            &retained_frame,
+        );
 
-        let current_routes = HashMap::from([(group_id, display_route)]);
+        let current_routes = HashMap::from([(zone_id, display_route)]);
         let fallback_routes = HashMap::new();
-        let target_fps = HashMap::from([(group_id, 30)]);
+        let target_fps = HashMap::from([(zone_id, 30)]);
         let context = DisplayLaneContext {
             elapsed_ms: 120,
             dependency_key,
@@ -567,7 +563,7 @@ mod tests {
 
         let mut compose = harness.compose_runtime();
         let materialized = DisplayLaneMaterializer::new(&mut compose, context)
-            .materialize_group_canvases(&[group_id], vec![(group_id, fresh_frame)], &scene_frame);
+            .materialize_zone_canvases(&[zone_id], vec![(zone_id, fresh_frame)], &scene_frame);
 
         assert_eq!(materialized.len(), 1);
         assert_eq!(first_pixel(&materialized[0].1.frame), [255, 0, 0, 255]);
@@ -576,28 +572,26 @@ mod tests {
     #[cfg(feature = "wgpu")]
     #[test]
     fn unsupported_display_finalize_reuses_latest_retained_materialized_frame() {
-        let group_id = ZoneId::new();
+        let zone_id = ZoneId::new();
         let device_id = DeviceId::new();
         let display_target = DisplayFaceTarget::new(device_id);
         let display_route = display_route(device_id, 1.0);
-        let retained_frame = group_canvas_frame(&display_target, [255, 0, 0], true);
+        let retained_frame = zone_canvas_frame(&display_target, [255, 0, 0], true);
         let dependency_key = SceneDependencyKey::new(1, 1);
         let mut harness = DisplayLaneHarness::new();
-        harness
-            .render_group_runtime
-            .retain_materialized_group_frame(
-                group_id,
-                100,
-                dependency_key,
-                &display_target,
-                &display_route,
-                false,
-                &retained_frame,
-            );
+        harness.render_zone_runtime.retain_materialized_zone_frame(
+            zone_id,
+            100,
+            dependency_key,
+            &display_target,
+            &display_route,
+            false,
+            &retained_frame,
+        );
 
-        let current_routes = HashMap::from([(group_id, display_route)]);
+        let current_routes = HashMap::from([(zone_id, display_route)]);
         let fallback_routes = HashMap::new();
-        let target_fps = HashMap::from([(group_id, 30)]);
+        let target_fps = HashMap::from([(zone_id, 30)]);
         let context = DisplayLaneContext {
             elapsed_ms: 140,
             dependency_key,
@@ -616,7 +610,7 @@ mod tests {
 
         let mut compose = harness.compose_runtime();
         let materialized = DisplayLaneMaterializer::new(&mut compose, context)
-            .materialize_group_canvases(&[group_id], vec![(group_id, fresh_frame)], &scene_frame);
+            .materialize_zone_canvases(&[zone_id], vec![(zone_id, fresh_frame)], &scene_frame);
 
         assert_eq!(materialized.len(), 1);
         assert_eq!(first_pixel(&materialized[0].1.frame), [255, 0, 0, 255]);
@@ -628,7 +622,7 @@ mod tests {
         let Some(mut harness) = DisplayLaneHarness::with_gpu_display() else {
             return;
         };
-        let group_id = ZoneId::new();
+        let zone_id = ZoneId::new();
         let device_id = DeviceId::new();
         let display_target = DisplayFaceTarget::new(device_id);
         let display_route = rgb_display_route(device_id);
@@ -637,7 +631,7 @@ mod tests {
 
         let red = wait_for_materialized_color(
             &mut harness,
-            group_id,
+            zone_id,
             &display_target,
             &display_route,
             dependency_key,
@@ -649,7 +643,7 @@ mod tests {
 
         let green = wait_for_materialized_color(
             &mut harness,
-            group_id,
+            zone_id,
             &display_target,
             &display_route,
             dependency_key,
@@ -684,14 +678,14 @@ mod tests {
         );
         let yuv = DisplayYuv420Frame::from_vec(vec![0; 6], 2, 2, 2, 1, 4, 1, 7, 11);
 
-        let rgb_frame = display_finalize_frame_to_group(
+        let rgb_frame = display_finalize_frame_to_zone(
             DisplayFinalizeFrame::Rgba(surface),
             DisplayFrameFormat::Rgb,
         )
         .expect("RGB finalize should accept RGBA display frames");
         assert!(matches!(rgb_frame, DisplayZoneFrame::Canvas(_)));
 
-        let jpeg_frame = display_finalize_frame_to_group(
+        let jpeg_frame = display_finalize_frame_to_zone(
             DisplayFinalizeFrame::Yuv420(yuv),
             DisplayFrameFormat::Jpeg,
         )
@@ -705,14 +699,14 @@ mod tests {
         );
         let mismatched_yuv = DisplayYuv420Frame::from_vec(vec![0; 6], 2, 2, 2, 1, 4, 1, 7, 11);
         assert!(
-            display_finalize_frame_to_group(
+            display_finalize_frame_to_zone(
                 DisplayFinalizeFrame::Rgba(mismatched_surface),
                 DisplayFrameFormat::Jpeg,
             )
             .is_none()
         );
         assert!(
-            display_finalize_frame_to_group(
+            display_finalize_frame_to_zone(
                 DisplayFinalizeFrame::Yuv420(mismatched_yuv),
                 DisplayFrameFormat::Rgb,
             )
@@ -756,7 +750,7 @@ mod tests {
     }
 
     #[cfg(feature = "wgpu")]
-    fn group_canvas_frame(
+    fn zone_canvas_frame(
         display_target: &DisplayFaceTarget,
         rgb: [u8; 3],
         finalized: bool,
@@ -791,16 +785,16 @@ mod tests {
     #[cfg(feature = "wgpu")]
     fn materialize_display_color(
         harness: &mut DisplayLaneHarness,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
         dependency_key: SceneDependencyKey,
         elapsed_ms: u64,
         rgb: [u8; 3],
     ) -> Option<[u8; 4]> {
-        let current_routes = HashMap::from([(group_id, display_route.clone())]);
+        let current_routes = HashMap::from([(zone_id, display_route.clone())]);
         let fallback_routes = HashMap::new();
-        let target_fps = HashMap::from([(group_id, 30)]);
+        let target_fps = HashMap::from([(zone_id, 30)]);
         let context = DisplayLaneContext {
             elapsed_ms,
             dependency_key,
@@ -818,7 +812,7 @@ mod tests {
         };
         let mut compose = harness.compose_runtime();
         let materialized = DisplayLaneMaterializer::new(&mut compose, context)
-            .materialize_group_canvases(&[group_id], vec![(group_id, face_frame)], &scene_frame);
+            .materialize_zone_canvases(&[zone_id], vec![(zone_id, face_frame)], &scene_frame);
 
         match materialized.as_slice() {
             [] => None,
@@ -830,7 +824,7 @@ mod tests {
     #[cfg(feature = "wgpu")]
     fn wait_for_materialized_color(
         harness: &mut DisplayLaneHarness,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         display_target: &DisplayFaceTarget,
         display_route: &DisplayZoneOutputRoute,
         dependency_key: SceneDependencyKey,
@@ -843,7 +837,7 @@ mod tests {
             *elapsed_ms = elapsed_ms.saturating_add(33);
             if materialize_display_color(
                 harness,
-                group_id,
+                zone_id,
                 display_target,
                 display_route,
                 dependency_key,
@@ -868,7 +862,7 @@ mod tests {
         display_sparkleflinger: SparkleFlinger,
         display_finalize_runtime: DisplayFinalizeRuntime,
         effect_delta_clock: EffectDeltaClock,
-        render_group_runtime: ZoneRuntime,
+        render_zone_runtime: ZoneRuntime,
         output_artifacts: OutputArtifactsState,
     }
 
@@ -882,7 +876,7 @@ mod tests {
                 display_sparkleflinger: SparkleFlinger::cpu(),
                 display_finalize_runtime: DisplayFinalizeRuntime::default(),
                 effect_delta_clock: EffectDeltaClock::default(),
-                render_group_runtime: ZoneRuntime::new(2, 2),
+                render_zone_runtime: ZoneRuntime::new(2, 2),
                 output_artifacts: OutputArtifactsState::default(),
             }
         }
@@ -902,7 +896,7 @@ mod tests {
                 display_sparkleflinger: &mut self.display_sparkleflinger,
                 display_finalize_runtime: &mut self.display_finalize_runtime,
                 effect_delta_clock: &mut self.effect_delta_clock,
-                render_group_runtime: &mut self.render_group_runtime,
+                render_zone_runtime: &mut self.render_zone_runtime,
                 output_artifacts: &mut self.output_artifacts,
             }
         }

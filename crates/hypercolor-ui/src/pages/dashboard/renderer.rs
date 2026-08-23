@@ -518,7 +518,7 @@ pub(super) fn RendererHardwarePanel(
                                     format!(
                                         "{} fd / {} canvas / {} preview / {} evt",
                                         fmt_ms(m.stages.publish_frame_data_ms),
-                                        fmt_ms(m.stages.publish_group_canvas_ms),
+                                        fmt_ms(m.stages.publish_zone_canvas_ms),
                                         fmt_ms(m.stages.publish_preview_ms),
                                         fmt_ms(m.stages.publish_events_ms),
                                     )

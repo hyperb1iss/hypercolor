@@ -10,16 +10,16 @@ use hypercolor_types::viewport::FitMode;
 
 use super::super::producer_queue::ProducerFrame;
 use super::super::sparkleflinger::{CompositionLayer, CompositionTransform};
-use super::group_state::group_contributes_to_scene_canvas;
+use super::zone_state::zone_contributes_to_scene_canvas;
 
-pub(super) struct CachedGroupProjection {
+pub(super) struct CachedZoneProjection {
     pub(super) scene_width: u32,
     pub(super) scene_height: u32,
     pub(super) layout: SpatialLayout,
-    pub(super) zones: Vec<CachedZoneProjection>,
+    pub(super) zones: Vec<CachedOutputProjection>,
 }
 
-pub(super) struct CachedZoneProjection {
+pub(super) struct CachedOutputProjection {
     zone: Output,
     sampling_mode: SamplingMode,
     edge_behavior: EdgeBehavior,
@@ -36,7 +36,7 @@ pub(super) struct ProjectionRasterWork {
 }
 
 #[cfg(test)]
-impl CachedGroupProjection {
+impl CachedZoneProjection {
     pub(super) fn raster_work(&self) -> ProjectionRasterWork {
         self.zones.iter().fold(
             ProjectionRasterWork {
@@ -78,29 +78,29 @@ pub(super) struct ProjectionBounds {
 
 pub(super) fn compose_authoritative_scene_canvas(
     scene_canvas: &mut Canvas,
-    groups: &[Zone],
+    zones: &[Zone],
     target_canvases: &HashMap<ZoneId, Canvas>,
     scene_width: u32,
     scene_height: u32,
-    scene_projection_cache: &HashMap<ZoneId, CachedGroupProjection>,
+    scene_projection_cache: &HashMap<ZoneId, CachedZoneProjection>,
 ) {
     scene_canvas.clear();
 
-    for group in groups
+    for zone in zones
         .iter()
-        .filter(|group| group_contributes_to_scene_canvas(group))
+        .filter(|zone| zone_contributes_to_scene_canvas(zone))
     {
-        let Some(source) = target_canvases.get(&group.id) else {
+        let Some(source) = target_canvases.get(&zone.id) else {
             continue;
         };
 
-        let Some(projection) = scene_projection_cache.get(&group.id) else {
-            for zone in &group.layout.zones {
+        let Some(projection) = scene_projection_cache.get(&zone.id) else {
+            for output in &zone.layout.zones {
                 blit_zone_projection(
                     scene_canvas,
                     source,
-                    zone,
-                    &group.layout,
+                    output,
+                    &zone.layout,
                     scene_width,
                     scene_height,
                 );
@@ -118,27 +118,27 @@ pub(super) fn compose_authoritative_scene_canvas(
     }
 }
 
-pub(super) fn groups_support_projection_composition(
-    groups: &[Zone],
-    scene_projection_cache: &HashMap<ZoneId, CachedGroupProjection>,
+pub(super) fn zones_support_projection_composition(
+    zones: &[Zone],
+    scene_projection_cache: &HashMap<ZoneId, CachedZoneProjection>,
 ) -> bool {
-    let mut scene_group_count = 0_usize;
-    for group in groups
+    let mut scene_zone_count = 0_usize;
+    for zone in zones
         .iter()
-        .filter(|group| group_contributes_to_scene_canvas(group))
+        .filter(|zone| zone_contributes_to_scene_canvas(zone))
     {
-        scene_group_count = scene_group_count.saturating_add(1);
-        let Some(projection) = scene_projection_cache.get(&group.id) else {
+        scene_zone_count = scene_zone_count.saturating_add(1);
+        let Some(projection) = scene_projection_cache.get(&zone.id) else {
             return false;
         };
         if !projection_supports_composition(projection) {
             return false;
         }
     }
-    scene_group_count > 0
+    scene_zone_count > 0
 }
 
-pub(super) fn projection_supports_composition(projection: &CachedGroupProjection) -> bool {
+pub(super) fn projection_supports_composition(projection: &CachedZoneProjection) -> bool {
     !projection.zones.is_empty()
         && projection.zones.iter().all(|zone| {
             zone.affine.is_some()
@@ -147,17 +147,17 @@ pub(super) fn projection_supports_composition(projection: &CachedGroupProjection
         })
 }
 
-pub(super) fn append_projection_composition_layers_for_group(
+pub(super) fn append_projection_composition_layers_for_zone(
     layers: &mut Vec<CompositionLayer>,
     frame: &ProducerFrame,
-    group: &Zone,
-    projection: &CachedGroupProjection,
+    zone: &Zone,
+    projection: &CachedZoneProjection,
     scene_width: u32,
     scene_height: u32,
 ) -> bool {
     if projection.scene_width != scene_width
         || projection.scene_height != scene_height
-        || projection.layout != group.layout
+        || projection.layout != zone.layout
         || !projection_supports_composition(projection)
     {
         return false;
@@ -165,15 +165,15 @@ pub(super) fn append_projection_composition_layers_for_group(
     if layers.capacity().saturating_sub(layers.len()) < projection.zones.len() {
         return false;
     }
-    for zone in &projection.zones {
+    for output in &projection.zones {
         layers.push(CompositionLayer::alpha(frame.clone(), 1.0).with_transform(
             CompositionTransform {
-                anchor: zone.zone.position,
+                anchor: output.zone.position,
                 scale: [
-                    zone.zone.size.x * zone.zone.scale,
-                    zone.zone.size.y * zone.zone.scale,
+                    output.zone.size.x * output.zone.scale,
+                    output.zone.size.y * output.zone.scale,
                 ],
-                rotation: zone.zone.rotation,
+                rotation: output.zone.rotation,
                 fit: FitMode::Stretch,
                 sample_target_space: true,
             },
@@ -183,19 +183,19 @@ pub(super) fn append_projection_composition_layers_for_group(
 }
 
 #[cfg(test)]
-pub(super) fn projection_composition_layers_for_group(
+pub(super) fn projection_composition_layers_for_zone(
     frame: &ProducerFrame,
-    group: &Zone,
-    projection: &CachedGroupProjection,
+    zone: &Zone,
+    projection: &CachedZoneProjection,
     scene_width: u32,
     scene_height: u32,
 ) -> Option<Vec<CompositionLayer>> {
     let mut layers = Vec::new();
     layers.try_reserve_exact(projection.zones.len()).ok()?;
-    append_projection_composition_layers_for_group(
+    append_projection_composition_layers_for_zone(
         &mut layers,
         frame,
-        group,
+        zone,
         projection,
         scene_width,
         scene_height,
@@ -206,7 +206,7 @@ pub(super) fn projection_composition_layers_for_group(
 pub(super) fn copy_full_scene_identity_projection(
     scene_canvas: &mut Canvas,
     source: &Canvas,
-    projection: &CachedGroupProjection,
+    projection: &CachedZoneProjection,
 ) -> bool {
     if scene_canvas.width() != source.width()
         || scene_canvas.height() != source.height()
@@ -221,7 +221,7 @@ pub(super) fn copy_full_scene_identity_projection(
     true
 }
 
-fn full_scene_identity_projection(source: &Canvas, projection: &CachedGroupProjection) -> bool {
+fn full_scene_identity_projection(source: &Canvas, projection: &CachedZoneProjection) -> bool {
     if projection.scene_width != source.width()
         || projection.scene_height != source.height()
         || projection.layout.canvas_width != source.width()
@@ -233,7 +233,7 @@ fn full_scene_identity_projection(source: &Canvas, projection: &CachedGroupProje
     full_scene_identity_projection_shape(projection)
 }
 
-fn full_scene_identity_projection_shape(projection: &CachedGroupProjection) -> bool {
+fn full_scene_identity_projection_shape(projection: &CachedZoneProjection) -> bool {
     if projection.layout.canvas_width != projection.scene_width
         || projection.layout.canvas_height != projection.scene_height
     {
@@ -267,41 +267,40 @@ fn zone_is_full_scene_identity(zone: &Output) -> bool {
         && zone.rotation.abs() <= f32::EPSILON
 }
 
-pub(super) fn build_group_projection(
-    group: &Zone,
+pub(super) fn build_zone_projection(
+    zone: &Zone,
     scene_width: u32,
     scene_height: u32,
-) -> Result<CachedGroupProjection, TryReserveError> {
+) -> Result<CachedZoneProjection, TryReserveError> {
     let mut zones = Vec::new();
-    zones.try_reserve_exact(group.layout.zones.len())?;
+    zones.try_reserve_exact(zone.layout.zones.len())?;
     zones.extend(
-        group
-            .layout
+        zone.layout
             .zones
             .iter()
-            .map(|zone| build_zone_projection(zone, &group.layout, scene_width, scene_height)),
+            .map(|output| build_output_projection(output, &zone.layout, scene_width, scene_height)),
     );
-    Ok(CachedGroupProjection {
+    Ok(CachedZoneProjection {
         scene_width,
         scene_height,
-        layout: group.layout.clone(),
+        layout: zone.layout.clone(),
         zones,
     })
 }
 
-fn build_zone_projection(
+fn build_output_projection(
     zone: &Output,
     layout: &SpatialLayout,
     target_width: u32,
     target_height: u32,
-) -> CachedZoneProjection {
+) -> CachedOutputProjection {
     let sampling_mode = zone
         .sampling_mode
         .clone()
         .unwrap_or_else(|| layout.default_sampling_mode.clone());
     let edge_behavior = zone.edge_behavior.unwrap_or(layout.default_edge_behavior);
     let affine = ProjectionAffine::new(zone, target_width, target_height);
-    CachedZoneProjection {
+    CachedOutputProjection {
         zone: zone.clone(),
         sampling_mode,
         edge_behavior,
@@ -319,7 +318,7 @@ pub(super) fn blit_zone_projection(
     target_width: u32,
     target_height: u32,
 ) {
-    let projection = build_zone_projection(zone, layout, target_width, target_height);
+    let projection = build_output_projection(zone, layout, target_width, target_height);
     rasterize_zone_projection(target, source, &projection);
 }
 
@@ -331,7 +330,7 @@ pub(super) fn blit_zone_projection(
 fn rasterize_zone_projection(
     target: &mut Canvas,
     source: &Canvas,
-    projection: &CachedZoneProjection,
+    projection: &CachedOutputProjection,
 ) {
     let Some(bounds) = projection.bounds else {
         return;

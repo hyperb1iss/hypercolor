@@ -94,21 +94,21 @@ fn static_layer_surface_cache_stays_bounded() {
 
 #[test]
 fn empty_layer_stack_does_not_forge_a_layer_identity() {
-    let mut group = sample_group(4, 4);
-    group.layers.clear();
+    let mut zone = sample_zone(4, 4);
+    zone.layers.clear();
 
-    assert!(passthrough_effect_layer(&group).is_none());
+    assert!(passthrough_effect_layer(&zone).is_none());
 }
 
 #[test]
 fn single_effect_layer_can_passthrough_layer_compositor() {
-    let mut group = sample_group(4, 4);
-    let effect_id = group
+    let mut zone = sample_zone(4, 4);
+    let effect_id = zone
         .effect_ids()
         .next()
-        .expect("sample group should have an effect");
+        .expect("sample zone should have an effect");
     let layer_id = SceneLayerId::new();
-    group.layers = vec![SceneLayer::from_effect(
+    zone.layers = vec![SceneLayer::from_effect(
         layer_id,
         effect_id,
         HashMap::new(),
@@ -116,7 +116,7 @@ fn single_effect_layer_can_passthrough_layer_compositor() {
         None,
     )];
 
-    let layer = passthrough_effect_layer(&group)
+    let layer = passthrough_effect_layer(&zone)
         .expect("neutral materialized effect layer should bypass layer composition");
 
     assert_eq!(layer.id, layer_id);
@@ -124,11 +124,11 @@ fn single_effect_layer_can_passthrough_layer_compositor() {
 
 #[test]
 fn stacked_layers_use_layer_compositor() {
-    let mut group = sample_group(4, 4);
-    let effect_id = group
+    let mut zone = sample_zone(4, 4);
+    let effect_id = zone
         .effect_ids()
         .next()
-        .expect("sample group should have an effect");
+        .expect("sample zone should have an effect");
     let effect_layer = SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
@@ -149,18 +149,18 @@ fn stacked_layers_use_layer_compositor() {
         bindings: Vec::new(),
         enabled: true,
     };
-    group.layers = vec![effect_layer, overlay];
+    zone.layers = vec![effect_layer, overlay];
 
-    assert!(passthrough_effect_layer(&group).is_none());
+    assert!(passthrough_effect_layer(&zone).is_none());
 }
 
 #[test]
 fn adjusted_effect_layer_uses_layer_compositor() {
-    let mut group = sample_group(4, 4);
-    let effect_id = group
+    let mut zone = sample_zone(4, 4);
+    let effect_id = zone
         .effect_ids()
         .next()
-        .expect("sample group should have an effect");
+        .expect("sample zone should have an effect");
     let mut layer = SceneLayer::from_effect(
         SceneLayerId::new(),
         effect_id,
@@ -169,17 +169,17 @@ fn adjusted_effect_layer_uses_layer_compositor() {
         None,
     );
     layer.opacity = 0.5;
-    group.layers = vec![layer];
+    zone.layers = vec![layer];
 
-    assert!(passthrough_effect_layer(&group).is_none());
+    assert!(passthrough_effect_layer(&zone).is_none());
 }
 
 #[test]
 fn missing_media_layer_renders_transparent_black_and_reports_health() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = EffectRegistry::new(Vec::new());
-    let mut group = sample_group(4, 4);
-    group.layers = vec![SceneLayer {
+    let mut zone = sample_zone(4, 4);
+    zone.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("Missing Media".into()),
         source: LayerSource::Media {
@@ -193,12 +193,12 @@ fn missing_media_layer_renders_transparent_black_and_reports_health() {
         bindings: Vec::new(),
         enabled: true,
     }];
-    let layer_id = group.layers[0].id;
+    let layer_id = zone.layers[0].id;
     let mut zones = Vec::new();
 
     let result = render_scene_for_test(
         &mut runtime,
-        &[group.clone()],
+        &[zone.clone()],
         1,
         0,
         &HashMap::new(),
@@ -216,7 +216,7 @@ fn missing_media_layer_renders_transparent_black_and_reports_health() {
             layer_id: event_layer_id,
             health: LayerHealth::AssetMissing,
             ..
-        }] if *zone_id == group.id && *event_layer_id == layer_id
+        }] if *zone_id == zone.id && *event_layer_id == layer_id
     ));
 }
 
@@ -224,8 +224,8 @@ fn missing_media_layer_renders_transparent_black_and_reports_health() {
 fn screen_region_layer_uses_latest_capture_canvas() {
     let mut runtime = ZoneRuntime::new(4, 4);
     let registry = EffectRegistry::new(Vec::new());
-    let mut group = sample_display_zone(2, 1);
-    group.layers = vec![SceneLayer {
+    let mut zone = sample_display_zone(2, 1);
+    zone.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("Screen".into()),
         source: LayerSource::ScreenRegion {
@@ -252,10 +252,10 @@ fn screen_region_layer_uses_latest_capture_canvas() {
 
     let result = render_scene_for_test_with_screen(
         &mut runtime,
-        &[group.clone()],
+        &[zone.clone()],
         1,
         0,
-        &HashMap::from([(group.id, 60)]),
+        &HashMap::from([(zone.id, 60)]),
         &registry,
         &mut zones,
         Some(&screen),
@@ -289,8 +289,8 @@ fn gif_asset_layer_can_drive_direct_display_zone() {
     let asset_library = Arc::new(RwLock::new(library));
     let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
     let registry = EffectRegistry::new(Vec::new());
-    let mut group = sample_display_zone(2, 2);
-    group.layers = vec![SceneLayer {
+    let mut zone = sample_display_zone(2, 2);
+    zone.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("GIF".into()),
         source: LayerSource::Media {
@@ -308,10 +308,10 @@ fn gif_asset_layer_can_drive_direct_display_zone() {
 
     let result = render_scene_for_test(
         &mut runtime,
-        &[group.clone()],
+        &[zone.clone()],
         1,
         0,
-        &HashMap::from([(group.id, 60)]),
+        &HashMap::from([(zone.id, 60)]),
         &registry,
         &mut zones,
     )
@@ -347,8 +347,8 @@ fn stream_media_layer_reports_loading_until_first_frame() {
     let asset_library = Arc::new(RwLock::new(library));
     let mut runtime = ZoneRuntime::with_asset_library(4, 4, asset_library);
     let registry = EffectRegistry::new(Vec::new());
-    let mut group = sample_group(4, 4);
-    group.layers = vec![SceneLayer {
+    let mut zone = sample_zone(4, 4);
+    zone.layers = vec![SceneLayer {
         id: hypercolor_types::layer::SceneLayerId::new(),
         name: Some("Stream".into()),
         source: LayerSource::Media {
@@ -362,12 +362,12 @@ fn stream_media_layer_reports_loading_until_first_frame() {
         bindings: Vec::new(),
         enabled: true,
     }];
-    let layer_id = group.layers[0].id;
+    let layer_id = zone.layers[0].id;
     let mut zones = Vec::new();
 
     let result = render_scene_for_test(
         &mut runtime,
-        &[group.clone()],
+        &[zone.clone()],
         1,
         0,
         &HashMap::new(),
@@ -385,7 +385,7 @@ fn stream_media_layer_reports_loading_until_first_frame() {
             layer_id: event_layer_id,
             health: LayerHealth::Loading,
             ..
-        }] if *zone_id == group.id && *event_layer_id == layer_id
+        }] if *zone_id == zone.id && *event_layer_id == layer_id
     ));
 }
 
@@ -395,8 +395,8 @@ fn note_effect_error_dedupes_until_cleared() {
     let error = ZoneEffectError {
         effect_id: "effect-1".into(),
         effect_name: "Test Effect".into(),
-        group_id: ZoneId::new(),
-        group_name: "Test Group".into(),
+        zone_id: ZoneId::new(),
+        zone_name: "Test Zone".into(),
         error: "boom".into(),
     };
 
@@ -414,8 +414,8 @@ fn recovered_effect_error_is_reported_once_after_clear() {
     let error = ZoneEffectError {
         effect_id: "effect-1".into(),
         effect_name: "Test Effect".into(),
-        group_id: ZoneId::new(),
-        group_name: "Test Group".into(),
+        zone_id: ZoneId::new(),
+        zone_name: "Test Zone".into(),
         error: "boom".into(),
     };
 

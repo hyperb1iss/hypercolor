@@ -15,7 +15,7 @@ use crate::output_power::OutputPowerState;
 use super::RenderThreadState;
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_state::{RenderSceneState, TransitionFrame};
-use crate::display_output::{DISPLAY_FACE_DEFAULT_FPS, capped_group_direct_display_target_fps};
+use crate::display_output::{DISPLAY_FACE_DEFAULT_FPS, capped_zone_direct_display_target_fps};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SceneTransitionSnapshot {
@@ -52,7 +52,7 @@ pub(crate) struct SceneRuntimeSnapshot {
     pub resolved_zones: Arc<[Zone]>,
     pub resolved_zones_revision: u64,
     pub zone_layout_preview_generation: u64,
-    pub active_render_group_count: u32,
+    pub active_render_zone_count: u32,
     pub active_display_zone_target_fps: HashMap<ZoneId, u32>,
     pub active_display_zone_output_routes: HashMap<ZoneId, DisplayZoneOutputRoute>,
     pub active_display_zone_descriptors: HashMap<ZoneId, DisplayDescriptor>,
@@ -61,8 +61,8 @@ pub(crate) struct SceneRuntimeSnapshot {
 }
 
 impl SceneRuntimeSnapshot {
-    pub(crate) fn active_render_group_count(&self) -> u32 {
-        self.active_render_group_count
+    pub(crate) fn active_render_zone_count(&self) -> u32 {
+        self.active_render_zone_count
     }
 
     pub(crate) fn dependency_key(&self, dependency_generation: u64) -> SceneDependencyKey {
@@ -285,14 +285,14 @@ async fn snapshot_scene_runtime(
             state.face_fps_cap,
         )
         .await;
-    let active_display_zone_descriptors = display_descriptors_for_groups(
+    let active_display_zone_descriptors = display_descriptors_for_zones(
         &active_display_zone_target_fps,
         &active_display_zone_output_routes,
     );
-    let active_render_group_count = u32::try_from(
+    let active_render_zone_count = u32::try_from(
         resolved_zones
             .iter()
-            .filter(|group| group_has_enabled_layer(group))
+            .filter(|zone| zone_has_enabled_layer(zone))
             .count(),
     )
     .unwrap_or(u32::MAX);
@@ -312,7 +312,7 @@ async fn snapshot_scene_runtime(
         resolved_zones,
         resolved_zones_revision,
         zone_layout_preview_generation,
-        active_render_group_count,
+        active_render_zone_count,
         active_display_zone_target_fps,
         active_display_zone_output_routes,
         active_display_zone_descriptors,
@@ -330,22 +330,22 @@ pub(super) fn apply_zone_layout_previews(
     }
 
     let mut changed = false;
-    let groups = resolved_zones
+    let zones = resolved_zones
         .iter()
         .cloned()
-        .map(|mut group| {
-            if let Some(layout) = overrides.get(&group.id)
-                && group.layout != *layout
+        .map(|mut zone| {
+            if let Some(layout) = overrides.get(&zone.id)
+                && zone.layout != *layout
             {
-                group.layout = layout.clone();
+                zone.layout = layout.clone();
                 changed = true;
             }
-            group
+            zone
         })
         .collect::<Vec<_>>();
 
     if changed {
-        groups.into()
+        zones.into()
     } else {
         resolved_zones
     }
@@ -385,8 +385,8 @@ fn unassigned_behavior_generation(unassigned_behavior: &UnassignedBehavior) -> u
     match unassigned_behavior {
         UnassignedBehavior::Off => 0,
         UnassignedBehavior::Hold => 1,
-        UnassignedBehavior::Fallback(group_id) => {
-            let raw = group_id.0.as_u128();
+        UnassignedBehavior::Fallback(zone_id) => {
+            let raw = zone_id.0.as_u128();
             2 ^ ((raw >> 64) as u64) ^ (raw as u64)
         }
     }
@@ -395,14 +395,14 @@ fn unassigned_behavior_generation(unassigned_behavior: &UnassignedBehavior) -> u
 pub(super) async fn snapshot_display_zone_target_metadata(
     device_registry: &hypercolor_core::device::DeviceRegistry,
     scene_snapshot_cache: &mut SceneSnapshotCache,
-    groups_revision: u64,
-    groups: &[Zone],
+    zones_revision: u64,
+    zones: &[Zone],
     face_fps_cap: u32,
 ) -> (
     HashMap<ZoneId, u32>,
     HashMap<ZoneId, DisplayZoneOutputRoute>,
 ) {
-    let dependency_key = SceneDependencyKey::new(groups_revision, device_registry.generation());
+    let dependency_key = SceneDependencyKey::new(zones_revision, device_registry.generation());
     if let Some(cached) = scene_snapshot_cache.cached_display_zone_target_metadata(dependency_key) {
         return cached;
     }
@@ -426,26 +426,26 @@ pub(super) async fn snapshot_display_zone_target_metadata(
         })
         .collect::<HashMap<DeviceId, (u32, Option<DisplayZoneOutputRoute>)>>();
 
-    let target_fps = groups
+    let target_fps = zones
         .iter()
-        .filter_map(|group| {
-            let target = group.display_target.as_ref()?;
+        .filter_map(|zone| {
+            let target = zone.display_target.as_ref()?;
             let device_max_fps = display_devices
                 .get(&target.device_id)
                 .map(|(max_fps, _)| *max_fps)
                 .unwrap_or(0);
             Some((
-                group.id,
-                capped_group_direct_display_target_fps(device_max_fps, face_fps_cap),
+                zone.id,
+                capped_zone_direct_display_target_fps(device_max_fps, face_fps_cap),
             ))
         })
         .collect();
-    let output_routes = groups
+    let output_routes = zones
         .iter()
-        .filter_map(|group| {
-            let target = group.display_target.as_ref()?;
+        .filter_map(|zone| {
+            let target = zone.display_target.as_ref()?;
             let route = display_devices.get(&target.device_id)?.1.clone()?;
-            Some((group.id, route))
+            Some((zone.id, route))
         })
         .collect();
     scene_snapshot_cache.cache_display_zone_target_metadata(
@@ -496,11 +496,11 @@ fn display_target_geometry_for_device(
     })
 }
 
-/// Build the per-group display descriptors handed to face renderers at
+/// Build the per-zone display descriptors handed to face renderers at
 /// load. Pixel format maps the transport: raw RGB stays `Rgb`; JPEG
 /// transports apply 4:2:0 chroma subsampling, surfaced as `Yuv420` so
 /// face authors can avoid one-pixel colored hairlines.
-pub(super) fn display_descriptors_for_groups(
+pub(super) fn display_descriptors_for_zones(
     target_fps: &HashMap<ZoneId, u32>,
     routes: &HashMap<ZoneId, DisplayZoneOutputRoute>,
 ) -> HashMap<ZoneId, DisplayDescriptor> {
@@ -564,12 +564,12 @@ async fn current_effect_scene_snapshot(
     let mut media_input_active = false;
     let mut network_input_active = false;
 
-    for group in scene_runtime.resolved_zones.iter() {
-        if !group.enabled {
+    for zone in scene_runtime.resolved_zones.iter() {
+        if !zone.enabled {
             continue;
         }
 
-        for layer in &group.layers {
+        for layer in &zone.layers {
             if !layer.enabled {
                 continue;
             }
@@ -615,8 +615,8 @@ fn effect_has_tag(tags: &[String], expected: &str) -> bool {
     tags.iter().any(|tag| tag.eq_ignore_ascii_case(expected))
 }
 
-fn group_has_enabled_layer(group: &Zone) -> bool {
-    group.enabled && group.layers.iter().any(|layer| layer.enabled)
+fn zone_has_enabled_layer(zone: &Zone) -> bool {
+    zone.enabled && zone.layers.iter().any(|layer| layer.enabled)
 }
 
 async fn render_loop_snapshot(state: &RenderThreadState) -> RenderLoopSnapshot {
@@ -661,7 +661,7 @@ mod tests {
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
     use hypercolor_types::viewport::ViewportRect;
 
-    use super::{default_display_zone_viewport, display_descriptors_for_groups};
+    use super::{default_display_zone_viewport, display_descriptors_for_zones};
     use crate::display_output::DISPLAY_FACE_DEFAULT_FPS;
     use crate::output_power::OutputPowerState;
     use crate::performance::PerformanceTracker;
@@ -682,8 +682,8 @@ mod tests {
     #[test]
     fn scene_snapshot_cache_caches_display_zone_target_metadata_by_dependency_key() {
         let mut scheduler = SceneSnapshotCache::new();
-        let group_id = ZoneId::new();
-        let target_fps = std::collections::HashMap::from([(group_id, 30)]);
+        let zone_id = ZoneId::new();
+        let target_fps = std::collections::HashMap::from([(zone_id, 30)]);
         let output_routes = std::collections::HashMap::new();
         let dependency_key = SceneDependencyKey::new(1, 7);
 
@@ -794,10 +794,10 @@ mod tests {
         }
     }
 
-    fn sample_group(effect_id: EffectId) -> Zone {
+    fn sample_zone(effect_id: EffectId) -> Zone {
         Zone {
             id: ZoneId::new(),
-            name: "Test Group".into(),
+            name: "Test Zone".into(),
             description: None,
             layers: vec![SceneLayer::from_effect(
                 SceneLayerId::new(),
@@ -962,24 +962,24 @@ mod tests {
                 .await
         );
 
-        let mut group = sample_group(EffectId::from(Uuid::now_v7()));
-        group.role = ZoneRole::Display;
-        group.display_target = Some(DisplayFaceTarget::new(device_id));
-        let group_id = group.id;
+        let mut zone = sample_zone(EffectId::from(Uuid::now_v7()));
+        zone.role = ZoneRole::Display;
+        zone.display_target = Some(DisplayFaceTarget::new(device_id));
+        let zone_id = zone.id;
 
         let mut scene_snapshot_cache = SceneSnapshotCache::new();
         let (target_fps, output_routes) = snapshot_display_zone_target_metadata(
             &state.device_registry,
             &mut scene_snapshot_cache,
             11,
-            &[group],
+            &[zone],
             30,
         )
         .await;
 
-        assert_eq!(target_fps.get(&group_id), Some(&30));
+        assert_eq!(target_fps.get(&zone_id), Some(&30));
         let route = output_routes
-            .get(&group_id)
+            .get(&zone_id)
             .expect("display zone should get a fallback output route");
         assert_eq!(route.device_id, device_id);
         assert_eq!(route.width, 320);
@@ -1006,7 +1006,7 @@ mod tests {
         let mut fps = HashMap::new();
         fps.insert(zone_id, 60);
 
-        let descriptors = display_descriptors_for_groups(&fps, &routes);
+        let descriptors = display_descriptors_for_zones(&fps, &routes);
         let descriptor = descriptors
             .get(&zone_id)
             .expect("display route should yield a descriptor");
@@ -1035,7 +1035,7 @@ mod tests {
         let mut routes = HashMap::new();
         routes.insert(zone_id, route);
 
-        let descriptors = display_descriptors_for_groups(&HashMap::new(), &routes);
+        let descriptors = display_descriptors_for_zones(&HashMap::new(), &routes);
         let descriptor = descriptors
             .get(&zone_id)
             .expect("display route should yield a descriptor");
@@ -1061,7 +1061,7 @@ mod tests {
         preview_layout.canvas_width = 640;
         preview_layout.canvas_height = 360;
 
-        let (scene_id, group_id) = {
+        let (scene_id, zone_id) = {
             let mut mutation = state.scene_manager.begin_mutation().await;
             let zone = mutation
                 .upsert_primary_zone(
@@ -1072,26 +1072,26 @@ mod tests {
                     hypercolor_types::event::ChangeTrigger::System,
                     None,
                 )
-                .expect("test scene should accept a primary group");
+                .expect("test scene should accept a primary zone");
             let scene = mutation
                 .scenes()
                 .active_scene()
                 .expect("default scene should be active");
             let scene_id = scene.id;
-            let group_id = zone.id;
+            let zone_id = zone.id;
             state
                 .scene_manager
                 .commit_mutation(mutation)
                 .await
                 .expect("test scene should commit");
-            (scene_id, group_id)
+            (scene_id, zone_id)
         };
         state
             .zone_layout_previews
             .set(
                 ZoneLayoutPreviewOwner::new(),
                 scene_id,
-                group_id,
+                zone_id,
                 preview_layout.clone(),
             )
             .await;
@@ -1117,10 +1117,10 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones: vec![sample_zone(effect_id)].into(),
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
+            active_render_zone_count: 1,
             active_display_zone_target_fps: HashMap::new(),
             active_display_zone_output_routes: HashMap::new(),
             active_display_zone_descriptors: HashMap::new(),
@@ -1155,8 +1155,8 @@ mod tests {
     async fn screen_region_layers_request_screen_capture_when_configured() {
         let effect_id = EffectId::from(Uuid::now_v7());
         let state = minimal_render_thread_state(EffectRegistry::default());
-        let mut group = sample_group(effect_id);
-        group.layers = vec![SceneLayer {
+        let mut zone = sample_zone(effect_id);
+        zone.layers = vec![SceneLayer {
             id: SceneLayerId::new(),
             name: Some("Screen".into()),
             source: LayerSource::ScreenRegion {
@@ -1173,10 +1173,10 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            resolved_zones: vec![group].into(),
+            resolved_zones: vec![zone].into(),
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
+            active_render_zone_count: 1,
             active_display_zone_target_fps: HashMap::new(),
             active_display_zone_output_routes: HashMap::new(),
             active_display_zone_descriptors: HashMap::new(),
@@ -1207,10 +1207,10 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones: vec![sample_zone(effect_id)].into(),
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
+            active_render_zone_count: 1,
             active_display_zone_target_fps: HashMap::new(),
             active_display_zone_output_routes: HashMap::new(),
             active_display_zone_descriptors: HashMap::new(),
@@ -1244,10 +1244,10 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones: vec![sample_zone(effect_id)].into(),
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
+            active_render_zone_count: 1,
             active_display_zone_target_fps: HashMap::new(),
             active_display_zone_output_routes: HashMap::new(),
             active_display_zone_descriptors: HashMap::new(),
@@ -1274,10 +1274,10 @@ mod tests {
             active_scene_id: None,
             active_scene_name: None,
             active_transition: None,
-            resolved_zones: vec![sample_group(effect_id)].into(),
+            resolved_zones: vec![sample_zone(effect_id)].into(),
             resolved_zones_revision: 7,
             zone_layout_preview_generation: 0,
-            active_render_group_count: 1,
+            active_render_zone_count: 1,
             active_display_zone_target_fps: HashMap::new(),
             active_display_zone_output_routes: HashMap::new(),
             active_display_zone_descriptors: HashMap::new(),

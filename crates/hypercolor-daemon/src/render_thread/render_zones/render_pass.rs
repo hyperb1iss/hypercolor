@@ -10,17 +10,17 @@ use super::ZoneRuntime;
 use super::frame_helpers::{
     copy_producer_frame_to_canvas, passthrough_effect_layer, transparent_black_frame,
 };
-use super::group_state::{enabled_layer_count, group_is_active, group_publishes_direct_canvas};
 use super::model::{
-    GroupFrameContext, GroupFrameRequirements, PendingDisplayZoneFrame, RenderSceneContext,
-    RenderedGroupSet,
+    PendingDisplayZoneFrame, RenderSceneContext, RenderedZoneSet, ZoneFrameContext,
+    ZoneFrameRequirements,
 };
-use super::projection::append_projection_composition_layers_for_group;
+use super::projection::append_projection_composition_layers_for_zone;
+use super::zone_state::{enabled_layer_count, zone_is_active, zone_publishes_direct_canvas};
 use crate::performance::FullFrameCopyMetrics;
 
 #[derive(Default)]
-pub(super) struct RenderedGroupPassOutput {
-    pub(super) rendered_groups: RenderedGroupSet,
+pub(super) struct RenderedZonePassOutput {
+    pub(super) rendered_zones: RenderedZoneSet,
     pub(super) render_us: u32,
     pub(super) producer_full_frame_copy: FullFrameCopyMetrics,
 }
@@ -39,7 +39,7 @@ impl Default for ProjectedSceneFrames {
     }
 }
 
-impl RenderedGroupPassOutput {
+impl RenderedZonePassOutput {
     pub(super) fn record_render_elapsed(&mut self, render_start: Instant) {
         self.render_us = self
             .render_us
@@ -48,38 +48,38 @@ impl RenderedGroupPassOutput {
 }
 
 impl ZoneRuntime {
-    fn render_direct_group_frame(
+    fn render_direct_zone_frame(
         &mut self,
-        group: &Zone,
-        context: GroupFrameContext<'_>,
+        zone: &Zone,
+        context: ZoneFrameContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
         full_frame_copy: &mut FullFrameCopyMetrics,
     ) -> Result<Option<PendingDisplayZoneFrame>> {
-        let display_target = group
+        let display_target = zone
             .display_target
             .clone()
             .expect("direct display zone should carry a display target");
 
-        let empty_direct_shell = enabled_layer_count(group) == 0;
+        let empty_direct_shell = enabled_layer_count(zone) == 0;
         let frame = if empty_direct_shell {
-            self.effect_pool.remove_zone(group.id);
-            self.retained_materialized_group_frames.remove(&group.id);
+            self.effect_pool.remove_zone(zone.id);
+            self.retained_materialized_zone_frames.remove(&zone.id);
             transparent_black_frame(
                 &mut self.static_layer_surface_cache,
-                group.layout.canvas_width,
-                group.layout.canvas_height,
+                zone.layout.canvas_width,
+                zone.layout.canvas_height,
             )?
-        } else if passthrough_effect_layer(group).is_some() {
-            let Some(frame) = self.render_passthrough_effect_layer_frame(group, context)? else {
+        } else if passthrough_effect_layer(zone).is_some() {
+            let Some(frame) = self.render_passthrough_effect_layer_frame(zone, context)? else {
                 return Ok(None);
             };
             frame
         } else {
-            let Some(frame) = self.render_group_frame(
-                group,
+            let Some(frame) = self.render_zone_frame(
+                zone,
                 context,
                 sparkleflinger,
-                GroupFrameRequirements {
+                ZoneFrameRequirements {
                     requires_cpu_sampling_canvas: true,
                     requires_published_surface: true,
                 },
@@ -89,8 +89,7 @@ impl ZoneRuntime {
             };
             frame
         };
-        let Some(frame) = self.surface_backed_direct_frame(group.id, frame, full_frame_copy)?
-        else {
+        let Some(frame) = self.surface_backed_direct_frame(zone.id, frame, full_frame_copy)? else {
             return Ok(None);
         };
         record_producer_frame(&frame);
@@ -106,7 +105,7 @@ impl ZoneRuntime {
         context: RenderSceneContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
         project_scene_with_sparkleflinger: bool,
-        output: &mut RenderedGroupPassOutput,
+        output: &mut RenderedZonePassOutput,
     ) -> Result<ProjectedSceneFrames> {
         let mut projected_scene = ProjectedSceneFrames::default();
         if project_scene_with_sparkleflinger {
@@ -124,56 +123,56 @@ impl ZoneRuntime {
             }
         }
         let render_result = (|| -> Result<()> {
-            for group in context.groups {
-                if !group_is_active(group) || group_publishes_direct_canvas(group) {
+            for zone in context.zones {
+                if !zone_is_active(zone) || zone_publishes_direct_canvas(zone) {
                     continue;
                 }
 
                 let render_start = Instant::now();
-                let mut frame = self.render_group_frame(
-                    group,
-                    context.group_context(),
+                let mut frame = self.render_zone_frame(
+                    zone,
+                    context.zone_context(),
                     sparkleflinger,
-                    GroupFrameRequirements {
+                    ZoneFrameRequirements {
                         requires_cpu_sampling_canvas: !project_scene_with_sparkleflinger,
                         requires_published_surface: false,
                     },
                 )?;
                 if frame.is_none() && project_scene_with_sparkleflinger {
-                    frame = self.render_group_frame(
-                        group,
-                        context.group_context(),
+                    frame = self.render_zone_frame(
+                        zone,
+                        context.zone_context(),
                         sparkleflinger,
-                        GroupFrameRequirements {
+                        ZoneFrameRequirements {
                             requires_cpu_sampling_canvas: true,
                             requires_published_surface: false,
                         },
                     )?;
                 }
                 let Some(frame) = frame else {
-                    if let Some(target) = self.target_canvases.get_mut(&group.id) {
+                    if let Some(target) = self.target_canvases.get_mut(&zone.id) {
                         target.clear();
                     }
                     output.record_render_elapsed(render_start);
                     continue;
                 };
                 let frame = if project_scene_with_sparkleflinger {
-                    sparkleflinger.stabilize_projected_group_frame(group.id, frame)?
+                    sparkleflinger.stabilize_projected_zone_frame(zone.id, frame)?
                 } else {
                     frame
                 };
                 if project_scene_with_sparkleflinger
-                    && let Some(projection) = self.scene_projection_cache.get(&group.id)
-                    && append_projection_composition_layers_for_group(
+                    && let Some(projection) = self.scene_projection_cache.get(&zone.id)
+                    && append_projection_composition_layers_for_zone(
                         &mut projected_scene.layers,
                         &frame,
-                        group,
+                        zone,
                         projection,
                         self.scene_width,
                         self.scene_height,
                     )
                 {
-                    let replayed = if let Some(target) = self.target_canvases.get_mut(&group.id) {
+                    let replayed = if let Some(target) = self.target_canvases.get_mut(&zone.id) {
                         let replayed = copy_producer_frame_to_canvas(
                             frame,
                             target,
@@ -194,8 +193,8 @@ impl ZoneRuntime {
                 }
                 let target = self
                     .target_canvases
-                    .get_mut(&group.id)
-                    .ok_or_else(|| anyhow::anyhow!("CPU group target was not admitted"))?;
+                    .get_mut(&zone.id)
+                    .ok_or_else(|| anyhow::anyhow!("CPU zone target was not admitted"))?;
                 if !copy_producer_frame_to_canvas(
                     frame,
                     target,
@@ -206,8 +205,8 @@ impl ZoneRuntime {
                     continue;
                 }
                 output
-                    .rendered_groups
-                    .push_fresh_scene_group_frame(group.id, ProducerFrame::Canvas(target.clone()));
+                    .rendered_zones
+                    .push_fresh_scene_zone_frame(zone.id, ProducerFrame::Canvas(target.clone()));
                 output.record_render_elapsed(render_start);
             }
             Ok(())
@@ -224,60 +223,60 @@ impl ZoneRuntime {
         &mut self,
         context: RenderSceneContext<'_>,
         sparkleflinger: &mut SparkleFlinger,
-        skip_group_id: Option<ZoneId>,
-        output: &mut RenderedGroupPassOutput,
+        skip_zone_id: Option<ZoneId>,
+        output: &mut RenderedZonePassOutput,
     ) -> Result<()> {
-        for group in context.groups {
-            if skip_group_id == Some(group.id)
-                || !group.enabled
-                || !group_is_active(group)
-                || !group_publishes_direct_canvas(group)
+        for zone in context.zones {
+            if skip_zone_id == Some(zone.id)
+                || !zone.enabled
+                || !zone_is_active(zone)
+                || !zone_publishes_direct_canvas(zone)
             {
                 continue;
             }
 
-            output.rendered_groups.mark_direct_group_active(group.id);
-            if let Some(retained) = self.reuse_retained_direct_group_frame(
-                group,
+            output.rendered_zones.mark_direct_zone_active(zone.id);
+            if let Some(retained) = self.reuse_retained_direct_zone_frame(
+                zone,
                 context.elapsed_ms,
                 context.display_zone_target_fps,
                 context.dependency_key,
             ) {
                 let render_start = Instant::now();
-                self.advance_direct_group_effects(group, context.group_context())?;
+                self.advance_direct_zone_effects(zone, context.zone_context())?;
                 output.record_render_elapsed(render_start);
                 output
-                    .rendered_groups
-                    .push_retained_direct_group_frame(group.id, retained);
+                    .rendered_zones
+                    .push_retained_direct_zone_frame(zone.id, retained);
                 continue;
             }
 
             let render_start = Instant::now();
-            let Some(frame) = self.render_direct_group_frame(
-                group,
-                context.group_context(),
+            let Some(frame) = self.render_direct_zone_frame(
+                zone,
+                context.zone_context(),
                 sparkleflinger,
                 &mut output.producer_full_frame_copy,
             )?
             else {
                 output.record_render_elapsed(render_start);
-                if let Some(retained) = self.reuse_latest_direct_group_frame(group) {
+                if let Some(retained) = self.reuse_latest_direct_zone_frame(zone) {
                     output
-                        .rendered_groups
-                        .push_retained_direct_group_frame(group.id, retained);
+                        .rendered_zones
+                        .push_retained_direct_zone_frame(zone.id, retained);
                 }
                 continue;
             };
             output.record_render_elapsed(render_start);
-            self.retain_direct_group_frame(
-                group.id,
+            self.retain_direct_zone_frame(
+                zone.id,
                 context.elapsed_ms,
                 context.dependency_key,
                 &frame,
             );
             output
-                .rendered_groups
-                .push_fresh_direct_group_frame(group.id, frame);
+                .rendered_zones
+                .push_fresh_direct_zone_frame(zone.id, frame);
         }
 
         Ok(())

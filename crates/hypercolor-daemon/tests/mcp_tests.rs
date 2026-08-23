@@ -1991,7 +1991,7 @@ async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
         }
     }
     assert!(saw_started_event, "expected MCP effect-start event");
-    assert!(saw_group_event, "expected MCP render-group event");
+    assert!(saw_group_event, "expected MCP render-zone event");
 
     let mut stop_events = state.event_bus.subscribe_all();
     let clear_result = execute_tool_with_state("clear_zone", &json!({}), state.as_ref())
@@ -2691,7 +2691,7 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
         display_id.to_string()
     );
 
-    // The preference persists and the overlay reaches the render groups.
+    // The preference persists and the overlay reaches the render zones.
     assert!(
         state
             .display_preferences

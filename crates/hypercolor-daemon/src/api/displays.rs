@@ -21,7 +21,7 @@ use tracing::warn;
 
 use crate::api::devices;
 use crate::api::envelope;
-use crate::api::publish_render_group_changed;
+use crate::api::publish_render_zone_changed;
 use crate::app_state::AppState;
 use crate::display_frames::DisplayFrameSnapshot;
 pub(crate) use crate::domain::display::{
@@ -57,7 +57,7 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
         let Some(surface) = display_surface_info(&tracked.info) else {
             continue;
         };
-        let target_fps = crate::display_output::capped_group_direct_display_target_fps(
+        let target_fps = crate::display_output::capped_zone_direct_display_target_fps(
             tracked.info.capabilities.max_fps,
             face_fps_cap,
         );
@@ -265,7 +265,7 @@ pub async fn set_display_face(
                 .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT)
         };
         if !scene_assigned {
-            publish_render_group_changed(state.as_ref(), scene_id, &zone, ZoneChangeKind::Updated);
+            publish_render_zone_changed(state.as_ref(), scene_id, &zone, ZoneChangeKind::Updated);
         }
 
         return envelope::ok(DisplayFaceResponse {
@@ -374,7 +374,7 @@ pub async fn patch_display_face_composition(
                     .parse::<uuid::Uuid>()
                     .map(hypercolor_types::scene::SceneId)
                     .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-                publish_render_group_changed(
+                publish_render_zone_changed(
                     state.as_ref(),
                     scene_id,
                     &response.zone,
@@ -477,7 +477,7 @@ pub async fn delete_display_face(
                             .active_scene()
                             .map_or(hypercolor_types::scene::SceneId::DEFAULT, |scene| scene.id)
                     };
-                    publish_render_group_changed(
+                    publish_render_zone_changed(
                         state.as_ref(),
                         scene_id,
                         &zone,
@@ -609,7 +609,7 @@ pub async fn patch_display_face_controls(
                     .parse::<uuid::Uuid>()
                     .map(hypercolor_types::scene::SceneId)
                     .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-                publish_render_group_changed(
+                publish_render_zone_changed(
                     state.as_ref(),
                     scene_id,
                     &response.zone,
