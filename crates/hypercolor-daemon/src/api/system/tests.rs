@@ -450,7 +450,7 @@ async fn input_source_status_serializes_macos_screen_platform() {
     assert!(!remote.to_string().contains("com.secret.private"));
     assert!(!remote.to_string().contains("w42"));
 
-    let public = serde_json::to_value(input_status_snapshot(&state))
+    let public = serde_json::to_value(input_status_snapshot(&state.domains.platform))
         .expect("public input status should serialize");
     assert!(!public.to_string().contains("com.secret.private"));
     assert!(!public.to_string().contains("w42"));

@@ -41,8 +41,8 @@ use crate::device_settings::{DeviceSettingsAccess, DeviceSettingsStore};
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{
-    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionProjection,
-    RuntimeSessionService, SceneContext,
+    DeviceContext, DomainContextResources, DomainContexts, PlatformContext,
+    RuntimeSessionProjection, RuntimeSessionService, SceneContext,
 };
 use crate::domain::layout::{LayoutContext, LayoutContextResources};
 use crate::domain::output::OutputContext;
@@ -574,6 +574,7 @@ impl AppState {
             scene,
             layout,
             output,
+            PlatformContext::new(input_status.clone(), config_manager.clone()),
             DomainContextResources {
                 effect_registry: Arc::clone(&effect_registry),
                 spatial: spatial_engine.clone(),

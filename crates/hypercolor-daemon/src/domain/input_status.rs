@@ -22,7 +22,7 @@ use hypercolor_types::api::system::{
     MacosTahoeSelectionCapabilities, MacosTiming,
 };
 
-use crate::app_state::AppState;
+use crate::domain::context::PlatformContext;
 use crate::macos_owner::{MacosDaemonOwner, MacosHandoverPhase, MacosOwnerSnapshot};
 
 #[derive(Debug)]
@@ -34,16 +34,16 @@ pub(crate) struct InputDiagnostic {
 
 /// Build the redacted input health snapshot used without protected control.
 #[must_use]
-pub(crate) fn input_status_snapshot(state: &AppState) -> InputStatus {
-    input_status_snapshot_with_privacy(state, false)
+pub(crate) fn input_status_snapshot(platform: &PlatformContext) -> InputStatus {
+    input_status_snapshot_with_privacy(platform, false)
 }
 
 pub(crate) fn input_status_snapshot_with_privacy(
-    state: &AppState,
+    platform: &PlatformContext,
     include_private_selection_ids: bool,
 ) -> InputStatus {
     let now = Instant::now();
-    let registry = state.input_status.snapshot();
+    let registry = platform.source_status_snapshot();
     let statuses = registry
         .handles()
         .iter()
@@ -58,10 +58,7 @@ pub(crate) fn input_status_snapshot_with_privacy(
         .collect();
 
     InputStatus {
-        enabled: state
-            .config_manager
-            .as_ref()
-            .is_some_and(|manager| manager.get().input.enabled),
+        enabled: platform.input_enabled(),
         host_capture_registered: host_sources.clone().next().is_some(),
         host_capturing: host_sources
             .clone()

@@ -163,7 +163,8 @@ async fn system_status_with_privacy(
     let effect_health = effect_health_status(performance.effect_health);
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
-    let input_status = input_status_snapshot_with_privacy(&state, include_private_selection_ids);
+    let input_status =
+        input_status_snapshot_with_privacy(&state.domains.platform, include_private_selection_ids);
     let audio_available = input_status.sources.iter().any(|source| {
         source.kind == "audio"
             && !source.retired

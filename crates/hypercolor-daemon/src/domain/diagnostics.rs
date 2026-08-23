@@ -217,7 +217,7 @@ pub(crate) async fn collect_diagnostics(
     let usb_actor_metrics = usb_actor_metrics_snapshot();
     let display_output_metrics = state.display_frames.read().await.metrics_snapshot();
     let device_metrics = state.device_metrics.load_full();
-    let input = input_status_snapshot(&state);
+    let input = input_status_snapshot(&state.domains.platform);
     let mut snapshot = build_diagnose_snapshot(
         input,
         &performance,

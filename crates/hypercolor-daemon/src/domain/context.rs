@@ -10,6 +10,7 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::input::{SourceStatusRegistry, SourceStatusRegistrySnapshot};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
@@ -47,6 +48,8 @@ pub struct DomainContexts {
     pub layout: LayoutContext,
     /// Global output power and brightness authority.
     pub output: OutputContext,
+    /// Platform input health and live configuration authority.
+    pub platform: PlatformContext,
     /// Effect catalog, validation, and activation authority.
     pub effects: EffectContext,
     /// Live scene-tree mutation authority.
@@ -68,6 +71,7 @@ impl DomainContexts {
         scene: SceneContext,
         layout: LayoutContext,
         output: OutputContext,
+        platform: PlatformContext,
         resources: DomainContextResources,
     ) -> Self {
         let effects = EffectContext::new(
@@ -95,10 +99,42 @@ impl DomainContexts {
             scene,
             layout,
             output,
+            platform,
             effects,
             scene_tree,
             scene_library,
         }
+    }
+}
+
+/// Platform input health projection dependencies.
+#[derive(Clone)]
+pub struct PlatformContext {
+    input_status: SourceStatusRegistry,
+    config_manager: Option<Arc<ConfigManager>>,
+}
+
+impl PlatformContext {
+    pub(crate) fn new(
+        input_status: SourceStatusRegistry,
+        config_manager: Option<Arc<ConfigManager>>,
+    ) -> Self {
+        Self {
+            input_status,
+            config_manager,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn source_status_snapshot(&self) -> Arc<SourceStatusRegistrySnapshot> {
+        self.input_status.snapshot()
+    }
+
+    #[must_use]
+    pub(crate) fn input_enabled(&self) -> bool {
+        self.config_manager
+            .as_ref()
+            .is_some_and(|manager| manager.get().input.enabled)
     }
 }
 

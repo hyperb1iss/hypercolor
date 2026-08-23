@@ -108,6 +108,41 @@ fn application_state_reuses_one_domain_graph() {
 }
 
 #[test]
+fn input_status_projection_uses_platform_context() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let contexts = source("domain/context.rs");
+    let platform = contexts
+        .split_once("pub struct PlatformContext")
+        .and_then(|(_, source)| source.split_once("pub struct RuntimeSessionService"))
+        .map(|(platform, _)| platform)
+        .expect("platform context should remain structurally visible");
+    assert!(contexts.contains("pub platform: PlatformContext"));
+    assert!(platform.contains("input_status: SourceStatusRegistry"));
+    assert!(platform.contains("config_manager: Option<Arc<ConfigManager>>"));
+    assert!(!platform.contains("pub input_status:"));
+    assert!(!platform.contains("pub config_manager:"));
+
+    let projection = source("domain/input_status.rs");
+    assert!(projection.contains("use crate::domain::context::PlatformContext;"));
+    assert!(!projection.contains("AppState"));
+
+    for creditor in [
+        source("api/system.rs"),
+        source("domain/diagnostics.rs"),
+        source("mcp/payload.rs"),
+    ] {
+        assert!(creditor.contains("&state.domains.platform"));
+    }
+}
+
+#[test]
 fn output_static_hold_lifecycle_uses_output_context_directly() {
     let sources = daemon_sources();
     let lifecycle = sources
@@ -256,7 +291,7 @@ fn effect_registry_watcher_uses_domain_authority() {
     assert!(startup.contains("reload_registry_file(&watcher_state"));
     assert!(!startup.contains("crate::api::effects::invalidate"));
     assert!(!startup.contains("reload_single(&path)"));
-    assert!(!startup.contains("invalidate_active_render_groups"));
+    assert!(!startup.contains("invalidate_resolved_zones"));
 }
 
 #[test]

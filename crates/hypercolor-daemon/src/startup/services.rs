@@ -55,8 +55,8 @@ use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::DeviceMetricsSnapshot;
 use crate::device_settings::DeviceSettingsStore;
 use crate::domain::context::{
-    DeviceContext, DomainContextResources, DomainContexts, RuntimeSessionProjection,
-    RuntimeSessionService, SceneContext,
+    DeviceContext, DomainContextResources, DomainContexts, PlatformContext,
+    RuntimeSessionProjection, RuntimeSessionService, SceneContext,
 };
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
@@ -760,6 +760,7 @@ impl DaemonState {
             scene,
             layout,
             output,
+            PlatformContext::new(input_status.clone(), Some(Arc::clone(&config_manager))),
             DomainContextResources {
                 effect_registry: Arc::clone(&effect_registry),
                 spatial: spatial_engine.clone(),

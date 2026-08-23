@@ -79,7 +79,7 @@ pub(crate) async fn build_status_payload(state: &AppState) -> StatusResult {
     } else {
         (InputAvailability::Unknown, InputAvailability::Unknown)
     };
-    let input = input_status_snapshot(state);
+    let input = input_status_snapshot(&state.domains.platform);
     let input_state = interaction_state(input.enabled, input.degraded.as_deref());
 
     let power = state.output_power.snapshot();
