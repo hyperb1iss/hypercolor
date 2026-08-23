@@ -453,7 +453,7 @@ where
 }
 
 /// PUT JSON body, discard the response. Used for idempotent actions that
-/// send a payload but don't return anything (e.g., `preview_layout`).
+/// send a payload but don't return anything (e.g., `set_config_value`).
 pub async fn put_json_discard<Req>(url: &str, body: &Req) -> ApiResult<()>
 where
     Req: Serialize + ?Sized,

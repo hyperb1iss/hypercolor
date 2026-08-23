@@ -2,9 +2,7 @@
 
 use super::{ApiResult, client};
 
-pub use hypercolor_types::api::layouts::{
-    CreateLayoutRequest, LayoutListResponse, LayoutSummary, UpdateLayoutRequest,
-};
+pub use hypercolor_types::api::layouts::{LayoutListResponse, LayoutSummary, UpdateLayoutRequest};
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
@@ -14,19 +12,9 @@ pub async fn fetch_layouts() -> ApiResult<Vec<LayoutSummary>> {
     Ok(list.items)
 }
 
-/// Fetch a single layout with full zone data.
-pub async fn fetch_layout(id: &str) -> ApiResult<hypercolor_types::spatial::SpatialLayout> {
-    client::fetch_json(&format!("/api/v1/layouts/{id}")).await
-}
-
 /// Fetch the currently active layout.
 pub async fn fetch_active_layout() -> ApiResult<hypercolor_types::spatial::SpatialLayout> {
     client::fetch_json("/api/v1/layouts/active").await
-}
-
-/// Create a new layout.
-pub async fn create_layout(req: &CreateLayoutRequest) -> ApiResult<LayoutSummary> {
-    client::post_json("/api/v1/layouts", req).await
 }
 
 /// Update a layout (metadata + optionally zones).
@@ -37,14 +25,4 @@ pub async fn update_layout(id: &str, req: &UpdateLayoutRequest) -> ApiResult<Lay
 /// Apply a layout to the spatial engine.
 pub async fn apply_layout(id: &str) -> ApiResult<()> {
     client::post_empty(&format!("/api/v1/layouts/{id}/apply")).await
-}
-
-/// Push a layout to the spatial engine for live preview (no persistence).
-pub async fn preview_layout(layout: &hypercolor_types::spatial::SpatialLayout) -> ApiResult<()> {
-    client::put_json_discard("/api/v1/layouts/active/preview", layout).await
-}
-
-/// Delete a layout.
-pub async fn delete_layout(id: &str) -> ApiResult<()> {
-    client::delete_empty(&format!("/api/v1/layouts/{id}")).await
 }
