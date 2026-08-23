@@ -22,7 +22,7 @@ use hypercolor_types::api::scene::{
     TransitionType,
 };
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::effect::{EffectCategory, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use hypercolor_types::library::PresetId;
 
 use crate::api::envelope;
@@ -33,11 +33,14 @@ use crate::domain;
 // the payload never reports.
 use crate::domain::effect::RequestedTransition;
 use crate::domain::{DomainError, MutationContext, ResourceKind};
+use crate::resource_summary::{
+    EffectListIncludes, effect_cover_image_path, effect_cover_image_url, effect_summary,
+    html_effect_source_path, is_runnable_source,
+};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
 const MAX_EFFECT_UPLOAD_BYTES: usize = 1024 * 1024;
-const EFFECT_COVER_FILE_NAME: &str = "default.webp";
 const EFFECT_COVER_CONTENT_TYPE: &str = "image/webp";
 // Wire contracts live in hypercolor-types::api::effects — shared with the
 // web UI and the TUI.
@@ -86,33 +89,6 @@ pub struct EffectListQuery {
     pub include: Option<String>,
 }
 
-/// Which summary expansions a listing asked for.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct EffectListIncludes {
-    controls: bool,
-    presets: bool,
-}
-
-impl EffectListIncludes {
-    fn parse(raw: Option<&str>) -> Result<Self, DomainError> {
-        let mut includes = Self::default();
-        for token in raw.unwrap_or_default().split(',') {
-            match token.trim() {
-                "" => {}
-                "controls" => includes.controls = true,
-                "presets" => includes.presets = true,
-                other => {
-                    return Err(DomainError::validation_field(
-                        "include",
-                        format!("unknown expansion '{other}'; expected controls or presets"),
-                    ));
-                }
-            }
-        }
-        Ok(includes)
-    }
-}
-
 /// `GET /api/v1/effects` — the effect catalog, narrowed server-side.
 pub async fn list_effects(
     State(state): State<Arc<AppState>>,
@@ -154,40 +130,6 @@ pub async fn list_effects(
         total: u64::try_from(total).expect("effect count fits in u64"),
         page: None,
     })
-}
-
-fn effect_summary(meta: &EffectMetadata, includes: EffectListIncludes) -> EffectSummary {
-    EffectSummary {
-        id: meta.id.to_string(),
-        name: meta.name.clone(),
-        description: meta.description.clone(),
-        author: meta.author.clone(),
-        category: meta.category,
-        source: EffectSourceKind::from(&meta.source),
-        runnable: is_runnable_source(&meta.source),
-        tags: meta.tags.clone(),
-        version: meta.version.clone(),
-        audio_reactive: meta.audio_reactive,
-        input_reactive: meta.input_reactive,
-        capabilities: EffectCapabilitySet {
-            audio_reactive: meta.audio_reactive,
-            screen_reactive: meta.screen_reactive,
-            input_reactive: meta.input_reactive,
-        },
-        cover_image_url: effect_cover_image_url(meta),
-        controls: includes.controls.then(|| meta.controls.clone()),
-        presets: includes.presets.then(|| meta.presets.clone()),
-    }
-}
-
-pub(crate) fn effect_summary_with_details(meta: &EffectMetadata) -> EffectSummary {
-    effect_summary(
-        meta,
-        EffectListIncludes {
-            controls: true,
-            presets: true,
-        },
-    )
 }
 
 /// `GET /api/v1/effects/{id}` — Get a single effect's metadata.
@@ -752,13 +694,6 @@ async fn effect_cover_image_response(
     (headers, cover.bytes).into_response()
 }
 
-fn effect_cover_image_url(metadata: &EffectMetadata) -> Option<String> {
-    if effect_cover_image_path(metadata).is_none() && html_effect_source_path(metadata).is_none() {
-        return None;
-    }
-    Some(format!("/api/v1/effects/{}/cover", metadata.id))
-}
-
 struct EffectCover {
     content_type: String,
     bytes: Vec<u8>,
@@ -809,65 +744,6 @@ async fn effect_inline_cover(metadata: &EffectMetadata) -> Option<EffectCover> {
             );
             None
         }
-    }
-}
-
-fn html_effect_source_path(metadata: &EffectMetadata) -> Option<&PathBuf> {
-    match &metadata.source {
-        EffectSource::Html { path } => Some(path),
-        EffectSource::Native { .. } | EffectSource::Shader { .. } => None,
-    }
-}
-
-fn effect_cover_image_path(metadata: &EffectMetadata) -> Option<PathBuf> {
-    let root = hypercolor_core::effect::bundled_screenshots_root();
-    effect_cover_slugs(metadata)
-        .into_iter()
-        .map(|slug| root.join(slug).join(EFFECT_COVER_FILE_NAME))
-        .find(|path| path.is_file())
-}
-
-fn effect_cover_slugs(metadata: &EffectMetadata) -> Vec<String> {
-    let mut slugs = Vec::new();
-    if let Some(stem) = metadata.source.source_stem() {
-        push_cover_slug(&mut slugs, stem);
-    }
-    push_cover_slug(&mut slugs, &metadata.name);
-    slugs
-}
-
-fn push_cover_slug(slugs: &mut Vec<String>, value: &str) {
-    let slug = cover_slug(value);
-    if !slug.is_empty() && !slugs.iter().any(|existing| existing == &slug) {
-        slugs.push(slug);
-    }
-}
-
-fn cover_slug(value: &str) -> String {
-    let mut slug = String::new();
-    let mut last_was_separator = false;
-
-    for character in value.chars() {
-        if character.is_ascii_alphanumeric() {
-            slug.push(character.to_ascii_lowercase());
-            last_was_separator = false;
-        } else if !slug.is_empty() && !last_was_separator {
-            slug.push('-');
-            last_was_separator = true;
-        }
-    }
-
-    if last_was_separator {
-        let _ = slug.pop();
-    }
-    slug
-}
-
-fn is_runnable_source(source: &EffectSource) -> bool {
-    match source {
-        EffectSource::Native { .. } => true,
-        EffectSource::Html { .. } => cfg!(feature = "servo"),
-        EffectSource::Shader { .. } => false,
     }
 }
 

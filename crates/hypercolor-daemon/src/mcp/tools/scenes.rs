@@ -11,6 +11,7 @@ use crate::mcp::results::{
     ActivateSceneResult, AdjustControlsResult, CreateSceneResult, SceneListItem, SceneListResult,
 };
 use crate::mcp::selector::SelectorCandidate;
+use crate::resource_summary::scene_summary;
 use hypercolor_types::api::scene::{PatchControlsRequest, SceneDocument};
 use hypercolor_types::api::scenes::ActivatedSceneRef;
 use hypercolor_types::control::control_value_json_schema;
@@ -426,11 +427,7 @@ pub(super) async fn handle_list_scenes_with_state(
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .filter(|scene| !enabled_only || scene.enabled)
         .map(|scene| SceneListItem {
-            id: scene.id.to_string(),
-            name: scene.name.clone(),
-            description: scene.description.clone(),
-            enabled: scene.enabled,
-            mutation_mode: scene.mutation_mode,
+            summary: scene_summary(scene),
             active: Some(scene.id) == active_scene_id,
         })
         .collect::<Vec<_>>();

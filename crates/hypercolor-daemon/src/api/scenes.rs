@@ -9,11 +9,12 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
 use hypercolor_core::scene::SceneManager;
-use hypercolor_types::scene::{Scene, SceneId, SceneKind};
+use hypercolor_types::scene::{SceneId, SceneKind};
 
 use crate::api::envelope;
 use crate::app_state::AppState;
 use crate::domain::{DomainError, DomainErrorDetails, ResourceKind};
+use crate::resource_summary::scene_summary;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -234,17 +235,6 @@ pub async fn activate_scene(
 }
 
 /// The scene summary every scene-library response carries.
-fn scene_summary(scene: &Scene) -> SceneSummary {
-    SceneSummary {
-        id: scene.id.to_string(),
-        name: scene.name.clone(),
-        description: scene.description.clone(),
-        enabled: scene.enabled,
-        priority: scene.priority.0,
-        mutation_mode: scene.mutation_mode,
-    }
-}
-
 pub(crate) fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {
     if id_or_name.eq_ignore_ascii_case("default") {
         return Some(SceneId::DEFAULT);

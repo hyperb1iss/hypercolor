@@ -94,13 +94,22 @@ Browse the full effect catalog before applying a visual.
       "id": "aurora",
       "name": "Aurora",
       "description": "Slow-drifting northern-lights ribbons",
+      "author": "Hypercolor",
       "category": "ambient",
-      "tags": ["calm", "blue", "green", "slow"]
+      "source": "native",
+      "runnable": true,
+      "tags": ["calm", "blue", "green", "slow"],
+      "version": "1.0.0",
+      "audio_reactive": false,
+      "input_reactive": false,
+      "capabilities": { "audio_reactive": false, "screen_reactive": false, "input_reactive": false }
     }
   ],
   "total": 47
 }
 ```
+
+Each row is the same `EffectSummary` that `GET /api/v1/effects` returns, so a field added to the REST catalog appears here in the same release. The `list_effects` tool returns the same rows with `controls` and `presets` expanded.
 
 The catalog blends roughly a dozen native Rust built-ins with the SDK's HTML effects, so the `total` is the source of truth for how many are installed on this daemon. Do not hardcode a count in agent logic; read it from the resource. The same data drives the `list_effects` tool, which adds full-text search on top. For building new entries, see [native Rust effects](@/effects/native-rust-effects.md) and [the effects overview](@/effects/_index.md).
 
@@ -186,7 +195,7 @@ Live audio levels, beat state, and spectrum summary at roughly 10 Hz.
 {
   "enabled": true,
   "source": "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
-  "sample_rate": 2048,
+  "fft_size": 2048,
   "levels": {
     "overall": 0.61,
     "bass": 0.78,
@@ -206,9 +215,9 @@ Live audio levels, beat state, and spectrum summary at roughly 10 Hz.
 
 Field notes:
 
-- `enabled` reflects the daemon's audio config. When audio is off, `source` and `sample_rate` are `null` and the levels read zero.
+- `enabled` reflects the daemon's audio config. When audio is off, `source` and `fft_size` are `null` and the levels read zero.
 - `source` is the configured capture device. For reactivity to work this must be a **monitor** source (what the speakers are playing), not a microphone. See [audio setup](@/guide/audio-setup.md) for choosing the right PipeWire or PulseAudio device.
-- `sample_rate` is the configured FFT size, not a hardware Hz value.
+- `fft_size` is the configured FFT window; the resource carries no hardware sample rate.
 - `levels` are normalized energies in `[0.0, 1.0]` per band.
 - `beat.bpm_estimate` is `null` until the detector locks a tempo.
 - `spectrum_summary.bins` reports how many spectrum bins are available; the full per-bin data streams over the WebSocket spectrum channel rather than this resource.

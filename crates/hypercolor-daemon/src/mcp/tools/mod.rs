@@ -308,25 +308,93 @@ pub(super) fn output_schema<T: ToSchema>() -> Value {
     let mut root = serde_json::to_value(T::schema())
         .expect("utoipa output schemas should serialize to JSON values");
     rewrite_schema_refs(&mut root);
+
+    let mut definitions: serde_json::Map<String, Value> = definitions
+        .into_iter()
+        .map(|(name, schema)| {
+            let mut schema = serde_json::to_value(schema)
+                .expect("utoipa referenced schemas should serialize to JSON values");
+            rewrite_schema_refs(&mut schema);
+            (name, schema)
+        })
+        .collect();
+
+    let open_definitions = definitions.clone();
+    merge_flattened_objects(&mut root, &open_definitions);
+    for schema in definitions.values_mut() {
+        merge_flattened_objects(schema, &open_definitions);
+    }
+
     close_typed_objects(&mut root);
+    for schema in definitions.values_mut() {
+        close_typed_objects(schema);
+    }
 
     if !definitions.is_empty() {
-        let definitions = definitions
-            .into_iter()
-            .map(|(name, schema)| {
-                let mut schema = serde_json::to_value(schema)
-                    .expect("utoipa referenced schemas should serialize to JSON values");
-                rewrite_schema_refs(&mut schema);
-                close_typed_objects(&mut schema);
-                (name, schema)
-            })
-            .collect();
         root.as_object_mut()
             .expect("MCP output schemas must have an object root")
             .insert("$defs".to_owned(), Value::Object(definitions));
     }
 
     root
+}
+
+/// Fold `allOf` object branches into one object so the closed-object
+/// rule below can hold. `#[serde(flatten)]` renders as `allOf` over the
+/// flattened type and the remaining fields; closing each branch on its
+/// own would reject the other branch's keys.
+fn merge_flattened_objects(schema: &mut Value, definitions: &serde_json::Map<String, Value>) {
+    match schema {
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                merge_flattened_objects(value, definitions);
+            }
+            let Some(Value::Array(branches)) = object.get("allOf") else {
+                return;
+            };
+            let mut properties = serde_json::Map::new();
+            let mut required = Vec::new();
+            for branch in branches {
+                let resolved = resolve_definition(branch, definitions);
+                let Some(branch) = resolved.as_object() else {
+                    return;
+                };
+                if !branch.contains_key("properties") {
+                    return;
+                }
+                if let Some(Value::Object(fields)) = branch.get("properties") {
+                    properties.extend(fields.clone());
+                }
+                if let Some(Value::Array(names)) = branch.get("required") {
+                    required.extend(names.iter().cloned());
+                }
+            }
+            object.remove("allOf");
+            object.insert("type".to_owned(), Value::String("object".to_owned()));
+            object.insert("properties".to_owned(), Value::Object(properties));
+            if !required.is_empty() {
+                object.insert("required".to_owned(), Value::Array(required));
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                merge_flattened_objects(item, definitions);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_definition<'a>(
+    schema: &'a Value,
+    definitions: &'a serde_json::Map<String, Value>,
+) -> &'a Value {
+    schema
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix("#/$defs/"))
+        .and_then(|name| definitions.get(name))
+        .unwrap_or(schema)
 }
 
 pub(super) fn serialize_result<T: Serialize>(result: T) -> Result<Value, ToolError> {

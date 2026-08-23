@@ -192,6 +192,79 @@ async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
 }
 
 #[tokio::test]
+async fn effect_and_scene_listings_match_their_rest_summaries() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+
+    let created =
+        execute_tool_with_state("create_scene", &json!({ "name": "Parity" }), state.as_ref())
+            .await
+            .expect("scene creation should succeed");
+    assert!(created["scene_id"].is_string());
+
+    let (client, base_url) = spawn_router(api::build_router(Arc::clone(&state), None)).await;
+
+    let rest_effects: Value = client
+        .get(format!(
+            "{base_url}/api/v1/effects?include=controls,presets&limit=200"
+        ))
+        .send()
+        .await
+        .expect("REST effects should complete")
+        .json()
+        .await
+        .expect("REST effects should return JSON");
+    let tool_effects =
+        execute_tool_with_state("list_effects", &json!({ "limit": 100 }), state.as_ref())
+            .await
+            .expect("list_effects should succeed");
+    assert_eq!(tool_effects["effects"], rest_effects["data"]["items"]);
+
+    let resource_effects = read_resource_with_state("hypercolor://effects", &state)
+        .await
+        .expect("effects resource should exist");
+    let rest_catalog: Value = client
+        .get(format!("{base_url}/api/v1/effects?limit=200"))
+        .send()
+        .await
+        .expect("REST catalog should complete")
+        .json()
+        .await
+        .expect("REST catalog should return JSON");
+    assert_eq!(resource_effects["effects"], rest_catalog["data"]["items"]);
+
+    let rest_scenes: Value = client
+        .get(format!("{base_url}/api/v1/scenes"))
+        .send()
+        .await
+        .expect("REST scenes should complete")
+        .json()
+        .await
+        .expect("REST scenes should return JSON");
+    let tool_scenes = execute_tool_with_state("list_scenes", &json!({}), state.as_ref())
+        .await
+        .expect("list_scenes should succeed");
+    let resource_scenes = read_resource_with_state("hypercolor://scenes", &state)
+        .await
+        .expect("scenes resource should exist");
+    assert_eq!(tool_scenes["scenes"], resource_scenes["scenes"]);
+    for (tool_row, rest_row) in tool_scenes["scenes"]
+        .as_array()
+        .expect("tool scenes")
+        .iter()
+        .zip(
+            rest_scenes["data"]["items"]
+                .as_array()
+                .expect("rest scenes"),
+        )
+    {
+        let mut expected = rest_row.clone();
+        expected["active"] = tool_row["active"].clone();
+        assert_eq!(tool_row, &expected);
+    }
+}
+
+#[tokio::test]
 async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
     let (state, _tempdir) = isolated_state_with_tempdir();
 

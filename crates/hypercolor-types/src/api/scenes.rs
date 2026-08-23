@@ -37,6 +37,12 @@ pub struct SceneSummary {
     #[serde(default)]
     #[cfg_attr(feature = "schema", schema(value_type = String))]
     pub mutation_mode: SceneMutationMode,
+    /// Named layout the scene applies on activation, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_id: Option<LayoutId>,
+    /// Brightness applied on activation, when the scene sets one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_brightness: Option<f32>,
 }
 
 /// Response for `DELETE /api/v1/scenes/{id}`.

@@ -6,6 +6,8 @@
 use serde_json::{Value, json};
 
 use crate::app_state::AppState;
+use crate::mcp::results::SceneListItem;
+use crate::resource_summary::{EffectListIncludes, effect_summary, scene_summary};
 
 /// Definition of a single MCP resource.
 #[derive(Debug, Clone)]
@@ -107,16 +109,8 @@ async fn read_effects_with_state(state: &AppState) -> Value {
         .effects
         .all_metadata()
         .await
-        .into_iter()
-        .map(|metadata| {
-            json!({
-                "id": metadata.id.to_string(),
-                "name": metadata.name,
-                "description": metadata.description,
-                "category": format!("{}", metadata.category),
-                "tags": metadata.tags
-            })
-        })
+        .iter()
+        .map(|metadata| effect_summary(metadata, EffectListIncludes::default()))
         .collect::<Vec<_>>();
 
     json!({
@@ -132,17 +126,9 @@ async fn read_scenes_with_state(state: &AppState) -> Value {
         .list()
         .into_iter()
         .filter(|scene| scene.kind != hypercolor_types::scene::SceneKind::Ephemeral)
-        .map(|scene| {
-            json!({
-                "id": scene.id.to_string(),
-                "name": scene.name,
-                "description": scene.description,
-                "enabled": scene.enabled,
-                "mutation_mode": scene.mutation_mode,
-                "layout_id": scene.layout_id,
-                "activation_brightness": scene.activation_brightness,
-                "active": Some(scene.id) == active_scene_id
-            })
+        .map(|scene| SceneListItem {
+            summary: scene_summary(scene),
+            active: Some(scene.id) == active_scene_id,
         })
         .collect::<Vec<_>>();
 
@@ -154,8 +140,7 @@ async fn read_scenes_with_state(state: &AppState) -> Value {
 
 fn read_audio_with_state(state: &AppState) -> Value {
     let spectrum = state.event_bus.spectrum_receiver().borrow().clone();
-    let (enabled, device, sample_rate) = if let Some(config_manager) = state.config_manager.as_ref()
-    {
+    let (enabled, device, fft_size) = if let Some(config_manager) = state.config_manager.as_ref() {
         let config = config_manager.get();
         (
             config.audio.enabled,
@@ -169,7 +154,7 @@ fn read_audio_with_state(state: &AppState) -> Value {
     json!({
         "enabled": enabled,
         "source": device,
-        "sample_rate": sample_rate,
+        "fft_size": fft_size,
         "levels": {
             "overall": spectrum.level,
             "bass": spectrum.bass,

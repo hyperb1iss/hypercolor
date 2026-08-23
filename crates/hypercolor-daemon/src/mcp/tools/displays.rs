@@ -141,7 +141,9 @@ pub(super) async fn handle_set_display_face_with_state(
         live_scope: Some(hypercolor_types::api::displays::DisplayFaceScope::Scene),
         cleared: false,
         scene_id: Some(written.scene_id.to_string()),
-        effect: Some(crate::api::effects::effect_summary_with_details(&effect)),
+        effect: Some(crate::resource_summary::effect_summary_with_details(
+            &effect,
+        )),
         zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),
     })
 }
@@ -225,7 +227,7 @@ async fn handle_default_scope(
         live_scope: live_scope_payload(state, device_id).await,
         cleared: false,
         scene_id: None,
-        effect: Some(crate::api::effects::effect_summary_with_details(
+        effect: Some(crate::resource_summary::effect_summary_with_details(
             &written.effect,
         )),
         zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),

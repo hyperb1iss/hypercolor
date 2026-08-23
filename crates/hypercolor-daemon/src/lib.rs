@@ -37,6 +37,7 @@ pub mod preview_runtime;
 pub mod process;
 pub(crate) mod profile_import;
 pub mod render_thread;
+pub(crate) mod resource_summary;
 pub mod runtime_state;
 pub mod scene_store;
 pub(crate) mod scene_transactions;

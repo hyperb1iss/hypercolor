@@ -1,10 +1,9 @@
 use hypercolor_types::api::effects::EffectSummary;
 use hypercolor_types::api::scene::ZoneResource;
-use hypercolor_types::api::scenes::ActivatedSceneRef;
+use hypercolor_types::api::scenes::{ActivatedSceneRef, SceneSummary};
 use hypercolor_types::api::system::InputSourceStatus;
-use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceOrigin, DeviceState, DriverPresentation};
-use hypercolor_types::effect::{ControlKind, EffectCategory};
+
 use hypercolor_types::scene::SceneMutationMode;
 use hypercolor_types::sensor::{SensorReading, SystemSnapshot};
 use serde::Serialize;
@@ -21,28 +20,12 @@ pub(crate) struct EffectCatalogResult {
     pub(crate) offset: u64,
 }
 
+/// One catalog row, rendered exactly as `GET /api/v1/effects` renders it
+/// with controls and presets expanded.
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct EffectCatalogItem {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) description: String,
-    pub(crate) category: EffectCategory,
-    pub(crate) audio_reactive: bool,
-    pub(crate) tags: Vec<String>,
-    pub(crate) controls: Vec<EffectControlItem>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct EffectControlItem {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) kind: ControlKind,
-    pub(crate) default: ControlValue,
-    pub(crate) min: Option<f32>,
-    pub(crate) max: Option<f32>,
-    pub(crate) step: Option<f32>,
-    pub(crate) options: Vec<String>,
-    pub(crate) tooltip: Option<String>,
+    #[serde(flatten)]
+    pub(crate) summary: EffectSummary,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -175,14 +158,11 @@ pub(crate) struct SceneListResult {
     pub(crate) total: usize,
 }
 
+/// One scene row, the REST summary plus whether it is the active scene.
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct SceneListItem {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) description: Option<String>,
-    pub(crate) enabled: bool,
-    #[schema(value_type = String, pattern = "^(live|snapshot)$")]
-    pub(crate) mutation_mode: SceneMutationMode,
+    #[serde(flatten)]
+    pub(crate) summary: SceneSummary,
     pub(crate) active: bool,
 }
 

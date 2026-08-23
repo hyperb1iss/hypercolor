@@ -20,7 +20,8 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::EffectCategory;
 use strum::VariantNames;
 
-use crate::mcp::results::{EffectCatalogItem, EffectCatalogResult, EffectControlItem};
+use crate::mcp::results::{EffectCatalogItem, EffectCatalogResult};
+use crate::resource_summary::effect_summary_with_details;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -234,27 +235,7 @@ pub(super) async fn handle_list_effects_with_state(
     let effects = filtered[start..end]
         .iter()
         .map(|metadata| EffectCatalogItem {
-            id: metadata.id.to_string(),
-            name: metadata.name.clone(),
-            description: metadata.description.clone(),
-            category: metadata.category,
-            audio_reactive: metadata.audio_reactive,
-            tags: metadata.tags.clone(),
-            controls: metadata
-                .controls
-                .iter()
-                .map(|control| EffectControlItem {
-                    id: control.control_id().to_owned(),
-                    name: control.name.clone(),
-                    kind: control.kind.clone(),
-                    default: control.default_value.clone(),
-                    min: control.min,
-                    max: control.max,
-                    step: control.step,
-                    options: control.labels.clone(),
-                    tooltip: control.tooltip.clone(),
-                })
-                .collect(),
+            summary: effect_summary_with_details(metadata),
         })
         .collect::<Vec<_>>();
 
