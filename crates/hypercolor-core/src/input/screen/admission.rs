@@ -6,10 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arc_swap::ArcSwap;
 use thiserror::Error;
 
-use super::{
-    ScreenAdmissionCapacity, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
-    ScreenAnalysisWorkPlan, ScreenCaptureDemand,
-};
+use super::{ScreenAdmissionCapacity, ScreenCaptureDemand};
 
 /// Immutable manager-owned screen capacity policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,9 +15,6 @@ pub struct ScreenCapacityPolicySnapshot {
     total_capacity: ScreenAdmissionCapacity,
     publication_capacity: ScreenAdmissionCapacity,
     capture_demand: ScreenCaptureDemand,
-    analysis_resource_plan: Option<ScreenAnalysisResourcePlan>,
-    analysis_work_plan: Option<ScreenAnalysisWorkPlan>,
-    analysis_compute_capacity: Option<ScreenAnalysisComputeCapacity>,
 }
 
 impl ScreenCapacityPolicySnapshot {
@@ -29,18 +23,12 @@ impl ScreenCapacityPolicySnapshot {
         total_capacity: ScreenAdmissionCapacity,
         publication_capacity: ScreenAdmissionCapacity,
         capture_demand: ScreenCaptureDemand,
-        analysis_resource_plan: Option<ScreenAnalysisResourcePlan>,
-        analysis_work_plan: Option<ScreenAnalysisWorkPlan>,
-        analysis_compute_capacity: Option<ScreenAnalysisComputeCapacity>,
     ) -> Self {
         Self {
             capacity_enforced,
             total_capacity,
             publication_capacity,
             capture_demand,
-            analysis_resource_plan,
-            analysis_work_plan,
-            analysis_compute_capacity,
         }
     }
 
@@ -50,7 +38,7 @@ impl ScreenCapacityPolicySnapshot {
         self.capacity_enforced
     }
 
-    /// Configured steady-state capacity shared by analysis and publication.
+    /// Configured steady-state capacity available to publication.
     #[must_use]
     pub const fn total_capacity(self) -> ScreenAdmissionCapacity {
         self.total_capacity
@@ -62,28 +50,10 @@ impl ScreenCapacityPolicySnapshot {
         self.publication_capacity
     }
 
-    /// Authoritative screen-capture demand used by the analysis plans.
+    /// Authoritative screen-capture demand the manager last applied.
     #[must_use]
     pub const fn capture_demand(self) -> ScreenCaptureDemand {
         self.capture_demand
-    }
-
-    /// Exact retained and peak analysis resources for current demand.
-    #[must_use]
-    pub const fn analysis_resource_plan(self) -> Option<ScreenAnalysisResourcePlan> {
-        self.analysis_resource_plan
-    }
-
-    /// Exact compatibility-analysis work for current demand.
-    #[must_use]
-    pub const fn analysis_work_plan(self) -> Option<ScreenAnalysisWorkPlan> {
-        self.analysis_work_plan
-    }
-
-    /// Calibrated analysis compute capacity, when configured.
-    #[must_use]
-    pub const fn analysis_compute_capacity(self) -> Option<ScreenAnalysisComputeCapacity> {
-        self.analysis_compute_capacity
     }
 }
 
@@ -95,7 +65,7 @@ pub struct ScreenCapacityStatusSnapshot {
 }
 
 impl ScreenCapacityStatusSnapshot {
-    /// Manager-owned capacity policy and analysis plans.
+    /// Manager-owned capacity policy.
     #[must_use]
     pub fn policy(&self) -> ScreenCapacityPolicySnapshot {
         *self.policy

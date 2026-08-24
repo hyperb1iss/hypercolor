@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Args;
-
 use hypercolor_types::api::system::{SystemResource, SystemStatus};
 
 use crate::client::{DaemonClient, DaemonEventSubscription};

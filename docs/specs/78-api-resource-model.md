@@ -291,6 +291,8 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ## 10. Review history
 
+- **Rev 10 (2026-08-22, execution amendment):** preserve `POST /media/authorize`, the protected media Automation authorization action added by Design 72 E3 beside the Spec 76/77 input and capture actions. Appendix A and the generated target manifest converge at 83 paths / 118 operations.
+
 - **Rev 9 (2026-08-19, execution amendment):** preserve `POST /input/authorize` and `POST /capture/authorize`, the protected authorization actions required by Specs 76 and 77. Appendix A and its generated target manifest therefore converge at 82 paths / 117 operations. No Spec 78 resource route is restored.
 
 - **Rev 8 (2026-08-17, 78.1 execution reconciliation):** two wording fixes surfaced by wave 78.1's reviews. §1.2's membership id is unique within its zone (the zone-scoped route needs no more; `Output.id` is layout-scoped, so the rev-7 "globally unique" claim was unfulfillable). §5.5 gains the shared-vocabulary carve-out: pre-spec enums keep their canonical serde form on the new surface. Contract intent unchanged in both.
@@ -306,7 +308,7 @@ Waves are atomic PRs from lane worktrees, every in-repo consumer updated in-PR (
 
 ---
 
-## Appendix A: Normative route inventory (82 paths, 117 operations)
+## Appendix A: Normative route inventory (83 paths, 118 operations)
 
 Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, which the convergence test matches by path without asserting a JSON shape) and `/health`. Document routes are deliberately outside the inventory and the convergence test: `/` (SPA), `/api/v1/docs`, `/api/v1/openapi.json`, and the `/mcp` mount are served pages and protocol endpoints, not API resources (`/preview` was on this list until wave 3.2c deleted the page). Config rows landed via Spec 76 wave 4.3; logical-devices rows are intentionally absent pending the §8 downstream check (re-add via spec amendment if the check fails). `⚡` marks routes whose handler is new or substantially rewritten by this spec.
 
@@ -318,6 +320,7 @@ Scope: the `/api/v1` surface (JSON routes plus the one `/ws` upgrade endpoint, w
 | `/api/v1/system/audio-devices` | GET | ⚡ from `/audio/devices` |
 | `/api/v1/input/authorize` | POST | protected Input Monitoring authorization |
 | `/api/v1/capture/authorize` | POST | protected screen-capture authorization |
+| `/api/v1/media/authorize` | POST | protected media Automation authorization (Design 72 E3) |
 | `/api/v1/output` | GET, PATCH | ⚡ power + brightness |
 | `/api/v1/config` | GET | 4.3 |
 | `/api/v1/config/schema` | GET | 4.3 |

@@ -1,6 +1,7 @@
 //! Non-blocking latest-value reads for source health and sample freshness.
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use hypercolor_types::source_status::SourceDiagnosticsEnvelope;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -27,6 +28,8 @@ pub enum SourceKind {
     Media,
     /// Network-delivered input.
     Network,
+    /// System sensor telemetry.
+    Sensors,
 }
 
 /// Current lifecycle health of an input source.
@@ -99,336 +102,6 @@ impl SourceIssue {
         self.remediation = Some(remediation.into());
         self
     }
-}
-
-/// Precise lifecycle state for one protected macOS capability.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MacosProtectedSourceState {
-    /// Configuration disables the capability.
-    Disabled,
-    /// The next transition requires an explicit local authorization action.
-    NeedsUserAction,
-    /// The user denied the requested authorization.
-    PermissionDenied,
-    /// Authorization is present but the owning process must restart.
-    NeedsProcessRestart,
-    /// Screen capture requires a source choice from Apple's system picker.
-    NeedsSelection,
-    /// The capability is authorized and selected but has no active demand.
-    ReadyIdle,
-    /// Native resources are being established.
-    Starting,
-    /// The capability is active and producing data.
-    Live,
-    /// Native delivery stopped transiently and recovery is pending.
-    Interrupted,
-    /// A previously usable authorization was revoked.
-    Revoked,
-    /// The current configuration failed terminally.
-    Failed,
-}
-
-/// TCC authorization evidence for one macOS protected resource.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MacosAuthorizationState {
-    /// The adapter has not queried authorization yet.
-    Unknown,
-    /// No positive grant or explicit denial has been observed.
-    NotDetermined,
-    /// The user explicitly denied the request.
-    Denied,
-    /// The current capability owner has positive grant evidence.
-    Authorized,
-}
-
-/// Process topology that owns a protected macOS capability.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MacosCapabilityOwner {
-    /// Daemon process embedded as an app sidecar.
-    AppSidecar,
-    /// Main application process.
-    App,
-    /// Direct user launchd service.
-    LaunchdService,
-    /// Homebrew-managed user service.
-    HomebrewService,
-    /// Authenticated app broker.
-    Broker,
-    /// Terminal-launched daemon.
-    Standalone,
-}
-
-/// Bounded record of two macOS daemon topologies contending for ownership.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MacosDaemonOwnerConflict {
-    /// Topology currently holding the process guard.
-    pub active: MacosCapabilityOwner,
-    /// Topology that attempted to start.
-    pub contender: MacosCapabilityOwner,
-    /// Unix timestamp of the observed conflict.
-    pub observed_at_ms: u64,
-}
-
-/// Native architecture of the active macOS host.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MacosArchitecture {
-    /// Apple Silicon host.
-    AppleSilicon,
-    /// Intel host.
-    Intel,
-}
-
-/// Runtime Tahoe feature probes stable for one process and Metal device.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MacosTahoeCapabilities {
-    /// Native host architecture, independent of the running executable slice.
-    pub host_architecture: MacosArchitecture,
-    /// Whether this process runs under Rosetta translation.
-    pub translated_process: bool,
-    /// Whether the Tahoe Core Graphics tone-mapping API is callable.
-    pub content_tone_mapping_info: bool,
-    /// Whether the active Metal device exposes every required Metal 4 facility.
-    pub metal4: bool,
-}
-
-/// Tahoe capabilities resolved for one selected capture incarnation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MacosTahoeSelectionCapabilities {
-    /// Stable selected source identity.
-    pub source_id: Arc<str>,
-    /// Capture session generation that proved these capabilities.
-    pub capture_session_generation: u64,
-    /// Whether the selected stream delivered canonical HDR.
-    pub hdr_capture: bool,
-    /// Whether paired SDR and HDR diagnostic screenshots are available.
-    pub dual_range_screenshots: bool,
-}
-
-/// Persistability and content style of the current macOS screen selection.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MacosSelectionState {
-    /// No source is currently selected.
-    None,
-    /// A stable display source is selected.
-    Display {
-        /// Canonical display UUID source identity.
-        source_id: Arc<str>,
-    },
-    /// A window, application, or multi-window choice valid for this process.
-    SessionScoped {
-        /// Redacted content style suitable for diagnostics.
-        content_style: Arc<str>,
-    },
-}
-
-/// Platform detail for the macOS host-input adapter.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MacosInputPlatformStatus {
-    /// Keyboard capture lifecycle.
-    pub keyboard: MacosProtectedSourceState,
-    /// Pointer capture lifecycle.
-    pub pointer: MacosProtectedSourceState,
-    /// Input Monitoring authorization evidence.
-    pub keyboard_tcc: MacosAuthorizationState,
-    /// Whether another process holds the secure-input assertion (Secure
-    /// Keyboard Entry). While true, keyboard events are withheld from the
-    /// event tap and held-key state has been cleared through a gap.
-    pub secure_input_active: bool,
-    /// Process topology owning keyboard capture.
-    pub keyboard_owner: MacosCapabilityOwner,
-    /// Process topology owning pointer capture.
-    pub pointer_owner: MacosCapabilityOwner,
-    /// Latest daemon-owner conflict, when one exists.
-    pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
-    /// Age anchor for the latest observed Input Monitoring transition.
-    pub authorization_last_transition_at: Option<Instant>,
-    /// Designated-requirement hash when the owning process exposes one.
-    pub owner_designated_requirement_hash: Option<Arc<str>>,
-    /// Native host architecture when the process-stable probe succeeded.
-    pub host_architecture: Option<MacosArchitecture>,
-    /// Architecture of the running executable slice.
-    pub executable_architecture: MacosArchitecture,
-    /// Whether the process runs under Rosetta when the probe succeeded.
-    pub translated_process: Option<bool>,
-    /// Native capture epoch, absent before a session starts.
-    pub capture_session_generation: Option<u64>,
-    /// Display topology generation observed by pointer capture.
-    pub topology_generation: Option<u64>,
-    /// Fixed native event-queue capacity for the active session.
-    pub queue_capacity: Option<usize>,
-    /// Current number of native events awaiting delivery.
-    pub queue_depth: Option<usize>,
-    /// Native input events offered to the bounded queue.
-    pub input_events_received: Option<u64>,
-    /// Native input events and ordered gaps delivered to core.
-    pub input_events_published: Option<u64>,
-    /// Native input events rejected by queue pressure.
-    pub input_events_dropped: Option<u64>,
-    /// Event-tap disables caused by callback timeout.
-    pub tap_disabled_timeout: Option<u64>,
-    /// Event-tap disables caused by user input.
-    pub tap_disabled_user_input: Option<u64>,
-    /// Successful event-tap reenable attempts.
-    pub tap_reenabled: Option<u64>,
-    /// Ordered state gaps observed across native and core folding.
-    pub state_gaps: Option<u64>,
-    /// Event-tap callback entry through canonical core publication.
-    pub callback_to_publication_timing: Option<MacosTimingStatus>,
-}
-
-/// Bounded latency distribution retained without raw samples.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct MacosTimingStatus {
-    /// Number of observations in the distribution.
-    pub sample_count: u64,
-    /// Saturating sum of all observations.
-    pub total_ns: u64,
-    /// Exact maximum observation.
-    pub max_ns: u64,
-    /// Bounded 95th-percentile upper estimate.
-    pub p95_ns: u64,
-    /// Bounded 99th-percentile upper estimate.
-    pub p99_ns: u64,
-}
-
-/// Screen-capture stage and end-to-end latency distributions.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct MacosScreenTimingStatus {
-    /// Native callback execution.
-    pub callback: MacosTimingStatus,
-    /// Native surface validation and retain work.
-    pub retain: MacosTimingStatus,
-    /// Latest-value worker enqueue work.
-    pub enqueue: MacosTimingStatus,
-    /// Retained native-sample decode and validation work.
-    pub conversion: MacosTimingStatus,
-    /// Core CPU reduction work.
-    pub cpu_reduction: MacosTimingStatus,
-    /// Renderer IOSurface import work.
-    pub native_import: MacosTimingStatus,
-    /// Native reduction encode and queue-submission work.
-    pub native_reduction_submit: MacosTimingStatus,
-    /// Decoded native-frame publication work.
-    pub publication: MacosTimingStatus,
-    /// Capture timestamp through exact native publication.
-    pub capture_to_native_publication: MacosTimingStatus,
-    /// Capture timestamp through CPU-converted publication.
-    pub capture_to_converted_publication: MacosTimingStatus,
-}
-
-/// Platform detail for the macOS screen-capture adapter.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MacosScreenPlatformStatus {
-    /// Screen capture lifecycle.
-    pub state: MacosProtectedSourceState,
-    /// Screen Recording authorization evidence.
-    pub tcc: MacosAuthorizationState,
-    /// Process topology owning ScreenCaptureKit.
-    pub owner: MacosCapabilityOwner,
-    /// Current system-picker selection.
-    pub selection: MacosSelectionState,
-    /// Privacy-safe bounded label for the selected content style.
-    pub selection_diagnostic_label: Option<Arc<str>>,
-    /// Monotonic native selection lifecycle revision.
-    pub selection_revision: u64,
-    /// Process-stable Tahoe host and active Metal-device capabilities.
-    pub tahoe: MacosTahoeCapabilities,
-    /// Tahoe capabilities for the active selected stream.
-    pub tahoe_selection: Option<MacosTahoeSelectionCapabilities>,
-    /// Latest daemon-owner conflict, when one exists.
-    pub owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
-    /// Age anchor for the latest observed Screen Recording transition.
-    pub authorization_last_transition_at: Option<Instant>,
-    /// Designated-requirement hash when the owning process exposes one.
-    pub owner_designated_requirement_hash: Option<Arc<str>>,
-    /// Architecture of the running executable slice.
-    pub executable_architecture: MacosArchitecture,
-    /// Bounded native stream state.
-    pub stream_state: Arc<str>,
-    /// ScreenCaptureKit stream generation from the latest accepted frame.
-    pub capture_session_generation: Option<u64>,
-    /// Geometry generation from the latest accepted frame.
-    pub topology_generation: Option<u64>,
-    /// Native resource generation from the latest accepted frame.
-    pub resource_generation: Option<u64>,
-    /// Publication plan generation used by the latest exact path.
-    pub publication_plan_generation: Option<u64>,
-    /// Bounded native pixel-format name.
-    pub pixel_format: Option<Arc<str>>,
-    /// Bounded dynamic-range name.
-    pub dynamic_range: Option<Arc<str>>,
-    /// Bounded color-space name.
-    pub color_space: Option<Arc<str>>,
-    /// Bounded transfer-function name.
-    pub transfer_function: Option<Arc<str>>,
-    /// Exact display scale encoded as `f64::to_bits`.
-    pub display_scale_bits: Option<u64>,
-    /// Exact native surface width.
-    pub native_width: Option<u32>,
-    /// Exact native surface height.
-    pub native_height: Option<u32>,
-    /// Configured ScreenCaptureKit queue depth.
-    pub queue_depth: usize,
-    /// Bytes currently admitted by the shared screen resource fence.
-    pub admitted_native_bytes: u64,
-    /// Retained old resource generations, when the backend can distinguish them.
-    pub pinned_generations: Option<usize>,
-    /// Native callback frames received.
-    pub frames_received: u64,
-    /// Native callback frames published after validation.
-    pub frames_published: u64,
-    /// Latest-value deliveries superseded before consumption.
-    pub frames_superseded: u64,
-    /// Native frames rejected for malformed attachment data.
-    pub frames_malformed: u64,
-    /// Malformed or rejected native frames grouped by bounded reason.
-    pub frames_dropped: Arc<[(Arc<str>, u64)]>,
-    /// Frames rejected after their freshness deadline.
-    pub frames_stale: u64,
-    /// Active bounded publication path after a route has resolved.
-    pub publication_path: Option<Arc<str>>,
-    /// Exact bounded reason for falling back from native publication.
-    pub fallback_reason: Option<Arc<str>>,
-    /// Stage and end-to-end timing distributions for the active session.
-    pub timing: MacosScreenTimingStatus,
-    /// Total callback execution time measured by the native boundary.
-    pub callback_total_ns: u64,
-    /// Maximum callback execution time measured by the native boundary.
-    pub callback_max_ns: u64,
-    /// Total native surface validation and retain time.
-    pub retain_total_ns: u64,
-    /// Maximum native surface validation and retain time.
-    pub retain_max_ns: u64,
-    /// Total retained native-frame decode and validation time.
-    pub conversion_total_ns: u64,
-    /// Maximum retained native-frame decode and validation time.
-    pub conversion_max_ns: u64,
-    /// Total CPU reduction time measured by core.
-    pub cpu_reduction_total_ns: u64,
-    /// Maximum CPU reduction time measured by core.
-    pub cpu_reduction_max_ns: u64,
-    /// Total native IOSurface import time measured by the renderer.
-    pub native_import_total_ns: u64,
-    /// Maximum native IOSurface import time measured by the renderer.
-    pub native_import_max_ns: u64,
-    /// Total native reduction encode and queue-submission time.
-    pub native_reduction_submit_total_ns: u64,
-    /// Maximum native reduction encode and queue-submission time.
-    pub native_reduction_submit_max_ns: u64,
-    /// Total decoded-frame publication time measured by the native boundary.
-    pub publication_total_ns: u64,
-    /// Maximum decoded-frame publication time measured by the native boundary.
-    pub publication_max_ns: u64,
-}
-
-/// Platform-specific detail attached to a generic input-source status.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum SourcePlatformStatus {
-    /// macOS host-input state.
-    MacosInput(MacosInputPlatformStatus),
-    /// macOS screen-capture state.
-    MacosScreen(MacosScreenPlatformStatus),
 }
 
 /// Screen-capture reduction implementation reported by source diagnostics.
@@ -647,8 +320,10 @@ pub struct SourceStatus {
     pub issue: Option<SourceIssue>,
     /// Structured freshness problem details.
     pub freshness_issue: Option<SourceIssue>,
-    /// Platform-specific state clients must not infer from generic health.
-    pub platform: Option<Arc<SourcePlatformStatus>>,
+    /// Neutral user action required before the source can become fully usable.
+    pub action_issue: Option<SourceIssue>,
+    /// Versioned backend diagnostics with bounded neutral display fields.
+    pub diagnostics: Option<Arc<SourceDiagnosticsEnvelope>>,
     /// Whether the source was permanently removed from its owning graph.
     pub retired: bool,
 }
@@ -680,29 +355,14 @@ impl SourceStatus {
             denied_resource_count: 0,
             issue: None,
             freshness_issue: None,
-            platform: None,
+            action_issue: None,
+            diagnostics: None,
             retired: false,
         }
     }
 
     fn eligible(&self) -> bool {
         self.configured && self.consented && self.demanded
-    }
-}
-
-pub(crate) struct SourceStatusPolicy {
-    configured: bool,
-    consented: bool,
-    demanded: bool,
-}
-
-impl SourceStatusPolicy {
-    pub(crate) const fn new(configured: bool, consented: bool, demanded: bool) -> Self {
-        Self {
-            configured,
-            consented,
-            demanded,
-        }
     }
 }
 
@@ -1166,21 +826,27 @@ impl SourceStatusWriter {
         consented: bool,
         demanded: bool,
     ) -> (Self, SourceStatusHandle) {
-        let initial = Arc::new(SourceStatus::stopped(
+        let initial = SourceStatus::stopped(
             source_id.into(),
             kind,
             backend.into(),
             configured,
             consented,
             demanded,
-        ));
+        );
+        Self::from_initial(initial)
+    }
+
+    fn from_initial(initial: SourceStatus) -> (Self, SourceStatusHandle) {
+        let next_session = initial.session_generation;
+        let initial = Arc::new(initial);
         let (structural, _) = watch::channel(Arc::clone(&initial));
         let (sample_signals, _) = watch::channel(0);
         let shared = Arc::new(SourceStatusShared {
             latest: ArcSwap::from(initial),
             control: Mutex::new(SourceStatusControl {
                 active_session: None,
-                next_session: 0,
+                next_session,
                 sample_signal_generation: 0,
             }),
             structural,
@@ -1274,26 +940,45 @@ impl SourceStatusWriter {
         Ok(())
     }
 
-    /// Publish platform-specific state without disturbing generic lifecycle.
+    /// Publish backend diagnostics without disturbing generic lifecycle.
     ///
     /// # Errors
     ///
     /// Returns [`SourceStatusError::Retired`] after source removal.
-    pub fn set_platform(
+    pub fn set_diagnostics(
         &self,
-        platform: Option<SourcePlatformStatus>,
+        diagnostics: Option<SourceDiagnosticsEnvelope>,
     ) -> Result<(), SourceStatusError> {
-        let platform = platform.map(Arc::new);
+        let diagnostics = diagnostics.map(Arc::new);
         let _control = lock_control(&self.shared);
         let current = self.shared.latest.load_full();
         if current.retired {
             return Err(SourceStatusError::Retired);
         }
-        if current.platform == platform {
+        if current.diagnostics == diagnostics {
             return Ok(());
         }
         let mut status = (*current).clone();
-        status.platform = platform;
+        status.diagnostics = diagnostics;
+        publish_structural(&self.shared, status);
+        Ok(())
+    }
+
+    /// Publish a neutral user-action issue without disturbing lifecycle state.
+    pub fn set_action_issue(
+        &self,
+        action_issue: Option<SourceIssue>,
+    ) -> Result<(), SourceStatusError> {
+        let _control = lock_control(&self.shared);
+        let current = self.shared.latest.load_full();
+        if current.retired {
+            return Err(SourceStatusError::Retired);
+        }
+        if current.action_issue == action_issue {
+            return Ok(());
+        }
+        let mut status = (*current).clone();
+        status.action_issue = action_issue;
         publish_structural(&self.shared, status);
         Ok(())
     }
@@ -1363,6 +1048,7 @@ impl SourceStatusWriter {
         control.active_session = None;
         let mut status = (*current).clone();
         clear_stopped_state(&mut status);
+        status.action_issue = None;
         publish_structural(&self.shared, status);
         self.shared.samples.tombstone();
         self.shared.diagnostics.store(None);
@@ -1387,6 +1073,7 @@ impl SourceStatusWriter {
         control.active_session = None;
         let mut status = (*current).clone();
         clear_stopped_state(&mut status);
+        status.action_issue = None;
         status.active_consumer_count = 0;
         status.source_graph_generation = removal_graph_generation;
         status.retired = true;
@@ -1464,6 +1151,33 @@ impl SourceStatusReporter {
         }
     }
 
+    pub(crate) fn new_successor(
+        predecessor: &SourceStatusHandle,
+        backend: impl Into<Arc<str>>,
+        configured: bool,
+        consented: bool,
+        demanded: bool,
+    ) -> Self {
+        let predecessor = predecessor.snapshot();
+        let mut initial = SourceStatus::stopped(
+            Arc::clone(&predecessor.source_id),
+            predecessor.kind,
+            backend.into(),
+            configured,
+            consented,
+            demanded,
+        );
+        initial.source_graph_generation = predecessor.source_graph_generation;
+        initial.session_generation = predecessor.session_generation;
+        let (writer, handle) = SourceStatusWriter::from_initial(initial);
+        Self {
+            writer,
+            handle,
+            source_graph_generation: predecessor.source_graph_generation,
+            session: None,
+        }
+    }
+
     /// Clone the source's lock-free read handle.
     #[must_use]
     pub fn handle(&self) -> SourceStatusHandle {
@@ -1477,71 +1191,6 @@ impl SourceStatusReporter {
             "source graph generation must never regress"
         );
         self.source_graph_generation = source_graph_generation;
-    }
-
-    pub(crate) fn reconfigure(
-        &mut self,
-        backend: impl Into<Arc<str>>,
-        policy: SourceStatusPolicy,
-        start_session: bool,
-    ) -> Result<Option<SourceSessionWriter>, SourceStatusError> {
-        let backend = backend.into();
-        let mut control = lock_control(&self.writer.shared);
-        let current = self.handle.snapshot();
-        if current.retired {
-            return Err(SourceStatusError::Retired);
-        }
-        let eligible = policy.configured && policy.consented && policy.demanded;
-        if start_session && !eligible {
-            return Err(SourceStatusError::Ineligible {
-                configured: policy.configured,
-                consented: policy.consented,
-                demanded: policy.demanded,
-            });
-        }
-        if start_session && self.source_graph_generation != 0 {
-            require_newer_graph(
-                self.source_graph_generation,
-                current.source_graph_generation,
-            )?;
-        }
-
-        let mut status = (*current).clone();
-        status.backend = backend;
-        status.configured = policy.configured;
-        status.consented = policy.consented;
-        status.demanded = policy.demanded;
-        let session = if start_session && self.source_graph_generation != 0 {
-            control.next_session = control
-                .next_session
-                .checked_add(1)
-                .expect("source session generation exhausted");
-            let session_generation = control.next_session;
-            control.active_session = Some(session_generation);
-            status.state = SourceState::Starting;
-            status.freshness = SourceFreshness::AwaitingSample;
-            status.source_graph_generation = self.source_graph_generation;
-            status.session_generation = session_generation;
-            status.last_sample_at = None;
-            status.freshness_deadline = None;
-            status.resource_count = 0;
-            status.denied_resource_count = 0;
-            status.issue = None;
-            status.freshness_issue = None;
-            Some(SourceSessionWriter {
-                shared: Arc::clone(&self.writer.shared),
-                session_generation,
-            })
-        } else {
-            control.active_session = None;
-            clear_stopped_state(&mut status);
-            None
-        };
-        self.writer.shared.diagnostics.store(None);
-        publish_structural(&self.writer.shared, status);
-        self.writer.shared.samples.tombstone();
-        self.session.clone_from(&session);
-        Ok(session)
     }
 
     /// Begin a generation-fenced session when the source belongs to a manager.
@@ -1590,12 +1239,20 @@ impl SourceStatusReporter {
         self.writer.set_active_consumer_count(active_consumer_count)
     }
 
-    /// Publish platform-specific state without disturbing generic lifecycle.
-    pub fn set_platform(
+    /// Publish backend diagnostics without disturbing generic lifecycle.
+    pub fn set_diagnostics(
         &mut self,
-        platform: Option<SourcePlatformStatus>,
+        diagnostics: Option<SourceDiagnosticsEnvelope>,
     ) -> Result<(), SourceStatusError> {
-        self.writer.set_platform(platform)
+        self.writer.set_diagnostics(diagnostics)
+    }
+
+    /// Publish a neutral user-action issue without disturbing lifecycle state.
+    pub fn set_action_issue(
+        &mut self,
+        action_issue: Option<SourceIssue>,
+    ) -> Result<(), SourceStatusError> {
+        self.writer.set_action_issue(action_issue)
     }
 
     /// Stop and fence the current source session.
@@ -1641,6 +1298,23 @@ impl SourceSessionWriter {
         }
         self.shared.diagnostics.store(Some(Arc::new(diagnostics)));
         true
+    }
+
+    /// Publish platform diagnostics into the public source-status envelope.
+    ///
+    /// This method takes the blocking control mutex and must not run inside an
+    /// audio, graphics, or other real-time callback.
+    pub fn publish_status_diagnostics(
+        &self,
+        diagnostics: Option<SourceDiagnosticsEnvelope>,
+    ) -> bool {
+        let diagnostics = diagnostics.map(Arc::new);
+        self.publish(|status| status.diagnostics = diagnostics)
+    }
+
+    /// Publish a neutral user-action issue if this session is still active.
+    pub fn set_action_issue(&self, action_issue: Option<SourceIssue>) -> bool {
+        self.publish(|status| status.action_issue = action_issue)
     }
 
     /// Publish a sampled value with its mandatory freshness deadline.
@@ -2131,6 +1805,7 @@ fn is_canonical_stopped(status: &SourceStatus) -> bool {
         && status.denied_resource_count == 0
         && status.issue.is_none()
         && status.freshness_issue.is_none()
+        && status.action_issue.is_none()
 }
 
 fn stale_data_issue() -> SourceIssue {

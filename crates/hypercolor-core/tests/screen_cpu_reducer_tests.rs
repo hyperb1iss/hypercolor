@@ -5,22 +5,25 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::consumer::{CaptureEpoch, CaptureSourceId, PixelExtent};
+use hypercolor_core::input::screen::implementer::{
     CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureDynamicRange,
-    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CaptureLuminanceContext,
-    CapturePixelFormat, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStorage,
+    CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CaptureLuminanceContext,
+    CapturePixelFormat, CapturePositiveScalar, CaptureRotation, CaptureStorage,
     CaptureTransferFunction, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
-    CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, InputPublicationDemandRevision,
-    KnownCaptureColorimetry, LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration,
-    PhysicalOrigin, PixelExtent, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenColorPipeline, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, KnownCaptureColorimetry,
+    PhysicalOrigin, RawCaptureSurface, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    InputPublicationDemandRevision, LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorPipeline,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenExtentRequest, ScreenHdrPolicy, ScreenInputGraphGeneration, ScreenPlanBuilder,
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
     ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, ScreenToneMapOperator,
-    ScreenToneMapPolicy, SourceScale,
+    ScreenToneMapPolicy,
 };
 use hypercolor_types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
 
@@ -328,7 +331,6 @@ fn prepared_managed_nearest_applies_color_before_publication() {
     let preparing = builder
         .prepare(
             [demand],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

@@ -1,7 +1,7 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
 use hypercolor_types::config::{
-    AudioConfig, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError, CapturePlatform,
+    AudioConfig, CaptureBackendId, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError,
     DaemonConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
     HypercolorConfig, InputConfig, InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig,
     NetworkAccessMode, NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
@@ -128,7 +128,7 @@ fn capture_native_refresh_is_explicit_and_roundtrips_without_a_zero_sentinel() {
     assert_eq!(config.capture_fps, 30);
     assert_eq!(config.cadence, CaptureCadenceMode::NativeRefresh);
     config
-        .validate_for_platform(CapturePlatform::MacosScreenCaptureKit)
+        .validate_for_backend(Some(&CaptureBackendId::ScreenCaptureKit))
         .expect("native refresh retains a valid analysis cadence");
 
     let serialized = toml::to_string(&config).expect("capture config serializes");
@@ -154,21 +154,46 @@ fn capture_tone_mapping_fields_default_when_omitted() {
 }
 
 #[test]
-fn capture_platform_matches_build_target() {
+fn capture_backend_matches_build_target() {
     #[cfg(target_os = "windows")]
     assert_eq!(
-        CapturePlatform::current(),
-        CapturePlatform::WindowsDesktopDuplication
+        CaptureBackendId::current(),
+        Some(CaptureBackendId::DesktopDuplication)
     );
     #[cfg(target_os = "linux")]
-    assert_eq!(CapturePlatform::current(), CapturePlatform::LinuxPipeWire);
+    assert_eq!(
+        CaptureBackendId::current(),
+        Some(CaptureBackendId::PipeWire)
+    );
     #[cfg(target_os = "macos")]
     assert_eq!(
-        CapturePlatform::current(),
-        CapturePlatform::MacosScreenCaptureKit
+        CaptureBackendId::current(),
+        Some(CaptureBackendId::ScreenCaptureKit)
     );
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-    assert_eq!(CapturePlatform::current(), CapturePlatform::Unsupported);
+    assert_eq!(CaptureBackendId::current(), None);
+}
+
+#[test]
+fn capture_backend_names_stay_stable_on_the_wire() {
+    assert_eq!(
+        CaptureBackendId::DesktopDuplication.wire_name(),
+        "dxgi_desktop_duplication"
+    );
+    assert_eq!(CaptureBackendId::PipeWire.wire_name(), "pipewire");
+    assert_eq!(
+        CaptureBackendId::ScreenCaptureKit.wire_name(),
+        "screen_capture_kit"
+    );
+    assert_eq!(
+        serde_json::to_value(CaptureBackendId::DesktopDuplication).expect("backend serializes"),
+        serde_json::json!("desktop_duplication")
+    );
+    assert_eq!(
+        serde_json::from_value::<CaptureBackendId>(serde_json::json!({ "other": "custom" }))
+            .expect("extensible backend deserializes"),
+        CaptureBackendId::Other("custom".into())
+    );
 }
 
 #[test]
@@ -185,18 +210,18 @@ fn capture_config_rejects_retired_monitor_key() {
 fn capture_config_accepts_any_nonzero_backend_rate() {
     let mut config = CaptureConfig::default();
     for platform in [
-        CapturePlatform::WindowsDesktopDuplication,
-        CapturePlatform::LinuxPipeWire,
-        CapturePlatform::MacosScreenCaptureKit,
+        CaptureBackendId::DesktopDuplication,
+        CaptureBackendId::PipeWire,
+        CaptureBackendId::ScreenCaptureKit,
     ] {
         config.source = "auto".to_owned();
         config.capture_fps = 1;
         config
-            .validate_for_platform(platform)
+            .validate_for_backend(Some(&platform))
             .expect("minimum nonzero cadence should validate");
         config.capture_fps = u32::MAX;
         config
-            .validate_for_platform(platform)
+            .validate_for_backend(Some(&platform))
             .expect("configuration should not impose an arbitrary cadence ceiling");
     }
 }
@@ -208,33 +233,33 @@ fn capture_config_rejects_zero_cadence() {
         ..CaptureConfig::default()
     };
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        config.validate_for_backend(Some(&CaptureBackendId::DesktopDuplication)),
         Err(CaptureConfigValidationError::CaptureFps { value: 0 })
     ));
 }
 
 #[test]
 fn capture_config_accepts_arbitrary_nonzero_grid_dimensions() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let config = CaptureConfig {
         grid_cols: u32::MAX,
         grid_rows: 256,
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(platform)
+        .validate_for_backend(Some(&platform))
         .expect("grid dimensions are governed by byte admission, not axis caps");
 }
 
 #[test]
 fn capture_config_rejects_empty_grid_and_invalid_float_values() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let mut config = CaptureConfig {
         grid_cols: 0,
         ..CaptureConfig::default()
     };
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::GridDimension {
             field: "grid_cols",
             value: 0
@@ -244,7 +269,7 @@ fn capture_config_rejects_empty_grid_and_invalid_float_values() {
     config.grid_cols = 8;
     config.smoothing = f32::NAN;
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::FloatRange {
             field: "smoothing",
             ..
@@ -254,14 +279,14 @@ fn capture_config_rejects_empty_grid_and_invalid_float_values() {
     config.smoothing = 0.3;
     config.gamma = 0.19;
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::FloatRange { field: "gamma", .. })
     ));
 }
 
 #[test]
 fn capture_config_accepts_tone_mapping_boundaries() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let mut config = CaptureConfig {
         target_led_white_x: 0.000_1,
         target_led_white_y: 0.999_8,
@@ -271,19 +296,19 @@ fn capture_config_accepts_tone_mapping_boundaries() {
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(platform)
+        .validate_for_backend(Some(&platform))
         .expect("minimum tone-mapping boundaries should validate");
 
     config.target_led_reference_white_nits = 5_000.0;
     config.exposure_ev = 8.0;
     config
-        .validate_for_platform(platform)
+        .validate_for_backend(Some(&platform))
         .expect("maximum tone-mapping boundaries should validate");
 }
 
 #[test]
 fn capture_config_rejects_invalid_target_white_point() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     for (x, y) in [
         (f32::NAN, 0.3290),
         (0.3127, f32::INFINITY),
@@ -297,7 +322,7 @@ fn capture_config_rejects_invalid_target_white_point() {
             ..CaptureConfig::default()
         };
         assert!(matches!(
-            config.validate_for_platform(platform),
+            config.validate_for_backend(Some(&platform)),
             Err(CaptureConfigValidationError::WhitePointChromaticity { .. })
         ));
     }
@@ -305,13 +330,13 @@ fn capture_config_rejects_invalid_target_white_point() {
 
 #[test]
 fn capture_config_rejects_invalid_target_luminance_and_exposure() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let mut config = CaptureConfig {
         target_led_reference_white_nits: 0.99,
         ..CaptureConfig::default()
     };
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::FloatRange {
             field: "target_led_reference_white_nits",
             ..
@@ -321,7 +346,7 @@ fn capture_config_rejects_invalid_target_luminance_and_exposure() {
     config.target_led_reference_white_nits = 203.0;
     config.target_led_peak_nits = 10_000.1;
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::FloatRange {
             field: "target_led_peak_nits",
             ..
@@ -330,7 +355,7 @@ fn capture_config_rejects_invalid_target_luminance_and_exposure() {
 
     config.target_led_peak_nits = 203.0;
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::PeakNotAboveReference {
             reference: 203.0,
             peak: 203.0
@@ -340,7 +365,7 @@ fn capture_config_rejects_invalid_target_luminance_and_exposure() {
     config.target_led_peak_nits = 406.0;
     config.exposure_ev = 8.01;
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::FloatRange {
             field: "exposure_ev",
             ..
@@ -350,18 +375,18 @@ fn capture_config_rejects_invalid_target_luminance_and_exposure() {
 
 #[test]
 fn capture_config_accepts_optional_nonzero_publication_memory_budget() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let mut config = CaptureConfig {
         publication_memory_bytes: Some(1),
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(platform)
+        .validate_for_backend(Some(&platform))
         .expect("one-byte explicit budget is semantically valid");
 
     config.publication_memory_bytes = Some(0);
     assert_eq!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::PublicationMemoryBudget { value: 0 })
     );
 }
@@ -376,28 +401,28 @@ fn capture_config_validates_source_by_backend() {
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(CapturePlatform::WindowsDesktopDuplication)
+        .validate_for_backend(Some(&CaptureBackendId::DesktopDuplication))
         .expect("stable Windows display identities should validate");
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::LinuxPipeWire),
+        config.validate_for_backend(Some(&CaptureBackendId::PipeWire)),
         Err(CaptureConfigValidationError::Source { .. })
     ));
     config.enabled = false;
     config
-        .validate_for_platform(CapturePlatform::LinuxPipeWire)
+        .validate_for_backend(Some(&CaptureBackendId::PipeWire))
         .expect("disabled cross-platform source identities should remain portable");
 
     config.enabled = true;
     config.source = "auto\0hidden".to_owned();
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        config.validate_for_backend(Some(&CaptureBackendId::DesktopDuplication)),
         Err(CaptureConfigValidationError::Source { .. })
     ));
 }
 
 #[test]
 fn macos_capture_source_accepts_only_persistable_picker_grammar() {
-    let platform = CapturePlatform::MacosScreenCaptureKit;
+    let platform = CaptureBackendId::ScreenCaptureKit;
     let mut config = CaptureConfig {
         enabled: true,
         ..CaptureConfig::default()
@@ -412,7 +437,7 @@ fn macos_capture_source_accepts_only_persistable_picker_grammar() {
     ] {
         config.source = source.to_owned();
         config
-            .validate_for_platform(platform)
+            .validate_for_backend(Some(&platform))
             .unwrap_or_else(|error| panic!("{source} should validate: {error}"));
     }
 
@@ -428,7 +453,7 @@ fn macos_capture_source_accepts_only_persistable_picker_grammar() {
         config.source = source.to_owned();
         assert!(
             matches!(
-                config.validate_for_platform(platform),
+                config.validate_for_backend(Some(&platform)),
                 Err(CaptureConfigValidationError::Source { .. })
             ),
             "{source} should be rejected"
@@ -444,7 +469,7 @@ fn macos_capture_source_is_validated_while_capture_is_disabled() {
         ..CaptureConfig::default()
     };
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::MacosScreenCaptureKit),
+        config.validate_for_backend(Some(&CaptureBackendId::ScreenCaptureKit)),
         Err(CaptureConfigValidationError::Source { .. })
     ));
 }
@@ -456,17 +481,17 @@ fn unsupported_capture_platform_only_accepts_disabled_config() {
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(CapturePlatform::Unsupported)
+        .validate_for_backend(None)
         .expect("dormant portable capture config should remain loadable");
     config.grid_rows = 0;
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::Unsupported),
+        config.validate_for_backend(None),
         Err(CaptureConfigValidationError::GridDimension { .. })
     ));
     config.grid_rows = 6;
     config.enabled = true;
     assert_eq!(
-        config.validate_for_platform(CapturePlatform::Unsupported),
+        config.validate_for_backend(None),
         Err(CaptureConfigValidationError::UnsupportedPlatform)
     );
 }

@@ -514,7 +514,7 @@ mod tests {
                 .send(Message::Text(
                     serde_json::json!({
                         "type": "event",
-                        "event": "macos_daemon_ownership_changed",
+                        "event": "service_identity_changed",
                         "timestamp": "2026-08-12T00:00:00Z",
                         "data": {"owner_epoch": 4}
                     })
@@ -542,7 +542,7 @@ mod tests {
             .expect("event stream should remain valid")
             .expect("fixture event should arrive");
 
-        assert_eq!(event["event"], "macos_daemon_ownership_changed");
+        assert_eq!(event["event"], "service_identity_changed");
         assert_eq!(event["data"]["owner_epoch"], 4);
         subscription.close().await;
         server.await.expect("fixture server should finish");

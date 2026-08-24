@@ -306,6 +306,18 @@ pub struct PreparedCpuDesktopReadback {
 }
 
 impl PreparedCpuDesktopReadback {
+    /// No native readback metadata exists on this platform.
+    #[must_use]
+    pub fn metadata_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No native readback bytes are retained on this platform.
+    #[must_use]
+    pub fn retained_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
     /// No native readback is pending on this platform.
     #[must_use]
     pub fn has_pending(&self) -> bool {
@@ -408,6 +420,24 @@ pub struct CapturePumpReport {
 }
 
 impl PreparedGpuSurfacePlan {
+    /// No constant buffer exists on this platform.
+    #[must_use]
+    pub fn constant_buffer_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No plan metadata exists on this platform.
+    #[must_use]
+    pub fn metadata_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No plan bytes are retained on this platform.
+    #[must_use]
+    pub fn retained_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
     /// No committed D3D11 plan generation exists on this platform.
     #[must_use]
     pub fn plan_generation(&self) -> GpuSurfacePlanGeneration {
@@ -466,6 +496,24 @@ impl PreparedGpuSurfacePlan {
 }
 
 impl PreparedGpuReductionPlan {
+    /// No constant buffer exists on this platform.
+    #[must_use]
+    pub fn constant_buffer_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No plan metadata exists on this platform.
+    #[must_use]
+    pub fn metadata_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
+    /// No plan bytes are retained on this platform.
+    #[must_use]
+    pub fn retained_byte_len(&self) -> u64 {
+        match self.never {}
+    }
+
     /// No D3D11 descriptors exist on this platform.
     pub fn descriptors(&self) -> std::iter::Empty<&GpuSurfaceDescriptor> {
         match self.never {}

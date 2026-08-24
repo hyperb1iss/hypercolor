@@ -3,12 +3,16 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, PixelExtent, PixelRect,
+};
+use hypercolor_core::input::screen::implementer::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
-    CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat,
-    CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    KnownCaptureColorimetry, LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration,
-    LedToneMapCalibrationError, PhysicalOrigin, PixelExtent, PixelRect,
+    CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar,
+    CaptureRotation, CaptureTransferFunction, KnownCaptureColorimetry, PhysicalOrigin, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration, LedToneMapCalibrationError,
     RegisteredScreenBranchDemand, ResolvedScreenColorTransform, ResolvedScreenSource,
     ResolvedScreenSourceConfig, ScreenAspectPolicy, ScreenBackendResourceIdentity,
     ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenColorTuning,
@@ -17,7 +21,7 @@ use hypercolor_core::input::screen::{
     ScreenPublicationKind, ScreenPublicationRequest, ScreenReductionFilter, ScreenResourceApi,
     ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
     ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
-    ScreenUpscalePolicy, SourceScale,
+    ScreenUpscalePolicy,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {

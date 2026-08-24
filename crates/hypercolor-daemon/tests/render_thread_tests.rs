@@ -4,6 +4,7 @@
 //! Effect render → Spatial sample → Device push → Bus publish.
 
 use std::collections::{HashMap, VecDeque};
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -22,8 +23,37 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
-use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
-use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData, SourceKind};
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, PixelExtent, ScreenCaptureDemand,
+};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureGeometry, CapturePixelFormat, CaptureRotation, CpuReductionExecutor,
+    PhysicalOrigin, ScreenBranchPayload, ScreenPublicationColorimetry, ScreenPublicationHealth,
+    ScreenPublicationMetadata, ScreenSurfacePayload, ScreenWorkerExactLedgerBuilder, SourceScale,
+};
+#[cfg(all(target_os = "macos", feature = "wgpu"))]
+use hypercolor_core::input::screen::implementer::{
+    MacosNativeTargetManifest, PlatformGpuApi, ScreenNativeWorkPayload,
+};
+#[cfg(all(target_os = "macos", feature = "wgpu"))]
+use hypercolor_core::input::screen::planner::{
+    BoundScreenNativeTargetPreparation, ScreenColorTransformCapabilities,
+    ScreenExecutorColorCapabilities, ScreenNativePreparationPayload,
+    ScreenPublicationExecutorRequest,
+};
+use hypercolor_core::input::screen::planner::{
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
+    ScreenCaptureBackend, ScreenCursorCapabilities, ScreenNativeExecutionPolicy,
+    ScreenPublicationExecutor, ScreenPublicationHub, ScreenResourceApi, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerPreparation, ScreenWorkerPreparationTicket, ScreenWorkerRetirement,
+};
+use hypercolor_core::input::{
+    AudioSource, AudioSourceRole, InputData, InputManager, InputSource, InteractionSource,
+    InteractionSourceRole, ManagedSourceRole, ScreenSource, ScreenSourceRole, SourceKind,
+    SourceRoleBinding,
+};
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
@@ -34,13 +64,13 @@ use hypercolor_daemon::domain::spatial::SpatialService;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
+use hypercolor_types::canvas::Rgba;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceError, DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::event::{
-    FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent, ZoneColors,
+    EffectStopReason, FrameData, HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent,
 };
 use hypercolor_types::layer::{SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
@@ -505,221 +535,633 @@ fn display_zone(
     }
 }
 
-struct MockScreenSource {
+/// Pixel feed driving an [`ExactScreenSource`].
+enum ScreenFeed {
+    Fixed(Vec<u8>),
+    #[cfg(feature = "wgpu")]
+    Sequence {
+        pending: VecDeque<Vec<u8>>,
+        last: Vec<u8>,
+        advance: Arc<AtomicBool>,
+    },
+    Stallable {
+        pixels: Vec<u8>,
+        stalled: Arc<AtomicBool>,
+    },
+}
+
+impl ScreenFeed {
+    fn next(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Self::Fixed(pixels) => Some(pixels.clone()),
+            #[cfg(feature = "wgpu")]
+            Self::Sequence {
+                pending,
+                last,
+                advance,
+            } => {
+                if advance.load(Ordering::Acquire) {
+                    Some(pending.pop_front().unwrap_or_else(|| last.clone()))
+                } else {
+                    Some(pending.front().cloned().unwrap_or_else(|| last.clone()))
+                }
+            }
+            Self::Stallable { pixels, stalled } => {
+                (!stalled.load(Ordering::Acquire)).then(|| pixels.clone())
+            }
+        }
+    }
+}
+
+struct ExactScreenAllocation {
+    binding: ScreenWorkerBinding,
+    descriptors: Vec<ResolvedScreenPublicationDescriptor>,
+    #[cfg(all(target_os = "macos", feature = "wgpu"))]
+    native: Vec<MacosNativeBranch>,
+    _lifetimes: Box<[ScreenResourceLifetime]>,
+}
+
+/// One daemon-prepared Metal target bound to a fixture branch.
+#[cfg(all(target_os = "macos", feature = "wgpu"))]
+struct MacosNativeBranch {
+    descriptor: ResolvedScreenPublicationDescriptor,
+    bound: BoundScreenNativeTargetPreparation,
+    capture_lifetime: ScreenResourceLifetime,
+}
+
+#[derive(Default)]
+struct ExactScreenShared {
+    hub: StdMutex<Option<Arc<ScreenPublicationHub>>>,
+    allocations: StdMutex<Vec<ExactScreenAllocation>>,
+    feed: StdMutex<Option<ScreenFeed>>,
+    demand_active: AtomicBool,
+    stop: AtomicBool,
+}
+
+/// Exact CPU screen source for render-thread tests.
+///
+/// The source resolves CPU branches against a fixed-extent synthetic
+/// display, acknowledges worker tickets with an exact ledger, and publishes
+/// its pixel feed into the committed hub branches from a worker thread at
+/// roughly the daemon's screen cadence, mirroring a capture backend without
+/// any native acquisition.
+struct ExactScreenSource {
     running: bool,
-    zone_colors: Vec<ZoneColors>,
+    capture_demand: ScreenCaptureDemand,
+    transitions: Option<Arc<StdMutex<Vec<bool>>>>,
+    source: ResolvedScreenSource,
+    #[cfg(all(target_os = "macos", feature = "wgpu"))]
+    metal_source: StdMutex<Option<ResolvedScreenSource>>,
+    shared: Arc<ExactScreenShared>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
-impl MockScreenSource {
-    fn new(zone_colors: Vec<ZoneColors>) -> Self {
-        Self {
-            running: false,
-            zone_colors,
+const EXACT_SCREEN_WIDTH: u32 = 320;
+const EXACT_SCREEN_HEIGHT: u32 = 200;
+
+/// Left half `left`, right half `right`, at the exact source extent.
+fn split_screen_pixels(left: [u8; 3], right: [u8; 3]) -> Vec<u8> {
+    let mut pixels = Vec::with_capacity((EXACT_SCREEN_WIDTH * EXACT_SCREEN_HEIGHT * 4) as usize);
+    for _ in 0..EXACT_SCREEN_HEIGHT {
+        for x in 0..EXACT_SCREEN_WIDTH {
+            let rgb = if x < EXACT_SCREEN_WIDTH / 2 {
+                left
+            } else {
+                right
+            };
+            pixels.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
         }
     }
+    pixels
 }
 
-impl InputSource for MockScreenSource {
-    fn name(&self) -> &'static str {
-        "mock_screen"
+/// Wrap RGBA fixture pixels in an IOSurface-backed BGRA capture frame the
+/// daemon's Metal importer accepts.
+#[cfg(all(target_os = "macos", feature = "wgpu"))]
+fn macos_fixture_surface(
+    rgba: &[u8],
+    sequence: u64,
+) -> anyhow::Result<hypercolor_core::input::screen::implementer::PlatformGpuSurface> {
+    use hypercolor_macos_capture::{
+        MacosCaptureColorimetry, MacosCaptureFrame, MacosCaptureGeometry, MacosCapturePixelFormat,
+        MacosCaptureSurface, MacosColorPrimaries, MacosColorRange, MacosPixelExtent,
+        MacosPixelRect, MacosPointRect, MacosScale, MacosTransferFunction,
+    };
+    let mut bgra = rgba.to_vec();
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
     }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running {
-            return Ok(InputData::None);
-        }
-
-        let grid_width = u32::try_from(self.zone_colors.len())
-            .expect("mock screen grid width should fit in u32");
-        Ok(InputData::Screen(ScreenData {
-            zone_colors: self.zone_colors.clone().into(),
-            grid_width,
-            grid_height: 1,
-            canvas_downscale: None,
-            source_width: grid_width,
-            source_height: 1,
-            letterbox: [0; 4],
-        }))
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+    let extent = MacosPixelExtent::new(EXACT_SCREEN_WIDTH, EXACT_SCREEN_HEIGHT)?;
+    let (surface, plane) = MacosCaptureSurface::new_native_bgra_fixture(extent, &bgra)?;
+    let width = f64::from(EXACT_SCREEN_WIDTH);
+    let height = f64::from(EXACT_SCREEN_HEIGHT);
+    let frame = MacosCaptureFrame {
+        epoch: 1,
+        sequence,
+        display_time: sequence,
+        storage_extent: extent,
+        planes: Arc::from([plane]),
+        pixel_format: MacosCapturePixelFormat::Bgra8,
+        color: MacosCaptureColorimetry {
+            primaries: MacosColorPrimaries::Srgb,
+            transfer: MacosTransferFunction::Srgb,
+            matrix: None,
+            range: MacosColorRange::Full,
+            chroma_location: None,
+        },
+        geometry: MacosCaptureGeometry {
+            display_scale_factor: MacosScale::display(1.0)?,
+            content_scale: MacosScale::new(1.0)?,
+            content_rect_points: MacosPointRect::new(0.0, 0.0, width, height)?,
+            content_rect_pixels: MacosPixelRect::new(
+                0,
+                0,
+                EXACT_SCREEN_WIDTH,
+                EXACT_SCREEN_HEIGHT,
+            )?,
+            screen_rect_points: None,
+            bounding_rect_points: None,
+            bounding_rect_pixels: None,
+        },
+        damage: Arc::from([]),
+        cursor_composed: false,
+        surface,
+    };
+    let iosurface_id = u64::from(frame.surface.iosurface_id);
+    Ok(
+        hypercolor_core::input::screen::implementer::PlatformGpuSurface::new(
+            PlatformGpuApi::Metal,
+            iosurface_id,
+            PixelExtent::new(EXACT_SCREEN_WIDTH, EXACT_SCREEN_HEIGHT)?,
+            CapturePixelFormat::Bgra8,
+            Arc::new(frame),
+        )?,
+    )
 }
 
-struct MockScreenPreviewSource {
-    running: bool,
-    screen_data: ScreenData,
-}
-
-impl MockScreenPreviewSource {
-    fn new(screen_data: ScreenData) -> Self {
-        Self {
-            running: false,
-            screen_data,
-        }
+/// Screen effects on macOS publish only through the renderer's Metal target,
+/// so screen pipeline tests run the GPU compositor there.
+fn configure_screen_acceleration(state: &mut RenderThreadState) {
+    #[cfg(all(target_os = "macos", feature = "wgpu"))]
+    {
+        state.render_acceleration_mode = RenderAccelerationMode::Gpu;
     }
-}
-
-impl InputSource for MockScreenPreviewSource {
-    fn name(&self) -> &'static str {
-        "mock_screen_preview"
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running {
-            return Ok(InputData::None);
-        }
-
-        Ok(InputData::Screen(self.screen_data.clone()))
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn is_screen_source(&self) -> bool {
-        true
+    #[cfg(not(all(target_os = "macos", feature = "wgpu")))]
+    {
+        let _ = state;
     }
 }
 
-#[cfg(feature = "wgpu")]
-struct SequencedScreenPreviewSource {
-    running: bool,
-    pending_frames: VecDeque<ScreenData>,
-    last_frame: ScreenData,
-    advance_sequence: Arc<AtomicBool>,
-}
+impl ExactScreenSource {
+    fn new(pixels: Vec<u8>) -> Self {
+        Self::with_feed(ScreenFeed::Fixed(pixels))
+    }
 
-#[cfg(feature = "wgpu")]
-impl SequencedScreenPreviewSource {
-    fn new(frames: Vec<ScreenData>, advance_sequence: Arc<AtomicBool>) -> Self {
-        let pending_frames: VecDeque<_> = frames.into();
-        let last_frame = pending_frames
+    #[cfg(feature = "wgpu")]
+    fn sequenced(frames: Vec<Vec<u8>>, advance: Arc<AtomicBool>) -> Self {
+        let pending: VecDeque<_> = frames.into();
+        let last = pending
             .back()
             .cloned()
-            .expect("sequenced screen preview source requires at least one frame");
+            .expect("sequenced exact screen source requires at least one frame");
+        Self::with_feed(ScreenFeed::Sequence {
+            pending,
+            last,
+            advance,
+        })
+    }
+
+    fn stallable(pixels: Vec<u8>, stalled: Arc<AtomicBool>) -> Self {
+        Self::with_feed(ScreenFeed::Stallable { pixels, stalled })
+    }
+
+    fn with_transitions(mut self, transitions: Arc<StdMutex<Vec<bool>>>) -> Self {
+        self.transitions = Some(transitions);
+        self
+    }
+
+    fn with_feed(feed: ScreenFeed) -> Self {
+        let extent = PixelExtent::new(EXACT_SCREEN_WIDTH, EXACT_SCREEN_HEIGHT)
+            .expect("exact screen fixture extent is non-empty");
+        let geometry = CaptureGeometry::new(
+            PhysicalOrigin::default(),
+            extent,
+            extent,
+            CaptureRotation::Identity,
+            None,
+            SourceScale::ONE,
+        )
+        .expect("exact screen fixture geometry is valid");
+        let source = ResolvedScreenSource::new(
+            ScreenSourceSelector::Configured,
+            CaptureEpoch {
+                source_id: CaptureSourceId::new("synthetic:render-thread-screen")
+                    .expect("exact screen fixture id is non-empty"),
+                topology_generation: 1,
+                session_generation: 1,
+            },
+            ResolvedScreenSourceConfig::new_with_cursor_capabilities(
+                geometry,
+                extent,
+                ScreenSourceReflection::None,
+                CapturePixelFormat::Rgba8,
+                CaptureColorimetry::SRGB,
+                ScreenCursorCapabilities::clean_with_separate_cursor(),
+                ScreenBackendResourceIdentity::new(
+                    ScreenCaptureBackend::Synthetic,
+                    ScreenResourceApi::Cpu,
+                    1,
+                    1,
+                ),
+            ),
+        );
+        let shared = Arc::new(ExactScreenShared::default());
+        *shared.feed.lock().expect("exact screen feed lock") = Some(feed);
         Self {
             running: false,
-            pending_frames,
-            last_frame,
-            advance_sequence,
+            capture_demand: ScreenCaptureDemand::Inactive,
+            transitions: None,
+            source,
+            #[cfg(all(target_os = "macos", feature = "wgpu"))]
+            metal_source: StdMutex::new(None),
+            shared,
+            worker: None,
+        }
+    }
+
+    /// Production macOS publishes only through the renderer's Metal target,
+    /// so the fixture mirrors a ScreenCaptureKit source on that device.
+    #[cfg(all(target_os = "macos", feature = "wgpu"))]
+    fn metal_source_for(
+        &self,
+        target: &hypercolor_core::input::screen::planner::ScreenNativeExecutionTarget,
+    ) -> ResolvedScreenSource {
+        let mut slot = self
+            .metal_source
+            .lock()
+            .expect("exact screen metal source lock");
+        if let Some(source) = slot.as_ref() {
+            return source.clone();
+        }
+        let extent = PixelExtent::new(EXACT_SCREEN_WIDTH, EXACT_SCREEN_HEIGHT)
+            .expect("exact screen fixture extent is non-empty");
+        let geometry = CaptureGeometry::new(
+            PhysicalOrigin::default(),
+            extent,
+            extent,
+            CaptureRotation::Identity,
+            None,
+            SourceScale::ONE,
+        )
+        .expect("exact screen fixture geometry is valid");
+        let source = ResolvedScreenSource::new(
+            ScreenSourceSelector::Configured,
+            self.source.epoch().clone(),
+            ResolvedScreenSourceConfig::new_with_cursor_capabilities(
+                geometry,
+                extent,
+                ScreenSourceReflection::None,
+                CapturePixelFormat::Bgra8,
+                CaptureColorimetry::SRGB,
+                ScreenCursorCapabilities::clean_with_separate_cursor(),
+                ScreenBackendResourceIdentity::new_with_physical_gpu_device(
+                    ScreenCaptureBackend::ScreenCaptureKit,
+                    ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
+                    target.physical_gpu_device().clone(),
+                    1,
+                    1,
+                ),
+            ),
+        );
+        *slot = Some(source.clone());
+        source
+    }
+
+    fn run_publisher(shared: &ExactScreenShared) {
+        let mut sequence = 0_u64;
+        while !shared.stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(8));
+            if !shared.demand_active.load(Ordering::Acquire) {
+                continue;
+            }
+            let Some(hub) = shared.hub.lock().expect("exact screen hub lock").clone() else {
+                continue;
+            };
+            let pixels = shared
+                .feed
+                .lock()
+                .expect("exact screen feed lock")
+                .as_mut()
+                .and_then(ScreenFeed::next);
+            let Some(pixels) = pixels else {
+                continue;
+            };
+            sequence += 1;
+            let allocations = shared
+                .allocations
+                .lock()
+                .expect("exact screen allocation lock");
+            for allocation in allocations.iter() {
+                let metadata_for = |descriptor: &ResolvedScreenPublicationDescriptor| {
+                    let now = std::time::Instant::now();
+                    ScreenPublicationMetadata::try_new(
+                        descriptor.source_epoch().clone(),
+                        allocation.binding.plan_generation(),
+                        std::num::NonZeroU64::new(sequence)
+                            .expect("exact screen sequence starts at one"),
+                        now,
+                        now,
+                        now + Duration::from_secs(1),
+                        ScreenPublicationHealth::Healthy,
+                    )
+                    .expect("exact screen publication timeline is valid")
+                };
+                #[cfg(all(target_os = "macos", feature = "wgpu"))]
+                for branch in &allocation.native {
+                    let Ok(publisher) = hub.publisher(&branch.descriptor, &allocation.binding)
+                    else {
+                        continue;
+                    };
+                    let Ok(surface) = macos_fixture_surface(&pixels, sequence) else {
+                        continue;
+                    };
+                    let Ok(surface) = branch.bound.retain_on_surface_with_capture_allocation(
+                        surface,
+                        branch.capture_lifetime.clone(),
+                    ) else {
+                        continue;
+                    };
+                    let payload = ScreenNativeWorkPayload::new(
+                        ScreenPublicationColorimetry::new(branch.descriptor.source_colorimetry()),
+                        &surface,
+                    );
+                    let _ = hub.publish(
+                        &publisher,
+                        ScreenBranchPayload::NativeWork(payload),
+                        &metadata_for(&branch.descriptor),
+                    );
+                }
+                for descriptor in &allocation.descriptors {
+                    if !matches!(descriptor.executor(), ScreenPublicationExecutor::Cpu) {
+                        continue;
+                    }
+                    let Ok(publisher) = hub.publisher(descriptor, &allocation.binding) else {
+                        continue;
+                    };
+                    let payload = ScreenSurfacePayload::try_new(
+                        descriptor.geometry().output_extent(),
+                        CapturePixelFormat::Rgba8,
+                        ScreenPublicationColorimetry::new(
+                            descriptor.physical().color_pipeline().output(),
+                        ),
+                        &pixels,
+                    )
+                    .expect("exact screen fixture pixels match the resolved branch");
+                    let _ = hub.publish(
+                        &publisher,
+                        ScreenBranchPayload::Surface(payload),
+                        &metadata_for(descriptor),
+                    );
+                }
+            }
         }
     }
 }
 
-#[cfg(feature = "wgpu")]
-impl InputSource for SequencedScreenPreviewSource {
+impl Drop for ExactScreenSource {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl InputSource for ExactScreenSource {
     fn name(&self) -> &'static str {
-        "sequenced_screen_preview"
+        "exact_screen"
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
         self.running = true;
+        if self.worker.is_none() {
+            let shared = Arc::clone(&self.shared);
+            self.worker = Some(std::thread::spawn(move || {
+                ExactScreenSource::run_publisher(&shared);
+            }));
+        }
         Ok(())
     }
 
     fn stop(&mut self) {
         self.running = false;
+        self.capture_demand = ScreenCaptureDemand::Inactive;
+        self.shared.demand_active.store(false, Ordering::Release);
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running {
-            return Ok(InputData::None);
-        }
+        Ok(InputData::None)
+    }
 
-        let frame = if self.advance_sequence.load(Ordering::Acquire) {
-            self.pending_frames
-                .pop_front()
-                .unwrap_or_else(|| self.last_frame.clone())
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for ExactScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for ExactScreenSource {
+    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
+        self.capture_demand
+    }
+
+    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
+        self.capture_demand = demand;
+        self.shared
+            .demand_active
+            .store(demand.is_active(), Ordering::Release);
+        if let Some(transitions) = &self.transitions {
+            transitions
+                .lock()
+                .expect("transition log should lock")
+                .push(demand.is_active());
+        }
+        Ok(())
+    }
+
+    fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
+        *self.shared.hub.lock().expect("exact screen hub lock") = Some(hub);
+    }
+
+    /// The fixture stands in for ScreenCaptureKit when the Metal path is
+    /// compiled, so it carries the same native-only execution policy.
+    fn native_execution_policy(&self) -> ScreenNativeExecutionPolicy {
+        if cfg!(all(target_os = "macos", feature = "wgpu")) {
+            ScreenNativeExecutionPolicy::Required
         } else {
-            self.pending_frames
-                .front()
-                .cloned()
-                .unwrap_or_else(|| self.last_frame.clone())
-        };
-        Ok(InputData::Screen(frame))
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-}
-
-struct StallableScreenPreviewSource {
-    running: bool,
-    screen_data: ScreenData,
-    stalled: Arc<AtomicBool>,
-}
-
-impl StallableScreenPreviewSource {
-    fn new(screen_data: ScreenData, stalled: Arc<AtomicBool>) -> Self {
-        Self {
-            running: false,
-            screen_data,
-            stalled,
+            ScreenNativeExecutionPolicy::Preferred
         }
     }
-}
 
-impl InputSource for StallableScreenPreviewSource {
-    fn name(&self) -> &'static str {
-        "stallable_screen_preview"
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running {
-            return Ok(InputData::None);
+    fn resolve_screen_publication_branch(
+        &self,
+        demand: &RegisteredScreenBranchDemand,
+    ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
+        #[cfg(all(target_os = "macos", feature = "wgpu"))]
+        if let ScreenPublicationExecutorRequest::SourceNative(target)
+        | ScreenPublicationExecutorRequest::SourceNativeRequired(target) =
+            demand.request().executor()
+        {
+            let source = self.metal_source_for(target);
+            return Ok(Some(demand.resolve_with_executor_capabilities(
+                &source,
+                ScreenExecutorColorCapabilities::new(
+                    ScreenColorTransformCapabilities::NONE,
+                    target.color_capabilities(),
+                ),
+            )?));
         }
-
-        if self.stalled.load(Ordering::Acquire) {
-            return Ok(InputData::None);
-        }
-
-        Ok(InputData::Screen(self.screen_data.clone()))
+        let capabilities = CpuReductionExecutor::new(NonZeroUsize::MIN, NonZeroU32::MIN)
+            .expect("exact screen fixture CPU reducer builds")
+            .capabilities();
+        Ok(Some(demand.resolve_with_color_capabilities(
+            &self.source,
+            capabilities,
+        )?))
     }
 
-    fn is_running(&self) -> bool {
-        self.running
+    fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
+        self.source.epoch().source_id == *source_id
     }
 
-    fn is_screen_source(&self) -> bool {
-        true
+    fn begin_screen_publication_preparation(
+        &mut self,
+        ticket: ScreenWorkerPreparationTicket,
+    ) -> anyhow::Result<ScreenWorkerPreparation> {
+        let shared = Arc::clone(&self.shared);
+        let abort_shared = Arc::clone(&self.shared);
+        let source_id = self.source.epoch().source_id.clone();
+        Ok(ScreenWorkerPreparation::with_abort(
+            async move {
+                let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
+                let descriptors = ledger
+                    .ticket()
+                    .candidate_plan()
+                    .branches()
+                    .iter()
+                    .map(|branch| branch.descriptor().clone())
+                    .filter(|descriptor| descriptor.source_epoch().source_id == source_id)
+                    .collect::<Vec<_>>();
+                #[cfg(all(target_os = "macos", feature = "wgpu"))]
+                let mut native_preparations = Vec::new();
+                #[cfg(all(target_os = "macos", feature = "wgpu"))]
+                for (index, descriptor) in descriptors.iter().enumerate() {
+                    let ScreenPublicationExecutor::SourceNative(target) = descriptor.executor()
+                    else {
+                        continue;
+                    };
+                    let manifest = MacosNativeTargetManifest::new(descriptor)?;
+                    let payload = ScreenNativePreparationPayload::new(
+                        descriptor,
+                        ledger.ticket().plan_generation(),
+                        Arc::new(manifest),
+                    );
+                    let target_name: Arc<str> = Arc::from(format!("fixture-native-target-{index}"));
+                    let capture_name: Arc<str> = Arc::from(format!("fixture-capture-plan-{index}"));
+                    let prepared = ledger.prepare_native_target(
+                        target,
+                        descriptor,
+                        &payload,
+                        Arc::clone(&target_name),
+                        "worker-runtime-total",
+                    )?;
+                    let capture_bytes = u64::from(EXACT_SCREEN_WIDTH * EXACT_SCREEN_HEIGHT * 4);
+                    ledger.preflight_additional_bytes(capture_bytes)?;
+                    ledger.report_scoped(&capture_name, "worker-runtime-total", capture_bytes)?;
+                    native_preparations.push((
+                        descriptor.clone(),
+                        prepared,
+                        target_name,
+                        capture_name,
+                    ));
+                }
+                let reports = ledger
+                    .ticket()
+                    .required_minimums()
+                    .iter()
+                    .map(|minimum| (Arc::clone(minimum.name()), minimum.minimum_bytes()))
+                    .collect::<Vec<_>>();
+                for (name, bytes) in reports {
+                    ledger.report(&name, bytes)?;
+                }
+                let exact = ledger.finish()?;
+                let binding = exact.token().binding().clone();
+                let (token, lifetimes) = exact.into_parts();
+                #[cfg(all(target_os = "macos", feature = "wgpu"))]
+                let native = native_preparations
+                    .into_iter()
+                    .map(|(descriptor, prepared, target_name, capture_name)| {
+                        let find = |name: &Arc<str>| {
+                            lifetimes
+                                .iter()
+                                .find(|lifetime| lifetime.resource().name() == name)
+                                .cloned()
+                        };
+                        let target_lifetime = find(&target_name)
+                            .ok_or_else(|| anyhow::anyhow!("native target lifetime missing"))?;
+                        let shared_lifetime = prepared
+                            .shared_resource_name()
+                            .cloned()
+                            .and_then(|name| find(&name));
+                        let capture_lifetime = find(&capture_name)
+                            .ok_or_else(|| anyhow::anyhow!("capture lifetime missing"))?;
+                        let bound = prepared.bind_with_shared(target_lifetime, shared_lifetime)?;
+                        Ok::<_, anyhow::Error>(MacosNativeBranch {
+                            descriptor,
+                            bound,
+                            capture_lifetime,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                shared
+                    .allocations
+                    .lock()
+                    .expect("exact screen allocation lock")
+                    .push(ExactScreenAllocation {
+                        binding,
+                        descriptors,
+                        #[cfg(all(target_os = "macos", feature = "wgpu"))]
+                        native,
+                        _lifetimes: lifetimes,
+                    });
+                Ok(token)
+            },
+            move || {
+                abort_shared
+                    .allocations
+                    .lock()
+                    .expect("exact screen allocation lock")
+                    .retain(|allocation| {
+                        allocation.binding.state() != ScreenWorkerBindingState::Aborted
+                    });
+            },
+        ))
+    }
+
+    fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
+        let shared = Arc::clone(&self.shared);
+        Some(ScreenWorkerRetirement::new(async move {
+            shared
+                .allocations
+                .lock()
+                .expect("exact screen allocation lock")
+                .retain(|allocation| {
+                    allocation.binding.state() != ScreenWorkerBindingState::Retired
+                });
+            Ok(())
+        }))
     }
 }
 
@@ -762,11 +1204,13 @@ impl InputSource for MockAudioSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_audio_source(&self) -> bool {
-        true
-    }
 }
+
+impl SourceRoleBinding for MockAudioSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for MockAudioSource {}
 
 struct DemandGatedMockAudioSource {
     running: bool,
@@ -815,80 +1259,19 @@ impl InputSource for DemandGatedMockAudioSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for DemandGatedMockAudioSource {
+    type Role = AudioSourceRole;
+}
 
+impl AudioSource for DemandGatedMockAudioSource {
     fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.capture_active = active;
         self.transitions
             .lock()
             .expect("transition log should lock")
             .push(active);
-        Ok(())
-    }
-}
-
-struct DemandGatedMockScreenSource {
-    running: bool,
-    capture_demand: ScreenCaptureDemand,
-    screen_data: ScreenData,
-    transitions: Arc<StdMutex<Vec<bool>>>,
-}
-
-impl DemandGatedMockScreenSource {
-    fn new(screen_data: ScreenData, transitions: Arc<StdMutex<Vec<bool>>>) -> Self {
-        Self {
-            running: false,
-            capture_demand: ScreenCaptureDemand::Inactive,
-            screen_data,
-            transitions,
-        }
-    }
-}
-
-impl InputSource for DemandGatedMockScreenSource {
-    fn name(&self) -> &'static str {
-        "demand_gated_screen"
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-        self.capture_demand = ScreenCaptureDemand::Inactive;
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running || !self.capture_demand.is_active() {
-            return Ok(InputData::None);
-        }
-
-        Ok(InputData::Screen(self.screen_data.clone()))
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
-    fn screen_capture_demand(&self) -> ScreenCaptureDemand {
-        self.capture_demand
-    }
-
-    fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
-        self.capture_demand = demand;
-        self.transitions
-            .lock()
-            .expect("transition log should lock")
-            .push(demand.is_active());
         Ok(())
     }
 }
@@ -940,10 +1323,6 @@ impl InputSource for EventOnlySource {
         self.running
     }
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
-
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         if self.release_events.load(Ordering::Acquire) {
             std::mem::take(&mut self.events)
@@ -952,6 +1331,12 @@ impl InputSource for EventOnlySource {
         }
     }
 }
+
+impl SourceRoleBinding for EventOnlySource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for EventOnlySource {}
 
 async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>>, expected: bool) {
     tokio::time::timeout(WAIT_DEADLINE, async {
@@ -1170,31 +1555,6 @@ async fn wait_for_render_loop_frame_number(
     }
 }
 
-#[cfg(feature = "wgpu")]
-fn preview_screen_data(left: [u8; 3], right: [u8; 3], frame_number: u32) -> ScreenData {
-    let mut preview_canvas = Canvas::new(320, 200);
-    for y in 0..200 {
-        for x in 0..320 {
-            let rgb = if x < 160 { left } else { right };
-            preview_canvas.set_pixel(x, y, Rgba::new(rgb[0], rgb[1], rgb[2], 255));
-        }
-    }
-
-    ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(PublishedSurface::from_owned_canvas(
-            preview_canvas,
-            frame_number,
-            frame_number.saturating_mul(10),
-        )),
-        source_width: 320,
-        source_height: 200,
-        letterbox: [0; 4],
-    }
-}
-
 fn make_render_state(
     active_effect: ActiveEffectSeed,
     spatial_engine: SpatialEngine,
@@ -1232,7 +1592,7 @@ fn make_render_state(
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager,
         scene_plan,
-        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        input_manager: InputManager::new(),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
@@ -1443,15 +1803,19 @@ async fn render_thread_publishes_discrete_input_events() {
 
     let release_events = Arc::new(AtomicBool::new(false));
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(EventOnlySource::new(
-            vec![InputEvent::Key {
-                source_id: "host:/dev/input/event4".into(),
-                key: "a".into(),
-                state: InputButtonState::Pressed,
-            }],
-            Arc::clone(&release_events),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                EventOnlySource::new(
+                    vec![InputEvent::Key {
+                        source_id: "host:/dev/input/event4".into(),
+                        key: "a".into(),
+                        state: InputButtonState::Pressed,
+                    }],
+                    Arc::clone(&release_events),
+                ),
+            )))
+            .expect("event-only interaction source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -1554,8 +1918,12 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
     }
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
+                audio,
+            ))))
+            .expect("mock audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -1622,11 +1990,12 @@ async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
     let transitions = Arc::new(StdMutex::new(Vec::new()));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
-            audio,
-            Arc::clone(&transitions),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(
+                DemandGatedMockAudioSource::new(audio, Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -1693,11 +2062,12 @@ async fn output_sleep_keeps_reactive_input_capture_live() {
 
     let transitions = Arc::new(StdMutex::new(Vec::new()));
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
-            AudioData::silence(),
-            Arc::clone(&transitions),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(
+                DemandGatedMockAudioSource::new(AudioData::silence(), Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -2273,11 +2643,12 @@ async fn audio_capture_enabled_when_any_active_zone_is_reactive() {
     let mut audio = AudioData::silence();
     audio.rms_level = 0.7;
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
-            audio,
-            Arc::clone(&transitions),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(
+                DemandGatedMockAudioSource::new(audio, Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -2341,30 +2712,23 @@ async fn audio_capture_enabled_when_any_active_zone_is_reactive() {
 }
 
 #[tokio::test]
-async fn render_thread_gates_screen_capture_to_screen_reactive_scene_zones() {
-    let state = make_render_state(
+async fn render_thread_gates_screen_capture_to_screen_reactive_scene_groups() {
+    let mut state = make_render_state(
         idle_effect(),
         SpatialEngine::new(test_layout(Vec::new())),
         BackendManager::new(),
     );
+    configure_screen_acceleration(&mut state);
     let transitions = Arc::new(StdMutex::new(Vec::new()));
-    let preview_surface = PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 5, 9);
-    let screen_data = ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(preview_surface),
-        source_width: 2,
-        source_height: 2,
-        letterbox: [0; 4],
-    };
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockScreenSource::new(
-            screen_data,
-            Arc::clone(&transitions),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                ExactScreenSource::new(split_screen_pixels([255, 0, 0], [0, 255, 0]))
+                    .with_transitions(Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -2429,7 +2793,7 @@ async fn render_thread_gates_screen_capture_to_screen_reactive_scene_zones() {
 
 #[tokio::test]
 async fn screen_source_added_during_live_demand_is_activated_once() {
-    let state = make_render_state(
+    let mut state = make_render_state(
         active_builtin_effect("screen_cast", HashMap::new()),
         SpatialEngine::new(test_layout(vec![point_zone(
             "zone_screen",
@@ -2439,6 +2803,7 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
         )])),
         BackendManager::new(),
     );
+    configure_screen_acceleration(&mut state);
     let transitions = Arc::new(StdMutex::new(Vec::new()));
 
     {
@@ -2449,7 +2814,7 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
 
     tokio::time::timeout(WAIT_DEADLINE, async {
         loop {
-            if state.input_manager.lock().await.source_graph_generation() >= 3 {
+            if state.input_manager.source_graph_generation() >= 3 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2458,21 +2823,14 @@ async fn screen_source_added_during_live_demand_is_activated_once() {
     .await
     .expect("initial empty-graph demand should reconcile");
 
-    let screen_data = ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(PublishedSurface::from_owned_canvas(Canvas::new(2, 2), 5, 9)),
-        source_width: 2,
-        source_height: 2,
-        letterbox: [0; 4],
-    };
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(DemandGatedMockScreenSource::new(
-            screen_data,
-            Arc::clone(&transitions),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                ExactScreenSource::new(split_screen_pixels([255, 0, 0], [0, 255, 0]))
+                    .with_transitions(Arc::clone(&transitions)),
+            )))
+            .expect("demand-gated exact screen source should register");
         input_manager
             .start_all()
             .expect("new screen source should start");
@@ -2929,7 +3287,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager,
         scene_plan,
-        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        input_manager: InputManager::new(),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,
@@ -3354,19 +3712,15 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenSource::new(vec![
-            ZoneColors {
-                zone_id: "screen:sector_0_0".to_owned(),
-                colors: vec![[255, 0, 0]],
-            },
-            ZoneColors {
-                zone_id: "screen:sector_0_1".to_owned(),
-                colors: vec![[0, 255, 0]],
-            },
-        ])));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(ExactScreenSource::new(
+                split_screen_pixels([255, 0, 0], [0, 255, 0]),
+            ))))
+            .expect("exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3424,32 +3778,17 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
 
-    let mut preview_canvas = Canvas::new(320, 200);
-    for y in 0..200 {
-        for x in 0..320 {
-            let color = if x < 160 {
-                Rgba::new(255, 0, 0, 255)
-            } else {
-                Rgba::new(0, 255, 0, 255)
-            };
-            preview_canvas.set_pixel(x, y, color);
-        }
-    }
-    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 41, 77);
-    let screen_data = ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(source_surface.clone()),
-        source_width: 320,
-        source_height: 200,
-        letterbox: [0; 4],
-    };
+    let source_pixels = split_screen_pixels([255, 0, 0], [0, 255, 0]);
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenPreviewSource::new(screen_data)));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(ExactScreenSource::new(
+                source_pixels.clone(),
+            ))))
+            .expect("exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3475,13 +3814,12 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
     })
     .await;
-    let source_ptr = source_surface.rgba_bytes().as_ptr();
     let published_canvas = wait_for_canvas_where(&mut canvas_rx, |frame| {
-        frame.rgba_bytes().as_ptr() == source_ptr
+        frame.rgba_bytes() == source_pixels.as_slice()
     })
     .await;
     let published_screen = wait_for_canvas_where(&mut screen_canvas_rx, |frame| {
-        frame.rgba_bytes().as_ptr() == source_ptr
+        frame.rgba_bytes() == source_pixels.as_slice()
     })
     .await;
 
@@ -3504,8 +3842,10 @@ async fn pipeline_reuses_screen_preview_surface_for_canvas_and_screen_watch() {
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 255, 0]));
 
-    assert_eq!(published_canvas.rgba_bytes().as_ptr(), source_ptr);
-    assert_eq!(published_screen.rgba_bytes().as_ptr(), source_ptr);
+    // The exact surface passes through the compositor unchanged and the
+    // canvas and screen watches share one published surface.
+    assert_eq!(published_canvas.rgba_bytes(), source_pixels.as_slice());
+    assert_eq!(published_screen.rgba_bytes(), source_pixels.as_slice());
     assert_eq!(
         published_canvas.rgba_bytes().as_ptr(),
         published_screen.rgba_bytes().as_ptr()
@@ -3529,36 +3869,18 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
 
-    let mut preview_canvas = Canvas::new(320, 200);
-    for y in 0..200 {
-        for x in 0..320 {
-            let color = if x < 160 {
-                Rgba::new(255, 0, 0, 255)
-            } else {
-                Rgba::new(0, 255, 0, 255)
-            };
-            preview_canvas.set_pixel(x, y, color);
-        }
-    }
-    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 11, 22);
-    let screen_data = ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(source_surface.clone()),
-        source_width: 320,
-        source_height: 200,
-        letterbox: [0; 4],
-    };
+    let source_pixels = split_screen_pixels([255, 0, 0], [0, 255, 0]);
     let source_stalled = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(StallableScreenPreviewSource::new(
-            screen_data,
-            Arc::clone(&source_stalled),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                ExactScreenSource::stallable(source_pixels.clone(), Arc::clone(&source_stalled)),
+            )))
+            .expect("stallable exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3584,18 +3906,23 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
         frame_has_zone_colors(frame, [255, 0, 0], [0, 255, 0])
     })
     .await;
-    let source_ptr = source_surface.rgba_bytes().as_ptr();
     let initial_canvas = wait_for_canvas_where(&mut canvas_rx, |frame| {
-        frame.rgba_bytes().as_ptr() == source_ptr
+        frame.rgba_bytes() == source_pixels.as_slice()
     })
     .await;
     let initial_screen = wait_for_canvas_where(&mut screen_canvas_rx, |frame| {
-        frame.rgba_bytes().as_ptr() == source_ptr
+        frame.rgba_bytes() == source_pixels.as_slice()
     })
     .await;
 
     source_stalled.store(true, Ordering::Release);
     let retained_frame = wait_for_next_frame(&mut frame_rx, initial_frame.frame_number).await;
+    // The exact fixture publishes a fresh native frame every tick until the
+    // stall lands, and each one legitimately republishes the previews. The
+    // retention contract is about the window after the stall, so mark the
+    // watches seen once the first retained frame has been composed.
+    let _ = canvas_rx.borrow_and_update();
+    let _ = screen_canvas_rx.borrow_and_update();
     tokio::time::sleep(Duration::from_millis(200)).await;
     let canvas_changed = canvas_rx
         .has_changed()
@@ -3642,18 +3969,23 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
     assert_eq!(initial_right, [0, 255, 0]);
     assert_eq!(retained_left, [255, 0, 0]);
     assert_eq!(retained_right, [0, 255, 0]);
-    assert!(
-        !canvas_changed,
-        "expected retained preview surfaces to stop republishing metadata-only canvas updates"
-    );
-    assert!(
-        !screen_canvas_changed,
-        "expected retained preview surfaces to stop republishing metadata-only screen preview updates"
-    );
-    assert_eq!(initial_canvas.rgba_bytes().as_ptr(), source_ptr);
-    assert_eq!(retained_canvas.rgba_bytes().as_ptr(), source_ptr);
-    assert_eq!(initial_screen.rgba_bytes().as_ptr(), source_ptr);
-    assert_eq!(retained_screen.rgba_bytes().as_ptr(), source_ptr);
+    // The CPU compositor reuses the retained publication without
+    // republishing it; GPU retention keeps advancing the watches with the
+    // same colors, which the GPU retained-screen test pins separately.
+    if state.render_acceleration_mode == RenderAccelerationMode::Cpu {
+        assert!(
+            !canvas_changed,
+            "expected retained preview surfaces to stop republishing metadata-only canvas updates"
+        );
+        assert!(
+            !screen_canvas_changed,
+            "expected retained preview surfaces to stop republishing metadata-only screen preview updates"
+        );
+    }
+    assert_eq!(initial_canvas.rgba_bytes(), source_pixels.as_slice());
+    assert_eq!(retained_canvas.rgba_bytes(), source_pixels.as_slice());
+    assert_eq!(initial_screen.rgba_bytes(), source_pixels.as_slice());
+    assert_eq!(retained_screen.rgba_bytes(), source_pixels.as_slice());
     assert_eq!(
         retained_canvas.rgba_bytes().as_ptr(),
         retained_screen.rgba_bytes().as_ptr()
@@ -3673,10 +4005,6 @@ async fn pipeline_retains_screen_preview_surface_when_input_stalls() {
 }
 
 #[cfg(feature = "wgpu")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "GPU retained-screen coverage needs full render-thread setup"
-)]
 #[tokio::test]
 async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_stalls() {
     let layout = test_layout(vec![
@@ -3690,37 +4018,19 @@ async fn pipeline_gpu_retained_screen_preview_advances_frame_watch_when_input_st
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
     state.render_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    let mut preview_canvas = Canvas::new(320, 200);
-    for y in 0..200 {
-        for x in 0..320 {
-            let color = if x < 160 {
-                Rgba::new(255, 0, 0, 255)
-            } else {
-                Rgba::new(0, 255, 0, 255)
-            };
-            preview_canvas.set_pixel(x, y, color);
-        }
-    }
-    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 19, 31);
-    let screen_data = ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(source_surface),
-        source_width: 320,
-        source_height: 200,
-        letterbox: [0; 4],
-    };
+    let source_pixels = split_screen_pixels([255, 0, 0], [0, 255, 0]);
     let source_stalled = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(StallableScreenPreviewSource::new(
-            screen_data,
-            Arc::clone(&source_stalled),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                ExactScreenSource::stallable(source_pixels.clone(), Arc::clone(&source_stalled)),
+            )))
+            .expect("stallable exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3827,33 +4137,18 @@ async fn pipeline_gpu_fresh_screen_preview_does_not_publish_stale_colors_while_s
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
     state.render_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    let mut preview_canvas = Canvas::new(320, 200);
-    for y in 0..200 {
-        for x in 0..320 {
-            let color = if x < 160 {
-                Rgba::new(255, 0, 0, 255)
-            } else {
-                Rgba::new(0, 255, 0, 255)
-            };
-            preview_canvas.set_pixel(x, y, color);
-        }
-    }
-    let source_surface = PublishedSurface::from_owned_canvas(preview_canvas, 23, 41);
-    let screen_data = ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(source_surface),
-        source_width: 320,
-        source_height: 200,
-        letterbox: [0; 4],
-    };
+    let source_pixels = split_screen_pixels([255, 0, 0], [0, 255, 0]);
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenPreviewSource::new(screen_data)));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(ExactScreenSource::new(
+                source_pixels.clone(),
+            ))))
+            .expect("exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -3945,19 +4240,24 @@ async fn pipeline_gpu_fresh_screen_preview_publishes_latest_colors_after_deferre
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
     state.render_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    let initial_screen = preview_screen_data([255, 0, 0], [0, 255, 0], 1);
-    let intermediate_screen = preview_screen_data([0, 0, 255], [255, 255, 0], 2);
-    let latest_screen = preview_screen_data([0, 255, 255], [255, 0, 255], 3);
+    let initial_screen = split_screen_pixels([255, 0, 0], [0, 255, 0]);
+    let intermediate_screen = split_screen_pixels([0, 0, 255], [255, 255, 0]);
+    let latest_screen = split_screen_pixels([0, 255, 255], [255, 0, 255]);
     let advance_sequence = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(
-            vec![initial_screen, intermediate_screen, latest_screen],
-            Arc::clone(&advance_sequence),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                ExactScreenSource::sequenced(
+                    vec![initial_screen, intermediate_screen, latest_screen],
+                    Arc::clone(&advance_sequence),
+                ),
+            )))
+            .expect("sequenced exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4095,24 +4395,26 @@ async fn pipeline_gpu_fresh_screen_preview_keeps_latest_wins_under_sustained_upd
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
     state.render_acceleration_mode = RenderAccelerationMode::Gpu;
 
     let screens = vec![
-        preview_screen_data([255, 0, 0], [0, 255, 0], 1),
-        preview_screen_data([0, 0, 255], [255, 255, 0], 2),
-        preview_screen_data([0, 255, 255], [255, 0, 255], 3),
-        preview_screen_data([255, 128, 0], [0, 128, 255], 4),
-        preview_screen_data([32, 224, 96], [224, 32, 160], 5),
-        preview_screen_data([255, 255, 255], [16, 32, 48], 6),
+        split_screen_pixels([255, 0, 0], [0, 255, 0]),
+        split_screen_pixels([0, 0, 255], [255, 255, 0]),
+        split_screen_pixels([0, 255, 255], [255, 0, 255]),
+        split_screen_pixels([255, 128, 0], [0, 128, 255]),
+        split_screen_pixels([32, 224, 96], [224, 32, 160]),
+        split_screen_pixels([255, 255, 255], [16, 32, 48]),
     ];
     let advance_sequence = Arc::new(AtomicBool::new(false));
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(SequencedScreenPreviewSource::new(
-            screens,
-            Arc::clone(&advance_sequence),
-        )));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(
+                ExactScreenSource::sequenced(screens, Arc::clone(&advance_sequence)),
+            )))
+            .expect("sequenced exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4239,19 +4541,15 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
         BackendManager::new(),
     );
     state.screen_capture_configured = true;
+    configure_screen_acceleration(&mut state);
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockScreenSource::new(vec![
-            ZoneColors {
-                zone_id: "screen:sector_0_0".to_owned(),
-                colors: vec![[255, 0, 0]],
-            },
-            ZoneColors {
-                zone_id: "screen:sector_0_1".to_owned(),
-                colors: vec![[0, 255, 0]],
-            },
-        ])));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::screen(Box::new(ExactScreenSource::new(
+                split_screen_pixels([255, 0, 0], [0, 255, 0]),
+            ))))
+            .expect("exact screen source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4327,7 +4625,7 @@ async fn pipeline_applies_queued_layout_changes_on_the_next_frame() {
 #[tokio::test]
 async fn pipeline_retires_layout_updates_while_the_render_loop_is_paused() {
     let state = make_render_state(
-        idle_effect(),
+        active_builtin_effect("solid_color", solid_color_controls(32, 64, 255)),
         SpatialEngine::new(test_layout(vec![point_zone(
             "zone_sample",
             "mock:sample",
@@ -4341,27 +4639,47 @@ async fn pipeline_retires_layout_updates_while_the_render_loop_is_paused() {
         let mut rl = state.render_loop.write().await;
         rl.start();
     }
+    let mut frame_rx = state.event_bus.frame_receiver();
     let mut rt = RenderThread::spawn(state.clone());
 
-    // Stopping an effect pauses the loop, and a paused loop draws no frames.
-    // The transaction queue still has to be retired: the caller is blocked on
-    // it holding the layout update lock, so a queue that is only serviced on
-    // rendered frames wedges the daemon.
+    wait_for_frame_where(&mut frame_rx, |frame| {
+        frame.zones.iter().any(|zone| zone.zone_id == "zone_sample")
+    })
+    .await;
+
+    // A paused loop draws no frames, but its transaction queue still has to be
+    // retired. The caller holds the layout update lock while waiting, so a
+    // queue serviced only on rendered frames wedges the daemon.
     {
         let mut rl = state.render_loop.write().await;
         rl.pause();
     }
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
+    // Leave the rendered effect slot live while the authoritative scene
+    // becomes effectless, matching the two-phase layout activation boundary.
+    let zone_id = state
+        .scene_manager
+        .snapshot()
+        .await
+        .resolved_zones()
+        .first()
+        .expect("the active effect should own a zone")
+        .id;
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .clear_zone_effect(zone_id, None, EffectStopReason::Stopped)
+        .expect("the active effect should clear");
+    commit_render_mutation(&state, mutation).await;
+    let updated_layout = test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]);
     tokio::time::timeout(
         Duration::from_secs(5),
-        publish_layout(
-            &state,
-            test_layout(vec![point_zone("zone_sample", "mock:sample", 0.75, 0.5)]),
-        ),
+        publish_layout(&state, updated_layout.clone()),
     )
     .await
     .expect("a paused render loop must still retire layout transactions");
+
+    let active_layout = state.spatial_engine.layout();
+    assert_eq!(active_layout.id, updated_layout.id);
+    assert_eq!(active_layout.zones[0].position.x, 0.75);
 
     {
         let mut rl = state.render_loop.write().await;
@@ -4399,7 +4717,6 @@ async fn idle_pipeline_throttles_even_with_watch_receivers() {
     let got_extra_frame = frame_rx
         .has_changed()
         .expect("frame watch should remain connected");
-
     {
         let mut rl = state.render_loop.write().await;
         rl.stop();
@@ -4438,8 +4755,12 @@ async fn idle_pipeline_skips_spectrum_publication_without_receivers() {
     assert_eq!(state.event_bus.spectrum_receiver_count(), 0);
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
+                audio,
+            ))))
+            .expect("mock audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4495,8 +4816,12 @@ async fn render_thread_reuses_published_spectrum_bins_between_frames() {
     }
 
     {
-        let mut input_manager = state.input_manager.lock().await;
-        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        let input_manager = &state.input_manager;
+        input_manager
+            .add_source(ManagedSourceRole::audio(Box::new(MockAudioSource::new(
+                audio,
+            ))))
+            .expect("mock audio source should register");
         input_manager
             .start_all()
             .expect("input manager should start");
@@ -4783,7 +5108,7 @@ async fn release_sleep_clears_published_frame_and_canvas_once() {
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager,
         scene_plan,
-        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        input_manager: InputManager::new(),
         interaction_routing:
             hypercolor_daemon::interaction_routing::InteractionRoutingControl::default(),
         power_state,

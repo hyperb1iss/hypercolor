@@ -14,11 +14,7 @@ use hypercolor_daemon::macos_owner::{
 use serde_json::{Value, json};
 
 fn executable_path(label: &str) -> std::path::PathBuf {
-    std::env::current_dir()
-        .expect("fixture working directory should be absolute")
-        .join("Applications")
-        .join(label)
-        .join("hypercolor-daemon")
+    format!("/Applications/{label}/hypercolor-daemon").into()
 }
 
 fn transaction_id(value: &str) -> MacosHandoverTransactionId {

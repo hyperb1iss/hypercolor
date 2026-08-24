@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 hypercolor-driver-api = { workspace = true }
 hypercolor-persistence = { workspace = true }
+hypercolor-platform-fs = { workspace = true }
 hypercolor-types = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

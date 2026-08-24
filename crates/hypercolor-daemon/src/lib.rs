@@ -18,12 +18,16 @@ pub mod driver_inventory;
 pub mod extensions;
 pub mod interaction_routing;
 pub mod interactive_preview;
+pub mod launcher_claim;
 pub mod layout_auto_exclusions;
 pub mod layout_store;
 pub mod library;
 pub mod logical_devices;
 pub mod macos_owner;
-#[cfg(all(target_os = "macos", feature = "macos-tcc-canary"))]
+pub mod macos_service_identity;
+/// ScreenCaptureKit TCC canary harness; the feature is macOS-only and the
+/// module refuses other targets with a clear error.
+#[cfg(feature = "macos-tcc-canary")]
 pub mod macos_tcc_canary;
 pub mod mcp;
 pub mod mdns;

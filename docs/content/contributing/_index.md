@@ -78,7 +78,7 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 | `just daemon` | Daemon on `:9420` (preview profile, debug logging) |
 | `just daemon-servo` | Daemon with Servo HTML effect rendering enabled |
 | `just tui` | TUI client (starts a daemon if none is running) |
-| `just tray` | System tray applet |
+| `just app` | Unified desktop app with system tray |
 | `just cli` | The `hypercolor` CLI |
 | `just dev` | Daemon (Servo) and UI dev server together |
 | `just ui-dev` | Leptos dev server on `:9430`, proxies API to `:9420` |

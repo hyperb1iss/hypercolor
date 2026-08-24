@@ -19,6 +19,7 @@ use hypercolor_types::scene::{
 };
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use serde::Deserialize;
+#[cfg(unix)]
 use tracing::warn;
 use uuid::{Uuid, uuid};
 

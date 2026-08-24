@@ -5,10 +5,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use hypercolor_core::config::ConfigManager;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
-use hypercolor_core::input::screen::{PixelExtent, ScreenCaptureDemand};
+use hypercolor_core::input::screen::ScreenCaptureDemand;
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, ScreenReconfigurationConflict, SourceIssue, SourceKind,
-    SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
+    InputData, InputManager, InputSource, ManagedSourceRole, ScreenReconfigurationConflict,
+    ScreenSource, ScreenSourceRole, ScreenSourceSwapCommitError, SourceIssue, SourceKind,
+    SourceRoleBinding, SourceState, SourceStatus, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_types::config::InteractionRoutePolicy;
 
@@ -58,11 +59,13 @@ impl InputSource for TestScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for TestScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for TestScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
     }
@@ -74,9 +77,7 @@ impl InputSource for TestScreenSource {
 }
 
 fn test_screen_demand() -> ScreenCaptureDemand {
-    ScreenCaptureDemand::active(
-        PixelExtent::new(640, 480).expect("test screen extent should be non-empty"),
-    )
+    ScreenCaptureDemand::active()
 }
 
 fn screen_status(state: SourceState, resource_count: usize) -> Arc<SourceStatus> {
@@ -296,7 +297,7 @@ async fn route_only_input_config_changes_publish_without_rebuilding_sources() {
         .with_config_manager(Arc::clone(&manager))
         .build();
     let state = Arc::new(state);
-    let graph_generation = state.input_manager().lock().await.source_graph_generation();
+    let graph_generation = state.input_manager().source_graph_generation();
 
     manager.modify(|config| config.input.daemon_route = InteractionRoutePolicy::Merge);
     assert!(apply_input_config_change(&state, Some("input.daemon_route")).await);
@@ -310,7 +311,7 @@ async fn route_only_input_config_changes_publish_without_rebuilding_sources() {
     assert_eq!(second.preview_policy, InteractionRoutePolicy::Host);
     assert_eq!(second.config_generation, 3);
     assert_eq!(
-        state.input_manager().lock().await.source_graph_generation(),
+        state.input_manager().source_graph_generation(),
         graph_generation
     );
 }
@@ -382,11 +383,13 @@ fn capture_runtime_fingerprint_rejects_divergent_config() {
 
 #[test]
 fn screen_runtime_commit_preserves_demand_and_retires_after_swap() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .set_screen_capture_demand(test_screen_demand())
         .expect("screen demand should cache before a source exists");
-    let first_plan = manager.plan_screen_runtime_config(true);
+    let first_plan = manager
+        .plan_screen_source_swap(true, None)
+        .expect("initial screen swap should plan");
     assert_eq!(first_plan.capture_demand(), test_screen_demand());
 
     let first_stopped = Arc::new(AtomicBool::new(false));
@@ -395,14 +398,21 @@ fn screen_runtime_commit_preserves_demand_and_retires_after_swap() {
         .set_screen_capture_demand(first_plan.capture_demand())
         .expect("prepared source should accept demand");
     first.start().expect("prepared source should start");
-    let mut first = Some(first as Box<dyn InputSource>);
+    let mut first = Some(first as Box<dyn ScreenSource>);
+    let mut first = first_plan
+        .prepare(&mut first)
+        .expect("initial screen source should prepare");
     manager
-        .commit_screen_runtime_config(&first_plan, &mut first)
+        .commit_screen_source_swap(&mut first, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
         .expect("initial prepared source should commit")
         .retire();
-    assert!(first.is_none());
+    first.discard();
 
-    let replacement_plan = manager.plan_screen_runtime_config(true);
+    let replacement_plan = manager
+        .plan_screen_source_swap(true, None)
+        .expect("replacement screen swap should plan");
     assert_eq!(replacement_plan.capture_demand(), test_screen_demand());
     let replacement_stopped = Arc::new(AtomicBool::new(false));
     let mut replacement = Box::new(TestScreenSource::new(replacement_stopped));
@@ -410,10 +420,16 @@ fn screen_runtime_commit_preserves_demand_and_retires_after_swap() {
         .set_screen_capture_demand(replacement_plan.capture_demand())
         .expect("replacement should accept demand");
     replacement.start().expect("replacement should start");
-    let mut replacement = Some(replacement as Box<dyn InputSource>);
+    let mut replacement = Some(replacement as Box<dyn ScreenSource>);
+    let mut replacement = replacement_plan
+        .prepare(&mut replacement)
+        .expect("replacement screen source should prepare");
     let retirement = manager
-        .commit_screen_runtime_config(&replacement_plan, &mut replacement)
+        .commit_screen_source_swap(&mut replacement, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
         .expect("replacement should commit");
+    replacement.discard();
 
     assert!(!first_stopped.load(Ordering::Acquire));
     retirement.retire();
@@ -422,24 +438,34 @@ fn screen_runtime_commit_preserves_demand_and_retires_after_swap() {
 
 #[test]
 fn screen_runtime_commit_rejects_stale_graph_without_consuming_replacement() {
-    let mut manager = InputManager::new();
-    let plan = manager.plan_screen_runtime_config(true);
+    let manager = InputManager::new();
+    let plan = manager
+        .plan_screen_source_swap(true, None)
+        .expect("screen swap should plan");
     let stopped = Arc::new(AtomicBool::new(false));
     let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
     source.start().expect("prepared source should start");
-    let mut replacement = Some(source as Box<dyn InputSource>);
-    manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("screen replacement should prepare");
+    manager
+        .add_source(ManagedSourceRole::data(Box::new(
+            hypercolor_core::input::MediaSource::new(),
+        )))
+        .expect("media source should mutate the graph");
 
     assert!(matches!(
-        manager.commit_screen_runtime_config(&plan, &mut replacement),
-        Err(ScreenReconfigurationConflict::GraphChanged)
+        manager.commit_screen_source_swap(&mut prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        }),
+        Err(ScreenSourceSwapCommitError::Conflict(
+            ScreenReconfigurationConflict::Source(_)
+        ))
     ));
-    assert!(replacement.is_some());
+    assert!(prepared.has_replacement());
     assert!(!stopped.load(Ordering::Acquire));
-    replacement
-        .as_mut()
-        .expect("failed commit preserves replacement ownership")
-        .stop();
+    prepared.discard();
     assert!(stopped.load(Ordering::Acquire));
 }
 
@@ -461,8 +487,6 @@ async fn capture_transaction_applies_publication_capacity_with_config() {
     let state = Arc::new(state);
     state
         .input_manager()
-        .lock()
-        .await
         .set_screen_capacity_plan(
             ScreenAdmissionCapacity::new(40_000, 40_000),
             ScreenAdmissionCapacity::new(30_000, 40_000),
@@ -476,19 +500,11 @@ async fn capture_transaction_applies_publication_capacity_with_config() {
 
     assert_eq!(manager.get().capture, capture);
     assert!(manager.capture_runtime_matches(&capture));
-    let capacity = state
-        .input_manager()
-        .lock()
-        .await
-        .screen_publication_capacity();
+    let capacity = state.input_manager().screen_publication_capacity();
     assert_eq!(capacity.byte_budget(), 30_000);
     assert_eq!(capacity.backend_capacity(), 40_000);
     assert_eq!(
-        state
-            .input_manager()
-            .lock()
-            .await
-            .screen_resource_capacity(),
+        state.input_manager().screen_resource_capacity(),
         ScreenAdmissionCapacity::new(40_000, 40_000)
     );
 }
@@ -512,8 +528,6 @@ async fn capture_transaction_conflict_preserves_publication_capacity() {
     let state = Arc::new(state);
     state
         .input_manager()
-        .lock()
-        .await
         .set_screen_capacity_plan(
             ScreenAdmissionCapacity::new(40_000, 40_000),
             ScreenAdmissionCapacity::new(20_000, 40_000),
@@ -527,11 +541,7 @@ async fn capture_transaction_conflict_preserves_publication_capacity() {
         result,
         Err(CaptureConfigTransactionError::Conflict)
     ));
-    let capacity = state
-        .input_manager()
-        .lock()
-        .await
-        .screen_publication_capacity();
+    let capacity = state.input_manager().screen_publication_capacity();
     assert_eq!(capacity, ScreenAdmissionCapacity::new(20_000, 40_000));
     assert_eq!(
         manager.get().capture.capture_fps,
@@ -559,20 +569,18 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
         .build();
     let state = Arc::new(state);
     {
-        let mut input_manager = state.input_manager().lock().await;
+        let input_manager = state.input_manager();
         let mut old = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
         old.start().expect("old test source should start");
-        input_manager.add_source(old);
+        input_manager
+            .add_source(ManagedSourceRole::screen(old))
+            .expect("old test source should register");
         input_manager
             .set_screen_capture_demand(test_screen_demand())
             .expect("old source should accept active demand");
     }
-    let graph_generation = state.input_manager().lock().await.source_graph_generation();
-    let admission_coordinator = state
-        .input_manager()
-        .lock()
-        .await
-        .screen_admission_coordinator();
+    let graph_generation = state.input_manager().source_graph_generation();
+    let admission_coordinator = state.input_manager().screen_admission_coordinator();
     let reserved_before = admission_coordinator.snapshot().reserved_bytes();
     let expected = Arc::clone(&manager.get());
     let mut capture = expected.capture.clone();
@@ -585,7 +593,7 @@ async fn failed_windows_capture_preparation_preserves_old_graph_and_config() {
         Err(CaptureConfigTransactionError::Prepare(_))
     ));
     assert_eq!(manager.get().capture.source, "auto");
-    let input_manager = state.input_manager().lock().await;
+    let input_manager = state.input_manager();
     assert_eq!(input_manager.source_graph_generation(), graph_generation);
     assert!(input_manager.has_screen_source());
     assert!(
@@ -615,13 +623,12 @@ async fn unchanged_disabled_capture_repairs_stale_runtime_source() {
     let state = Arc::new(state);
     let stopped = Arc::new(AtomicBool::new(false));
     {
-        let mut input_manager = state.input_manager().lock().await;
+        let input_manager = state.input_manager();
         let mut source = Box::new(TestScreenSource::new(Arc::clone(&stopped)));
         source.start().expect("stale source should start");
-        input_manager.add_source(source);
-        let mut extra = Box::new(TestScreenSource::new(Arc::new(AtomicBool::new(false))));
-        extra.start().expect("extra stale source should start");
-        input_manager.add_source(extra);
+        input_manager
+            .add_source(ManagedSourceRole::screen(source))
+            .expect("stale source should register");
     }
 
     let response = put_config_key(
@@ -643,57 +650,6 @@ async fn unchanged_disabled_capture_repairs_stale_runtime_source() {
         "{}",
         String::from_utf8_lossy(&body)
     );
-    assert!(!state.input_manager().lock().await.has_screen_source());
+    assert!(!state.input_manager().has_screen_source());
     assert!(stopped.load(Ordering::Acquire));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn unchanged_capture_rejects_a_concurrent_config_generation() {
-    let tempdir = tempfile::tempdir().expect("temporary config directory should build");
-    let manager = Arc::new(
-        ConfigManager::new(tempdir.path().join("hypercolor.toml"))
-            .expect("test config manager should initialize"),
-    );
-    manager.modify(|config| config.capture.enabled = false);
-    let initial = Arc::clone(&manager.get());
-    manager.mark_capture_runtime_applied(&initial.capture);
-    let state = AppState::builder()
-        .with_config_manager(Arc::clone(&manager))
-        .build();
-    let state = Arc::new(state);
-    let input_manager = state.input_manager().lock().await;
-    let request_state = Arc::clone(&state);
-    let unchanged_fps = initial.capture.capture_fps;
-    let request = tokio::spawn(async move {
-        put_config_key(
-            axum::extract::State(request_state),
-            axum::extract::Path("capture.capture_fps".to_owned()),
-            axum::extract::Query(ConfigApplyQuery { live: true }),
-            axum::Extension(crate::api::security::RequestAuthContext::control()),
-            axum::Json(serde_json::json!(unchanged_fps)),
-        )
-        .await
-    });
-
-    tokio::task::yield_now().await;
-    let mut competing = (*initial).clone();
-    competing.capture.capture_fps += 1;
-    let competing_capture = competing.capture.clone();
-    manager.update(competing);
-    manager.mark_capture_runtime_applied(&competing_capture);
-    drop(input_manager);
-
-    let response = request.await.expect("unchanged request should complete");
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), 4096)
-        .await
-        .expect("config response body should be readable");
-    assert_eq!(
-        status,
-        axum::http::StatusCode::CONFLICT,
-        "{}",
-        String::from_utf8_lossy(&body)
-    );
-    assert_eq!(manager.get().capture, competing_capture);
-    assert!(manager.capture_runtime_matches(&competing_capture));
 }

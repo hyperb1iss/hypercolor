@@ -27,8 +27,11 @@ servo = [
     "dep:profile_traits",
     "dep:dpi",
     "dep:gleam",
-    "dep:raw-window-handle",
-    "dep:tao",
+    "hypercolor-gpu-frame/servo-context",
+    # The Windows CPU path renders through a hidden native window; the crate
+    # stubs to "no platform" elsewhere.
+    "dep:hypercolor-windows-gpu-interop",
+    "hypercolor-windows-gpu-interop/servo-window",
 ]
 servo-gpu-import = [
     "servo",
@@ -43,6 +46,7 @@ servo-gpu-import = [
 
 [dependencies]
 hypercolor-color = { workspace = true }
+hypercolor-gpu-frame = { workspace = true }
 hypercolor-types = { workspace = true }
 # Unconditional: the shared event vocabulary and the decoding arithmetic
 # compile everywhere, which is what lets Linux CI test the Windows key tables.
@@ -51,10 +55,20 @@ hypercolor-windows-input = { path = "../hypercolor-windows-input" }
 # the capture crate supplies stubs when DXGI is unavailable.
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture" }
 hypercolor-macos-input = { workspace = true }
+# Unconditional: every capture backend compiles on every target so the shared
+# ScreenCaptureAdapter is verifiable anywhere; the interop crate supplies
+# stubs when PipeWire and the XDG portal are unavailable.
+hypercolor-pipewire-interop = { workspace = true }
+hypercolor-linux-input = { workspace = true }
 hypercolor-macos-capture = { workspace = true }
 hypercolor-driver-api = { workspace = true }
 hypercolor-hal = { workspace = true }
+hypercolor-platform-fs = { workspace = true }
 hypercolor-persistence = { workspace = true }
+# Unconditional: the Windows WMI/PawnIO sensor cascade and board probe stub
+# to "nothing to report" elsewhere, so the sensor sampler stays neutral.
+hypercolor-windows-telemetry = { workspace = true }
+hypercolor-worker-retention = { workspace = true }
 hypercolor-linux-gpu-interop = { workspace = true, optional = true }
 hypercolor-macos-gpu-interop = { workspace = true, optional = true }
 hypercolor-windows-gpu-interop = { workspace = true, optional = true }
@@ -106,10 +120,10 @@ tempfile = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libpulse-binding = { workspace = true }
-ashpd = { workspace = true }
-pipewire = { workspace = true }
-evdev = { workspace = true }
 zbus = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+hypercolor-macos-media = { path = "../hypercolor-macos-media" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", default-features = false, features = [
@@ -118,10 +132,6 @@ windows = { version = "0.62", default-features = false, features = [
     "Storage_Streams",
 ] }
 servo = { workspace = true, features = ["baked-in-resources", "js_jit", "no-wgl"], optional = true }
-raw-window-handle = { version = "0.6", optional = true }
-tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
-wmi = { workspace = true }
-hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio" }
 
 [dev-dependencies]
 hypercolor-persistence = { workspace = true, features = ["persistence-test-hooks"] }
@@ -133,6 +143,7 @@ criterion = { workspace = true }
 gif = { workspace = true }
 pollster = { workspace = true }
 stats_alloc = { workspace = true }
+trybuild = "1.0.120"
 
 [[test]]
 name = "alloc_contract_tests"

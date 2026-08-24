@@ -12,7 +12,9 @@ use anyhow::Result;
 use hypercolor_types::net::NetStats;
 use sysinfo::Networks;
 
-use super::traits::{InputData, InputSource};
+use super::traits::{
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, SourceRoleBinding,
+};
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -146,6 +148,16 @@ impl InputSource for NetSource {
 
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
+    }
+}
+
+impl SourceRoleBinding for NetSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for NetSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Network
     }
 }
 

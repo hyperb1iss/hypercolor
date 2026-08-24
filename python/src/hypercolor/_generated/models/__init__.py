@@ -61,6 +61,7 @@ from .audio_band import AudioBand
 from .audio_device_info import AudioDeviceInfo
 from .audio_devices_response import AudioDevicesResponse
 from .authorize_input_monitoring_response_200 import AuthorizeInputMonitoringResponse200
+from .authorize_media_response_200 import AuthorizeMediaResponse200
 from .authorize_screen_recording_response_200 import AuthorizeScreenRecordingResponse200
 from .b_tree_map import BTreeMap
 from .b_tree_map_additional_property_type_0 import BTreeMapAdditionalPropertyType0
@@ -321,6 +322,15 @@ from .driver_presentation import DriverPresentation
 from .driver_protocol_descriptor import DriverProtocolDescriptor
 from .driver_summary import DriverSummary
 from .driver_summary_list_response import DriverSummaryListResponse
+from .driver_transport_availability_type_0 import DriverTransportAvailabilityType0
+from .driver_transport_availability_type_0_status import (
+    DriverTransportAvailabilityType0Status,
+)
+from .driver_transport_availability_type_1 import DriverTransportAvailabilityType1
+from .driver_transport_availability_type_1_status import (
+    DriverTransportAvailabilityType1Status,
+)
+from .driver_transport_descriptor import DriverTransportDescriptor
 from .driver_transport_kind_type_0 import DriverTransportKindType0
 from .driver_transport_kind_type_1 import DriverTransportKindType1
 from .driver_transport_kind_type_2 import DriverTransportKindType2
@@ -388,10 +398,6 @@ from .identify_request import IdentifyRequest
 from .identify_segment_response import IdentifySegmentResponse
 from .identify_segment_response_200 import IdentifySegmentResponse200
 from .input_source_issue_status import InputSourceIssueStatus
-from .input_source_platform_status_type_0 import InputSourcePlatformStatusType0
-from .input_source_platform_status_type_0_type import InputSourcePlatformStatusType0Type
-from .input_source_platform_status_type_1 import InputSourcePlatformStatusType1
-from .input_source_platform_status_type_1_type import InputSourcePlatformStatusType1Type
 from .input_source_status import InputSourceStatus
 from .input_status import InputStatus
 from .install_effect_response_201 import InstallEffectResponse201
@@ -445,8 +451,6 @@ from .list_simulated_displays_response_200 import ListSimulatedDisplaysResponse2
 from .list_templates_response_200 import ListTemplatesResponse200
 from .live_section import LiveSection
 from .loop_mode import LoopMode
-from .macos_architecture import MacosArchitecture
-from .macos_authorization_state import MacosAuthorizationState
 from .macos_capability_owner import MacosCapabilityOwner
 from .macos_daemon_handover_phase import MacosDaemonHandoverPhase
 from .macos_daemon_owner_conflict_status import MacosDaemonOwnerConflictStatus
@@ -454,22 +458,11 @@ from .macos_daemon_owner_recovery_required_status import (
     MacosDaemonOwnerRecoveryRequiredStatus,
 )
 from .macos_daemon_ownership_status import MacosDaemonOwnershipStatus
-from .macos_frame_drop import MacosFrameDrop
-from .macos_input_telemetry import MacosInputTelemetry
-from .macos_protected_source_state import MacosProtectedSourceState
-from .macos_screen_telemetry import MacosScreenTelemetry
-from .macos_screen_timing import MacosScreenTiming
-from .macos_selection_state_type_0 import MacosSelectionStateType0
-from .macos_selection_state_type_0_type import MacosSelectionStateType0Type
-from .macos_selection_state_type_1 import MacosSelectionStateType1
-from .macos_selection_state_type_1_type import MacosSelectionStateType1Type
-from .macos_selection_state_type_2 import MacosSelectionStateType2
-from .macos_selection_state_type_2_type import MacosSelectionStateType2Type
-from .macos_tahoe_capabilities import MacosTahoeCapabilities
-from .macos_tahoe_selection_capabilities import MacosTahoeSelectionCapabilities
-from .macos_timing import MacosTiming
 from .media_asset_record import MediaAssetRecord
 from .media_asset_record_list_response import MediaAssetRecordListResponse
+from .media_authorization_adapter import MediaAuthorizationAdapter
+from .media_authorization_request import MediaAuthorizationRequest
+from .media_authorization_response import MediaAuthorizationResponse
 from .media_playback import MediaPlayback
 from .member_placement import MemberPlacement
 from .normalized_position import NormalizedPosition
@@ -595,6 +588,8 @@ from .simulated_display import SimulatedDisplay
 from .simulated_display_list_item import SimulatedDisplayListItem
 from .snapshot_scene_request import SnapshotSceneRequest
 from .snapshot_scene_response_201 import SnapshotSceneResponse201
+from .source_diagnostics_display_field import SourceDiagnosticsDisplayField
+from .source_diagnostics_envelope import SourceDiagnosticsEnvelope
 from .spatial_layout import SpatialLayout
 from .strip_direction import StripDirection
 from .system_resource import SystemResource
@@ -698,6 +693,7 @@ __all__ = (
     "AudioDeviceInfo",
     "AudioDevicesResponse",
     "AuthorizeInputMonitoringResponse200",
+    "AuthorizeMediaResponse200",
     "AuthorizeScreenRecordingResponse200",
     "BindingMap",
     "BindingSourceType0",
@@ -912,6 +908,11 @@ __all__ = (
     "DriverProtocolDescriptor",
     "DriverSummary",
     "DriverSummaryListResponse",
+    "DriverTransportAvailabilityType0",
+    "DriverTransportAvailabilityType0Status",
+    "DriverTransportAvailabilityType1",
+    "DriverTransportAvailabilityType1Status",
+    "DriverTransportDescriptor",
     "DriverTransportKindType0",
     "DriverTransportKindType1",
     "DriverTransportKindType2",
@@ -979,10 +980,6 @@ __all__ = (
     "IdentifySegmentResponse",
     "IdentifySegmentResponse200",
     "InputSourceIssueStatus",
-    "InputSourcePlatformStatusType0",
-    "InputSourcePlatformStatusType0Type",
-    "InputSourcePlatformStatusType1",
-    "InputSourcePlatformStatusType1Type",
     "InputSourceStatus",
     "InputStatus",
     "InstalledEffectResponse",
@@ -1034,29 +1031,16 @@ __all__ = (
     "ListTemplatesResponse200",
     "LiveSection",
     "LoopMode",
-    "MacosArchitecture",
-    "MacosAuthorizationState",
     "MacosCapabilityOwner",
     "MacosDaemonHandoverPhase",
     "MacosDaemonOwnerConflictStatus",
     "MacosDaemonOwnerRecoveryRequiredStatus",
     "MacosDaemonOwnershipStatus",
-    "MacosFrameDrop",
-    "MacosInputTelemetry",
-    "MacosProtectedSourceState",
-    "MacosScreenTelemetry",
-    "MacosScreenTiming",
-    "MacosSelectionStateType0",
-    "MacosSelectionStateType0Type",
-    "MacosSelectionStateType1",
-    "MacosSelectionStateType1Type",
-    "MacosSelectionStateType2",
-    "MacosSelectionStateType2Type",
-    "MacosTahoeCapabilities",
-    "MacosTahoeSelectionCapabilities",
-    "MacosTiming",
     "MediaAssetRecord",
     "MediaAssetRecordListResponse",
+    "MediaAuthorizationAdapter",
+    "MediaAuthorizationRequest",
+    "MediaAuthorizationResponse",
     "MediaPlayback",
     "MemberPlacement",
     "NormalizedPosition",
@@ -1176,6 +1160,8 @@ __all__ = (
     "SimulatedDisplayListItem",
     "SnapshotSceneRequest",
     "SnapshotSceneResponse201",
+    "SourceDiagnosticsDisplayField",
+    "SourceDiagnosticsEnvelope",
     "SpatialLayout",
     "StripDirection",
     "SystemResource",

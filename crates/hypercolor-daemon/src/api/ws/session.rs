@@ -29,10 +29,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use hypercolor_core::input::screen::{
-    PixelExtent, RegisteredScreenBranchDemand, ScreenAspectPolicy, ScreenExtentRequest,
-    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenSourceSelector, ScreenUpscalePolicy,
+use hypercolor_core::input::screen::consumer::PixelExtent;
+use hypercolor_core::input::screen::planner::{
+    ScreenAspectPolicy, ScreenExtentRequest, ScreenProcessingProfile, ScreenPublicationKind,
+    ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
@@ -75,14 +75,16 @@ use crate::interactive_preview::{
     InteractivePreviewTarget as RuntimeInteractivePreviewTarget,
 };
 use crate::preview_runtime::PreviewPixelFormat;
+use crate::render_thread::InputScreenBranchRequest;
 use crate::render_thread::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationDemandRegistration, InputScreenBranchDemand,
+    InputPublicationDemandRegistration,
 };
 use crate::zone_layout_preview::ZoneLayoutPreviewOwner;
 
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+const SENSOR_STREAM_HZ: u32 = 1;
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
 pub(crate) async fn ws_handler(
@@ -550,9 +552,11 @@ pub(super) struct WsInputDemandLeases {
     spectrum: Option<InputPublicationDemandRegistration>,
     screen: Option<InputPublicationDemandRegistration>,
     interaction: Option<InputPublicationDemandRegistration>,
+    sensors: Option<InputPublicationDemandRegistration>,
     current_spectrum: Option<InputPublicationDemand>,
     current_screen: Option<InputPublicationDemand>,
     current_interaction: Option<InputPublicationDemand>,
+    current_sensors: Option<InputPublicationDemand>,
     #[cfg(test)]
     screen_requested_extent: Option<PixelExtent>,
 }
@@ -576,9 +580,11 @@ impl WsInputDemandLeases {
             spectrum: None,
             screen: None,
             interaction: None,
+            sensors: None,
             current_spectrum: None,
             current_screen: None,
             current_interaction: None,
+            current_sensors: None,
             #[cfg(test)]
             screen_requested_extent: None,
         }
@@ -647,7 +653,6 @@ impl WsInputDemandLeases {
                     ScreenPublicationKind::Surface,
                     extent_request,
                     canvas_hz,
-                    canvas_extent,
                 ));
                 requested_extent = Some(canvas_extent);
             }
@@ -664,16 +669,13 @@ impl WsInputDemandLeases {
                     },
                     extent_request,
                     zones_hz,
-                    self.screen_base_extent,
                 ));
                 requested_extent.get_or_insert(self.screen_base_extent);
             }
             let requested_extent =
                 requested_extent.expect("an active screen subscription has an extent");
-            (
-                Some(InputPublicationDemand::default().with_screen_branches(branches)),
-                Some(requested_extent),
-            )
+            let demand = InputPublicationDemand::default().with_renderer_screen_requests(branches);
+            (Some(demand), Some(requested_extent))
         } else {
             (None, None)
         };
@@ -697,6 +699,12 @@ impl WsInputDemandLeases {
                 InputPublicationDemand::default().with_source(
                     hypercolor_core::input::SourceKind::Interaction,
                     self.interaction_hz,
+                )
+            }),
+            sensors: subscriptions.contains(TopicId::Sensors).then(|| {
+                InputPublicationDemand::default().with_source(
+                    hypercolor_core::input::SourceKind::Sensors,
+                    SENSOR_STREAM_HZ,
                 )
             }),
             #[cfg(test)]
@@ -724,6 +732,12 @@ impl WsInputDemandLeases {
             &mut self.interaction,
             &mut self.current_interaction,
             projected.interaction,
+        );
+        Self::synchronize_domain(
+            &self.demands,
+            &mut self.sensors,
+            &mut self.current_sensors,
+            projected.sensors,
         );
         #[cfg(test)]
         {
@@ -784,27 +798,25 @@ pub(super) struct ProjectedInputDemand {
     spectrum: Option<InputPublicationDemand>,
     screen: Option<InputPublicationDemand>,
     interaction: Option<InputPublicationDemand>,
+    sensors: Option<InputPublicationDemand>,
     #[cfg(test)]
     screen_requested_extent: Option<PixelExtent>,
 }
 
+/// One browser screen request, bound to an executor by the demand registry
+/// under the screen source's native execution policy.
 fn screen_branch_demand(
     kind: ScreenPublicationKind,
     extent: ScreenExtentRequest,
     requested_hz: NonZeroU32,
-    legacy_extent: PixelExtent,
-) -> InputScreenBranchDemand {
-    let request = ScreenPublicationRequest::new(
+) -> InputScreenBranchRequest {
+    InputScreenBranchRequest::new(
         ScreenSourceSelector::Configured,
         kind,
-        ScreenPublicationExecutorRequest::Cpu,
         extent,
         ScreenAspectPolicy::Contain,
         Arc::new(ScreenProcessingProfile::default()),
-    );
-    InputScreenBranchDemand::new(
-        RegisteredScreenBranchDemand::new(request, requested_hz),
-        legacy_extent,
+        requested_hz,
     )
 }
 

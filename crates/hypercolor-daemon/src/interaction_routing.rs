@@ -1,11 +1,14 @@
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
+use hypercolor_core::effect::InputSourceAvailability;
 use hypercolor_core::input::browser::{
     BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle, BrowserInputPublicationId,
     BrowserInputRegistryHandle, BrowserInputRegistrySnapshot,
 };
 use hypercolor_core::input::routing::{InteractionRouteRequest, SourceIncarnation};
+use hypercolor_core::input::{SourceFreshness, SourceKind, SourceState, SourceStatusHandle};
 use hypercolor_types::config::InteractionRoutePolicy;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +24,30 @@ pub struct InteractionRoutingSnapshot {
     pub daemon_policy: InteractionRoutePolicy,
     pub preview_policy: InteractionRoutePolicy,
     pub authoritative_browser: Option<AuthoritativeBrowserLease>,
+}
+
+impl InteractionRoutingSnapshot {
+    #[must_use]
+    pub fn daemon_request(&self) -> InteractionRouteRequest {
+        InteractionRouteRequest {
+            policy: self.daemon_policy,
+            browser_source: self
+                .authoritative_browser
+                .as_ref()
+                .map(|owner| SourceIncarnation::browser_child(owner.publication_id.get())),
+        }
+    }
+
+    #[must_use]
+    pub fn preview_request(
+        &self,
+        publication_id: BrowserInputPublicationId,
+    ) -> InteractionRouteRequest {
+        InteractionRouteRequest {
+            policy: self.preview_policy,
+            browser_source: Some(SourceIncarnation::browser_child(publication_id.get())),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,24 +198,12 @@ impl InteractionRoutingControl {
 
     #[must_use]
     pub fn daemon_request(&self) -> InteractionRouteRequest {
-        let snapshot = self.snapshot();
-        InteractionRouteRequest {
-            policy: snapshot.daemon_policy,
-            browser_source: snapshot
-                .authoritative_browser
-                .as_ref()
-                .map(|owner| SourceIncarnation::browser_child(owner.publication_id.get())),
-        }
+        self.snapshot().daemon_request()
     }
 
     #[must_use]
     pub fn preview_request(&self, attachment: &BrowserInputAttachment) -> InteractionRouteRequest {
-        InteractionRouteRequest {
-            policy: self.snapshot().preview_policy,
-            browser_source: Some(SourceIncarnation::browser_child(
-                attachment.publication_id().get(),
-            )),
-        }
+        self.snapshot().preview_request(attachment.publication_id())
     }
 
     fn attachment_is_active(&self, attachment: &BrowserInputAttachment) -> bool {
@@ -223,6 +238,33 @@ impl InteractionRoutingControl {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+pub(crate) fn selected_input_availability<'a>(
+    statuses: impl IntoIterator<Item = &'a SourceStatusHandle>,
+    now: Instant,
+) -> InputSourceAvailability {
+    let mut availability = InputSourceAvailability::default();
+    for source in statuses {
+        let source = source.availability_at(now);
+        if source.retired
+            || source.kind != SourceKind::Interaction
+            || !(source.configured && source.consented && source.demanded)
+        {
+            continue;
+        }
+
+        availability.routed = true;
+        let healthy = matches!(source.state, SourceState::Live | SourceState::Degraded);
+        availability.healthy |= healthy;
+        availability.degraded |= source.state == SourceState::Degraded;
+        availability.fresh |= healthy
+            && matches!(
+                source.freshness,
+                SourceFreshness::Fresh | SourceFreshness::NotApplicable
+            );
+    }
+    availability
 }
 
 fn lease_matches_attachment(

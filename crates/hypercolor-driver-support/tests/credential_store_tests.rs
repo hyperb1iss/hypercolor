@@ -293,3 +293,108 @@ async fn credential_store_restricts_existing_secret_file_permissions() -> TestRe
 
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn credential_store_refuses_symlinked_store_and_seed() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let tempdir = tempdir()?;
+    let store = CredentialStore::open(tempdir.path()).await?;
+    store
+        .store_driver_json("alpha", "bridge-1", serde_json::json!({ "api_key": "key" }))
+        .await?;
+    drop(store);
+
+    let store_path = tempdir.path().join("credentials.json.enc");
+    let relocated = tempdir.path().join("relocated.enc");
+    std::fs::rename(&store_path, &relocated)?;
+    symlink(&relocated, &store_path)?;
+
+    assert!(
+        CredentialStore::open(tempdir.path()).await.is_err(),
+        "a symlinked store must be refused"
+    );
+    assert!(
+        CredentialStore::open_blocking(tempdir.path()).is_err(),
+        "a symlinked store must be refused on the blocking path"
+    );
+    assert!(std::fs::symlink_metadata(&store_path)?.is_symlink());
+    assert!(relocated.is_file(), "refusal must not disturb the target");
+
+    std::fs::remove_file(&store_path)?;
+    std::fs::rename(&relocated, &store_path)?;
+    let seed_path = tempdir.path().join(".credential_seed");
+    let relocated_seed = tempdir.path().join("relocated_seed");
+    std::fs::rename(&seed_path, &relocated_seed)?;
+    symlink(&relocated_seed, &seed_path)?;
+
+    assert!(
+        CredentialStore::open(tempdir.path()).await.is_err(),
+        "a symlinked seed must be refused"
+    );
+    assert!(std::fs::symlink_metadata(&seed_path)?.is_symlink());
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_persist_leaves_prior_store_readable() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+
+    if std::fs::metadata("/")?.uid() == effective_uid() {
+        eprintln!("skipping: root bypasses directory permission checks");
+        return Ok(());
+    }
+
+    let tempdir = tempdir()?;
+    let store = CredentialStore::open(tempdir.path()).await?;
+    store
+        .store_driver_json(
+            "alpha",
+            "bridge-1",
+            serde_json::json!({ "api_key": "first" }),
+        )
+        .await?;
+
+    set_file_mode(tempdir.path(), 0o500)?;
+    let failed = store
+        .store_driver_json(
+            "alpha",
+            "bridge-1",
+            serde_json::json!({ "api_key": "second" }),
+        )
+        .await;
+    set_file_mode(tempdir.path(), 0o700)?;
+    assert!(failed.is_err(), "a sealed directory must fail the persist");
+
+    let leftovers: Vec<_> = std::fs::read_dir(tempdir.path())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no temp files may remain: {leftovers:?}"
+    );
+
+    let reopened = CredentialStore::open(tempdir.path()).await?;
+    assert_eq!(
+        reopened.get_driver_json("alpha", "bridge-1").await,
+        Some(serde_json::json!({ "api_key": "first" }))
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt as _;
+
+    // The effective uid owns any file this process creates.
+    let probe = tempfile::NamedTempFile::new().expect("probe file");
+    std::fs::metadata(probe.path())
+        .expect("probe metadata")
+        .uid()
+}

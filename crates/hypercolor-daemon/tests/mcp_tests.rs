@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::{
-    InputData, InputSource, SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter,
+    AudioSource, AudioSourceRole, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    SourceKind, SourceRoleBinding, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::scene::OutputPlacement;
 use hypercolor_daemon::api;
@@ -157,6 +158,12 @@ impl InputSource for FailedInputSource {
     }
 }
 
+impl SourceRoleBinding for FailedInputSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for FailedInputSource {}
+
 #[tokio::test]
 async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -269,8 +276,10 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
     let (state, _tempdir) = isolated_state_with_tempdir();
 
     {
-        let mut manager = state.input_manager().lock().await;
-        manager.add_source(Box::new(FailedInputSource::new()));
+        let manager = state.input_manager();
+        manager
+            .add_source(ManagedSourceRole::audio(Box::new(FailedInputSource::new())))
+            .expect("failed audio source should register");
         manager.start_all().expect("test input graph should start");
     }
 
@@ -296,23 +305,20 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
 }
 
 #[tokio::test]
-async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
+async fn mcp_status_surfaces_are_exact_with_running_input_manager() {
     let (state, _tempdir) = isolated_state_with_tempdir();
 
     state
         .input_manager()
-        .lock()
-        .await
         .start_all()
         .expect("input manager should start");
-    let manager_guard = state.input_manager().lock().await;
 
     let status = tokio::time::timeout(
         Duration::from_secs(1),
         execute_tool_with_state("get_status", &json!({}), &state),
     )
     .await
-    .expect("get_status must not wait for the input manager")
+    .expect("get_status should respond promptly")
     .expect("get_status should succeed");
     assert_eq!(status["inputs"]["sources"], json!([]));
     assert!(status["inputs"]["source_graph_generation"].is_number());
@@ -322,7 +328,7 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
         read_resource_with_state("hypercolor://state", &state),
     )
     .await
-    .expect("state resource must not wait for the input manager")
+    .expect("state resource should respond promptly")
     .expect("state resource should exist");
     assert_eq!(status, resource, "tool and resource payloads must be exact");
     assert_eq!(resource["inputs"]["sources"], json!([]));
@@ -332,9 +338,8 @@ async fn mcp_status_surfaces_are_exact_while_input_manager_is_held() {
         execute_tool_with_state("diagnose", &json!({}), &state),
     )
     .await
-    .expect("diagnose must not wait for the input manager")
+    .expect("diagnose should respond promptly")
     .expect("diagnose should succeed");
-    drop(manager_guard);
 
     assert_eq!(diagnose["snapshot"]["input"]["sources"], json!([]));
 }

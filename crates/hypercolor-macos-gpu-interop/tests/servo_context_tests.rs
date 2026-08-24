@@ -3,7 +3,7 @@
 use dpi::PhysicalSize;
 use gleam::gl;
 use hypercolor_macos_gpu_interop::{
-    ImportedFrameFormat, MacosHardwareRenderingContext, MacosServoFrameOrigin,
+    FrameOrigin, ImportedFrameFormat, MacosHardwareRenderingContext,
 };
 use objc2_io_surface::{IOSurfaceLockOptions, IOSurfaceRef};
 use paint_api::rendering_context::RenderingContext;
@@ -30,7 +30,7 @@ fn hardware_context_reads_back_and_exposes_iosurface() -> Result<(), String> {
     assert_eq!(native_frame.width, WIDTH);
     assert_eq!(native_frame.height, HEIGHT);
     assert_eq!(native_frame.format, ImportedFrameFormat::Bgra8Unorm);
-    assert_eq!(native_frame.origin, MacosServoFrameOrigin::BottomLeft);
+    assert_eq!(native_frame.origin, FrameOrigin::BottomLeft);
     assert_ne!(native_frame.surface_id, 0);
     assert_ne!(native_frame.content_generation, 0);
     assert_eq!(native_frame.iosurface.width(), WIDTH as usize);

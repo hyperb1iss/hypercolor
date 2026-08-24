@@ -3,13 +3,15 @@ use leptos_icons::Icon;
 
 use hypercolor_types::config::HypercolorConfig;
 
-use crate::api::{self, MacosCapabilityOwner, MacosDaemonOwnershipStatus};
+use crate::api::{
+    self, DaemonRunMode, ServiceIdentity, ServiceManager, ServiceStatus, SystemStatusServiceExt,
+};
 use crate::app::WsContext;
 use crate::components::settings_controls::*;
 use crate::icons::*;
 use crate::tauri_bridge::{
-    self, MacosDaemonOwnerChoice, MacosOwnerCoordinatorOutcome, MacosOwnerRemedy,
-    WindowsDaemonServiceStatus, windows_daemon_service_conflict,
+    self, DaemonLauncherStatus, MacosDaemonOwnerChoice, MacosOwnerCoordinatorOutcome,
+    MacosOwnerRemedy, managed_daemon_launcher_active,
 };
 use crate::toasts;
 
@@ -156,12 +158,12 @@ fn MacosDaemonOwnershipPanel() -> impl IntoView {
     let native_available = tauri_bridge::is_tauri_available();
     let ownership = LocalResource::new(move || {
         let generation = ws.connection_generation.get();
-        let event = ws.last_macos_daemon_ownership_event.get();
+        let event = ws.last_service_identity_event.get();
         async move {
             let _ = (generation, event);
             api::fetch_status()
                 .await
-                .map(|status| status.macos_daemon_ownership)
+                .map(|status| status.service_status())
         }
     });
     let offline = LocalResource::new(tauri_bridge::macos_daemon_owner_offline_status);
@@ -312,7 +314,7 @@ fn MacosDaemonOwnerOfflinePanel(
 
 #[component]
 fn MacosDaemonOwnershipStatusPanel(
-    status: MacosDaemonOwnershipStatus,
+    status: ServiceStatus,
     native_available: bool,
     #[prop(into)] switching: Signal<Option<MacosDaemonOwnerChoice>>,
     #[prop(into)] result_message: Signal<Option<String>>,
@@ -332,8 +334,8 @@ fn MacosDaemonOwnershipStatusPanel(
                         <div class="mt-0.5 text-fg-secondary">
                             {format!(
                                 "{} is running now; {} also tried to start. Pick which one should own your lighting.",
-                                humanize_owner(conflict.active.as_str()),
-                                humanize_owner(conflict.contender.as_str()),
+                                humanize_identity(&conflict.active),
+                                humanize_identity(&conflict.contender),
                             )}
                         </div>
                     </div>
@@ -377,16 +379,16 @@ fn MacosDaemonOwnershipStatusPanel(
     }
 }
 
-fn macos_owner_choices(status: &MacosDaemonOwnershipStatus) -> Vec<MacosDaemonOwnerChoice> {
+fn macos_owner_choices(status: &ServiceStatus) -> Vec<MacosDaemonOwnerChoice> {
     let mut choices = Vec::new();
-    for owner in [
-        Some(status.active_owner),
-        status.conflict.as_ref().map(|conflict| conflict.contender),
+    for identity in [
+        Some(&status.identity),
+        status.conflict.as_ref().map(|conflict| &conflict.contender),
     ]
     .into_iter()
     .flatten()
     {
-        if let Some(choice) = macos_owner_choice(owner)
+        if let Some(choice) = macos_owner_choice(identity)
             && !choices.contains(&choice)
         {
             choices.push(choice);
@@ -395,14 +397,32 @@ fn macos_owner_choices(status: &MacosDaemonOwnershipStatus) -> Vec<MacosDaemonOw
     choices
 }
 
-const fn macos_owner_choice(owner: MacosCapabilityOwner) -> Option<MacosDaemonOwnerChoice> {
-    match owner {
-        MacosCapabilityOwner::AppSidecar => Some(MacosDaemonOwnerChoice::AppSidecar),
-        MacosCapabilityOwner::LaunchdService => Some(MacosDaemonOwnerChoice::DirectLaunchd),
-        MacosCapabilityOwner::HomebrewService => Some(MacosDaemonOwnerChoice::Homebrew),
-        MacosCapabilityOwner::App
-        | MacosCapabilityOwner::Broker
-        | MacosCapabilityOwner::Standalone => None,
+/// The managed owner a neutral identity can be switched to; standalone and
+/// non-macOS launchers are never offered.
+fn macos_owner_choice(identity: &ServiceIdentity) -> Option<MacosDaemonOwnerChoice> {
+    match (identity.run_mode, identity.manager) {
+        (DaemonRunMode::SupervisedChild, None) => Some(MacosDaemonOwnerChoice::AppSidecar),
+        (DaemonRunMode::UserService, Some(ServiceManager::Launchd)) => {
+            Some(MacosDaemonOwnerChoice::DirectLaunchd)
+        }
+        (DaemonRunMode::UserService, Some(ServiceManager::Homebrew)) => {
+            Some(MacosDaemonOwnerChoice::Homebrew)
+        }
+        _ => None,
+    }
+}
+
+/// Human name for a neutral launcher identity.
+fn humanize_identity(identity: &ServiceIdentity) -> String {
+    match (identity.run_mode, identity.manager) {
+        (DaemonRunMode::SupervisedChild, _) => "Hypercolor.app".to_owned(),
+        (DaemonRunMode::Standalone, _) => "a terminal-launched daemon".to_owned(),
+        (_, Some(ServiceManager::Launchd)) => "launchd service".to_owned(),
+        (_, Some(ServiceManager::Homebrew)) => "Homebrew service".to_owned(),
+        (_, Some(ServiceManager::Systemd)) => "systemd service".to_owned(),
+        (_, Some(ServiceManager::WindowsScm)) => "Windows service".to_owned(),
+        (DaemonRunMode::UserService, None) => "a user service".to_owned(),
+        (DaemonRunMode::SystemService, None) => "a system service".to_owned(),
     }
 }
 
@@ -609,14 +629,14 @@ fn NativeStartupFrame(children: Children) -> impl IntoView {
 #[component]
 fn WindowsDaemonServicePanel() -> impl IntoView {
     let native_available = tauri_bridge::is_tauri_available();
-    let status = LocalResource::new(tauri_bridge::detect_windows_daemon_service);
+    let status = LocalResource::new(tauri_bridge::detect_daemon_launcher);
     let refresh = Callback::new(move |()| status.refetch());
 
     view! {
         <Show when=move || native_available>
             {move || match status.get() {
-                Some(Ok(Some(current))) if windows_daemon_service_conflict(&current) => view! {
-                    <WindowsDaemonServiceStatusPanel
+                Some(Ok(Some(current))) if managed_daemon_launcher_active(&current) => view! {
+                    <ManagedDaemonLauncherPanel
                         status=current
                         on_refresh=refresh
                     />
@@ -625,7 +645,7 @@ fn WindowsDaemonServicePanel() -> impl IntoView {
                     <NativeStartupFrame>
                         <div class="flex items-center gap-2 text-xs text-status-error/80">
                             <Icon icon=LuTriangleAlert width="13px" height="13px" />
-                            {format!("Windows service status unavailable: {error}")}
+                            {format!("Service status unavailable: {error}")}
                         </div>
                     </NativeStartupFrame>
                 }.into_any(),
@@ -636,14 +656,14 @@ fn WindowsDaemonServicePanel() -> impl IntoView {
 }
 
 #[component]
-fn WindowsDaemonServiceStatusPanel(
-    status: WindowsDaemonServiceStatus,
+fn ManagedDaemonLauncherPanel(
+    status: DaemonLauncherStatus,
     on_refresh: Callback<()>,
 ) -> impl IntoView {
-    let service_state = status
-        .service
-        .state
-        .unwrap_or_else(|| "UNKNOWN".to_string());
+    let service_state = status.state.unwrap_or_else(|| "UNKNOWN".to_string());
+    let identity = status.identity.unwrap_or(ServiceIdentity::STANDALONE);
+    let launcher_name = humanize_identity(&identity);
+    let unit = identity.unit.clone().unwrap_or_default();
 
     view! {
         <NativeStartupFrame>
@@ -651,7 +671,7 @@ fn WindowsDaemonServiceStatusPanel(
                 <div class="flex-1 min-w-0">
                     <div class="flex items-center gap-2">
                         <Icon icon=LuActivity width="15px" height="15px" style="color: rgba(241, 250, 140, 0.76)" />
-                        <span class="text-sm text-fg-primary font-medium">"Windows Service Mode"</span>
+                        <span class="text-sm text-fg-primary font-medium">"Service Mode"</span>
                         <span
                             class="text-[9px] font-mono px-1.5 py-0.5 rounded"
                             style="color: rgba(241, 250, 140, 0.78); background: rgba(241, 250, 140, 0.08); border: 1px solid rgba(241, 250, 140, 0.12)"
@@ -660,7 +680,7 @@ fn WindowsDaemonServiceStatusPanel(
                         </span>
                     </div>
                     <div class="text-xs text-fg-tertiary/70 mt-0.5">
-                        {format!("Hypercolor is running as the {} Windows service", status.service_name)}
+                        {format!("Hypercolor is running as the {unit} {launcher_name}")}
                     </div>
                 </div>
                 <button
@@ -680,21 +700,19 @@ fn WindowsDaemonServiceStatusPanel(
 
 #[cfg(test)]
 mod tests {
-    use crate::api::{
-        MacosCapabilityOwner, MacosDaemonOwnerConflictStatus, MacosDaemonOwnershipStatus,
-    };
+    use crate::api::{ServiceConflict, ServiceIdentity, ServiceStatus};
     use crate::tauri_bridge::MacosDaemonOwnerChoice;
 
-    use super::{humanize_owner, macos_owner_choices};
+    use super::{humanize_identity, humanize_owner, macos_owner_choices};
 
     #[test]
     fn owner_choices_follow_only_the_published_conflict() {
-        let status = MacosDaemonOwnershipStatus {
-            active_owner: MacosCapabilityOwner::AppSidecar,
+        let status = ServiceStatus {
+            identity: ServiceIdentity::APP_SIDECAR,
             owner_epoch: 8,
-            conflict: Some(MacosDaemonOwnerConflictStatus {
-                active: MacosCapabilityOwner::AppSidecar,
-                contender: MacosCapabilityOwner::HomebrewService,
+            conflict: Some(ServiceConflict {
+                active: ServiceIdentity::APP_SIDECAR,
+                contender: ServiceIdentity::homebrew(),
                 observed_at_ms: 42,
             }),
             recovery_required: None,
@@ -711,12 +729,12 @@ mod tests {
 
     #[test]
     fn standalone_owner_is_named_but_never_offered_as_a_managed_target() {
-        let status = MacosDaemonOwnershipStatus {
-            active_owner: MacosCapabilityOwner::Standalone,
+        let status = ServiceStatus {
+            identity: ServiceIdentity::STANDALONE,
             owner_epoch: 3,
-            conflict: Some(MacosDaemonOwnerConflictStatus {
-                active: MacosCapabilityOwner::Standalone,
-                contender: MacosCapabilityOwner::LaunchdService,
+            conflict: Some(ServiceConflict {
+                active: ServiceIdentity::STANDALONE,
+                contender: ServiceIdentity::launchd_direct(),
                 observed_at_ms: 43,
             }),
             recovery_required: None,
@@ -724,8 +742,26 @@ mod tests {
 
         assert_eq!(humanize_owner("standalone"), "a terminal-launched daemon");
         assert_eq!(
+            humanize_identity(&ServiceIdentity::STANDALONE),
+            "a terminal-launched daemon"
+        );
+        assert_eq!(
             macos_owner_choices(&status),
             vec![MacosDaemonOwnerChoice::DirectLaunchd]
+        );
+    }
+
+    #[test]
+    fn foreign_launchers_are_named_but_never_offered() {
+        let status = ServiceStatus::new(ServiceIdentity::systemd_user(), 1);
+        assert!(macos_owner_choices(&status).is_empty());
+        assert_eq!(
+            humanize_identity(&ServiceIdentity::systemd_user()),
+            "systemd service"
+        );
+        assert_eq!(
+            humanize_identity(&ServiceIdentity::windows_scm()),
+            "Windows service"
         );
     }
 }

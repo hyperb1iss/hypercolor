@@ -49,8 +49,12 @@ use crate::decode::{
 use crate::devices::{DeviceCache, DeviceResolution, enumerate_devices, seed_cache};
 use crate::metrics::{MonitorTopology, monitor_topology, pin_dpi_context, sample_cursor};
 use crate::shared::{
-    PendingEvents, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch, RawInputConfig,
-    RawInputError, RawInputEvent, RawInputResult,
+    PendingEvents, RawDeviceDescriptor, RawDeviceKind, RawInputConfig, RawInputError,
+    RawInputResult, normalize_windows_key_event,
+};
+use hypercolor_types::event::{PointerScrollPhase, PointerScrollUnit};
+use hypercolor_types::host_input::{
+    HostInputBatch, HostInputEvent, HostInputGapReason, HostPointerMotion, HostPointerSnapshot,
 };
 
 /// Window class shared by every session in this process.
@@ -269,8 +273,10 @@ pub struct Pump {
     /// hot path. Only ever holds addresses into `buffer`, rebuilt each slice.
     record_pointers: Vec<*const RAWINPUT>,
     events: PendingEvents,
-    last_cursor: Option<RawCursor>,
+    last_cursor: Option<HostPointerSnapshot>,
     topology: Option<MonitorTopology>,
+    device_catalog_generation: u64,
+    coordinate_space_generation: u64,
     topology_refresh_at: Instant,
     registered: bool,
 }
@@ -301,17 +307,20 @@ impl Pump {
         let topology = initial_topology(config.mouse, monitor_topology)
             .map_err(RawInputError::MonitorTopology)?;
         let window = create_message_window()?;
+        let session_generation = config.session_generation;
         let mut pump = Self {
             window,
             generation,
             config,
-            cache: DeviceCache::new(generation),
+            cache: DeviceCache::new(session_generation),
             key_canonicalizer: KeyCanonicalizer,
             buffer: vec![0u64; INITIAL_BUFFER_QWORDS],
             record_pointers: Vec::new(),
             events: PendingEvents::new(),
             last_cursor: None,
             topology,
+            device_catalog_generation: 0,
+            coordinate_space_generation: 1,
             topology_refresh_at: Instant::now() + TOPOLOGY_REFRESH_INTERVAL,
             registered: false,
         };
@@ -509,13 +518,16 @@ impl Pump {
     /// every other batch — an arrivals batch stamped with anything else would
     /// be rejected by the very check that exists to catch stale sessions.
     pub fn queue_initial_arrivals(&mut self) {
-        let arrivals: Vec<RawInputEvent> = self
+        let arrivals: Vec<HostInputEvent> = self
             .cache
             .identities()
-            .map(|device| RawInputEvent::DeviceArrived {
-                device: Arc::clone(device),
+            .map(|device| HostInputEvent::DeviceArrived {
+                device: Arc::clone(&device.host_device),
             })
             .collect();
+        if !arrivals.is_empty() {
+            self.bump_device_catalog_generation();
+        }
         self.events.extend(arrivals);
     }
 
@@ -524,7 +536,7 @@ impl Pump {
     pub fn run_once(
         &mut self,
         stop: &StopSignal,
-        sink: &mut impl FnMut(RawInputBatch<'_>),
+        sink: &mut impl FnMut(HostInputBatch<'_>),
     ) -> Result<bool, PumpError> {
         self.verify_claim()?;
 
@@ -546,7 +558,13 @@ impl Pump {
         let now = Instant::now();
         if self.config.mouse && now >= self.topology_refresh_at {
             match monitor_topology() {
-                Ok(topology) => self.topology = Some(topology),
+                Ok(topology) => {
+                    if self.topology.as_ref() != Some(&topology) {
+                        self.coordinate_space_generation =
+                            self.coordinate_space_generation.wrapping_add(1).max(1);
+                    }
+                    self.topology = Some(topology);
+                }
                 Err(error) => {
                     tracing::warn!(%error, "monitor topology refresh failed; keeping previous")
                 }
@@ -586,7 +604,7 @@ impl Pump {
     fn drain_slice(
         &mut self,
         stop: &StopSignal,
-        sink: &mut impl FnMut(RawInputBatch<'_>),
+        sink: &mut impl FnMut(HostInputBatch<'_>),
     ) -> Result<bool, PumpError> {
         // Stamped before the read, not at sink entry: a stamp taken while
         // folding would record when folding happened rather than when input
@@ -620,14 +638,15 @@ impl Pump {
     /// this loop — and it took a dump against real hardware to surface.
     /// Routing every emission through one function that clears makes the
     /// duplicate unrepresentable rather than merely fixed.
-    fn emit(&mut self, at_ms: u64, sink: &mut impl FnMut(RawInputBatch<'_>)) {
+    fn emit(&mut self, at_ms: u64, sink: &mut impl FnMut(HostInputBatch<'_>)) {
         if self.events.is_empty() {
             return;
         }
         // Sampled only when something will actually be delivered, so an idle
         // wake does not cost a `GetCursorPos` syscall.
         let cursor = self.sample_pointer();
-        self.events.deliver(at_ms, self.config.epoch, cursor, sink);
+        self.events
+            .deliver(at_ms, self.device_catalog_generation, cursor, sink);
     }
 
     /// Fill `self.buffer`, growing it when the API says it is too small.
@@ -831,8 +850,9 @@ impl Pump {
                 // quiet moment" would leave keys stuck for as long as the user
                 // keeps typing — which during a key-mashing burst is the whole
                 // time, and mashing keys is the point of half these effects.
-                self.events.push(RawInputEvent::StateGap {
-                    device: Arc::clone(device),
+                self.events.push(HostInputEvent::StateGap {
+                    device: Some(Arc::clone(&device.host_device)),
+                    reason: HostInputGapReason::SynchronizationLost,
                 });
             }
             CanonicalKeyReport::Edge {
@@ -841,13 +861,13 @@ impl Pump {
                 vkey,
                 pressed,
             } => {
-                self.events.push(RawInputEvent::Key {
-                    device: Arc::clone(device),
+                self.events.push(normalize_windows_key_event(
+                    &device.host_device,
                     make_code,
                     prefix,
                     vkey,
                     pressed,
-                });
+                ));
             }
         }
     }
@@ -862,8 +882,9 @@ impl Pump {
         last_y: i32,
     ) {
         for (button, pressed) in button_edges(button_flags) {
-            self.events.push(RawInputEvent::Button {
-                device: Arc::clone(device),
+            self.events.push(HostInputEvent::Button {
+                device: Some(Arc::clone(&device.host_device)),
+                physical_code: Arc::from(format!("windows:button:{}", button.as_str())),
                 button,
                 pressed,
             });
@@ -872,20 +893,33 @@ impl Pump {
         if let Some((delta_x_q16_16, delta_y_q16_16)) =
             scroll_delta_q16_16(button_flags, button_data)
         {
-            self.events.push(RawInputEvent::Scroll {
-                device: Arc::clone(device),
+            let physical_code = match (delta_x_q16_16 != 0, delta_y_q16_16 != 0) {
+                (true, false) => "windows:raw-input:hwheel",
+                (false, true) => "windows:raw-input:wheel",
+                _ => "windows:raw-input:wheel+hwheel",
+            };
+            self.events.push(HostInputEvent::Scroll {
+                device: Some(Arc::clone(&device.host_device)),
                 delta_x_q16_16,
                 delta_y_q16_16,
+                unit: PointerScrollUnit::Line120,
+                phase: PointerScrollPhase::None,
+                momentum_phase: PointerScrollPhase::None,
+                physical_code: Arc::from(physical_code),
             });
         }
 
         match motion_kind(flags) {
             MotionKind::Relative => {
                 if last_x != 0 || last_y != 0 {
-                    self.events.push(RawInputEvent::MotionRelative {
-                        device: Arc::clone(device),
-                        dx: last_x,
-                        dy: last_y,
+                    self.events.push(HostInputEvent::Motion {
+                        device: Some(Arc::clone(&device.host_device)),
+                        motion: HostPointerMotion::Relative {
+                            delta_x: f64::from(last_x),
+                            delta_y: f64::from(last_y),
+                            units_per_x: 1200.0,
+                            units_per_y: 1200.0,
+                        },
                     });
                 }
             }
@@ -901,11 +935,17 @@ impl Pump {
                     topology.primary_screen,
                     topology.virtual_screen,
                 );
-                self.events.push(RawInputEvent::MotionAbsolute {
-                    device: Arc::clone(device),
-                    norm_x,
-                    norm_y,
-                    virtual_desktop: space == AbsoluteSpace::VirtualDesktop,
+                let space_offset = u64::from(space == AbsoluteSpace::PrimaryMonitor);
+                self.events.push(HostInputEvent::Motion {
+                    device: Some(Arc::clone(&device.host_device)),
+                    motion: HostPointerMotion::Absolute {
+                        norm_x,
+                        norm_y,
+                        coordinate_space_generation: self
+                            .coordinate_space_generation
+                            .saturating_mul(2)
+                            .saturating_add(space_offset),
+                    },
                 });
             }
         }
@@ -980,12 +1020,15 @@ impl Pump {
     /// for a user who did not consent to pointer capture, and sampling the
     /// cursor anyway would hand pointer position back through the back door on
     /// every keyboard wake.
-    fn sample_pointer(&mut self) -> Option<RawCursor> {
+    fn sample_pointer(&mut self) -> Option<HostPointerSnapshot> {
         if !self.config.mouse {
             return None;
         }
         let topology = self.topology.as_ref()?;
-        if let Some(cursor) = sample_cursor(topology.virtual_screen) {
+        if let Some(cursor) = sample_cursor(
+            topology.virtual_screen,
+            self.coordinate_space_generation.saturating_mul(2),
+        ) {
             self.last_cursor = Some(cursor);
         }
         self.last_cursor
@@ -1049,7 +1092,10 @@ impl Pump {
             }
             GIDC_REMOVAL => {
                 if let Some(device) = self.cache.remove(handle) {
-                    self.events.push(RawInputEvent::DeviceRemoved { device });
+                    self.bump_device_catalog_generation();
+                    self.events.push(HostInputEvent::DeviceRemoved {
+                        device: Arc::clone(&device.host_device),
+                    });
                 }
             }
             _ => {}
@@ -1057,13 +1103,20 @@ impl Pump {
     }
 
     fn queue_device_resolution(&mut self, resolution: &DeviceResolution) {
+        if resolution.retired.is_some() || resolution.discovered {
+            self.bump_device_catalog_generation();
+        }
         queue_device_resolution(&mut self.events, resolution);
+    }
+
+    fn bump_device_catalog_generation(&mut self) {
+        self.device_catalog_generation = self.device_catalog_generation.wrapping_add(1).max(1);
     }
 
     /// Deliver any events the control pass produced outside a drain slice.
     ///
     /// After a slice this is a no-op, because `emit` already cleared.
-    pub fn flush_pending(&mut self, sink: &mut impl FnMut(RawInputBatch<'_>)) {
+    pub fn flush_pending(&mut self, sink: &mut impl FnMut(HostInputBatch<'_>)) {
         let at_ms = (self.config.clock)();
         self.emit(at_ms, sink);
     }
@@ -1071,13 +1124,13 @@ impl Pump {
 
 fn queue_device_resolution(events: &mut PendingEvents, resolution: &DeviceResolution) {
     if let Some(retired) = &resolution.retired {
-        events.push(RawInputEvent::DeviceRemoved {
-            device: Arc::clone(retired),
+        events.push(HostInputEvent::DeviceRemoved {
+            device: Arc::clone(&retired.host_device),
         });
     }
     if resolution.discovered || resolution.metadata_changed {
-        events.push(RawInputEvent::DeviceArrived {
-            device: Arc::clone(&resolution.device),
+        events.push(HostInputEvent::DeviceArrived {
+            device: Arc::clone(&resolution.device.host_device),
         });
     }
 }

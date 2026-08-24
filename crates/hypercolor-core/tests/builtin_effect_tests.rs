@@ -7,7 +7,7 @@
 mod control_renderer;
 
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use hypercolor_core::effect::builtin::{
@@ -16,11 +16,13 @@ use hypercolor_core::effect::builtin::{
     create_builtin_renderer, register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
-use hypercolor_core::input::screen::{CaptureConfig, ColorTuning, ScreenCaptureInput};
-use hypercolor_core::input::{InputData, InputSource, InteractionData, ScreenData};
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, ColorTuning, PixelExtent, ScreenCaptureInput, SyntheticScreenPublisher,
+};
+use hypercolor_core::input::{InputData, InputSource, InteractionData, ScreenBranchPublication};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
+use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::control::ControlValue;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -122,7 +124,7 @@ fn frame_with_audio(time_secs: f64, audio: &AudioData) -> FrameInput<'_> {
     }
 }
 
-fn frame_with_screen(time_secs: f64, screen: &ScreenData) -> FrameInput<'_> {
+fn frame_with_screen(time_secs: f64, screen: &Arc<ScreenBranchPublication>) -> FrameInput<'_> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,
@@ -137,7 +139,8 @@ fn frame_with_screen(time_secs: f64, screen: &ScreenData) -> FrameInput<'_> {
     }
 }
 
-fn make_screen_data() -> ScreenData {
+/// Publish one exact 4x2 RGBA surface: red on the left, blue on the right.
+fn make_screen_publication() -> Arc<ScreenBranchPublication> {
     let mut canvas = Canvas::new(4, 2);
     for y in 0..2 {
         for x in 0..4 {
@@ -149,16 +152,13 @@ fn make_screen_data() -> ScreenData {
             canvas.set_pixel(x, y, color);
         }
     }
+    publish_canvas(&canvas)
+}
 
-    ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(PublishedSurface::from_owned_canvas(canvas, 0, 0)),
-        source_width: 4,
-        source_height: 2,
-        letterbox: [0; 4],
-    }
+fn publish_canvas(canvas: &Canvas) -> Arc<ScreenBranchPublication> {
+    let extent = PixelExtent::new(canvas.width(), canvas.height())
+        .expect("screen fixture canvas is non-empty");
+    SyntheticScreenPublisher::surface(extent).publish_rgba(canvas.as_rgba_bytes())
 }
 
 /// Returns true if any pixel in the canvas is not opaque black.
@@ -1191,7 +1191,7 @@ fn screen_cast_initializes() {
 fn screen_cast_renders_capture_frame() {
     let mut r = ScreenCastRenderer::new();
     r.init(&make_metadata("screen_cast")).expect("init");
-    let screen = make_screen_data();
+    let screen = make_screen_publication();
 
     let canvas = r
         .render_frame(&frame_with_screen(0.0, &screen))
@@ -1263,8 +1263,9 @@ fn screen_analysis_consumers_share_letterbox_smoothing_and_tuning_policy() {
     renderer
         .init(&make_metadata("screen_cast"))
         .expect("screen cast should initialize");
+    let publication = publish_canvas(&Canvas::from_published_surface(surface));
     let rendered = renderer
-        .render_frame(&frame_with_screen(0.0, &screen))
+        .render_frame(&frame_with_screen(0.0, &publication))
         .expect("screen cast should render policy pixels");
     assert_eq!(rendered.get_pixel(W / 2, H / 2), first);
 }
@@ -1278,7 +1279,7 @@ fn screen_cast_frame_controls_crop_region() {
         &ControlValue::rect(ViewportRect::new(0.5, 0.0, 0.5, 1.0)),
     );
     r.apply_test_control("fit_mode", &ControlValue::Enum("Stretch".into()));
-    let screen = make_screen_data();
+    let screen = make_screen_publication();
 
     let canvas = r
         .render_frame(&frame_with_screen(0.0, &screen))

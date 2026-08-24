@@ -2,11 +2,18 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, mpsc};
 use std::time::Duration;
 
-use hypercolor_core::input::screen::{
-    PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenByteAdmissionError,
-    ScreenCaptureDemand,
+use hypercolor_core::input::screen::consumer::{ScreenByteAdmissionError, ScreenCaptureDemand};
+use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
+use hypercolor_core::input::{
+    InputData, InputManager, InputSource, ManagedSourceRole, ScreenReconfigurationConflict,
+    ScreenSource, ScreenSourceRole, SourceRoleBinding,
 };
-use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenReconfigurationConflict};
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("capacity fixture source should match its declared role");
+}
 
 struct PlannedScreenSource {
     running: bool,
@@ -44,29 +51,11 @@ impl InputSource for PlannedScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for PlannedScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
-    }
-
-    fn screen_analysis_resource_plan(
-        &self,
-        demand: ScreenCaptureDemand,
-    ) -> anyhow::Result<Option<ScreenAnalysisResourcePlan>> {
-        let Some(extent) = demand.requested_extent() else {
-            return Ok(None);
-        };
-        Ok(Some(ScreenAnalysisResourcePlan::try_new_for_extent(
-            8,
-            6,
-            30,
-            extent,
-            u64::MAX,
-        )?))
     }
 
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
@@ -75,9 +64,13 @@ impl InputSource for PlannedScreenSource {
     }
 }
 
+impl SourceRoleBinding for PlannedScreenSource {
+    type Role = ScreenSourceRole;
+}
+
 #[test]
 fn status_handle_tracks_policy_and_live_physical_reservations() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let status = manager.screen_capacity_status_handle();
     let coordinator = manager.screen_admission_coordinator();
     let resource = ScreenAdmissionCapacity::new(1_000, 800);
@@ -122,7 +115,7 @@ fn status_handle_tracks_policy_and_live_physical_reservations() {
 
 #[test]
 fn concurrent_status_readers_observe_complete_physical_snapshots() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let capacity = ScreenAdmissionCapacity::new(10_000, 8_000);
     manager
         .set_screen_capacity_plan(capacity, capacity, capacity)
@@ -172,7 +165,7 @@ fn concurrent_status_readers_observe_complete_physical_snapshots() {
 
 #[test]
 fn concurrent_status_readers_never_observe_torn_capacity_transitions() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let steps = Arc::new([
         (
             ScreenAdmissionCapacity::new(10_000, 8_000),
@@ -260,22 +253,11 @@ fn concurrent_status_readers_never_observe_torn_capacity_transitions() {
 fn compound_capacity_and_runtime_commit_publishes_one_coherent_policy() {
     let mut manager = InputManager::new();
     let status = manager.screen_capacity_status_handle();
-    let demand = ScreenCaptureDemand::active(
-        PixelExtent::new(640, 480).expect("test demand should be non-empty"),
-    );
-    let analysis = ScreenAnalysisResourcePlan::try_new_for_extent(
-        8,
-        6,
-        30,
-        demand
-            .requested_extent()
-            .expect("active demand should retain its extent"),
-        u64::MAX,
-    )
-    .expect("test analysis should be representable");
+    let demand = ScreenCaptureDemand::active();
+    let reserved_peak_bytes = 4_096_u64;
     let physical = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
     let initial_total =
-        ScreenAdmissionCapacity::new(analysis.peak_bytes() + 2_000, analysis.peak_bytes() + 2_000);
+        ScreenAdmissionCapacity::new(reserved_peak_bytes + 2_000, reserved_peak_bytes + 2_000);
     manager
         .set_screen_capacity_plan(physical, initial_total, initial_total)
         .expect("empty manager should accept initial capacity");
@@ -284,50 +266,67 @@ fn compound_capacity_and_runtime_commit_publishes_one_coherent_policy() {
         .expect("demand should cache before source installation");
     let before = status.snapshot().policy();
     assert_eq!(before.capture_demand(), demand);
-    assert_eq!(before.analysis_resource_plan(), None);
 
-    let runtime = manager.plan_screen_runtime_config(true);
     let mut source = Box::new(PlannedScreenSource::new());
     source
         .set_screen_capture_demand(demand)
         .expect("prepared source should accept demand");
     source.start().expect("prepared source should start");
-    let mut replacement = Some(source as Box<dyn InputSource>);
     let committed_total =
-        ScreenAdmissionCapacity::new(analysis.peak_bytes() + 1_000, analysis.peak_bytes() + 750);
+        ScreenAdmissionCapacity::new(reserved_peak_bytes + 1_000, reserved_peak_bytes + 750);
     let capacity = manager
-        .prepare_screen_capacity_plan(committed_total, analysis.peak_bytes())
+        .prepare_screen_capacity_plan(committed_total, reserved_peak_bytes)
         .expect("candidate split should prepare")
         .expect("capacity enforcement should be installed");
+    let runtime = manager
+        .plan_screen_source_swap(true, Some(capacity))
+        .expect("unique screen swap should plan");
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
+    let mut prepared = runtime
+        .prepare(&mut replacement)
+        .expect("screen replacement should prepare");
     manager
-        .commit_screen_capacity_and_runtime_config(capacity, &runtime, &mut replacement)
+        .commit_screen_source_swap(&mut prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
         .expect("unchanged capacity and runtime should commit")
         .retire();
 
     let committed = status.snapshot().policy();
     assert_eq!(committed.capture_demand(), demand);
-    assert_eq!(committed.analysis_resource_plan(), Some(analysis));
     assert_eq!(committed.total_capacity(), committed_total);
     assert_eq!(
         committed.publication_capacity(),
         ScreenAdmissionCapacity::new(1_000, 750)
     );
 
-    let stale_runtime = manager.plan_screen_runtime_config(false);
     let stale_capacity = manager
         .prepare_screen_capacity_plan(initial_total, 0)
         .expect("disable capacity should prepare")
         .expect("capacity enforcement should remain installed");
-    manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
-    let stable = status.snapshot().policy();
+    let stale_runtime = manager
+        .plan_screen_source_swap(false, Some(stale_capacity))
+        .expect("unique screen removal should plan");
     let mut no_replacement = None;
+    let mut stale_prepared = stale_runtime
+        .prepare(&mut no_replacement)
+        .expect("screen removal should prepare");
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::data(Box::new(hypercolor_core::input::MediaSource::new())),
+    );
+    let stable = status.snapshot().policy();
     assert!(matches!(
-        manager.commit_screen_capacity_and_runtime_config(
-            stale_capacity,
-            &stale_runtime,
-            &mut no_replacement,
-        ),
-        Err(ScreenReconfigurationConflict::GraphChanged)
+        manager.commit_screen_source_swap(&mut stale_prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        }),
+        Err(
+            hypercolor_core::input::ScreenSourceSwapCommitError::Conflict(
+                ScreenReconfigurationConflict::Source(
+                    hypercolor_core::input::SourceSwapConflict::GraphChanged
+                )
+            )
+        )
     ));
     assert_eq!(status.snapshot().policy(), stable);
 }

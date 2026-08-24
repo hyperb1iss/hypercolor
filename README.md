@@ -487,7 +487,7 @@ graph TD
     APP --> DT & TR & D
 ```
 
-It's Rust all the way down. The daemon, CLI, TUI, tray applet, and HAL drivers are
+It's Rust all the way down. The daemon, CLI, TUI, unified app, and HAL drivers are
 all Rust. The web UI is Rust compiled to WASM via Leptos. Even the embedded browser
 is Servo (Rust). The only non-Rust code is the TypeScript effect SDK and the GLSL
 shaders it compiles.

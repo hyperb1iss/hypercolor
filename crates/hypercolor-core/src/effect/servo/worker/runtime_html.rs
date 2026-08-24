@@ -9,7 +9,6 @@ use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use reqwest::Url;
 use tracing::debug;
 
-use crate::config::paths::cache_dir;
 use crate::effect::lightscript::control_js_literal;
 
 /// Whether an effect should receive `engine.audio.*` updates each frame.
@@ -59,7 +58,7 @@ pub(in crate::effect::servo) fn prepare_runtime_html_source(
     let injected_block = format!("{base_tag}<script>\n{preamble}\n</script>\n");
     let runtime_html = inject_runtime_head_block(&html, &injected_block);
 
-    let cache_root = cache_dir().join("servo-runtime");
+    let cache_root = crate::config::paths::servo_runtime_cache_dir();
     std::fs::create_dir_all(&cache_root).with_context(|| {
         format!(
             "failed to create Servo runtime cache directory: {}",

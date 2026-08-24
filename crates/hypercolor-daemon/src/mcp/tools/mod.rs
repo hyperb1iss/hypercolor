@@ -463,7 +463,7 @@ pub async fn execute_tool_with_state(
         "list_scenes" => scenes::handle_list_scenes_with_state(&params, state).await,
         "create_scene" => scenes::handle_create_scene_with_state(&params, state).await,
         "get_audio_state" => system::handle_get_audio_state_with_state(state),
-        "get_sensor_data" => system::handle_get_sensor_data_with_state(&params, state).await,
+        "get_sensor_data" => system::handle_get_sensor_data_with_state(&params, state),
         "set_display_face" => displays::handle_set_display_face_with_state(&params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
         "diagnose" => system::handle_diagnose_with_state(&params, state).await,

@@ -567,3 +567,39 @@ fn all_dirs_are_absolute() {
     assert!(ConfigManager::state_dir().is_absolute());
     assert!(ConfigManager::cache_dir().is_absolute());
 }
+
+#[test]
+fn servo_runtime_cache_dir_is_rooted_under_hypercolor() {
+    let dir = hypercolor_core::config::paths::servo_runtime_cache_dir();
+    assert!(dir.is_absolute());
+    assert!(dir.ends_with(std::path::Path::new("hypercolor").join("servo-runtime")));
+}
+
+#[test]
+fn user_output_dir_is_desktop_or_home() {
+    let Some(dir) = hypercolor_core::config::paths::user_output_dir() else {
+        return;
+    };
+    let home = hypercolor_core::config::paths::home_dir().expect("home resolves");
+    assert!(dir.is_absolute());
+    assert!(dir == home || dir.is_dir());
+}
+
+#[test]
+fn macos_user_paths_live_under_the_home_library() {
+    use hypercolor_core::config::paths;
+
+    let home = paths::home_dir().expect("home resolves");
+    assert_eq!(
+        paths::macos_launch_agents_dir().expect("launch agents resolve"),
+        home.join("Library").join("LaunchAgents")
+    );
+    assert_eq!(
+        paths::macos_user_log_dir().expect("log dir resolves"),
+        home.join("Library").join("Logs").join("hypercolor")
+    );
+    assert_eq!(
+        paths::macos_user_applications_dir().expect("applications resolve"),
+        home.join("Applications")
+    );
+}

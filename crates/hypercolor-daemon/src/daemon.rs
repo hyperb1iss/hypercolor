@@ -7,9 +7,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use axum::Router;
 use hypercolor_core::config::{BootConfig, ConfigManager, LoadedConfig};
+use hypercolor_core::session::SessionMonitor;
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
 };
+use hypercolor_types::service::ServiceStatus;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -31,7 +33,7 @@ const API_LISTEN_BACKLOG: i32 = 1024;
 const API_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Runtime options for one daemon process.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct DaemonRunOptions {
     /// Path to the configuration file.
     pub config: Option<PathBuf>,
@@ -57,6 +59,11 @@ pub struct DaemonRunOptions {
     pub macos_owner_snapshot: Option<MacosOwnerSnapshot>,
     /// Exact private process session derived from canonical macOS ownership.
     pub macos_daemon_session_attestation: Option<MacosDaemonSessionAttestation>,
+    /// Corroborated launcher identity resolved by the process host before
+    /// runtime startup. On macOS the durable owner snapshot supersedes it.
+    pub service_status: Option<ServiceStatus>,
+    /// Platform session monitors supplied by the process host.
+    pub session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
 }
 
 /// Ownership handle for the exact sockets bound during daemon preparation.
@@ -128,11 +135,13 @@ impl PreparedDaemon {
         // Boot values are frozen into the subsystems that need them by this
         // call, which consumes the config; anything read past this point
         // reads live (Spec 76 §3.2).
-        let mut daemon_state = DaemonState::initialize_with_macos_owner(
+        let mut daemon_state = DaemonState::initialize_with_launcher(
             self.config,
             self.config_manager,
             self.options.macos_owner_snapshot,
+            self.options.service_status.take(),
         )?;
+        daemon_state.session_monitors = self.options.session_monitors.take();
         for installer in extension_installers {
             installer.install(&mut daemon_state)?;
         }
@@ -170,8 +179,8 @@ impl PreparedDaemon {
         }
         info!(binds = %self.listen_addr, "API server listening");
 
-        notify_ready();
-        spawn_watchdog();
+        hypercolor_linux_session::notify_ready();
+        hypercolor_linux_session::spawn_watchdog();
 
         serve_api_listeners(listeners, router, shutdown_rx).await?;
 
@@ -406,34 +415,6 @@ fn format_age(elapsed: std::time::Duration) -> String {
         format!("{}d ago", secs / 86_400)
     }
 }
-
-#[cfg(target_os = "linux")]
-fn notify_ready() {
-    if let Err(error) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
-        tracing::warn!("failed to notify systemd: {error}");
-    } else {
-        tracing::debug!("notified systemd: READY=1");
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn notify_ready() {}
-
-#[cfg(target_os = "linux")]
-fn spawn_watchdog() {
-    tokio::spawn(async {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-            if let Err(error) = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]) {
-                tracing::debug!("failed to notify systemd watchdog: {error}");
-            }
-        }
-    });
-}
-
-#[cfg(not(target_os = "linux"))]
-fn spawn_watchdog() {}
 
 fn default_env_filter(log_level: &str) -> String {
     let normalized = log_level.trim().to_ascii_lowercase();

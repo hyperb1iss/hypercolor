@@ -169,8 +169,6 @@ async fn status_includes_latest_frame_surface_stats() {
     }
     state
         .input_manager()
-        .lock()
-        .await
         .set_screen_capacity_plan(
             ScreenAdmissionCapacity::new(2_000_000, 2_000_000),
             ScreenAdmissionCapacity::new(123, 456),

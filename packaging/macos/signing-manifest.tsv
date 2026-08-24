@@ -1,8 +1,7 @@
 # scope<TAB>relative path<TAB>identifier<TAB>entitlements
 app	Contents/MacOS/Hypercolor	tech.hyperbliss.hypercolor	crates/hypercolor-app/entitlements.plist
-app	Contents/MacOS/hypercolor-daemon-{target}	tech.hyperbliss.hypercolor.sidecar	packaging/macos/daemon.entitlements.plist
+app	Contents/MacOS/hypercolor-daemon-{target}	tech.hyperbliss.hypercolor.sidecar	packaging/macos/daemon-sidecar.entitlements.plist
 app	Contents/MacOS/hypercolor-{target}	tech.hyperbliss.hypercolor.cli	none
 standalone	bin/hypercolor-daemon	tech.hyperbliss.hypercolor.daemon	packaging/macos/daemon.entitlements.plist
 standalone	bin/hypercolor	tech.hyperbliss.hypercolor.cli	none
 standalone	bin/hypercolor-app	tech.hyperbliss.hypercolor.app-host	crates/hypercolor-app/entitlements.plist
-standalone	bin/hypercolor-tray	tech.hyperbliss.hypercolor.tray	none

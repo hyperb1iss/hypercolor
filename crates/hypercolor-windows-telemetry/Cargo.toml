@@ -1,0 +1,21 @@
+[package]
+name = "hypercolor-windows-telemetry"
+description = "Windows host telemetry (WMI and PawnIO sensors, board identity) for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-types = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+hypercolor-windows-pawnio = { path = "../hypercolor-windows-pawnio" }
+serde = { workspace = true }
+wmi = { workspace = true }

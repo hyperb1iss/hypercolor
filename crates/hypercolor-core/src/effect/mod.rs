@@ -57,8 +57,7 @@ pub use servo::{
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;
 pub use traits::{
-    EffectRenderOutput, EffectRenderer, FrameDataSources, FrameInput, InputSourceAvailability,
+    EffectRenderOutput, EffectRenderer, FrameDataSources, FrameInput, ImportedEffectFrame,
+    ImportedFrameFormat, ImportedFrameTimings, InputSourceAvailability,
 };
-#[cfg(feature = "servo-gpu-import")]
-pub use traits::{ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings};
 pub use watcher::{EffectWatchEvent, EffectWatcher};

@@ -30,7 +30,7 @@ use windows::core::PCWSTR;
 use wio::com::ComPtr;
 
 use crate::{
-    ImportedEffectFrame, ImportedFrameFormat, Result, WindowsD3d11Device,
+    FrameOrigin, ImportedEffectFrame, ImportedFrameFormat, Result, WindowsD3d11Device,
     WindowsD3d11SharedTexture, WindowsD3d11SharedTextureImportDescriptor,
     WindowsD3d11SharedTextureImporter, WindowsGpuInteropError,
 };
@@ -58,14 +58,6 @@ pub struct WindowsDxgiAdapterIdentity {
     pub device_id: u32,
 }
 
-/// Origin convention for a native Windows Servo frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum WindowsServoFrameOrigin {
-    /// The first row in native framebuffer coordinates is the bottom row.
-    BottomLeft,
-}
-
 /// Native D3D11 shared-texture frame exposed by the Windows ANGLE context.
 #[derive(Debug, Clone, Copy)]
 pub struct WindowsServoNativeFrame {
@@ -76,7 +68,7 @@ pub struct WindowsServoNativeFrame {
     /// Native texture format.
     pub format: ImportedFrameFormat,
     /// Native framebuffer origin.
-    pub origin: WindowsServoFrameOrigin,
+    pub origin: FrameOrigin,
     /// Ring slot that produced this frame.
     pub slot_index: usize,
     /// NT shared handle for this frame's D3D11 texture.
@@ -265,6 +257,7 @@ impl WindowsD3d11SharedTextureImporter {
             self.import_shared_handle(
                 device,
                 frame.shared_handle,
+                frame.origin,
                 frame.content_generation,
                 frame.sync_us,
             )
@@ -710,7 +703,7 @@ impl WindowsServoFramebuffer {
             width: self.size.width,
             height: self.size.height,
             format: ImportedFrameFormat::Bgra8Unorm,
-            origin: WindowsServoFrameOrigin::BottomLeft,
+            origin: FrameOrigin::BottomLeft,
             slot_index: index,
             shared_handle: slot.texture.shared_handle(),
             ring_epoch: self.ring_epoch,

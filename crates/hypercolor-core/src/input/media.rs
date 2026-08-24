@@ -6,6 +6,9 @@
 //! snapshot.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
+#[cfg(target_os = "macos")]
+use std::fmt::Write as _;
 use std::future::Future;
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -20,17 +23,21 @@ use futures_util::{
     FutureExt as _,
     stream::{self, FuturesUnordered, StreamExt as _},
 };
+#[cfg(target_os = "macos")]
+use sha2::{Digest as _, Sha256};
 use tokio::sync::{Semaphore, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use hypercolor_types::media::MediaState;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 use super::SourceSessionWriter;
-use super::traits::{InputData, InputSource};
-use super::worker_retention::{retain_input_worker, spawn_input_worker};
+use super::traits::{
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, SourceRoleBinding,
+};
 use super::{SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter};
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
 /// Poll cadence for player discovery, status, and position.
 pub const MEDIA_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -80,9 +87,9 @@ pub const MAX_ART_REDIRECTS: usize = 3;
 /// JPEG quality for re-encoded album art.
 pub const ART_JPEG_QUALITY: u8 = 80;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(2);
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Playback status reported by a platform media provider.
@@ -117,91 +124,136 @@ impl PlaybackStatus {
 pub enum ArtworkSource {
     /// A bounded `file:`, `http:`, or `https:` resource.
     Url(String),
-    /// The current GSMTC thumbnail for a Windows media session.
-    WindowsSession(WindowsArtworkSource),
+    /// Bounded bytes captured with the metadata snapshot that named them.
+    Bytes { identity: String, data: Arc<[u8]> },
+    /// Platform-owned work resolved after the metadata snapshot is published.
+    Deferred(DeferredArtworkSource),
+    /// Platform-owned blocking work resolved under the shared artwork gate.
+    DeferredBlocking(BlockingDeferredArtworkSource),
 }
 
-/// Exact Windows media-session identity retained for deferred artwork reads.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WindowsArtworkSource {
-    source_app_id: String,
-    track: String,
-    artist: String,
-    album: String,
-    session: WindowsSessionReference,
+type DeferredArtworkFuture<'a> =
+    Pin<Box<dyn Future<Output = std::result::Result<DeferredArtworkPayload, ArtworkError>> + 'a>>;
+
+enum DeferredArtworkPayload {
+    Url(String),
+    Bytes(Vec<u8>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WindowsSessionReference {
-    #[cfg(target_os = "windows")]
-    Native(::windows::Media::Control::GlobalSystemMediaTransportControlsSession),
-    Fixture(String),
+trait DeferredArtworkLoader: Send + Sync {
+    fn load<'a>(
+        &'a self,
+        max_bytes: usize,
+        cancel: &'a CancellationToken,
+    ) -> DeferredArtworkFuture<'a>;
 }
+
+/// Opaque identity and platform loader for deferred artwork.
+#[derive(Clone)]
+pub struct DeferredArtworkSource {
+    identity: String,
+    loader: Arc<dyn DeferredArtworkLoader>,
+}
+
+impl fmt::Debug for DeferredArtworkSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeferredArtworkSource")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for DeferredArtworkSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+}
+
+impl Eq for DeferredArtworkSource {}
+
+trait BlockingDeferredArtworkLoader: Send + Sync {
+    fn load(
+        &self,
+        max_bytes: usize,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<DeferredArtworkPayload, ArtworkError>;
+}
+
+/// Opaque identity and blocking platform loader for deferred artwork.
+#[derive(Clone)]
+pub struct BlockingDeferredArtworkSource {
+    identity: String,
+    loader: Arc<dyn BlockingDeferredArtworkLoader>,
+}
+
+impl fmt::Debug for BlockingDeferredArtworkSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BlockingDeferredArtworkSource")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for BlockingDeferredArtworkSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+}
+
+impl Eq for BlockingDeferredArtworkSource {}
 
 impl ArtworkSource {
-    /// Build an opaque Windows identity for deterministic provider conformance tests.
+    /// Build a platform-neutral embedded artwork fixture.
     #[doc(hidden)]
     #[must_use]
-    pub fn windows_session_fixture(
-        session_key: impl Into<String>,
-        source_app_id: impl Into<String>,
-        track: impl Into<String>,
-        artist: impl Into<String>,
-        album: impl Into<String>,
-    ) -> Self {
-        Self::WindowsSession(WindowsArtworkSource {
-            source_app_id: source_app_id.into(),
-            track: track.into(),
-            artist: artist.into(),
-            album: album.into(),
-            session: WindowsSessionReference::Fixture(session_key.into()),
-        })
+    pub fn embedded(identity: impl Into<String>, data: impl Into<Arc<[u8]>>) -> Self {
+        Self::Bytes {
+            identity: identity.into(),
+            data: data.into(),
+        }
     }
 
     #[cfg(target_os = "windows")]
-    fn native_windows_session(
-        session: ::windows::Media::Control::GlobalSystemMediaTransportControlsSession,
-        source_app_id: String,
-        track: String,
-        artist: String,
-        album: String,
+    fn deferred(identity: impl Into<String>, loader: Arc<dyn DeferredArtworkLoader>) -> Self {
+        Self::Deferred(DeferredArtworkSource {
+            identity: identity.into(),
+            loader,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn deferred_blocking(
+        identity: impl Into<String>,
+        loader: Arc<dyn BlockingDeferredArtworkLoader>,
     ) -> Self {
-        Self::WindowsSession(WindowsArtworkSource {
-            source_app_id,
-            track,
-            artist,
-            album,
-            session: WindowsSessionReference::Native(session),
+        Self::DeferredBlocking(BlockingDeferredArtworkSource {
+            identity: identity.into(),
+            loader,
         })
     }
 
     fn cache_key(&self) -> String {
         match self {
             Self::Url(value) => value.clone(),
-            Self::WindowsSession(WindowsArtworkSource {
-                source_app_id,
-                track,
-                artist,
-                album,
-                session,
-            }) => {
-                let session_key = match session {
-                    #[cfg(target_os = "windows")]
-                    WindowsSessionReference::Native(session) => {
-                        use ::windows::core::Interface as _;
-                        let identity = session
-                            .cast::<::windows::core::IUnknown>()
-                            .expect("every WinRT session exposes canonical IUnknown identity");
-                        format!("{:p}", identity.as_raw())
-                    }
-                    WindowsSessionReference::Fixture(session_key) => session_key.clone(),
-                };
-                format!(
-                    "{source_app_id}\u{1f}{session_key}\u{1f}{artist}\u{1f}{album}\u{1f}{track}"
-                )
-            }
+            Self::Bytes { identity, .. } => identity.clone(),
+            Self::Deferred(source) => source.identity.clone(),
+            Self::DeferredBlocking(source) => source.identity.clone(),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn embedded_artwork_identity(namespace: &str, data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    let mut identity = String::with_capacity(namespace.len() + 65);
+    identity.push_str(namespace);
+    identity.push('\u{1f}');
+    for byte in digest {
+        write!(&mut identity, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    identity
 }
 
 /// One player's state as read from a native provider, in scan order.
@@ -307,7 +359,31 @@ pub fn media_state_from_player(
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct MediaProviderError {
+    kind: MediaProviderErrorKind,
     message: String,
+}
+
+/// Neutral failure class retained across native media providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaProviderErrorKind {
+    /// Provider-specific failure without a narrower neutral class.
+    BackendFailure,
+    /// The current process or platform cannot use the provider.
+    UnsupportedCapability,
+    /// Provider access needs an explicit user authorization action.
+    AuthorizationRequired,
+    /// The user or operating system denied provider access.
+    AuthorizationDenied,
+    /// No supported media application is currently running.
+    NoRunningPlayer,
+    /// The target application changed or exited during the operation.
+    StaleTarget,
+    /// The provider exceeded its bounded operation deadline.
+    TimedOut,
+    /// One application adapter failed independently.
+    AdapterFailure,
+    /// The provider session is disconnected.
+    Disconnected,
 }
 
 impl MediaProviderError {
@@ -315,8 +391,46 @@ impl MediaProviderError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: MediaProviderErrorKind::BackendFailure,
             message: message.into(),
         }
+    }
+
+    /// Preserve a neutral provider failure class across the platform seam.
+    #[must_use]
+    pub fn classified(kind: MediaProviderErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    /// Return the neutral failure class.
+    #[must_use]
+    pub const fn kind(&self) -> MediaProviderErrorKind {
+        self.kind
+    }
+
+    fn issue_code(&self, fallback: &'static str) -> &'static str {
+        match self.kind {
+            MediaProviderErrorKind::BackendFailure => fallback,
+            MediaProviderErrorKind::UnsupportedCapability => "media_provider_unsupported",
+            MediaProviderErrorKind::AuthorizationRequired => "authorization_required",
+            MediaProviderErrorKind::AuthorizationDenied => "authorization_denied",
+            MediaProviderErrorKind::NoRunningPlayer => "media_player_unavailable",
+            MediaProviderErrorKind::StaleTarget => "media_target_stale",
+            MediaProviderErrorKind::TimedOut => "media_poll_timed_out",
+            MediaProviderErrorKind::AdapterFailure => "media_adapter_failed",
+            MediaProviderErrorKind::Disconnected => "media_provider_disconnected",
+        }
+    }
+
+    fn requires_user_action(&self) -> bool {
+        matches!(
+            self.kind,
+            MediaProviderErrorKind::AuthorizationRequired
+                | MediaProviderErrorKind::AuthorizationDenied
+        )
     }
 }
 
@@ -755,6 +869,9 @@ pub trait MediaMetadataProvider: Send {
     async fn poll_players(
         &mut self,
     ) -> std::result::Result<Vec<PlayerSnapshot>, MediaProviderError>;
+    fn take_poll_warning(&mut self) -> Option<MediaProviderError> {
+        None
+    }
     fn disconnect(&mut self);
 }
 
@@ -772,6 +889,7 @@ pub enum MediaProviderFailure {
 pub struct MediaMetadataPoll {
     pub state: MediaState,
     pub artwork: Option<ArtworkRequest>,
+    pub warning: Option<MediaProviderError>,
 }
 
 /// One deduplicated artwork enrichment request.
@@ -826,6 +944,7 @@ impl MediaProviderSession {
                 return Err(MediaProviderFailure::Poll(error));
             }
         };
+        let warning = self.provider.take_poll_warning();
         let picked = pick_active_player(&players, self.active_player.as_deref());
         self.active_player = picked.map(|player| player.bus_name.clone());
         let artwork = picked.and_then(|player| {
@@ -837,10 +956,10 @@ impl MediaProviderSession {
         Ok(MediaMetadataPoll {
             state: media_state_from_player(picked, None),
             artwork,
+            warning,
         })
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn disconnect(&mut self) {
         self.provider.disconnect();
         self.connected = false;
@@ -1034,28 +1153,37 @@ impl ArtworkFetcher {
     ) -> std::result::Result<String, ArtworkError> {
         let operation_cancel = cancel.child_token();
         let work = async {
-            let bytes = match source {
-                ArtworkSource::Url(url) => self.load_url(url, &operation_cancel).await?,
-                ArtworkSource::WindowsSession(source) => {
-                    #[cfg(target_os = "windows")]
-                    {
-                        let WindowsSessionReference::Native(session) = &source.session else {
-                            return Err(ArtworkError::UnsupportedSource);
-                        };
-                        windows::fetch_thumbnail_bytes(
-                            session,
-                            source,
-                            self.policy.max_source_bytes,
-                            &operation_cancel,
-                        )
-                        .await?
+            let payload = match source {
+                ArtworkSource::Url(url) => DeferredArtworkPayload::Url(url.clone()),
+                ArtworkSource::Bytes { data, .. } => {
+                    if data.len() > self.policy.max_source_bytes {
+                        return Err(ArtworkError::SourceTooLarge {
+                            limit: self.policy.max_source_bytes,
+                        });
                     }
-                    #[cfg(not(target_os = "windows"))]
-                    {
-                        let _ = source;
-                        return Err(ArtworkError::UnsupportedSource);
-                    }
+                    DeferredArtworkPayload::Bytes(data.to_vec())
                 }
+                ArtworkSource::Deferred(source) => {
+                    source
+                        .loader
+                        .load(self.policy.max_source_bytes, &operation_cancel)
+                        .await?
+                }
+                ArtworkSource::DeferredBlocking(source) => {
+                    let loader = Arc::clone(&source.loader);
+                    let max_bytes = self.policy.max_source_bytes;
+                    let blocking_cancel = operation_cancel.clone();
+                    self.run_blocking(
+                        "platform media artwork loader",
+                        &operation_cancel,
+                        move || loader.load(max_bytes, &blocking_cancel),
+                    )
+                    .await?
+                }
+            };
+            let bytes = match payload {
+                DeferredArtworkPayload::Url(url) => self.load_url(&url, &operation_cancel).await?,
+                DeferredArtworkPayload::Bytes(bytes) => bytes,
             };
             let policy = self.policy;
             let blocking = Arc::clone(&self.blocking);
@@ -1193,7 +1321,7 @@ impl ArtworkFetcher {
         };
         let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
         let mut worker = Some(
-            spawn_input_worker(
+            spawn_worker(
                 std::thread::Builder::new().name("hypercolor-artwork".to_owned()),
                 move || {
                     let result = operation();
@@ -1211,7 +1339,7 @@ impl ArtworkFetcher {
                     result
                 } else {
                     warn!(worker = context, "artwork job ignored cancellation; quarantining it");
-                    retain_input_worker(
+                    retain_worker(
                         worker.take().expect("running artwork worker remains owned"),
                         context,
                     );
@@ -1401,13 +1529,14 @@ struct CompletedMediaPoll {
     state: Arc<MediaState>,
     completed_at: Instant,
     kind: MediaPublicationKind,
+    health_issue: Option<SourceIssue>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MediaPublicationKind {
     BackendSuccess,
     StateUpdate,
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     BackendFailure,
 }
 
@@ -1443,7 +1572,20 @@ impl MediaPollPublisher {
     #[must_use]
     pub fn publish_completed(&self, state: MediaState, completed_at: Instant) -> bool {
         let key = state.available.then(|| state.track_key());
-        self.publish_metadata(state, key, completed_at)
+        self.publish_metadata(state, key, completed_at, None)
+    }
+
+    /// Publish a degraded backend sample through the production status path.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn publish_degraded_completed_for_test(
+        &self,
+        state: MediaState,
+        completed_at: Instant,
+        issue: SourceIssue,
+    ) -> bool {
+        let key = state.available.then(|| state.track_key());
+        self.publish_metadata(state, key, completed_at, Some(issue))
     }
 
     fn publish_metadata(
@@ -1451,6 +1593,7 @@ impl MediaPollPublisher {
         mut state: MediaState,
         artwork_key: Option<String>,
         completed_at: Instant,
+        health_issue: Option<SourceIssue>,
     ) -> bool {
         let mut publication = self
             .publication
@@ -1466,12 +1609,17 @@ impl MediaPollPublisher {
         } else {
             publication.artwork_key = artwork_key;
         }
-        self.publish(state, completed_at, MediaPublicationKind::BackendSuccess);
+        self.publish(
+            state,
+            completed_at,
+            MediaPublicationKind::BackendSuccess,
+            health_issue,
+        );
         drop(publication);
         true
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     fn publish_unavailable(&self, completed_at: Instant) -> bool {
         let mut publication = self
             .publication
@@ -1485,6 +1633,7 @@ impl MediaPollPublisher {
             MediaState::unavailable(),
             completed_at,
             MediaPublicationKind::BackendFailure,
+            None,
         );
         drop(publication);
         true
@@ -1505,11 +1654,22 @@ impl MediaPollPublisher {
             return;
         }
         state.art_data_url = Some(data_url);
-        self.publish(state, Instant::now(), MediaPublicationKind::StateUpdate);
+        self.publish(
+            state,
+            Instant::now(),
+            MediaPublicationKind::StateUpdate,
+            None,
+        );
         drop(publication);
     }
 
-    fn publish(&self, state: MediaState, completed_at: Instant, kind: MediaPublicationKind) {
+    fn publish(
+        &self,
+        state: MediaState,
+        completed_at: Instant,
+        kind: MediaPublicationKind,
+        health_issue: Option<SourceIssue>,
+    ) {
         let state = Arc::new(state);
         self.state_tx.send_if_modified(|current| {
             if current.as_ref() == state.as_ref() {
@@ -1522,6 +1682,7 @@ impl MediaPollPublisher {
             state,
             completed_at,
             kind,
+            health_issue,
         })));
     }
 
@@ -1664,7 +1825,7 @@ pub async fn run_artwork_loop(
     }
 }
 
-/// Now-playing input source backed by MPRIS on Linux and GSMTC on Windows.
+/// Now-playing input source backed by native platform providers.
 pub struct MediaSource {
     name: String,
     publisher: MediaPollPublisher,
@@ -1675,7 +1836,7 @@ pub struct MediaSource {
     last_logged_track_key: Option<String>,
     running: bool,
     status: SourceStatusReporter,
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     poller: Option<worker::MediaPollerThread>,
 }
 
@@ -1706,7 +1867,7 @@ impl MediaSource {
                 true,
                 true,
             ),
-            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
             poller: None,
         }
     }
@@ -1728,7 +1889,7 @@ impl MediaSource {
         self.running = false;
         self.last_poll = None;
         self.last_sampled = None;
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         {
             self.poller = None;
         }
@@ -1754,7 +1915,7 @@ impl InputSource for MediaSource {
             return Ok(());
         }
 
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         if let Some(poller) = self.poller.as_mut() {
             if poller.stop() {
                 self.poller = None;
@@ -1768,7 +1929,7 @@ impl InputSource for MediaSource {
         self.last_poll = None;
         self.last_sampled = None;
 
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         {
             self.poller = match worker::MediaPollerThread::spawn(self.publisher.clone(), status) {
                 Ok(poller) => Some(poller),
@@ -1789,7 +1950,7 @@ impl InputSource for MediaSource {
             Ok(())
         }
 
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
         {
             info!("media input source is unavailable on this platform");
             self.running = true;
@@ -1813,7 +1974,7 @@ impl InputSource for MediaSource {
         self.last_poll = None;
         self.last_sampled = None;
         self.status.stop();
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         if let Some(poller) = self.poller.as_mut()
             && poller.stop()
         {
@@ -1825,7 +1986,7 @@ impl InputSource for MediaSource {
         if !self.publisher.is_active() {
             return Ok(InputData::None);
         }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
         if let Some(reason) = self
             .poller
             .as_mut()
@@ -1849,11 +2010,21 @@ impl InputSource for MediaSource {
         if poll.kind == MediaPublicationKind::BackendSuccess
             && let Some(status) = self.status.session()
         {
-            status.record_sample(
-                poll.completed_at,
-                poll.completed_at + MEDIA_POLL_INTERVAL + MEDIA_POLL_INTERVAL,
-                usize::from(poll.state.available),
-            )?;
+            let freshness_deadline = poll.completed_at + MEDIA_POLL_INTERVAL + MEDIA_POLL_INTERVAL;
+            if let Some(issue) = &poll.health_issue {
+                status.record_degraded_sample(
+                    poll.completed_at,
+                    freshness_deadline,
+                    usize::from(poll.state.available),
+                    issue.clone(),
+                )?;
+            } else {
+                status.record_sample(
+                    poll.completed_at,
+                    freshness_deadline,
+                    usize::from(poll.state.available),
+                )?;
+            }
         }
 
         let latest = Arc::clone(&poll.state);
@@ -1894,6 +2065,16 @@ impl InputSource for MediaSource {
     }
 }
 
+impl SourceRoleBinding for MediaSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for MediaSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Media
+    }
+}
+
 const fn native_media_name() -> &'static str {
     #[cfg(target_os = "linux")]
     {
@@ -1902,6 +2083,10 @@ const fn native_media_name() -> &'static str {
     #[cfg(target_os = "windows")]
     {
         return "Windows Media";
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return "macOS Media Automation";
     }
     #[allow(unreachable_code)]
     "Native Media"
@@ -1916,11 +2101,15 @@ const fn native_media_backend() -> &'static str {
     {
         return "gsmtc";
     }
+    #[cfg(target_os = "macos")]
+    {
+        return "macos_automation";
+    }
     #[allow(unreachable_code)]
     "unsupported"
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 mod worker {
     use std::sync::Arc;
     use std::sync::mpsc;
@@ -1930,7 +2119,7 @@ mod worker {
     use tokio::time::MissedTickBehavior;
     use tracing::{debug, warn};
 
-    use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
+    use hypercolor_worker_retention::{retain_worker, spawn_worker};
 
     use super::{
         ArtworkFetcher, ArtworkRequest, MEDIA_POLL_INTERVAL, MEDIA_PROVIDER_TIMEOUT,
@@ -1952,7 +2141,7 @@ mod worker {
             let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
             let (ready_tx, ready_rx) = mpsc::sync_channel(1);
             let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-            let join_handle = spawn_input_worker(
+            let join_handle = spawn_worker(
                 std::thread::Builder::new().name("hypercolor-media".to_owned()),
                 move || {
                     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -2043,7 +2232,7 @@ mod worker {
             let Some(join_handle) = self.join_handle.take() else {
                 return;
             };
-            retain_input_worker(join_handle, "media poller");
+            retain_worker(join_handle, "media poller");
         }
     }
 
@@ -2083,11 +2272,33 @@ mod worker {
                     };
                     match poll {
                         Ok(Ok(metadata)) => {
+                            let health_issue = metadata.warning.as_ref().map(|warning| {
+                                SourceIssue::new(
+                                    warning.issue_code("media_adapter_failed"),
+                                    warning.to_string(),
+                                    true,
+                                )
+                            });
+                            if let Some(status) = &status {
+                                if let Some(issue) = &health_issue {
+                                    let warning = metadata
+                                        .warning
+                                        .as_ref()
+                                        .expect("health issue retains its provider warning");
+                                    status.set_action_issue(
+                                        warning.requires_user_action().then(|| issue.clone()),
+                                    );
+                                    status.degraded(issue.clone());
+                                } else {
+                                    status.set_action_issue(None);
+                                }
+                            }
                             let key = metadata.artwork.as_ref().map(|request| request.key.clone());
                             let _ = publisher.publish_metadata(
                                 metadata.state,
                                 key,
                                 std::time::Instant::now(),
+                                health_issue,
                             );
                             if metadata.artwork != last_artwork {
                                 last_artwork.clone_from(&metadata.artwork);
@@ -2096,14 +2307,16 @@ mod worker {
                         }
                         Ok(Err(MediaProviderFailure::Connect(error))) => {
                             if let Some(status) = &status {
-                                status.unavailable(
-                                    SourceIssue::new(
-                                        "media_provider_unavailable",
-                                        error.to_string(),
-                                        true,
-                                    )
-                                    .with_remediation(native_remediation()),
+                                let issue = SourceIssue::new(
+                                    error.issue_code("media_provider_unavailable"),
+                                    error.to_string(),
+                                    true,
+                                )
+                                .with_remediation(native_remediation());
+                                status.set_action_issue(
+                                    error.requires_user_action().then(|| issue.clone()),
                                 );
+                                status.unavailable(issue);
                             }
                             let _ = publisher.publish_unavailable(std::time::Instant::now());
                             if last_artwork.take().is_some() {
@@ -2112,11 +2325,15 @@ mod worker {
                         }
                         Ok(Err(MediaProviderFailure::Poll(error))) => {
                             if let Some(status) = &status {
-                                status.degraded(SourceIssue::new(
-                                    "media_poll_failed",
+                                let issue = SourceIssue::new(
+                                    error.issue_code("media_poll_failed"),
                                     error.to_string(),
                                     true,
-                                ));
+                                );
+                                status.set_action_issue(
+                                    error.requires_user_action().then(|| issue.clone()),
+                                );
+                                status.degraded(issue);
                             }
                             let _ = publisher.publish_unavailable(std::time::Instant::now());
                             if last_artwork.take().is_some() {
@@ -2126,6 +2343,7 @@ mod worker {
                         Err(_) => {
                             session.disconnect();
                             if let Some(status) = &status {
+                                status.set_action_issue(None);
                                 status.degraded(SourceIssue::new(
                                     "media_poll_timed_out",
                                     format!(
@@ -2159,6 +2377,10 @@ mod worker {
         {
             return "allow media-session access and start a GSMTC-capable player";
         }
+        #[cfg(target_os = "macos")]
+        {
+            return "run Music or Spotify, then grant Automation from an explicit Hypercolor action";
+        }
         #[allow(unreachable_code)]
         "enable a native media provider"
     }
@@ -2172,6 +2394,261 @@ fn native_provider() -> Box<dyn MediaMetadataProvider> {
 #[cfg(target_os = "windows")]
 fn native_provider() -> Box<dyn MediaMetadataProvider> {
     Box::new(windows::GsmtcProvider::new())
+}
+
+#[cfg(target_os = "macos")]
+fn native_provider() -> Box<dyn MediaMetadataProvider> {
+    Box::new(macos::AutomationProvider::new())
+}
+
+/// One media application whose automation access can be requested explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaAuthorizationTarget {
+    /// Apple Music.
+    Music,
+    /// Spotify.
+    Spotify,
+}
+
+/// Prompt the platform for explicit automation access to one media application.
+///
+/// This is a blocking call that may show a consent dialog; run it off the
+/// async runtime. Platforms without a consent-gated media provider report
+/// [`MediaProviderErrorKind::UnsupportedCapability`].
+///
+/// # Errors
+///
+/// Returns the neutral provider failure when the platform refuses, the user
+/// denies, the application is not running, or the platform has no such
+/// provider.
+pub fn request_media_authorization(
+    target: MediaAuthorizationTarget,
+) -> std::result::Result<(), MediaProviderError> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::request_authorization(target)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(MediaProviderError::classified(
+            MediaProviderErrorKind::UnsupportedCapability,
+            format!("explicit media authorization for {target:?} is available only on macOS"),
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use hypercolor_macos_media::{
+        AdapterFailure, Artwork, LoadedArtwork, MediaErrorKind, MediaPoll, MediaProvider,
+        PlaybackStatus as NativePlaybackStatus,
+    };
+
+    use super::{
+        ArtworkError, ArtworkSource, BlockingDeferredArtworkLoader, DeferredArtworkPayload,
+        MediaMetadataProvider, MediaProviderError, MediaProviderErrorKind, PlaybackStatus,
+        PlayerSnapshot, embedded_artwork_identity,
+    };
+
+    pub(super) struct AutomationProvider {
+        provider: MediaProvider,
+        poll_warning: Option<MediaProviderError>,
+    }
+
+    impl AutomationProvider {
+        pub(super) fn new() -> Self {
+            Self {
+                provider: MediaProvider::new(),
+                poll_warning: None,
+            }
+        }
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl MediaMetadataProvider for AutomationProvider {
+        fn backend_name(&self) -> &'static str {
+            "macos_automation"
+        }
+
+        async fn connect(&mut self) -> std::result::Result<(), MediaProviderError> {
+            self.provider.connect().map_err(provider_error)
+        }
+
+        async fn poll_players(
+            &mut self,
+        ) -> std::result::Result<Vec<PlayerSnapshot>, MediaProviderError> {
+            self.poll_warning = None;
+            let (players, failures) = match self.provider.poll_players().map_err(provider_error)? {
+                MediaPoll::Players { players, failures } => (players, failures),
+                MediaPoll::NoRunningCapablePlayer => {
+                    return Err(no_running_player_error());
+                }
+            };
+            for failure in &failures {
+                tracing::debug!(
+                    adapter = failure.adapter.display_name(),
+                    error = %failure.error,
+                    "macOS media adapter failed"
+                );
+            }
+            if players.is_empty() && !failures.is_empty() {
+                let failure = summarize_failures(&failures);
+                return Err(MediaProviderError::classified(
+                    failure.kind(),
+                    format!("all running macOS media adapters failed: {failure}"),
+                ));
+            }
+            if !failures.is_empty() {
+                self.poll_warning = Some(summarize_failures(&failures));
+            }
+            Ok(players.into_iter().map(map_player).collect())
+        }
+
+        fn take_poll_warning(&mut self) -> Option<MediaProviderError> {
+            self.poll_warning.take()
+        }
+
+        fn disconnect(&mut self) {
+            self.provider.disconnect();
+        }
+    }
+
+    fn map_player(player: hypercolor_macos_media::MediaPlayerSnapshot) -> PlayerSnapshot {
+        let bus_name = format!("{}\u{1f}{}", player.player_id, player.track_id);
+        let artwork = player.artwork.map(|artwork| match artwork {
+            Artwork::Url(url) => ArtworkSource::Url(url),
+            Artwork::Bytes { identity, data } => ArtworkSource::Bytes {
+                identity: embedded_artwork_identity(
+                    &format!(
+                        "{}\u{1f}{}\u{1f}{identity}",
+                        player.player_id, player.track_id
+                    ),
+                    &data,
+                ),
+                data,
+            },
+            Artwork::Deferred(source) => ArtworkSource::deferred_blocking(
+                source.identity().to_owned(),
+                std::sync::Arc::new(MacosArtworkLoader { source }),
+            ),
+        });
+        PlayerSnapshot {
+            bus_name,
+            status: match player.status {
+                NativePlaybackStatus::Playing => PlaybackStatus::Playing,
+                NativePlaybackStatus::Paused => PlaybackStatus::Paused,
+                NativePlaybackStatus::Stopped => PlaybackStatus::Stopped,
+            },
+            track: player.track,
+            artist: player.artist,
+            album: player.album,
+            artwork,
+            position_ms: player.position_ms,
+            duration_ms: player.duration_ms,
+        }
+    }
+
+    struct MacosArtworkLoader {
+        source: hypercolor_macos_media::DeferredArtworkSource,
+    }
+
+    impl BlockingDeferredArtworkLoader for MacosArtworkLoader {
+        fn load(
+            &self,
+            max_bytes: usize,
+            cancel: &tokio_util::sync::CancellationToken,
+        ) -> std::result::Result<DeferredArtworkPayload, ArtworkError> {
+            if cancel.is_cancelled() {
+                return Err(ArtworkError::Cancelled);
+            }
+            let artwork = self
+                .source
+                .load(max_bytes)
+                .map_err(|error| ArtworkError::Io(error.to_string()))?
+                .ok_or(ArtworkError::UnsupportedSource)?;
+            if cancel.is_cancelled() {
+                return Err(ArtworkError::Cancelled);
+            }
+            Ok(match artwork {
+                LoadedArtwork::Url(url) => DeferredArtworkPayload::Url(url),
+                LoadedArtwork::Bytes { data, .. } => DeferredArtworkPayload::Bytes(data.to_vec()),
+            })
+        }
+    }
+
+    fn provider_error(error: hypercolor_macos_media::MediaError) -> MediaProviderError {
+        MediaProviderError::classified(map_error_kind(error.kind()), error.to_string())
+    }
+
+    pub(super) fn request_authorization(
+        target: super::MediaAuthorizationTarget,
+    ) -> Result<(), MediaProviderError> {
+        let adapter = match target {
+            super::MediaAuthorizationTarget::Music => hypercolor_macos_media::MediaAdapter::Music,
+            super::MediaAuthorizationTarget::Spotify => {
+                hypercolor_macos_media::MediaAdapter::Spotify
+            }
+        };
+        MediaProvider::new()
+            .request_authorization(adapter)
+            .map_err(provider_error)
+    }
+
+    fn no_running_player_error() -> MediaProviderError {
+        MediaProviderError::classified(
+            MediaProviderErrorKind::NoRunningPlayer,
+            "no supported macOS media application is running",
+        )
+    }
+
+    fn summarize_failures(failures: &[AdapterFailure]) -> MediaProviderError {
+        let first = failures
+            .first()
+            .expect("adapter failure summary requires one failure");
+        let representative = failures
+            .iter()
+            .find(|failure| {
+                matches!(
+                    failure.error.kind(),
+                    MediaErrorKind::AuthorizationRequired | MediaErrorKind::AuthorizationDenied
+                )
+            })
+            .unwrap_or(first);
+        let message = failures
+            .iter()
+            .map(|failure| format!("{}: {}", failure.adapter.display_name(), failure.error))
+            .collect::<Vec<_>>()
+            .join("; ");
+        MediaProviderError::classified(map_error_kind(representative.error.kind()), message)
+    }
+
+    const fn map_error_kind(kind: MediaErrorKind) -> MediaProviderErrorKind {
+        match kind {
+            MediaErrorKind::UnsupportedCapability => MediaProviderErrorKind::UnsupportedCapability,
+            MediaErrorKind::AuthorizationRequired => MediaProviderErrorKind::AuthorizationRequired,
+            MediaErrorKind::AuthorizationDenied => MediaProviderErrorKind::AuthorizationDenied,
+            MediaErrorKind::NoRunningCapablePlayer => MediaProviderErrorKind::NoRunningPlayer,
+            MediaErrorKind::StaleTarget => MediaProviderErrorKind::StaleTarget,
+            MediaErrorKind::TimedOut => MediaProviderErrorKind::TimedOut,
+            MediaErrorKind::AdapterFailure => MediaProviderErrorKind::AdapterFailure,
+            MediaErrorKind::Disconnected => MediaProviderErrorKind::Disconnected,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::no_running_player_error;
+        use crate::input::media::MediaProviderErrorKind;
+
+        #[test]
+        fn no_running_player_keeps_its_neutral_status_class() {
+            let error = no_running_player_error();
+
+            assert_eq!(error.kind(), MediaProviderErrorKind::NoRunningPlayer);
+            assert_eq!(error.issue_code("fallback"), "media_player_unavailable");
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2336,8 +2813,9 @@ mod windows {
     use ::windows::Storage::Streams::DataReader;
 
     use super::{
-        ArtworkError, ArtworkSource, MediaMetadataProvider, MediaProviderError, PlaybackStatus,
-        PlayerSnapshot, PlayerSnapshotScanner, WindowsArtworkSource,
+        ArtworkError, ArtworkSource, DeferredArtworkFuture, DeferredArtworkLoader,
+        DeferredArtworkPayload, MediaMetadataProvider, MediaProviderError, PlaybackStatus,
+        PlayerSnapshot, PlayerSnapshotScanner,
     };
 
     pub(super) struct GsmtcProvider {
@@ -2475,12 +2953,19 @@ mod windows {
         let artist = properties.Artist().map_err(provider_error)?.to_string();
         let album = properties.AlbumTitle().map_err(provider_error)?.to_string();
         let artwork = properties.Thumbnail().is_ok().then(|| {
-            ArtworkSource::native_windows_session(
-                session.clone(),
-                bus_name.clone(),
-                track.clone(),
-                artist.clone(),
-                album.clone(),
+            let identity = format!(
+                "{}\u{1f}{track}\u{1f}{artist}\u{1f}{album}",
+                session_key(session).expect("a scanned GSMTC session retains its identity")
+            );
+            ArtworkSource::deferred(
+                identity,
+                std::sync::Arc::new(WindowsArtworkLoader {
+                    session: session.clone(),
+                    source_app_id: bus_name.clone(),
+                    track: track.clone(),
+                    artist: artist.clone(),
+                    album: album.clone(),
+                }),
             )
         });
 
@@ -2496,13 +2981,37 @@ mod windows {
         })
     }
 
-    pub(super) async fn fetch_thumbnail_bytes(
-        session: &GlobalSystemMediaTransportControlsSession,
-        source: &WindowsArtworkSource,
+    struct WindowsArtworkLoader {
+        session: GlobalSystemMediaTransportControlsSession,
+        source_app_id: String,
+        track: String,
+        artist: String,
+        album: String,
+    }
+
+    impl DeferredArtworkLoader for WindowsArtworkLoader {
+        fn load<'a>(
+            &'a self,
+            max_bytes: usize,
+            cancel: &'a tokio_util::sync::CancellationToken,
+        ) -> DeferredArtworkFuture<'a> {
+            Box::pin(async move {
+                fetch_thumbnail_bytes(self, max_bytes, cancel)
+                    .await
+                    .map(DeferredArtworkPayload::Bytes)
+            })
+        }
+    }
+
+    async fn fetch_thumbnail_bytes(
+        source: &WindowsArtworkLoader,
         max_bytes: usize,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> std::result::Result<Vec<u8>, ArtworkError> {
-        let operation = session.TryGetMediaPropertiesAsync().map_err(artwork_io)?;
+        let operation = source
+            .session
+            .TryGetMediaPropertiesAsync()
+            .map_err(artwork_io)?;
         let cancellation = operation.clone();
         let properties = await_artwork_operation(
             operation,

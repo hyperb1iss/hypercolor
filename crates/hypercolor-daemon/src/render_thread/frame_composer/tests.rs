@@ -3,7 +3,7 @@ use super::preview_policy::{
     requires_cpu_sampling_canvas, requires_published_surface,
 };
 use super::{
-    PreviewSurfaceRequest, apply_native_copy_failure_policy, effective_render_zone_layer_count,
+    PreviewSurfaceRequest, effective_render_zone_layer_count,
     native_copy_failure_retains_last_frame, producer_frame_requires_composition_for_preview,
     render_zone_requires_full_composition, synchronize_screen_plan_generation,
 };
@@ -44,15 +44,6 @@ fn native_copy_failure_falls_back_until_a_last_good_frame_exists() {
 
     let _ = queue.clear_latest();
     assert!(!native_copy_failure_retains_last_frame(&queue));
-}
-
-#[test]
-fn invalidating_native_copy_failure_drops_the_last_good_frame() {
-    let mut queue = ProducerQueue::new();
-    queue.submit_latest(ProducerFrame::Canvas(Canvas::new(4, 4)));
-
-    assert!(!apply_native_copy_failure_policy(&mut queue, true));
-    assert!(!queue.has_latest());
 }
 
 #[test]

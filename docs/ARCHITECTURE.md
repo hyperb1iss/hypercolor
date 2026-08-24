@@ -123,7 +123,6 @@ graph TD
         D[hypercolor-daemon]
         CLI[hypercolor-cli]
         TUI[hypercolor-tui]
-        TRAY[hypercolor-tray]
         APP[hypercolor-app]
         UI[hypercolor-ui<br><i>excluded from workspace</i>]
     end
@@ -148,7 +147,6 @@ graph TD
     CORE --> CLI
     T --> TUI
     TUI -.->|optional| CLI
-    CORE & T --> TRAY
     CORE & T --> APP
     T & LEXT --> UI
 ```

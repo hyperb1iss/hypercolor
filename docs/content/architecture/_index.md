@@ -42,8 +42,8 @@ graph TD
     CORE & HAL & DB & NET --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
-    CORE & T --> TRAY[hypercolor-tray]
-    APP[hypercolor-app] --> D & TRAY
+    CORE & T --> APP[hypercolor-app]
+    APP --> D
     T --> UI["hypercolor-ui (excluded from workspace)"]
     LE[hypercolor-leptos-ext] --> UI & D & TUI
 {% </mermaid> %}
@@ -63,7 +63,6 @@ graph TD
 | `hypercolor-daemon` | Daemon binary: render-loop host, SparkleFlinger compositor, REST/WebSocket/MCP server on `:9420` |
 | `hypercolor-cli` | The `hypercolor` CLI binary |
 | `hypercolor-tui` | Ratatui terminal UI library |
-| `hypercolor-tray` | System tray applet |
 | `hypercolor-app` | Unified desktop shell: supervises the daemon, owns the tray, handles autostart |
 | `hypercolor-leptos-ext` | Leptos 0.8 extension helpers for the web UI and TUI |
 | `hypercolor-ui` | Leptos 0.8 CSR web app compiled to WASM via Trunk; excluded from the workspace |

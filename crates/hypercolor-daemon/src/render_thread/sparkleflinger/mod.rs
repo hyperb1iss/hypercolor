@@ -28,13 +28,7 @@ impl ProjectedLookupAllocationFixture {
 use anyhow::{Result, bail};
 #[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayYuv420Frame;
-#[cfg(all(
-    feature = "wgpu",
-    any(
-        target_os = "windows",
-        all(target_os = "macos", feature = "screen-capture")
-    )
-))]
+#[cfg(feature = "wgpu")]
 use hypercolor_core::input::screen::ScreenBranchPublication;
 use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_core::spatial::PreparedZonePlan;
@@ -299,9 +293,6 @@ impl CompositionLayer {
     }
 
     fn is_bypass_candidate(&self) -> bool {
-        if matches!(self.frame, ProducerFrame::ScreenPublication(_)) {
-            return false;
-        }
         #[cfg(feature = "servo-gpu-import")]
         if matches!(self.frame, ProducerFrame::Gpu(_)) {
             return false;
@@ -683,11 +674,14 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    /// Capability features the native screen bridge reports for the
+    /// screen source, such as Metal 4 availability on macOS.
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-    pub(crate) fn macos_metal4_capability(&self) -> bool {
+    pub(crate) fn screen_source_capability_features(&self) -> Vec<(&'static str, bool)> {
         match &self.backend {
-            SparkleFlingerBackend::Cpu(_) => false,
-            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.macos_metal4_capability(),
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.screen_source_capability_features(),
+            _ => Vec::new(),
         }
     }
 
@@ -795,47 +789,40 @@ impl SparkleFlinger {
         changed
     }
 
-    pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
-        #[cfg(all(
-            feature = "wgpu",
-            any(
-                target_os = "windows",
-                all(target_os = "macos", feature = "screen-capture")
-            )
-        ))]
-        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+    pub(crate) fn screen_native_execution_target(
+        &mut self,
+    ) -> Option<&ScreenNativeExecutionTarget> {
+        #[cfg(feature = "wgpu")]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             return gpu.screen_native_execution_target();
         }
         None
     }
 
     pub(crate) fn release_native_screen_caches(&mut self) {
-        #[cfg(all(
-            feature = "wgpu",
-            any(
-                target_os = "windows",
-                all(target_os = "macos", feature = "screen-capture")
-            )
-        ))]
+        #[cfg(feature = "wgpu")]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             gpu.release_native_screen_caches();
         }
     }
 
-    #[cfg(all(
-        feature = "wgpu",
-        any(
-            target_os = "windows",
-            all(target_os = "macos", feature = "screen-capture")
-        )
-    ))]
+    #[cfg(feature = "wgpu")]
     pub(crate) fn copy_screen_publication(
         &mut self,
         publication: &std::sync::Arc<ScreenBranchPublication>,
     ) -> Result<Option<GpuTextureFrame>> {
+        self.copy_screen_publication_outcome(publication)
+            .into_result()
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn copy_screen_publication_outcome(
+        &mut self,
+        publication: &std::sync::Arc<ScreenBranchPublication>,
+    ) -> gpu::NativeScreenCopyOutcome {
         match &mut self.backend {
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.copy_screen_publication(publication),
-            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            SparkleFlingerBackend::Cpu(_) => gpu::NativeScreenCopyOutcome::Ignored,
         }
     }
 
@@ -874,10 +861,11 @@ impl SparkleFlinger {
         )
     }
 
-    #[cfg(all(test, feature = "wgpu", target_os = "windows"))]
-    pub(crate) fn new_required_dx12_for_test() -> Result<Self> {
+    /// A GPU compositor on the backend mandatory GPU tests must exercise.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn new_required_gpu_for_test() -> Result<Self> {
         let render_device =
-            GpuRenderDevice::new_dx12_required("SparkleFlinger required DX12 test compositor")?;
+            GpuRenderDevice::new_required_for_test("SparkleFlinger required GPU test compositor")?;
         Self::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(render_device))
     }
 
@@ -1587,7 +1575,7 @@ impl SparkleFlinger {
         }
     }
 
-    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    #[cfg(feature = "wgpu")]
     pub(crate) fn sample_texture_zone_plan(
         &mut self,
         frame: &GpuTextureFrame,
@@ -1855,13 +1843,19 @@ fn preview_surface_for_frame(
                 preview_surface_pool,
             )
         }
-        ProducerFrame::ScreenPublication(_) => scaled_preview_surface_from_rgba(
-            frame.cpu_rgba_bytes()?,
-            frame.width(),
-            frame.height(),
-            request,
-            preview_surface_pool,
-        ),
+        ProducerFrame::ScreenPublication(publication) => {
+            let surface = publication.published_surface();
+            if preview_request_matches_dimensions(request, surface.width(), surface.height()) {
+                return Some(surface.clone());
+            }
+            scaled_preview_surface_from_rgba(
+                surface.rgba_bytes(),
+                surface.width(),
+                surface.height(),
+                request,
+                preview_surface_pool,
+            )
+        }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => {
             frame.record_cpu_materialization_blocked();

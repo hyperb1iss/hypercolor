@@ -7,8 +7,6 @@ fi
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="${ROOT_DIR}/packaging/macos/signing-manifest.tsv"
-APP_ENTITLEMENTS="crates/hypercolor-app/entitlements.plist"
-DAEMON_ENTITLEMENTS="packaging/macos/daemon.entitlements.plist"
 SIGNING_TMP=""
 SIGNING_KEYCHAIN=""
 
@@ -100,7 +98,7 @@ validate_manifest() {
     count=$((count + 1))
   done < "${MANIFEST}"
 
-  [[ "${count}" -eq 7 ]] || die "expected 7 signing manifest entries, found ${count}"
+  [[ "${count}" -eq 6 ]] || die "expected 6 signing manifest entries, found ${count}"
   manifest_has app 'Contents/MacOS/Hypercolor' 'tech.hyperbliss.hypercolor' \
     || die "manifest is missing the app identity"
   manifest_has app 'Contents/MacOS/hypercolor-daemon-{target}' 'tech.hyperbliss.hypercolor.sidecar' \
@@ -111,10 +109,6 @@ validate_manifest() {
     || die "manifest is missing the standalone CLI identity"
   manifest_has standalone 'bin/hypercolor-app' 'tech.hyperbliss.hypercolor.app-host' \
     || die "manifest is missing the standalone app host identity"
-  manifest_has standalone 'bin/hypercolor-tray' 'tech.hyperbliss.hypercolor.tray' \
-    || die "manifest is missing the standalone tray identity"
-  cmp -s "${ROOT_DIR}/${APP_ENTITLEMENTS}" "${ROOT_DIR}/${DAEMON_ENTITLEMENTS}" \
-    || die "daemon entitlements diverge from the app profile"
 }
 
 ensure_signing_tmp() {
@@ -274,6 +268,28 @@ signature_requirement() {
   codesign -d -r- "$1" 2>&1 | sed -n 's/^designated => /designated => /p'
 }
 
+codesign_arch_for_target() {
+  case "$1" in
+    aarch64-apple-darwin) printf 'arm64\n' ;;
+    x86_64-apple-darwin) printf 'x86_64\n' ;;
+    *) die "unsupported CDHash target: $1" ;;
+  esac
+}
+
+signature_cdhash() {
+  local path="$1"
+  local target="$2"
+  local arch metadata cdhash
+  arch="$(codesign_arch_for_target "${target}")"
+  if ! metadata="$(codesign -d --arch "${arch}" --verbose=4 "${path}" 2>&1)"; then
+    die "could not inspect architecture-specific CDHash for ${path}"
+  fi
+  cdhash="$(sed -n 's/^CDHash=\([0-9a-f]\{40\}\)$/\1/p' <<< "${metadata}")"
+  [[ "${cdhash}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "codesign returned malformed or ambiguous CDHash for ${path}"
+  printf '%s\n' "${cdhash}"
+}
+
 normalize_entitlements() {
   plutil -convert json -o - "$1" | jq -S .
 }
@@ -418,17 +434,19 @@ write_object_inventory() {
   local output="$4"
   local records
   records="$(mktemp)"
-  local path relative_path requirement
+  local path relative_path requirement cdhash
   while IFS= read -r -d '' path; do
     is_macho "${path}" || continue
     relative_path="${path#"${scope_root}/"}"
     resolve_rule "${scope}" "${relative_path}" "${target}"
     requirement="$(signature_requirement "${path}")"
+    cdhash="$(signature_cdhash "${path}" "${target}")"
     jq -n \
       --arg path "${relative_path}" \
       --arg identifier "${RULE_IDENTIFIER}" \
       --arg requirement "${requirement}" \
-      '{path: $path, identifier: $identifier, designated_requirement: $requirement}' \
+      --arg cdhash "${cdhash}" \
+      '{path: $path, identifier: $identifier, designated_requirement: $requirement, cdhash: $cdhash}' \
       >> "${records}"
   done < <(find "${scope_root}" -type f -print0)
   jq -s . "${records}" > "${output}"

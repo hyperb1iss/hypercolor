@@ -36,20 +36,13 @@ static NEXT_BATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// Tail of a device path — enough to tell two collections of the same physical
 /// device apart, without a full interface path on every line.
 #[cfg(target_os = "windows")]
-fn short_id(source_id: &str) -> String {
-    let trimmed = source_id.trim_end_matches('}');
-    let tail: String = trimmed.chars().rev().take(12).collect();
-    tail.chars().rev().collect()
-}
-
-#[cfg(target_os = "windows")]
 fn windows_main() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
     use hypercolor_windows_input::{
-        RawInputConfig, RawInputEvent, RawInputSession, SessionState, interactive_session_state,
+        RawInputConfig, RawInputSession, SessionState, interactive_session_state,
     };
 
     if interactive_session_state() == SessionState::NoInteractiveSession {
@@ -97,7 +90,7 @@ fn windows_main() {
             keyboard: true,
             mouse: true,
             clock: Arc::new(move || u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)),
-            epoch: 1,
+            session_generation: 1,
         },
         |batch| {
             // Batches are numbered and events carry their device, so the two
@@ -107,79 +100,11 @@ fn windows_main() {
             // reporting the same physical key.
             let batch_no = NEXT_BATCH.fetch_add(1, Ordering::Relaxed);
             for event in batch.events {
-                match event {
-                    RawInputEvent::Key {
-                        device,
-                        make_code,
-                        prefix,
-                        vkey,
-                        pressed,
-                    } => println!(
-                        "{:>8} #{batch_no:<5} key   make={make_code:#06X} prefix={prefix:?} \
-                         vk={vkey:#06X} {:4} {}",
-                        batch.at_ms,
-                        if *pressed { "down" } else { "up" },
-                        short_id(&device.source_id)
-                    ),
-                    RawInputEvent::Button {
-                        device,
-                        button,
-                        pressed,
-                    } => println!(
-                        "{:>8} #{batch_no:<5} btn   {} {:4} {}",
-                        batch.at_ms,
-                        button.canonical_name(),
-                        if *pressed { "down" } else { "up" },
-                        short_id(&device.source_id)
-                    ),
-                    RawInputEvent::Scroll {
-                        device,
-                        delta_x_q16_16,
-                        delta_y_q16_16,
-                    } => println!(
-                        "{:>8} #{batch_no:<5} scroll x={delta_x_q16_16:+} \
-                         y={delta_y_q16_16:+} {}",
-                        batch.at_ms,
-                        short_id(&device.source_id)
-                    ),
-                    RawInputEvent::MotionRelative { device, dx, dy } => println!(
-                        "{:>8} #{batch_no:<5} move  {dx:+} {dy:+} {}",
-                        batch.at_ms,
-                        short_id(&device.source_id)
-                    ),
-                    RawInputEvent::MotionAbsolute {
-                        device,
-                        norm_x,
-                        norm_y,
-                        virtual_desktop,
-                    } => println!(
-                        "{:>8} #{batch_no:<5} abs   {norm_x:.4} {norm_y:.4} {} {}",
-                        batch.at_ms,
-                        if *virtual_desktop { "vdesk" } else { "primary" },
-                        short_id(&device.source_id)
-                    ),
-                    RawInputEvent::DeviceArrived { device } => println!(
-                        "{:>8} #{batch_no:<5} +dev  {} ({:?}) {}",
-                        batch.at_ms,
-                        device.label,
-                        device.kind,
-                        short_id(&device.source_id)
-                    ),
-                    RawInputEvent::DeviceRemoved { device } => println!(
-                        "{:>8} #{batch_no:<5} -dev  {}",
-                        batch.at_ms,
-                        short_id(&device.source_id)
-                    ),
-                    RawInputEvent::StateGap { device } => println!(
-                        "{:>8} #{batch_no:<5} GAP   rollover overrun on {}",
-                        batch.at_ms,
-                        short_id(&device.source_id)
-                    ),
-                }
+                println!("{:>8} #{batch_no:<5} {event:?}", batch.at_ms);
             }
-            if let Some(cursor) = batch.cursor {
+            if let Some(cursor) = batch.pointer {
                 println!(
-                    "{:>8} #{batch_no:<5} cur   {},{} ({:.4},{:.4})",
+                    "{:>8} #{batch_no:<5} cur   {:.0},{:.0} ({:.4},{:.4})",
                     batch.at_ms, cursor.x, cursor.y, cursor.norm_x, cursor.norm_y
                 );
             }

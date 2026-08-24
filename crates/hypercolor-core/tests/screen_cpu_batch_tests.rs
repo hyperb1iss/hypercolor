@@ -4,15 +4,18 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CaptureStorage, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError,
-    CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSamplingError,
-    CpuSamplingView, InputPublicationDemandRevision, KnownCaptureColorimetry, PhysicalOrigin,
-    PixelExtent, PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+use hypercolor_core::input::screen::consumer::{CaptureEpoch, CaptureSourceId, PixelExtent};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureFrame, CaptureFrameError,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureStorage,
+    CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError, CpuReductionExecutor,
+    CpuReductionLayout, CpuReductionRequest, CpuSamplingError, CpuSamplingView,
+    KnownCaptureColorimetry, PhysicalOrigin, PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface,
+    SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
     ScreenExtentRequest, ScreenInputGraphGeneration, ScreenNativeExecutionTarget,
@@ -20,7 +23,7 @@ use hypercolor_core::input::screen::{
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenReductionFilter, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenUpscalePolicy, SourceScale,
+    ScreenUpscalePolicy,
 };
 
 #[path = "support/native_target.rs"]
@@ -185,7 +188,6 @@ fn prepare_batch(
     let preparing = builder
         .prepare(
             demands,
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -626,7 +628,6 @@ fn source_config_and_output_count_mismatches_are_fenced() {
     let preparing = builder
         .prepare(
             [native],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -697,7 +698,6 @@ fn gpu_source_readback_requires_an_explicit_cpu_executor() {
     let gpu_preparing = gpu_builder
         .prepare(
             [gpu_demand],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -805,7 +805,6 @@ fn gpu_source_readback_requires_an_explicit_cpu_executor() {
     let native_preparing = native_builder
         .prepare(
             [native_demand],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -907,7 +906,6 @@ fn source_partition_selects_only_the_contiguous_canonical_range() {
                 native(&source_a),
                 native(&source_m),
             ],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

@@ -1,6 +1,6 @@
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor,
-    DriverModuleKind, DriverPresentation, DriverTransportKind,
+    DriverModuleKind, DriverPresentation, DriverTransportDescriptor, DriverTransportKind,
 };
 
 use hypercolor_ui::api::{
@@ -13,7 +13,7 @@ fn driver(
     display_name: &str,
     discovery: bool,
     pairing: bool,
-    transports: Vec<DriverTransportKind>,
+    transports: Vec<DriverTransportDescriptor>,
 ) -> DriverSummary {
     DriverSummary {
         descriptor: DriverModuleDescriptor {
@@ -55,28 +55,49 @@ fn discovery_settings_follow_driver_descriptors() {
             "Leaf Driver",
             true,
             true,
-            vec![DriverTransportKind::Network],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Network,
+            )],
         ),
         driver(
             "catalog",
             "Catalog Only",
             false,
             false,
-            vec![DriverTransportKind::Usb],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Usb,
+            )],
         ),
         driver(
             "bridge",
             "Bridge Driver",
             true,
             false,
-            vec![DriverTransportKind::Bridge],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Bridge,
+            )],
         ),
         driver(
             "external",
             "External Driver",
             true,
             false,
-            vec![DriverTransportKind::Custom("open-link-hub".to_string())],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Custom("open-link-hub".to_string()),
+            )],
+        ),
+        driver(
+            "asus",
+            "ASUS Aura",
+            true,
+            false,
+            vec![
+                DriverTransportDescriptor::available(DriverTransportKind::Usb),
+                DriverTransportDescriptor::unsupported_platform(
+                    DriverTransportKind::Smbus,
+                    "macOS",
+                ),
+            ],
         ),
     ]);
 
@@ -106,6 +127,17 @@ fn discovery_settings_follow_driver_descriptors() {
                 transport_labels: vec!["Open Link Hub".to_string()],
                 supports_pairing: false,
                 enabled: true,
+            },
+            DiscoveryDriverSetting {
+                id: "asus".to_string(),
+                label: "ASUS Aura".to_string(),
+                key: "drivers.asus.enabled".to_string(),
+                transport_labels: vec![
+                    "USB".to_string(),
+                    "SMBus (not available on macOS)".to_string(),
+                ],
+                supports_pairing: false,
+                enabled: true,
             }
         ]
     );
@@ -120,7 +152,10 @@ fn driver_list_response_deserializes_daemon_data() {
                 "id": "testnet",
                 "display_name": "Test Network",
                 "module_kind": "network",
-                "transports": ["network"],
+                "transports": [{
+                    "kind": "network",
+                    "availability": { "status": "available" }
+                }],
                 "capabilities": {
                     "config": false,
                     "discovery": true,
@@ -242,7 +277,9 @@ fn discovery_settings_carry_the_inventory_enabled_flag() {
         "Leaf Driver",
         true,
         false,
-        vec![DriverTransportKind::Network],
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Network,
+        )],
     );
     disabled.enabled = false;
 

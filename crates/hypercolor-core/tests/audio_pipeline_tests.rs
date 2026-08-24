@@ -19,7 +19,7 @@ use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_fr
 use hypercolor_core::input::audio::{
     AudioCaptureBackend, AudioInput, classify_audio_capture_backend,
 };
-use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_core::input::{InputData, InputManager, InputSource, ManagedSourceRole};
 use hypercolor_types::audio::{
     AudioData, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
 };
@@ -745,21 +745,15 @@ fn audio_status_backend_tracks_committed_configuration() {
 #[test]
 fn failed_audio_reconfiguration_preserves_committed_backend() {
     let initial = manual_input_config();
-    let mut input = AudioInput::new(&initial);
-    input.start().expect("manual input should start");
-    input
-        .set_capture_active(true)
-        .expect("manual input should become live");
-    let samples = sine_wave(440.0, 48_000, 2048);
-    input.push_samples(&samples);
-    let InputData::Audio(before_failure) = input.sample().expect("initial source should sample")
-    else {
-        panic!("expected live audio before reconfiguration");
-    };
-    assert!(before_failure.rms_level > 0.0);
+    let input = AudioInput::new(&initial);
     let handle = input
         .source_status_handle()
         .expect("audio status should exist");
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::audio(Box::new(input)))
+        .expect("audio source should register");
+    manager.start_all().expect("manual input should start");
     assert_eq!(handle.snapshot().backend.as_ref(), "disabled");
 
     let replacement = AudioPipelineConfig {
@@ -768,25 +762,31 @@ fn failed_audio_reconfiguration_preserves_committed_backend() {
         ),
         ..initial
     };
-    let error = input
-        .reconfigure_live(&replacement, "replacement", true)
-        .expect_err("a nonexistent device should reject the staged reconfiguration");
+    let Err(error) = manager
+        .plan_audio_runtime_config(true, &replacement, "replacement", true)
+        .expect("replacement should plan")
+        .prepare()
+    else {
+        panic!("a nonexistent device should reject the staged reconfiguration");
+    };
 
     assert!(error.to_string().contains("not found"));
     assert_eq!(handle.snapshot().backend.as_ref(), "disabled");
-    assert_eq!(input.name(), "AudioInput");
-    input.push_samples(&samples);
-    let InputData::Audio(after_failure) = input.sample().expect("preserved source should sample")
-    else {
-        panic!("expected live audio after rejected reconfiguration");
-    };
-    assert!(after_failure.rms_level > 0.0);
+    assert_eq!(manager.source_names(), vec!["AudioInput"]);
 
-    input
-        .reconfigure_live(&manual_input_config(), "retry", false)
-        .expect("a later valid reconfiguration should remain actionable");
-    assert_eq!(handle.snapshot().backend.as_ref(), "disabled");
-    assert_eq!(input.name(), "retry");
+    let prepared = manager
+        .plan_audio_runtime_config(true, &manual_input_config(), "retry", false)
+        .expect("retry should plan")
+        .prepare()
+        .expect("manual retry should prepare");
+    let mut prepared = prepared.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("retry should commit");
+    prepared.discard();
+    retirement.retire();
+    assert!(handle.snapshot().retired);
+    assert_eq!(manager.source_names(), vec!["retry"]);
 }
 
 #[test]

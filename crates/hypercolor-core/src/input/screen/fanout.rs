@@ -558,6 +558,7 @@ impl PreparedCpuPublicationFanout {
             .and_then(|route| self.batch.descriptor(route.batch_index))
     }
 
+    #[cfg(feature = "macos-capture-fixtures")]
     pub(crate) fn inherit_tone_map_transition_from(
         &mut self,
         previous: &mut Self,
@@ -1232,6 +1233,7 @@ impl PreparedCpuPublicationFanout {
     }
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 fn same_tone_map_route(
     current: &ScreenPhysicalReductionDescriptor,
     previous: &ScreenPhysicalReductionDescriptor,
@@ -1259,6 +1261,7 @@ fn same_tone_map_route(
         && current_output.dynamic_range() == previous_output.dynamic_range()
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 fn tone_map_dynamic_range_changed(
     current: &ScreenPhysicalReductionDescriptor,
     previous: &ScreenPhysicalReductionDescriptor,

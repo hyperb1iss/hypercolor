@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use hypercolor_types::canvas::Canvas;
 use thiserror::Error;
 use tokio::sync::watch;
 
@@ -155,6 +156,31 @@ impl<'a> ScreenSurfacePayload<'a> {
     #[must_use]
     pub const fn pixels(self) -> &'a [u8] {
         self.pixels
+    }
+
+    /// Copy this surface into an RGBA8 canvas for CPU consumers.
+    ///
+    /// Only the two eight-bit four-channel encodings are CPU-readable as
+    /// canvas pixels; packed 10-bit, half-float, and planar video formats
+    /// return `None` rather than a misdecoded image.
+    #[must_use]
+    pub fn to_rgba_canvas(self) -> Option<Canvas> {
+        let extent = self.extent;
+        let mut canvas = Canvas::try_new(extent.width(), extent.height()).ok()?;
+        let target = canvas.as_rgba_bytes_mut();
+        match self.pixel_format {
+            CapturePixelFormat::Rgba8 => target.copy_from_slice(self.pixels),
+            CapturePixelFormat::Bgra8 => {
+                for (dst, src) in target.chunks_exact_mut(4).zip(self.pixels.chunks_exact(4)) {
+                    dst[0] = src[2];
+                    dst[1] = src[1];
+                    dst[2] = src[0];
+                    dst[3] = src[3];
+                }
+            }
+            _ => return None,
+        }
+        Some(canvas)
     }
 }
 
@@ -996,6 +1022,20 @@ impl ScreenBranchPublication {
     #[must_use]
     pub fn payload(&self) -> ScreenBranchPayload<'_> {
         self.storage.view()
+    }
+
+    /// Materialize a CPU surface payload as an RGBA8 canvas.
+    ///
+    /// GPU-resident and zone payloads return `None`; CPU renderers that need
+    /// pixels read only what the exact CPU executor published.
+    #[must_use]
+    pub fn surface_canvas(&self) -> Option<Canvas> {
+        match self.payload() {
+            ScreenBranchPayload::Surface(surface) => surface.to_rgba_canvas(),
+            ScreenBranchPayload::GpuSurface(_)
+            | ScreenBranchPayload::NativeWork(_)
+            | ScreenBranchPayload::Zones(_) => None,
+        }
     }
 }
 

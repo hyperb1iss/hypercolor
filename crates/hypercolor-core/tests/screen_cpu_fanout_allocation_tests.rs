@@ -4,19 +4,22 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CpuCaptureStorage, CpuReductionExecutor, InputPublicationDemandRevision,
-    PhysicalOrigin, PixelExtent, PreparedCpuPublicationFanout, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenColorTuning, ScreenContentBarsPolicy, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenResourceApi, ScreenSceneCutPolicy, ScreenSmoothingPolicy,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
+use hypercolor_core::input::screen::consumer::{CaptureEpoch, CaptureSourceId, PixelExtent};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureFrame, CaptureFrameMetadata,
+    CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureStorage, CpuCaptureStorage,
+    CpuReductionExecutor, PhysicalOrigin, PreparedCpuPublicationFanout, RawCaptureSurface,
+    ScreenPublicationHealth, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTuning,
+    ScreenContentBarsPolicy, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
@@ -167,7 +170,6 @@ fn authority_binding_performs_no_heap_allocation() {
     let mut preparing = builder
         .prepare(
             [demand],
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -398,7 +400,6 @@ fn warmed_mixed_materialized_fanout_performs_no_heap_allocation() {
     let mut preparing = builder
         .prepare(
             [direct, shared_surface, shared_zones, dynamic_surface],
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

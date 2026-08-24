@@ -466,6 +466,10 @@ fn transient_and_fatal_frame_write_errors_classify_transport_liveness() {
             detail: "access revoked".to_owned(),
         },
         TransportError::Closed,
+        TransportError::UnsupportedPlatform {
+            transport: "SMBus",
+            platform: hypercolor_hal::transport::TransportPlatform::MacOs,
+        },
         TransportError::UnsupportedTransfer {
             transport: "test".to_owned(),
             transfer_type: TransferType::Primary,

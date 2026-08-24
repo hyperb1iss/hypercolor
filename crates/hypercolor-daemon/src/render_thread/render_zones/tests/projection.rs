@@ -4,16 +4,20 @@ use super::*;
 use crate::render_thread::producer_queue::GpuTextureFrameOrigin;
 use crate::render_thread::sparkleflinger::CompositionLayer;
 #[cfg(feature = "wgpu")]
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CpuReductionExecutor, PhysicalOrigin, PixelExtent,
+use hypercolor_core::input::screen::consumer::{CaptureEpoch, CaptureSourceId, PixelExtent};
+#[cfg(feature = "wgpu")]
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureGeometry, CapturePixelFormat, CaptureRotation, CpuReductionExecutor,
+    PhysicalOrigin, ScreenPublicationHealth, ScreenPublicationMetadata, SourceScale,
+};
+#[cfg(feature = "wgpu")]
+use hypercolor_core::input::screen::planner::{
     RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
     ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
     ScreenCaptureBackend, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
     ScreenInputGraphGeneration, ScreenPayloadKind, ScreenPlanBuilder,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 #[cfg(feature = "wgpu")]
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
@@ -1943,17 +1947,16 @@ fn initial_and_switched_scenes_admit_gpu_projection_before_rendering() {
 
 #[cfg(feature = "wgpu")]
 fn required_gpu_sparkleflinger() -> Option<SparkleFlinger> {
-    #[cfg(target_os = "windows")]
-    let result = SparkleFlinger::new_required_dx12_for_test();
-    #[cfg(not(target_os = "windows"))]
-    let result = SparkleFlinger::new(hypercolor_types::config::RenderAccelerationMode::Gpu);
-    match result {
+    match SparkleFlinger::new_required_gpu_for_test() {
         Ok(mut sparkleflinger) => {
-            if std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_some() {
+            if std::env::var_os("HYPERCOLOR_REQUIRE_GPU_TESTS").is_some()
+                && let Some(required) =
+                    crate::render_thread::gpu_device::GpuRenderDevice::required_test_backend()
+            {
                 assert_eq!(
                     sparkleflinger.gpu_backend_name_for_test(),
-                    Some("dx12"),
-                    "mandatory Windows GPU projection tests must exercise DX12"
+                    Some(crate::render_thread::gpu_device::backend_name(required)),
+                    "mandatory GPU projection tests must exercise the platform backend"
                 );
             }
             let canvas = sparkleflinger
@@ -2260,7 +2263,6 @@ fn cpu_screen_publication(
     let mut preparing = builder
         .prepare(
             [demand],
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

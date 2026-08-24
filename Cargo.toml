@@ -147,13 +147,20 @@ hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 hypercolor-persistence = { path = "crates/hypercolor-persistence" }
 hypercolor-platform-fs = { path = "crates/hypercolor-platform-fs" }
+hypercolor-worker-retention = { path = "crates/hypercolor-worker-retention" }
+hypercolor-gpu-frame = { path = "crates/hypercolor-gpu-frame" }
+hypercolor-linux-input = { path = "crates/hypercolor-linux-input" }
+hypercolor-pipewire-interop = { path = "crates/hypercolor-pipewire-interop" }
+hypercolor-linux-session = { path = "crates/hypercolor-linux-session" }
 hypercolor-linux-gpu-interop = { path = "crates/hypercolor-linux-gpu-interop" }
 hypercolor-macos-gpu-interop = { path = "crates/hypercolor-macos-gpu-interop" }
 hypercolor-macos-capture = { path = "crates/hypercolor-macos-capture" }
 hypercolor-macos-input = { path = "crates/hypercolor-macos-input" }
 hypercolor-macos-owner = { path = "crates/hypercolor-macos-owner" }
+hypercolor-windows-session = { path = "crates/hypercolor-windows-session" }
 hypercolor-windows-capture = { path = "crates/hypercolor-windows-capture" }
 hypercolor-windows-gpu-interop = { path = "crates/hypercolor-windows-gpu-interop" }
+hypercolor-windows-telemetry = { path = "crates/hypercolor-windows-telemetry" }
 hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
 hypercolor-driver-support = { path = "crates/hypercolor-driver-support" }
 hypercolor-driver-builtin = { path = "crates/hypercolor-driver-builtin", default-features = false }

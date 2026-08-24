@@ -6,54 +6,25 @@
 
 use std::sync::Arc;
 
+use crate::decode::unknown_key_name;
+use hypercolor_types::host_input::{HostInputBatch, HostInputEvent, HostPointerSnapshot};
+use hypercolor_types::host_input::{
+    HostInputDevice, HostKeyIdentity, HostKeySignal, HostRepeatEvidence, HostScanCodePrefix,
+    host_key_name_from_windows, host_media_key_name_from_windows,
+};
+
 /// Which scan-code prefix a key report carried.
 ///
 /// A boolean `extended` cannot distinguish `E0` (the extended block: arrows,
 /// right-hand modifiers, the navigation cluster) from `E1` (Pause/Break), and
 /// collapsing them would let an unrecognized `E1` sequence collide with an
 /// unprefixed code of the same value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RawKeyPrefix {
-    /// No prefix byte: the make code is a plain set-1 scan code.
-    None,
-    /// `E0`-prefixed: the extended key block.
-    E0,
-    /// `E1`-prefixed: in practice Pause/Break.
-    E1,
-}
-
-/// A mouse button, named in the evdev vocabulary so effects stay portable.
-///
-/// `Side` and `Extra` are Windows' logical `XBUTTON1`/`XBUTTON2`. Windows
-/// guarantees nothing about where those physically sit, so this mapping is a
-/// naming convention chosen to match evdev's own names, not a claim about
-/// hardware placement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RawButton {
-    Left,
-    Right,
-    Middle,
-    Side,
-    Extra,
-}
-
-impl RawButton {
-    /// Canonical cross-platform name, matching `pointer_button_name` on Linux.
-    #[must_use]
-    pub const fn canonical_name(self) -> &'static str {
-        match self {
-            Self::Left => "left",
-            Self::Right => "right",
-            Self::Middle => "middle",
-            Self::Side => "side",
-            Self::Extra => "extra",
-        }
-    }
-}
+pub use hypercolor_types::host_input::HostScanCodePrefix as RawKeyPrefix;
 
 /// Which top-level HID collection a device was registered under.
+#[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RawDeviceKind {
+pub(crate) enum RawDeviceKind {
     Keyboard,
     Mouse,
 }
@@ -64,123 +35,69 @@ pub enum RawDeviceKind {
 /// each native lifetime distinct, while the interned path and label let every
 /// hot event clone one [`Arc`] instead of cloning diagnostic strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawDeviceDescriptor {
+#[cfg(target_os = "windows")]
+pub(crate) struct RawDeviceDescriptor {
     pub source_id: Arc<str>,
     pub interface_path: Option<Arc<str>>,
     pub label: Arc<str>,
     pub kind: RawDeviceKind,
     pub session_generation: u64,
     pub device_generation: u64,
+    pub host_device: Arc<HostInputDevice>,
 }
 
-/// One decoded hardware edge, or a device-lifecycle marker.
-#[derive(Debug, Clone, PartialEq)]
-pub enum RawInputEvent {
-    /// A key edge. `pressed` is the raw hardware edge; auto-repeat carries no
-    /// marker on Windows, so repeat classification happens in core against the
-    /// held set for this `source_id`.
-    Key {
-        device: Arc<RawDeviceDescriptor>,
-        make_code: u16,
-        prefix: RawKeyPrefix,
-        /// Logical virtual-key code. Layout-dependent, so it is only consulted
-        /// when `make_code` is unusable.
-        vkey: u16,
-        pressed: bool,
-    },
-    Button {
-        device: Arc<RawDeviceDescriptor>,
-        button: RawButton,
-        pressed: bool,
-    },
-    /// Two-axis wheel travel in signed Q16.16 `Line120` units.
-    Scroll {
-        device: Arc<RawDeviceDescriptor>,
-        delta_x_q16_16: i64,
-        delta_y_q16_16: i64,
-    },
-    /// Relative counts from a normal mouse.
-    MotionRelative {
-        device: Arc<RawDeviceDescriptor>,
-        dx: i32,
-        dy: i32,
-    },
-    /// Absolute position from a tablet, RDP, or VM pointer, already normalized
-    /// to `[0,1]²` against whichever rect `MOUSE_VIRTUAL_DESKTOP` selected.
-    MotionAbsolute {
-        device: Arc<RawDeviceDescriptor>,
-        norm_x: f32,
-        norm_y: f32,
-        /// Which rect the device's raw range covered, from
-        /// `MOUSE_VIRTUAL_DESKTOP`.
-        ///
-        /// Carried through rather than consumed at normalization time because
-        /// a device can switch spaces mid-session, and the two normalizations
-        /// are not comparable: differencing a primary-monitor position against
-        /// a virtual-desktop one invents a jump the pointer never made. Core
-        /// resets its baseline when this changes.
-        virtual_desktop: bool,
-    },
-    DeviceArrived {
-        device: Arc<RawDeviceDescriptor>,
-    },
-    DeviceRemoved {
-        device: Arc<RawDeviceDescriptor>,
-    },
-    /// Ordered barrier: everything this source had held is now unknown.
-    ///
-    /// Core releases that source's held keys and buttons and resets its
-    /// absolute baseline before applying any later event in the batch. Emitted
-    /// only for a keyboard overrun report, where the keyboard's own view of
-    /// held state has become unreliable.
-    StateGap {
-        device: Arc<RawDeviceDescriptor>,
-    },
-}
-
-impl RawInputEvent {
-    /// The device bucket this event belongs to.
-    #[must_use]
-    pub fn source_id(&self) -> &Arc<str> {
-        match self {
-            Self::Key { device, .. }
-            | Self::Button { device, .. }
-            | Self::Scroll { device, .. }
-            | Self::MotionRelative { device, .. }
-            | Self::MotionAbsolute { device, .. }
-            | Self::DeviceArrived { device }
-            | Self::DeviceRemoved { device }
-            | Self::StateGap { device } => &device.source_id,
-        }
+#[must_use]
+pub fn normalize_windows_key_event(
+    device: &Arc<HostInputDevice>,
+    make_code: u16,
+    prefix: HostScanCodePrefix,
+    vkey: u16,
+    pressed: bool,
+) -> HostInputEvent {
+    const VK_PAUSE: u16 = 0x13;
+    let key = if prefix == HostScanCodePrefix::E1 && vkey == VK_PAUSE {
+        "Pause".to_owned()
+    } else if let Some(name) = host_media_key_name_from_windows(vkey) {
+        name.to_owned()
+    } else if let Some(name) = host_key_name_from_windows(make_code, prefix) {
+        name.to_owned()
+    } else if make_code == 0 {
+        logical_vkey_name(vkey).map_or_else(|| unknown_key_name(make_code, prefix), str::to_owned)
+    } else {
+        unknown_key_name(make_code, prefix)
+    };
+    let prefix_name = match prefix {
+        HostScanCodePrefix::None => "none",
+        HostScanCodePrefix::E0 => "e0",
+        HostScanCodePrefix::E1 => "e1",
+    };
+    HostInputEvent::Key {
+        device: Some(Arc::clone(device)),
+        identity: HostKeyIdentity {
+            key: Arc::from(key),
+            physical_code: Arc::from(format!("windows:set1:{prefix_name}:{make_code:02x}")),
+        },
+        signal: HostKeySignal::Edge {
+            pressed,
+            repeat: HostRepeatEvidence::Unknown,
+        },
     }
 }
 
-/// Cursor position as of one drain, in virtual-desktop pixels plus normalized
-/// canvas coordinates.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RawCursor {
-    /// Signed: the virtual desktop starts at negative coordinates whenever a
-    /// monitor sits left of the primary.
-    pub x: i32,
-    pub y: i32,
-    pub norm_x: f32,
-    pub norm_y: f32,
-}
-
-/// One coherent drain: the events, the cursor as of the same drain, and the
-/// capture stamp taken before the drain read anything.
-///
-/// Delivered by reference so a drain costs no allocation, and as one call per
-/// drain rather than one per event — the core side takes exactly one lock to
-/// fold the whole batch.
-#[derive(Debug)]
-pub struct RawInputBatch<'a> {
-    pub events: &'a [RawInputEvent],
-    pub cursor: Option<RawCursor>,
-    pub at_ms: u64,
-    /// The epoch core handed to `start()`, echoed back so core can reject a
-    /// batch from a session it no longer owns.
-    pub epoch: u64,
+fn logical_vkey_name(vkey: u16) -> Option<&'static str> {
+    match vkey {
+        0xA6 => Some("BrowserBack"),
+        0xA7 => Some("BrowserForward"),
+        0xA8 => Some("BrowserRefresh"),
+        0xA9 => Some("BrowserStop"),
+        0xAA => Some("BrowserSearch"),
+        0xAB => Some("BrowserFavorites"),
+        0xAC => Some("BrowserHome"),
+        0xB4 => Some("LaunchMail"),
+        0xB6 => Some("LaunchApp1"),
+        0xB7 => Some("LaunchApp2"),
+        _ => None,
+    }
 }
 
 /// Capture configuration for one session.
@@ -196,8 +113,8 @@ pub struct RawInputConfig {
     /// drain. Injected because `input_mono_ms` lives in core and the
     /// dependency cannot run the other way.
     pub clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    /// Allocated by core; echoed in every batch.
-    pub epoch: u64,
+    /// Monotonic identity for native device lifetimes in this session.
+    pub session_generation: u64,
 }
 
 impl std::fmt::Debug for RawInputConfig {
@@ -205,7 +122,7 @@ impl std::fmt::Debug for RawInputConfig {
         f.debug_struct("RawInputConfig")
             .field("keyboard", &self.keyboard)
             .field("mouse", &self.mouse)
-            .field("epoch", &self.epoch)
+            .field("session_generation", &self.session_generation)
             .finish_non_exhaustive()
     }
 }
@@ -278,7 +195,7 @@ pub type RawInputResult<T> = Result<T, RawInputError>;
 /// tests everywhere.
 #[derive(Debug, Default)]
 pub struct PendingEvents {
-    events: Vec<RawInputEvent>,
+    events: Vec<HostInputEvent>,
 }
 
 impl PendingEvents {
@@ -287,11 +204,11 @@ impl PendingEvents {
         Self { events: Vec::new() }
     }
 
-    pub fn push(&mut self, event: RawInputEvent) {
+    pub fn push(&mut self, event: HostInputEvent) {
         self.events.push(event);
     }
 
-    pub fn extend(&mut self, events: impl IntoIterator<Item = RawInputEvent>) {
+    pub fn extend(&mut self, events: impl IntoIterator<Item = HostInputEvent>) {
         self.events.extend(events);
     }
 
@@ -308,18 +225,18 @@ impl PendingEvents {
     pub fn deliver(
         &mut self,
         at_ms: u64,
-        epoch: u64,
-        cursor: Option<RawCursor>,
-        sink: &mut impl FnMut(RawInputBatch<'_>),
+        device_catalog_generation: u64,
+        pointer: Option<HostPointerSnapshot>,
+        sink: &mut impl FnMut(HostInputBatch<'_>),
     ) -> bool {
         if self.events.is_empty() {
             return false;
         }
-        sink(RawInputBatch {
+        sink(HostInputBatch {
             events: &self.events,
-            cursor,
+            pointer,
             at_ms,
-            epoch,
+            device_catalog_generation,
         });
         self.events.clear();
         true

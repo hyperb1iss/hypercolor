@@ -19,6 +19,7 @@ mod error;
 pub mod layouts;
 pub mod library;
 pub mod local;
+pub mod media;
 pub mod openapi;
 pub mod output;
 mod routes;

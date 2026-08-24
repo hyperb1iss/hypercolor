@@ -2,15 +2,19 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use hypercolor_core::input::routing::{
-    ConsumerIncarnation, InteractionRouteContext, InteractionRouteRead, InteractionRouteRequest,
-    InteractionRouteSlot, InteractionRouteSnapshot, InteractionRouteSource,
-    InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouteContext, InteractionRouteRead,
+    InteractionRouteRequest, InteractionRouteSlot, InteractionRouteSnapshot,
+    InteractionRouteSource, InteractionRouteSourceClass, InteractionRouter, RoutedInteraction,
+    SourceIncarnation,
 };
 use hypercolor_core::input::{
-    InputEventRead, InteractionBatch, InteractionData, InteractionTransientTotals, KeyboardData,
-    MotionAggregate, MouseData, ScrollAggregate,
+    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
+    InputData, InputEventRead, InputManager, InputSource, InteractionBatch, InteractionData,
+    InteractionSource, InteractionSourceRole, InteractionTransientTotals, KeyboardData,
+    ManagedSourceRole, MotionAggregate, MouseData, ScrollAggregate, SourceRoleBinding,
 };
 use hypercolor_types::config::InteractionRoutePolicy;
 use hypercolor_types::event::{
@@ -179,6 +183,39 @@ impl InteractionRouteSlot for FakeSlot {
     }
 }
 
+struct CatalogHostSource {
+    running: bool,
+}
+
+impl InputSource for CatalogHostSource {
+    fn name(&self) -> &'static str {
+        "catalog-host"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for CatalogHostSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for CatalogHostSource {}
+
 fn source(
     incarnation: SourceIncarnation,
     descriptor: &str,
@@ -212,6 +249,122 @@ fn context(now_ms: u64) -> InteractionRouteContext {
         browser_registry_generation: 33,
         now_ms,
     }
+}
+
+#[test]
+fn catalog_preserves_source_order_revisions_and_exact_browser_selection() {
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(
+            CatalogHostSource { running: false },
+        )))
+        .expect("host source should register");
+    let browser_handle = BrowserInputHandle::new();
+    let browser_registry = browser_handle.registry();
+    manager.start_all().expect("catalog sources should start");
+    let attachment = browser_handle
+        .attach(BrowserInputChildKey::new(
+            BrowserConnectionIncarnation::new(7),
+            BrowserPreviewId::new("catalog-preview"),
+        ))
+        .expect("browser child should attach");
+    let suppressed_attachment = browser_handle
+        .attach(BrowserInputChildKey::new(
+            BrowserConnectionIncarnation::new(8),
+            BrowserPreviewId::new("catalog-suppressed"),
+        ))
+        .expect("second browser child should attach");
+    let selected_descriptor = Arc::<str>::from(attachment.slot().source_id());
+    let suppressed_descriptor = Arc::<str>::from(suppressed_attachment.slot().source_id());
+
+    let graph = manager.input_graph_handle().snapshot();
+    let browser = browser_registry.snapshot();
+    let mut catalog = InteractionRouteCatalog::default();
+    catalog.refresh(&graph, &browser, Instant::now());
+
+    assert_eq!(
+        catalog
+            .sources()
+            .iter()
+            .map(|source| source.class)
+            .collect::<Vec<_>>(),
+        [
+            InteractionRouteSourceClass::Host,
+            InteractionRouteSourceClass::Browser,
+            InteractionRouteSourceClass::Browser,
+        ]
+    );
+    assert!(
+        catalog
+            .sources()
+            .iter()
+            .all(|source| source.availability_revision == 1)
+    );
+
+    let consumer = ConsumerIncarnation::new(91);
+    let mut router = InteractionRouter::default();
+    let mut output = RoutedInteraction::new(consumer);
+    catalog.resolve_into(
+        &mut router,
+        consumer,
+        InteractionRouteRequest {
+            policy: InteractionRoutePolicy::Browser,
+            browser_source: Some(SourceIncarnation::browser_child(
+                attachment.publication_id().get(),
+            )),
+        },
+        13,
+        17,
+        &mut output,
+    );
+
+    assert_eq!(output.diagnostics.selected.len(), 1);
+    assert_eq!(
+        output.diagnostics.selected[0].descriptor,
+        selected_descriptor
+    );
+    assert_eq!(
+        output.diagnostics.selected[0].incarnation,
+        SourceIncarnation::browser_child(attachment.publication_id().get())
+    );
+    assert_eq!(
+        output.diagnostics.source_graph_generation,
+        graph.generation()
+    );
+    assert_eq!(
+        output.diagnostics.browser_registry_generation,
+        browser.generation()
+    );
+    assert!(
+        output
+            .diagnostics
+            .suppressed
+            .contains(&suppressed_descriptor)
+    );
+    assert_ne!(selected_descriptor, suppressed_descriptor);
+    assert!(catalog.sources().iter().all(|source| {
+        source.class != InteractionRouteSourceClass::Browser
+            || source.descriptor.as_ref() != "browser_input"
+    }));
+    catalog.refresh(&graph, &browser, Instant::now());
+    assert!(
+        catalog
+            .sources()
+            .iter()
+            .all(|source| source.availability_revision == 1)
+    );
+    manager
+        .set_interaction_capture_active(false)
+        .expect("interaction capture demand should update");
+    catalog.refresh(&graph, &browser, Instant::now());
+    assert_eq!(
+        catalog
+            .sources()
+            .iter()
+            .map(|source| source.availability_revision)
+            .collect::<Vec<_>>(),
+        [2, 1, 1]
+    );
 }
 
 fn key_event(source_id: &str, key: &str, state: InputButtonState, seq: u64) -> TimedInputEvent {

@@ -1,9 +1,9 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 
 use hypercolor_core::effect::{EffectRenderer, FrameDataSources, FrameInput};
-use hypercolor_core::input::{InteractionData, ScreenData};
+use hypercolor_core::input::{InteractionData, ScreenBranchPublication};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::EffectMetadata;
@@ -65,7 +65,7 @@ impl TestFrameState {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         target: &mut Canvas,
     ) -> Result<()> {

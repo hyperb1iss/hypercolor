@@ -73,6 +73,7 @@ pub enum ResourceKind {
     Control,
     ControlSurface,
     Diagnostic,
+    Sensor,
     Config,
     ConfigKey,
     Session,
@@ -105,6 +106,7 @@ impl ResourceKind {
             Self::Control => "control_not_found",
             Self::ControlSurface => "control_surface_not_found",
             Self::Diagnostic => "diagnostic_not_found",
+            Self::Sensor => "sensor_not_found",
             Self::Config => "config_not_found",
             Self::ConfigKey => "config_key_not_found",
             Self::Session => "session_not_found",
@@ -136,6 +138,7 @@ impl std::fmt::Display for ResourceKind {
             Self::Control => "control",
             Self::ControlSurface => "control surface",
             Self::Diagnostic => "diagnostic",
+            Self::Sensor => "sensor",
             Self::Config => "config",
             Self::ConfigKey => "config key",
             Self::Session => "session",
@@ -566,6 +569,7 @@ mod tests {
                 | ResourceKind::Control
                 | ResourceKind::ControlSurface
                 | ResourceKind::Diagnostic
+                | ResourceKind::Sensor
                 | ResourceKind::Config
                 | ResourceKind::ConfigKey
                 | ResourceKind::Session
@@ -573,7 +577,7 @@ mod tests {
             }
         }
 
-        const ALL: [ResourceKind; 24] = [
+        const ALL: [ResourceKind; 25] = [
             ResourceKind::Scene,
             ResourceKind::Zone,
             ResourceKind::Layer,
@@ -594,6 +598,7 @@ mod tests {
             ResourceKind::Control,
             ResourceKind::ControlSurface,
             ResourceKind::Diagnostic,
+            ResourceKind::Sensor,
             ResourceKind::Config,
             ResourceKind::ConfigKey,
             ResourceKind::Session,

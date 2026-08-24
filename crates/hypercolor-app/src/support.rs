@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use hypercolor_types::service::ServiceIdentity;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -140,20 +141,21 @@ pub struct PawnIoHelperLaunchResult {
     pub exit_code: Option<i32>,
 }
 
-/// Status of the optional full Hypercolor daemon Windows SCM service.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// A service-manager launcher the app found registered on this machine,
+/// described in the neutral vocabulary the daemon itself reports.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct WindowsDaemonServiceStatus {
-    /// Whether the current platform can query Windows SCM services.
-    pub platform_supported: bool,
-    /// Windows service name used by the legacy/headless daemon service.
-    pub service_name: String,
-    /// Raw service install/state information.
-    pub service: ServiceSupportStatus,
-    /// Whether the service currently reports `RUNNING`.
-    pub running: bool,
-    /// Whether the app should reuse the service instead of proposing per-user replacement.
+pub struct DaemonLauncherStatus {
+    /// The registered launcher, when the service manager knows one.
+    pub identity: Option<ServiceIdentity>,
+    /// Whether that launcher currently runs the daemon.
+    pub online: bool,
+    /// Whether the app should reuse the launcher instead of proposing a
+    /// per-user replacement.
     pub reuse_recommended: bool,
+    /// Raw service-manager state label for diagnostics (`RUNNING`,
+    /// `STOPPED`).
+    pub state: Option<String>,
 }
 
 /// Detect PawnIO and SMBus support status for the app UI.
@@ -170,11 +172,11 @@ pub fn detect_pawnio_support(app: AppHandle) -> Result<PawnIoSupportStatus, Stri
     ))
 }
 
-/// Detect the optional Windows SCM daemon service.
+/// Detect a service-manager launcher already registered for the daemon.
 #[tauri::command]
 #[must_use]
-pub fn detect_windows_daemon_service() -> WindowsDaemonServiceStatus {
-    windows_daemon_service_status_from_query(
+pub fn detect_daemon_launcher() -> DaemonLauncherStatus {
+    daemon_launcher_status_from_query(
         cfg!(target_os = "windows"),
         query_service_status(DAEMON_SERVICE_NAME),
     )
@@ -344,21 +346,25 @@ pub fn launch_pawnio_helper_from_resource_dir(
     })
 }
 
-/// Build the full daemon service status from a service query result.
+/// Build the launcher status from a Windows SCM service query.
+///
+/// An installed registration is the `system_service:windows_scm` identity
+/// whether it is running or stopped; only a running one is reused. Hosts
+/// that cannot query SCM report no launcher.
 #[must_use]
-pub fn windows_daemon_service_status_from_query(
+pub fn daemon_launcher_status_from_query(
     platform_supported: bool,
     service: ServiceSupportStatus,
-) -> WindowsDaemonServiceStatus {
-    let running =
-        platform_supported && service.installed && service.state.as_deref() == Some("RUNNING");
-
-    WindowsDaemonServiceStatus {
-        platform_supported,
-        service_name: DAEMON_SERVICE_NAME.to_owned(),
-        service,
-        running,
-        reuse_recommended: running,
+) -> DaemonLauncherStatus {
+    if !platform_supported || !service.installed {
+        return DaemonLauncherStatus::default();
+    }
+    let online = service.state.as_deref() == Some("RUNNING");
+    DaemonLauncherStatus {
+        identity: Some(ServiceIdentity::windows_scm()),
+        online,
+        reuse_recommended: online,
+        state: service.state,
     }
 }
 

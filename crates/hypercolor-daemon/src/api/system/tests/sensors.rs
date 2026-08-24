@@ -1,4 +1,43 @@
 use super::*;
+use hypercolor_core::input::{DataSourceKind, InputData};
+
+struct FixedSensorSource {
+    snapshot: Arc<SystemSnapshot>,
+    running: bool,
+}
+
+impl hypercolor_core::input::InputSource for FixedSensorSource {
+    fn name(&self) -> &'static str {
+        "fixed-sensors"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::Sensors(Arc::clone(&self.snapshot)))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl hypercolor_core::input::SourceRoleBinding for FixedSensorSource {
+    type Role = hypercolor_core::input::DataSourceRole;
+}
+
+impl hypercolor_core::input::DataSource for FixedSensorSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Sensors
+    }
+}
 
 #[tokio::test]
 async fn sensors_endpoint_returns_latest_snapshot() {
@@ -23,12 +62,20 @@ async fn sensors_endpoint_returns_latest_snapshot() {
         )],
         polled_at_ms: 1234,
     });
-    let (_tx, rx) = watch::channel(snapshot);
     state
         .input_manager()
-        .lock()
-        .await
-        .set_sensor_snapshot_receiver(rx);
+        .add_source(hypercolor_core::input::ManagedSourceRole::data(Box::new(
+            FixedSensorSource {
+                snapshot,
+                running: false,
+            },
+        )))
+        .expect("sensor source should register");
+    state
+        .input_manager()
+        .start_all()
+        .expect("sensor source should start");
+    state.input_manager().sample_sources(0.0);
 
     let response = get_sensors(State(state)).await;
     let body = to_bytes(response.into_body(), usize::MAX)

@@ -8,7 +8,7 @@ use crate::macos_owner::{
     MacosOwnerStore, MacosOwnerStoreError, acquire_macos_daemon_guard,
     recover_incoming_daemon_owner, try_acquire_macos_daemon_guard,
 };
-use crate::startup::install_signal_handlers;
+use crate::startup::{ParentLifetime, install_signal_handlers};
 use anyhow::{Context, Result};
 #[cfg(target_os = "macos")]
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
@@ -20,6 +20,9 @@ use hypercolor_macos_input::current_process_audit_token_identity;
 use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
 #[cfg(target_os = "macos")]
 use hypercolor_types::event::MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE;
+use hypercolor_types::service::SERVICE_IDENTITY_ENV;
+#[cfg(not(target_os = "macos"))]
+use hypercolor_types::service::ServiceStatus;
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 #[cfg(not(target_os = "macos"))]
@@ -30,9 +33,17 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+#[path = "linux_launcher_authority.rs"]
+mod linux_launcher_authority;
+
 #[cfg(target_os = "macos")]
 #[path = "macos_launcher_authority.rs"]
 mod macos_launcher_authority;
+
+#[cfg(target_os = "windows")]
+#[path = "windows_launcher_authority.rs"]
+mod windows_launcher_authority;
 
 #[cfg(target_os = "macos")]
 const MACOS_OWNER_ARBITRATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -155,6 +166,8 @@ impl DaemonArgs {
             macos_owner: None,
             macos_owner_snapshot: None,
             macos_daemon_session_attestation: None,
+            service_status: None,
+            session_monitors: None,
         }
     }
 }
@@ -275,6 +288,25 @@ pub fn run(extension_installers: &'static [&'static dyn DaemonExtensionInstaller
     };
     #[cfg(not(target_os = "macos"))]
     let args = DaemonArgs::parse();
+    #[cfg(target_os = "linux")]
+    let service_status = {
+        let claim = crate::launcher_claim::read_service_identity_claim(
+            std::env::var_os(SERVICE_IDENTITY_ENV).as_deref(),
+        )?;
+        let evidence = linux_launcher_authority::inspect_linux_launcher_authority()?;
+        let identity =
+            crate::launcher_claim::resolve_linux_launcher_identity(claim.as_ref(), evidence)?;
+        ServiceStatus::new(identity, 0)
+    };
+    #[cfg(target_os = "windows")]
+    let service_status = {
+        let claim = crate::launcher_claim::read_service_identity_claim(
+            std::env::var_os(SERVICE_IDENTITY_ENV).as_deref(),
+        )?;
+        let attested = windows_launcher_authority::attested_windows_launchers(args.windows_service);
+        let identity = crate::launcher_claim::resolve_launcher_identity(claim.as_ref(), &attested)?;
+        ServiceStatus::new(identity, 0)
+    };
     #[cfg(target_os = "macos")]
     let macos_daemon_executable =
         std::env::current_exe().context("failed to resolve the current daemon executable")?;
@@ -287,6 +319,7 @@ pub fn run(extension_installers: &'static [&'static dyn DaemonExtensionInstaller
             &macos_daemon_requirement,
         )?;
         let owner = macos_launcher_authority::resolve_macos_launcher_owner(
+            std::env::var_os(SERVICE_IDENTITY_ENV).as_deref(),
             std::env::var_os(macos_launcher_authority::MACOS_OWNER_ENV).as_deref(),
             macos_owner_argument,
             evidence,
@@ -406,10 +439,18 @@ pub fn run(extension_installers: &'static [&'static dyn DaemonExtensionInstaller
 
     #[cfg(target_os = "windows")]
     if args.windows_service {
-        return windows_service::run(args.into_run_options(), extension_installers);
+        let mut options = args.into_run_options();
+        options.service_status = Some(service_status);
+        return windows_service::run(options, extension_installers);
     }
 
     let options = args.into_run_options();
+    #[cfg(not(target_os = "macos"))]
+    let options = {
+        let mut options = options;
+        options.service_status = Some(service_status);
+        options
+    };
     #[cfg(target_os = "macos")]
     let options = {
         let mut options = options;
@@ -812,13 +853,10 @@ fn run_daemon(
 ) -> Result<()> {
     let runtime = daemon::build_main_runtime()?;
     runtime.block_on(async move {
-        let shutdown_rx = install_signal_handlers();
-        Box::pin(daemon::run_with_extensions(
-            options,
-            shutdown_rx,
-            extension_installers,
-        ))
-        .await
+        // Linux pdeathsig and the Windows job object are armed by the
+        // supervisor; the kernel delivers supervisor death to this process.
+        let shutdown_rx = install_signal_handlers(ParentLifetime::Kernel);
+        daemon::run_with_extensions(options, shutdown_rx, extension_installers).await
     })
 }
 
@@ -834,7 +872,20 @@ fn run_prepared_macos_daemon(
         .spawn(move || {
             let _run_loop_stop = MainRunLoopStop;
             let result = runtime.block_on(async move {
-                let shutdown_rx = install_signal_handlers();
+                let shutdown_rx =
+                    install_signal_handlers(ParentLifetime::Watch(Box::new(|parent_pid| {
+                        if let Err(error) = crate::macos_owner::wait_for_process_exit(parent_pid) {
+                            tracing::warn!(
+                                %error,
+                                parent_pid,
+                                "kqueue parent watch failed; falling back to no parent-death watch"
+                            );
+                            // Never flip shutdown on a watch failure: park the
+                            // thread so the daemon keeps serving under launchd
+                            // or the terminal user.
+                            std::thread::park();
+                        }
+                    })));
                 Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
             });
             let _ = result_tx.send(result);
@@ -877,6 +928,25 @@ fn daemon_instance_name() -> String {
         "hypercolor-daemon".to_owned()
     }
 }
+
+/// Raise the render thread above normal priority where the host scheduler
+/// benefits from the hint.
+#[cfg(target_os = "windows")]
+pub(crate) fn configure_render_thread_priority() {
+    use thread_priority::{ThreadPriority, WinAPIThreadPriority, set_current_thread_priority};
+
+    let priority = ThreadPriority::Os(WinAPIThreadPriority::AboveNormal.into());
+    match set_current_thread_priority(priority) {
+        Ok(()) => tracing::debug!("configured Windows render thread priority"),
+        Err(error) => tracing::warn!(
+            error = %error,
+            "failed to configure Windows render thread priority"
+        ),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn configure_render_thread_priority() {}
 
 #[cfg(test)]
 mod tests {

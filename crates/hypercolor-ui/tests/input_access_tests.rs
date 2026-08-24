@@ -1,5 +1,5 @@
 use hypercolor_ui::api::{
-    InputSourceIssueStatus, InputSourceStatus, InputStatus, MacosCapabilityOwner, SystemStatus,
+    InputSourceIssueStatus, InputSourceStatus, InputStatus, ServiceIdentity, SystemStatus,
 };
 use hypercolor_ui::input_access::{
     InputAccessRemedy, InputPipelineState, StatusLineTone, input_access_remedy,
@@ -7,7 +7,7 @@ use hypercolor_ui::input_access::{
     primary_input_source_issue, screen_status_line,
 };
 use hypercolor_ui::ws::messages::{
-    extract_input_source_status_event_hint, extract_macos_daemon_ownership_event_hint,
+    extract_input_source_status_event_hint, extract_service_identity_event_hint,
 };
 
 fn input(enabled: bool, opened: usize, denied: usize) -> InputStatus {
@@ -165,29 +165,32 @@ fn input_source_status_event_decodes_as_a_refetch_hint() {
 }
 
 #[test]
-fn macos_daemon_ownership_event_decodes_as_a_refetch_hint() {
-    let hint = extract_macos_daemon_ownership_event_hint(&serde_json::json!({
-        "active_owner": "app_sidecar",
+fn service_identity_event_decodes_as_a_refetch_hint() {
+    let hint = extract_service_identity_event_hint(&serde_json::json!({
+        "identity": { "run_mode": "user_service", "manager": "launchd", "unit": "tech.hyperbliss.hypercolor" },
         "owner_epoch": 17,
         "conflict": null,
         "recovery_required": {
-            "requested_owner": "homebrew_service",
-            "prior_owner": "app_sidecar",
+            "requested": { "run_mode": "user_service", "manager": "homebrew" },
+            "prior": { "run_mode": "supervised_child" },
             "phase": "requested_owner_started"
         },
         "future_field": true
     }))
-    .expect("ownership event should decode");
+    .expect("identity event should decode");
 
-    assert_eq!(hint.active_owner, MacosCapabilityOwner::AppSidecar);
+    assert_eq!(hint.identity, ServiceIdentity::launchd_direct());
     assert_eq!(hint.owner_epoch, 17);
-    assert!(hint.recovery_required.is_some());
+    assert_eq!(
+        hint.recovery_required.map(|recovery| recovery.phase),
+        Some("requested_owner_started".to_owned())
+    );
 }
 
 #[test]
-fn macos_daemon_ownership_event_requires_identity() {
+fn service_identity_event_requires_identity() {
     assert!(
-        extract_macos_daemon_ownership_event_hint(&serde_json::json!({
+        extract_service_identity_event_hint(&serde_json::json!({
             "owner_epoch": 17
         }))
         .is_none()

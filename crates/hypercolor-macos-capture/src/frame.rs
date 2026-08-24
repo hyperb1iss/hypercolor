@@ -6,16 +6,14 @@ use objc2_core_foundation::CFRetained;
 #[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
 use objc2_core_foundation::{CFDictionary, CFString};
 #[cfg(target_os = "macos")]
-use objc2_core_video::{
-    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
-    CVPixelBufferGetIOSurface, CVPixelBufferGetPlaneCount, CVPixelBufferLockBaseAddress,
-    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVReturnSuccess,
-};
+use objc2_core_video::{CVPixelBuffer, CVPixelBufferGetIOSurface};
 #[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
 use objc2_core_video::{
-    CVPixelBufferCreate, CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane,
-    CVPixelBufferGetHeightOfPlane, CVPixelBufferGetWidthOfPlane,
-    kCVPixelBufferIOSurfacePropertiesKey,
+    CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
+    CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeightOfPlane,
+    CVPixelBufferGetPlaneCount, CVPixelBufferGetWidthOfPlane, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey,
+    kCVReturnSuccess,
 };
 use thiserror::Error;
 
@@ -586,6 +584,7 @@ impl MacosCaptureSurface {
         }
     }
 
+    #[cfg(feature = "capture-fixtures")]
     pub(crate) fn with_plane_bytes<R>(
         &self,
         lengths: &[u64],
@@ -670,7 +669,7 @@ unsafe impl Send for MacosRetainedPixelBuffer {}
 // access is serialized by Core Video's lock contract.
 unsafe impl Sync for MacosRetainedPixelBuffer {}
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
 struct PixelBufferReadLock<'a> {
     pixel_buffer: &'a CVPixelBuffer,
     locked: bool,
@@ -726,7 +725,7 @@ impl Drop for PixelBufferWriteLock<'_> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
 impl<'a> PixelBufferReadLock<'a> {
     fn acquire(pixel_buffer: &'a CVPixelBuffer) -> Result<Self, MacosCaptureError> {
         // SAFETY: The retained pixel buffer remains live through this guard,
@@ -757,7 +756,7 @@ impl<'a> PixelBufferReadLock<'a> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
 impl Drop for PixelBufferReadLock<'_> {
     fn drop(&mut self) {
         if self.locked {
@@ -770,7 +769,7 @@ impl Drop for PixelBufferReadLock<'_> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "capture-fixtures"))]
 fn with_native_plane_bytes<R>(
     pixel_buffer: &CVPixelBuffer,
     lengths: &[u64],

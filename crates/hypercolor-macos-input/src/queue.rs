@@ -6,16 +6,32 @@ use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crossbeam_queue::ArrayQueue;
+use hypercolor_types::host_input::{HostInputEvent, HostInputGapReason};
 
-use crate::{MacosInputDiagnostics, MacosInputEvent, MacosInputGapReason};
+use crate::{MacosInputDiagnostics, MacosInputGapReason};
 
 pub(crate) const DEFAULT_QUEUE_CAPACITY: usize = 2048;
 const LATENCY_BUCKET_WIDTH_NS: u64 = 100_000;
 const LATENCY_BUCKET_COUNT: usize = 4096;
 
 struct QueuedInputEvent {
-    event: MacosInputEvent,
+    event: MacosQueuedInputEvent,
     callback_entry: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MacosQueuedInputEvent {
+    Event(HostInputEvent),
+    Motion { x: f64, y: f64 },
+}
+
+impl MacosQueuedInputEvent {
+    pub(crate) fn gap(reason: HostInputGapReason) -> Self {
+        Self::Event(HostInputEvent::StateGap {
+            device: None,
+            reason,
+        })
+    }
 }
 
 struct AtomicLatencyHistogram {
@@ -300,13 +316,16 @@ impl EventQueue {
     }
 
     #[cfg(test)]
-    pub(crate) fn enqueue(&self, event: MacosInputEvent) {
+    pub(crate) fn enqueue(&self, event: MacosQueuedInputEvent) {
         self.enqueue_at(event, Instant::now());
     }
 
-    pub(crate) fn enqueue_at(&self, event: MacosInputEvent, callback_entry: Instant) {
+    pub(crate) fn enqueue_at(&self, event: MacosQueuedInputEvent, callback_entry: Instant) {
         self.diagnostics.record_received();
-        if matches!(event, MacosInputEvent::StateGap { .. }) {
+        if matches!(
+            event,
+            MacosQueuedInputEvent::Event(HostInputEvent::StateGap { .. })
+        ) {
             self.diagnostics.record_gap();
         }
         if self.overflowed.load(Ordering::Acquire) {
@@ -358,7 +377,7 @@ impl EventQueue {
 
     pub(crate) fn drain_into(
         &self,
-        output: &mut Vec<MacosInputEvent>,
+        output: &mut Vec<MacosQueuedInputEvent>,
         callback_entries: &mut Vec<Instant>,
     ) {
         while let Some(queued) = self.events.pop() {
@@ -367,16 +386,16 @@ impl EventQueue {
         }
         if self.overflowed.swap(false, Ordering::AcqRel) {
             self.diagnostics.record_gap();
-            output.push(MacosInputEvent::StateGap {
-                reason: MacosInputGapReason::QueueOverflow,
-            });
+            output.push(MacosQueuedInputEvent::gap(
+                HostInputGapReason::QueueOverflow,
+            ));
         }
         output.extend(
             self.terminal_gaps
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .drain(..)
-                .map(|reason| MacosInputEvent::StateGap { reason }),
+                .map(|reason| MacosQueuedInputEvent::gap(reason.host_reason())),
         );
     }
 
@@ -407,13 +426,15 @@ impl EventQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MacosPointerButton;
+    use hypercolor_types::host_input::HostPointerButton;
 
-    fn button(pressed: bool) -> MacosInputEvent {
-        MacosInputEvent::Button {
-            button: MacosPointerButton::Left,
+    fn button(pressed: bool) -> MacosQueuedInputEvent {
+        MacosQueuedInputEvent::Event(HostInputEvent::Button {
+            device: None,
+            button: HostPointerButton::left(),
             pressed,
-        }
+            physical_code: "macos:button:left".into(),
+        })
     }
 
     #[test]
@@ -436,9 +457,7 @@ mod tests {
         assert_eq!(drained[1], button(false));
         assert_eq!(
             drained[2],
-            MacosInputEvent::StateGap {
-                reason: MacosInputGapReason::QueueOverflow
-            }
+            MacosQueuedInputEvent::gap(HostInputGapReason::QueueOverflow)
         );
         let diagnostics = queue.diagnostics_snapshot();
         assert_eq!(diagnostics.queue_capacity, 2);
@@ -463,9 +482,7 @@ mod tests {
         assert_eq!(drained[0], button(true));
         assert_eq!(
             drained[1],
-            MacosInputEvent::StateGap {
-                reason: MacosInputGapReason::SourceStopped
-            }
+            MacosQueuedInputEvent::gap(HostInputGapReason::WorkerStopped)
         );
         assert!(queue.is_closed());
         assert!(queue.is_empty());

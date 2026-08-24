@@ -6,10 +6,8 @@
 
 mod policy;
 
-#[cfg(target_os = "linux")]
-mod logind;
-#[cfg(target_os = "linux")]
-mod screensaver;
+#[cfg(test)]
+mod tests;
 
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc};
@@ -17,11 +15,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-#[cfg(target_os = "linux")]
-use self::logind::LogindMonitor;
 pub use self::policy::{SleepPolicy, parse_static_color};
-#[cfg(target_os = "linux")]
-use self::screensaver::ScreensaverMonitor;
 
 use hypercolor_types::session::{SessionConfig, SessionEvent};
 
@@ -35,7 +29,7 @@ pub trait SessionMonitor: Send + Sync + 'static {
 
     /// Run the monitor until cancellation or a fatal connection error.
     async fn run(
-        self,
+        self: Box<Self>,
         tx: mpsc::Sender<SessionEvent>,
         cancel: CancellationToken,
     ) -> anyhow::Result<()>;
@@ -51,10 +45,11 @@ pub struct SessionWatcher {
 #[derive(Debug, Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "session dedup tracks four orthogonal state bits"
+    reason = "session dedup tracks five orthogonal state bits"
 )]
 struct DeduplicationState {
     screen_locked: bool,
+    session_inactive: bool,
     lid_closed: bool,
     idle: bool,
     suspended: bool,
@@ -74,6 +69,18 @@ impl DeduplicationState {
                     return false;
                 }
                 self.screen_locked = false;
+            }
+            SessionEvent::SessionInactive => {
+                if self.session_inactive {
+                    return false;
+                }
+                self.session_inactive = true;
+            }
+            SessionEvent::SessionActive => {
+                if !self.session_inactive {
+                    return false;
+                }
+                self.session_inactive = false;
             }
             SessionEvent::Suspending => {
                 if self.suspended {
@@ -118,8 +125,8 @@ impl DeduplicationState {
 }
 
 impl SessionWatcher {
-    /// Spawn all currently available session monitors.
-    pub fn start(config: &SessionConfig) -> Self {
+    /// Spawn the installed session monitors.
+    pub fn start(config: &SessionConfig, monitors: Vec<Box<dyn SessionMonitor>>) -> Self {
         let (event_tx, _) = broadcast::channel(SESSION_EVENT_CAPACITY);
         let cancel = CancellationToken::new();
         let mut tasks = Vec::new();
@@ -140,27 +147,20 @@ impl SessionWatcher {
             cancel.child_token(),
         ));
 
-        #[cfg(target_os = "linux")]
-        {
+        let monitor_count = monitors.len();
+        for monitor in monitors {
             tasks.push(spawn_monitor(
-                ScreensaverMonitor::new(),
+                monitor,
                 merged_tx.clone(),
                 cancel.child_token(),
             ));
-            tasks.push(spawn_monitor(
-                LogindMonitor::new(config),
-                merged_tx,
-                cancel.child_token(),
-            ));
         }
+        drop(merged_tx);
 
-        #[cfg(not(target_os = "linux"))]
-        let _ = merged_tx;
-
-        if tasks.len() == 1 {
+        if monitor_count == 0 {
             warn!("Session watcher started without any active session monitors");
         } else {
-            debug!(monitor_count = tasks.len() - 1, "Session watcher started");
+            debug!(monitor_count, "Session watcher started");
         }
 
         Self {
@@ -189,9 +189,8 @@ impl SessionWatcher {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn spawn_monitor<M: SessionMonitor>(
-    monitor: M,
+fn spawn_monitor(
+    monitor: Box<dyn SessionMonitor>,
     tx: mpsc::Sender<SessionEvent>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {

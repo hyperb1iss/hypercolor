@@ -20,8 +20,8 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
-    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
-    FingerprintNamespace, SegmentInfo,
+    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportDescriptor,
+    DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
 use hypercolor_types::pairing::{
     DeviceAuthState, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
@@ -200,7 +200,12 @@ fn driver_descriptor_converts_to_module_descriptor() {
     assert_eq!(module.id, "fixture-network");
     assert_eq!(module.display_name, "Fixture Network");
     assert_eq!(module.module_kind, DriverModuleKind::Network);
-    assert_eq!(module.transports, vec![DriverTransportKind::Network]);
+    assert_eq!(
+        module.transports,
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Network
+        )]
+    );
     assert!(module.capabilities.discovery);
     assert!(module.capabilities.pairing);
     assert!(module.capabilities.output_backend);
@@ -249,7 +254,10 @@ fn driver_descriptor_maps_non_network_transports() {
         let module = descriptor.module_descriptor();
 
         assert_eq!(module.module_kind, module_kind);
-        assert_eq!(module.transports, vec![transport_kind]);
+        assert_eq!(
+            module.transports,
+            vec![DriverTransportDescriptor::available(transport_kind)]
+        );
     }
 }
 

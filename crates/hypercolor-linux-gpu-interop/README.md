@@ -45,10 +45,10 @@ workspace crates.
 
 **Output types**
 
-- `ImportedEffectFrame` — `Arc<wgpu::Texture>`, `Arc<wgpu::TextureView>`,
-  dimensions, `storage_id` for cache comparison, and `ImportedFrameTimings`.
-- `ImportedFrameTimings` — per-import latency breakdown: `blit_us`, `sync_us`,
-  `total_us`.
+- `ImportedEffectFrame`: imported texture/view, allocation identity, content
+  generation, origin, lease, and uniform timing phases.
+- `ImportedFrameTimings`: optional `blit_us`, `wrap_us`, and `sync_us` phases
+  plus `total_us`.
 
 **Descriptors and formats**
 

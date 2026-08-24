@@ -21,7 +21,7 @@
     "allow-macos-daemon-owner-offline-status",
     "allow-restart-macos-capture-owner",
     "allow-detect-pawnio-support",
-    "allow-detect-windows-daemon-service",
+    "allow-detect-daemon-launcher",
     "allow-launch-pawnio-helper",
     "allow-repair-smbus-service",
     "allow-open-external-url",

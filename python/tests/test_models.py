@@ -173,7 +173,19 @@ def test_driver_model_decodes_protocol_catalog() -> None:
             "id": "nollie",
             "display_name": "Nollie",
             "module_kind": "hal",
-            "transports": ["usb"],
+            "transports": [
+                {
+                    "kind": "usb",
+                    "availability": {"status": "available"},
+                },
+                {
+                    "kind": "smbus",
+                    "availability": {
+                        "status": "unsupported_platform",
+                        "platform": "macOS",
+                    },
+                },
+            ],
             "capabilities": {
                 "config": False,
                 "discovery": True,
@@ -185,7 +197,7 @@ def test_driver_model_decodes_protocol_catalog() -> None:
                 "presentation": True,
                 "controls": False,
             },
-            "api_schema_version": 1,
+            "api_schema_version": 3,
             "config_version": 1,
             "default_enabled": True,
         },
@@ -210,6 +222,10 @@ def test_driver_model_decodes_protocol_catalog() -> None:
     driver = DriverSummary.from_dict(payload)
 
     assert driver.descriptor.capabilities.protocol_catalog is True
+    assert driver.descriptor.api_schema_version == 3
+    assert [transport.to_dict() for transport in driver.descriptor.transports] == payload[
+        "descriptor"
+    ]["transports"]
     assert driver.presentation.label == "Nollie"
     protocols = driver.protocols
     assert not isinstance(protocols, Unset)

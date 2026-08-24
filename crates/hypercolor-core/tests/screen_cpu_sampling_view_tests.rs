@@ -3,15 +3,20 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureDamage, CaptureEpoch,
-    CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CaptureStorage, CpuCaptureStorage, CpuSamplingError, CpuSamplingPoint,
-    CpuSamplingView, KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenBackendResourceIdentity, ScreenCaptureBackend,
-    ScreenCursorCapabilities, ScreenRational, ScreenResourceApi, ScreenSourceReflection,
-    ScreenSourceSelector, SourceScale,
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, PixelExtent, PixelRect,
+};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureDamage, CaptureFrame,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureStorage,
+    CpuCaptureStorage, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
+    KnownCaptureColorimetry, PhysicalOrigin, PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface,
+    SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenBackendResourceIdentity,
+    ScreenCaptureBackend, ScreenCursorCapabilities, ScreenRational, ScreenResourceApi,
+    ScreenSourceReflection, ScreenSourceSelector,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -188,6 +193,26 @@ fn every_rotation_and_reflection_reads_the_expected_texels() {
             CaptureRotation::Clockwise270,
             extent(2, 3),
             vec![3, 6, 2, 5, 1, 4],
+        ),
+        (
+            CaptureRotation::Flipped,
+            extent(3, 2),
+            vec![3, 2, 1, 6, 5, 4],
+        ),
+        (
+            CaptureRotation::Flipped90,
+            extent(2, 3),
+            vec![6, 3, 5, 2, 4, 1],
+        ),
+        (
+            CaptureRotation::Flipped180,
+            extent(3, 2),
+            vec![4, 5, 6, 1, 2, 3],
+        ),
+        (
+            CaptureRotation::Flipped270,
+            extent(2, 3),
+            vec![1, 4, 2, 5, 3, 6],
         ),
     ] {
         for reflection in [

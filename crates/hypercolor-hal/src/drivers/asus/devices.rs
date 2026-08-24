@@ -1,14 +1,17 @@
 //! ASUS Aura device registry entries.
 
+use std::sync::LazyLock;
+
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding};
+use crate::transport::{
+    HidAccessMode, HidTransportIntent, TransportIntent, resolve_current_transport,
+};
 
 use super::protocol::AuraUsbProtocol;
-#[cfg(windows)]
-use super::types::AURA_REPORT_PAYLOAD_LEN;
-use super::types::{ASUS_VID, AURA_REPORT_ID, AuraControllerGen};
+use super::types::{ASUS_VID, AURA_REPORT_ID, AURA_REPORT_PAYLOAD_LEN, AuraControllerGen};
 
 /// ASUS Aura addressable-only controller, generation 1.
 pub const PID_AURA_ADDRESSABLE_GEN1: u16 = 0x1867;
@@ -83,27 +86,16 @@ pub fn build_aura_terminal_protocol() -> Box<dyn Protocol> {
     Box::new(AuraUsbProtocol::new(AuraControllerGen::Terminal))
 }
 
-#[cfg(windows)]
-const fn aura_hid_transport(interface: u8) -> TransportType {
-    TransportType::UsbHidApi {
-        interface: Some(interface),
+const fn aura_hid_intent(interface: u8) -> TransportIntent {
+    TransportIntent::Hid(HidTransportIntent {
+        access: HidAccessMode::HostManaged,
+        interface,
         report_id: AURA_REPORT_ID,
         report_mode: HidRawReportMode::OutputReport,
         max_report_len: AURA_REPORT_PAYLOAD_LEN + 1,
         usage_page: None,
         usage: None,
-    }
-}
-
-#[cfg(not(windows))]
-const fn aura_hid_transport(interface: u8) -> TransportType {
-    TransportType::UsbHidRaw {
-        interface,
-        report_id: AURA_REPORT_ID,
-        report_mode: HidRawReportMode::OutputReport,
-        usage_page: None,
-        usage: None,
-    }
+    })
 }
 
 macro_rules! asus_descriptor {
@@ -118,7 +110,8 @@ macro_rules! asus_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("asus", "ASUS"),
-            transport: aura_hid_transport(2),
+            transport: resolve_current_transport(aura_hid_intent(2))
+                .expect("ASUS HID transport should support the current platform"),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,
@@ -128,71 +121,73 @@ macro_rules! asus_descriptor {
     };
 }
 
-static ASUS_DESCRIPTORS: &[DeviceDescriptor] = &[
-    asus_descriptor!(
-        pid: PID_AURA_MOTHERBOARD_GEN1,
-        name: "ASUS Aura Motherboard (Gen 1)",
-        protocol_id: "asus/motherboard-gen1",
-        builder: build_aura_motherboard_gen1_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_MOTHERBOARD_GEN2,
-        name: "ASUS Aura Motherboard (Gen 2)",
-        protocol_id: "asus/motherboard-gen2",
-        builder: build_aura_motherboard_gen2_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_MOTHERBOARD_GEN3,
-        name: "ASUS Aura Motherboard (Gen 3)",
-        protocol_id: "asus/motherboard-gen3",
-        builder: build_aura_motherboard_gen3_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_MOTHERBOARD_GEN4,
-        name: "ASUS Aura Motherboard (Gen 4)",
-        protocol_id: "asus/motherboard-gen4",
-        builder: build_aura_motherboard_gen4_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_MOTHERBOARD_GEN5,
-        name: "ASUS Aura Motherboard (Gen 5)",
-        protocol_id: "asus/motherboard-gen5",
-        builder: build_aura_motherboard_gen5_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_ADDRESSABLE_GEN1,
-        name: "ASUS Aura Addressable (Gen 1)",
-        protocol_id: "asus/addressable-gen1",
-        builder: build_aura_addressable_gen1_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_ADDRESSABLE_GEN2,
-        name: "ASUS Aura Addressable (Gen 2)",
-        protocol_id: "asus/addressable-gen2",
-        builder: build_aura_addressable_gen2_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_ADDRESSABLE_GEN3,
-        name: "ASUS Aura Addressable (Gen 3)",
-        protocol_id: "asus/addressable-gen3",
-        builder: build_aura_addressable_gen3_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_ADDRESSABLE_GEN4,
-        name: "ASUS Aura Addressable (Gen 4)",
-        protocol_id: "asus/addressable-gen4",
-        builder: build_aura_addressable_gen4_protocol
-    ),
-    asus_descriptor!(
-        pid: PID_AURA_TERMINAL,
-        name: "ASUS Aura Terminal",
-        protocol_id: "asus/terminal",
-        builder: build_aura_terminal_protocol
-    ),
-];
+static ASUS_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
+    vec![
+        asus_descriptor!(
+            pid: PID_AURA_MOTHERBOARD_GEN1,
+            name: "ASUS Aura Motherboard (Gen 1)",
+            protocol_id: "asus/motherboard-gen1",
+            builder: build_aura_motherboard_gen1_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_MOTHERBOARD_GEN2,
+            name: "ASUS Aura Motherboard (Gen 2)",
+            protocol_id: "asus/motherboard-gen2",
+            builder: build_aura_motherboard_gen2_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_MOTHERBOARD_GEN3,
+            name: "ASUS Aura Motherboard (Gen 3)",
+            protocol_id: "asus/motherboard-gen3",
+            builder: build_aura_motherboard_gen3_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_MOTHERBOARD_GEN4,
+            name: "ASUS Aura Motherboard (Gen 4)",
+            protocol_id: "asus/motherboard-gen4",
+            builder: build_aura_motherboard_gen4_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_MOTHERBOARD_GEN5,
+            name: "ASUS Aura Motherboard (Gen 5)",
+            protocol_id: "asus/motherboard-gen5",
+            builder: build_aura_motherboard_gen5_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_ADDRESSABLE_GEN1,
+            name: "ASUS Aura Addressable (Gen 1)",
+            protocol_id: "asus/addressable-gen1",
+            builder: build_aura_addressable_gen1_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_ADDRESSABLE_GEN2,
+            name: "ASUS Aura Addressable (Gen 2)",
+            protocol_id: "asus/addressable-gen2",
+            builder: build_aura_addressable_gen2_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_ADDRESSABLE_GEN3,
+            name: "ASUS Aura Addressable (Gen 3)",
+            protocol_id: "asus/addressable-gen3",
+            builder: build_aura_addressable_gen3_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_ADDRESSABLE_GEN4,
+            name: "ASUS Aura Addressable (Gen 4)",
+            protocol_id: "asus/addressable-gen4",
+            builder: build_aura_addressable_gen4_protocol
+        ),
+        asus_descriptor!(
+            pid: PID_AURA_TERMINAL,
+            name: "ASUS Aura Terminal",
+            protocol_id: "asus/terminal",
+            builder: build_aura_terminal_protocol
+        ),
+    ]
+});
 
 /// Static ASUS Aura descriptors.
 #[must_use]
 pub fn descriptors() -> &'static [DeviceDescriptor] {
-    ASUS_DESCRIPTORS
+    ASUS_DESCRIPTORS.as_slice()
 }

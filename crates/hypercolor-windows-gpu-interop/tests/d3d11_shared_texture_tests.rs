@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use hypercolor_windows_gpu_interop::{
-    ImportedFrameFormat, WindowsD3d11Device, WindowsD3d11SharedTextureImportDescriptor,
-    WindowsD3d11SharedTextureImporter,
+    FrameOrigin, ImportedFrameFormat, WindowsD3d11Device,
+    WindowsD3d11SharedTextureImportDescriptor, WindowsD3d11SharedTextureImporter,
 };
 
 mod support;
@@ -46,9 +46,16 @@ fn imports_synthetic_d3d11_shared_texture_into_wgpu_texture() -> Result<(), Stri
         .map_err(|error| error.to_string())?;
     // SAFETY: texture owns a live NT D3D11 shared handle matching descriptor,
     // and write_pixels flushed producer work before the import.
-    let frame =
-        unsafe { importer.import_shared_handle(&wgpu.device, texture.shared_handle(), 7, 0) }
-            .map_err(|error| error.to_string())?;
+    let frame = unsafe {
+        importer.import_shared_handle(
+            &wgpu.device,
+            texture.shared_handle(),
+            FrameOrigin::BottomLeft,
+            7,
+            0,
+        )
+    }
+    .map_err(|error| error.to_string())?;
     let pixels = read_texture_pixels(
         &wgpu.device,
         &wgpu.queue,
@@ -60,19 +67,29 @@ fn imports_synthetic_d3d11_shared_texture_into_wgpu_texture() -> Result<(), Stri
     assert_eq!(frame.width, WIDTH);
     assert_eq!(frame.height, HEIGHT);
     assert_eq!(frame.format, ImportedFrameFormat::Bgra8Unorm);
-    assert_eq!(frame.storage_id, 7);
+    assert_eq!(frame.content_generation, 7);
     assert_eq!(pixels, expected_pixels);
 
     // SAFETY: the texture and producer synchronization remain valid.
-    let cached_frame =
-        unsafe { importer.import_shared_handle(&wgpu.device, texture.shared_handle(), 8, 123) }
-            .map_err(|error| error.to_string())?;
+    let cached_frame = unsafe {
+        importer.import_shared_handle(
+            &wgpu.device,
+            texture.shared_handle(),
+            FrameOrigin::BottomLeft,
+            8,
+            123,
+        )
+    }
+    .map_err(|error| error.to_string())?;
     // The cached wgpu texture is reused while the content version advances.
-    assert_eq!(cached_frame.storage_id, 8);
+    assert_eq!(cached_frame.content_generation, 8);
+    assert_eq!(cached_frame.allocation_id, frame.allocation_id);
     assert!(Arc::ptr_eq(&cached_frame.texture, &frame.texture));
     assert!(Arc::ptr_eq(&cached_frame.view, &frame.view));
-    assert_eq!(cached_frame.timings.wrap_us, 0);
-    assert_eq!(cached_frame.timings.sync_us, 123);
+    assert_eq!(frame.origin, FrameOrigin::BottomLeft);
+    assert!(cached_frame.lease.retains_same_owner(&frame.lease));
+    assert_eq!(cached_frame.timings.wrap_us, Some(0));
+    assert_eq!(cached_frame.timings.sync_us, Some(123));
 
     Ok(())
 }

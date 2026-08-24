@@ -27,7 +27,7 @@ use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
 use hypercolor_hal::transport::midi::Push2Transport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
-use hypercolor_hal::transport::{Transport, TransportError};
+use hypercolor_hal::transport::{HidRawOpenRequest, Transport, TransportError};
 use hypercolor_types::attachment::DeviceComponentProfile;
 use hypercolor_types::device::{
     DeviceError, DeviceId, DeviceInfo, OwnedDisplayFramePayload, USB_OUTPUT_BACKEND_ID,
@@ -35,9 +35,6 @@ use hypercolor_types::device::{
 use tokio::sync::{RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace};
-
-#[cfg(target_os = "linux")]
-use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
 use super::transport_error::{DeviceTransportOperation, map_hal_transport_error};
 use crate::attachment::ComponentRegistry;
@@ -930,21 +927,21 @@ impl UsbBackend {
                 usage_page,
                 usage,
             } => {
-                #[cfg(target_os = "linux")]
-                {
-                    let transport = UsbHidRawTransport::open(
-                        pending.vendor_id,
-                        pending.product_id,
+                let transport = hypercolor_hal::transport::open_hid_raw_transport(
+                    HidRawOpenRequest {
+                        vendor_id: pending.vendor_id,
+                        product_id: pending.product_id,
                         interface,
                         report_id,
                         report_mode,
-                        pending.serial.as_deref(),
-                        pending.usb_path.as_deref(),
+                        serial: pending.serial.clone(),
+                        usb_path: pending.usb_path.clone(),
                         usage_page,
                         usage,
-                    )
-                    .await
-                    .with_context(|| {
+                    },
+                )
+                .await
+                .with_context(|| {
                         format!(
                             "failed to open hidraw transport for {:04X}:{:04X} interface {} (report_id=0x{report_id:02X}, usage_page={}, usage={})",
                             pending.vendor_id,
@@ -956,26 +953,19 @@ impl UsbBackend {
                         )
                     })?;
 
-                    debug!(
-                        vendor_id = format_args!("{:04X}", pending.vendor_id),
-                        product_id = format_args!("{:04X}", pending.product_id),
-                        interface,
-                        report_id = format_args!("0x{report_id:02X}"),
-                        report_mode = ?report_mode,
-                        usage_page = usage_page
-                            .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
-                        usage = usage
-                            .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
-                        "using hidraw transport"
-                    );
-                    Ok(Box::new(transport))
-                }
-
-                #[cfg(not(target_os = "linux"))]
-                {
-                    let _ = (interface, report_id, report_mode, usage_page, usage, usb);
-                    bail!("hidraw transport is only supported on Linux");
-                }
+                debug!(
+                    vendor_id = format_args!("{:04X}", pending.vendor_id),
+                    product_id = format_args!("{:04X}", pending.product_id),
+                    interface,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    report_mode = ?report_mode,
+                    usage_page = usage_page
+                        .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                    usage = usage
+                        .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                    "using hidraw transport"
+                );
+                Ok(transport)
             }
             TransportType::UsbControl {
                 interface,

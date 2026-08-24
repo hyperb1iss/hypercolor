@@ -1666,6 +1666,16 @@ Verify:
   consumer and output equivalent samples.
 - Native interactive fixture exercises state plus timed batch.
 
+Status on 2026-08-22: landed with design 72 C4. Renderers receive the
+exact publication as `Option<&Arc<ScreenBranchPublication>>`; Servo keeps
+the Arc across coalesced frames without copying pixels; LightScript reads
+zone publications cell for cell and projects surface publications onto
+its grid as a documented box average, so the 8x6 substitute is gone.
+Repeat-key multiplicity and the ScreenCast registration identity landed
+earlier. The macOS production path still publishes GPU-resident work
+only, so CPU renderers on macOS read an absent screen until a GPU
+readback or a CPU branch exists there.
+
 #### T20 - Bound media enrichment and make providers resilient
 
 Files:

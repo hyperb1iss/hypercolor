@@ -111,6 +111,12 @@ async fn handle_inactive_render_loop(
 }
 
 async fn clear_inactive_render_zones(state: &RenderThreadState, runtime: &mut PipelineRuntime) {
+    // Prepared zone resources remain tied to the live effect-pool generation
+    // until activation commits or aborts on a later tick.
+    if runtime.render.pending_layout_activation.is_some() {
+        return;
+    }
+
     let active_zone_count = {
         let manager = state.scene_manager.snapshot().await;
         manager

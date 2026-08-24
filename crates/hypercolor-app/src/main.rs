@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::ownership::macos_daemon_owner_offline_status,
             hypercolor_app::ownership::restart_macos_capture_owner,
             hypercolor_app::support::detect_pawnio_support,
-            hypercolor_app::support::detect_windows_daemon_service,
+            hypercolor_app::support::detect_daemon_launcher,
             hypercolor_app::support::launch_pawnio_helper,
             hypercolor_app::support::repair_smbus_service,
             hypercolor_app::window::open_external_url,
@@ -105,10 +105,6 @@ fn main() -> anyhow::Result<()> {
 
             hypercolor_app::supervisor::start(app.handle(), url.clone())?;
             tracing::info!("daemon supervisor started");
-
-            // On Windows, hook into WM_POWERBROADCAST so devices re-enumerate
-            // when the user wakes the machine. No-op on other platforms.
-            hypercolor_app::power_events::start(url);
 
             Ok(())
         })

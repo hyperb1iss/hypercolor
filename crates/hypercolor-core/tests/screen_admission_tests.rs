@@ -1,11 +1,11 @@
 use std::sync::{Arc, Barrier};
 use std::thread;
 
-use hypercolor_core::input::screen::{
-    CaptureConfig, PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan,
-    ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteReservation,
-    ScreenCaptureInput,
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, PixelExtent, ScreenAnalysisResourcePlan, ScreenByteAdmissionCoordinator,
+    ScreenByteAdmissionError, ScreenByteReservation, ScreenCaptureInput,
 };
+use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
 use hypercolor_core::input::{InputData, InputSource};
 
 #[test]

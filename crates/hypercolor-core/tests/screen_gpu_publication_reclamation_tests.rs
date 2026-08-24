@@ -4,27 +4,30 @@ use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    BoundScreenNativeTargetPreparation, CaptureColorimetry, CaptureEpoch, CaptureGeometry,
-    CapturePixelFormat, CaptureRotation, CaptureSourceId, CommittedScreenPlan, PhysicalOrigin,
-    PixelExtent, PlatformGpuApi, PlatformGpuSurface, RegisteredScreenBranchDemand,
+use hypercolor_core::input::screen::consumer::{CaptureEpoch, CaptureSourceId, PixelExtent};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureGeometry, CapturePixelFormat, CaptureRotation, PhysicalOrigin,
+    PlatformGpuApi, PlatformGpuSurface, ScreenBranchPayload, ScreenBranchPublisher,
+    ScreenGpuSurfacePayload, ScreenLiveBranchReceipt, ScreenNativeWorkPayload,
+    ScreenPublicationColorimetry, ScreenPublicationHealth, ScreenPublicationMetadata,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    BoundScreenNativeTargetPreparation, CommittedScreenPlan, RegisteredScreenBranchDemand,
     ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
     ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenBranchPublisher,
-    ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTransformCapabilities,
-    ScreenCursorCapabilities, ScreenExactResource, ScreenExecutorColorCapabilities,
-    ScreenExtentRequest, ScreenGpuSurfacePayload, ScreenInputGraphGeneration,
-    ScreenLiveBranchReceipt, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetBindingError,
-    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenNativeTargetResourceError,
-    ScreenNativeWorkPayload, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationColorimetry,
-    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHealth,
-    ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationSlotPolicy,
-    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSceneCutPolicy,
-    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
-    ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan,
+    ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
+    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
+    ScreenNativeRetentionQuote, ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
+    ScreenNativeTargetPreparer, ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity,
+    ScreenPlanBuilder, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
+    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
+    ScreenWorkerBinding,
 };
 
 #[path = "support/native_target.rs"]
@@ -96,7 +99,7 @@ fn source() -> ResolvedScreenSource {
             CaptureColorimetry::SRGB,
             ScreenCursorCapabilities::clean_with_separate_cursor(),
             ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                ScreenCaptureBackend::WindowsDesktopDuplication,
+                ScreenCaptureBackend::DesktopDuplication,
                 ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
                 gpu_device(),
                 1,
@@ -256,7 +259,6 @@ fn commit_candidate(
     let mut preparing = builder
         .prepare(
             demands,
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -296,7 +298,6 @@ fn worker_ticket_for(
     let mut preparing = builder
         .prepare(
             demands,
-            None,
             hypercolor_core::input::screen::InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

@@ -8,7 +8,7 @@ fn main() {
         "macos_daemon_owner_offline_status",
         "restart_macos_capture_owner",
         "detect_pawnio_support",
-        "detect_windows_daemon_service",
+        "detect_daemon_launcher",
         "launch_pawnio_helper",
         "repair_smbus_service",
         "open_external_url",

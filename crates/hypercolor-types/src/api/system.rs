@@ -186,35 +186,6 @@ pub struct InputSourceIssueStatus {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum MacosProtectedSourceState {
-    #[default]
-    Disabled,
-    NeedsUserAction,
-    PermissionDenied,
-    NeedsProcessRestart,
-    NeedsSelection,
-    ReadyIdle,
-    Starting,
-    Live,
-    Interrupted,
-    Revoked,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum MacosAuthorizationState {
-    #[default]
-    Unknown,
-    NotDetermined,
-    Denied,
-    Authorized,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
 pub enum MacosCapabilityOwner {
     AppSidecar,
     App,
@@ -293,211 +264,6 @@ pub struct MacosDaemonOwnershipStatus {
     pub recovery_required: Option<MacosDaemonOwnerRecoveryRequiredStatus>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MacosSelectionState {
-    #[default]
-    None,
-    Display {
-        source_id: String,
-    },
-    SessionScoped {
-        content_style: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct MacosTahoeSelectionCapabilities {
-    pub source_id: String,
-    pub capture_session_generation: u64,
-    pub hdr_capture: bool,
-    pub dual_range_screenshots: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum MacosArchitecture {
-    AppleSilicon,
-    #[default]
-    Intel,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct MacosTahoeCapabilities {
-    pub host_architecture: MacosArchitecture,
-    pub translated_process: bool,
-    pub content_tone_mapping_info: bool,
-    pub metal4: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct MacosInputTelemetry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authorization_last_transition_age_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_designated_requirement_hash: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_architecture: Option<MacosArchitecture>,
-    pub executable_architecture: MacosArchitecture,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub translated_process: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_session_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topology_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_capacity: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_depth: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_events_received: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_events_published: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_events_dropped: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tap_disabled_timeout: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tap_disabled_user_input: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tap_reenabled: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_gaps: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub callback_to_publication_timing: Option<MacosTiming>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct MacosTiming {
-    pub sample_count: u64,
-    pub total_ns: u64,
-    pub max_ns: u64,
-    pub p95_ns: u64,
-    pub p99_ns: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct MacosScreenTiming {
-    pub callback: MacosTiming,
-    pub retain: MacosTiming,
-    pub enqueue: MacosTiming,
-    pub conversion: MacosTiming,
-    pub cpu_reduction: MacosTiming,
-    pub native_import: MacosTiming,
-    pub native_reduction_submit: MacosTiming,
-    pub publication: MacosTiming,
-    pub capture_to_native_publication: MacosTiming,
-    pub capture_to_converted_publication: MacosTiming,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct MacosFrameDrop {
-    pub reason: String,
-    pub count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-pub struct MacosScreenTelemetry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authorization_last_transition_age_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub owner_designated_requirement_hash: Option<String>,
-    pub executable_architecture: MacosArchitecture,
-    pub stream_state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_session_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topology_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resource_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication_plan_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pixel_format: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dynamic_range: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_space: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transfer_function: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection_diagnostic_label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_scale: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_width: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_height: Option<u32>,
-    pub queue_depth: usize,
-    pub admitted_native_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pinned_generations: Option<usize>,
-    pub frames_received: u64,
-    pub frames_published: u64,
-    pub frames_superseded: u64,
-    pub frames_malformed: u64,
-    pub frames_dropped: Vec<MacosFrameDrop>,
-    pub frames_stale: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fallback_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timing: Option<MacosScreenTiming>,
-    pub callback_total_ns: u64,
-    pub callback_max_ns: u64,
-    pub retain_total_ns: u64,
-    pub retain_max_ns: u64,
-    pub conversion_total_ns: u64,
-    pub conversion_max_ns: u64,
-    pub cpu_reduction_total_ns: u64,
-    pub cpu_reduction_max_ns: u64,
-    pub native_import_total_ns: u64,
-    pub native_import_max_ns: u64,
-    pub native_reduction_submit_total_ns: u64,
-    pub native_reduction_submit_max_ns: u64,
-    pub publication_total_ns: u64,
-    pub publication_max_ns: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InputSourcePlatformStatus {
-    MacosInput {
-        keyboard: MacosProtectedSourceState,
-        pointer: MacosProtectedSourceState,
-        keyboard_tcc: MacosAuthorizationState,
-        secure_input_active: bool,
-        keyboard_owner: MacosCapabilityOwner,
-        pointer_owner: MacosCapabilityOwner,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        owner_conflict: Option<MacosDaemonOwnerConflictStatus>,
-        telemetry: MacosInputTelemetry,
-    },
-    MacosScreen {
-        state: MacosProtectedSourceState,
-        tcc: MacosAuthorizationState,
-        owner: MacosCapabilityOwner,
-        selection: MacosSelectionState,
-        tahoe: MacosTahoeCapabilities,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tahoe_selection: Option<MacosTahoeSelectionCapabilities>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        owner_conflict: Option<MacosDaemonOwnerConflictStatus>,
-        telemetry: MacosScreenTelemetry,
-    },
-}
-
 /// Lock-free lifecycle and freshness status for one input source.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
@@ -526,12 +292,16 @@ pub struct InputSourceStatus {
     /// Effective issue, with freshness taking precedence while stale.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<InputSourceIssueStatus>,
+    /// User-action issue kept distinct from lifecycle and freshness failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_issue: Option<InputSourceIssueStatus>,
+    /// Bounded, display-safe backend diagnostics for settings surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<crate::source_status::SourceDiagnosticsEnvelope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_issue: Option<InputSourceIssueStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freshness_issue: Option<InputSourceIssueStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub platform: Option<InputSourcePlatformStatus>,
     pub retired: bool,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

@@ -342,7 +342,10 @@ impl BackendRebindActions for DaemonDriverHost {
             return Ok(());
         };
         let descriptor = driver.module_descriptor();
-        if !super::module_enabled(&config, &descriptor) || !descriptor.capabilities.output_backend {
+        if !super::module_enabled(&config, &descriptor)
+            || !super::module_has_available_transport(&descriptor)
+            || !descriptor.capabilities.output_backend
+        {
             return Ok(());
         }
 

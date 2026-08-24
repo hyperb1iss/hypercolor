@@ -37,7 +37,7 @@ Hypercolor has six entry points. Understanding which one you want saves a lot of
 | **Web UI**               | Leptos app served by the daemon at `http://localhost:9420`                             | Daily use: browsing effects, tweaking controls, managing layouts            |
 | **TUI**                  | Ratatui terminal dashboard with live LED preview and audio spectrum                    | SSH sessions, headless setups, or if you live in the terminal               |
 | **CLI**                  | `hypercolor` binary for scripting and quick control                                    | Automation, shell scripts, CI pipelines                                     |
-| **Tray applet**          | System tray icon with a brightness submenu and quick actions                           | Minimal desktop footprint; change effects without opening a window          |
+| **App tray**             | System tray icon with a brightness submenu and quick actions                           | Minimal desktop footprint; change effects without opening a window          |
 | **REST + WebSocket API** | Daemon's full HTTP interface on `:9420`                                                | Integrations, agents, and anything programmatic                             |
 
 [The pieces](@/guide/the-pieces.md) walks through how these connect and which to open first.

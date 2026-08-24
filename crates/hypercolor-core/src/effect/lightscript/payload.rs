@@ -6,7 +6,9 @@ use hypercolor_types::net::NetStats;
 use hypercolor_types::sensor::{SensorReading, SensorUnit};
 use serde::Serialize;
 
-use crate::input::{InteractionData, ScreenData};
+use crate::input::screen::consumer::ScreenBranchPayload;
+use crate::input::{InteractionData, ScreenBranchPublication};
+use hypercolor_types::canvas::Canvas;
 
 use super::{
     DEFAULT_ZONE_HEIGHT, DEFAULT_ZONE_SAMPLES, DEFAULT_ZONE_WIDTH, keyboard_lookup_keys,
@@ -514,36 +516,51 @@ pub(super) struct LightScriptScreenPayload {
 }
 
 impl LightScriptScreenPayload {
-    pub(super) fn from_screen(screen: Option<&ScreenData>) -> Self {
+    /// Project the exact screen publication onto the LightScript HSL grid.
+    ///
+    /// Zone publications map one cell per published zone. Surface
+    /// publications are box-averaged into the default LightScript grid
+    /// (`DEFAULT_ZONE_WIDTH` by `DEFAULT_ZONE_HEIGHT`), which is the
+    /// documented projection of the processed surface rather than a
+    /// substitute grid. GPU-resident publications carry no CPU pixels and
+    /// read as a dark grid.
+    pub(super) fn from_screen(screen: Option<&ScreenBranchPublication>) -> Self {
         let Some(screen) = screen else {
-            return Self {
-                grid_width: DEFAULT_ZONE_WIDTH as u32,
-                grid_height: DEFAULT_ZONE_HEIGHT as u32,
-                hue: vec![0_i16; DEFAULT_ZONE_SAMPLES],
-                saturation: vec![0_i8; DEFAULT_ZONE_SAMPLES],
-                lightness: vec![0_i8; DEFAULT_ZONE_SAMPLES],
-            };
+            return Self::dark();
         };
+        match screen.payload() {
+            ScreenBranchPayload::Zones(zones) => {
+                Self::from_rgb_grid(zones.columns().get(), zones.rows().get(), zones.colors())
+            }
+            ScreenBranchPayload::Surface(surface) => surface
+                .to_rgba_canvas()
+                .map_or_else(Self::dark, |canvas| Self::from_surface_canvas(&canvas)),
+            ScreenBranchPayload::GpuSurface(_) | ScreenBranchPayload::NativeWork(_) => Self::dark(),
+        }
+    }
 
-        let grid_width = screen.grid_width.max(1);
-        let grid_height = screen.grid_height.max(1);
+    fn dark() -> Self {
+        Self {
+            grid_width: DEFAULT_ZONE_WIDTH as u32,
+            grid_height: DEFAULT_ZONE_HEIGHT as u32,
+            hue: vec![0_i16; DEFAULT_ZONE_SAMPLES],
+            saturation: vec![0_i8; DEFAULT_ZONE_SAMPLES],
+            lightness: vec![0_i8; DEFAULT_ZONE_SAMPLES],
+        }
+    }
+
+    fn from_rgb_grid(grid_width: u32, grid_height: u32, colors: &[[u8; 3]]) -> Self {
         let sample_count = usize::try_from(grid_width.saturating_mul(grid_height)).unwrap_or(0);
         let mut hue = Vec::with_capacity(sample_count);
         let mut saturation = Vec::with_capacity(sample_count);
         let mut lightness = Vec::with_capacity(sample_count);
-
         for index in 0..sample_count {
-            let rgb = screen
-                .zone_colors
-                .get(index)
-                .and_then(|zone| zone.colors.first().copied())
-                .unwrap_or([0, 0, 0]);
+            let rgb = colors.get(index).copied().unwrap_or([0, 0, 0]);
             let (h, s, l) = rgb_to_hsl(rgb[0], rgb[1], rgb[2]);
             hue.push(h);
             saturation.push(s);
             lightness.push(l);
         }
-
         Self {
             grid_width,
             grid_height,
@@ -552,6 +569,50 @@ impl LightScriptScreenPayload {
             lightness,
         }
     }
+
+    fn from_surface_canvas(canvas: &Canvas) -> Self {
+        let width = canvas.width();
+        let height = canvas.height();
+        if width == 0 || height == 0 {
+            return Self::dark();
+        }
+        let grid_width = DEFAULT_ZONE_WIDTH as u32;
+        let grid_height = DEFAULT_ZONE_HEIGHT as u32;
+        let pixels = canvas.as_rgba_bytes();
+        let mut colors = Vec::with_capacity(DEFAULT_ZONE_SAMPLES);
+        for row in 0..grid_height {
+            let y0 = cell_start(row, grid_height, height);
+            let y1 = cell_start(row + 1, grid_height, height).max(y0 + 1);
+            for col in 0..grid_width {
+                let x0 = cell_start(col, grid_width, width);
+                let x1 = cell_start(col + 1, grid_width, width).max(x0 + 1);
+                let mut sum = [0_u64; 3];
+                let mut count = 0_u64;
+                for y in y0..y1.min(height) {
+                    let row_offset =
+                        usize::try_from(y).unwrap_or(0) * usize::try_from(width).unwrap_or(0) * 4;
+                    for x in x0..x1.min(width) {
+                        let offset = row_offset + usize::try_from(x).unwrap_or(0) * 4;
+                        if let Some(pixel) = pixels.get(offset..offset + 3) {
+                            sum[0] += u64::from(pixel[0]);
+                            sum[1] += u64::from(pixel[1]);
+                            sum[2] += u64::from(pixel[2]);
+                            count += 1;
+                        }
+                    }
+                }
+                let average = |channel: u64| u8::try_from(channel / count.max(1)).unwrap_or(255);
+                colors.push([average(sum[0]), average(sum[1]), average(sum[2])]);
+            }
+        }
+        Self::from_rgb_grid(grid_width, grid_height, &colors)
+    }
+}
+
+/// First source pixel covered by grid cell `index` along an axis.
+fn cell_start(index: u32, cells: u32, source: u32) -> u32 {
+    u32::try_from((u64::from(index) * u64::from(source)) / u64::from(cells.max(1)))
+        .unwrap_or(source)
 }
 
 fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {

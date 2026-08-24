@@ -1,7 +1,7 @@
 //! Tests for the input source abstraction layer.
 
 #[cfg(target_os = "linux")]
-use hypercolor_core::input::SensorPoller;
+use hypercolor_core::input::SensorSource;
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::WindowsHostInput;
 use hypercolor_core::input::audio::AudioInput;
@@ -9,29 +9,82 @@ use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(target_os = "linux")]
-use hypercolor_core::input::screen::{CaptureConfig, WaylandScreenCaptureInput};
-use hypercolor_core::input::screen::{
-    PixelExtent, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan, ScreenCaptureCadence,
-    ScreenCaptureDemand, ScreenCaptureInput, ScreenCursorPolicy,
+use hypercolor_core::input::screen::consumer::CaptureConfig;
+use hypercolor_core::input::screen::consumer::{
+    ScreenCaptureCadence, ScreenCaptureDemand, ScreenCaptureInput,
 };
+#[cfg(target_os = "linux")]
+use hypercolor_core::input::screen::implementer::WaylandScreenCaptureInput;
+use hypercolor_core::input::screen::planner::{ScreenAdmissionCapacity, ScreenCursorPolicy};
 use hypercolor_core::input::{
-    AudioReconfigurationConflict, INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource,
-    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
-    MacosProtectedSourceState, MacosScreenPlatformStatus, MacosScreenTimingStatus,
-    MacosSelectionState, MacosTahoeCapabilities, MediaSource, NetSource, ScreenData,
-    ScreenReconfigurationConflict, SourceFreshness, SourceIssue, SourceKind, SourcePlatformStatus,
-    SourceResourceScanHealth, SourceSessionSlot, SourceSessionWriter, SourceState,
-    SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
-    SourceTimestampField, TerminalFailureLatch, classify_source_resource_scan,
+    AudioSource, AudioSourceRole, DataSource, DataSourceKind, DataSourceRole,
+    INPUT_EVENT_RING_CAPACITY, InputData, InputManager, InputSource, InteractionSource,
+    InteractionSourceRole, ManagedSourceKey, ManagedSourceRole, MediaSource, NetSource,
+    PreparedAudioSourceSwap, ScreenData, ScreenReconfigurationConflict, ScreenSource,
+    ScreenSourceRole, ScreenSourceSwapCommitError, SourceCapabilityConflict,
+    SourceCapabilityContext, SourceFreshness, SourceIssue, SourceKind, SourceRegistrationError,
+    SourceResourceScanHealth, SourceRoleBinding, SourceSessionSlot, SourceSessionWriter,
+    SourceState, SourceStatusError, SourceStatusHandle, SourceStatusReporter, SourceStatusWriter,
+    SourceSwapConflict, SourceSwapTarget, SourceTimestampField, TerminalFailureLatch,
+    TryInputManagerIntent, classify_source_resource_scan,
 };
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent, ZoneColors};
+use hypercolor_types::source_status::{SourceDiagnosticsDisplayField, SourceDiagnosticsEnvelope};
 use std::collections::VecDeque;
 #[cfg(target_os = "linux")]
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::{Duration, Instant};
+
+fn managed_audio(source: impl AudioSource + 'static) -> ManagedSourceRole {
+    ManagedSourceRole::audio(Box::new(source))
+}
+
+fn managed_screen(source: impl ScreenSource + 'static) -> ManagedSourceRole {
+    ManagedSourceRole::screen(Box::new(source))
+}
+
+fn managed_interaction(source: impl InteractionSource + 'static) -> ManagedSourceRole {
+    ManagedSourceRole::interaction(Box::new(source))
+}
+
+fn managed_data(source: impl DataSource + 'static) -> ManagedSourceRole {
+    ManagedSourceRole::data(Box::new(source))
+}
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("typed fixture source should match its declared role");
+}
+
+fn commit_prepared_audio_swap(manager: &mut InputManager, prepared: PreparedAudioSourceSwap) {
+    let mut prepared = prepared.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("prepared audio swap should commit");
+    prepared.discard();
+    retirement.retire();
+}
+
+fn remove_unique_screen_source(manager: &mut InputManager) {
+    let plan = manager
+        .plan_screen_source_swap(false, None)
+        .expect("test graph should contain at most one screen source");
+    let mut replacement = None;
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("absent screen swap should prepare");
+    let retirement = manager
+        .commit_screen_source_swap(&mut prepared, |commit| {
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        })
+        .expect("unchanged screen removal should commit");
+    retirement.retire();
+}
 
 // ── Mock Sources ───────────────────────────────────────────────────────────
 
@@ -41,28 +94,88 @@ struct MockAudioSource {
     rms_level: f32,
 }
 
+struct MutableInteractionRoleSource {
+    _aggregate: Arc<AtomicBool>,
+}
+
+impl InputSource for MutableInteractionRoleSource {
+    fn name(&self) -> &'static str {
+        "MutableInteractionRole"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        false
+    }
+}
+
+impl InteractionSource for MutableInteractionRoleSource {}
+
+impl SourceRoleBinding for MutableInteractionRoleSource {
+    type Role = InteractionSourceRole;
+}
+
+struct MutableDataRoleSource {
+    network: Arc<AtomicBool>,
+}
+
+impl InputSource for MutableDataRoleSource {
+    fn name(&self) -> &'static str {
+        "MutableDataRole"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn stop(&mut self) {}
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        false
+    }
+}
+
+impl SourceRoleBinding for MutableDataRoleSource {
+    type Role = hypercolor_core::input::DataSourceRole;
+}
+
+impl hypercolor_core::input::DataSource for MutableDataRoleSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        if self.network.load(Ordering::Relaxed) {
+            DataSourceKind::Network
+        } else {
+            DataSourceKind::Media
+        }
+    }
+}
+
 struct StatusAwareScreenSource {
     running: bool,
     status: SourceStatusReporter,
     session_sink: Arc<Mutex<Option<SourceSessionWriter>>>,
 }
 
-#[derive(Debug, PartialEq)]
-struct RetainedMacosState {
-    owner: MacosCapabilityOwner,
-    conflict: Option<MacosDaemonOwnerConflict>,
-    designated_requirement_hash: Option<Arc<str>>,
-    metal4: bool,
-}
-
-struct MacosStateAwareSource {
-    state: Arc<Mutex<RetainedMacosState>>,
+struct CapabilityStateAwareSource {
+    state: Arc<Mutex<SourceCapabilityContext>>,
     running: bool,
 }
 
-impl InputSource for MacosStateAwareSource {
+impl InputSource for CapabilityStateAwareSource {
     fn name(&self) -> &'static str {
-        "MacosStateAware"
+        "CapabilityStateAware"
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
@@ -81,22 +194,18 @@ impl InputSource for MacosStateAwareSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn set_macos_daemon_ownership(
-        &mut self,
-        owner: MacosCapabilityOwner,
-        conflict: Option<MacosDaemonOwnerConflict>,
-        designated_requirement_hash: Option<Arc<str>>,
-    ) -> anyhow::Result<()> {
-        let mut state = self.state.lock().expect("macOS state lock");
-        state.owner = owner;
-        state.conflict = conflict;
-        state.designated_requirement_hash = designated_requirement_hash;
-        Ok(())
-    }
+impl SourceRoleBinding for CapabilityStateAwareSource {
+    type Role = InteractionSourceRole;
+}
 
-    fn set_macos_metal4_capability(&mut self, metal4: bool) -> anyhow::Result<()> {
-        self.state.lock().expect("macOS state lock").metal4 = metal4;
+impl InteractionSource for CapabilityStateAwareSource {
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        self.state
+            .lock()
+            .expect("capability state lock")
+            .clone_from(context);
         Ok(())
     }
 }
@@ -154,51 +263,37 @@ impl InputSource for StatusAwareScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_screen_source(&self) -> bool {
-        true
-    }
 }
 
-fn screen_demand(width: u32, height: u32) -> ScreenCaptureDemand {
-    ScreenCaptureDemand::active(
-        PixelExtent::new(width, height).expect("test screen demand extent is non-empty"),
+/// Active demand distinguished only by its acquisition cadence.
+fn screen_demand_at(frames_per_second: u32) -> ScreenCaptureDemand {
+    ScreenCaptureDemand::active_with_policy(
+        ScreenCaptureCadence::frames_per_second(frames_per_second)
+            .expect("test screen cadence is representable"),
+        ScreenCursorPolicy::Exclude,
     )
 }
 
 fn active_screen_demand() -> ScreenCaptureDemand {
-    screen_demand(640, 480)
-}
-
-#[test]
-fn screen_capture_demand_unions_each_axis_without_a_resolution_cap() {
-    let ultrawide = screen_demand(5_120, 720);
-    let portrait = screen_demand(1_920, 2_160);
-
-    assert_eq!(ultrawide.union(portrait), screen_demand(5_120, 2_160));
-    assert_eq!(ScreenCaptureDemand::Inactive.union(ultrawide), ultrawide);
-    assert_eq!(portrait.union(ScreenCaptureDemand::Inactive), portrait);
-    assert!(ScreenCaptureDemand::try_active(0, 720).is_err());
-    assert!(ScreenCaptureDemand::try_active(1_280, 0).is_err());
+    ScreenCaptureDemand::active()
 }
 
 #[test]
 fn screen_capture_demand_unions_native_cadence_and_cursor_policy() {
     let fixed = ScreenCaptureDemand::active_with_policy(
-        PixelExtent::new(640, 480).expect("fixture extent is valid"),
         ScreenCaptureCadence::frames_per_second(30).expect("fixture cadence is valid"),
         ScreenCursorPolicy::Exclude,
     );
     let native = ScreenCaptureDemand::active_with_policy(
-        PixelExtent::new(1_280, 720).expect("fixture extent is valid"),
         ScreenCaptureCadence::NativeRefresh,
         ScreenCursorPolicy::Include,
     );
     let union = fixed.union(native);
 
-    assert_eq!(union.requested_extent(), PixelExtent::new(1_280, 720).ok());
     assert_eq!(union.cadence(), Some(ScreenCaptureCadence::NativeRefresh));
     assert_eq!(union.cursor(), Some(ScreenCursorPolicy::Include));
+    assert_eq!(ScreenCaptureDemand::Inactive.union(fixed), fixed);
+    assert_eq!(native.union(ScreenCaptureDemand::Inactive), native);
 }
 
 #[derive(Default)]
@@ -261,11 +356,13 @@ impl InputSource for FallibleStatusScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for FallibleStatusScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for FallibleStatusScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.state.lock().expect("demand state lock").demand
     }
@@ -360,11 +457,13 @@ impl InputSource for RestartingStatusScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for RestartingStatusScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for RestartingStatusScreenSource {
     fn reconfigure_screen_capture(&mut self, config: &ScreenCaptureConfig) -> anyhow::Result<()> {
         if self.target_fps != config.target_fps {
             self.target_fps = config.target_fps;
@@ -412,88 +511,22 @@ impl InputSource for MockAudioSource {
     }
 }
 
-struct ReconfigurableAudioSource {
-    running: bool,
-    capture_active: bool,
-    config: AudioPipelineConfig,
-    name: String,
+impl SourceRoleBinding for MockAudioSource {
+    type Role = AudioSourceRole;
 }
 
-impl ReconfigurableAudioSource {
-    fn new() -> Self {
-        Self {
-            running: false,
-            capture_active: false,
-            config: AudioPipelineConfig::default(),
-            name: "AudioInput(default)".to_owned(),
-        }
-    }
-}
+impl AudioSource for MockAudioSource {}
 
-impl InputSource for ReconfigurableAudioSource {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        self.running = false;
-    }
-
-    fn sample(&mut self) -> anyhow::Result<InputData> {
-        let mut data = AudioData::silence();
-        data.rms_level =
-            if matches!(self.config.source, AudioSourceType::None) || !self.capture_active {
-                0.0
-            } else {
-                0.5
-            };
-        Ok(InputData::Audio(data))
-    }
-
-    fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn is_audio_source(&self) -> bool {
-        true
-    }
-
-    fn reconfigure_audio(
-        &mut self,
-        config: &AudioPipelineConfig,
-        name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        self.config = config.clone();
-        name.clone_into(&mut self.name);
-        self.running = true;
-        self.capture_active = capture_active;
-        Ok(())
-    }
-
-    fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
-        self.capture_active = active;
-        Ok(())
-    }
-}
-
-struct StatusReconfigurableAudioSource {
-    running: bool,
+struct MismatchedStatusAudioSource {
     status: SourceStatusReporter,
 }
 
-impl StatusReconfigurableAudioSource {
+impl MismatchedStatusAudioSource {
     fn new() -> Self {
         Self {
-            running: false,
             status: SourceStatusReporter::new(
-                "status_reconfigurable_audio",
-                SourceKind::Audio,
+                "mismatched_status_audio",
+                SourceKind::Screen,
                 "test",
                 true,
                 true,
@@ -503,9 +536,9 @@ impl StatusReconfigurableAudioSource {
     }
 }
 
-impl InputSource for StatusReconfigurableAudioSource {
+impl InputSource for MismatchedStatusAudioSource {
     fn name(&self) -> &'static str {
-        "StatusReconfigurableAudio"
+        "MismatchedStatusAudio"
     }
 
     fn source_status_handle(&self) -> Option<SourceStatusHandle> {
@@ -517,47 +550,25 @@ impl InputSource for StatusReconfigurableAudioSource {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
-        self.running = true;
         Ok(())
     }
 
-    fn stop(&mut self) {
-        self.status.stop();
-        self.running = false;
-    }
+    fn stop(&mut self) {}
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
         Ok(InputData::None)
     }
 
     fn is_running(&self) -> bool {
-        self.running
-    }
-
-    fn is_audio_source(&self) -> bool {
-        true
-    }
-
-    fn reconfigure_audio(
-        &mut self,
-        config: &AudioPipelineConfig,
-        _name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        let configured = !matches!(config.source, AudioSourceType::None);
-        self.status
-            .set_policy(configured, true, configured && capture_active)?;
-        self.running = true;
-        if configured && capture_active {
-            let session = self
-                .status
-                .begin_session()?
-                .expect("manager binds audio reconfiguration generation");
-            session.mark_event_driven_live_without_deadline(1);
-        }
-        Ok(())
+        false
     }
 }
+
+impl SourceRoleBinding for MismatchedStatusAudioSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for MismatchedStatusAudioSource {}
 
 /// A mock screen capture source that produces a known set of zone colors.
 struct MockScreenSource {
@@ -602,6 +613,45 @@ impl InputSource for MockScreenSource {
         self.running
     }
 }
+
+impl SourceRoleBinding for MockScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for MockScreenSource {}
+
+struct ExternallyStoppedScreenSource {
+    running: Arc<AtomicBool>,
+}
+
+impl InputSource for ExternallyStoppedScreenSource {
+    fn name(&self) -> &'static str {
+        "ExternallyStoppedScreen"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running.store(false, Ordering::Release);
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+}
+
+impl SourceRoleBinding for ExternallyStoppedScreenSource {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for ExternallyStoppedScreenSource {}
 
 /// A mock source that always fails on start.
 struct FailingSource;
@@ -709,23 +759,23 @@ struct StatuslessDemandSource {
     capture_active: bool,
 }
 
-struct SequencedSource {
+struct SequencedSource<R> {
     samples: VecDeque<InputData>,
-    interaction: bool,
     running: bool,
+    role: PhantomData<R>,
 }
 
-impl SequencedSource {
-    fn new(samples: impl IntoIterator<Item = InputData>, interaction: bool) -> Self {
+impl<R> SequencedSource<R> {
+    fn new(samples: impl IntoIterator<Item = InputData>) -> Self {
         Self {
             samples: samples.into_iter().collect(),
-            interaction,
             running: false,
+            role: PhantomData,
         }
     }
 }
 
-impl InputSource for SequencedSource {
+impl<R: Send> InputSource for SequencedSource<R> {
     fn name(&self) -> &'static str {
         "Sequenced"
     }
@@ -750,9 +800,21 @@ impl InputSource for SequencedSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        self.interaction
+impl SourceRoleBinding for SequencedSource<InteractionSourceRole> {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for SequencedSource<InteractionSourceRole> {}
+
+impl SourceRoleBinding for SequencedSource<DataSourceRole> {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for SequencedSource<DataSourceRole> {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Media
     }
 }
 
@@ -822,11 +884,13 @@ impl InputSource for StatuslessDemandSource {
     fn is_running(&self) -> bool {
         self.running && self.capture_active
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for StatuslessDemandSource {
+    type Role = InteractionSourceRole;
+}
 
+impl InteractionSource for StatuslessDemandSource {
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         self.capture_active = active;
         Ok(())
@@ -890,29 +954,15 @@ impl InputSource for CountingScreenDemandSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CountingScreenDemandSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for CountingScreenDemandSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
-    }
-
-    fn screen_analysis_resource_plan(
-        &self,
-        demand: ScreenCaptureDemand,
-    ) -> anyhow::Result<Option<ScreenAnalysisResourcePlan>> {
-        let Some(extent) = demand.requested_extent() else {
-            return Ok(None);
-        };
-        Ok(Some(ScreenAnalysisResourcePlan::try_new_for_extent(
-            8,
-            6,
-            30,
-            extent,
-            u64::MAX,
-        )?))
     }
 
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
@@ -966,11 +1016,13 @@ impl InputSource for CaptureTrackingScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CaptureTrackingScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for CaptureTrackingScreenSource {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
         self.demand
     }
@@ -1004,18 +1056,15 @@ impl InputSource for CaptureTrackingAudioSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_audio_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CaptureTrackingAudioSource {
+    type Role = AudioSourceRole;
+}
 
-    fn reconfigure_audio(
-        &mut self,
-        _config: &AudioPipelineConfig,
-        _name: &str,
-        capture_active: bool,
-    ) -> anyhow::Result<()> {
-        self.capture_active = capture_active;
+impl AudioSource for CaptureTrackingAudioSource {
+    fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active = active;
         Ok(())
     }
 }
@@ -1067,44 +1116,45 @@ fn screen_source_produces_zone_colors() {
 }
 
 #[test]
-fn late_source_inherits_retained_macos_process_state() {
-    let conflict = MacosDaemonOwnerConflict {
-        active: MacosCapabilityOwner::LaunchdService,
-        contender: MacosCapabilityOwner::AppSidecar,
+fn late_source_inherits_retained_capability_context_in_either_update_order() {
+    let conflict = SourceCapabilityConflict {
+        active: Arc::from("service_host"),
+        contender: Arc::from("ui_host"),
         observed_at_ms: 73,
     };
-    let state = Arc::new(Mutex::new(RetainedMacosState {
-        owner: MacosCapabilityOwner::Standalone,
-        conflict: None,
-        designated_requirement_hash: None,
-        metal4: false,
-    }));
+    let state = Arc::new(Mutex::new(SourceCapabilityContext::default()));
     let mut manager = InputManager::new();
     manager
-        .set_macos_daemon_ownership(
-            MacosCapabilityOwner::LaunchdService,
-            Some(conflict.clone()),
-            Some(Arc::from("designated-launchd")),
-        )
-        .expect("manager retains macOS ownership before registration");
+        .set_source_capability_feature("accelerated_path", true)
+        .expect("manager retains a feature before registration");
     manager
-        .set_macos_metal4_capability(true)
-        .expect("manager retains Metal 4 before registration");
+        .set_source_capability_identity(
+            "service_host",
+            Some(conflict.clone()),
+            Some(Arc::from("identity-hash")),
+        )
+        .expect("manager retains capability identity before registration");
 
-    manager.add_source(Box::new(MacosStateAwareSource {
-        state: Arc::clone(&state),
-        running: false,
-    }));
-
-    assert_eq!(
-        *state.lock().expect("macOS state lock"),
-        RetainedMacosState {
-            owner: MacosCapabilityOwner::LaunchdService,
-            conflict: Some(conflict),
-            designated_requirement_hash: Some(Arc::from("designated-launchd")),
-            metal4: true,
-        }
+    register_test_source(
+        &mut manager,
+        managed_interaction(CapabilityStateAwareSource {
+            state: Arc::clone(&state),
+            running: false,
+        }),
     );
+
+    let retained = state.lock().expect("capability state lock").clone();
+    assert_eq!(retained.owner.as_ref(), "service_host");
+    assert_eq!(retained.conflict, Some(conflict));
+    assert_eq!(retained.identity_hash.as_deref(), Some("identity-hash"));
+    assert_eq!(retained.features.get("accelerated_path"), Some(&true));
+
+    manager
+        .set_source_capability_identity("ui_host", None, None)
+        .expect("identity update should preserve retained features");
+    let updated = state.lock().expect("capability state lock").clone();
+    assert_eq!(updated.owner.as_ref(), "ui_host");
+    assert_eq!(updated.features.get("accelerated_path"), Some(&true));
 }
 
 #[test]
@@ -1122,18 +1172,427 @@ fn input_data_none_variant() {
     assert!(matches!(data, InputData::None));
 }
 
+#[test]
+fn managed_roles_expose_stable_typed_keys_and_common_sources() {
+    let mut audio = ManagedSourceRole::Audio(Box::new(MockAudioSource::new(0.25)));
+    let screen = ManagedSourceRole::Screen(Box::new(MockScreenSource::new(1)));
+    let interaction = ManagedSourceRole::interaction(Box::new(MutableInteractionRoleSource {
+        _aggregate: Arc::new(AtomicBool::new(false)),
+    }));
+    let data = ManagedSourceRole::data(Box::new(NetSource::new()));
+
+    assert_eq!(audio.key(), ManagedSourceKey::Audio);
+    assert_eq!(screen.key(), ManagedSourceKey::Screen);
+    assert_eq!(interaction.key(), ManagedSourceKey::Interaction);
+    assert_eq!(data.key(), ManagedSourceKey::Data(DataSourceKind::Network));
+    assert_eq!(audio.source().name(), "MockAudio");
+    assert_eq!(screen.source().name(), "MockScreen");
+    assert_eq!(interaction.source().name(), "MutableInteractionRole");
+    assert_eq!(data.source().name(), "net");
+    assert!(!audio.source_mut().is_running());
+}
+
+#[test]
+fn data_source_kinds_map_once_into_scheduling_kinds() {
+    assert_eq!(SourceKind::from(DataSourceKind::Media), SourceKind::Media);
+    assert_eq!(
+        SourceKind::from(DataSourceKind::Network),
+        SourceKind::Network
+    );
+    assert_eq!(
+        SourceKind::from(DataSourceKind::Sensors),
+        SourceKind::Sensors
+    );
+}
+
+#[test]
+fn managed_role_keys_do_not_change_after_registration() {
+    let aggregate = Arc::new(AtomicBool::new(false));
+    let network = Arc::new(AtomicBool::new(false));
+    let interaction = ManagedSourceRole::interaction(Box::new(MutableInteractionRoleSource {
+        _aggregate: Arc::clone(&aggregate),
+    }));
+    let data = ManagedSourceRole::data(Box::new(MutableDataRoleSource {
+        network: Arc::clone(&network),
+    }));
+
+    aggregate.store(true, Ordering::Relaxed);
+    network.store(true, Ordering::Relaxed);
+
+    assert_eq!(interaction.key(), ManagedSourceKey::Interaction);
+    assert_eq!(data.key(), ManagedSourceKey::Data(DataSourceKind::Media));
+}
+
 // ── InputManager Tests ─────────────────────────────────────────────────────
+
+struct BlockingStartAudioSource {
+    started: mpsc::SyncSender<()>,
+    release: mpsc::Receiver<()>,
+    running: bool,
+}
+
+impl InputSource for BlockingStartAudioSource {
+    fn name(&self) -> &'static str {
+        "BlockingStartAudio"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.started
+            .send(())
+            .expect("start observer should remain connected");
+        self.release
+            .recv()
+            .expect("start release should remain connected");
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for BlockingStartAudioSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for BlockingStartAudioSource {}
+
+struct CountingMediaSource {
+    samples: Arc<AtomicUsize>,
+    running: bool,
+}
+
+impl InputSource for CountingMediaSource {
+    fn name(&self) -> &'static str {
+        "CountingMedia"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        self.samples.fetch_add(1, Ordering::AcqRel);
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for CountingMediaSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for CountingMediaSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Media
+    }
+}
+
+#[test]
+fn cloned_handles_serialize_concurrent_intents_and_publish_one_graph() {
+    let manager = InputManager::new();
+    let barrier = Arc::new(Barrier::new(3));
+    let media_manager = manager.clone();
+    let media_barrier = Arc::clone(&barrier);
+    let media = std::thread::spawn(move || {
+        media_barrier.wait();
+        media_manager
+            .add_source(managed_data(MediaSource::new()))
+            .expect("media intent should register");
+    });
+    let network_manager = manager.clone();
+    let network_barrier = Arc::clone(&barrier);
+    let network = std::thread::spawn(move || {
+        network_barrier.wait();
+        network_manager
+            .add_source(managed_data(NetSource::new()))
+            .expect("network intent should register");
+    });
+
+    barrier.wait();
+    media.join().expect("media intent thread should finish");
+    network.join().expect("network intent thread should finish");
+
+    let graph = manager.input_graph_handle().snapshot();
+    assert_eq!(manager.source_count(), 2);
+    assert_eq!(graph.generation(), 2);
+    assert_eq!(graph.slots().len(), 2);
+    assert_eq!(
+        manager
+            .source_status_registry()
+            .snapshot()
+            .source_graph_generation(),
+        2
+    );
+}
+
+#[test]
+fn lock_free_handles_remain_readable_while_source_start_is_blocked() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let graph = manager.input_graph_handle();
+    let registry = manager.source_status_registry();
+    let before = graph.snapshot();
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("source start should block at the fixture gate");
+    let during = graph.snapshot();
+    assert_eq!(during.generation(), before.generation());
+    assert_eq!(during.slots()[0].id(), before.slots()[0].id());
+    assert_eq!(
+        registry.snapshot().source_graph_generation(),
+        before.generation()
+    );
+
+    release_tx
+        .send(())
+        .expect("blocked source start should be released");
+    starter
+        .join()
+        .expect("source start thread should finish")
+        .expect("source start should succeed");
+    let after = graph.snapshot();
+    assert_eq!(after.generation(), before.generation() + 1);
+    assert_eq!(after.slots()[0].id(), before.slots()[0].id());
+}
+
+#[test]
+fn try_sampling_is_busy_then_rejects_stale_work_without_source_calls() {
+    let samples = Arc::new(AtomicUsize::new(0));
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_data(CountingMediaSource {
+            samples: Arc::clone(&samples),
+            running: false,
+        }))
+        .expect("counting source should register");
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own the lifecycle gate");
+
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Media, 0.01)], || true),
+        TryInputManagerIntent::Busy
+    ));
+    assert_eq!(samples.load(Ordering::Acquire), 0);
+
+    release_tx.send(()).expect("startup should resume");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Media, 0.01)], || false),
+        TryInputManagerIntent::Stale
+    ));
+    assert_eq!(samples.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Media, 0.01)], || true),
+        TryInputManagerIntent::Applied(())
+    ));
+    assert_eq!(samples.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn lifecycle_release_subscription_wakes_only_after_the_owner_releases() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own the lifecycle gate");
+
+    assert!(matches!(
+        manager.try_sample_source_kinds_if(&[(SourceKind::Audio, 0.01)], || true),
+        TryInputManagerIntent::Busy
+    ));
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            manager.wait_for_lifecycle_release_after_busy(),
+        )
+        .await
+        .is_err(),
+        "a busy subscriber must not wake before lifecycle release"
+    );
+
+    release_tx.send(()).expect("startup should resume");
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        manager.wait_for_lifecycle_release_after_busy(),
+    )
+    .await
+    .expect("lifecycle release should wake the subscriber");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
+}
+
+#[test]
+fn source_commit_freshness_runs_only_after_lifecycle_ownership() {
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let manager = InputManager::new();
+    manager
+        .add_source(managed_data(MediaSource::new()))
+        .expect("media source should register");
+    manager
+        .add_source(managed_audio(BlockingStartAudioSource {
+            started: started_tx,
+            release: release_rx,
+            running: false,
+        }))
+        .expect("blocking source should register");
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Data(DataSourceKind::Media),
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("media replacement should plan");
+    let mut replacement = Some(managed_data(MediaSource::new()));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("media replacement should prepare");
+    let starter = {
+        let manager = manager.clone();
+        std::thread::spawn(move || manager.start_all())
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("startup should own the lifecycle gate");
+    let predicate_calls = AtomicUsize::new(0);
+
+    assert!(matches!(
+        manager.try_commit_source_swap_if(&mut prepared, || {
+            predicate_calls.fetch_add(1, Ordering::AcqRel);
+            true
+        }),
+        TryInputManagerIntent::Busy
+    ));
+    assert_eq!(predicate_calls.load(Ordering::Acquire), 0);
+
+    release_tx.send(()).expect("startup should resume");
+    starter
+        .join()
+        .expect("startup thread should finish")
+        .expect("sources should start");
+    assert!(matches!(
+        manager.try_commit_source_swap_if(&mut prepared, || {
+            predicate_calls.fetch_add(1, Ordering::AcqRel);
+            false
+        }),
+        TryInputManagerIntent::Stale
+    ));
+    assert_eq!(predicate_calls.load(Ordering::Acquire), 1);
+    assert!(prepared.has_replacement());
+    prepared.discard();
+}
 
 #[test]
 fn manager_starts_empty() {
-    let mut mgr = InputManager::new();
+    let mgr = InputManager::new();
     let samples = mgr.sample_all();
     assert!(samples.is_empty());
 }
 
 #[test]
+fn multiple_screen_sources_register_but_keyed_swap_planning_rejects_ambiguity() {
+    let mut manager = InputManager::new();
+    register_test_source(&mut manager, managed_screen(MockScreenSource::new(1)));
+    register_test_source(&mut manager, managed_screen(MockScreenSource::new(2)));
+    let graph_generation = manager.source_graph_generation();
+
+    assert!(matches!(
+        manager.plan_screen_source_swap(false, None),
+        Err(SourceSwapConflict::AmbiguousKey {
+            key: ManagedSourceKey::Screen
+        })
+    ));
+    assert_eq!(manager.source_count(), 2);
+    assert_eq!(manager.source_graph_generation(), graph_generation);
+}
+
+#[test]
+fn manager_rejects_status_kind_mismatch_without_mutating_graph() {
+    let manager = InputManager::new();
+    let graph_generation = manager.source_graph_generation();
+    let source_count = manager.source_count();
+
+    let error = manager
+        .add_source(managed_audio(MismatchedStatusAudioSource::new()))
+        .expect_err("audio role should reject a screen status kind");
+
+    assert_eq!(
+        error,
+        SourceRegistrationError::StatusKindMismatch {
+            key: ManagedSourceKey::Audio,
+            expected: SourceKind::Audio,
+            observed: SourceKind::Screen,
+        }
+    );
+    assert_eq!(manager.source_graph_generation(), graph_generation);
+    assert_eq!(manager.source_count(), source_count);
+    assert!(manager.input_graph_handle().snapshot().slots().is_empty());
+}
+
+#[test]
 fn manager_default_is_empty() {
-    let mut mgr = InputManager::default();
+    let mgr = InputManager::default();
     let samples = mgr.sample_all();
     assert!(samples.is_empty());
     assert_eq!(mgr.source_count(), 0);
@@ -1144,9 +1603,10 @@ fn manager_default_is_empty() {
 fn status_registry_advances_while_manager_ownership_is_held() {
     let session_sink = Arc::new(Mutex::new(None));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(StatusAwareScreenSource::new(Arc::clone(
-        &session_sink,
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_screen(StatusAwareScreenSource::new(Arc::clone(&session_sink))),
+    );
     manager.start_all().expect("status-aware source starts");
     let registry = manager.source_status_registry();
     let manager = Mutex::new(manager);
@@ -1177,7 +1637,10 @@ fn status_registry_advances_while_manager_ownership_is_held() {
 fn manager_graph_generation_advances_and_removal_retires_status() {
     let session_sink = Arc::new(Mutex::new(None));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(StatusAwareScreenSource::new(session_sink)));
+    register_test_source(
+        &mut manager,
+        managed_screen(StatusAwareScreenSource::new(session_sink)),
+    );
     let registry = manager.source_status_registry();
     let added = registry.snapshot();
     assert_eq!(added.source_graph_generation(), 1);
@@ -1186,7 +1649,7 @@ fn manager_graph_generation_advances_and_removal_retires_status() {
     manager.start_all().expect("status-aware source starts");
     let started_generation = manager.source_graph_generation();
     assert!(started_generation > added.source_graph_generation());
-    manager.remove_screen_sources();
+    remove_unique_screen_source(&mut manager);
 
     let removed = registry.snapshot();
     assert!(removed.source_graph_generation() > started_generation);
@@ -1203,21 +1666,31 @@ fn manager_graph_generation_advances_and_removal_retires_status() {
 fn replacing_source_advances_graph_and_retires_previous_handle() {
     let session_sink = Arc::new(Mutex::new(None));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(StatusAwareScreenSource::new(session_sink)));
+    register_test_source(
+        &mut manager,
+        managed_screen(StatusAwareScreenSource::new(session_sink)),
+    );
     let registry = manager.source_status_registry();
     let graph = manager.input_graph_handle();
     let before = registry.snapshot();
     let previous_slot_id = graph.snapshot().slots()[0].id();
     let previous_handle = before.handles()[0].clone();
 
-    let replacement = manager.replace_source(
-        0,
-        Box::new(RestartingStatusScreenSource::new(Arc::new(Mutex::new(
-            Vec::new(),
-        )))),
-    );
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Screen,
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("unique screen source should plan");
+    let mut replacement = Some(managed_screen(MockScreenSource::new(1)));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("matching screen replacement should prepare");
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("matching screen replacement should commit");
 
-    assert!(replacement.is_ok());
+    assert!(replacement.is_none());
     let after = registry.snapshot();
     let replacement_graph = graph.snapshot();
     assert!(after.source_graph_generation() > before.source_graph_generation());
@@ -1227,10 +1700,14 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
     );
     assert_ne!(replacement_graph.slots()[0].id(), previous_slot_id);
     assert_eq!(after.handles().len(), 1);
-    assert_eq!(
-        after.handles()[0].snapshot().source_id.as_ref(),
-        "restarting_status_screen"
+    assert!(
+        after.handles()[0]
+            .snapshot()
+            .source_id
+            .ends_with(":MockScreen")
     );
+    assert!(!previous_handle.snapshot().retired);
+    retirement.retire();
     let retired = previous_handle.snapshot();
     assert!(retired.retired);
     assert_eq!(
@@ -1240,9 +1717,103 @@ fn replacing_source_advances_graph_and_retires_previous_handle() {
 }
 
 #[test]
+fn screen_swap_persistence_failure_preserves_candidate_and_graph() {
+    let manager = InputManager::new();
+    let graph_generation = manager.source_graph_generation();
+    let plan = manager
+        .plan_screen_source_swap(true, None)
+        .expect("absent screen source should plan");
+    let mut source = Box::new(MockScreenSource::new(1));
+    source.start().expect("screen candidate should start");
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("screen candidate should prepare");
+
+    assert!(matches!(
+        manager.commit_screen_source_swap(&mut prepared, |_| Err("persistence failed")),
+        Err(ScreenSourceSwapCommitError::Persistence(
+            "persistence failed"
+        ))
+    ));
+    assert!(prepared.has_replacement());
+    assert_eq!(manager.source_graph_generation(), graph_generation);
+    assert!(!manager.has_screen_source());
+    prepared.discard();
+}
+
+#[test]
+fn screen_swap_rechecks_candidate_lifecycle_before_persistence() {
+    let manager = InputManager::new();
+    let plan = manager
+        .plan_screen_source_swap(true, None)
+        .expect("absent screen source should plan");
+    let running = Arc::new(AtomicBool::new(false));
+    let mut source = Box::new(ExternallyStoppedScreenSource {
+        running: Arc::clone(&running),
+    });
+    source.start().expect("screen candidate should start");
+    let mut replacement = Some(source as Box<dyn ScreenSource>);
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("running screen candidate should prepare");
+    running.store(false, Ordering::Release);
+    let persistence_called = AtomicBool::new(false);
+
+    assert!(matches!(
+        manager.commit_screen_source_swap(&mut prepared, |commit| {
+            persistence_called.store(true, Ordering::Release);
+            Ok::<_, std::convert::Infallible>(commit.commit(|| {}))
+        }),
+        Err(ScreenSourceSwapCommitError::Conflict(
+            ScreenReconfigurationConflict::Source(
+                SourceSwapConflict::InvalidReplacementLifecycle {
+                    expected_running: true,
+                    observed_running: false,
+                }
+            )
+        ))
+    ));
+    assert!(!persistence_called.load(Ordering::Acquire));
+    assert!(prepared.has_replacement());
+    prepared.discard();
+}
+
+#[test]
+fn statusless_audio_swap_invalidates_capture_cache_for_compatibility_demand() {
+    let manager = InputManager::new();
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Audio,
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("absent audio role should plan");
+    let mut replacement = Some(managed_audio(MockAudioSource::new(0.5)));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("statusless audio candidate should prepare");
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("statusless audio candidate should commit");
+    drop(replacement);
+    retirement.retire();
+
+    assert!(manager.source_status_registry().snapshot().statuses()[0].demanded);
+    let committed_generation = manager.source_graph_generation();
+    manager
+        .set_audio_capture_active(false)
+        .expect("invalidated cache should reconcile compatibility demand");
+    assert!(manager.source_graph_generation() > committed_generation);
+    assert!(!manager.source_status_registry().snapshot().statuses()[0].demanded);
+}
+
+#[test]
 fn manager_instruments_statusless_sources_in_their_graph_slot() {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(EventfulSource::new(Vec::new())));
+    register_test_source(
+        &mut manager,
+        managed_interaction(EventfulSource::new(Vec::new())),
+    );
     manager
         .start_all()
         .expect("compatibility source should start");
@@ -1264,10 +1835,13 @@ fn manager_instruments_statusless_sources_in_their_graph_slot() {
 #[test]
 fn manager_tracks_statusless_source_demand_transitions() {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(StatuslessDemandSource {
-        running: false,
-        capture_active: true,
-    }));
+    register_test_source(
+        &mut manager,
+        managed_interaction(StatuslessDemandSource {
+            running: false,
+            capture_active: true,
+        }),
+    );
     manager.start_all().expect("statusless source should start");
     let registry = manager.source_status_registry();
 
@@ -1297,7 +1871,10 @@ fn input_graph_event_ring_bounds_history_and_advances_cursor_once() {
         })
         .collect();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(EventfulSource::new(events)));
+    register_test_source(
+        &mut manager,
+        managed_interaction(EventfulSource::new(events)),
+    );
     manager.start_all().expect("event source should start");
     manager.sample_sources(1.0 / 60.0);
 
@@ -1331,25 +1908,28 @@ fn input_graph_rejects_zero_repeat_events_before_publication() {
         state: InputButtonState::Pressed,
     };
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(EventfulSource {
-        running: false,
-        events: vec![
-            TimedInputEvent {
-                event: event.clone(),
-                at_ms: 1,
-                seq: 1,
-                physical_code: None,
-                repeat_count: 0,
-            },
-            TimedInputEvent {
-                event,
-                at_ms: 2,
-                seq: 2,
-                physical_code: None,
-                repeat_count: 1,
-            },
-        ],
-    }));
+    register_test_source(
+        &mut manager,
+        managed_interaction(EventfulSource {
+            running: false,
+            events: vec![
+                TimedInputEvent {
+                    event: event.clone(),
+                    at_ms: 1,
+                    seq: 1,
+                    physical_code: None,
+                    repeat_count: 0,
+                },
+                TimedInputEvent {
+                    event,
+                    at_ms: 2,
+                    seq: 2,
+                    physical_code: None,
+                    repeat_count: 1,
+                },
+            ],
+        }),
+    );
     manager.start_all().expect("event source should start");
     manager.sample_sources(1.0 / 60.0);
 
@@ -1371,14 +1951,20 @@ fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
     interaction.generation = 1;
     let media = Arc::new(hypercolor_types::media::MediaState::unavailable());
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(SequencedSource::new(
-        [InputData::Interaction(interaction), InputData::None],
-        true,
-    )));
-    manager.add_source(Box::new(SequencedSource::new(
-        [InputData::Media(Arc::clone(&media)), InputData::None],
-        false,
-    )));
+    register_test_source(
+        &mut manager,
+        managed_interaction(SequencedSource::<InteractionSourceRole>::new([
+            InputData::Interaction(interaction),
+            InputData::None,
+        ])),
+    );
+    register_test_source(
+        &mut manager,
+        managed_data(SequencedSource::<DataSourceRole>::new([
+            InputData::Media(Arc::clone(&media)),
+            InputData::None,
+        ])),
+    );
     manager.start_all().expect("sequenced sources should start");
     let graph = manager.input_graph_handle();
 
@@ -1405,9 +1991,12 @@ fn input_graph_clears_absent_live_data_but_retains_change_only_snapshots() {
 #[test]
 fn manager_restart_uses_a_new_canonical_graph_generation() {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(StatusAwareScreenSource::new(Arc::new(
-        Mutex::new(None),
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_interaction(MutableInteractionRoleSource {
+            _aggregate: Arc::new(AtomicBool::new(false)),
+        }),
+    );
     let registry = manager.source_status_registry();
 
     manager.start_all().expect("status-aware source starts");
@@ -1433,9 +2022,10 @@ fn manager_restart_uses_a_new_canonical_graph_generation() {
 fn removed_source_fences_worker_owned_session() {
     let session_sink = Arc::new(Mutex::new(None));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(StatusAwareScreenSource::new(Arc::clone(
-        &session_sink,
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_screen(StatusAwareScreenSource::new(Arc::clone(&session_sink))),
+    );
     manager.start_all().expect("status-aware source starts");
     let stale_worker = session_sink
         .lock()
@@ -1443,7 +2033,7 @@ fn removed_source_fences_worker_owned_session() {
         .clone()
         .expect("worker session was published");
 
-    manager.remove_screen_sources();
+    remove_unique_screen_source(&mut manager);
 
     assert!(!stale_worker.failed(SourceIssue::new(
         "late_worker_exit",
@@ -1454,7 +2044,7 @@ fn removed_source_fences_worker_owned_session() {
 
 #[test]
 fn manager_constructs_screen_analysis_inside_its_total_byte_fence() {
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let resource = ScreenAdmissionCapacity::new(1_000_000, 900_000);
     let total = ScreenAdmissionCapacity::new(600_000, 500_000);
     let publication = ScreenAdmissionCapacity::new(400_000, 300_000);
@@ -1475,24 +2065,6 @@ fn manager_constructs_screen_analysis_inside_its_total_byte_fence() {
     assert_eq!(manager.screen_resource_capacity(), resource);
     assert_eq!(manager.screen_total_capacity(), total);
     assert_eq!(coordinator.snapshot().capacity(), resource);
-
-    let input = manager
-        .prepare_screen_capture_input(
-            ScreenCaptureConfig {
-                grid_cols: 1,
-                grid_rows: 1,
-                analysis_memory_bytes: u64::MAX,
-                ..ScreenCaptureConfig::default()
-            },
-            PixelExtent::new(4, 4).expect("test extent is non-empty"),
-        )
-        .expect("analysis should fit the manager's total fence");
-    assert_eq!(
-        coordinator.snapshot().reserved_bytes(),
-        input.analysis_resource_plan().peak_bytes()
-    );
-    drop(input);
-    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 }
 
 #[test]
@@ -1501,7 +2073,7 @@ fn stale_capacity_preparations_cannot_overwrite_a_committed_split() {
     let total = ScreenAdmissionCapacity::new(100, 100);
 
     for commit_newer_first in [true, false] {
-        let mut manager = InputManager::new();
+        let manager = InputManager::new();
         manager
             .set_screen_capacity_plan(physical, total, total)
             .expect("empty manager should accept its capacity policy");
@@ -1605,11 +2177,11 @@ fn production_source_constructors_expose_status_handles() {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 #[test]
 fn unsupported_media_platform_reports_structured_unavailable_status() {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(MediaSource::new()));
+    register_test_source(&mut manager, managed_data(MediaSource::new()));
     let registry = manager.source_status_registry();
     manager
         .start_all()
@@ -1629,8 +2201,8 @@ fn unsupported_media_platform_reports_structured_unavailable_status() {
 #[test]
 fn manager_samples_multiple_sources() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(MockAudioSource::new(0.5)));
-    mgr.add_source(Box::new(MockScreenSource::new(2)));
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.5)));
+    register_test_source(&mut mgr, managed_screen(MockScreenSource::new(2)));
 
     assert_eq!(mgr.source_count(), 2);
     assert_eq!(mgr.source_names(), vec!["MockAudio", "MockScreen"]);
@@ -1643,31 +2215,41 @@ fn manager_samples_multiple_sources() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn sensor_poller_does_not_cache_process_stat_fds() {
+fn sensor_source_does_not_cache_process_stat_fds() {
     let before = per_process_stat_fd_count();
-    let mut poller = SensorPoller::with_interval(Duration::from_millis(20));
-    let mut rx = poller.receiver();
+    let mut manager = InputManager::new();
+    register_test_source(&mut manager, managed_data(SensorSource::new()));
+    let graph = manager.input_graph_handle();
 
-    poller.start().expect("sensor poller should start");
-    assert!(
-        wait_for_sensor_snapshot(&mut rx, Duration::from_secs(1)),
-        "sensor poller should publish at least one snapshot",
-    );
+    manager.start_all().expect("sensor source should start");
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while graph
+        .snapshot()
+        .latest_data_source(DataSourceKind::Sensors)
+        .is_none()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "sensor source should publish at least one snapshot"
+        );
+        manager.sample_source_kinds(&[(SourceKind::Sensors, 0.1)]);
+        std::thread::yield_now();
+    }
 
     let after = per_process_stat_fd_count();
-    poller.stop();
+    manager.stop_all();
 
     assert!(
         after <= before.saturating_add(8),
-        "sensor poller should not retain /proc/<pid>/stat fds (before={before}, after={after})",
+        "sensor source should not retain /proc/<pid>/stat fds (before={before}, after={after})",
     );
 }
 
 #[test]
 fn manager_start_all_succeeds() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(MockAudioSource::new(0.1)));
-    mgr.add_source(Box::new(MockScreenSource::new(1)));
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.1)));
+    register_test_source(&mut mgr, managed_screen(MockScreenSource::new(1)));
 
     mgr.start_all().expect("start_all should succeed");
 }
@@ -1681,23 +2263,6 @@ fn per_process_stat_fd_count() -> usize {
         .filter_map(|target| target.into_os_string().into_string().ok())
         .filter(|target| is_process_stat_path(target))
         .count()
-}
-
-#[cfg(target_os = "linux")]
-fn wait_for_sensor_snapshot(
-    rx: &mut tokio::sync::watch::Receiver<Arc<hypercolor_types::sensor::SystemSnapshot>>,
-    timeout: Duration,
-) -> bool {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("test runtime should build");
-    runtime.block_on(async {
-        matches!(
-            tokio::time::timeout(timeout, rx.changed()).await,
-            Ok(Ok(()))
-        )
-    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1726,8 +2291,8 @@ fn manager_start_all_rolls_back_on_failure() {
     let mut mgr = InputManager::new();
 
     // First source starts fine, second will fail.
-    mgr.add_source(Box::new(MockAudioSource::new(0.1)));
-    mgr.add_source(Box::new(FailingSource));
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.1)));
+    register_test_source(&mut mgr, managed_interaction(FailingSource));
 
     let result = mgr.start_all();
     assert!(result.is_err());
@@ -1736,7 +2301,7 @@ fn manager_start_all_rolls_back_on_failure() {
 #[test]
 fn manager_stop_all_is_idempotent() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(MockAudioSource::new(0.1)));
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.1)));
     mgr.start_all().expect("start should succeed");
 
     // Stop twice — should not panic or error.
@@ -1747,9 +2312,9 @@ fn manager_stop_all_is_idempotent() {
 #[test]
 fn manager_sample_gracefully_handles_errors() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(MockAudioSource::new(0.8)));
-    mgr.add_source(Box::new(FaultySampleSource::new()));
-    mgr.add_source(Box::new(MockScreenSource::new(1)));
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.8)));
+    register_test_source(&mut mgr, managed_interaction(FaultySampleSource::new()));
+    register_test_source(&mut mgr, managed_screen(MockScreenSource::new(1)));
 
     let samples = mgr.sample_all();
     assert_eq!(samples.len(), 3);
@@ -1765,9 +2330,9 @@ fn manager_sample_gracefully_handles_errors() {
 #[test]
 fn manager_sample_preserves_source_order() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(MockScreenSource::new(5)));
-    mgr.add_source(Box::new(MockAudioSource::new(0.33)));
-    mgr.add_source(Box::new(MockScreenSource::new(1)));
+    register_test_source(&mut mgr, managed_screen(MockScreenSource::new(5)));
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.33)));
+    register_test_source(&mut mgr, managed_screen(MockScreenSource::new(1)));
 
     let samples = mgr.sample_all();
     assert_eq!(samples.len(), 3);
@@ -1779,7 +2344,7 @@ fn manager_sample_preserves_source_order() {
 #[test]
 fn manager_sample_all_with_delta_secs_uses_timing_aware_sources() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(DeltaAwareSource::new()));
+    register_test_source(&mut mgr, managed_audio(DeltaAwareSource::new()));
 
     let samples = mgr.sample_all_with_delta_secs(0.25);
     assert_eq!(samples.len(), 1);
@@ -1795,17 +2360,21 @@ fn manager_sample_all_with_delta_secs_uses_timing_aware_sources() {
 #[test]
 fn manager_drains_discrete_input_events_from_all_sources() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(EventfulSource::new(vec![InputEvent::Key {
-        source_id: "host:/dev/input/event4".into(),
-        key: "Space".into(),
-        state: InputButtonState::Pressed,
-    }])));
-    mgr.add_source(Box::new(EventfulSource::new(vec![
-        InputEvent::MidiRealtime {
+    register_test_source(
+        &mut mgr,
+        managed_interaction(EventfulSource::new(vec![InputEvent::Key {
+            source_id: "host:/dev/input/event4".into(),
+            key: "Space".into(),
+            state: InputButtonState::Pressed,
+        }])),
+    );
+    register_test_source(
+        &mut mgr,
+        managed_interaction(EventfulSource::new(vec![InputEvent::MidiRealtime {
             source_id: "midi:clock".into(),
             message: hypercolor_types::event::MidiRealtimeMessage::Clock,
-        },
-    ])));
+        }])),
+    );
     mgr.start_all().expect("eventful sources should start");
 
     let first = mgr.drain_events();
@@ -1818,11 +2387,14 @@ fn manager_drains_discrete_input_events_from_all_sources() {
 #[test]
 fn manager_does_not_drain_events_from_stopped_sources() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(EventfulSource::new(vec![InputEvent::Key {
-        source_id: "host:/dev/input/event4".into(),
-        key: "Space".into(),
-        state: InputButtonState::Pressed,
-    }])));
+    register_test_source(
+        &mut mgr,
+        managed_interaction(EventfulSource::new(vec![InputEvent::Key {
+            source_id: "host:/dev/input/event4".into(),
+            key: "Space".into(),
+            state: InputButtonState::Pressed,
+        }])),
+    );
     mgr.start_all().expect("eventful source should start");
     mgr.stop_all();
 
@@ -1832,7 +2404,7 @@ fn manager_does_not_drain_events_from_stopped_sources() {
 #[test]
 fn audio_data_values_propagate_through_input_data() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(MockAudioSource::new(0.99)));
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.99)));
 
     let samples = mgr.sample_all();
     assert_eq!(samples.len(), 1);
@@ -1862,55 +2434,28 @@ fn screen_data_empty_zones_is_valid() {
 }
 
 #[test]
-fn manager_reconfigures_existing_audio_source_live() {
-    let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(ReconfigurableAudioSource::new()));
-
-    let config = AudioPipelineConfig {
-        source: AudioSourceType::Named("microphone".to_owned()),
-        ..AudioPipelineConfig::default()
-    };
-
-    mgr.apply_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
-        .expect("audio reconfigure should succeed");
-
-    assert_eq!(mgr.source_count(), 1);
-    assert_eq!(mgr.source_names(), vec!["AudioInput(microphone)"]);
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
-
-    mgr.set_audio_capture_active(true)
-        .expect("audio capture demand update should succeed");
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
-}
-
-#[test]
 fn prepared_audio_reconfiguration_commits_after_native_work_is_complete() {
     let config = AudioPipelineConfig {
         source: AudioSourceType::None,
         ..AudioPipelineConfig::default()
     };
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(AudioInput::new(&config).with_name("audio-before")));
+    register_test_source(
+        &mut manager,
+        managed_audio(AudioInput::new(&config).with_name("audio-before")),
+    );
     manager.start_all().expect("audio source should start");
 
     let plan = manager
         .plan_audio_runtime_config(false, &config, "audio-after", false)
         .expect("production audio source supports preparation");
-    let mut prepared = plan.prepare().expect("disabled audio preparation is local");
-    manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect("unchanged graph should accept prepared audio")
-        .retire();
+    let prepared = plan.prepare().expect("disabled audio preparation is local");
+    let mut prepared = prepared.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("unchanged graph should accept prepared audio");
+    prepared.discard();
+    retirement.retire();
 
     assert_eq!(manager.source_names(), vec!["audio-after"]);
 }
@@ -1921,17 +2466,19 @@ fn prepared_audio_enable_while_demanded_registers_a_live_source() {
         source: AudioSourceType::Microphone,
         ..AudioPipelineConfig::default()
     };
-    let mut manager = InputManager::new();
-    let mut prepared = manager
+    let manager = InputManager::new();
+    let prepared = manager
         .plan_audio_runtime_config(true, &config, "audio-active", true)
         .expect("absent audio source should support preparation")
         .prepare_with_synthetic_capture_for_testing()
         .expect("synthetic capture should stage without hardware");
 
-    manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect("active prepared audio source should commit")
-        .retire();
+    let mut prepared = prepared.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("active prepared audio source should commit");
+    prepared.discard();
+    retirement.retire();
 
     assert_eq!(manager.source_names(), vec!["audio-active"]);
     let statuses = manager.source_status_registry().snapshot().statuses();
@@ -1943,7 +2490,49 @@ fn prepared_audio_enable_while_demanded_registers_a_live_source() {
         statuses[0].source_graph_generation,
         manager.source_graph_generation()
     );
+    let committed_generation = manager.source_graph_generation();
+    manager
+        .set_audio_capture_active(true)
+        .expect("committed capture demand should already be cached");
+    assert_eq!(manager.source_graph_generation(), committed_generation);
     manager.stop_all();
+}
+
+#[test]
+fn prepared_audio_reconfiguration_preserves_stopped_lifecycle_and_order() {
+    let disabled = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let enabled = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    register_test_source(&mut manager, managed_screen(MockScreenSource::new(1)));
+    register_test_source(
+        &mut manager,
+        managed_audio(AudioInput::new(&disabled).with_name("audio-before")),
+    );
+    register_test_source(
+        &mut manager,
+        managed_data(SequencedSource::<DataSourceRole>::new([InputData::None])),
+    );
+
+    let prepared = manager
+        .plan_audio_runtime_config(true, &enabled, "audio-after", true)
+        .expect("stopped replacement should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("stopped replacement should not start capture");
+    commit_prepared_audio_swap(&mut manager, prepared);
+
+    assert_eq!(
+        manager.source_names(),
+        vec!["MockScreen", "audio-after", "Sequenced"]
+    );
+    let status = manager.source_status_registry().snapshot().statuses()[1].clone();
+    assert_eq!(status.state, SourceState::Stopped);
+    assert!(status.demanded);
 }
 
 #[test]
@@ -1953,25 +2542,75 @@ fn prepared_audio_reconfiguration_rejects_a_changed_input_graph() {
         ..AudioPipelineConfig::default()
     };
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(AudioInput::new(&config).with_name("audio-before")));
+    register_test_source(
+        &mut manager,
+        managed_audio(AudioInput::new(&config).with_name("audio-before")),
+    );
     manager.start_all().expect("audio source should start");
-    let mut prepared = manager
+    let prepared = manager
         .plan_audio_runtime_config(false, &config, "audio-after", false)
         .expect("production audio source supports preparation")
         .prepare()
         .expect("disabled audio preparation is local");
 
-    manager.add_source(Box::new(MockScreenSource::new(1)));
-    let error = manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect_err("graph changes must fence a stale prepared runtime");
+    register_test_source(&mut manager, managed_screen(MockScreenSource::new(1)));
+    let mut prepared = prepared.into_source_swap();
+    let Err(error) = manager.commit_source_swap(&mut prepared) else {
+        panic!("graph changes must fence a stale prepared runtime");
+    };
 
-    assert!(matches!(
-        error.downcast_ref::<AudioReconfigurationConflict>(),
-        Some(AudioReconfigurationConflict::GraphChanged)
-    ));
+    assert_eq!(error, SourceSwapConflict::GraphChanged);
     assert!(error.to_string().contains("input graph changed"));
+    assert!(
+        prepared.has_replacement(),
+        "conflicts retain candidate ownership"
+    );
     assert_eq!(manager.source_names()[0], "audio-before");
+}
+
+#[test]
+fn prepared_audio_terminal_failure_rejects_every_commit_attempt_without_mutation() {
+    let disabled = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    let enabled = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    let mut manager = InputManager::new();
+    register_test_source(
+        &mut manager,
+        managed_audio(AudioInput::new(&disabled).with_name("audio-before")),
+    );
+    manager.start_all().expect("audio source should start");
+    let old_handle = manager.source_status_registry().snapshot().handles()[0].clone();
+    let graph_generation = manager.source_graph_generation();
+    let prepared = manager
+        .plan_audio_runtime_config(true, &enabled, "audio-after", true)
+        .expect("replacement should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("synthetic candidate should prepare");
+    prepared.fail_before_commit_for_testing();
+    let mut prepared = prepared.into_source_swap();
+
+    for _ in 0..2 {
+        let Err(error) = manager.commit_source_swap(&mut prepared) else {
+            panic!("terminally failed candidate must never commit");
+        };
+        assert!(matches!(
+            error,
+            SourceSwapConflict::ReplacementNotReady {
+                key: ManagedSourceKey::Audio,
+                ..
+            }
+        ));
+        assert!(prepared.has_replacement());
+        assert_eq!(manager.source_graph_generation(), graph_generation);
+        assert_eq!(manager.source_names(), ["audio-before"]);
+        assert!(!old_handle.snapshot().retired);
+    }
+    prepared.discard();
 }
 
 #[test]
@@ -1980,11 +2619,11 @@ fn prepared_audio_reconfiguration_rejects_changed_capture_demand() {
         source: AudioSourceType::None,
         ..AudioPipelineConfig::default()
     };
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     manager
         .set_audio_capture_active(false)
         .expect("initial demand should be cached");
-    let mut prepared = manager
+    let prepared = manager
         .plan_audio_runtime_config(false, &config, "audio-disabled", false)
         .expect("absent audio source supports disabled preparation")
         .prepare()
@@ -1993,36 +2632,14 @@ fn prepared_audio_reconfiguration_rejects_changed_capture_demand() {
     manager
         .set_audio_capture_active(true)
         .expect("concurrent demand should update the graph generation");
-    let error = manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect_err("capture demand changes must fence a stale prepared runtime");
+    let mut prepared = prepared.into_source_swap();
+    let Err(error) = manager.commit_source_swap(&mut prepared) else {
+        panic!("capture demand changes must fence a stale prepared runtime");
+    };
 
     assert!(error.to_string().contains("input graph changed"));
+    assert!(!prepared.has_replacement());
     assert_eq!(manager.source_count(), 0);
-}
-
-#[test]
-fn prepared_audio_reconfiguration_rejects_terminal_failure_before_commit() {
-    let config = AudioPipelineConfig {
-        source: AudioSourceType::None,
-        ..AudioPipelineConfig::default()
-    };
-    let mut manager = InputManager::new();
-    manager.add_source(Box::new(AudioInput::new(&config).with_name("audio-before")));
-    manager.start_all().expect("audio source should start");
-    let mut prepared = manager
-        .plan_audio_runtime_config(false, &config, "audio-after", false)
-        .expect("production audio source supports preparation")
-        .prepare()
-        .expect("disabled audio preparation is local");
-    prepared.fail_before_commit_for_testing();
-
-    let error = manager
-        .commit_audio_runtime_config(&mut prepared)
-        .expect_err("a terminal staged failure must preserve the committed source");
-
-    assert!(error.to_string().contains("failed before commit"));
-    assert_eq!(manager.source_names(), vec!["audio-before"]);
 }
 
 #[test]
@@ -2035,33 +2652,33 @@ fn disabling_absent_audio_fences_an_older_enable_plan() {
         source: AudioSourceType::Microphone,
         ..AudioPipelineConfig::default()
     };
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let initial_generation = manager.source_graph_generation();
     let older_enable = manager
         .plan_audio_runtime_config(true, &enabled, "audio-enabled", false)
         .expect("absent audio source supports prepared enable")
         .prepare()
         .expect("idle enable does not open native capture");
-    let mut newer_disable = manager
+    let newer_disable = manager
         .plan_audio_runtime_config(false, &disabled, "audio-disabled", false)
         .expect("absent audio source supports prepared disable")
         .prepare()
         .expect("disable preparation is local");
 
-    manager
-        .commit_audio_runtime_config(&mut newer_disable)
-        .expect("newer disable should commit")
-        .retire();
+    let mut newer_disable = newer_disable.into_source_swap();
+    let retirement = manager
+        .commit_source_swap(&mut newer_disable)
+        .expect("newer disable should commit");
+    newer_disable.discard();
+    retirement.retire();
     assert!(manager.source_graph_generation() > initial_generation);
 
-    let mut older_enable = older_enable;
-    let error = manager
-        .commit_audio_runtime_config(&mut older_enable)
-        .expect_err("newer disable must fence an older enable plan");
-    assert!(matches!(
-        error.downcast_ref::<AudioReconfigurationConflict>(),
-        Some(AudioReconfigurationConflict::GraphChanged)
-    ));
+    let mut older_enable = older_enable.into_source_swap();
+    let Err(error) = manager.commit_source_swap(&mut older_enable) else {
+        panic!("newer disable must fence an older enable plan");
+    };
+    assert_eq!(error, SourceSwapConflict::GraphChanged);
+    assert!(older_enable.has_replacement());
     assert_eq!(manager.source_count(), 0);
 }
 
@@ -2074,16 +2691,24 @@ fn manager_adds_audio_source_when_live_audio_is_enabled() {
         ..AudioPipelineConfig::default()
     };
 
-    mgr.apply_audio_runtime_config(false, &config, "AudioInput(none)", false)
-        .expect("disabling absent audio source should be a no-op");
+    let prepared = mgr
+        .plan_audio_runtime_config(false, &config, "AudioInput(none)", false)
+        .expect("absent disable should plan")
+        .prepare()
+        .expect("absent disable should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
     assert_eq!(mgr.source_count(), 0);
 
     let config = AudioPipelineConfig {
         source: AudioSourceType::Microphone,
         ..AudioPipelineConfig::default()
     };
-    mgr.apply_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
-        .expect("enabling audio should add a source");
+    let prepared = mgr
+        .plan_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
+        .expect("absent enable should plan")
+        .prepare()
+        .expect("idle enable should not open capture");
+    commit_prepared_audio_swap(&mut mgr, prepared);
 
     assert_eq!(mgr.source_count(), 1);
     assert_eq!(mgr.source_names(), vec!["AudioInput(microphone)"]);
@@ -2092,96 +2717,120 @@ fn manager_adds_audio_source_when_live_audio_is_enabled() {
 #[test]
 fn manager_forces_capture_inactive_when_live_audio_is_disabled() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(CaptureTrackingAudioSource::new()));
+    register_test_source(&mut mgr, managed_audio(CaptureTrackingAudioSource::new()));
+    mgr.start_all().expect("audio fixture should start");
 
     let config = AudioPipelineConfig {
         source: AudioSourceType::None,
         ..AudioPipelineConfig::default()
     };
 
-    mgr.apply_audio_runtime_config(false, &config, "AudioInput(none)", true)
-        .expect("disabling audio should clear capture demand");
+    let prepared = mgr
+        .plan_audio_runtime_config(false, &config, "AudioInput(none)", true)
+        .expect("disable should plan")
+        .prepare()
+        .expect("disabled replacement should stay local");
+    commit_prepared_audio_swap(&mut mgr, prepared);
 
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
+    let status = mgr.source_status_registry().snapshot().statuses()[0].clone();
+    assert!(!status.configured);
+    assert!(!status.demanded);
+    assert_eq!(status.state, SourceState::Stopped);
 }
 
 #[test]
 fn manager_reenables_existing_audio_source_after_live_disable() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(ReconfigurableAudioSource::new()));
+    let initial = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    register_test_source(&mut mgr, managed_audio(AudioInput::new(&initial)));
+    mgr.start_all().expect("audio source should start");
 
     let enabled_config = AudioPipelineConfig {
         source: AudioSourceType::Named("microphone".to_owned()),
         ..AudioPipelineConfig::default()
     };
 
-    mgr.apply_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
-        .expect("enabling audio should succeed");
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
+    let prepared = mgr
+        .plan_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
+        .expect("enable should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("synthetic capture should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
+    assert!(mgr.source_status_registry().snapshot().statuses()[0].demanded);
 
     let disabled_config = AudioPipelineConfig {
         source: AudioSourceType::None,
         ..enabled_config.clone()
     };
 
-    mgr.apply_audio_runtime_config(false, &disabled_config, "AudioInput(microphone)", true)
-        .expect("disabling audio should keep the existing source registered");
+    let prepared = mgr
+        .plan_audio_runtime_config(false, &disabled_config, "AudioInput(microphone)", true)
+        .expect("disable should plan")
+        .prepare()
+        .expect("disabled replacement should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
+    assert_eq!(mgr.source_count(), 1);
+    assert!(!mgr.source_status_registry().snapshot().statuses()[0].demanded);
 
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
-
-    mgr.apply_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
-        .expect("re-enabling audio should restore live capture");
-
-    let samples = mgr.sample_all();
-    match &samples[0] {
-        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
-        _ => panic!("expected audio data"),
-    }
+    let prepared = mgr
+        .plan_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
+        .expect("re-enable should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("synthetic capture should prepare");
+    commit_prepared_audio_swap(&mut mgr, prepared);
+    assert!(mgr.source_status_registry().snapshot().statuses()[0].demanded);
 }
 
 #[test]
 fn audio_runtime_reconfiguration_binds_each_status_session_to_a_new_graph_generation() {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(StatusReconfigurableAudioSource::new()));
+    let initial = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+    register_test_source(&mut manager, managed_audio(AudioInput::new(&initial)));
+    manager.start_all().expect("audio source should start");
     let registry = manager.source_status_registry();
+    let original_handle = registry.snapshot().handles()[0].clone();
+    let original_source_id = original_handle.snapshot().source_id.clone();
     let config_a = AudioPipelineConfig {
         source: AudioSourceType::Named("source-a".to_owned()),
         ..AudioPipelineConfig::default()
     };
 
-    manager
-        .apply_audio_runtime_config(true, &config_a, "source-a", true)
-        .expect("first live audio source should bind");
+    let prepared = manager
+        .plan_audio_runtime_config(true, &config_a, "source-a", true)
+        .expect("first source should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("first source should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let first = registry.snapshot().statuses()[0].clone();
-    assert_eq!(first.state, SourceState::Live);
+    assert_eq!(first.state, SourceState::Starting);
+    assert_eq!(first.source_id, original_source_id);
     assert_eq!(
         first.source_graph_generation,
         manager.source_graph_generation()
     );
 
-    manager
-        .apply_audio_runtime_config(false, &config_a, "source-a", true)
-        .expect("audio disable should fence the active session");
+    let prepared = manager
+        .plan_audio_runtime_config(false, &config_a, "source-a", true)
+        .expect("disable should plan")
+        .prepare()
+        .expect("disable should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let disabled = registry.snapshot().statuses()[0].clone();
     assert_eq!(disabled.state, SourceState::Stopped);
     assert!(!disabled.demanded);
 
-    manager
-        .apply_audio_runtime_config(true, &config_a, "source-a", true)
-        .expect("audio re-enable should start a successor session");
+    let prepared = manager
+        .plan_audio_runtime_config(true, &config_a, "source-a", true)
+        .expect("re-enable should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("re-enable should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let reenabled = registry.snapshot().statuses()[0].clone();
     assert!(
         reenabled.source_graph_generation > first.source_graph_generation,
@@ -2193,9 +2842,12 @@ fn audio_runtime_reconfiguration_binds_each_status_session_to_a_new_graph_genera
         source: AudioSourceType::Named("source-b".to_owned()),
         ..config_a
     };
-    manager
-        .apply_audio_runtime_config(true, &config_b, "source-b", true)
-        .expect("active source replacement should start a successor session");
+    let prepared = manager
+        .plan_audio_runtime_config(true, &config_b, "source-b", true)
+        .expect("replacement should plan")
+        .prepare_with_synthetic_capture_for_testing()
+        .expect("replacement should prepare");
+    commit_prepared_audio_swap(&mut manager, prepared);
     let replaced = registry.snapshot().statuses()[0].clone();
     assert!(replaced.source_graph_generation > reenabled.source_graph_generation);
     assert!(replaced.session_generation > reenabled.session_generation);
@@ -2203,12 +2855,14 @@ fn audio_runtime_reconfiguration_binds_each_status_session_to_a_new_graph_genera
         replaced.source_graph_generation,
         manager.source_graph_generation()
     );
+    assert!(original_handle.snapshot().retired);
+    assert_eq!(replaced.source_id, original_source_id);
 }
 
 #[test]
 fn manager_updates_screen_capture_demand_for_screen_sources() {
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(CaptureTrackingScreenSource::new()));
+    register_test_source(&mut mgr, managed_screen(CaptureTrackingScreenSource::new()));
     mgr.start_all().expect("start_all should succeed");
 
     let samples = mgr.sample_all();
@@ -2228,100 +2882,27 @@ fn manager_updates_screen_capture_demand_for_screen_sources() {
 }
 
 #[test]
-fn manager_recomputes_publication_capacity_from_the_exact_demand_extent() {
-    let demand = screen_demand(3840, 2160);
-    let extent = demand
-        .requested_extent()
-        .expect("active demand carries an extent");
-    let analysis = ScreenAnalysisResourcePlan::try_new_for_extent(8, 6, 30, extent, u64::MAX)
-        .expect("4K analysis is representable");
-    let steady =
-        ScreenAdmissionCapacity::new(analysis.peak_bytes() + 777, analysis.peak_bytes() + 333);
-    let physical = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
-    let activations = Arc::new(AtomicUsize::new(0));
-    let mut manager = InputManager::new();
-    manager
-        .set_screen_capacity_plan(physical, steady, steady)
-        .expect("empty manager accepts capacity policy");
-    manager.add_source(Box::new(CountingScreenDemandSource::new(activations)));
-    manager.start_all().expect("screen source starts");
-
-    manager
-        .set_screen_capture_demand(demand)
-        .expect("exact 4K analysis and publication split is admitted");
-
-    assert_eq!(manager.screen_capture_demand(), demand);
-    assert_eq!(
-        manager.screen_publication_capacity(),
-        ScreenAdmissionCapacity::new(777, 333)
-    );
-    assert_eq!(
-        manager
-            .screen_analysis_resource_plan()
-            .expect("analysis quote resolves"),
-        Some(analysis)
-    );
-}
-
-#[test]
-fn demand_growth_rejects_before_source_or_publication_policy_mutates() {
-    let initial = screen_demand(640, 480);
-    let initial_extent = initial
-        .requested_extent()
-        .expect("active demand carries an extent");
-    let initial_analysis =
-        ScreenAnalysisResourcePlan::try_new_for_extent(8, 6, 30, initial_extent, u64::MAX)
-            .expect("baseline analysis is representable");
-    let steady = ScreenAdmissionCapacity::new(
-        initial_analysis.peak_bytes() + 1,
-        initial_analysis.peak_bytes() + 1,
-    );
-    let mut manager = InputManager::new();
-    manager
-        .set_screen_capacity_plan(
-            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
-            steady,
-            steady,
-        )
-        .expect("empty manager accepts capacity policy");
-    manager.add_source(Box::new(CountingScreenDemandSource::new(Arc::new(
-        AtomicUsize::new(0),
-    ))));
-    manager.start_all().expect("screen source starts");
-    manager
-        .set_screen_capture_demand(initial)
-        .expect("baseline demand is admitted");
-    let publication_before = manager.screen_publication_capacity();
-    let graph_before = manager.source_graph_generation();
-
-    manager
-        .set_screen_capture_demand(screen_demand(3840, 2160))
-        .expect_err("growth beyond the steady total is rejected");
-
-    assert_eq!(manager.screen_capture_demand(), initial);
-    assert_eq!(manager.screen_publication_capacity(), publication_before);
-    assert_eq!(manager.source_graph_generation(), graph_before);
-}
-
-#[test]
-fn manager_propagates_extent_only_screen_demand_changes_and_shrinks() {
+fn manager_propagates_policy_only_screen_demand_changes() {
     let state = Arc::new(Mutex::new(DemandTransitionState::default()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "screen-resize",
-        None,
-        Arc::clone(&state),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "screen-resize",
+            None,
+            Arc::clone(&state),
+        )),
+    );
     manager.start_all().expect("screen source starts idle");
-    let large = screen_demand(5_120, 2_160);
-    let small = screen_demand(1_280, 720);
+    let large = screen_demand_at(60);
+    let small = screen_demand_at(30);
 
     manager
         .set_screen_capture_demand(large)
-        .expect("large demand is admitted");
+        .expect("60 Hz demand is admitted");
     manager
         .set_screen_capture_demand(small)
-        .expect("active demand shrink is propagated");
+        .expect("active cadence change is propagated");
 
     let state = state.lock().expect("demand state lock");
     assert_eq!(state.demand, small);
@@ -2329,23 +2910,29 @@ fn manager_propagates_extent_only_screen_demand_changes_and_shrinks() {
 }
 
 #[test]
-fn extent_transition_failure_restores_the_exact_previous_demand() {
-    let large = screen_demand(5_120, 2_160);
-    let small = screen_demand(1_280, 720);
+fn policy_transition_failure_restores_the_exact_previous_demand() {
+    let large = screen_demand_at(60);
+    let small = screen_demand_at(30);
     let states: Vec<_> = (0..2)
         .map(|_| Arc::new(Mutex::new(DemandTransitionState::default())))
         .collect();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "resize-first",
-        None,
-        Arc::clone(&states[0]),
-    )));
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "resize-failing",
-        Some(small),
-        Arc::clone(&states[1]),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "resize-first",
+            None,
+            Arc::clone(&states[0]),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "resize-failing",
+            Some(small),
+            Arc::clone(&states[1]),
+        )),
+    );
     manager.start_all().expect("screen sources start idle");
     manager
         .set_screen_capture_demand(large)
@@ -2382,9 +2969,10 @@ fn screen_source_added_while_demanded_is_activated_once_on_next_graph_generation
         .expect("empty graph should accept screen demand");
     let demanded_generation = manager.source_graph_generation();
 
-    manager.add_source(Box::new(CountingScreenDemandSource::new(Arc::clone(
-        &activations,
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_screen(CountingScreenDemandSource::new(Arc::clone(&activations))),
+    );
     manager
         .start_all()
         .expect("newly registered screen source should start");
@@ -2405,21 +2993,30 @@ fn screen_capture_demand_rolls_back_every_source_and_publishes_one_completed_epo
         .map(|_| Arc::new(Mutex::new(DemandTransitionState::default())))
         .collect();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "screen-first",
-        None,
-        Arc::clone(&states[0]),
-    )));
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "screen-failing",
-        Some(active_screen_demand()),
-        Arc::clone(&states[1]),
-    )));
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "screen-unattempted",
-        None,
-        Arc::clone(&states[2]),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "screen-first",
+            None,
+            Arc::clone(&states[0]),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "screen-failing",
+            Some(active_screen_demand()),
+            Arc::clone(&states[1]),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "screen-unattempted",
+            None,
+            Arc::clone(&states[2]),
+        )),
+    );
     manager
         .start_all()
         .expect("fallible screen sources start idle");
@@ -2485,21 +3082,30 @@ fn screen_capture_deactivation_failure_restores_live_demand_and_cache() {
         .map(|_| Arc::new(Mutex::new(DemandTransitionState::default())))
         .collect();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "deactivate-first",
-        None,
-        Arc::clone(&states[0]),
-    )));
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "deactivate-failing",
-        Some(ScreenCaptureDemand::Inactive),
-        Arc::clone(&states[1]),
-    )));
-    manager.add_source(Box::new(FallibleStatusScreenSource::new(
-        "deactivate-unattempted",
-        None,
-        Arc::clone(&states[2]),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "deactivate-first",
+            None,
+            Arc::clone(&states[0]),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "deactivate-failing",
+            Some(ScreenCaptureDemand::Inactive),
+            Arc::clone(&states[1]),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        managed_screen(FallibleStatusScreenSource::new(
+            "deactivate-unattempted",
+            None,
+            Arc::clone(&states[2]),
+        )),
+    );
     manager.start_all().expect("screen sources start idle");
     manager
         .set_screen_capture_demand(active_screen_demand())
@@ -2592,18 +3198,19 @@ fn wayland_picker_action_is_detached_and_names_the_platform_backend() {
                 .push(token);
         }));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, managed_screen(source));
 
     let action = manager
         .resolved_screen_source_picker_action()
         .expect("Wayland source exposes a detached picker request");
-    let hypercolor_core::input::ResolvedProtectedSourceAction::Local { action, owner } = action
+    let hypercolor_core::input::ResolvedProtectedSourceAction::Local { action, identity } = action
     else {
         panic!("Wayland picker must execute in its platform backend");
     };
+    assert_eq!(identity.owner(), "platform_backend");
     assert_eq!(
-        owner,
-        hypercolor_core::input::ProtectedSourceActionOwner::PlatformBackend
+        identity.disposition(),
+        hypercolor_core::input::CapabilityActionDisposition::Local
     );
     action.execute().expect("detached picker request succeeds");
     assert_eq!(
@@ -2655,11 +3262,13 @@ impl InputSource for ReconfigurableScreenSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for ReconfigurableScreenSource {
+    type Role = ScreenSourceRole;
+}
 
+impl ScreenSource for ReconfigurableScreenSource {
     fn reconfigure_screen_capture(&mut self, config: &ScreenCaptureConfig) -> anyhow::Result<()> {
         self.log
             .lock()
@@ -2679,8 +3288,11 @@ impl InputSource for ReconfigurableScreenSource {
 fn input_manager_routes_screen_capture_reconfiguration() {
     let log = Arc::new(Mutex::new(ScreenReconfigLog::default()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(ReconfigurableScreenSource::new(Arc::clone(&log))));
-    manager.add_source(Box::new(MockAudioSource::new(0.5)));
+    register_test_source(
+        &mut manager,
+        managed_screen(ReconfigurableScreenSource::new(Arc::clone(&log))),
+    );
+    register_test_source(&mut manager, managed_audio(MockAudioSource::new(0.5)));
     assert!(manager.has_screen_source());
 
     let config = ScreenCaptureConfig {
@@ -2706,9 +3318,10 @@ fn input_manager_routes_screen_capture_reconfiguration() {
 fn screen_restart_operations_start_sessions_under_the_bound_graph_generation() {
     let sessions = Arc::new(Mutex::new(Vec::new()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(RestartingStatusScreenSource::new(Arc::clone(
-        &sessions,
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_screen(RestartingStatusScreenSource::new(Arc::clone(&sessions))),
+    );
     let registry = manager.source_status_registry();
     manager.start_all().expect("status screen source starts");
     let started = registry.snapshot().statuses()[0].clone();
@@ -2782,14 +3395,17 @@ fn screen_status_uses_frame_acquisition_time_not_consumer_read_time() {
 }
 
 #[test]
-fn input_manager_removes_screen_sources() {
+fn input_manager_screen_swap_preserves_other_roles() {
     let log = Arc::new(Mutex::new(ScreenReconfigLog::default()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(ReconfigurableScreenSource::new(log)));
-    manager.add_source(Box::new(MockAudioSource::new(0.5)));
+    register_test_source(
+        &mut manager,
+        managed_screen(ReconfigurableScreenSource::new(log)),
+    );
+    register_test_source(&mut manager, managed_audio(MockAudioSource::new(0.5)));
     assert!(manager.has_screen_source());
 
-    manager.remove_screen_sources();
+    remove_unique_screen_source(&mut manager);
     assert!(!manager.has_screen_source());
     assert!(
         manager.source_names().contains(&"MockAudio".to_owned()),
@@ -2857,15 +3473,13 @@ impl InputSource for CaptureTrackingInteractionSource {
     fn is_running(&self) -> bool {
         self.running
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
+impl SourceRoleBinding for CaptureTrackingInteractionSource {
+    type Role = InteractionSourceRole;
+}
 
-    fn is_host_capture_source(&self) -> bool {
-        true
-    }
-
+impl InteractionSource for CaptureTrackingInteractionSource {
     fn set_interaction_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active != active {
             self.transitions
@@ -2882,14 +3496,57 @@ impl InputSource for CaptureTrackingInteractionSource {
     }
 }
 
+macro_rules! impl_audio_fixture {
+    ($($source:ty),+ $(,)?) => {
+        $(
+            impl SourceRoleBinding for $source {
+                type Role = AudioSourceRole;
+            }
+
+            impl AudioSource for $source {}
+        )+
+    };
+}
+
+macro_rules! impl_screen_fixture {
+    ($($source:ty),+ $(,)?) => {
+        $(
+            impl SourceRoleBinding for $source {
+                type Role = ScreenSourceRole;
+            }
+
+            impl ScreenSource for $source {}
+        )+
+    };
+}
+
+macro_rules! impl_interaction_fixture {
+    ($($source:ty),+ $(,)?) => {
+        $(
+            impl SourceRoleBinding for $source {
+                type Role = InteractionSourceRole;
+            }
+
+            impl InteractionSource for $source {}
+        )+
+    };
+}
+
+impl_audio_fixture!(DeltaAwareSource,);
+impl_screen_fixture!(StatusAwareScreenSource,);
+impl_interaction_fixture!(FailingSource, FaultySampleSource, EventfulSource,);
+
 #[test]
 fn manager_routes_interaction_capture_demand_to_interaction_sources_only() {
     let transitions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut mgr = InputManager::new();
-    mgr.add_source(Box::new(CaptureTrackingInteractionSource::new(
-        std::sync::Arc::clone(&transitions),
-    )));
-    mgr.add_source(Box::new(MockAudioSource::new(0.5)));
+    register_test_source(
+        &mut mgr,
+        managed_interaction(CaptureTrackingInteractionSource::new(
+            std::sync::Arc::clone(&transitions),
+        )),
+    );
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.5)));
 
     mgr.set_interaction_capture_active(true)
         .expect("activate interaction capture");
@@ -2908,9 +3565,12 @@ fn manager_routes_interaction_capture_demand_to_interaction_sources_only() {
 fn interaction_demand_reconciles_false_after_stop_and_restart() {
     let transitions = Arc::new(Mutex::new(Vec::new()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(CaptureTrackingInteractionSource::new(Arc::clone(
-        &transitions,
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_interaction(CaptureTrackingInteractionSource::new(Arc::clone(
+            &transitions,
+        ))),
+    );
     let registry = manager.source_status_registry();
     manager.start_all().expect("interaction source starts");
     manager
@@ -2939,7 +3599,7 @@ fn production_audio_demand_reconciles_false_after_stop_and_restart() {
         ..AudioPipelineConfig::default()
     };
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(AudioInput::new(&config)));
+    register_test_source(&mut manager, managed_audio(AudioInput::new(&config)));
     let registry = manager.source_status_registry();
 
     manager.start_all().expect("audio source starts idle");
@@ -2964,9 +3624,10 @@ fn adding_an_interaction_source_invalidates_and_reapplies_live_demand() {
     let first = Arc::new(Mutex::new(Vec::new()));
     let second = Arc::new(Mutex::new(Vec::new()));
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(CaptureTrackingInteractionSource::new(Arc::clone(
-        &first,
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_interaction(CaptureTrackingInteractionSource::new(Arc::clone(&first))),
+    );
     manager
         .start_all()
         .expect("first interaction source starts");
@@ -2974,9 +3635,10 @@ fn adding_an_interaction_source_invalidates_and_reapplies_live_demand() {
         .set_interaction_capture_active(true)
         .expect("first interaction source activates");
 
-    manager.add_source(Box::new(CaptureTrackingInteractionSource::new(Arc::clone(
-        &second,
-    ))));
+    register_test_source(
+        &mut manager,
+        managed_interaction(CaptureTrackingInteractionSource::new(Arc::clone(&second))),
+    );
     manager
         .set_interaction_capture_active(true)
         .expect("invalidated cache activates the added source");
@@ -2991,16 +3653,74 @@ fn manager_tracks_and_removes_host_capture_sources() {
     let mut mgr = InputManager::new();
     assert!(!mgr.has_host_capture_source());
 
-    mgr.add_source(Box::new(CaptureTrackingInteractionSource::new(transitions)));
-    mgr.add_source(Box::new(MockAudioSource::new(0.5)));
+    register_test_source(
+        &mut mgr,
+        managed_interaction(CaptureTrackingInteractionSource::new(transitions)),
+    );
+    register_test_source(&mut mgr, managed_audio(MockAudioSource::new(0.5)));
     assert!(mgr.has_host_capture_source());
     assert!(mgr.has_interaction_source());
     assert_eq!(mgr.source_count(), 2);
+    let graph_generation = mgr.source_graph_generation();
 
-    mgr.remove_host_capture_sources();
+    let plan = mgr
+        .plan_source_swap(ManagedSourceKey::Interaction, SourceSwapTarget::Absent)
+        .expect("unique host source plans");
+    let mut replacement = None;
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("host removal should prepare");
+    let retirement = mgr
+        .commit_source_swap(&mut prepared)
+        .expect("host removal commits");
+    assert_eq!(mgr.source_graph_generation(), graph_generation + 1);
     assert!(!mgr.has_host_capture_source());
     assert!(!mgr.has_interaction_source());
     assert_eq!(mgr.source_count(), 1, "audio survives host removal");
+    retirement.retire();
+    assert_eq!(mgr.source_graph_generation(), graph_generation + 1);
+}
+
+#[test]
+fn absent_host_commit_fences_an_older_enable_plan() {
+    let manager = InputManager::new();
+    let host_key = ManagedSourceKey::Interaction;
+    let stale_enable = manager
+        .plan_source_swap(host_key, SourceSwapTarget::Present { running: true })
+        .expect("empty host slot plans an enable");
+    let disable = manager
+        .plan_source_swap(host_key, SourceSwapTarget::Absent)
+        .expect("empty host slot plans a disable");
+    let graph_generation = manager.source_graph_generation();
+    let mut no_replacement = None;
+    let mut prepared_disable = disable
+        .prepare(&mut no_replacement)
+        .expect("absence should prepare");
+    let retirement = manager
+        .commit_source_swap(&mut prepared_disable)
+        .expect("absence commit linearizes");
+
+    assert_eq!(manager.source_graph_generation(), graph_generation + 1);
+    retirement.retire();
+
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let mut candidate = CaptureTrackingInteractionSource::new(transitions);
+    candidate.start().expect("host candidate starts");
+    let mut candidate = Some(managed_interaction(candidate));
+    let mut stale_enable = stale_enable
+        .prepare(&mut candidate)
+        .expect("stale candidate still prepares against its captured plan");
+
+    assert!(matches!(
+        manager.commit_source_swap(&mut stale_enable),
+        Err(SourceSwapConflict::GraphChanged)
+    ));
+    assert!(
+        stale_enable.has_replacement(),
+        "stale enable retains its candidate"
+    );
+    assert!(!manager.has_host_capture_source());
+    assert_eq!(manager.source_graph_generation(), graph_generation + 1);
 }
 
 #[test]
@@ -3426,72 +4146,22 @@ fn source_backend_updates_preserve_lifecycle_and_deduplicate() {
 }
 
 #[test]
-fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
+fn source_diagnostics_updates_preserve_lifecycle_and_deduplicate() {
     let (writer, handle) = test_status_writer();
     let before = handle.snapshot();
-    let platform = SourcePlatformStatus::MacosScreen(MacosScreenPlatformStatus {
-        state: MacosProtectedSourceState::NeedsSelection,
-        tcc: MacosAuthorizationState::Authorized,
-        owner: MacosCapabilityOwner::AppSidecar,
-        selection: MacosSelectionState::None,
-        selection_diagnostic_label: None,
-        selection_revision: 0,
-        tahoe: MacosTahoeCapabilities {
-            host_architecture: MacosArchitecture::AppleSilicon,
-            translated_process: false,
-            content_tone_mapping_info: true,
-            metal4: false,
-        },
-        tahoe_selection: None,
-        owner_conflict: None,
-        authorization_last_transition_at: None,
-        owner_designated_requirement_hash: None,
-        executable_architecture: MacosArchitecture::AppleSilicon,
-        stream_state: Arc::from("inactive"),
-        capture_session_generation: None,
-        topology_generation: None,
-        resource_generation: None,
-        publication_plan_generation: None,
-        pixel_format: None,
-        dynamic_range: None,
-        color_space: None,
-        transfer_function: None,
-        display_scale_bits: None,
-        native_width: None,
-        native_height: None,
-        queue_depth: 8,
-        admitted_native_bytes: 0,
-        pinned_generations: None,
-        frames_received: 0,
-        frames_published: 0,
-        frames_superseded: 0,
-        frames_malformed: 0,
-        frames_dropped: Arc::from([]),
-        frames_stale: 0,
-        publication_path: Some(Arc::from("cpu")),
-        fallback_reason: None,
-        timing: MacosScreenTimingStatus::default(),
-        callback_total_ns: 0,
-        callback_max_ns: 0,
-        retain_total_ns: 0,
-        retain_max_ns: 0,
-        conversion_total_ns: 0,
-        conversion_max_ns: 0,
-        cpu_reduction_total_ns: 0,
-        cpu_reduction_max_ns: 0,
-        native_import_total_ns: 0,
-        native_import_max_ns: 0,
-        native_reduction_submit_total_ns: 0,
-        native_reduction_submit_max_ns: 0,
-        publication_total_ns: 0,
-        publication_max_ns: 0,
-    });
+    let diagnostics = SourceDiagnosticsEnvelope::try_new(
+        "fixture.backend",
+        1,
+        vec![SourceDiagnosticsDisplayField::new("mode", "Mode", "live")],
+        serde_json::json!({"private_shape": {"generation": 7}}),
+    )
+    .expect("fixture diagnostics should be bounded");
 
     writer
-        .set_platform(Some(platform.clone()))
-        .expect("platform update should succeed");
+        .set_diagnostics(Some(diagnostics.clone()))
+        .expect("diagnostics update should succeed");
     let updated = handle.snapshot();
-    assert_eq!(updated.platform.as_deref(), Some(&platform));
+    assert_eq!(updated.diagnostics.as_deref(), Some(&diagnostics));
     assert_eq!(updated.state, before.state);
     assert_eq!(
         updated.source_graph_generation,
@@ -3500,14 +4170,61 @@ fn source_platform_updates_preserve_lifecycle_and_deduplicate() {
     assert_eq!(updated.session_generation, before.session_generation);
 
     writer
-        .set_platform(Some(platform))
-        .expect("same platform status should be a no-op");
+        .set_diagnostics(Some(diagnostics))
+        .expect("same diagnostics should be a no-op");
     assert!(Arc::ptr_eq(&updated, &handle.snapshot()));
 
     writer
-        .set_platform(None)
-        .expect("platform status should clear");
-    assert!(handle.snapshot().platform.is_none());
+        .set_diagnostics(None)
+        .expect("diagnostics should clear");
+    assert!(handle.snapshot().diagnostics.is_none());
+}
+
+#[test]
+fn source_action_issue_updates_preserve_lifecycle_and_deduplicate() {
+    let (writer, handle) = test_status_writer();
+    let before = handle.snapshot();
+    let issue = SourceIssue::new("authorization_required", "authorization is required", true);
+
+    writer
+        .set_action_issue(Some(issue.clone()))
+        .expect("action issue update should succeed");
+    let updated = handle.snapshot();
+    assert_eq!(updated.action_issue.as_ref(), Some(&issue));
+    assert_eq!(updated.state, before.state);
+    assert_eq!(
+        updated.source_graph_generation,
+        before.source_graph_generation
+    );
+    assert_eq!(updated.session_generation, before.session_generation);
+
+    writer
+        .set_action_issue(Some(issue))
+        .expect("same action issue should be a no-op");
+    assert!(Arc::ptr_eq(&updated, &handle.snapshot()));
+
+    writer
+        .set_action_issue(None)
+        .expect("action issue should clear");
+    assert!(handle.snapshot().action_issue.is_none());
+}
+
+#[test]
+fn source_session_action_issue_is_generation_fenced() {
+    let (writer, handle) = test_status_writer();
+    let session = writer
+        .begin_session(1)
+        .expect("source session should start");
+    let issue = SourceIssue::new("authorization_required", "authorization is required", true);
+
+    assert!(session.set_action_issue(Some(issue.clone())));
+    assert_eq!(handle.snapshot().action_issue.as_ref(), Some(&issue));
+    assert!(session.set_action_issue(None));
+    assert!(handle.snapshot().action_issue.is_none());
+
+    writer.stop();
+    assert!(!session.set_action_issue(Some(issue)));
+    assert!(handle.snapshot().action_issue.is_none());
 }
 
 #[test]
@@ -4567,4 +5284,5 @@ fn source_status_handles_and_publishers_are_send_and_sync() {
     assert_send_sync::<hypercolor_core::input::SourceStatusWriter>();
     assert_send_sync::<hypercolor_core::input::SourceSessionWriter>();
     assert_send_sync::<hypercolor_core::input::SourceStatusSubscription>();
+    assert_send_sync::<InputManager>();
 }

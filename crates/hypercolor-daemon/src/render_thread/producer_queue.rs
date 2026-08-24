@@ -1,29 +1,14 @@
-#[cfg(feature = "servo-gpu-import")]
-use hypercolor_core::effect::ImportedEffectFrame;
-#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
-use hypercolor_core::input::screen::PlatformGpuSurfaceOwner;
-#[cfg(all(
-    feature = "wgpu",
-    any(
-        target_os = "windows",
-        all(target_os = "macos", feature = "screen-capture")
-    )
-))]
+#[cfg(feature = "wgpu")]
 use hypercolor_core::input::screen::ScreenResourceLifetime;
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::implementer::{
     CapturePixelFormat, ScreenBranchPayload, ScreenBranchPublication, ScreenSurfacePayload,
 };
-#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
-use hypercolor_macos_capture::MacosCaptureFrame;
-#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
-use hypercolor_macos_gpu_interop::ImportedMacosScreenFrame;
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_gpu_frame::ImportedEffectFrame;
 use hypercolor_types::canvas::{Canvas, PublishedSurface};
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
-use hypercolor_windows_gpu_interop::ScreenTextureCopy;
-#[cfg(all(
-    feature = "wgpu",
-    any(test, all(target_os = "macos", feature = "screen-capture"))
-))]
+#[cfg(feature = "wgpu")]
+use std::any::Any;
+#[cfg(feature = "wgpu")]
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,19 +17,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///
 /// The compositor retires entries in queue order because wgpu submissions on
 /// one queue complete in that same order.
-#[cfg(all(
-    feature = "wgpu",
-    any(test, all(target_os = "macos", feature = "screen-capture"))
-))]
+#[cfg(feature = "wgpu")]
 #[derive(Debug)]
 pub(crate) struct SubmissionRetirementQueue<K, T> {
     entries: VecDeque<(K, Vec<T>)>,
 }
 
-#[cfg(all(
-    feature = "wgpu",
-    any(test, all(target_os = "macos", feature = "screen-capture"))
-))]
+#[cfg(feature = "wgpu")]
 impl<K, T> Default for SubmissionRetirementQueue<K, T> {
     fn default() -> Self {
         Self {
@@ -53,10 +32,7 @@ impl<K, T> Default for SubmissionRetirementQueue<K, T> {
     }
 }
 
-#[cfg(all(
-    feature = "wgpu",
-    any(test, all(target_os = "macos", feature = "screen-capture"))
-))]
+#[cfg(feature = "wgpu")]
 impl<K, T> SubmissionRetirementQueue<K, T> {
     pub(crate) fn retire(&mut self, submission: K, values: Vec<T>) {
         if !values.is_empty() {
@@ -103,123 +79,113 @@ pub(crate) struct GpuTextureFrame {
         reason = "the Arc value is retained for its lifetime rather than read in production"
     )]
     pub(crate) immutable_lease: Option<Arc<GpuTextureFrameLease>>,
-    #[cfg(target_os = "windows")]
-    pub(crate) windows_screen_lease: Option<WindowsScreenTextureLease>,
-    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-    pub(crate) macos_screen_lease: Option<MacosScreenTextureLease>,
+    pub(crate) native_screen_lease: Option<NativeScreenTextureLease>,
 }
 
 #[cfg(feature = "wgpu")]
 #[derive(Debug)]
 pub(crate) struct GpuTextureFrameLease;
 
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
-#[derive(Debug, Clone)]
-pub(crate) struct WindowsScreenTextureLease {
-    _copy: ScreenTextureCopy,
-    target_lifetime: ScreenResourceLifetime,
-    _capture_lifetime: ScreenResourceLifetime,
+/// How much of a native screen lease a cached bind group must keep alive.
+///
+/// Backends whose imported texture stays valid for as long as the target
+/// allocation lives (DXGI copies into a daemon-owned texture) retain only
+/// the target lifetime. Backends whose texture aliases a native surface
+/// (IOSurface imports) retain the whole lease, owner included.
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeScreenCacheRetention {
+    #[allow(
+        dead_code,
+        reason = "selected by screen bridges whose copies land in daemon-owned textures"
+    )]
+    TargetLifetime,
+    #[allow(
+        dead_code,
+        reason = "selected by screen bridges whose textures alias native surfaces"
+    )]
+    FullLease,
 }
 
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
-impl WindowsScreenTextureLease {
-    pub(crate) fn new(
-        copy: ScreenTextureCopy,
-        target_lifetime: ScreenResourceLifetime,
-        capture_lifetime: ScreenResourceLifetime,
-    ) -> Self {
-        Self {
-            _copy: copy,
-            target_lifetime,
-            _capture_lifetime: capture_lifetime,
-        }
-    }
-}
-#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
+/// Platform resources a native screen texture must outlive.
+///
+/// The owner is opaque: each screen bridge packs whatever native handles,
+/// imported frames, and surface owners its texture aliases, and the
+/// compositor only clones and drops the lease in submission order.
+#[cfg(feature = "wgpu")]
 #[derive(Clone)]
-pub(crate) struct MacosScreenTextureLease {
-    _imported: ImportedMacosScreenFrame,
-    _capture_owner: PlatformGpuSurfaceOwner<MacosCaptureFrame>,
-    _target_owner: PlatformGpuSurfaceOwner<
-        crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
-    >,
-    _target_lifetime: ScreenResourceLifetime,
-    _shared_target_lifetime: Option<ScreenResourceLifetime>,
-    _capture_lifetime: ScreenResourceLifetime,
+pub(crate) struct NativeScreenTextureLease {
+    owner: Arc<dyn Any + Send + Sync>,
+    target_lifetime: ScreenResourceLifetime,
+    cache_retention: NativeScreenCacheRetention,
 }
 
-#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
-impl MacosScreenTextureLease {
+#[cfg(feature = "wgpu")]
+impl NativeScreenTextureLease {
+    #[allow(
+        dead_code,
+        reason = "constructed by the platform screen bridges; targets without one carry the seam unused"
+    )]
     pub(crate) fn new(
-        imported: ImportedMacosScreenFrame,
-        capture_owner: PlatformGpuSurfaceOwner<MacosCaptureFrame>,
-        target_owner: PlatformGpuSurfaceOwner<
-            crate::render_thread::sparkleflinger::gpu::PreparedMacosScreenTarget,
-        >,
+        owner: impl Any + Send + Sync,
         target_lifetime: ScreenResourceLifetime,
-        shared_target_lifetime: Option<ScreenResourceLifetime>,
-        capture_lifetime: ScreenResourceLifetime,
+        cache_retention: NativeScreenCacheRetention,
     ) -> Self {
         Self {
-            _imported: imported,
-            _capture_owner: capture_owner,
-            _target_owner: target_owner,
-            _target_lifetime: target_lifetime,
-            _shared_target_lifetime: shared_target_lifetime,
-            _capture_lifetime: capture_lifetime,
+            owner: Arc::new(owner),
+            target_lifetime,
+            cache_retention,
+        }
+    }
+
+    fn cache_lease(&self) -> NativeScreenCacheLease {
+        NativeScreenCacheLease {
+            _owner: match self.cache_retention {
+                NativeScreenCacheRetention::TargetLifetime => None,
+                NativeScreenCacheRetention::FullLease => Some(Arc::clone(&self.owner)),
+            },
+            _target_lifetime: self.target_lifetime.clone(),
         }
     }
 }
-#[cfg(all(feature = "wgpu", target_os = "macos", feature = "screen-capture"))]
-impl std::fmt::Debug for MacosScreenTextureLease {
+
+#[cfg(feature = "wgpu")]
+impl std::fmt::Debug for NativeScreenTextureLease {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("MacosScreenTextureLease")
+            .debug_struct("NativeScreenTextureLease")
+            .field("cache_retention", &self.cache_retention)
             .finish_non_exhaustive()
     }
 }
 
-#[cfg(all(
-    feature = "wgpu",
-    any(
-        target_os = "windows",
-        all(target_os = "macos", feature = "screen-capture")
-    )
-))]
-#[derive(Debug, Clone)]
+/// The slice of a native screen lease a cached bind group retains.
+#[cfg(feature = "wgpu")]
+#[derive(Clone)]
 #[allow(
     dead_code,
     reason = "cache lease payloads are retained for ownership rather than inspected"
 )]
-pub(crate) enum NativeScreenCacheLease {
-    #[cfg(target_os = "windows")]
-    Windows(ScreenResourceLifetime),
-    #[cfg(target_os = "macos")]
-    Macos(MacosScreenTextureLease),
+pub(crate) struct NativeScreenCacheLease {
+    _owner: Option<Arc<dyn Any + Send + Sync>>,
+    _target_lifetime: ScreenResourceLifetime,
 }
 
-#[cfg(all(
-    feature = "wgpu",
-    any(
-        target_os = "windows",
-        all(target_os = "macos", feature = "screen-capture")
-    )
-))]
+#[cfg(feature = "wgpu")]
+impl std::fmt::Debug for NativeScreenCacheLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeScreenCacheLease")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "wgpu")]
 impl GpuTextureFrame {
     pub(crate) fn native_screen_cache_lease(&self) -> Option<NativeScreenCacheLease> {
-        #[cfg(target_os = "windows")]
-        {
-            self.windows_screen_lease
-                .as_ref()
-                .map(|lease| NativeScreenCacheLease::Windows(lease.target_lifetime.clone()))
-        }
-        #[cfg(target_os = "macos")]
-        {
-            self.macos_screen_lease
-                .as_ref()
-                .cloned()
-                .map(NativeScreenCacheLease::Macos)
-        }
+        self.native_screen_lease
+            .as_ref()
+            .map(NativeScreenTextureLease::cache_lease)
     }
 }
 
@@ -257,17 +223,32 @@ pub(crate) enum ProducerFrame {
 #[derive(Debug, Clone)]
 pub(crate) struct ScreenPublicationFrame {
     publication: Arc<ScreenBranchPublication>,
+    /// CPU surface materialized once per publication. Its storage identity
+    /// is what lets a retained publication reuse preview and canvas
+    /// publications instead of republishing a fresh copy every frame.
+    surface: PublishedSurface,
 }
 
 impl ScreenPublicationFrame {
     fn try_new(publication: Arc<ScreenBranchPublication>) -> Option<Self> {
-        let ScreenBranchPayload::Surface(surface) = publication.payload() else {
+        let ScreenBranchPayload::Surface(payload) = publication.payload() else {
             return None;
         };
-        if surface.pixel_format() != CapturePixelFormat::Rgba8 {
+        if payload.pixel_format() != CapturePixelFormat::Rgba8 {
             return None;
         }
-        Some(Self { publication })
+        let extent = payload.extent();
+        let canvas = Canvas::from_rgba(payload.pixels(), extent.width(), extent.height());
+        let surface = PublishedSurface::from_owned_canvas(canvas, 0, 0);
+        Some(Self {
+            publication,
+            surface,
+        })
+    }
+
+    /// The publication's pixels as a stable CPU surface.
+    pub(crate) const fn published_surface(&self) -> &PublishedSurface {
+        &self.surface
     }
 
     pub(crate) fn surface(&self) -> ScreenSurfacePayload<'_> {
@@ -391,10 +372,8 @@ impl ProducerFrame {
                 Some((Canvas::from_published_surface(&surface), Some(surface)))
             }
             Self::ScreenPublication(publication) => {
-                let surface = publication.surface();
-                let mut canvas = Canvas::new(surface.extent().width(), surface.extent().height());
-                canvas.as_rgba_bytes_mut().copy_from_slice(surface.pixels());
-                Some((canvas, None))
+                let surface = publication.published_surface().clone();
+                Some((Canvas::from_published_surface(&surface), Some(surface)))
             }
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(frame) => {
@@ -431,7 +410,8 @@ impl ProducerFrame {
             (Self::Gpu(left), Self::Gpu(right)) => {
                 left.width == right.width
                     && left.height == right.height
-                    && left.storage_id == right.storage_id
+                    && left.allocation_id == right.allocation_id
+                    && left.content_generation == right.content_generation
             }
             #[cfg(feature = "wgpu")]
             (Self::GpuTexture(left), Self::GpuTexture(right)) => {
@@ -516,16 +496,7 @@ impl ProducerQueue {
         self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 
-    #[cfg(any(
-        test,
-        all(
-            feature = "wgpu",
-            any(
-                target_os = "windows",
-                all(target_os = "macos", feature = "screen-capture")
-            )
-        )
-    ))]
+    #[cfg(any(test, feature = "wgpu"))]
     pub(crate) const fn has_latest(&self) -> bool {
         self.latest.is_some()
     }

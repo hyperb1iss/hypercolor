@@ -38,6 +38,30 @@ pub(crate) enum GpuBackendPreference {
     VulkanRequiredForServoImport,
 }
 
+impl GpuBackendPreference {
+    /// The backend policy startup applies for one Servo GPU import mode.
+    ///
+    /// Windows defaults to DX12 for native screen interop and only moves
+    /// to Vulkan when Servo GPU import is forced on, because that import
+    /// path needs Vulkan external memory. Every other platform lets wgpu
+    /// choose.
+    #[must_use]
+    pub(crate) const fn for_servo_gpu_import_mode(
+        servo_gpu_import_mode: hypercolor_types::config::ServoGpuImportMode,
+    ) -> Self {
+        #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
+        if matches!(
+            servo_gpu_import_mode,
+            hypercolor_types::config::ServoGpuImportMode::On
+        ) {
+            return Self::VulkanRequiredForServoImport;
+        }
+
+        let _ = servo_gpu_import_mode;
+        Self::Default
+    }
+}
+
 impl GpuRenderDevice {
     pub(crate) fn new_with_backend_preference(
         label: &'static str,
@@ -124,14 +148,31 @@ impl GpuRenderDevice {
         })
     }
 
-    #[cfg(all(test, target_os = "windows"))]
-    pub(crate) fn new_dx12_required(label: &'static str) -> Result<Self> {
+    /// The backend a mandatory GPU test must land on for this platform.
+    ///
+    /// Windows GPU tests exist to exercise the DX12 path that production
+    /// uses; every other platform accepts whichever backend wgpu selects.
+    #[cfg(test)]
+    pub(crate) const fn required_test_backend() -> Option<wgpu::Backend> {
+        if cfg!(target_os = "windows") {
+            Some(wgpu::Backend::Dx12)
+        } else {
+            None
+        }
+    }
+
+    /// Open the default device and insist on the platform's required
+    /// test backend when one exists.
+    #[cfg(test)]
+    pub(crate) fn new_required_for_test(label: &'static str) -> Result<Self> {
         let render_device =
             Self::new_with_backend_preference(label, GpuBackendPreference::Default)?;
-        anyhow::ensure!(
-            render_device.info().backend == wgpu::Backend::Dx12,
-            "required DX12 GPU test selected a different backend"
-        );
+        if let Some(required) = Self::required_test_backend() {
+            anyhow::ensure!(
+                render_device.info().backend == required,
+                "required {required:?} GPU test selected a different backend"
+            );
+        }
         Ok(render_device)
     }
 
@@ -372,8 +413,12 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_default_backend_is_dx12_for_native_screen_interop() {
+        let preference = GpuBackendPreference::for_servo_gpu_import_mode(
+            hypercolor_types::config::ServoGpuImportMode::Auto,
+        );
+        assert_eq!(preference, GpuBackendPreference::Default);
         assert_eq!(
-            windows_backends_for_preference(GpuBackendPreference::Default),
+            windows_backends_for_preference(preference),
             wgpu::Backends::DX12
         );
     }
@@ -381,8 +426,15 @@ mod tests {
     #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
     #[test]
     fn windows_servo_import_keeps_its_explicit_vulkan_override() {
+        let preference = GpuBackendPreference::for_servo_gpu_import_mode(
+            hypercolor_types::config::ServoGpuImportMode::On,
+        );
         assert_eq!(
-            windows_backends_for_preference(GpuBackendPreference::VulkanRequiredForServoImport),
+            preference,
+            GpuBackendPreference::VulkanRequiredForServoImport
+        );
+        assert_eq!(
+            windows_backends_for_preference(preference),
             wgpu::Backends::VULKAN
         );
     }

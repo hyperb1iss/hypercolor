@@ -1,14 +1,17 @@
 //! Descriptor registration for Corsair Lighting Node devices.
 
+use std::sync::LazyLock;
+
 use hypercolor_types::device::DeviceFamily;
 
 use crate::drivers::corsair::CORSAIR_VID;
-#[cfg(windows)]
 use crate::drivers::corsair::framing::LN_WRITE_BUF_SIZE;
 use crate::protocol::Protocol;
-#[cfg(windows)]
 use crate::registry::HidRawReportMode;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, ProtocolBinding};
+use crate::transport::{
+    HidAccessMode, HidTransportIntent, TransportIntent, resolve_current_transport,
+};
 
 use super::protocol::CorsairLightingNodeProtocol;
 
@@ -66,22 +69,16 @@ pub fn build_spec_omega_rgb_protocol() -> Box<dyn Protocol> {
     build_protocol("Corsair SPEC OMEGA RGB", 2)
 }
 
-#[cfg(windows)]
-const fn corsair_lighting_node_transport() -> TransportType {
-    TransportType::UsbHidApi {
-        interface: Some(0),
+const CORSAIR_LIGHTING_NODE_TRANSPORT_INTENT: TransportIntent =
+    TransportIntent::Hid(HidTransportIntent {
+        access: HidAccessMode::Direct,
+        interface: 0,
         report_id: 0x00,
         report_mode: HidRawReportMode::OutputReportWithReportId,
         max_report_len: LN_WRITE_BUF_SIZE,
         usage_page: None,
         usage: None,
-    }
-}
-
-#[cfg(not(windows))]
-const fn corsair_lighting_node_transport() -> TransportType {
-    TransportType::UsbHid { interface: 0 }
-}
+    });
 
 macro_rules! lighting_node_descriptor {
     (
@@ -96,7 +93,8 @@ macro_rules! lighting_node_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::new_static("corsair", "Corsair"),
-            transport: corsair_lighting_node_transport(),
+            transport: resolve_current_transport(CORSAIR_LIGHTING_NODE_TRANSPORT_INTENT)
+                .expect("Corsair Lighting Node HID transport should support the current platform"),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,
@@ -106,60 +104,62 @@ macro_rules! lighting_node_descriptor {
     };
 }
 
-static LIGHTING_NODE_DESCRIPTORS: &[DeviceDescriptor] = &[
-    lighting_node_descriptor!(
-        pid: PID_LIGHTING_NODE_CORE,
-        name: "Corsair Lighting Node Core",
-        protocol_id: "corsair/lighting-node-core",
-        channels: 1,
-        builder: build_lighting_node_core_protocol
-    ),
-    lighting_node_descriptor!(
-        pid: PID_LIGHTING_NODE_PRO,
-        name: "Corsair Lighting Node Pro",
-        protocol_id: "corsair/lighting-node-pro",
-        channels: 2,
-        builder: build_lighting_node_pro_protocol
-    ),
-    lighting_node_descriptor!(
-        pid: PID_COMMANDER_PRO,
-        name: "Corsair Commander Pro",
-        protocol_id: "corsair/commander-pro",
-        channels: 2,
-        builder: build_commander_pro_protocol
-    ),
-    lighting_node_descriptor!(
-        pid: PID_LS100_STARTER_KIT,
-        name: "Corsair LS100 Starter Kit",
-        protocol_id: "corsair/ls100-starter-kit",
-        channels: 1,
-        builder: build_ls100_starter_kit_protocol
-    ),
-    lighting_node_descriptor!(
-        pid: PID_LT100_TOWER,
-        name: "Corsair LT100 Tower",
-        protocol_id: "corsair/lt100-tower",
-        channels: 2,
-        builder: build_lt100_tower_protocol
-    ),
-    lighting_node_descriptor!(
-        pid: PID_1000D_OBSIDIAN,
-        name: "Corsair 1000D Obsidian",
-        protocol_id: "corsair/1000d-obsidian",
-        channels: 2,
-        builder: build_1000d_obsidian_protocol
-    ),
-    lighting_node_descriptor!(
-        pid: PID_SPEC_OMEGA_RGB,
-        name: "Corsair SPEC OMEGA RGB",
-        protocol_id: "corsair/spec-omega-rgb",
-        channels: 2,
-        builder: build_spec_omega_rgb_protocol
-    ),
-];
+static LIGHTING_NODE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
+    vec![
+        lighting_node_descriptor!(
+            pid: PID_LIGHTING_NODE_CORE,
+            name: "Corsair Lighting Node Core",
+            protocol_id: "corsair/lighting-node-core",
+            channels: 1,
+            builder: build_lighting_node_core_protocol
+        ),
+        lighting_node_descriptor!(
+            pid: PID_LIGHTING_NODE_PRO,
+            name: "Corsair Lighting Node Pro",
+            protocol_id: "corsair/lighting-node-pro",
+            channels: 2,
+            builder: build_lighting_node_pro_protocol
+        ),
+        lighting_node_descriptor!(
+            pid: PID_COMMANDER_PRO,
+            name: "Corsair Commander Pro",
+            protocol_id: "corsair/commander-pro",
+            channels: 2,
+            builder: build_commander_pro_protocol
+        ),
+        lighting_node_descriptor!(
+            pid: PID_LS100_STARTER_KIT,
+            name: "Corsair LS100 Starter Kit",
+            protocol_id: "corsair/ls100-starter-kit",
+            channels: 1,
+            builder: build_ls100_starter_kit_protocol
+        ),
+        lighting_node_descriptor!(
+            pid: PID_LT100_TOWER,
+            name: "Corsair LT100 Tower",
+            protocol_id: "corsair/lt100-tower",
+            channels: 2,
+            builder: build_lt100_tower_protocol
+        ),
+        lighting_node_descriptor!(
+            pid: PID_1000D_OBSIDIAN,
+            name: "Corsair 1000D Obsidian",
+            protocol_id: "corsair/1000d-obsidian",
+            channels: 2,
+            builder: build_1000d_obsidian_protocol
+        ),
+        lighting_node_descriptor!(
+            pid: PID_SPEC_OMEGA_RGB,
+            name: "Corsair SPEC OMEGA RGB",
+            protocol_id: "corsair/spec-omega-rgb",
+            channels: 2,
+            builder: build_spec_omega_rgb_protocol
+        ),
+    ]
+});
 
 /// Static Lighting Node descriptors for HAL registration.
 #[must_use]
 pub fn descriptors() -> &'static [DeviceDescriptor] {
-    LIGHTING_NODE_DESCRIPTORS
+    LIGHTING_NODE_DESCRIPTORS.as_slice()
 }

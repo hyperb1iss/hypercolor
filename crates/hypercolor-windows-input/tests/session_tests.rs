@@ -50,7 +50,7 @@ fn test_config(keyboard: bool, mouse: bool) -> RawInputConfig {
         keyboard,
         mouse,
         clock: Arc::new(|| 0),
-        epoch: 1,
+        session_generation: 1,
     }
 }
 
@@ -154,7 +154,7 @@ fn arrivals_for_already_attached_devices_land_before_readiness() {
             .filter(|event| {
                 matches!(
                     event,
-                    hypercolor_windows_input::RawInputEvent::DeviceArrived { .. }
+                    hypercolor_types::host_input::HostInputEvent::DeviceArrived { .. }
                 )
             })
             .count();
@@ -244,22 +244,42 @@ fn the_clock_callback_is_only_read_on_the_pump() {
         clock: Arc::new(move || {
             u64::try_from(counter.fetch_add(1, Ordering::AcqRel)).unwrap_or(u64::MAX)
         }),
-        epoch: 42,
+        session_generation: 42,
     };
 
     let mut session = RawInputSession::start(config, move |batch| {
         if let Ok(mut guard) = seen.lock() {
-            guard.push((batch.at_ms, batch.epoch));
+            guard.push(batch.at_ms);
         }
     })
     .expect("session starts");
     session.stop();
 
+    // Every delivered stamp is one of the counter's outputs, and reads stop
+    // with the pump. Empty drains legitimately read the clock without
+    // delivering a batch, so the counts need not match one to one.
+    let reads = calls.load(Ordering::Acquire);
     if let Ok(guard) = stamps.lock() {
-        for (_, epoch) in guard.iter() {
-            assert_eq!(*epoch, 42, "every batch echoes the epoch core allocated");
+        assert!(
+            guard.len() <= reads,
+            "batches ({}) cannot outnumber clock reads ({reads})",
+            guard.len()
+        );
+        for stamp in guard.iter() {
+            assert!(
+                *stamp < u64::try_from(reads).unwrap_or(u64::MAX),
+                "stamp {stamp} was not produced by the pump's clock"
+            );
+        }
+        for pair in guard.windows(2) {
+            assert!(pair[0] < pair[1], "stamps advance with the pump's drains");
         }
     }
+    assert_eq!(
+        calls.load(Ordering::Acquire),
+        reads,
+        "no clock reads may happen after the pump stopped"
+    );
 }
 
 #[test]

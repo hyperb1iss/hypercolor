@@ -4,21 +4,25 @@ use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CpuCaptureStorage, CpuReductionBatchJob, CpuReductionBatchReport,
-    CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSamplingPoint,
-    CpuSamplingView, InputPublicationDemandRevision, KnownCaptureColorimetry, PhysicalOrigin,
-    PixelExtent, PixelRect, PreparedCpuReductionBatch, RawCaptureSurface,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, PixelExtent, PixelRect,
+};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureFrame, CaptureFrameMetadata,
+    CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureStorage, CpuCaptureStorage,
+    CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionExecutor, CpuReductionLayout,
+    CpuReductionRequest, CpuSamplingPoint, CpuSamplingView, KnownCaptureColorimetry,
+    PhysicalOrigin, PreparedCpuReductionBatch, RawCaptureSurface, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationExecutorRequest, ScreenPublicationKind,
     ScreenPublicationRequest, ScreenRational, ScreenReductionFilter, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy, SourceScale,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 
 fn extent(width: u32, height: u32) -> PixelExtent {
@@ -125,7 +129,6 @@ fn prepare(
     let preparing = builder
         .prepare(
             [demand],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -294,6 +297,10 @@ fn every_rotation_reflection_and_filter_preserves_native_texels() {
         CaptureRotation::Clockwise90,
         CaptureRotation::Clockwise180,
         CaptureRotation::Clockwise270,
+        CaptureRotation::Flipped,
+        CaptureRotation::Flipped90,
+        CaptureRotation::Flipped180,
+        CaptureRotation::Flipped270,
     ] {
         let logical = rotation.apply_to_extent(native);
         for reflection in [

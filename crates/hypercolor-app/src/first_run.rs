@@ -22,7 +22,7 @@ const MARKER_FILE_NAME: &str = "first-run-complete";
 /// who genuinely haven't seen it.
 #[must_use]
 pub fn is_pending() -> bool {
-    !marker_path().is_some_and(|path| path.is_file())
+    !marker_path().is_file()
 }
 
 /// Persist that the wizard has been completed. Idempotent.
@@ -33,7 +33,7 @@ pub fn is_pending() -> bool {
 /// the marker directory cannot be created, or the marker file cannot
 /// be written.
 pub fn mark_complete() -> Result<()> {
-    let path = marker_path().context("LOCALAPPDATA / app data directory is unavailable")?;
+    let path = marker_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
@@ -51,7 +51,7 @@ pub fn mark_complete() -> Result<()> {
 /// or when removing an existing marker file fails for a reason other
 /// than "not found".
 pub fn reset() -> Result<()> {
-    let path = marker_path().context("LOCALAPPDATA / app data directory is unavailable")?;
+    let path = marker_path();
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -59,8 +59,8 @@ pub fn reset() -> Result<()> {
     }
 }
 
-fn marker_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|dir| dir.join("hypercolor").join(MARKER_FILE_NAME))
+fn marker_path() -> PathBuf {
+    hypercolor_core::config::paths::data_dir().join(MARKER_FILE_NAME)
 }
 
 /// Tauri command: returns true when the welcome overlay should show.
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn marker_path_lives_under_hypercolor_appdata_dir() {
-        let path = marker_path().expect("marker path");
+        let path = marker_path();
         let display = path.display().to_string();
         assert!(
             display.contains("hypercolor"),
@@ -108,7 +108,7 @@ mod tests {
         // Probe the real marker path; if it happens to exist (because
         // the dev machine has run the app), skip this test rather than
         // delete it. This test is about the absent-file branch.
-        let path = marker_path().expect("marker path");
+        let path = marker_path();
         if path.is_file() {
             return;
         }

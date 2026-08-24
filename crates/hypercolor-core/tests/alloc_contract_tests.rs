@@ -7,6 +7,7 @@ use std::{
     alloc::System,
     collections::HashMap,
     hint::black_box,
+    marker::PhantomData,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -15,19 +16,24 @@ use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_buil
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::audio::realtime::{AudioFrameRing, PushStats, push_frames};
 use hypercolor_core::input::routing::{
-    ConsumerIncarnation, InteractionRouteContext, InteractionRouteRequest, InteractionRouteSource,
-    InteractionRouter, RoutedInteraction,
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouteRequest, InteractionRouter,
+    RoutedInteraction,
 };
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::CaptureRotation;
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, ScreenCaptureInput, TemporalSmoother,
+};
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::wayland::{
     DoubleBuffer, SpaChunkView, SpaVideoFormat, decode_chunk,
 };
-use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput, TemporalSmoother};
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, InteractionBatch, InteractionData, MotionAggregate,
-    ScreenData, SourceKind, SourceSessionWriter, SourceStatusHandle, SourceStatusWriter,
+    AudioSource, AudioSourceRole, BrowserInputHandle, BrowserInputRegistrySnapshot, InputData,
+    InputGraphSnapshot, InputManager, InputSource, InteractionBatch, InteractionData,
+    InteractionSource, InteractionSourceRole, ManagedSourceRole, MotionAggregate, ScreenData,
+    ScreenSource, ScreenSourceRole, SourceKind, SourceRoleBinding, SourceSessionWriter,
+    SourceStatusHandle, SourceStatusWriter,
 };
 use hypercolor_types::audio::{AudioData, AudioPipelineConfig};
 use hypercolor_types::control::ControlValue;
@@ -39,6 +45,12 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, Region, Stats, StatsAlloc};
 
 #[cfg_attr(not(feature = "servo"), global_allocator)]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("allocation fixture source should match its declared role");
+}
 
 fn allocation_control() -> (Stats, Stats) {
     let mut region = Region::new(GLOBAL);
@@ -335,23 +347,23 @@ fn steady_availability_control() -> (Stats, Stats) {
     )
 }
 
-struct SharedSampleSource {
-    kind: SourceKind,
+struct SharedSampleSource<R> {
     sample: Arc<InputData>,
     running: bool,
+    role: PhantomData<R>,
 }
 
-impl SharedSampleSource {
-    fn new(kind: SourceKind, sample: InputData) -> Self {
+impl<R> SharedSampleSource<R> {
+    fn new(sample: InputData) -> Self {
         Self {
-            kind,
             sample: Arc::new(sample),
             running: false,
+            role: PhantomData,
         }
     }
 }
 
-impl InputSource for SharedSampleSource {
+impl<R: Send> InputSource for SharedSampleSource<R> {
     fn name(&self) -> &'static str {
         "shared-allocation-sample"
     }
@@ -380,19 +392,25 @@ impl InputSource for SharedSampleSource {
     fn is_running(&self) -> bool {
         self.running
     }
-
-    fn is_audio_source(&self) -> bool {
-        self.kind == SourceKind::Audio
-    }
-
-    fn is_screen_source(&self) -> bool {
-        self.kind == SourceKind::Screen
-    }
-
-    fn is_interaction_source(&self) -> bool {
-        self.kind == SourceKind::Interaction
-    }
 }
+
+impl SourceRoleBinding for SharedSampleSource<AudioSourceRole> {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for SharedSampleSource<AudioSourceRole> {}
+
+impl SourceRoleBinding for SharedSampleSource<ScreenSourceRole> {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for SharedSampleSource<ScreenSourceRole> {}
+
+impl SourceRoleBinding for SharedSampleSource<InteractionSourceRole> {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for SharedSampleSource<InteractionSourceRole> {}
 
 fn manager_sample_round(manager: &mut InputManager) -> Stats {
     let mut region = Region::new(GLOBAL);
@@ -405,18 +423,24 @@ fn manager_sample_round(manager: &mut InputManager) -> Stats {
 
 fn steady_manager_sampling_control() -> (Stats, Stats) {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(SharedSampleSource::new(
-        SourceKind::Audio,
-        InputData::Audio(AudioData::silence()),
-    )));
-    manager.add_source(Box::new(SharedSampleSource::new(
-        SourceKind::Screen,
-        InputData::Screen(ScreenData::from_zones(Vec::new(), 0, 0)),
-    )));
-    manager.add_source(Box::new(SharedSampleSource::new(
-        SourceKind::Interaction,
-        InputData::Interaction(InteractionData::default()),
-    )));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::audio(Box::new(SharedSampleSource::<AudioSourceRole>::new(
+            InputData::Audio(AudioData::silence()),
+        ))),
+    );
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::screen(Box::new(SharedSampleSource::<ScreenSourceRole>::new(
+            InputData::Screen(ScreenData::from_zones(Vec::new(), 0, 0)),
+        ))),
+    );
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::interaction(Box::new(SharedSampleSource::<InteractionSourceRole>::new(
+            InputData::Interaction(InteractionData::default()),
+        ))),
+    );
     manager
         .start_all()
         .expect("allocation sources should start");
@@ -445,14 +469,18 @@ fn typed_manager_sample_round(
 
 fn steady_typed_manager_sampling_control() -> (Stats, Stats) {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(SharedSampleSource::new(
-        SourceKind::Audio,
-        InputData::Audio(AudioData::silence()),
-    )));
-    manager.add_source(Box::new(SharedSampleSource::new(
-        SourceKind::Interaction,
-        InputData::Interaction(InteractionData::default()),
-    )));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::audio(Box::new(SharedSampleSource::<AudioSourceRole>::new(
+            InputData::Audio(AudioData::silence()),
+        ))),
+    );
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::interaction(Box::new(SharedSampleSource::<InteractionSourceRole>::new(
+            InputData::Interaction(InteractionData::default()),
+        ))),
+    );
     manager
         .start_all()
         .expect("typed allocation sources should start");
@@ -470,7 +498,10 @@ fn steady_typed_manager_sampling_control() -> (Stats, Stats) {
 
 fn steady_audio_manager_sampling_control() -> (Stats, Stats) {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(AudioInput::new(&AudioPipelineConfig::default())));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::audio(Box::new(AudioInput::new(&AudioPipelineConfig::default()))),
+    );
     manager
         .start_all()
         .expect("manual audio source should start");
@@ -483,21 +514,28 @@ fn steady_audio_manager_sampling_control() -> (Stats, Stats) {
 
 fn router_resolution_round(
     manager: &mut InputManager,
+    catalog: &mut InteractionRouteCatalog,
     router: &mut InteractionRouter,
     consumer: ConsumerIncarnation,
-    sources: &[InteractionRouteSource],
-    context: InteractionRouteContext,
+    graph: &InputGraphSnapshot,
+    browser: &BrowserInputRegistrySnapshot,
     output: &mut RoutedInteraction,
 ) -> Stats {
     let mut region = Region::new(GLOBAL);
     region.reset();
     for _ in 0..128 {
         black_box(&mut *manager).sample_sources(1.0 / 60.0);
-        black_box(&mut *router).resolve_into(
+        black_box(&mut *catalog).refresh(
+            black_box(graph),
+            black_box(browser),
+            black_box(Instant::now()),
+        );
+        black_box(&mut *catalog).resolve_into(
+            black_box(&mut *router),
             black_box(consumer),
             InteractionRouteRequest::host(),
-            black_box(sources),
-            black_box(context),
+            0,
+            0,
             black_box(&mut *output),
         );
     }
@@ -506,63 +544,62 @@ fn router_resolution_round(
 
 fn steady_router_resolution_control() -> (Stats, Stats) {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(SharedSampleSource::new(
-        SourceKind::Interaction,
-        InputData::Interaction(InteractionData {
-            batch: InteractionBatch {
-                motion: MotionAggregate {
-                    dx: 0.25,
-                    dy: -0.125,
-                    distance: 0.375,
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::interaction(Box::new(SharedSampleSource::<InteractionSourceRole>::new(
+            InputData::Interaction(InteractionData {
+                batch: InteractionBatch {
+                    motion: MotionAggregate {
+                        dx: 0.25,
+                        dy: -0.125,
+                        distance: 0.375,
+                    },
+                    window_secs: 1.0 / 60.0,
+                    ..InteractionBatch::default()
                 },
-                window_secs: 1.0 / 60.0,
-                ..InteractionBatch::default()
-            },
-            ..InteractionData::default()
-        }),
-    )));
+                ..InteractionData::default()
+            }),
+        ))),
+    );
+    let browser_source = BrowserInputHandle::new();
+    let browser_registry = browser_source.registry();
     manager
         .start_all()
         .expect("allocation interaction source should start");
     manager.sample_sources(1.0 / 60.0);
     let graph = manager.input_graph_handle().snapshot();
-    let sources = graph
-        .slots()
-        .iter()
-        .filter_map(|slot| {
-            InteractionRouteSource::manager_slot("allocation-interaction", 1, slot.clone())
-        })
-        .collect::<Vec<_>>();
+    let browser = browser_registry.snapshot();
     let consumer = ConsumerIncarnation::new(1);
-    let context = InteractionRouteContext {
-        source_graph_generation: graph.generation(),
-        ..InteractionRouteContext::default()
-    };
+    let mut catalog = InteractionRouteCatalog::default();
+    catalog.refresh(&graph, &browser, Instant::now());
     let mut router = InteractionRouter::default();
     let mut output = RoutedInteraction::new(consumer);
-    router.resolve_into(
+    catalog.resolve_into(
+        &mut router,
         consumer,
         InteractionRouteRequest::host(),
-        &sources,
-        context,
+        0,
+        0,
         &mut output,
     );
 
     let first = router_resolution_round(
         &mut manager,
+        &mut catalog,
         &mut router,
         consumer,
-        &sources,
-        context,
+        &graph,
+        &browser,
         &mut output,
     );
     assert_eq!(output.interaction.batch.motion.dx, 0.25);
     let second = router_resolution_round(
         &mut manager,
+        &mut catalog,
         &mut router,
         consumer,
-        &sources,
-        context,
+        &graph,
+        &browser,
         &mut output,
     );
     assert_eq!(output.interaction.batch.motion.dx, 0.25);
@@ -580,23 +617,28 @@ fn audio_input_construction_round(config: &AudioPipelineConfig) -> Stats {
 
 fn prepared_audio_commit_round(config: &AudioPipelineConfig) -> Stats {
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(AudioInput::new(config)));
+    register_test_source(
+        &mut manager,
+        ManagedSourceRole::audio(Box::new(AudioInput::new(config))),
+    );
     manager
         .start_all()
         .expect("manual audio source should start");
-    let mut prepared = manager
+    let prepared = manager
         .plan_audio_runtime_config(false, config, "prepared-audio", false)
         .expect("manual audio source should support preparation")
         .prepare()
         .expect("disabled audio preparation should stay local");
+    let mut prepared = prepared.into_source_swap();
 
     let mut region = Region::new(GLOBAL);
     region.reset();
     let retirement = black_box(&mut manager)
-        .commit_audio_runtime_config(black_box(&mut prepared))
+        .commit_source_swap(black_box(&mut prepared))
         .expect("prepared audio state should commit");
     black_box(&retirement);
     let stats = region.change();
+    prepared.discard();
     retirement.retire();
     stats
 }

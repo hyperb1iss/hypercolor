@@ -342,7 +342,7 @@ Set-ItemProperty `
     -Name Description `
     -Value $Description
 
-$serviceEnvironment = @()
+$serviceEnvironment = @("HYPERCOLOR_SERVICE_IDENTITY=system_service:windows_scm:$ServiceName")
 if ($resolvedPawnIoHome) {
     $serviceEnvironment += "HYPERCOLOR_PAWNIO_HOME=$resolvedPawnIoHome"
 }

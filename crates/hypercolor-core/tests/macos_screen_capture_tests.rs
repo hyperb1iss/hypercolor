@@ -1,22 +1,22 @@
 //! ScreenCaptureKit core worker fixture contracts.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::{num::NonZeroU64, num::NonZeroUsize};
 
 use hypercolor_core::effect::builtin::ScreenCastRenderer;
 use hypercolor_core::effect::{EffectRenderer, FrameDataSources, FrameInput};
-use hypercolor_core::input::screen::{
-    CaptureConfig, MacosScreenCaptureFixture, PixelExtent, ScreenAdmissionCapacity,
-    ScreenAnalysisComputeCapacity, ScreenByteAdmissionCoordinator, ScreenCaptureCadence,
-    ScreenCaptureDemand, ScreenComputeCapacityPolicy, ScreenCursorPolicy,
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, PixelExtent, ScreenByteAdmissionCoordinator, ScreenCaptureCadence,
+    ScreenCaptureDemand, SyntheticScreenPublisher,
 };
+use hypercolor_core::input::screen::implementer::MacosScreenCaptureFixture;
+use hypercolor_core::input::screen::planner::{ScreenAdmissionCapacity, ScreenCursorPolicy};
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, InteractionData, MacosArchitecture,
-    MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
-    MacosProtectedSourceState as CoreProtectedSourceState, MacosSelectionState,
-    SourcePlatformStatus,
+    CapabilityActionDisposition, InputData, InputManager, InputSource, InteractionData,
+    ManagedSourceRole, ScreenSource, SourceCapabilityConflict, SourceCapabilityContext,
+    SourceStatus,
 };
 use hypercolor_macos_capture::{
     MacosAttachment, MacosCaptureCadence, MacosCaptureCapabilities, MacosCaptureColorimetry,
@@ -33,6 +33,12 @@ use hypercolor_types::sensor::SystemSnapshot;
 
 const BGRA8: u32 = 0x4247_5241;
 const RGBA16_FLOAT: u32 = 0x5247_6841;
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("macOS screen fixture should match its declared role");
+}
 
 fn fixture_frame(epoch: u64, pixel: [u8; 4]) -> MacosCaptureFrame {
     let extent = MacosPixelExtent::new(4, 2).expect("fixture extent is valid");
@@ -150,6 +156,32 @@ fn fixture_source(
     MacosScreenCaptureFixture::source(config, admission)
 }
 
+fn capability_context(
+    owner: &'static str,
+    conflict: Option<SourceCapabilityConflict>,
+    identity_hash: Option<&str>,
+    metal4: bool,
+) -> SourceCapabilityContext {
+    let mut features = BTreeMap::new();
+    features.insert(Arc::from("metal4"), metal4);
+    SourceCapabilityContext {
+        owner: Arc::from(owner),
+        conflict,
+        identity_hash: identity_hash.map(Arc::from),
+        features,
+    }
+}
+
+fn diagnostics_payload(snapshot: &SourceStatus) -> &serde_json::Value {
+    let diagnostics = snapshot
+        .diagnostics
+        .as_deref()
+        .expect("fixture should publish macOS screen diagnostics");
+    assert_eq!(diagnostics.schema(), "macos.screen");
+    assert_eq!(diagnostics.version(), 1);
+    diagnostics.payload()
+}
+
 fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::ScreenData {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -221,7 +253,6 @@ fn native_refresh_hdr_and_cursor_demand_reaches_capture_and_screen_cast() {
     source.start().expect("fixture source starts idle");
     source
         .set_screen_capture_demand(ScreenCaptureDemand::active_with_policy(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
             ScreenCaptureCadence::NativeRefresh,
             ScreenCursorPolicy::Include,
         ))
@@ -236,7 +267,15 @@ fn native_refresh_hdr_and_cursor_demand_reaches_capture_and_screen_cast() {
     });
     fixture.publish(fixture_hdr_frame(1, [0x00, 0x3c, 0, 0, 0, 0, 0x00, 0x3c]));
     let screen = wait_for_screen(&mut source);
-    assert!(screen.canvas_downscale.is_some());
+    let reference = screen
+        .canvas_downscale
+        .as_ref()
+        .expect("reference analysis carries a surface");
+    let publication = SyntheticScreenPublisher::surface(
+        PixelExtent::new(reference.width(), reference.height())
+            .expect("reference surface is non-empty"),
+    )
+    .publish_rgba(reference.rgba_bytes());
 
     let audio = AudioData::silence();
     let interaction = InteractionData::default();
@@ -248,7 +287,7 @@ fn native_refresh_hdr_and_cursor_demand_reaches_capture_and_screen_cast() {
         frame_number: 0,
         audio: &audio,
         interaction: &interaction,
-        screen: Some(&screen),
+        screen: Some(&publication),
         sensors: &sensors,
         sources: FrameDataSources::default(),
         canvas_width: 4,
@@ -261,27 +300,6 @@ fn native_refresh_hdr_and_cursor_demand_reaches_capture_and_screen_cast() {
     let pixel = canvas.get_pixel(0, 0);
     assert!(pixel.r > pixel.g && pixel.r > pixel.b);
     assert_ne!(pixel, Rgba::BLACK);
-}
-
-#[test]
-fn macos_exposes_installed_compute_capacity_for_cpu_fallback() {
-    let analysis = ScreenAnalysisComputeCapacity::new(
-        NonZeroUsize::new(2).expect("fixture worker count is nonzero"),
-        NonZeroU64::new(1_000_000).expect("fixture throughput is nonzero"),
-    );
-    let policy = ScreenComputeCapacityPolicy::calibrated(
-        analysis,
-        NonZeroU64::new(2_000_000).expect("fixture exact throughput is nonzero"),
-    );
-    let admission =
-        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
-    let (source, _) = MacosScreenCaptureFixture::source_with_compute_capacity_policy(
-        CaptureConfig::default(),
-        admission,
-        policy,
-    );
-
-    assert_eq!(source.screen_analysis_compute_capacity(), Some(analysis));
 }
 
 #[test]
@@ -311,19 +329,17 @@ fn fixture_capture_activates_only_for_live_demand() {
         MacosProtectedSourceState::ReadyIdle
     );
     source
-        .set_macos_daemon_ownership(
-            MacosCapabilityOwner::AppSidecar,
-            Some(MacosDaemonOwnerConflict {
-                active: MacosCapabilityOwner::AppSidecar,
-                contender: MacosCapabilityOwner::HomebrewService,
+        .set_capability_context(&capability_context(
+            "app_sidecar",
+            Some(SourceCapabilityConflict {
+                active: Arc::from("app_sidecar"),
+                contender: Arc::from("homebrew_service"),
                 observed_at_ms: 42,
             }),
-            Some(Arc::from("designated-app-sidecar")),
-        )
-        .expect("fixture owner status updates");
-    source
-        .set_macos_metal4_capability(true)
-        .expect("fixture Metal 4 status updates");
+            Some("designated-app-sidecar"),
+            true,
+        ))
+        .expect("fixture capability status updates");
     source
         .source_status_reporter()
         .expect("macOS fixture exposes status reporting")
@@ -332,39 +348,32 @@ fn fixture_capture_activates_only_for_live_demand() {
         .source_status_handle()
         .expect("macOS fixture exposes status");
     let initial = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = initial.platform.as_deref() else {
-        panic!("expected macOS screen platform status");
-    };
-    assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
-    assert_eq!(platform.tcc, MacosAuthorizationState::Authorized);
-    assert_eq!(platform.owner, MacosCapabilityOwner::AppSidecar);
-    assert_eq!(
-        platform.owner_conflict.as_deref(),
-        Some(&MacosDaemonOwnerConflict {
-            active: MacosCapabilityOwner::AppSidecar,
-            contender: MacosCapabilityOwner::HomebrewService,
-            observed_at_ms: 42,
-        })
-    );
-    assert_eq!(platform.selection, MacosSelectionState::None);
-    assert_eq!(platform.selection_diagnostic_label, None);
-    assert_eq!(platform.selection_revision, 0);
-    assert_eq!(platform.tahoe.host_architecture, MacosArchitecture::Intel);
-    assert!(!platform.tahoe.translated_process);
-    assert!(!platform.tahoe.content_tone_mapping_info);
-    assert!(platform.tahoe.metal4);
-    assert_eq!(platform.stream_state.as_ref(), "inactive");
-    assert_eq!(platform.queue_depth, 8);
-    assert_eq!(platform.admitted_native_bytes, 0);
-    assert_eq!(platform.frames_received, 0);
-    assert_eq!(platform.frames_published, 0);
-    assert_eq!(platform.publication_path, None);
+    let platform = diagnostics_payload(&initial);
+    assert_eq!(platform["state"], "ready_idle");
+    assert_eq!(platform["tcc"], "authorized");
+    assert_eq!(platform["owner"], "app_sidecar");
+    assert_eq!(platform["owner_conflict"]["active"], "app_sidecar");
+    assert_eq!(platform["owner_conflict"]["contender"], "homebrew_service");
+    assert_eq!(platform["owner_conflict"]["observed_at_ms"], 42);
+    assert_eq!(platform["selection"]["type"], "none");
+    assert!(platform["selection_diagnostic_label"].is_null());
+    assert_eq!(platform["selection_revision"], 0);
+    assert_eq!(platform["tahoe"]["host_architecture"], "intel");
+    assert_eq!(platform["tahoe"]["translated_process"], false);
+    assert_eq!(platform["tahoe"]["content_tone_mapping_info"], false);
+    assert_eq!(platform["tahoe"]["metal4"], true);
+    assert_eq!(platform["stream_state"], "inactive");
+    assert_eq!(platform["queue_depth"], 8);
+    assert_eq!(platform["admitted_native_bytes"], 0);
+    assert_eq!(platform["frames_received"], 0);
+    assert_eq!(platform["frames_published"], 0);
+    assert!(platform["publication_path"].is_null());
     assert!(!fixture.is_active());
     source.start().expect("fixture source starts idle");
     assert!(matches!(source.sample(), Ok(InputData::None)));
 
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::try_active(4, 2).expect("valid demand"))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("fixture demand activates");
     assert!(fixture.is_active());
     let source_id = Arc::from("display:00000000-0000-0000-0000-000000000001");
@@ -373,11 +382,9 @@ fn fixture_capture_activates_only_for_live_demand() {
     });
     assert!(matches!(source.sample(), Ok(InputData::None)));
     let selected = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = selected.platform.as_deref() else {
-        panic!("expected selected macOS screen platform status");
-    };
-    assert_eq!(platform.selection_revision, 1);
-    assert_eq!(platform.tahoe_selection, None);
+    let platform = diagnostics_payload(&selected);
+    assert_eq!(platform["selection_revision"], 1);
+    assert!(platform["tahoe_selection"].is_null());
 
     fixture.set_tahoe_selection_capabilities(Some(MacosTahoeSelectionCapabilities {
         source_id: Arc::clone(&source_id),
@@ -395,40 +402,28 @@ fn fixture_capture_activates_only_for_live_demand() {
     assert_eq!(data.zone_colors.len(), 2);
     let live = status.snapshot();
     assert_eq!(live.last_sample_at, Some(captured_at));
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = live.platform.as_deref() else {
-        panic!("expected live macOS screen platform status");
-    };
-    assert_eq!(platform.state, CoreProtectedSourceState::Live);
-    assert_eq!(platform.stream_state.as_ref(), "active");
-    assert_eq!(platform.capture_session_generation, Some(1));
-    assert_eq!(platform.topology_generation, Some(1));
-    assert_eq!(platform.resource_generation, Some(1));
-    assert_eq!(platform.pixel_format.as_deref(), Some("bgra8"));
-    assert_eq!(platform.dynamic_range.as_deref(), Some("standard"));
-    assert_eq!(platform.color_space.as_deref(), Some("srgb"));
-    assert_eq!(platform.transfer_function.as_deref(), Some("srgb"));
-    assert_eq!(platform.native_width, Some(4));
-    assert_eq!(platform.native_height, Some(2));
-    assert!(platform.frames_received >= 1);
-    assert!(platform.frames_published >= 1);
-    assert_eq!(
-        platform.selection,
-        MacosSelectionState::Display {
-            source_id: Arc::clone(&source_id),
-        }
-    );
-    assert_eq!(
-        platform.selection_diagnostic_label.as_deref(),
-        Some("display")
-    );
-    let tahoe = platform
-        .tahoe_selection
-        .as_ref()
-        .expect("confirmed stream should publish Tahoe selection capabilities");
-    assert_eq!(tahoe.source_id, source_id);
-    assert_eq!(tahoe.capture_session_generation, 1);
-    assert!(tahoe.hdr_capture);
-    assert!(!tahoe.dual_range_screenshots);
+    let platform = diagnostics_payload(&live);
+    assert_eq!(platform["state"], "live");
+    assert_eq!(platform["stream_state"], "active");
+    assert_eq!(platform["capture_session_generation"], 1);
+    assert_eq!(platform["topology_generation"], 1);
+    assert_eq!(platform["resource_generation"], 1);
+    assert_eq!(platform["pixel_format"], "bgra8");
+    assert_eq!(platform["dynamic_range"], "standard");
+    assert_eq!(platform["color_space"], "srgb");
+    assert_eq!(platform["transfer_function"], "srgb");
+    assert_eq!(platform["native_width"], 4);
+    assert_eq!(platform["native_height"], 2);
+    assert!(platform["frames_received"].as_u64().unwrap_or(0) >= 1);
+    assert!(platform["frames_published"].as_u64().unwrap_or(0) >= 1);
+    assert_eq!(platform["selection"]["type"], "display");
+    assert_eq!(platform["selection"]["source_id"], source_id.as_ref());
+    assert_eq!(platform["selection_diagnostic_label"], "display");
+    let tahoe = &platform["tahoe_selection"];
+    assert_eq!(tahoe["source_id"], source_id.as_ref());
+    assert_eq!(tahoe["capture_session_generation"], 1);
+    assert_eq!(tahoe["hdr_capture"], true);
+    assert_eq!(tahoe["dual_range_screenshots"], false);
 
     let replacement_source_id = Arc::from("display:00000000-0000-0000-0000-000000000002");
     fixture.set_selection(MacosCaptureSelection::Display {
@@ -436,11 +431,9 @@ fn fixture_capture_activates_only_for_live_demand() {
     });
     assert!(matches!(source.sample(), Ok(InputData::Screen(_))));
     let repicked = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = repicked.platform.as_deref() else {
-        panic!("expected repicked macOS screen platform status");
-    };
-    assert_eq!(platform.selection_revision, 2);
-    assert_eq!(platform.tahoe_selection, None);
+    let platform = diagnostics_payload(&repicked);
+    assert_eq!(platform["selection_revision"], 2);
+    assert!(platform["tahoe_selection"].is_null());
 
     fixture.set_tahoe_selection_capabilities(Some(MacosTahoeSelectionCapabilities {
         source_id: Arc::clone(&replacement_source_id),
@@ -450,17 +443,12 @@ fn fixture_capture_activates_only_for_live_demand() {
     }));
     assert!(matches!(source.sample(), Ok(InputData::Screen(_))));
     let reconfirmed = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = reconfirmed.platform.as_deref() else {
-        panic!("expected reconfirmed macOS screen platform status");
-    };
-    let tahoe = platform
-        .tahoe_selection
-        .as_ref()
-        .expect("replacement stream should publish Tahoe selection capabilities");
-    assert_eq!(tahoe.source_id, replacement_source_id);
-    assert_eq!(tahoe.capture_session_generation, 2);
-    assert!(!tahoe.hdr_capture);
-    assert!(tahoe.dual_range_screenshots);
+    let platform = diagnostics_payload(&reconfirmed);
+    let tahoe = &platform["tahoe_selection"];
+    assert_eq!(tahoe["source_id"], replacement_source_id.as_ref());
+    assert_eq!(tahoe["capture_session_generation"], 2);
+    assert_eq!(tahoe["hdr_capture"], false);
+    assert_eq!(tahoe["dual_range_screenshots"], true);
 
     source
         .set_screen_capture_demand(ScreenCaptureDemand::Inactive)
@@ -468,12 +456,10 @@ fn fixture_capture_activates_only_for_live_demand() {
     assert!(!fixture.is_active());
     assert!(matches!(source.sample(), Ok(InputData::None)));
     let inactive = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = inactive.platform.as_deref() else {
-        panic!("expected inactive macOS screen platform status");
-    };
-    assert_eq!(platform.state, CoreProtectedSourceState::ReadyIdle);
-    assert_eq!(platform.tahoe_selection, None);
-    assert_eq!(platform.selection_revision, 3);
+    let platform = diagnostics_payload(&inactive);
+    assert_eq!(platform["state"], "ready_idle");
+    assert!(platform["tahoe_selection"].is_null());
+    assert_eq!(platform["selection_revision"], 3);
 }
 
 #[test]
@@ -481,9 +467,7 @@ fn inactive_demand_deactivates_without_reconfiguring_the_native_request() {
     let (mut source, fixture) = fixture_source(CaptureConfig::default());
     source.start().expect("fixture source starts idle");
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
-        ))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("fixture demand activates");
     let request = fixture.stream_request();
     let request_transitions = fixture.stream_request_transitions();
@@ -509,8 +493,7 @@ fn rejected_demand_request_preserves_the_committed_worker_and_demand() {
     };
     let (mut source, fixture) = fixture_source(config);
     source.start().expect("fixture source starts idle");
-    let committed =
-        ScreenCaptureDemand::active(PixelExtent::new(4, 2).expect("fixture demand is valid"));
+    let committed = ScreenCaptureDemand::active();
     source
         .set_screen_capture_demand(committed)
         .expect("initial demand activates");
@@ -519,7 +502,6 @@ fn rejected_demand_request_preserves_the_committed_worker_and_demand() {
 
     let error = source
         .set_screen_capture_demand(ScreenCaptureDemand::active_with_policy(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
             ScreenCaptureCadence::NativeRefresh,
             ScreenCursorPolicy::Include,
         ))
@@ -545,9 +527,7 @@ fn rejected_reconfiguration_request_preserves_the_committed_worker_config() {
     let (mut source, fixture) = fixture_source(config.clone());
     source.start().expect("fixture source starts idle");
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
-        ))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("initial demand activates");
     let request = fixture.stream_request();
     fixture.reject_next_stream_request();
@@ -576,8 +556,7 @@ fn asynchronous_demand_request_failure_preserves_the_committed_worker_and_demand
     };
     let (mut source, fixture) = fixture_source(config);
     source.start().expect("fixture source starts idle");
-    let committed =
-        ScreenCaptureDemand::active(PixelExtent::new(4, 2).expect("fixture demand is valid"));
+    let committed = ScreenCaptureDemand::active();
     source
         .set_screen_capture_demand(committed)
         .expect("initial demand activates");
@@ -587,7 +566,6 @@ fn asynchronous_demand_request_failure_preserves_the_committed_worker_and_demand
     let thread = thread::scope(|scope| {
         let update = scope.spawn(|| {
             source.set_screen_capture_demand(ScreenCaptureDemand::active_with_policy(
-                PixelExtent::new(4, 2).expect("fixture demand is valid"),
                 ScreenCaptureCadence::NativeRefresh,
                 ScreenCursorPolicy::Include,
             ))
@@ -625,9 +603,7 @@ fn asynchronous_reconfiguration_commits_after_native_activation() {
     let (mut source, fixture) = fixture_source(config.clone());
     source.start().expect("fixture source starts idle");
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
-        ))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("initial demand activates");
     let request = fixture.stream_request();
     fixture.defer_next_stream_request();
@@ -672,9 +648,7 @@ fn processing_reconfiguration_changes_legacy_hdr_bytes_at_a_frame_boundary() {
     let (mut source, fixture) = fixture_source(config.clone());
     source.start().expect("fixture source starts idle");
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
-        ))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("fixture demand activates");
     let encoded = [0x00, 0x38, 0x00, 0x3c, 0x00, 0x40, 0x00, 0x3c];
     fixture.publish(fixture_hdr_frame(1, encoded));
@@ -707,9 +681,7 @@ fn stale_native_frame_never_enters_the_legacy_cpu_publication() {
         .expect("macOS fixture exposes status");
     source.start().expect("fixture source starts idle");
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
-        ))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("fixture demand activates");
     fixture.set_selection(MacosCaptureSelection::Display {
         source_id: Arc::from("display:stale-fixture"),
@@ -725,10 +697,8 @@ fn stale_native_frame_never_enters_the_legacy_cpu_publication() {
     loop {
         assert!(matches!(source.sample(), Ok(InputData::None)));
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
-            panic!("expected macOS screen platform status");
-        };
-        if platform.frames_stale == 1 {
+        let platform = diagnostics_payload(&snapshot);
+        if platform["frames_stale"] == 1 {
             break;
         }
         assert!(Instant::now() < deadline, "stale frame was not observed");
@@ -748,9 +718,7 @@ fn reconfiguration_fences_the_previous_worker_generation() {
     let (mut source, fixture) = fixture_source(config.clone());
     source.start().expect("fixture source starts idle");
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture demand is valid"),
-        ))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("fixture demand activates");
     fixture.publish(fixture_frame(1, [255, 0, 0, 255]));
     assert_eq!(wait_for_screen(&mut source).zone_colors.len(), 2);
@@ -801,11 +769,9 @@ fn authorization_and_picker_actions_run_outside_graph_ownership() {
     source.sample().expect("source refreshes platform status");
 
     let snapshot = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
-        panic!("fixture should publish macOS screen status");
-    };
-    assert_eq!(platform.tcc, MacosAuthorizationState::Authorized);
-    assert_eq!(platform.state, CoreProtectedSourceState::NeedsSelection);
+    let platform = diagnostics_payload(&snapshot);
+    assert_eq!(platform["tcc"], "authorized");
+    assert_eq!(platform["state"], "needs_selection");
 }
 
 #[test]
@@ -815,9 +781,9 @@ fn manager_gates_headless_macos_picker_before_local_execution() {
         .source_status_handle()
         .expect("macOS fixture exposes status");
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, ManagedSourceRole::screen(Box::new(source)));
     manager
-        .set_macos_daemon_ownership(MacosCapabilityOwner::LaunchdService, None, None)
+        .set_source_capability_context(capability_context("launchd_service", None, None, false))
         .expect("owner update should publish");
 
     let authorize = manager
@@ -830,23 +796,21 @@ fn manager_gates_headless_macos_picker_before_local_execution() {
     assert!(matches!(
         authorize,
         hypercolor_core::input::ResolvedProtectedSourceAction::Local {
-            owner: hypercolor_core::input::ProtectedSourceActionOwner::Macos(
-                MacosCapabilityOwner::LaunchdService
-            ),
+            ref identity,
             ..
         }
+            if identity.owner() == "launchd_service"
+                && identity.disposition() == CapabilityActionDisposition::Local
     ));
     assert!(matches!(
         picker,
-        hypercolor_core::input::ResolvedProtectedSourceAction::RequiresAppUi {
-            active_owner: MacosCapabilityOwner::LaunchdService,
-        }
+        hypercolor_core::input::ResolvedProtectedSourceAction::RequiresUi { ref identity }
+            if identity.owner() == "launchd_service"
+                && identity.disposition() == CapabilityActionDisposition::RequiresUi
     ));
     let snapshot = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
-        panic!("fixture should publish macOS screen status");
-    };
-    assert_eq!(platform.selection, MacosSelectionState::None);
+    let platform = diagnostics_payload(&snapshot);
+    assert_eq!(platform["selection"]["type"], "none");
 }
 
 #[test]
@@ -855,34 +819,54 @@ fn late_macos_capture_source_inherits_process_capabilities() {
     let status = source
         .source_status_handle()
         .expect("macOS fixture exposes status");
-    let conflict = MacosDaemonOwnerConflict {
-        active: MacosCapabilityOwner::HomebrewService,
-        contender: MacosCapabilityOwner::AppSidecar,
+    let conflict = SourceCapabilityConflict {
+        active: Arc::from("homebrew_service"),
+        contender: Arc::from("app_sidecar"),
         observed_at_ms: 42,
     };
     let mut manager = InputManager::new();
     manager
-        .set_macos_daemon_ownership(
-            MacosCapabilityOwner::HomebrewService,
+        .set_source_capability_context(capability_context(
+            "homebrew_service",
             Some(conflict.clone()),
-            Some(Arc::from("designated-homebrew")),
-        )
-        .expect("manager retains ownership before source registration");
-    manager
-        .set_macos_metal4_capability(true)
-        .expect("manager retains Metal 4 before source registration");
+            Some("designated-homebrew"),
+            true,
+        ))
+        .expect("manager retains capabilities before source registration");
 
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, ManagedSourceRole::screen(Box::new(source)));
 
     let snapshot = status.snapshot();
-    let Some(SourcePlatformStatus::MacosScreen(platform)) = snapshot.platform.as_deref() else {
-        panic!("expected macOS screen platform status");
-    };
-    assert_eq!(platform.owner, MacosCapabilityOwner::HomebrewService);
-    assert_eq!(platform.owner_conflict.as_deref(), Some(&conflict));
+    let platform = diagnostics_payload(&snapshot);
+    assert_eq!(platform["owner"], "homebrew_service");
+    assert_eq!(platform["owner_conflict"]["active"], "homebrew_service");
+    assert_eq!(platform["owner_conflict"]["contender"], "app_sidecar");
+    assert_eq!(platform["owner_conflict"]["observed_at_ms"], 42);
     assert_eq!(
-        platform.owner_designated_requirement_hash.as_deref(),
-        Some("designated-homebrew")
+        platform["owner_designated_requirement_hash"],
+        "designated-homebrew"
     );
-    assert!(platform.tahoe.metal4);
+    assert_eq!(platform["tahoe"]["metal4"], true);
+}
+
+#[test]
+fn invalid_screen_diagnostics_do_not_block_neutral_status() {
+    let (mut source, _) = fixture_source(CaptureConfig::default());
+    let status = source
+        .source_status_handle()
+        .expect("macOS fixture exposes status");
+    let oversized_identity = "x".repeat(17 * 1024);
+
+    source
+        .set_capability_context(&capability_context(
+            "app_sidecar",
+            None,
+            Some(&oversized_identity),
+            false,
+        ))
+        .expect("invalid diagnostics should degrade without failing status publication");
+
+    let snapshot = status.snapshot();
+    assert_eq!(snapshot.source_id.as_ref(), "macos:session");
+    assert!(snapshot.diagnostics.is_none());
 }

@@ -2,7 +2,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::implementer::{
     CaptureColorSpace, CaptureDynamicRange, CapturePixelFormat, CaptureTransferFunction,
     ScreenBranchPublication,
 };
@@ -19,8 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::domain::spatial::SpatialService;
 use crate::render_thread::sparkleflinger::{CompositionLayer, CompositionPlan, SparkleFlinger};
 use crate::render_thread::{
-    MacosScreenParityDiagnosticHandle, MacosScreenParityLiveSnapshot,
-    MacosScreenParitySnapshotError,
+    ScreenParityDiagnosticHandle, ScreenParityLiveSnapshot, ScreenParitySnapshotError,
 };
 
 const DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(15);
@@ -215,15 +214,12 @@ fn reference_zones(
 }
 
 pub(crate) async fn run_macos_screen_parity(
-    diagnostics: &MacosScreenParityDiagnosticHandle,
-    input_manager: &tokio::sync::Mutex<hypercolor_core::input::InputManager>,
+    diagnostics: &ScreenParityDiagnosticHandle,
+    input_manager: &hypercolor_core::input::InputManager,
     spatial: &SpatialService,
 ) -> Result<MacosScreenParityReport, MacosScreenParityDiagnosticError> {
     let deadline = Instant::now() + DIAGNOSTIC_TIMEOUT;
-    let screenshot_action = {
-        let input = input_manager.lock().await;
-        input.macos_screenshot_reference_action()
-    };
+    let screenshot_action = input_manager.diagnostic_artifact_action();
     let screenshot_action = screenshot_action.ok_or_else(|| {
         MacosScreenParityDiagnosticError::unsupported(
             "no active macOS screen capture exposes screenshot references",
@@ -240,7 +236,19 @@ pub(crate) async fn run_macos_screen_parity(
     }
     let layout_hash = layout_sha256(first_layout.as_ref())?;
 
-    let screenshot_rx = screenshot_action().map_err(|error| map_screenshot_action_error(&error))?;
+    let screenshot_rx = screenshot_action()
+        .map_err(|error| map_screenshot_action_error(&error))?
+        .downcast::<
+            std::sync::mpsc::Receiver<
+                Result<MacosScreenshotReferenceCapture, MacosCaptureError>,
+            >,
+        >()
+        .map(|receiver| *receiver)
+        .map_err(|_| {
+            MacosScreenParityDiagnosticError::failed(
+                "the screen source returned an unsupported diagnostic artifact",
+            )
+        })?;
     let screenshot_capture = receive_screenshot_capture(screenshot_rx, deadline).await?;
     validate_capture_identity(&first.publication, &screenshot_capture)?;
 
@@ -268,9 +276,9 @@ pub(crate) async fn run_macos_screen_parity(
 }
 
 async fn capture_live_snapshot(
-    diagnostics: &MacosScreenParityDiagnosticHandle,
+    diagnostics: &ScreenParityDiagnosticHandle,
     deadline: Instant,
-) -> Result<MacosScreenParityLiveSnapshot, MacosScreenParityDiagnosticError> {
+) -> Result<ScreenParityLiveSnapshot, MacosScreenParityDiagnosticError> {
     tokio::time::timeout(remaining(deadline)?, diagnostics.snapshot())
         .await
         .map_err(|_| {
@@ -301,36 +309,32 @@ async fn receive_screenshot_capture(
         .map_err(|error| map_screenshot_error(&error))
 }
 
-fn map_snapshot_error(error: MacosScreenParitySnapshotError) -> MacosScreenParityDiagnosticError {
+fn map_snapshot_error(error: ScreenParitySnapshotError) -> MacosScreenParityDiagnosticError {
     match error {
-        MacosScreenParitySnapshotError::NoActiveScreenPublication => {
+        ScreenParitySnapshotError::NoActiveScreenPublication => {
             MacosScreenParityDiagnosticError::unsupported(
                 "the active renderer has no live screen publication",
             )
         }
-        MacosScreenParitySnapshotError::PublicationIdentityChanged => {
+        ScreenParitySnapshotError::PublicationIdentityChanged => {
             MacosScreenParityDiagnosticError::retry(
                 "the active publication identity changed during the parity request; retry",
             )
         }
-        MacosScreenParitySnapshotError::SamplingUnavailable => {
-            MacosScreenParityDiagnosticError::retry(
-                "the active GPU sampler could not accept the parity request; retry",
-            )
-        }
-        MacosScreenParitySnapshotError::RendererStopped => {
-            MacosScreenParityDiagnosticError::failed(
-                "the active render thread stopped during the parity transaction",
-            )
-        }
-        MacosScreenParitySnapshotError::UnsupportedOutputFormat => {
+        ScreenParitySnapshotError::SamplingUnavailable => MacosScreenParityDiagnosticError::retry(
+            "the active GPU sampler could not accept the parity request; retry",
+        ),
+        ScreenParitySnapshotError::RendererStopped => MacosScreenParityDiagnosticError::failed(
+            "the active render thread stopped during the parity transaction",
+        ),
+        ScreenParitySnapshotError::UnsupportedOutputFormat => {
             MacosScreenParityDiagnosticError::unsupported(
                 "the active screen branch does not publish RGBA8 output",
             )
         }
-        MacosScreenParitySnapshotError::NativeReductionFailed
-        | MacosScreenParitySnapshotError::SurfaceReadbackFailed
-        | MacosScreenParitySnapshotError::SpatialSamplingFailed => {
+        ScreenParitySnapshotError::NativeReductionFailed
+        | ScreenParitySnapshotError::SurfaceReadbackFailed
+        | ScreenParitySnapshotError::SpatialSamplingFailed => {
             MacosScreenParityDiagnosticError::failed(error.to_string())
         }
     }
@@ -403,8 +407,8 @@ fn validate_capture_identity(
 }
 
 fn validate_live_identity(
-    first: &MacosScreenParityLiveSnapshot,
-    second: &MacosScreenParityLiveSnapshot,
+    first: &ScreenParityLiveSnapshot,
+    second: &ScreenParityLiveSnapshot,
 ) -> Result<(), MacosScreenParityDiagnosticError> {
     if second.publication.native_sequence() <= first.publication.native_sequence()
         || second.publication.plan_generation() != first.publication.plan_generation()
@@ -420,8 +424,8 @@ fn validate_live_identity(
 }
 
 fn require_static_live_content(
-    first: &MacosScreenParityLiveSnapshot,
-    second: &MacosScreenParityLiveSnapshot,
+    first: &ScreenParityLiveSnapshot,
+    second: &ScreenParityLiveSnapshot,
 ) -> Result<RgbDeltaMetrics, MacosScreenParityDiagnosticError> {
     if first.width != second.width
         || first.height != second.height
@@ -438,8 +442,8 @@ fn require_static_live_content(
 }
 
 fn build_report(
-    first: MacosScreenParityLiveSnapshot,
-    live: MacosScreenParityLiveSnapshot,
+    first: ScreenParityLiveSnapshot,
+    live: ScreenParityLiveSnapshot,
     screenshot_capture: MacosScreenshotReferenceCapture,
     layout_sha256: String,
     stability: RgbDeltaMetrics,
@@ -611,7 +615,7 @@ fn render_references(
 }
 
 fn ensure_matching_extent(
-    live: &MacosScreenParityLiveSnapshot,
+    live: &ScreenParityLiveSnapshot,
     reference: &MacosScreenshotPixelCopy,
 ) -> Result<(), MacosScreenParityDiagnosticError> {
     if live.width != reference.extent.width || live.height != reference.extent.height {
@@ -890,7 +894,7 @@ mod tests {
 
     #[test]
     fn saturated_live_sampler_remains_retryable() {
-        let mapped = map_snapshot_error(MacosScreenParitySnapshotError::SamplingUnavailable);
+        let mapped = map_snapshot_error(ScreenParitySnapshotError::SamplingUnavailable);
 
         assert_eq!(mapped.status(), "warning");
         assert!(mapped.detail().contains("retry"));

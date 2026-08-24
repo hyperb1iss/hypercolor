@@ -10,7 +10,7 @@ use hypercolor_core::asset::{AssetLibrary, AssetUploadOptions};
 use hypercolor_core::bus::DisplayZoneViewport;
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
-use hypercolor_core::input::InteractionData;
+use hypercolor_core::input::{InteractionData, ScreenBranchPublication};
 use hypercolor_types::asset::AssetId;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{LinearRgba, Rgba};
@@ -474,7 +474,7 @@ fn render_scene_for_test_with_screen(
     display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
     zone_colors: &mut Vec<ZoneColors>,
-    screen: Option<&ScreenData>,
+    screen: Option<&Arc<ScreenBranchPublication>>,
 ) -> Result<ZoneResult> {
     let mut sparkleflinger = SparkleFlinger::cpu();
     render_scene_for_test_with_screen_and_sparkleflinger(
@@ -498,7 +498,7 @@ fn render_scene_for_test_with_screen_and_sparkleflinger(
     display_zone_target_fps: &HashMap<ZoneId, u32>,
     registry: &EffectRegistry,
     zone_colors: &mut Vec<ZoneColors>,
-    screen: Option<&ScreenData>,
+    screen: Option<&Arc<ScreenBranchPublication>>,
     sparkleflinger: &mut SparkleFlinger,
 ) -> Result<ZoneResult> {
     let inputs = ZoneFrameInputs {

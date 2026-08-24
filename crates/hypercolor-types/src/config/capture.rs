@@ -110,38 +110,70 @@ pub struct CaptureConfig {
     pub restore_token: Option<String>,
 }
 
-/// Native capture implementation selected by the current target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CapturePlatform {
+/// Identity of a screen capture backend, named by the capture API it speaks.
+///
+/// One vocabulary serves configuration validation, publication source
+/// identity, and status reporting. Backends produce it; neutral code never
+/// selects a variant from the target OS.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureBackendId {
     /// DXGI Desktop Duplication.
-    WindowsDesktopDuplication,
+    DesktopDuplication,
     /// XDG desktop portal plus PipeWire.
-    LinuxPipeWire,
+    PipeWire,
     /// ScreenCaptureKit with the system content picker.
-    MacosScreenCaptureKit,
-    /// No native screen-capture implementation is available.
-    Unsupported,
+    ScreenCaptureKit,
+    /// Deterministic CPU or fixture source.
+    Synthetic,
+    /// Extensible backend identity.
+    Other(String),
 }
 
-impl CapturePlatform {
-    /// Capture platform compiled into this target.
+impl CaptureBackendId {
+    /// Backend compiled into this target, or `None` where no native screen
+    /// capture exists.
     #[must_use]
-    pub const fn current() -> Self {
+    pub const fn current() -> Option<Self> {
         #[cfg(target_os = "windows")]
         {
-            Self::WindowsDesktopDuplication
+            Some(Self::DesktopDuplication)
         }
         #[cfg(target_os = "linux")]
         {
-            Self::LinuxPipeWire
+            Some(Self::PipeWire)
         }
         #[cfg(target_os = "macos")]
         {
-            Self::MacosScreenCaptureKit
+            Some(Self::ScreenCaptureKit)
         }
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
         {
-            Self::Unsupported
+            None
+        }
+    }
+
+    /// Human-facing backend name for diagnostics.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        match self {
+            Self::DesktopDuplication => "Windows Desktop Duplication",
+            Self::PipeWire => "Linux PipeWire",
+            Self::ScreenCaptureKit => "macOS ScreenCaptureKit",
+            Self::Synthetic => "synthetic capture",
+            Self::Other(name) => name,
+        }
+    }
+
+    /// Stable machine name used on the status wire.
+    #[must_use]
+    pub fn wire_name(&self) -> &str {
+        match self {
+            Self::DesktopDuplication => "dxgi_desktop_duplication",
+            Self::PipeWire => "pipewire",
+            Self::ScreenCaptureKit => "screen_capture_kit",
+            Self::Synthetic => "synthetic",
+            Self::Other(name) => name,
         }
     }
 }
@@ -221,17 +253,17 @@ impl CaptureConfig {
     ///
     /// Returns the first unsupported or out-of-range setting.
     pub fn validate(&self) -> Result<(), CaptureConfigValidationError> {
-        self.validate_for_platform(CapturePlatform::current())
+        self.validate_for_backend(CaptureBackendId::current().as_ref())
     }
 
-    /// Validate against an explicit backend for cross-platform contract tests.
+    /// Validate against an explicit backend, or against no backend at all.
     ///
     /// # Errors
     ///
     /// Returns the first unsupported or out-of-range setting.
-    pub fn validate_for_platform(
+    pub fn validate_for_backend(
         &self,
-        platform: CapturePlatform,
+        backend: Option<&CaptureBackendId>,
     ) -> Result<(), CaptureConfigValidationError> {
         if self.capture_fps == 0 {
             return Err(CaptureConfigValidationError::CaptureFps {
@@ -279,8 +311,8 @@ impl CaptureConfig {
             });
         }
         validate_capture_float("exposure_ev", self.exposure_ev, -8.0, 8.0)?;
-        validate_capture_source(platform, &self.source, self.enabled)?;
-        if matches!(platform, CapturePlatform::Unsupported) && self.enabled {
+        validate_capture_source(backend, &self.source, self.enabled)?;
+        if backend.is_none() && self.enabled {
             return Err(CaptureConfigValidationError::UnsupportedPlatform);
         }
         Ok(())
@@ -317,16 +349,18 @@ fn validate_capture_float(
 }
 
 fn validate_capture_source(
-    platform: CapturePlatform,
+    backend: Option<&CaptureBackendId>,
     source: &str,
     enabled: bool,
 ) -> Result<(), CaptureConfigValidationError> {
     let source = source.trim();
-    let platform_name = match platform {
-        CapturePlatform::WindowsDesktopDuplication => "Windows Desktop Duplication",
-        CapturePlatform::LinuxPipeWire => "Linux PipeWire",
-        CapturePlatform::MacosScreenCaptureKit => "macOS ScreenCaptureKit",
-        CapturePlatform::Unsupported => "this platform",
+    let platform_name = match backend {
+        Some(CaptureBackendId::DesktopDuplication) => "Windows Desktop Duplication",
+        Some(CaptureBackendId::PipeWire) => "Linux PipeWire",
+        Some(CaptureBackendId::ScreenCaptureKit) => "macOS ScreenCaptureKit",
+        Some(CaptureBackendId::Synthetic) => "synthetic capture",
+        Some(CaptureBackendId::Other(_)) => "this backend",
+        None => "this platform",
     };
     if source.is_empty() {
         return Err(CaptureConfigValidationError::Source {
@@ -347,7 +381,7 @@ fn validate_capture_source(
         });
     }
     if enabled
-        && matches!(platform, CapturePlatform::LinuxPipeWire)
+        && matches!(backend, Some(CaptureBackendId::PipeWire))
         && !source.eq_ignore_ascii_case("auto")
     {
         return Err(CaptureConfigValidationError::Source {
@@ -355,7 +389,7 @@ fn validate_capture_source(
             reason: "portal-managed capture requires source = \"auto\"",
         });
     }
-    if matches!(platform, CapturePlatform::MacosScreenCaptureKit)
+    if matches!(backend, Some(CaptureBackendId::ScreenCaptureKit))
         && !is_valid_macos_capture_source(source)
     {
         return Err(CaptureConfigValidationError::Source {

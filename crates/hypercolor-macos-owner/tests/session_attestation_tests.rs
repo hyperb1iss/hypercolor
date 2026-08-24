@@ -310,3 +310,55 @@ fn schema_v1_shape_is_separate_and_credential_has_256_random_bits() {
         MacosProtectedControlCredential::from_bytes([0; 32])
     );
 }
+
+#[test]
+fn load_refuses_symlinked_attestation_without_touching_its_target() {
+    let directory = tempfile::tempdir().expect("temporary directory should build");
+    let (store, _guard, _record, _attestation) = publish_fixture(&directory, "symlink");
+    let path = store.daemon_session_attestation_path();
+    let relocated = directory.path().join("relocated-attestation.json");
+    fs::rename(&path, &relocated).expect("fixture should relocate");
+    std::os::unix::fs::symlink(&relocated, &path).expect("fixture symlink should build");
+    let before = fs::read(&relocated).expect("relocated attestation should read");
+
+    store
+        .load_daemon_session_attestation()
+        .expect_err("symlinked attestation must fail closed");
+
+    assert!(
+        fs::symlink_metadata(&path)
+            .expect("link should remain")
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read(&relocated).expect("target should remain readable"),
+        before
+    );
+}
+
+#[test]
+fn publication_leaves_no_temporary_files_and_private_modes() {
+    let directory = tempfile::tempdir().expect("temporary directory should build");
+    let (store, _guard, _record, _attestation) = publish_fixture(&directory, "durable");
+    let state_dir = store.daemon_session_attestation_path();
+    let state_dir = state_dir.parent().expect("attestation has a parent");
+
+    let leftovers: Vec<_> = fs::read_dir(state_dir)
+        .expect("state directory should list")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files must not linger: {leftovers:?}"
+    );
+    assert_eq!(
+        fs::metadata(store.daemon_session_attestation_path())
+            .expect("attestation metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+}

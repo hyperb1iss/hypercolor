@@ -231,7 +231,7 @@ do_install() {
 
   # Binaries
   info "Installing binaries to ${bin_dir}"
-  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
+  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tui hypercolor-open; do
     if [[ -f "${src}/bin/${bin}" ]]; then
       install -m 755 "${src}/bin/${bin}" "${bin_dir}/${bin}"
     fi
@@ -308,7 +308,7 @@ do_install() {
     plist="${plist//@LOG_DIR@/${log_dir}}"
     plist="${plist//~\/.local\/bin\/hypercolor-daemon/${bin_dir}/hypercolor-daemon}"
     printf "%s\n" "$plist" > "${agents_dir}/tech.hyperbliss.hypercolor.plist"
-    info "Launchd plist installed — load with: launchctl load ${agents_dir}/tech.hyperbliss.hypercolor.plist"
+    info "Launchd plist installed — load with: launchctl bootstrap gui/$(id -u) ${agents_dir}/tech.hyperbliss.hypercolor.plist"
   fi
 
   # udev rules (Linux, requires sudo)
@@ -338,7 +338,7 @@ do_uninstall() {
   fi
 
   info "Removing binaries"
-  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
+  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tui hypercolor-open; do
     rm -f "${bin_dir}/${bin}"
   done
 

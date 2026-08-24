@@ -8,23 +8,48 @@ use std::time::Duration;
 use anyhow::Context;
 use arc_swap::ArcSwapOption;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::input::{InputManager, MacosCapabilityOwner, MacosDaemonOwnerConflict};
-use hypercolor_types::event::{
-    HypercolorEvent, MacosDaemonHandoverPhaseEvent, MacosDaemonOwnerConflictEvent,
-    MacosDaemonOwnerEvent, MacosDaemonOwnerRecoveryRequiredEvent,
-};
+use hypercolor_core::input::{InputManager, SourceCapabilityConflict, TryInputManagerIntent};
+use hypercolor_types::event::HypercolorEvent;
+use hypercolor_types::service::ServiceStatus;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::macos_owner::{
-    MacosDaemonOwner, MacosHandoverPhase, MacosOwnerRecord, MacosOwnerSnapshot, MacosOwnerStore,
-};
+use crate::macos_owner::{MacosDaemonOwner, MacosOwnerRecord, MacosOwnerSnapshot, MacosOwnerStore};
 
 const WATCH_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 enum WatchSignal {
     Changed,
+}
+
+/// The neutral service status slot every owner publication refreshes; the
+/// durable macOS snapshot is mapped onto it at publication time and never
+/// crosses the API seam itself.
+#[derive(Clone, Default)]
+pub(crate) struct OwnershipSlots {
+    service: Arc<ArcSwapOption<ServiceStatus>>,
+    macos: Arc<ArcSwapOption<MacosOwnerSnapshot>>,
+}
+
+impl OwnershipSlots {
+    pub(crate) fn new(
+        service: Arc<ArcSwapOption<ServiceStatus>>,
+        macos: Arc<ArcSwapOption<MacosOwnerSnapshot>>,
+    ) -> Self {
+        Self { service, macos }
+    }
+
+    fn store(&self, snapshot: MacosOwnerSnapshot) {
+        self.macos.store(Some(Arc::new(snapshot)));
+        self.service.store(Some(Arc::new(
+            crate::macos_service_identity::service_status(&snapshot),
+        )));
+    }
+
+    #[cfg(test)]
+    fn service(&self) -> Option<ServiceStatus> {
+        self.service.load_full().map(|status| (*status).clone())
+    }
 }
 
 #[derive(Clone)]
@@ -57,7 +82,7 @@ pub(crate) struct PendingMacosOwnerWatch {
     signal_rx: Receiver<WatchSignal>,
     stopping: Arc<AtomicBool>,
     store: MacosOwnerStore,
-    snapshots: Arc<ArcSwapOption<MacosOwnerSnapshot>>,
+    snapshots: OwnershipSlots,
     event_bus: Arc<HypercolorBus>,
     startup_snapshot: MacosOwnerSnapshot,
     reconciled_fingerprint: Option<MacosOwnerIdentityFingerprint>,
@@ -66,7 +91,7 @@ pub(crate) struct PendingMacosOwnerWatch {
 impl PendingMacosOwnerWatch {
     pub(crate) fn start(
         data_dir: PathBuf,
-        snapshots: Arc<ArcSwapOption<MacosOwnerSnapshot>>,
+        snapshots: OwnershipSlots,
         event_bus: Arc<HypercolorBus>,
         startup_snapshot: MacosOwnerSnapshot,
     ) -> anyhow::Result<Self> {
@@ -120,10 +145,7 @@ impl PendingMacosOwnerWatch {
         ))
     }
 
-    pub(crate) fn attach(
-        self,
-        input_manager: Arc<Mutex<InputManager>>,
-    ) -> anyhow::Result<MacosOwnerWatch> {
+    pub(crate) fn attach(self, input_manager: InputManager) -> anyhow::Result<MacosOwnerWatch> {
         let Self {
             watcher,
             signal_tx,
@@ -135,7 +157,7 @@ impl PendingMacosOwnerWatch {
             startup_snapshot,
             reconciled_fingerprint,
         } = self;
-        let (snapshot_tx, mut snapshot_rx) = tokio::sync::watch::channel(None);
+        let (snapshot_tx, snapshot_rx) = tokio::sync::watch::channel(None);
         let (worker_done_tx, worker_done_rx) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("hypercolor-macos-owner-watch".to_owned())
@@ -154,19 +176,12 @@ impl PendingMacosOwnerWatch {
                 }
             })
             .context("failed to spawn the macOS daemon owner watch worker")?;
-        let publisher = tokio::spawn(async move {
-            while snapshot_rx.changed().await.is_ok() {
-                let Some(publication) = snapshot_rx.borrow_and_update().clone() else {
-                    continue;
-                };
-                let mut input_manager = input_manager.lock().await;
-                if let Err(error) =
-                    publish_owner_snapshot(&snapshots, &mut input_manager, &event_bus, publication)
-                {
-                    warn!(%error, "failed to publish macOS daemon ownership");
-                }
-            }
-        });
+        let publisher = tokio::spawn(run_owner_publisher(
+            snapshot_rx,
+            snapshots,
+            input_manager,
+            event_bus,
+        ));
         Ok(MacosOwnerWatch {
             watcher: Some(watcher),
             signal_tx,
@@ -175,6 +190,49 @@ impl PendingMacosOwnerWatch {
             worker_done_rx,
             publisher: Some(publisher),
         })
+    }
+}
+
+async fn run_owner_publisher(
+    mut publications: tokio::sync::watch::Receiver<Option<MacosOwnerPublication>>,
+    snapshots: OwnershipSlots,
+    input_manager: InputManager,
+    event_bus: Arc<HypercolorBus>,
+) {
+    let mut pending = None;
+    loop {
+        if pending.is_none() {
+            if publications.changed().await.is_err() {
+                return;
+            }
+            pending.clone_from(&publications.borrow_and_update());
+        }
+        let Some(publication) = pending.take() else {
+            continue;
+        };
+        let published =
+            try_publish_owner_snapshot(&snapshots, &input_manager, &event_bus, publication.clone());
+        match published {
+            TryInputManagerIntent::Applied(Ok(())) => {}
+            TryInputManagerIntent::Applied(Err(error)) => {
+                warn!(%error, "failed to publish macOS daemon ownership");
+            }
+            TryInputManagerIntent::Busy => {
+                pending = Some(publication);
+                tokio::select! {
+                    changed = publications.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        pending.clone_from(&publications.borrow_and_update());
+                    }
+                    () = input_manager.wait_for_lifecycle_release_after_busy() => {}
+                }
+            }
+            TryInputManagerIntent::Stale => {
+                unreachable!("owner capability publication has no stale predicate")
+            }
+        }
     }
 }
 
@@ -235,8 +293,8 @@ fn watch_worker(
 }
 
 pub(crate) fn publish_owner_snapshot(
-    snapshots: &ArcSwapOption<MacosOwnerSnapshot>,
-    input_manager: &mut InputManager,
+    snapshots: &OwnershipSlots,
+    input_manager: &InputManager,
     event_bus: &HypercolorBus,
     publication: MacosOwnerPublication,
 ) -> anyhow::Result<()> {
@@ -245,14 +303,44 @@ pub(crate) fn publish_owner_snapshot(
         input_manager,
         publication,
         |published_snapshot| {
-            event_bus.publish(owner_event(published_snapshot));
+            publish_owner_events(&event_bus, published_snapshot);
         },
     )
 }
 
+fn try_publish_owner_snapshot(
+    snapshots: &OwnershipSlots,
+    input_manager: &InputManager,
+    event_bus: &HypercolorBus,
+    publication: MacosOwnerPublication,
+) -> TryInputManagerIntent<anyhow::Result<()>> {
+    let MacosOwnerPublication {
+        snapshot,
+        designated_requirement_hash,
+    } = publication;
+    match input_manager.try_set_source_capability_identity(
+        capability_owner_id(snapshot.active_owner),
+        snapshot.conflict.map(|conflict| SourceCapabilityConflict {
+            active: Arc::from(capability_owner_id(conflict.active_owner)),
+            contender: Arc::from(capability_owner_id(conflict.contender_owner)),
+            observed_at_ms: conflict.observed_at_ms,
+        }),
+        designated_requirement_hash,
+    ) {
+        TryInputManagerIntent::Busy => TryInputManagerIntent::Busy,
+        TryInputManagerIntent::Stale => TryInputManagerIntent::Stale,
+        TryInputManagerIntent::Applied(Err(error)) => TryInputManagerIntent::Applied(Err(error)),
+        TryInputManagerIntent::Applied(Ok(())) => {
+            snapshots.store(snapshot);
+            publish_owner_events(event_bus, snapshot);
+            TryInputManagerIntent::Applied(Ok(()))
+        }
+    }
+}
+
 fn publish_owner_snapshot_with(
-    snapshots: &ArcSwapOption<MacosOwnerSnapshot>,
-    input_manager: &mut InputManager,
+    snapshots: &OwnershipSlots,
+    input_manager: &InputManager,
     publication: MacosOwnerPublication,
     publish_event: impl FnOnce(MacosOwnerSnapshot),
 ) -> anyhow::Result<()> {
@@ -260,16 +348,16 @@ fn publish_owner_snapshot_with(
         snapshot,
         designated_requirement_hash,
     } = publication;
-    input_manager.set_macos_daemon_ownership(
-        capability_owner(snapshot.active_owner),
-        snapshot.conflict.map(|conflict| MacosDaemonOwnerConflict {
-            active: capability_owner(conflict.active_owner),
-            contender: capability_owner(conflict.contender_owner),
+    input_manager.set_source_capability_identity(
+        capability_owner_id(snapshot.active_owner),
+        snapshot.conflict.map(|conflict| SourceCapabilityConflict {
+            active: Arc::from(capability_owner_id(conflict.active_owner)),
+            contender: Arc::from(capability_owner_id(conflict.contender_owner)),
             observed_at_ms: conflict.observed_at_ms,
         }),
         designated_requirement_hash,
     )?;
-    snapshots.store(Some(Arc::new(snapshot)));
+    snapshots.store(snapshot);
     publish_event(snapshot);
     Ok(())
 }
@@ -359,115 +447,114 @@ impl From<&MacosOwnerRecord> for MacosOwnerIdentityFingerprint {
     }
 }
 
-const fn capability_owner(owner: MacosDaemonOwner) -> MacosCapabilityOwner {
+const fn capability_owner_id(owner: MacosDaemonOwner) -> &'static str {
     match owner {
-        MacosDaemonOwner::AppSidecar => MacosCapabilityOwner::AppSidecar,
-        MacosDaemonOwner::DirectLaunchd => MacosCapabilityOwner::LaunchdService,
-        MacosDaemonOwner::Homebrew => MacosCapabilityOwner::HomebrewService,
-        MacosDaemonOwner::Standalone => MacosCapabilityOwner::Standalone,
+        MacosDaemonOwner::AppSidecar => "app_sidecar",
+        MacosDaemonOwner::DirectLaunchd => "launchd_service",
+        MacosDaemonOwner::Homebrew => "homebrew_service",
+        MacosDaemonOwner::Standalone => "standalone",
     }
 }
 
-const fn owner_event_owner(owner: MacosDaemonOwner) -> MacosDaemonOwnerEvent {
-    match owner {
-        MacosDaemonOwner::AppSidecar => MacosDaemonOwnerEvent::AppSidecar,
-        MacosDaemonOwner::DirectLaunchd => MacosDaemonOwnerEvent::LaunchdService,
-        MacosDaemonOwner::Homebrew => MacosDaemonOwnerEvent::HomebrewService,
-        MacosDaemonOwner::Standalone => MacosDaemonOwnerEvent::Standalone,
-    }
+fn publish_owner_events(event_bus: &HypercolorBus, snapshot: MacosOwnerSnapshot) {
+    event_bus.publish(service_identity_event(snapshot));
 }
 
-fn owner_event(snapshot: MacosOwnerSnapshot) -> HypercolorEvent {
-    HypercolorEvent::MacosDaemonOwnershipChanged {
-        active_owner: owner_event_owner(snapshot.active_owner),
-        owner_epoch: snapshot.owner_epoch,
-        conflict: snapshot
-            .conflict
-            .map(|conflict| MacosDaemonOwnerConflictEvent {
-                active: owner_event_owner(conflict.active_owner),
-                contender: owner_event_owner(conflict.contender_owner),
-                observed_at_ms: conflict.observed_at_ms,
-            }),
-        recovery_required: snapshot.recovery_required.map(|recovery| {
-            MacosDaemonOwnerRecoveryRequiredEvent {
-                requested_owner: owner_event_owner(recovery.requested_owner),
-                prior_owner: owner_event_owner(recovery.prior_owner),
-                phase: owner_event_phase(recovery.phase),
-            }
-        }),
-    }
-}
-
-const fn owner_event_phase(phase: MacosHandoverPhase) -> MacosDaemonHandoverPhaseEvent {
-    match phase {
-        MacosHandoverPhase::Prepared => MacosDaemonHandoverPhaseEvent::Prepared,
-        MacosHandoverPhase::AutostartsConfigured => {
-            MacosDaemonHandoverPhaseEvent::AutostartsConfigured
-        }
-        MacosHandoverPhase::StopRequested => MacosDaemonHandoverPhaseEvent::StopRequested,
-        MacosHandoverPhase::OutgoingOwnerStopped => {
-            MacosDaemonHandoverPhaseEvent::OutgoingOwnerStopped
-        }
-        MacosHandoverPhase::AwaitingGuardRelease => {
-            MacosDaemonHandoverPhaseEvent::AwaitingGuardRelease
-        }
-        MacosHandoverPhase::GuardReleased => MacosDaemonHandoverPhaseEvent::GuardReleased,
-        MacosHandoverPhase::StartRequested => MacosDaemonHandoverPhaseEvent::StartRequested,
-        MacosHandoverPhase::RequestedOwnerStarted => {
-            MacosDaemonHandoverPhaseEvent::RequestedOwnerStarted
-        }
-        MacosHandoverPhase::CommitPending => MacosDaemonHandoverPhaseEvent::CommitPending,
-        MacosHandoverPhase::Committed => MacosDaemonHandoverPhaseEvent::Committed,
-        MacosHandoverPhase::RollbackPending => MacosDaemonHandoverPhaseEvent::RollbackPending,
-        MacosHandoverPhase::RollbackAutostartsRestored => {
-            MacosDaemonHandoverPhaseEvent::RollbackAutostartsRestored
-        }
-        MacosHandoverPhase::RollbackStopRequested => {
-            MacosDaemonHandoverPhaseEvent::RollbackStopRequested
-        }
-        MacosHandoverPhase::RollbackOwnerStopped => {
-            MacosDaemonHandoverPhaseEvent::RollbackOwnerStopped
-        }
-        MacosHandoverPhase::RollbackAwaitingGuardRelease => {
-            MacosDaemonHandoverPhaseEvent::RollbackAwaitingGuardRelease
-        }
-        MacosHandoverPhase::RollbackGuardReleased => {
-            MacosDaemonHandoverPhaseEvent::RollbackGuardReleased
-        }
-        MacosHandoverPhase::RollbackStartRequested => {
-            MacosDaemonHandoverPhaseEvent::RollbackStartRequested
-        }
-        MacosHandoverPhase::PriorOwnerStarted => MacosDaemonHandoverPhaseEvent::PriorOwnerStarted,
-        MacosHandoverPhase::RollbackCommitPending => {
-            MacosDaemonHandoverPhaseEvent::RollbackCommitPending
-        }
-        MacosHandoverPhase::RolledBack => MacosDaemonHandoverPhaseEvent::RolledBack,
+fn service_identity_event(snapshot: MacosOwnerSnapshot) -> HypercolorEvent {
+    let ServiceStatus {
+        identity,
+        owner_epoch,
+        conflict,
+        recovery_required,
+    } = crate::macos_service_identity::service_status(&snapshot);
+    HypercolorEvent::ServiceIdentityChanged {
+        identity,
+        owner_epoch,
+        conflict,
+        recovery_required,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc;
     use std::time::Duration;
 
     use super::{
-        MacosOwnerIdentityFingerprint, MacosOwnerPublication, PendingMacosOwnerWatch,
-        enqueue_change, event_touches_owner_record, owner_event, publish_owner_snapshot_with,
-        refresh_owner_snapshot, snapshot_with_startup_recovery, watch_worker,
+        MacosOwnerIdentityFingerprint, MacosOwnerPublication, OwnershipSlots,
+        PendingMacosOwnerWatch, enqueue_change, event_touches_owner_record,
+        publish_owner_snapshot_with, refresh_owner_snapshot, service_identity_event,
+        snapshot_with_startup_recovery, watch_worker,
     };
     use crate::macos_owner::{
         MacosDaemonOwner, MacosHandoverPhase, MacosOwnerIdentity, MacosOwnerRecoveryRequired,
         MacosOwnerStore,
     };
-    use arc_swap::ArcSwapOption;
     use hypercolor_core::bus::HypercolorBus;
-    use hypercolor_core::input::InputManager;
+    use hypercolor_core::input::{
+        InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+        ManagedSourceRole, SourceCapabilityContext, SourceRoleBinding,
+    };
     use notify::{Event, EventKind};
 
+    struct BlockingCapabilitySource {
+        armed: Arc<AtomicBool>,
+        entered: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+        updates: Arc<AtomicUsize>,
+    }
+
+    impl InputSource for BlockingCapabilitySource {
+        fn name(&self) -> &'static str {
+            "blocking_capability"
+        }
+
+        fn start(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn stop(&mut self) {}
+
+        fn sample(&mut self) -> anyhow::Result<InputData> {
+            Ok(InputData::None)
+        }
+
+        fn is_running(&self) -> bool {
+            true
+        }
+    }
+
+    impl SourceRoleBinding for BlockingCapabilitySource {
+        type Role = InteractionSourceRole;
+    }
+
+    impl InteractionSource for BlockingCapabilitySource {
+        fn set_capability_context(
+            &mut self,
+            _context: &SourceCapabilityContext,
+        ) -> anyhow::Result<()> {
+            self.updates.fetch_add(1, Ordering::AcqRel);
+            if self.armed.load(Ordering::Acquire) {
+                self.entered
+                    .send(())
+                    .expect("capability observer should remain connected");
+                self.release
+                    .recv()
+                    .expect("capability release should remain connected");
+            }
+            Ok(())
+        }
+    }
+
     fn identity(path: &std::path::Path, pid: u32) -> MacosOwnerIdentity {
-        MacosOwnerIdentity::new("00000001", path, "deadbeef", pid)
+        let executable = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(|name| format!("/Applications/{name}"))
+            .expect("fixture executable name should be valid UTF-8");
+        MacosOwnerIdentity::new("00000001", executable, "deadbeef", pid)
             .expect("fixture owner identity is valid")
     }
 
@@ -552,8 +639,8 @@ mod tests {
 
         let refreshed = snapshot_with_startup_recovery(&record, startup_snapshot);
         assert_eq!(refreshed.recovery_required, Some(recovery));
-        let encoded = serde_json::to_value(owner_event(refreshed))
-            .expect("ownership recovery event should serialize");
+        let encoded = serde_json::to_value(service_identity_event(refreshed))
+            .expect("identity recovery event should serialize");
         assert_eq!(encoded["data"]["recovery_required"]["phase"], "prepared");
 
         let next = store
@@ -578,19 +665,24 @@ mod tests {
             )
             .expect("fixture owner should publish")
             .snapshot();
-        let snapshots = ArcSwapOption::empty();
-        let mut input_manager = InputManager::new();
+        let snapshots = OwnershipSlots::default();
+        let input_manager = InputManager::new();
         let mut event_published = false;
 
         publish_owner_snapshot_with(
             &snapshots,
-            &mut input_manager,
+            &input_manager,
             MacosOwnerPublication {
                 snapshot,
                 designated_requirement_hash: Some(Arc::from("deadbeef")),
             },
             |published_snapshot| {
-                assert_eq!(snapshots.load_full().as_deref(), Some(&published_snapshot));
+                assert_eq!(
+                    snapshots.service(),
+                    Some(crate::macos_service_identity::service_status(
+                        &published_snapshot
+                    ))
+                );
                 event_published = true;
             },
         )
@@ -610,7 +702,8 @@ mod tests {
             )
             .expect("fixture owner should publish")
             .snapshot();
-        let snapshots = Arc::new(ArcSwapOption::from(Some(Arc::new(initial))));
+        let snapshots = OwnershipSlots::default();
+        snapshots.store(initial);
         let event_bus = Arc::new(HypercolorBus::new());
         let mut pending = PendingMacosOwnerWatch::start(
             directory.path().to_path_buf(),
@@ -734,7 +827,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn shutdown_is_bounded_while_input_manager_is_locked() {
+    async fn dropping_watch_while_lifecycle_is_busy_prevents_late_owner_publication() {
         let directory = tempfile::tempdir().expect("temporary owner directory should build");
         let store = MacosOwnerStore::new(directory.path());
         let initial = store
@@ -744,19 +837,43 @@ mod tests {
             )
             .expect("fixture owner should publish")
             .snapshot();
-        let snapshots = Arc::new(ArcSwapOption::from(Some(Arc::new(initial))));
+        let snapshots = OwnershipSlots::default();
+        snapshots.store(initial);
         let event_bus = Arc::new(HypercolorBus::new());
         let pending = PendingMacosOwnerWatch::start(
             directory.path().to_path_buf(),
-            Arc::clone(&snapshots),
+            snapshots.clone(),
             event_bus,
             initial,
         )
         .expect("owner watch should register");
-        let input_manager = Arc::new(tokio::sync::Mutex::new(InputManager::new()));
-        let lock = input_manager.lock().await;
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let armed = Arc::new(AtomicBool::new(false));
+        let updates = Arc::new(AtomicUsize::new(0));
+        let input_manager = InputManager::new();
+        input_manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                BlockingCapabilitySource {
+                    armed: Arc::clone(&armed),
+                    entered: entered_tx,
+                    release: release_rx,
+                    updates: Arc::clone(&updates),
+                },
+            )))
+            .expect("blocking capability source should register");
+        armed.store(true, Ordering::Release);
+        let blocker = {
+            let manager = input_manager.clone();
+            std::thread::spawn(move || {
+                manager.set_source_capability_identity("held-owner", None, None)
+            })
+        };
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("capability update should own lifecycle state");
         let watch = pending
-            .attach(Arc::clone(&input_manager))
+            .attach(input_manager)
             .expect("owner watch should attach");
         store
             .record_conflict(
@@ -766,15 +883,40 @@ mod tests {
             )
             .expect("conflict should publish");
         enqueue_change(&watch.signal_tx);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(updates.load(Ordering::Acquire), 2);
+        assert_eq!(
+            snapshots.service(),
+            Some(crate::macos_service_identity::service_status(&initial))
+        );
+
+        // The worker only refreshes the owner store; the publisher task that
+        // talks to the input manager is aborted before the worker is joined,
+        // so shutdown cannot block on the held lock. The budget here only has
+        // to catch a hang, not race store IO on a loaded test host; the
+        // assertions after the release prove no late publication escaped.
+        let (dropped_tx, dropped_rx) = mpsc::sync_channel(1);
+        let dropper = std::thread::spawn(move || {
+            drop(watch);
+            let _ = dropped_tx.send(());
+        });
+        dropped_rx
+            .recv_timeout(super::WATCH_WORKER_SHUTDOWN_TIMEOUT * 3)
+            .expect("watch shutdown must not wait for the input-manager lock");
+        dropper.join().expect("watch shutdown thread should finish");
+        release_tx
+            .send(())
+            .expect("blocking capability update should resume");
+        blocker
+            .join()
+            .expect("capability thread should finish")
+            .expect("blocking capability update should succeed");
         tokio::task::yield_now().await;
 
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            tokio::task::spawn_blocking(move || drop(watch)),
-        )
-        .await
-        .expect("watch shutdown must not wait for the input-manager lock")
-        .expect("watch shutdown task should finish");
-        drop(lock);
+        assert_eq!(updates.load(Ordering::Acquire), 2);
+        assert_eq!(
+            snapshots.service(),
+            Some(crate::macos_service_identity::service_status(&initial))
+        );
     }
 }

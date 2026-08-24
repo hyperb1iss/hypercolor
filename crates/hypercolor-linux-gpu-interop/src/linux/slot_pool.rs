@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::{FrameOrigin, ImportedFrameAllocationId, ImportedFrameLease, ImportedFrameTimings};
+
 use super::fence::{GlFenceStatus, delete_gl_fence, poll_gl_fence, wait_for_gl_fence_completion};
 use super::gl_external_memory::{
     GlExternalMemoryFunctions, GlImportedImageBinding, clear_gl_errors,
@@ -10,13 +12,14 @@ use super::gl_external_memory::{
 };
 use super::vulkan_export::ExportableVulkanImage;
 use super::{
-    GlFramebufferSource, GlFramebufferStateSnapshot, ImportedEffectFrame, ImportedFrameTimings,
+    GlFramebufferSource, GlFramebufferStateSnapshot, ImportedEffectFrame,
     LinuxGlFramebufferImportDescriptor, LinuxGlImporterStateSnapshot, LinuxGpuInteropError, Result,
     elapsed_micros,
 };
 
 const MAX_RECOVERABLE_POLL_ERRORS_WITHOUT_COMPLETION: u32 = 16;
-static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ALLOCATION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_CONTENT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(super) struct ImportedFrameSlotPool {
     slots: Vec<ImportedFrameSlot>,
@@ -79,7 +82,7 @@ impl ImportedFrameSlotPool {
                 .count(),
             available_slots: self.slots.iter().filter(|slot| slot.is_available()).count(),
             oldest_pending_age_ms,
-            latest_completed_storage_id: self.latest_completed_storage_id(),
+            latest_completed_content_generation: self.latest_completed_content_generation(),
         }
     }
 
@@ -118,7 +121,7 @@ impl ImportedFrameSlotPool {
         descriptor: LinuxGlFramebufferImportDescriptor,
     ) -> Result<ImportedEffectFrame> {
         self.poll_pending_imports(gl)?;
-        let had_completed_frame_before_issue = self.latest_completed_storage_id().is_some();
+        let had_completed_frame_before_issue = self.latest_completed_content_generation().is_some();
 
         let issued_slot = if let Some(index) = self.next_pipelined_slot() {
             let total_start = Instant::now();
@@ -202,14 +205,14 @@ impl ImportedFrameSlotPool {
             .iter()
             .enumerate()
             .filter_map(|(index, slot)| slot.completed.map(|completed| (index, completed)))
-            .max_by_key(|(_, completed)| completed.storage_id)
+            .max_by_key(|(_, completed)| completed.content_generation)
             .map(|(index, _)| index)
     }
 
-    fn latest_completed_storage_id(&self) -> Option<u64> {
+    fn latest_completed_content_generation(&self) -> Option<u64> {
         self.slots
             .iter()
-            .filter_map(|slot| slot.completed.map(|completed| completed.storage_id))
+            .filter_map(|slot| slot.completed.map(|completed| completed.content_generation))
             .max()
     }
 
@@ -222,7 +225,7 @@ impl ImportedFrameSlotPool {
     }
 
     fn poll_pending_imports(&mut self, gl: &glow::Context) -> Result<()> {
-        let latest_before = self.latest_completed_storage_id();
+        let latest_before = self.latest_completed_content_generation();
         let mut first_error = None;
         for slot in &mut self.slots {
             if let Err(error) = slot.poll_pending_import(gl)
@@ -231,7 +234,7 @@ impl ImportedFrameSlotPool {
                 first_error = Some(error);
             }
         }
-        let latest_after = self.latest_completed_storage_id();
+        let latest_after = self.latest_completed_content_generation();
         let completed_advanced = latest_after != latest_before && latest_after.is_some();
         if completed_advanced {
             self.recoverable_poll_errors_without_completion = 0;
@@ -286,6 +289,7 @@ pub(super) fn import_framebuffer_once(
 
 struct ImportedFrameSlot {
     gl_binding: GlImportedImageBinding,
+    allocation_id: ImportedFrameAllocationId,
     texture: Arc<wgpu::Texture>,
     view: Arc<wgpu::TextureView>,
     pending: Option<PendingImport>,
@@ -294,14 +298,14 @@ struct ImportedFrameSlot {
 
 struct PendingImport {
     fence: glow::NativeFence,
-    storage_id: u64,
+    content_generation: u64,
     issued_at: Instant,
     timings: ImportedFrameTimings,
 }
 
 #[derive(Clone, Copy)]
 struct CompletedImport {
-    storage_id: u64,
+    content_generation: u64,
     timings: ImportedFrameTimings,
 }
 
@@ -342,6 +346,9 @@ impl ImportedFrameSlot {
         let texture = image.wrap_as_wgpu_texture(device, hal_device, descriptor)?;
         Ok(Self {
             gl_binding,
+            allocation_id: ImportedFrameAllocationId::new(
+                NEXT_ALLOCATION_ID.fetch_add(1, Ordering::Relaxed),
+            ),
             texture: texture.texture,
             view: texture.view,
             pending: None,
@@ -385,7 +392,7 @@ impl ImportedFrameSlot {
         )?;
         Ok(PendingImport {
             fence: timings.fence,
-            storage_id: NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            content_generation: NEXT_CONTENT_GENERATION.fetch_add(1, Ordering::Relaxed),
             issued_at: Instant::now(),
             timings: timings.timings,
         })
@@ -405,9 +412,9 @@ impl ImportedFrameSlot {
         descriptor: LinuxGlFramebufferImportDescriptor,
         timings: ImportedFrameTimings,
     ) -> ImportedEffectFrame {
-        self.frame_with_storage_id(
+        self.frame_with_content_generation(
             descriptor,
-            NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed),
+            NEXT_CONTENT_GENERATION.fetch_add(1, Ordering::Relaxed),
             timings,
         )
     }
@@ -417,23 +424,30 @@ impl ImportedFrameSlot {
         descriptor: LinuxGlFramebufferImportDescriptor,
     ) -> Option<ImportedEffectFrame> {
         self.completed.map(|completed| {
-            self.frame_with_storage_id(descriptor, completed.storage_id, completed.timings)
+            self.frame_with_content_generation(
+                descriptor,
+                completed.content_generation,
+                completed.timings,
+            )
         })
     }
 
-    fn frame_with_storage_id(
+    fn frame_with_content_generation(
         &self,
         descriptor: LinuxGlFramebufferImportDescriptor,
-        storage_id: u64,
+        content_generation: u64,
         timings: ImportedFrameTimings,
     ) -> ImportedEffectFrame {
         ImportedEffectFrame {
             width: descriptor.width,
             height: descriptor.height,
             format: descriptor.format,
-            storage_id,
+            allocation_id: self.allocation_id,
+            content_generation,
+            origin: FrameOrigin::TopLeft,
             texture: Arc::clone(&self.texture),
             view: Arc::clone(&self.view),
+            lease: ImportedFrameLease::new(Arc::clone(&self.texture)),
             timings,
         }
     }
@@ -452,16 +466,19 @@ impl ImportedFrameSlot {
                 return Err(error);
             }
         };
-        pending.timings.sync_us = pending
-            .timings
-            .sync_us
-            .saturating_add(elapsed_micros(sync_start));
+        pending.timings.sync_us = Some(
+            pending
+                .timings
+                .sync_us
+                .unwrap_or(0)
+                .saturating_add(elapsed_micros(sync_start)),
+        );
 
         match status {
             GlFenceStatus::Complete => {
                 delete_gl_fence(gl, pending.fence);
                 self.completed = Some(CompletedImport {
-                    storage_id: pending.storage_id,
+                    content_generation: pending.content_generation,
                     timings: pending.timings,
                 });
             }
@@ -479,9 +496,10 @@ impl ImportedFrameSlot {
         let sync_result = wait_for_gl_fence_completion(gl, pending.fence);
         delete_gl_fence(gl, pending.fence);
         let sync_us = sync_result?;
-        pending.timings.sync_us = pending.timings.sync_us.saturating_add(sync_us);
+        pending.timings.sync_us =
+            Some(pending.timings.sync_us.unwrap_or(0).saturating_add(sync_us));
         self.completed = Some(CompletedImport {
-            storage_id: pending.storage_id,
+            content_generation: pending.content_generation,
             timings: pending.timings,
         });
         Ok(())
@@ -521,11 +539,11 @@ fn should_escalate_recoverable_poll_error(errors_without_completion: u32) -> boo
 
 fn poll_error_should_propagate(
     error: &LinuxGpuInteropError,
-    latest_completed_storage_id: Option<u64>,
+    latest_completed_content_generation: Option<u64>,
     completed_advanced: bool,
     errors_without_completion: &mut u32,
 ) -> bool {
-    if latest_completed_storage_id.is_none() || !is_recoverable_poll_error(error) {
+    if latest_completed_content_generation.is_none() || !is_recoverable_poll_error(error) {
         return true;
     }
     if completed_advanced {

@@ -2,9 +2,6 @@
 
 use std::net::IpAddr;
 
-use hypercolor_types::api::system::{
-    MacosAuthorizationState, MacosCapabilityOwner, MacosProtectedSourceState,
-};
 use hypercolor_types::config::{HypercolorConfig, NetworkAccessMode, NetworkClientScope};
 use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 use leptos::prelude::*;
@@ -17,7 +14,10 @@ use crate::render_presets::{
     CANVAS_PRESETS, MAX_CUSTOM_CANVAS_HEIGHT, MAX_CUSTOM_CANVAS_WIDTH, canvas_preset_key,
 };
 use crate::{
-    api::{InputSourcePlatformStatus, InputStatus, SystemStatus},
+    api::{
+        DaemonRunMode, InputStatus, ServiceIdentity, ServiceManager, SystemStatus,
+        SystemStatusServiceExt,
+    },
     app::WsContext,
 };
 
@@ -169,7 +169,7 @@ pub fn CaptureSection(
     let capture_status = LocalResource::new(move || {
         let connection_generation = ws.connection_generation.get();
         let source_event = ws.last_input_source_status_event.get();
-        let owner_event = ws.last_macos_daemon_ownership_event.get();
+        let owner_event = ws.last_service_identity_event.get();
         let epoch = config.with(|current| {
             input_status_epoch(connection_generation, source_event, current.as_ref())
         });
@@ -478,6 +478,13 @@ pub fn CaptureSection(
                     min=0.0 max=500.0 step=10.0
                     decimals=0
                 />
+                {move || {
+                    let status = capture_status.get().and_then(Result::ok)?;
+                    input::source_diagnostics_view(input::source_diagnostics_fields(
+                        &status.input,
+                        "screen",
+                    ))
+                }}
             </AdvancedDisclosure>
             <SectionReset section_label="Capture" on_reset=Callback::new(move |()| on_reset.run("capture".to_string())) />
         </section>
@@ -485,65 +492,48 @@ pub fn CaptureSection(
 }
 
 fn macos_screen_needs_authorization(status: &InputStatus) -> bool {
-    status.sources.iter().any(|source| {
-        if source.retired {
-            return false;
-        }
-        let Some(InputSourcePlatformStatus::MacosScreen { state, tcc, .. }) =
-            source.platform.as_ref()
-        else {
-            return false;
-        };
-        matches!(
-            state,
-            MacosProtectedSourceState::NeedsUserAction
-                | MacosProtectedSourceState::PermissionDenied
-                | MacosProtectedSourceState::Revoked
-        ) || matches!(
-            tcc,
-            MacosAuthorizationState::NotDetermined | MacosAuthorizationState::Denied
-        )
-    })
+    input::source_needs_action(
+        status,
+        "screen",
+        &[
+            "authorization_required",
+            "authorization_denied",
+            "authorization_revoked",
+        ],
+    )
 }
 
 fn macos_screen_needs_restart(status: &InputStatus) -> bool {
-    status.sources.iter().any(|source| {
-        if source.retired {
-            return false;
-        }
-        matches!(
-            source.platform.as_ref(),
-            Some(InputSourcePlatformStatus::MacosScreen { state, .. })
-                if *state == MacosProtectedSourceState::NeedsProcessRestart
-        )
-    })
+    input::source_needs_action(status, "screen", &["process_restart_required"])
 }
 
-fn macos_screen_restart_coordinates(status: &SystemStatus) -> Option<(String, u64)> {
+fn macos_screen_restart_coordinates(status: &SystemStatus) -> Option<(ServiceIdentity, u64)> {
     macos_screen_needs_restart(&status.input)
-        .then_some(status.macos_daemon_ownership.as_ref())
+        .then(|| status.service_status())
         .flatten()
-        .and_then(|ownership| {
+        .and_then(|service| {
             Some((
-                validate_macos_restart_owner(ownership.active_owner)?,
-                ownership.owner_epoch,
+                validate_macos_restart_owner(service.identity)?,
+                service.owner_epoch,
             ))
         })
 }
 
-pub(super) fn validate_macos_restart_owner(owner: MacosCapabilityOwner) -> Option<String> {
-    match owner {
-        MacosCapabilityOwner::AppSidecar
-        | MacosCapabilityOwner::LaunchdService
-        | MacosCapabilityOwner::HomebrewService
-        | MacosCapabilityOwner::Standalone => Some(owner.as_str().to_owned()),
-        MacosCapabilityOwner::App | MacosCapabilityOwner::Broker => None,
+/// Only the launchers the native app can restart are offered; foreign
+/// service managers never become a restart target.
+pub(super) fn validate_macos_restart_owner(owner: ServiceIdentity) -> Option<ServiceIdentity> {
+    match (owner.run_mode, owner.manager) {
+        (DaemonRunMode::SupervisedChild | DaemonRunMode::Standalone, None)
+        | (DaemonRunMode::UserService, Some(ServiceManager::Launchd | ServiceManager::Homebrew)) => {
+            Some(owner)
+        }
+        _ => None,
     }
 }
 
 #[component]
 pub(super) fn MacosCaptureOwnerRestartAction(
-    owner: String,
+    owner: ServiceIdentity,
     epoch: u64,
     on_complete: Callback<()>,
 ) -> impl IntoView {
@@ -628,11 +618,20 @@ pub(super) fn MacosCaptureOwnerRestartAction(
 #[cfg(test)]
 mod macos_capture_tests {
     use crate::api::{
-        InputSourcePlatformStatus, InputSourceStatus, InputStatus, MacosAuthorizationState,
-        MacosCapabilityOwner, MacosDaemonOwnershipStatus, MacosProtectedSourceState, SystemStatus,
+        InputSourceIssueStatus, InputSourceStatus, InputStatus, MacosCapabilityOwner,
+        MacosDaemonOwnershipStatus, ServiceIdentity, SystemStatus,
     };
 
     use super::{macos_screen_restart_coordinates, validate_macos_restart_owner};
+
+    fn action_issue(code: &str) -> InputSourceIssueStatus {
+        InputSourceIssueStatus {
+            code: code.to_owned(),
+            message: "Action required".to_owned(),
+            remediation: None,
+            retryable: true,
+        }
+    }
 
     fn system_status(
         input: InputStatus,
@@ -664,16 +663,7 @@ mod macos_capture_tests {
             InputStatus {
                 sources: vec![InputSourceStatus {
                     kind: "screen".to_owned(),
-                    platform: Some(InputSourcePlatformStatus::MacosScreen {
-                        state: MacosProtectedSourceState::NeedsProcessRestart,
-                        tcc: MacosAuthorizationState::Authorized,
-                        owner: MacosCapabilityOwner::LaunchdService,
-                        selection: Default::default(),
-                        tahoe: Default::default(),
-                        tahoe_selection: None,
-                        owner_conflict: None,
-                        telemetry: Default::default(),
-                    }),
+                    action_issue: Some(action_issue("process_restart_required")),
                     ..InputSourceStatus::default()
                 }],
                 ..InputStatus::default()
@@ -687,7 +677,7 @@ mod macos_capture_tests {
 
         assert_eq!(
             macos_screen_restart_coordinates(&status),
-            Some(("launchd_service".to_owned(), 31))
+            Some((ServiceIdentity::launchd_direct(), 31))
         );
         status.input.sources[0].retired = true;
         assert_eq!(macos_screen_restart_coordinates(&status), None);
@@ -697,13 +687,21 @@ mod macos_capture_tests {
     }
 
     #[test]
-    fn owner_command_names_are_closed() {
+    fn owner_restart_targets_are_closed() {
         assert_eq!(
-            validate_macos_restart_owner(MacosCapabilityOwner::HomebrewService).as_deref(),
-            Some("homebrew_service")
+            validate_macos_restart_owner(ServiceIdentity::homebrew()),
+            Some(ServiceIdentity::homebrew())
         );
         assert_eq!(
-            validate_macos_restart_owner(MacosCapabilityOwner::Broker),
+            validate_macos_restart_owner(ServiceIdentity::STANDALONE),
+            Some(ServiceIdentity::STANDALONE)
+        );
+        assert_eq!(
+            validate_macos_restart_owner(ServiceIdentity::systemd_user()),
+            None
+        );
+        assert_eq!(
+            validate_macos_restart_owner(ServiceIdentity::windows_scm()),
             None
         );
     }

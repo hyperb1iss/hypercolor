@@ -333,6 +333,10 @@ transaction, launchd and Homebrew service files, `scripts/get-hypercolor.sh`,
   `HYPERCOLOR_MACOS_OWNER` plus the equal deprecated `--macos-owner` argument.
   New daemons prefer the environment, accept an equal argument, and reject a
   conflict. Remove the argument only after the supported-version floor moves.
+  Since 2026-08-22 (Design 72 L1) launchers also publish the neutral
+  `HYPERCOLOR_SERVICE_IDENTITY` declaration beside both; it must name the
+  same owner, a disagreement rejects startup the same way, and an old
+  daemon ignores it.
 - Treat launcher metadata as a claim. Corroborate direct and Homebrew owners
   through exact launchctl PID identity and app sidecars through their signed
   parent before guard acquisition or owner publication.

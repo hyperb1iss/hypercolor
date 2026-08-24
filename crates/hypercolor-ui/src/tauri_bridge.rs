@@ -1,5 +1,6 @@
 //! Optional bridge to native Tauri commands when the UI is hosted in hypercolor-app.
 
+use hypercolor_types::service::ServiceIdentity;
 use serde::Deserialize;
 #[cfg(any(target_arch = "wasm32", test))]
 use std::{cell::Cell, future::Future};
@@ -256,15 +257,15 @@ pub struct HelperOutcome {
     pub exit_code: Option<i32>,
 }
 
-/// Optional full Hypercolor daemon Windows SCM service status.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct WindowsDaemonServiceStatus {
-    pub platform_supported: bool,
-    pub service_name: String,
-    pub service: ServiceSupportStatus,
-    pub running: bool,
+/// A service-manager launcher the native app found registered for the
+/// daemon, in the neutral vocabulary the daemon itself reports.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DaemonLauncherStatus {
+    pub identity: Option<ServiceIdentity>,
+    pub online: bool,
     pub reuse_recommended: bool,
+    pub state: Option<String>,
 }
 
 /// Local macOS daemon topology selectable through the native app coordinator.
@@ -277,13 +278,14 @@ pub enum MacosDaemonOwnerChoice {
 }
 
 impl MacosDaemonOwnerChoice {
-    #[cfg(target_arch = "wasm32")]
-    const fn invoke_value(self) -> &'static str {
+    /// The neutral launcher identity this choice asks the app to make active.
+    #[must_use]
+    pub fn identity(self) -> ServiceIdentity {
         match self {
-            Self::AppSidecar => "app_sidecar",
-            Self::DirectLaunchd => "direct_launchd",
-            Self::Homebrew => "homebrew",
-            Self::Standalone => "standalone",
+            Self::AppSidecar => ServiceIdentity::APP_SIDECAR,
+            Self::DirectLaunchd => ServiceIdentity::launchd_direct(),
+            Self::Homebrew => ServiceIdentity::homebrew(),
+            Self::Standalone => ServiceIdentity::STANDALONE,
         }
     }
 }
@@ -350,12 +352,12 @@ pub struct MacosDaemonOwnerOfflineRemedyOutcome {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MacosCaptureOwnerRestartOutcome {
     Restarted {
-        owner: String,
+        owner: ServiceIdentity,
         previous_owner_epoch: u64,
         owner_epoch: u64,
     },
     UserActionRequired {
-        owner: String,
+        owner: ServiceIdentity,
         owner_epoch: u64,
         remedy: MacosOwnerRemedy,
     },
@@ -389,12 +391,15 @@ pub fn smbus_support_ready(status: &PawnIoSupportStatus) -> bool {
         && status.smbus_service.state.as_deref() == Some("RUNNING")
 }
 
-/// Returns true when the native app is connected to a running Windows SCM daemon service.
+/// Returns true when a registered service-manager launcher is running the
+/// daemon and the native app should reuse it rather than spawn its own.
 #[must_use]
-pub const fn windows_daemon_service_conflict(status: &WindowsDaemonServiceStatus) -> bool {
-    status.platform_supported
-        && status.service.installed
-        && status.running
+pub fn managed_daemon_launcher_active(status: &DaemonLauncherStatus) -> bool {
+    status
+        .identity
+        .as_ref()
+        .is_some_and(ServiceIdentity::is_managed)
+        && status.online
         && status.reuse_recommended
 }
 
@@ -418,18 +423,18 @@ pub async fn detect_pawnio_support() -> Result<Option<PawnIoSupportStatus>, Stri
     Ok(None)
 }
 
-/// Detect the optional full Hypercolor Windows SCM daemon service.
+/// Detect a service-manager launcher already registered for the daemon.
 ///
 /// # Errors
 ///
 /// Returns an error when the native command rejects or returns malformed data.
 #[cfg(target_arch = "wasm32")]
-pub async fn detect_windows_daemon_service() -> Result<Option<WindowsDaemonServiceStatus>, String> {
+pub async fn detect_daemon_launcher() -> Result<Option<DaemonLauncherStatus>, String> {
     let Some(invoke) = tauri_invoke() else {
         return Ok(None);
     };
 
-    let value = invoke_command(&invoke, "detect_windows_daemon_service", None).await?;
+    let value = invoke_command(&invoke, "detect_daemon_launcher", None).await?;
     serde_json_from_js_value(value).map(Some)
 }
 
@@ -450,7 +455,7 @@ pub async fn choose_macos_daemon_owner(
         return Ok(None);
     };
 
-    let args = string_arg_to_js("requestedOwner", owner.invoke_value())?;
+    let args = json_arg_to_js("requestedOwner", &owner.identity())?;
     let value = invoke_command(&invoke, "choose_daemon_owner", Some(args)).await?;
     serde_json_from_js_value(value).map(Some)
 }
@@ -527,7 +532,7 @@ pub async fn execute_macos_daemon_owner_offline_remedy(
 /// managed owner cannot complete the restart.
 #[cfg(target_arch = "wasm32")]
 pub async fn restart_macos_capture_owner(
-    active_owner: &str,
+    active_owner: &ServiceIdentity,
     owner_epoch: u64,
 ) -> Result<Option<MacosCaptureOwnerRestartOutcome>, String> {
     let Some(invoke) = tauri_invoke() else {
@@ -541,14 +546,14 @@ pub async fn restart_macos_capture_owner(
 
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn restart_macos_capture_owner(
-    _active_owner: &str,
+    _active_owner: &ServiceIdentity,
     _owner_epoch: u64,
 ) -> Result<Option<MacosCaptureOwnerRestartOutcome>, String> {
     Ok(None)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn detect_windows_daemon_service() -> Result<Option<WindowsDaemonServiceStatus>, String> {
+pub async fn detect_daemon_launcher() -> Result<Option<DaemonLauncherStatus>, String> {
     Ok(None)
 }
 
@@ -803,16 +808,32 @@ fn macos_owner_remedy_to_js(remedy: &MacosOwnerRemedy) -> Result<JsValue, String
     Ok(root.into())
 }
 
+/// Encode a serializable value as the JS object a native command expects.
+#[cfg(target_arch = "wasm32")]
+fn json_to_js_value<T: serde::Serialize>(value: &T) -> Result<JsValue, String> {
+    let json = serde_json::to_string(value)
+        .map_err(|error| format!("native command argument encode failed: {error}"))?;
+    js_sys::JSON::parse(&json).map_err(js_error_string)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn json_arg_to_js<T: serde::Serialize>(key: &str, value: &T) -> Result<JsValue, String> {
+    let root = js_sys::Object::new();
+    js_sys::Reflect::set(&root, &JsValue::from_str(key), &json_to_js_value(value)?)
+        .map_err(js_error_string)?;
+    Ok(root.into())
+}
+
 #[cfg(target_arch = "wasm32")]
 fn macos_capture_owner_restart_to_js(
-    active_owner: &str,
+    active_owner: &ServiceIdentity,
     owner_epoch: u64,
 ) -> Result<JsValue, String> {
     let root = js_sys::Object::new();
     js_sys::Reflect::set(
         &root,
         &JsValue::from_str("activeOwner"),
-        &JsValue::from_str(active_owner),
+        &json_to_js_value(active_owner)?,
     )
     .map_err(js_error_string)?;
     js_sys::Reflect::set(
@@ -866,8 +887,9 @@ mod tests {
         MacosSystemSettingsPane, PawnIoModuleStatus, PawnIoSupportStatus, ServiceSupportStatus,
         VERIFIED_DAEMON_CONNECTION_COMMAND, VERIFIED_DAEMON_REVISION, VerifiedDaemonConnection,
         VerifiedDaemonConnectionSnapshot, apply_verified_daemon_connection, bundled_payload_ready,
-        smbus_support_ready, snapshot_after_listener_registration, windows_daemon_service_conflict,
+        managed_daemon_launcher_active, smbus_support_ready, snapshot_after_listener_registration,
     };
+    use hypercolor_types::service::ServiceIdentity;
 
     fn run_ready<F: Future>(future: F) -> F::Output {
         let mut future = std::pin::pin!(future);
@@ -1021,20 +1043,39 @@ mod tests {
     }
 
     #[test]
-    fn windows_daemon_service_conflict_requires_supported_running_service() {
+    fn managed_launcher_is_active_only_when_registered_running_and_reusable() {
         let mut status = windows_service_status();
-        assert!(windows_daemon_service_conflict(&status));
+        assert!(managed_daemon_launcher_active(&status));
 
-        status.running = false;
-        assert!(!windows_daemon_service_conflict(&status));
+        status.online = false;
+        assert!(!managed_daemon_launcher_active(&status));
 
-        status.running = true;
+        status.online = true;
         status.reuse_recommended = false;
-        assert!(!windows_daemon_service_conflict(&status));
+        assert!(!managed_daemon_launcher_active(&status));
 
         status.reuse_recommended = true;
-        status.platform_supported = false;
-        assert!(!windows_daemon_service_conflict(&status));
+        status.identity = Some(ServiceIdentity::STANDALONE);
+        assert!(!managed_daemon_launcher_active(&status));
+
+        status.identity = None;
+        assert!(!managed_daemon_launcher_active(&status));
+    }
+
+    #[test]
+    fn launcher_status_decodes_the_native_shape() {
+        let status: super::DaemonLauncherStatus = serde_json::from_value(serde_json::json!({
+            "identity": { "run_mode": "system_service", "manager": "windows_scm", "unit": "Hypercolor" },
+            "online": true,
+            "reuseRecommended": true,
+            "state": "RUNNING"
+        }))
+        .expect("launcher status decodes");
+        assert_eq!(status, windows_service_status());
+
+        let absent: super::DaemonLauncherStatus =
+            serde_json::from_value(serde_json::json!({})).expect("empty status decodes");
+        assert_eq!(absent, super::DaemonLauncherStatus::default());
     }
 
     #[test]
@@ -1132,16 +1173,12 @@ mod tests {
         }
     }
 
-    fn windows_service_status() -> super::WindowsDaemonServiceStatus {
-        super::WindowsDaemonServiceStatus {
-            platform_supported: true,
-            service_name: "Hypercolor".to_string(),
-            service: ServiceSupportStatus {
-                installed: true,
-                state: Some("RUNNING".to_string()),
-            },
-            running: true,
+    fn windows_service_status() -> super::DaemonLauncherStatus {
+        super::DaemonLauncherStatus {
+            identity: Some(ServiceIdentity::windows_scm()),
+            online: true,
             reuse_recommended: true,
+            state: Some("RUNNING".to_string()),
         }
     }
 }

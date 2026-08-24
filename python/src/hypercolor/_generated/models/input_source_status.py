@@ -10,12 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.input_source_issue_status import InputSourceIssueStatus
-    from ..models.input_source_platform_status_type_0 import (
-        InputSourcePlatformStatusType0,
-    )
-    from ..models.input_source_platform_status_type_1 import (
-        InputSourcePlatformStatusType1,
-    )
+    from ..models.source_diagnostics_envelope import SourceDiagnosticsEnvelope
 
 
 T = TypeVar("T", bound="InputSourceStatus")
@@ -40,12 +35,13 @@ class InputSourceStatus:
         source_graph_generation (int):
         source_id (str):
         state (str):
+        action_issue (InputSourceIssueStatus | None | Unset):
+        diagnostics (None | SourceDiagnosticsEnvelope | Unset):
         freshness_issue (InputSourceIssueStatus | None | Unset):
         freshness_remaining_ms (int | None | Unset):
         issue (InputSourceIssueStatus | None | Unset):
         last_sample_age_ms (int | None | Unset):
         lifecycle_issue (InputSourceIssueStatus | None | Unset):
-        platform (InputSourcePlatformStatusType0 | InputSourcePlatformStatusType1 | None | Unset):
     """
 
     active_consumer_count: int
@@ -62,24 +58,18 @@ class InputSourceStatus:
     source_graph_generation: int
     source_id: str
     state: str
+    action_issue: InputSourceIssueStatus | None | Unset = UNSET
+    diagnostics: None | SourceDiagnosticsEnvelope | Unset = UNSET
     freshness_issue: InputSourceIssueStatus | None | Unset = UNSET
     freshness_remaining_ms: int | None | Unset = UNSET
     issue: InputSourceIssueStatus | None | Unset = UNSET
     last_sample_age_ms: int | None | Unset = UNSET
     lifecycle_issue: InputSourceIssueStatus | None | Unset = UNSET
-    platform: (
-        InputSourcePlatformStatusType0 | InputSourcePlatformStatusType1 | None | Unset
-    ) = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.input_source_issue_status import InputSourceIssueStatus
-        from ..models.input_source_platform_status_type_0 import (
-            InputSourcePlatformStatusType0,
-        )
-        from ..models.input_source_platform_status_type_1 import (
-            InputSourcePlatformStatusType1,
-        )
+        from ..models.source_diagnostics_envelope import SourceDiagnosticsEnvelope
 
         active_consumer_count = self.active_consumer_count
 
@@ -108,6 +98,22 @@ class InputSourceStatus:
         source_id = self.source_id
 
         state = self.state
+
+        action_issue: dict[str, Any] | None | Unset
+        if isinstance(self.action_issue, Unset):
+            action_issue = UNSET
+        elif isinstance(self.action_issue, InputSourceIssueStatus):
+            action_issue = self.action_issue.to_dict()
+        else:
+            action_issue = self.action_issue
+
+        diagnostics: dict[str, Any] | None | Unset
+        if isinstance(self.diagnostics, Unset):
+            diagnostics = UNSET
+        elif isinstance(self.diagnostics, SourceDiagnosticsEnvelope):
+            diagnostics = self.diagnostics.to_dict()
+        else:
+            diagnostics = self.diagnostics
 
         freshness_issue: dict[str, Any] | None | Unset
         if isinstance(self.freshness_issue, Unset):
@@ -145,16 +151,6 @@ class InputSourceStatus:
         else:
             lifecycle_issue = self.lifecycle_issue
 
-        platform: dict[str, Any] | None | Unset
-        if isinstance(self.platform, Unset):
-            platform = UNSET
-        elif isinstance(self.platform, InputSourcePlatformStatusType0):
-            platform = self.platform.to_dict()
-        elif isinstance(self.platform, InputSourcePlatformStatusType1):
-            platform = self.platform.to_dict()
-        else:
-            platform = self.platform
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -175,6 +171,10 @@ class InputSourceStatus:
                 "state": state,
             }
         )
+        if action_issue is not UNSET:
+            field_dict["action_issue"] = action_issue
+        if diagnostics is not UNSET:
+            field_dict["diagnostics"] = diagnostics
         if freshness_issue is not UNSET:
             field_dict["freshness_issue"] = freshness_issue
         if freshness_remaining_ms is not UNSET:
@@ -185,20 +185,13 @@ class InputSourceStatus:
             field_dict["last_sample_age_ms"] = last_sample_age_ms
         if lifecycle_issue is not UNSET:
             field_dict["lifecycle_issue"] = lifecycle_issue
-        if platform is not UNSET:
-            field_dict["platform"] = platform
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.input_source_issue_status import InputSourceIssueStatus
-        from ..models.input_source_platform_status_type_0 import (
-            InputSourcePlatformStatusType0,
-        )
-        from ..models.input_source_platform_status_type_1 import (
-            InputSourcePlatformStatusType1,
-        )
+        from ..models.source_diagnostics_envelope import SourceDiagnosticsEnvelope
 
         d = dict(src_dict)
         active_consumer_count = d.pop("active_consumer_count")
@@ -228,6 +221,42 @@ class InputSourceStatus:
         source_id = d.pop("source_id")
 
         state = d.pop("state")
+
+        def _parse_action_issue(data: object) -> InputSourceIssueStatus | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                action_issue_type_1 = InputSourceIssueStatus.from_dict(data)
+
+                return action_issue_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(InputSourceIssueStatus | None | Unset, data)
+
+        action_issue = _parse_action_issue(d.pop("action_issue", UNSET))
+
+        def _parse_diagnostics(
+            data: object,
+        ) -> None | SourceDiagnosticsEnvelope | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                diagnostics_type_1 = SourceDiagnosticsEnvelope.from_dict(data)
+
+                return diagnostics_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | SourceDiagnosticsEnvelope | Unset, data)
+
+        diagnostics = _parse_diagnostics(d.pop("diagnostics", UNSET))
 
         def _parse_freshness_issue(
             data: object,
@@ -306,48 +335,6 @@ class InputSourceStatus:
 
         lifecycle_issue = _parse_lifecycle_issue(d.pop("lifecycle_issue", UNSET))
 
-        def _parse_platform(
-            data: object,
-        ) -> (
-            InputSourcePlatformStatusType0
-            | InputSourcePlatformStatusType1
-            | None
-            | Unset
-        ):
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_input_source_platform_status_type_0 = (
-                    InputSourcePlatformStatusType0.from_dict(data)
-                )
-
-                return componentsschemas_input_source_platform_status_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                componentsschemas_input_source_platform_status_type_1 = (
-                    InputSourcePlatformStatusType1.from_dict(data)
-                )
-
-                return componentsschemas_input_source_platform_status_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(
-                InputSourcePlatformStatusType0
-                | InputSourcePlatformStatusType1
-                | None
-                | Unset,
-                data,
-            )
-
-        platform = _parse_platform(d.pop("platform", UNSET))
-
         input_source_status = cls(
             active_consumer_count=active_consumer_count,
             backend=backend,
@@ -363,12 +350,13 @@ class InputSourceStatus:
             source_graph_generation=source_graph_generation,
             source_id=source_id,
             state=state,
+            action_issue=action_issue,
+            diagnostics=diagnostics,
             freshness_issue=freshness_issue,
             freshness_remaining_ms=freshness_remaining_ms,
             issue=issue,
             last_sample_age_ms=last_sample_age_ms,
             lifecycle_issue=lifecycle_issue,
-            platform=platform,
         )
 
         input_source_status.additional_properties = d

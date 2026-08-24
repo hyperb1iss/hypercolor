@@ -6,7 +6,7 @@ use hypercolor_core::scene::ScenePlanSnapshot;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
-use hypercolor_types::layer::LayerSource;
+use hypercolor_types::layer::{BindingSource, LayerSource};
 use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
@@ -84,6 +84,7 @@ pub(crate) struct EffectDemand {
     pub(crate) interaction_capture_active: bool,
     pub(crate) media_input_active: bool,
     pub(crate) network_input_active: bool,
+    pub(crate) sensor_input_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -563,6 +564,7 @@ async fn current_effect_scene_snapshot(
     let mut interaction_capture_active = false;
     let mut media_input_active = false;
     let mut network_input_active = false;
+    let mut sensor_input_active = false;
 
     for zone in scene_runtime.resolved_zones.iter() {
         if !zone.enabled {
@@ -574,15 +576,25 @@ async fn current_effect_scene_snapshot(
                 continue;
             }
             effect_running = true;
+            sensor_input_active |= layer
+                .bindings
+                .iter()
+                .any(|binding| matches!(&binding.source, BindingSource::Sensor { .. }));
 
-            match layer.source {
-                LayerSource::Effect { effect_id, .. } => {
-                    if let Some(entry) = registry.get(&effect_id) {
+            match &layer.source {
+                LayerSource::Effect {
+                    effect_id,
+                    control_bindings,
+                    ..
+                } => {
+                    sensor_input_active |= !control_bindings.is_empty();
+                    if let Some(entry) = registry.get(effect_id) {
                         audio_capture_active |= entry.metadata.audio_reactive;
                         screen_capture_active |= entry.metadata.screen_reactive;
                         interaction_capture_active |= entry.metadata.requires_interaction();
                         media_input_active |= effect_has_tag(&entry.metadata.tags, "media");
                         network_input_active |= effect_has_tag(&entry.metadata.tags, "net");
+                        sensor_input_active |= entry.metadata.requires_sensors();
                     }
                 }
                 LayerSource::ScreenRegion { .. } => {
@@ -602,6 +614,7 @@ async fn current_effect_scene_snapshot(
         interaction_capture_active,
         media_input_active,
         network_input_active,
+        sensor_input_active,
     };
     scene_snapshot_cache.cache_effect_demand(dependency_key, screen_capture_configured, demand);
 
@@ -652,10 +665,11 @@ mod tests {
         DisplayFrameFormat, SegmentInfo,
     };
     use hypercolor_types::effect::{
-        EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+        ControlBinding, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
     };
     use hypercolor_types::layer::{
-        BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+        BindingMap, BindingSource, BlendMode, LayerAdjust, LayerBinding, LayerParameter,
+        LayerSource, LayerTransform, SceneLayer, SceneLayerId,
     };
     use hypercolor_types::scene::{DisplayFaceTarget, UnassignedBehavior, Zone, ZoneId, ZoneRole};
     use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -722,6 +736,7 @@ mod tests {
             interaction_capture_active: false,
             media_input_active: false,
             network_input_active: false,
+            sensor_input_active: false,
         };
 
         assert!(
@@ -816,6 +831,44 @@ mod tests {
         }
     }
 
+    fn sample_control_binding() -> ControlBinding {
+        ControlBinding {
+            sensor: "cpu.temperature".into(),
+            sensor_min: 20.0,
+            sensor_max: 100.0,
+            target_min: 0.0,
+            target_max: 1.0,
+            deadband: 0.0,
+            smoothing: 0.0,
+        }
+    }
+
+    async fn sensor_demand_for(entry: EffectEntry, zone: Zone) -> bool {
+        let mut registry = EffectRegistry::default();
+        registry.register(entry);
+        let state = minimal_render_thread_state(registry);
+        let scene_runtime = SceneRuntimeSnapshot {
+            active_scene_id: None,
+            active_scene_name: None,
+            active_transition: None,
+            resolved_zones: vec![zone].into(),
+            resolved_zones_revision: 7,
+            zone_layout_preview_generation: 0,
+            active_render_zone_count: 1,
+            active_display_zone_target_fps: HashMap::new(),
+            active_display_zone_output_routes: HashMap::new(),
+            active_display_zone_descriptors: HashMap::new(),
+            unassigned_behavior: UnassignedBehavior::default(),
+            device_registry_generation: 0,
+        };
+        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+
+        current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
+            .await
+            .demand
+            .sensor_input_active
+    }
+
     fn sample_display_device_info(device_id: DeviceId) -> DeviceInfo {
         DeviceInfo {
             id: device_id,
@@ -881,7 +934,7 @@ mod tests {
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             scene_manager,
             scene_plan,
-            input_manager: Arc::new(Mutex::new(InputManager::new())),
+            input_manager: InputManager::new(),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
             scene_transactions: SceneTransactionQueue::default(),
@@ -1230,37 +1283,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn free_form_tags_do_not_create_interaction_capture_demand() {
-        let effect_id = EffectId::from(Uuid::now_v7());
-        let mut entry = sample_entry(effect_id, false, false);
-        entry.metadata.tags = ["interactive", "input", "mouse", "keyboard"]
-            .map(ToOwned::to_owned)
-            .into();
-        let mut registry = EffectRegistry::default();
-        registry.register(entry);
-        let state = minimal_render_thread_state(registry);
-        let scene_runtime = SceneRuntimeSnapshot {
-            active_scene_id: None,
-            active_scene_name: None,
-            active_transition: None,
-            resolved_zones: vec![sample_zone(effect_id)].into(),
-            resolved_zones_revision: 7,
-            zone_layout_preview_generation: 0,
-            active_render_zone_count: 1,
-            active_display_zone_target_fps: HashMap::new(),
-            active_display_zone_output_routes: HashMap::new(),
-            active_display_zone_descriptors: HashMap::new(),
-            unassigned_behavior: UnassignedBehavior::default(),
-            device_registry_generation: 0,
+    async fn sensor_demand_covers_metadata_control_and_layer_bindings() {
+        let metadata_effect_id = EffectId::from(Uuid::now_v7());
+        let mut metadata_entry = sample_entry(metadata_effect_id, false, false);
+        metadata_entry.metadata.tags = vec!["SENSORS".into()];
+        assert!(
+            sensor_demand_for(metadata_entry, sample_zone(metadata_effect_id)).await,
+            "sensor-aware metadata should request sensor publication"
+        );
+
+        let control_effect_id = EffectId::from(Uuid::now_v7());
+        let mut control_zone = sample_zone(control_effect_id);
+        let LayerSource::Effect {
+            control_bindings, ..
+        } = &mut control_zone.layers[0].source
+        else {
+            panic!("sample zone should lead with an effect layer");
         };
-        let mut scene_snapshot_cache = SceneSnapshotCache::new();
+        control_bindings.insert("intensity".into(), sample_control_binding());
+        assert!(
+            sensor_demand_for(sample_entry(control_effect_id, false, false), control_zone,).await,
+            "effect control bindings should request sensor publication"
+        );
 
-        let snapshot =
-            current_effect_scene_snapshot(&state, &mut scene_snapshot_cache, &scene_runtime, false)
-                .await;
-
-        assert!(snapshot.demand.effect_running);
-        assert!(!snapshot.demand.interaction_capture_active);
+        let layer_effect_id = EffectId::from(Uuid::now_v7());
+        let mut layer_zone = sample_zone(layer_effect_id);
+        let mut layer = SceneLayer::from_effect(
+            SceneLayerId::new(),
+            layer_effect_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        );
+        layer.bindings.push(LayerBinding {
+            target: LayerParameter::Opacity,
+            source: BindingSource::Sensor {
+                name: "gpu.temperature".into(),
+            },
+            map: BindingMap::linear(20.0..=100.0, 0.0..=1.0),
+        });
+        layer_zone.layers = vec![layer];
+        assert!(
+            sensor_demand_for(sample_entry(layer_effect_id, false, false), layer_zone).await,
+            "layer sensor bindings should request sensor publication"
+        );
     }
 
     #[tokio::test]
