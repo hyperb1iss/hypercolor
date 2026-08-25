@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use hypercolor_core::bus::HypercolorBus;
@@ -20,6 +21,7 @@ use crate::output_power::OutputPower;
 /// Owns the core session watcher and the daemon-side power policy task.
 pub struct SessionController {
     watcher: SessionWatcher,
+    cancel: CancellationToken,
     task: JoinHandle<()>,
 }
 
@@ -55,14 +57,19 @@ impl SessionController {
             driver_host,
             driver_registry,
         };
-        let task = tokio::spawn(run_session_loop(event_rx, runtime));
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(run_session_loop(event_rx, runtime, cancel.clone()));
 
-        Self { watcher, task }
+        Self {
+            watcher,
+            cancel,
+            task,
+        }
     }
 
     /// Stop the policy loop and shut down the underlying watcher.
     pub async fn shutdown(self) {
-        self.task.abort();
+        self.cancel.cancel();
         let _ = self.task.await;
         self.watcher.shutdown().await;
     }
@@ -98,11 +105,15 @@ pub(crate) fn platform_session_monitors(
 async fn run_session_loop(
     mut rx: tokio::sync::broadcast::Receiver<SessionEvent>,
     runtime: SessionRuntime,
+    cancel: CancellationToken,
 ) {
     let mut transition_task: Option<JoinHandle<()>> = None;
 
     loop {
-        match rx.recv().await {
+        let Some(event) = receive_session_event(&mut rx, &cancel).await else {
+            break;
+        };
+        match event {
             Ok(event) => {
                 runtime
                     .event_bus
@@ -113,10 +124,7 @@ async fn run_session_loop(
                     continue;
                 }
 
-                if let Some(handle) = transition_task.take() {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                cancel_transition_task(&mut transition_task).await;
 
                 let policy = SleepPolicy::new(config);
                 if let Some(action) = policy.sleep_action(&event) {
@@ -132,7 +140,22 @@ async fn run_session_loop(
         }
     }
 
-    if let Some(handle) = transition_task {
+    cancel_transition_task(&mut transition_task).await;
+}
+
+async fn receive_session_event(
+    rx: &mut tokio::sync::broadcast::Receiver<SessionEvent>,
+    cancel: &CancellationToken,
+) -> Option<Result<SessionEvent, tokio::sync::broadcast::error::RecvError>> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        event = rx.recv() => Some(event),
+    }
+}
+
+async fn cancel_transition_task(transition_task: &mut Option<JoinHandle<()>>) {
+    if let Some(handle) = transition_task.take() {
         handle.abort();
         let _ = handle.await;
     }
@@ -351,4 +374,55 @@ async fn pause_output(
         );
     }
     applied
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+
+    use tokio::sync::{broadcast, oneshot};
+    use tokio_util::sync::CancellationToken;
+
+    use super::{cancel_transition_task, receive_session_event};
+    use hypercolor_types::session::SessionEvent;
+
+    struct DropProbe(Option<oneshot::Sender<()>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            if let Some(dropped) = self.0.take() {
+                let _ = dropped.send(());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_ends_event_wait_while_sender_remains_live() {
+        let (_event_tx, mut event_rx) = broadcast::channel::<SessionEvent>(1);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        assert!(
+            receive_session_event(&mut event_rx, &cancel)
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn transition_cleanup_aborts_and_joins_child_task() {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let mut transition_task = Some(tokio::spawn(async move {
+            let _probe = DropProbe(Some(dropped_tx));
+            let _ = started_tx.send(());
+            pending::<()>().await;
+        }));
+        started_rx.await.expect("child task should start");
+
+        cancel_transition_task(&mut transition_task).await;
+
+        assert!(transition_task.is_none());
+        dropped_rx.await.expect("child task should be dropped");
+    }
 }

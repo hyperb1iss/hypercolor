@@ -238,9 +238,11 @@ impl GpuSparkleFlinger {
                 requires_cpu_sampling_canvas,
                 requires_preview_surface,
             ),
-            ProducerFrame::ScreenPublication(_) => {
-                unreachable!("screen publication frames are composed instead of bypassed")
-            }
+            ProducerFrame::ScreenPublication(publication) => gpu_bypassed_surface_frame(
+                publication.published_surface(),
+                requires_cpu_sampling_canvas,
+                requires_preview_surface,
+            ),
             #[cfg(feature = "servo-gpu-import")]
             ProducerFrame::Gpu(_) => {
                 unreachable!("GPU producer frames are composed instead of bypassed")
