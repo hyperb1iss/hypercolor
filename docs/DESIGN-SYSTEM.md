@@ -8,7 +8,7 @@ breathes light.
 surface, not a proposal.
 **Scope:** The web UI (`crates/hypercolor-ui/`) and any future surface that
 renders application chrome.
-**Last reconciled with code:** 2026-05-17
+**Last reconciled with code:** 2026-08-25
 
 > **Source of truth.** Exact token values live in
 > `crates/hypercolor-ui/tokens/primitives.css` and `tokens/semantic.css`;
@@ -119,8 +119,8 @@ surfaces nearly none. This keeps the dark UI rich and the light UI clean.
 **SilkCircuit accents.** The palette is shared across Bliss's tooling ecosystem.
 Interactive chrome and status components consume it through semantic tokens.
 
-| Token | OKLCH | Hex anchor | Role |
-| ----- | ----- | ---------- | ---- |
+| Token | OKLCH | SilkCircuit source hex | Role |
+| ----- | ----- | ---------------------- | ---- |
 | `--color-purple` | `oklch(0.65 0.30 320)` | `#e135ff` | Primary accent |
 | `--color-cyan` | `oklch(0.88 0.18 175)` | `#80ffea` | Interactive focus |
 | `--color-coral` | `oklch(0.72 0.22 350)` | `#ff6ac1` | Secondary accent |
@@ -128,6 +128,14 @@ Interactive chrome and status components consume it through semantic tokens.
 | `--color-green` | `oklch(0.85 0.22 155)` | `#50fa7b` | Success |
 | `--color-red` | `oklch(0.68 0.22 25)` | `#ff6363` | Error, danger |
 | `--color-blue` | `oklch(0.72 0.12 260)` | `#82aaff` | Info |
+
+The hex column is the palette's SilkCircuit lineage value and the exact numeric
+triplet the `--glow-rgb` system uses (§4.2). It is **not** a preview of the
+OKLCH beside it. The tokens were re-tuned from those hexes and none of the
+seven round-trip: purple renders `#d91dfc`, cyan `#00fdd1`, coral `#ff5cb8`,
+yellow `#f7ed6c`, green `#00f68b`, red `#ff4c4d`, blue `#78a5ef`. Cyan, coral,
+green, and red sit outside sRGB and clip on the way out, cyan worst of all.
+Read the two columns as two related systems, never as one value written twice.
 
 `--color-purple-hover` and `--color-purple-light` extend the primary accent.
 Data visualization and decorative spectra may use a primitive directly when
@@ -177,12 +185,16 @@ disabled), `--text-inverse`.
 light mode is black at 10%, 16%, and 24%. `--border-focus` is cyan in dark,
 purple in light.
 
-**Accent:** `--accent`, `--accent-hover`, `--accent-muted` (12% wash),
-`--accent-subtle` (6% wash). Light mode desaturates the accent slightly so it
-does not vibrate against bright surfaces.
+**Accent:** `--accent`, `--accent-hover`, `--accent-muted`, `--accent-subtle`.
+The two washes differ per theme: 12% and 6% in dark, 10% and 5% in light. Light
+mode also desaturates and darkens the accent so it does not vibrate against
+bright surfaces.
 
 **Status:** `--status-success`, `--status-error`, `--status-warning`,
-`--status-info` resolve to the green, red, yellow, and blue primitives.
+`--status-info` resolve to the green, red, yellow, and blue primitives in dark
+mode. Light mode substitutes independently darkened values rather than
+re-tinting the same ones, and shifts warning toward amber
+(`oklch(0.58 0.14 85)` against the dark `oklch(0.93 0.15 105)`).
 
 Glows and ambient tokens are covered in §4 and §9.
 
@@ -191,8 +203,9 @@ Glows and ambient tokens are covered in §4 and §9.
 Theme is a `data-theme` attribute on `<html>` (`dark` is the default and the
 unattributed fallback). The preference persists to `localStorage` under
 `hc-theme` and is restored by an inline script in `index.html` **before first
-paint**, so there is no flash. In the running app, `ThemeContext` exposes
-`is_dark` and a `toggle` callback.
+paint**, so there is no flash. There is no runtime theme context and no toggle
+control: nothing in the Rust UI writes `hc-theme` or sets `data-theme`, so
+today light mode is reached only by setting that localStorage key by hand.
 
 Dark is the primary, fully-featured mode. Light is a real, supported complement
 for daytime use, not an afterthought, but it is derived from the same system
@@ -216,9 +229,11 @@ Components use the readable aliases, not raw `var()`.
 
 Note the deliberate naming: surfaces keep the `surface-` prefix, but text aliases
 are `fg-*` and borders are `edge-*`. The short forms avoid the awkward
-`text-text-*` and `border-border-*` doubling. Legacy `bg-layer-0..4` and
-`text-fg`, `-muted`, `-dim` aliases still resolve for migration safety; prefer
-the semantic names above.
+`text-text-*` and `border-border-*` doubling. Only the families in the table
+resolve. There is no bare `text-fg`, no `text-muted`, no `text-dim`, and no
+`bg-layer-*`: Tailwind v4 generates a utility only where an `@theme` property
+exists, and `primitives.css` declares none of those. Writing one produces a
+class that renders nothing.
 
 ---
 
@@ -248,17 +263,20 @@ Effect categories map to a badge style and an accent RGB triplet via
 | -------- | ----- | ----------- |
 | `ambient` | Neon cyan | `128, 255, 234` |
 | `audio` | Coral | `255, 106, 193` |
-| `display` | Coral | `255, 106, 193` |
-| `gaming` | Electric purple | `225, 53, 255` |
-| `reactive` | Electric yellow | `241, 250, 140` |
-| `source` | Electric yellow | `241, 250, 140` |
 | `generative` | Success green | `80, 250, 123` |
+| `particle` | Electric purple | `225, 53, 255` |
+| `scenic` | Soft pink (accent hover) | `255, 153, 255` |
 | `interactive` | Info blue | `130, 170, 255` |
-| `productivity` | Soft pink | `255, 153, 255` |
+| `fun` | Light purple | `189, 0, 221` |
+| `source` | Electric yellow (status warning) | `241, 250, 140` |
 | `utility`, unknown | Tertiary gray | `139, 133, 160` |
+| `display` | Coral | `255, 106, 193` |
 
-The triplet feeds the `--glow-rgb` system below. Add a category here and nowhere
-else.
+The triplet feeds the `--glow-rgb` system below. The category set is not open:
+it is fixed by the ten `EffectCategory` variants in
+`crates/hypercolor-types/src/effect.rs`, and `category_style()` carries exactly
+one arm per variant plus a fallback. Adding a category means adding the variant
+first, then the arm, then this row.
 
 ### 4.2 The `--glow-rgb` Named-Accent System
 
@@ -275,6 +293,7 @@ through component source:
 .accent-purple  brand, page headers       .accent-yellow  warnings, timestamps
 .accent-cyan    live state, widgets        .accent-green   success states
 .accent-coral   display-face chrome        .accent-red     errors
+.accent-pink    media library identity
 ```
 
 For dynamic colors (a preset row painted from its own control values, a card
@@ -296,7 +315,9 @@ colors, every session: identity without a stored palette.
 **Satoshi** is the interface typeface, a geometric sans with more personality
 than Inter, tighter metrics, and an excellent weight range. It reads as
 *designed*. **JetBrains Mono** carries every number, metric, hex value, and code
-fragment. Both load from Bunny Fonts (privacy-respecting, no Google tracking).
+fragment. **Sora** is the display face and does one job, the page title (§5.2).
+All three load from Bunny Fonts (privacy-respecting, no Google tracking), and
+they are the only faces the app fetches.
 
 The root is set to `font-size: 112.5%` (an 18px base), so `1rem` is 18px. Body
 text runs `letter-spacing: -0.01em` with `line-height: 1.5`; headings tighten to
@@ -318,11 +339,30 @@ Mono scale: 14px/500 for hex values in pickers, 12px/400 for status values and
 the FPS counter, 10px/400 for slider values and RGB channels. Mono runs with
 ligatures off (`liga 0`).
 
+The Display row is the ramp's top step, not a description of the page header.
+The shipped page title is `.page-title`: 21px, weight 500, +0.02em, in Sora
+(§5.2), and it steps down on the tighter phone header row.
+
 ### 5.2 Display Faces
 
-Three extra families (**Orbitron**, **Playfair Display**, **Dancing Script**)
-load solely for the logo (§11). They are *brand-identity* faces, never interface
-text. Do not use them in components.
+Exactly three families load, all from Bunny Fonts in `index.html`: **Satoshi**
+(400/500/600/700), **JetBrains Mono** (400/500/600 plus 400 italic), and
+**Sora** (400/500/600). Nothing else is fetched, so any face named in a stack
+without one of those three behind it silently falls back.
+
+**Sora** is the display face, and it has exactly one job: `.page-title` in
+`input.css`, at 21px, weight 500, +0.02em tracking, with an accent-forward
+gradient clipped to the glyphs (a bright tint of the page's accent leading into
+the full accent and out to an adjacent-hue tail, plus a dark-only neon halo and
+a light-mode re-mix toward ink). `PageHeader` picks the accent through the
+`.page-title-*` variants. Do not reach for Sora elsewhere. `--font-display`
+still resolves to Satoshi; Sora is applied directly by the `.page-title` rule
+rather than through a token.
+
+> **Known remnant.** `crates/hypercolor-ui/src/vendors.rs` returns a stack
+> beginning with `'Orbitron'` for `VendorFont::Display`. Orbitron has not
+> loaded since the logo modes were removed, so those vendor marks render in
+> Satoshi. The stack is a code bug to clean up, not a face to reintroduce.
 
 ---
 
@@ -483,29 +523,28 @@ under `prefers-reduced-motion`.
 
 ## 11. The Hypercolor Logo
 
-The logo is the product's one sanctioned piece of maximalism: a click-to-cycle
-brand mark with **nine fully distinct animated identities**, quarantined to the
-sidebar. It is where the system spends the drama it withholds everywhere else.
+One canonical trinity mark, quarantined to the sidebar. The glyph itself never
+moves. The light behind it does, and that single slow drift is the whole of the
+brand's motion budget.
 
-| # | Mode | Face | Character |
-| - | ---- | ---- | --------- |
-| 0 | Circuit | Orbitron | Cyan-green PCB traces, scanning beam |
-| 1 | Silk | Orbitron | Rose-lavender aurora ribbons |
-| 2 | Bloom | Orbitron | Coral-pink breathe, sparkle dust |
-| 3 | Whisper | Satoshi | Ethereal ultra-wide, parallax starfield |
-| 4 | Prism | Orbitron | Rotating conic caustics, light flares |
-| 5 | Script | Dancing Script | Cursive, rising sparkle motes |
-| 6 | Editorial | Playfair Display | High-fashion serif, halftone shimmer |
-| 7 | Neon | JetBrains Mono | Split-color terminal, digital rain |
-| 8 | Glitch | Orbitron | Chromatic aberration, CRT scanlines |
+The expanded rail renders the vertical lockup
+(`/assets/brand/lockup-vertical-color.png` at `h-24`) over a `.logo-bg-mark`
+aura: a radial gradient of the accent purple at 18% opacity fading to
+transparent at 65%, blurred 6px, running `markChillAura` for a full 360 degree
+hue rotation over 24 seconds, linear and infinite. The collapsed rail swaps to
+the square mark (`/assets/brand/mark-color.png` at `w-8 h-8`) with no aura
+behind it. Both images carry
+`.logo-mark-image`, a 14px accent drop shadow at 32% opacity.
 
-Each mode has a matching collapsed `.logo-mark-*` for the rail. Every logo
-animation is disabled under `prefers-reduced-motion`, and light mode swaps in
-darker gradient stops so the mark holds contrast on a bright surface.
+`.logo-container` presses to `scale(0.97)` on `:active` and still sets
+`cursor: pointer`, which is a leftover affordance: nothing binds a click
+handler to the mark today. `.logo-bg-mark` sits in the reduced-motion block, so
+the aura holds a still frame when the user asks for less motion.
 
-The logo's exuberance is the *exception that proves principle 1*: because the
-chrome around it is so disciplined, the logo can be loud without the product
-feeling loud. Do not let its energy migrate into components.
+The mark's restraint is *principle 1 applied to the brand itself*. The one
+place the system could justify spending drama, it spends a hue drift instead.
+Do not reintroduce per-mode variants, and do not let brand motion migrate into
+components.
 
 ---
 
@@ -513,29 +552,50 @@ feeling loud. Do not let its energy migrate into components.
 
 ### 12.1 Cards
 
-Surface `--surface-overlay`, 1px `--border-subtle`, `rounded-xl`. A category
-gradient accents the top edge. On hover the border brightens toward
-`--border-default` and an ambient glow emanates (no lift); the active effect's
-card pulses `breathe` with an `--ambient-border` edge.
+Panel and settings cards sit on `--surface-overlay` with a 1px
+`--border-subtle` edge and `rounded-xl`. The effect card keeps that border and
+radius but supplies its own background: a radial gradient built from the
+category triplet, with a cached thumbnail and then a curated cover image
+painted over it when either is available.
+
+Hover is `.card-hover`: the border brightens to `--accent-muted`, a
+`--glow-rgb` bloom emanates, and the whole card goes to `brightness(1.06)`.
+There is no lift and no translation. Press squishes to `scale(0.97)`.
+
+The active effect card does not animate. It holds a brighter `--accent` border
+at 50%, an inset accent ring, and a short `--accent` bar centered on the top
+edge. Continuous `breathe` belongs to device cards and dashboard charts, not to
+effect cards.
 
 ### 12.2 Sidebar
 
 Surface `--surface-raised`. Brand mark on top, nav items (icon plus label), a
 spacer, the ambient-tinted "Now Playing" block with transport controls, and a
-collapse toggle. Active nav item: a 3px left bar in `--accent` over an
-`--accent-subtle` wash. Hover: an inner glow, no translation.
+collapse toggle. Active nav item: a 3px left bar in `--accent` carrying its own
+accent glow, and the label lifts to `--text-primary`. There is no background
+wash on the active item. Inactive items sit at `--text-tertiary` and take a
+`--surface-hover` wash plus a 24px inner glow on hover, with no translation.
 
 ### 12.3 Controls
 
-- **Slider.** 4px track, 14px white thumb with an accent glow that brightens and
-  scales on hover, presses on active. The `.slider-silk` and color-channel
-  variants build on the same base.
+- **Slider.** The base `input[type="range"]` is a 5px `--border-subtle` track
+  with a 14px `--accent` thumb and a `--glow-accent` bloom that brightens and
+  scales 1.15x on hover. `.slider-silk` is the refined variant: a 4px
+  translucent white track with a 14px white thumb whose glow reads
+  `--glow-rgb`, scaling 1.2x on hover and 0.95x on press. `.color-channel`
+  overrides the base with a 10px transparent track and a white thumb.
 - **Toggle.** The track glows when on (`.toggle-track-on`); the thumb springs
   across with a halo.
 - **Color picker.** A glowing swatch button expands into a floating
   `.color-picker-popover` (hex input, preview, quick-pick grid, RGB channels).
-- **Select.** `.select-silk` styles the native control with a custom chevron,
-  `--surface-sunken` background, and an accent focus treatment.
+- **Select.** `SilkSelect` (`src/components/silk_select.rs`) is the canonical
+  dropdown: a trigger button plus a *portaled* option panel, with click-outside
+  dismissal, scroll-close, Escape, arrow/Home/End keyboard navigation, and
+  `listbox`/`option` ARIA. It exists because a native `<option>` popup cannot
+  be themed on Linux and Firefox, and because cards are `overflow-hidden`, so
+  an in-card dropdown must portal or it gets clipped. `.select-silk` styles a
+  bare native `<select>` (custom chevron, `--surface-sunken` background, accent
+  focus) and is only for the few places a native control is genuinely wanted.
 
 ### 12.4 Focus
 
@@ -595,6 +655,14 @@ as the checklist.
 
 When this guide and the shipped CSS disagree, the CSS is authoritative, and
 fixing this guide is part of the task.
+
+> **Where rules 1 and 4 stand today.** They are the target, not a description
+> of the current tree. `crates/hypercolor-ui/src/` holds 414 raw `rgba()`
+> triplets, 317 of them a color other than pure black or white, plus 72
+> six-digit hex literals outside `vendors.rs`. The accent purple triplet
+> `225, 53, 255` is hardcoded in 31 files under `src/`. Treat the two rules as
+> the standard new code is held to; the size and priority of the migration
+> backlog is an open call for the design system's owner.
 
 ---
 
