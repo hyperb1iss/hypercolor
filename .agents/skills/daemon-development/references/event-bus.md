@@ -15,6 +15,8 @@ bus.publish(HypercolorEvent::EffectStarted {
     trigger: ChangeTrigger::Api,
     previous: None,
     transition: None,
+    zone_id: Some(zone_id),
+    zone_name: Some(zone_name),
 });
 
 // Subscribing (unfiltered -- receives all events)
@@ -27,20 +29,26 @@ while let Ok(timestamped) = rx.recv().await {
 }
 
 // Subscribing (filtered -- only matching events)
-let rx = bus.subscribe_filtered(EventFilter::category(EventCategory::Effect));
+let rx = bus.subscribe_filtered(
+    EventFilter::new().categories(vec![EventCategory::Effect]),
+);
 ```
+
+`EventFilter` is a builder over two optional fields: `new()`, then `categories(Vec<EventCategory>)` and `min_priority(EventPriority)`, combining with AND. There is no `category(..)` singular constructor.
+
+A struct expression must name every field even where `#[serde(default)]` is present: `serde(default)` governs deserialization only, so omitting `zone_id` or `zone_name` above is an E0063, not a default. `zone_id` and `zone_name` are `None` only for publishers with no zone context, such as session restore.
 
 **Use for**: Discrete state change notifications (effect started, device connected, config changed). Multiple consumers need every event.
 
 ### 2. Watch (tokio::sync::watch)
 
-**Latest-value only** -- consumers see the most recent value, not a queue. The bus exposes typed sender/receiver accessor methods (no public fields).
+**Latest-value only** -- consumers see the most recent value, not a queue. Each stream is a `WatchLane<T>`, a typed latest-value channel that also counts publications and revisions. The bus exposes lane accessors and receiver accessors; there are no public fields and no `*_sender()` accessors for the unkeyed lanes.
 
 ```rust
-// Publishing via sender accessors (returns &watch::Sender<T>)
-bus.frame_sender().send_replace(frame_data);
-bus.spectrum_sender().send_replace(spectrum_data);
-bus.canvas_sender().send_replace(canvas_frame);
+// Publishing through the lane (returns &WatchLane<T>)
+bus.frame_lane().send_replace(frame_data);
+bus.spectrum_lane().send_replace(spectrum_data);
+bus.canvas_lane().send_replace(canvas_frame);
 
 // Subscribing via receiver methods (returns watch::Receiver<T>)
 let mut canvas_rx = bus.canvas_receiver();
@@ -57,36 +65,47 @@ bus.spectrum_receiver_count();
 bus.canvas_receiver_count();
 ```
 
+`WatchLane` offers `subscribe()`, `borrow()`, `send()` (fails when no receiver exists), `send_replace()` (always replaces), and the `_weighted` forms that count an explicit number of logical payloads for telemetry.
+
+Eight unkeyed lanes exist, each with a matching `_lane()`, `_receiver()`, and `_receiver_count()` accessor: `frame`, `spectrum`, `canvas`, `scene_canvas`, `screen_canvas`, `screen_zones`, `web_viewport_canvas`, `zone_preview`. The one keyed stream is per-zone display output, reached through `bus.zone_canvas_sender(zone_id)` and `bus.zone_canvas_receiver(zone_id)`, which return real `watch::Sender` / `watch::Receiver` handles rather than a lane.
+
 **Use for**: High-frequency data (frames at 30-60 FPS, audio spectrum, canvas snapshots). Consumers only need latest -- no buffering.
 
 ### Note: No MPSC on the Bus
 
-The `HypercolorBus` itself only provides broadcast and watch channels. Render commands from API handlers to the render thread use separate `tokio::sync::mpsc` channels created during daemon startup and passed directly to the render loop -- they are not part of the bus API.
+The `HypercolorBus` itself only provides broadcast and watch lanes. API mutations do not send commands to the render thread over a channel: they commit through a domain service, which enqueues a `SceneTransaction` on `AppState::scene_transactions` (a `SceneTransactionQueue`, `src/scene_transactions.rs`). The render thread drains that queue at a frame boundary in `render_thread::frame_executor::service_scene_transactions`. There is no `RenderCommand` type.
 
 ## Event Taxonomy
 
 Events are `HypercolorEvent` variants grouped by `EventCategory` with `EventPriority` levels.
 
-| Event                              | Category | Source                        |
-| ---------------------------------- | -------- | ----------------------------- |
-| `EffectStarted`                    | Effect   | API handler, scene activation |
-| `EffectStopped`                    | Effect   | Render thread, API stop       |
-| `EffectControlChanged`             | Effect   | API handler                   |
-| `EffectRegistryUpdated`            | Effect   | Rescan                        |
-| `DeviceDiscovered`                 | Device   | Discovery scan                |
-| `DeviceConnected`                  | Device   | Backend connection            |
-| `DeviceDisconnected`               | Device   | Lifecycle manager             |
-| `DeviceError`                      | Device   | Backend driver                |
-| `SceneActivated`                   | Scene    | Scene manager                 |
-| `SceneLibraryChanged`              | Scene    | Scene service                 |
-| `ConfigChanged`                    | System   | Config API                    |
-| `FrameRendered`                    | System   | Render thread                 |
-| `FpsChanged`                       | System   | Adaptive FPS                  |
-| `BrightnessChanged`                | System   | Settings API                  |
-| `BeatDetected`                     | Audio    | Audio processor               |
-| `AudioLevelUpdate`                 | Audio    | Audio processor               |
-| `LayoutChanged`                    | Layout   | Spatial engine                |
-| `DaemonStarted` / `DaemonShutdown` | System   | Daemon lifecycle              |
+| Event                              | Category | Where it is published                                     |
+| ---------------------------------- | -------- | --------------------------------------------------------- |
+| `EffectStarted`                    | Effect   | `domain/scene.rs`, queued on the scene mutation           |
+| `EffectStopped`                    | Effect   | `domain/scene.rs`, on `clear_zone_effect`                 |
+| `EffectControlChanged`             | Effect   | `domain/scene.rs`, on the controls patch                  |
+| `EffectRegistryUpdated`            | Effect   | `domain/effect.rs`, from the rescan report                |
+| `DeviceDiscovered`                 | Device   | `discovery/scan.rs`                                       |
+| `DeviceConnected`                  | Device   | `discovery/device_helpers.rs`                             |
+| `DeviceDisconnected`               | Device   | `discovery/scan.rs` and `discovery/lifecycle.rs`          |
+| `DeviceError`                      | Device   | **nowhere yet**: declared, never constructed              |
+| `SceneActivated`                   | Scene    | **nowhere yet**: declared, never constructed              |
+| `SceneLibraryChanged`              | Scene    | `domain/scene.rs`, on library create/update/delete        |
+| `ConfigChanged`                    | System   | `api/config.rs`, from the handler after the save succeeds |
+| `FrameRendered`                    | System   | `render_thread/frame_io.rs`                               |
+| `FpsChanged`                       | System   | **nowhere yet**: declared, never constructed              |
+| `BrightnessChanged`                | System   | `output_power.rs`, alongside `DeviceSettingsChanged`      |
+| `BeatDetected`                     | Audio    | **nowhere yet**: declared, never constructed              |
+| `AudioLevelUpdate`                 | Audio    | `render_thread/frame_io.rs`                               |
+| `LayoutChanged`                    | Layout   | **nowhere yet**: declared, never constructed              |
+| `DaemonStarted` / `DaemonShutdown` | System   | `startup/lifecycle.rs`                                    |
+
+The five variants marked "nowhere yet" are declared in
+`hypercolor-types/src/event.rs`, serialize, and are matched on by relays and
+tests, but no production code path constructs them today. Do not wire a
+subscriber to one expecting traffic, and do not assume the obvious producer
+(the adaptive FPS controller, the spatial engine, the audio processor) is
+already publishing.
 
 Priority levels: `Critical` (shutdown, critical errors), `High` (device connect/disconnect), `Normal` (most events), `Low` (frame rendered, beats, webhooks).
 

@@ -15,41 +15,75 @@ The daemon (`hypercolor-daemon`) serves the REST API, WebSocket protocol, and or
 
 ## AppState
 
-`AppState` holds 35+ fields (many `Arc`-wrapped), shared with Axum handlers via `State<Arc<AppState>>` extractor. Key fields:
+`AppState` holds 47 fields (many `Arc`-wrapped), shared with Axum handlers via the `State<Arc<AppState>>` extractor. The first field is the one that matters most:
 
-- `effect_engine: Arc<Mutex<EffectEngine>>` — active effect lifecycle
-- `effect_registry: Arc<RwLock<EffectRegistry>>` — effect catalog (metadata, search, categories)
-- `event_bus: Arc<HypercolorBus>` — system-wide event bus (broadcast + watch channels)
+- `domains: DomainContexts` — the complete domain service graph; every mutating handler goes through it
+- `event_bus: Arc<HypercolorBus>` — system-wide event bus (broadcast + watch lanes)
 - `backend_manager: Arc<Mutex<BackendManager>>` — device output routing
 - `config_manager: Option<Arc<ConfigManager>>` — wraps `ArcSwap<HypercolorConfig>` for lock-free reads; `None` in tests
 - `device_registry: DeviceRegistry` — device tracking (internally `Arc`-wrapped, cloneable)
-- `scene_manager: Arc<RwLock<SceneManager>>` — scene CRUD, priority stack, transitions
+- `scene_manager: SceneService` — scene CRUD, priority stack, transitions
 - `render_loop: Arc<RwLock<RenderLoop>>` — frame timing and pipeline skeleton
-- `spatial_engine: Arc<RwLock<SpatialEngine>>` — maps canvas pixels to LED positions
-- `library_store: Arc<dyn LibraryStore>` — favorites, presets, playlists (JSON-backed or in-memory)
-- `credential_store: Arc<CredentialStore>` — AES-256-GCM encrypted network credentials
-- `power_state: watch::Sender<OutputPowerState>` — global brightness and output state
+- `spatial_engine: SpatialService` — maps canvas pixels to LED positions; an `ArcSwap` newtype, so reads are lock-free
+- `output_power: OutputPower` — the canonical global power and brightness authority
+- `scene_transactions: SceneTransactionQueue` — frame-boundary scene changes mirrored into the render thread
+- `security_state: SecurityState` — API auth and rate limiting for HTTP and WS command dispatch
+- `extensions` / `api_extensions` — typed state and route mounters owned by downstream daemon extensions
 
-**Why Mutex on EffectEngine/BackendManager?** They hold `dyn` trait objects that aren't `Sync`. `RwLock` requires `Sync` on the inner type.
+`library_store` and `input_manager` are private; reach them through `state.library_store()` and `state.input_manager()`. There is no `effect_engine`, no `effect_registry`, no `credential_store`, and no `power_state` field: the effect catalog lives inside `domains.effects`, and power lives in `output_power`.
+
+**Why Mutex on BackendManager?** It holds `dyn` trait objects that aren't `Sync`. `RwLock` requires `Sync` on the inner type.
+
+## Domain Services
+
+`AppState::domains` (`src/domain/context.rs`) is the composition root for eleven authorities, each owning its own commit ordering, persistence, and event publication:
+
+`runtime_session`, `devices`, `scene`, `layout`, `output`, `platform`, `display`, `diagnostics`, `effects`, `scene_tree`, `scene_library`.
+
+A handler is a thin adapter: convert wire input, call one service function, wrap the outcome. It does not lock a subsystem mutex, and event publication is the service's job in almost every domain, because the service knows when the commit actually landed. The config routes are the standing exception: `api/config.rs` publishes `ConfigChanged` from the handler itself, after the save succeeds. Follow the service pattern unless you are extending that route family. Mutations take their provenance beside the command as a `MutationContext` (`MutationContext::api()` for REST, `MutationContext::mcp()` for MCP), never inside the command payload.
+
+```rust
+// src/api/output.rs (both handlers in full)
+pub async fn get_output(State(state): State<Arc<AppState>>) -> Response {
+    envelope::ok(domain::output::get_output(&state.domains.output))
+}
+
+pub async fn patch_output(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<OutputPatchRequest>,
+) -> Response {
+    match domain::output::patch_output(&state.domains.output, request).await {
+        Ok(outcome) => envelope::ok(outcome.output),
+        Err(error) => error.into_response(),
+    }
+}
+```
+
+Services return `Result<T, DomainError>` and never mention Axum, `Response`, or an HTTP status. Each transport owns exactly one `DomainError` projection, so the same service backs REST, MCP, WS commands, and the CLI.
 
 ## REST API Patterns
 
-All routes under `/api/v1/`. Success envelope:
+All routes under `/api/v1/`. Request and response contracts live in `hypercolor_types::api` (seventeen domain modules plus `envelope`), shared by the daemon, the web UI, the TUI, the CLI, and the generated Python client. Never hand-mirror one of these types in the daemon.
 
 ```rust
-pub struct ApiResponse<T: Serialize> {
+// hypercolor_types::api::envelope
+pub struct ApiResponse<T> {
     pub data: T,
-    pub meta: Meta,
+    pub meta: ResponseMeta,
 }
 
-pub struct Meta {
+pub struct ResponseMeta {
     pub api_version: String,    // "1.0"
     pub request_id: String,     // "req_{uuid_v7}"
     pub timestamp: String,      // ISO 8601 UTC, e.g. "2026-03-29T12:00:00.000Z"
 }
 ```
 
-Errors have exactly one rendering: the `IntoResponse` impl on `DomainError` in `src/domain/mod.rs`. A handler builds the variant that describes the failure and calls `.into_response()`; a helper returns `Result<T, DomainError>` so the route can `?` it or match on it. Constructors read like the failure: `DomainError::not_found(ResourceKind::Scene, id)`, `validation(msg)`, `validation_field(field, msg)`, `malformed(msg)`, `conflict(msg)`, `unauthorized(msg)`, `forbidden(msg)`, `unsupported_media_type(msg)`. Never hand-build an error body and never hand a `Response` back through a `Result`; `tests/api_error_surface_tests.rs` scans every file under `src/` for both and fails the build.
+Handlers wrap payloads with the free functions in `crate::api::envelope`: `envelope::ok(data)` (200), `envelope::created(data)` (201), `envelope::accepted(data)` (202). They return `Response`, not `Json<...>`.
+
+Most list routes answer `ListResponse<T> { items, total, page }`, where `page: Option<PageInfo>` is present only on routes that genuinely page. Domain aliases name the concrete shape, so `EffectListResponse` is `ListResponse<EffectSummary>`. Five list routes do not: `/displays`, `/capture/monitors`, `/config/schema`, and `/simulators/displays` put a bare JSON array in `data` (they are declared with `OperationDoc::get_vec` rather than `get_list`), and `/control-surfaces` answers `ControlSurfaceListResponse { surfaces }`. Check the route's `OperationDoc` before assuming the envelope shape.
+
+Errors have exactly one REST rendering: the `IntoResponse` impl on `DomainError` in `src/api/error.rs`. The error type itself lives in `src/domain/mod.rs` and stays transport free, because each transport owns its own projection. A handler builds the variant that describes the failure and calls `.into_response()`; a helper returns `Result<T, DomainError>` so the route can `?` it or match on it. Constructors read like the failure: `DomainError::not_found(ResourceKind::Scene, id)`, `validation(msg)`, `validation_field(field, msg)`, `malformed(msg)`, `conflict(msg)`, `unauthorized(msg)`, `forbidden(msg)`, `unsupported_media_type(msg)`. Never hand-build an error body and never hand a `Response` back through a `Result`; `tests/api_error_surface_tests.rs` scans every file under `src/` for both and fails the build.
 
 The error envelope is `{ error: { code, message, details }, meta }`, where `details` is omitted entirely when the variant carries no structured context. See `references/api-patterns.md` for the full variant, code, and status table.
 
@@ -71,20 +105,48 @@ Key route groups (path parameters use `{id}` Axum syntax, not `:id`):
 | `/layouts`                  | Spatial layout CRUD + active + preview + `{id}/apply`   |
 | `/config`                   | Show/get/set/reset system config values                 |
 | `/output`                   | Global output power and brightness get/patch            |
-| `/system`                   | Public identity plus authorized daemon status           |
+| `/system`                   | Public identity, authorized status, audio devices, sensors |
 | `/diagnose`                 | System diagnostics                                      |
+| `/assets`                   | User media asset CRUD plus `{id}/blob` and `{id}/thumbnail` |
+| `/capture`                  | Screen-recording authorization, monitor list, source selection |
+| `/input/authorize`          | Input-monitoring permission grant                       |
+| `/media/authorize`          | Media Automation permission grant                       |
+| `/control-surfaces`         | Control surface catalog, value patch, action invocation |
+| `/displays`                 | Display devices, face assign/composition/controls, frame |
+| `/drivers`                  | Driver module catalog, config, controls                 |
+| `/simulators/displays`      | Virtual display simulator CRUD plus `{id}/frame`        |
+
+`/health` sits at the root, outside `/api/v1`.
+
+**Route registration.** Routes never register with a bare `.route()`. Each domain owns a sub-router in `src/api/routes/<domain>.rs` exporting `pub(super) fn router() -> OpenApiRouter<Arc<AppState>>`, and every entry goes through `openapi::documented_route(path, method_router, [OperationDoc..])` so the operation lands in the OpenAPI document. `routes::versioned()` merges all eighteen sub-routers. See `references/api-patterns.md` for the full pattern and the gate that enforces it.
+
+**Security.** One `enforce_security` middleware layer (`src/api/security.rs`) wraps the whole router with a `SecurityState` carrying auth config, the macOS session credential, the network access policy, and a rate limiter. Exactly one serving `SecurityState` is minted per process in `api::build_state`; every other `AppState` is a worker projection holding `SecurityState::unserved`. When a UI directory is configured, a `StaticAssetSurface` tells the middleware which prefixes belong to the API so a browser fetching a stylesheet is not asked for a bearer header. CORS origins come from `WebConfig` and apply only while security is enabled.
+
+**Extensions.** Downstream builds layer on without patching the daemon: `AppState::extensions` (an `ExtensionRegistry`) holds their typed state, and each `Arc<dyn ApiExtension>` in `AppState::api_extensions` gets `mount_api_routes(router)` called on the `OpenApiRouter` before it is split, so extension routes are documented like any other. Extensions push their own state changes as `HypercolorEvent::ExtensionStateChanged`, which the WS event relay carries with no daemon changes.
 
 ## WebSocket Protocol
 
-Single endpoint at `/api/v1/ws`. Five of the fifteen topics:
+Single endpoint at `/api/v1/ws`. All fifteen topics are declared in one `define_ws_topics!` block in `hypercolor-leptos-ext/src/ws/registry.rs`, which is the single definition of the wire format for the daemon, the web UI, and the TUI. Never hand-roll a frame layout.
 
-| Topic      | Data                                                 | Format                 |
-| ---------- | ---------------------------------------------------- | ---------------------- |
-| `events`   | State changes (effect applied, device connected)     | JSON                   |
-| `frames`   | LED color output per device                          | Binary                 |
-| `canvas`   | Render canvas pixels (default 640x480, configurable) | Binary (header `0x03`) |
-| `spectrum` | Audio analysis (FFT, beats)                          | JSON                   |
-| `metrics`  | Performance telemetry (FPS, frame times)             | JSON                   |
+| Topic                 | Data                                                 | Binary tags        | Backpressure    |
+| --------------------- | ---------------------------------------------------- | ------------------ | --------------- |
+| `events`              | State changes (effect applied, device connected)     | JSON               | Lossless        |
+| `frame_events`        | `FrameRendered` events, split off the default channel | JSON              | Lossless        |
+| `input_events`        | Host `InputEventReceived` events; control-authorized because they carry keystroke data | JSON | Lossless |
+| `metrics`             | Performance telemetry (FPS, frame times)             | JSON               | DropWithNotice  |
+| `device_metrics`      | Per-device metrics snapshots                         | JSON               | DropWithNotice  |
+| `sensors`             | System sensor readings                               | JSON               | LatestWins      |
+| `frames`              | LED color output per device                          | `0x01`             | DropWithNotice  |
+| `spectrum`            | Audio analysis (FFT, beats)                          | `0x02`             | DropWithNotice  |
+| `canvas`              | Render canvas pixels (default 640x480, configurable) | `0x03`             | LatestWins      |
+| `screen_canvas`       | Screen-source canvas                                 | `0x05`             | LatestWins      |
+| `web_viewport_canvas` | Web-viewport preview canvas                          | `0x06`             | LatestWins      |
+| `display_preview`     | Per-display preview frames (keyed by device)         | `0x07`, `0x12`     | LatestWins      |
+| `zone_preview`        | Per-zone preview frames                              | `0x08`, `0x0c`     | LatestWins      |
+| `screen_zones`        | Ambilight screen-zone frames                         | `0x09`, `0x0e`, `0x11` | LatestWins  |
+| `interactive_preview` | Interactive preview lane (keyed by preview id)       | `0x0a`, `0x0d`     | LatestWins      |
+
+`0x0b` is the wide passive-preview frame four topics share, `0x0f` and `0x10` are the chunk and cancellation envelopes every preview stream rides, and `0x04` is deliberately unassigned. A single WS message may not exceed `MAX_WS_MESSAGE_BYTES` (1 MiB).
 
 **Subscribe on connect:**
 
@@ -94,6 +156,8 @@ Single endpoint at `/api/v1/ws`. Five of the fifteen topics:
   "topics": [{ "topic": "events" }, { "topic": "metrics" }]
 }
 ```
+
+**Client messages** are more than subscribe. The full vocabulary in `src/api/ws/protocol.rs` is `subscribe`, `unsubscribe`, `command` (`{ id, method, path, body }`, REST-equivalent execution over the socket), `zone_layout_preview`, `zone_layout_preview_clear`, `input_inject`, `interactive_preview_claim_authoritative`, and `interactive_preview_release_authoritative`.
 
 **Backpressure**: Slow consumers get dropped frames, not memory growth. The WS handler sends a `Backpressure` server message (JSON) with `dropped_frames`, `topic`, `recommendation: "reduce_fps"`, and `suggested_fps` so the UI can auto-throttle.
 
@@ -117,7 +181,7 @@ Runs on a **dedicated OS thread** with its own Tokio runtime (isolated from API 
 | Stage          | Budget | What Happens                                   |
 | -------------- | ------ | ---------------------------------------------- |
 | Input Sampling | 1.0ms  | Audio DSP + screen capture                     |
-| Effect Render  | 8.0ms  | `EffectEngine::tick()` → Canvas                |
+| Effect Render  | 8.0ms  | Renderer pool `render_into` → SparkleFlinger composition → Canvas |
 | Spatial Sample | 0.5ms  | Canvas pixels → LED colors via zone positions  |
 | Device Push    | 2.0ms  | Route colors to `BackendManager` → USB/network |
 | Bus Publish    | 0.1ms  | Broadcast state events + watch updates         |
@@ -161,32 +225,38 @@ Jank triage:
 
 ## Device Lifecycle State Machine
 
-Per-device states managed by `DeviceLifecycleManager` — a **pure state machine** that emits actions for async executors (no I/O itself):
+Per-device states managed by `DeviceLifecycleManager`, a **pure state machine** that emits actions for async executors (no I/O itself). `DeviceState` has exactly five variants: `Known`, `Connected`, `Active`, `Reconnecting`, `Disabled`.
 
 ```mermaid
 stateDiagram-v2
-    Unknown --> Known
-    Known --> Connecting
-    Connecting --> Connected
-    Connected --> Active
-    Connecting --> Failed
-    Connected --> Disconnected
-    Disconnected --> Failed
-    Failed --> Connecting : exponential backoff\n6 max attempts, 30s max delay
+    [*] --> Known
+    Known --> Connected : connect
+    Known --> Reconnecting : connect_failed
+    Connected --> Active : first_frame
+    Connected --> Reconnecting : comm_error
+    Active --> Reconnecting : comm_error
+    Reconnecting --> Connected : connect
+    Reconnecting --> Known : connect_abandoned
+    Reconnecting --> Known : reconnect_exhausted
+    Known --> Disabled : user_disable
+    Disabled --> Known : user_enable
 ```
+
+Any state answers `user_disable` by moving to `Disabled`, and a hot-unplug drops the device straight back to `Known`. Reconnect backoff starts at 1s, doubles by a factor of 2.0, jitters by 0.1, and ceilings at 1 minute (`ReconnectPolicy::default`). `DeviceLifecycleManager::default` caps attempts at 6, after which the machine falls back to `Known`.
 
 Hot-plug: USB device events trigger state transitions. The lifecycle manager decides whether to reconnect, the executor performs the actual transport operations.
 
 ## Configuration
 
 - **Config file**: TOML (`config.toml`), loaded by `ConfigManager` which wraps `ArcSwap<HypercolorConfig>` for lock-free reads
-- **Data storage**: `~/.local/share/hypercolor/` (8 JSON data files: `scenes.json`, `layouts.json`, `library.json`, `device-settings.json`, `attachment-profiles.json`, `layout-auto-exclusions.json`, `logical-devices.json`, `runtime-state.json`)
+- **Two storage tiers**, both resolved by `ConfigManager`. The data tier (`ConfigManager::data_dir()`, `$XDG_DATA_HOME/hypercolor`) holds portable user content: `scenes.json`, `layouts.json`, `layout-auto-exclusions.json`, `logical-devices.json`, `library.json`, `attachment-profiles.json`, `simulated-displays.json`. The state tier (`ConfigManager::state_dir()`, `$XDG_STATE_HOME/hypercolor`) holds machine-local state: `device-settings.json`, `runtime-state.json`, `display-preferences.json`, `device-aliases.json`, `driver-inventory.json`.
+- **Tier migration**: the state-tier stores open through `load_migrated(legacy_data_path, canonical_state_path)`, so an old install's data-tier copy is adopted once and then written to the state tier.
 - **Hot-reload**: `ConfigManager` uses `Arc<ArcSwap<HypercolorConfig>>` for atomic pointer swap on config change
 - **Encrypted**: Credentials stored via `CredentialStore` using AES-256-GCM encryption (file-backed, not keyring)
 
 ## MCP Server Integration
 
-17 tools exposed via Model Context Protocol for AI control:
+The MCP surface rides an `rmcp` `StreamableHttpService` mounted at `McpConfig::base_path` (default `/mcp`) and merged into the router only when `mcp.enabled`. 17 tools exposed via Model Context Protocol for AI control:
 
 | Tool               | Purpose                                                            |
 | ------------------ | ------------------------------------------------------------------ |

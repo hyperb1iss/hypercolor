@@ -107,13 +107,23 @@ position += velocity * dt;
 
 ## Gamma Correction
 
-Mandatory for quality LED output. Apply as the **last step** after all color math.
+**In Hypercolor the engine owns the transfer, so your effect must not apply
+one.** Your canvas is already sRGB-encoded, the way every HTML canvas is, and
+the daemon's output stage decodes it with the sRGB piecewise curve
+(IEC 61966-2-1, not a 2.2 power law) before writing linear-light PWM bytes to
+the device. A gamma pass of your own double-encodes and crushes the midtones.
+
+What that means for authoring is that you design in perceptual space: a color
+that reads mid-bright on screen lands mid-bright on the strip.
+
+The classic rule applies only when you are writing for an engine that hands
+your bytes straight to LED PWM with no transfer of its own:
 
 ```
 corrected = 255 * (input / 255) ^ 2.2
 ```
 
-Perceptual 50% brightness = PWM 55/255 (21.6%), not 128/255.
+Perceptual 50% brightness is PWM 56/255 (about 22%), not 128/255.
 
 ## Rendering Model
 
@@ -124,10 +134,30 @@ Use `globalCompositeOperation = 'lighter'` for additive blending of overlapping 
 ## Hypercolor Engine Pipeline
 
 ```
-Effect Canvas (sRGB u8) -> Spatial Sampling -> polish_sampled_color() -> fade_to_black -> USB output
+Effect canvas (sRGB u8)
+  -> SpatialEngine::sample: zone_local_to_canvas affine, then edge behavior
+  -> decode sRGB to linear, resample in linear light
+  -> optional FadeToBlack attenuation, still in linear
+  -> encode back to sRGB u8 as ZoneColors
+  -> BackendManager::write_frame: zone brightness, LED perceptual
+     compensation, output brightness, linear-light PWM bytes
+  -> device backends (the USB/HID driver families plus the Hue, Nanoleaf,
+     WLED, and Govee network drivers)
 ```
 
-`polish_sampled_color()` boosts chroma in Oklch space to compensate for sampling dullness on physical LEDs. Available color types: `Rgba`/`Rgb` (u8 sRGB), `LinearRgba` (linear f32), `Oklab`, `Oklch`. The engine implements correct sRGB transfer functions and Oklab/Oklch math.
+**The sampler does not restyle color.** It decodes, resamples in linear light,
+attenuates for `FadeToBlack` edges, and re-encodes. A pixel that survives
+sampling reaches `ZoneColors` unchanged, so an LED-safe palette has to come
+from the effect itself. There is no chroma-boost pass in the sampler.
+
+The one place the engine adjusts color is the output stage in
+`BackendManager`, which decodes back to linear, applies a bounded perceptual
+lift for low-luma chromatic colors (blue, cyan, and magenta read dimmer than
+they should on point-source LEDs), scales by zone and device brightness, and
+writes linear-light bytes. That final decode is the gamma transfer, which is
+why your effect must not apply one of its own.
+
+Available color types: `Rgba`/`Rgb` (u8 sRGB), `LinearRgba` (linear f32), `Oklab`, `Oklch`. The engine implements correct sRGB transfer functions and Oklab/Oklch math.
 
 ## Quick Checklist
 
@@ -160,4 +190,5 @@ For deeper information, consult:
 - **`references/effect-design.md`** — Complete effect design theory: noise functions, Voronoi, metaballs, temporal patterns, palette design, shader porting, rendering pipeline details
 - **`docs/content/effects/color-science.md`** — The shipping guide: hue tiers, saturation strategy, whiteness ratio test, gamma, composite modes, community patterns
 - **`docs/content/effects/typescript-effects.md`**, **`glsl-effects.md`**, **`raw-html.md`** — Authoring references for each rendering path
+- **`docs/content/effects/native-rust-effects.md`**: the Rust-native path (`EffectRenderer`, `FrameInput`, Canvas writes, registration). See also the `native-effect-authoring` skill
 - **`docs/content/effects/display-faces.md`** — Display-face authoring: the descriptor contract, layout variants per form factor, typed data sources (media/net/lighting), 15-30fps motion design, the Servo CSS support matrix, and the two-display quality gate
