@@ -601,10 +601,14 @@ impl DeviceLifecycleManager {
         }
 
         if let Some(value) = value.strip_prefix("usb:") {
+            let owner_prefix = format!("{owner}:");
+            let value = value.strip_prefix(&owner_prefix).unwrap_or(value);
             return format!("{owner}:{}", sanitize_component(value));
         }
 
         if let Some(value) = value.strip_prefix("smbus:") {
+            let owner_prefix = format!("{owner}:");
+            let value = value.strip_prefix(&owner_prefix).unwrap_or(value);
             return format!("{owner}:{}", sanitize_component(value));
         }
 
@@ -633,7 +637,9 @@ impl DeviceLifecycleManager {
         let backend_id = device_info.output_backend_id();
         if let Some(fingerprint) = fingerprint {
             let value = fingerprint.as_str().to_owned();
+            let owner_prefix = format!("{}:", Self::layout_owner_id(device_info));
             if let Some(rest) = value.strip_prefix("smbus:") {
+                let rest = rest.strip_prefix(&owner_prefix).unwrap_or(rest);
                 let (bus_path, address) = rest.rsplit_once(':').map_or((rest, 0), |(bus, raw)| {
                     let address = u16::from_str_radix(raw, 16).unwrap_or(0);
                     (bus, address)
@@ -644,6 +650,7 @@ impl DeviceLifecycleManager {
                 };
             }
             if let Some(rest) = value.strip_prefix("usb:") {
+                let rest = rest.strip_prefix(&owner_prefix).unwrap_or(rest);
                 let mut parts = rest.splitn(3, ':');
                 if let (Some(raw_vendor), Some(raw_product), Some(identity_key)) =
                     (parts.next(), parts.next(), parts.next())
@@ -671,7 +678,6 @@ impl DeviceLifecycleManager {
                 };
             }
             if let Some(rest) = value.strip_prefix("net:") {
-                let owner_prefix = format!("{}:", Self::layout_owner_id(device_info));
                 let mdns_hostname = rest
                     .strip_prefix(&owner_prefix)
                     .map(ToOwned::to_owned)
@@ -734,7 +740,7 @@ mod tests {
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
         DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-        SegmentInfo,
+        FingerprintNamespace, SegmentInfo,
     };
     use std::time::Duration;
 
@@ -1077,6 +1083,116 @@ mod tests {
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "usb-driver:dev-hidraw2");
+    }
+
+    #[test]
+    fn driver_scoped_usb_fingerprints_preserve_legacy_layout_ids() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "Razer Huntsman V2",
+            DeviceFamily::new_static("razer", "Razer"),
+        );
+        info.connection_type = ConnectionType::Usb;
+        info.origin = DeviceOrigin::native("razer", "usb", ConnectionType::Usb);
+        let fingerprint =
+            DeviceFingerprint::mint(FingerprintNamespace::Usb, "razer", "1532:026c:001-6-4-2");
+
+        let actions = lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+
+        assert!(matches!(
+            actions.as_slice(),
+            [LifecycleAction::Connect {
+                backend_id,
+                layout_device_id,
+                ..
+            }] if backend_id == "usb" && layout_device_id == "razer:1532:026c:001-6-4-2"
+        ));
+
+        lifecycle
+            .on_connected(info.id)
+            .expect("driver-scoped USB connect transition should work");
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected driver-scoped USB device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::UsbHid {
+                vendor_id: 0x1532,
+                product_id: 0x026c,
+                serial: Some(serial),
+                usb_path: None,
+            } if serial == "001-6-4-2"
+        ));
+    }
+
+    #[test]
+    fn driver_scoped_smbus_fingerprints_preserve_legacy_layout_ids() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "ASUS Aura DRAM (SMBus 0x71)",
+            DeviceFamily::new_static("asus", "ASUS"),
+        );
+        info.connection_type = ConnectionType::SmBus;
+        info.origin = DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus);
+        let fingerprint =
+            DeviceFingerprint::mint(FingerprintNamespace::SmBus, "asus", "/dev/i2c-9:71");
+
+        let actions = lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+
+        assert!(matches!(
+            actions.as_slice(),
+            [LifecycleAction::Connect {
+                backend_id,
+                layout_device_id,
+                ..
+            }] if backend_id == "smbus" && layout_device_id == "asus:dev-i2c-9:71"
+        ));
+
+        lifecycle
+            .on_connected(info.id)
+            .expect("driver-scoped SMBus connect transition should work");
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected driver-scoped SMBus device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::SmBus { bus_path, address }
+                if bus_path == "/dev/i2c-9" && *address == 0x71
+        ));
+    }
+
+    #[test]
+    fn unscoped_smbus_fingerprints_build_smbus_connection_handles() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "ASUS Aura DRAM (SMBus 0x71)",
+            DeviceFamily::new_static("asus", "ASUS"),
+        );
+        info.connection_type = ConnectionType::SmBus;
+        info.origin = DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus);
+        let fingerprint = DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:71".to_owned());
+
+        lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+        lifecycle
+            .on_connected(info.id)
+            .expect("unscoped SMBus connect transition should work");
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected unscoped SMBus device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::SmBus { bus_path, address }
+                if bus_path == "/dev/i2c-9" && *address == 0x71
+        ));
     }
 
     #[test]
