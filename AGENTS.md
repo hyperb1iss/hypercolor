@@ -134,7 +134,7 @@ graph TD
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
     DAPI --> NET[hypercolor-network]
     CORE & DAPI & HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
-    CORE & HAL & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
+    CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
@@ -158,9 +158,12 @@ and produce neutral vocabulary (`hypercolor-types`, `hypercolor-gpu-frame`)
 rather than mirroring it. `cfg(target_os)` is allowed only inside platform
 crates and at composition roots (`daemon/src/{process.rs,session.rs,
 startup/services.rs,render_thread/gpu_device.rs,render_thread/sparkleflinger/
-gpu/{runtime.rs,native_screen.rs}}` plus `core/src/input/{media.rs,audio/mod.rs}`
-until their seams land). `rg -l 'cfg\(target_os' crates/hypercolor-core/src
-crates/hypercolor-daemon/src` must stay at or under ten files. Never add a
+gpu/{runtime.rs,native_screen.rs},api/config/live/capture.rs,api/system/audio.rs}`
+plus `core/src/input/{media.rs,audio/mod.rs}` until their seams land).
+`rg -l 'cfg\(target_os' crates/hypercolor-core/src crates/hypercolor-daemon/src
+| rg -v '/tests?(\.rs|/)'` must stay at or under ten files (the unfiltered
+command also matches two test modules, so it returns twelve). Nothing enforces
+this budget today, so the number above is the only guard. Never add a
 `Macos*`/`Windows*`/`Linux*` type, variant, or field to shared code; carry
 per-platform facts as data (`Option`, unit variants, opaque diagnostics
 envelopes). See `docs/design/72-cross-platform-boundary-review.md`.
@@ -177,9 +180,15 @@ library, output, scene, scenes, simulators, system) plus the shared
 `envelope` module that owns `ApiResponse`, `ListResponse`, `PageInfo`, and
 `ApiErrorBody`. The daemon serializes these types; the web UI, the TUI, the
 CLI, the tray, and the desktop app shell deserialize them, and the Python
-client is generated from the same schemas. Every list route answers
+client is generated from the same schemas. Most list routes answer
 `ListResponse { items, total, page }`, where `page` is present only on the
-routes that genuinely page. Diagnostic telemetry (system status internals,
+routes that genuinely page (twelve routes answer `ListResponse` at all). Five
+collection routes do not, and the exceptions are
+contract: `GET /displays`, `/capture/monitors`, `/simulators/displays`, and
+`/config/schema` put a bare JSON array in `data` (they register through
+`OperationDoc::get_vec`), and `GET /control-surfaces` answers
+`{ surfaces: [...] }`. Check the generated OpenAPI document before assuming a
+collection is paged. Diagnostic telemetry (system status internals,
 metrics) deliberately stays daemon-local; clients consume tolerant subsets.
 When adding or changing an endpoint in a shared domain, change the type in
 `hypercolor-types::api`, never a hand-mirrored copy.
@@ -219,9 +228,14 @@ Rule of thumb: events are broadcast, data streams are watch.
 - **`DeviceBackend`** (`driver-api/src/backend.rs`): hardware communication.
   Discovery adopts devices before connect; frame and display sinks own hot-path delivery.
   Long-running I/O is dispatched internally.
-- **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer (wgpu and Servo
-  both implement this). Input: `FrameInput` (timing, audio, interaction, screen). Output: `Canvas`.
-- **`InputSource`** (`core/src/input/traits.rs`): audio, screen capture, keyboard, MIDI.
+- **`EffectRenderer`** (`core/src/effect/traits.rs`): polymorphic renderer implemented by
+  `ServoRenderer` and the CPU builtins in `core/src/effect/builtin/`. There is no native GPU
+  shader renderer; wgpu drives the SparkleFlinger compositor instead.
+  Input: `FrameInput` (timing, audio, interaction, screen, sensors, sources). Output: `Canvas`.
+- **`ManagedSource`** (`core/src/input/traits.rs`): the base input-source trait, requiring `name`,
+  `start`, `stop`, `sample`, and `is_running`, and refined by `AudioSource`, `ScreenSource`,
+  `InteractionSource`, and `DataSource` via `SourceRoleBinding`. `InputSource` is a legacy alias
+  for it (`pub use ManagedSource as InputSource`), so prefer the canonical name in new code.
   One broken source never crashes the render loop.
 - **`Protocol`** (`hal/src/protocol.rs`): USB/HID wire-format encoding per device family.
   See hal-driver-development skill for implementation patterns.
@@ -298,7 +312,7 @@ without the runtime cliffs of unoptimized Servo.
 
 - **Edition 2024**, Rust 1.94+
 - **Tests:** integration and public-API coverage lives in `tests/` directories, named `{feature}_tests.rs`. Small private-internals unit tests may use `#[cfg(test)]` modules; avoid large inline test bodies.
-- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `linux-session`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-session`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
+- **`unsafe_code` is forbidden** workspace-wide by default. The sixteen audited opt-outs are `linux-gpu-interop`, `linux-session`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `pipewire-interop`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-session`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden**: use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors

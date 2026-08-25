@@ -50,7 +50,7 @@ Include: device identification, wire format diagrams, command vocabulary, timing
 3. Implement `Protocol` trait with `encode_frame_into` (not just `encode_frame`)
 4. Use `CommandBuffer` with `push_struct` — no per-frame allocations
 5. Add `Cow` normalization for color input
-6. Register device descriptors in the driver's `devices.rs`
+6. Register device descriptors in the driver's `devices` module: a `devices.rs` file, or a `devices/` directory once the family outgrows one file, as Razer has
 7. Wire descriptors into `crates/hypercolor-hal/src/database.rs`
 
 ### Phase 4: Testing
@@ -69,7 +69,7 @@ Write tests in `crates/hypercolor-hal/tests/` covering:
 - `unsafe_code` is forbidden
 - `unwrap()` is forbidden — use `?`, `.ok()`, or `expect("reason")`
 - Clippy pedantic is enforced
-- Tests go in `tests/` directory, not inline `#[cfg(test)]`
+- Integration and encoding coverage goes in `tests/`, named `{feature}_tests.rs`; keep inline `#[cfg(test)]` modules to small private-internals checks
 
 ## Reference Patterns
 
