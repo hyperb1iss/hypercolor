@@ -13,9 +13,10 @@ correctly but whose full feature routing is not yet enabled.
 
 ## PrismRGB Prism 8 is a Nollie 8 v2 rebrand
 
-If you plug in a PrismRGB Prism 8 controller and the device list reads **"Nollie 8 v2"**,
-nothing is wrong. The Prism 8 is a hardware rebrand of the Nollie 8 v2. Hypercolor
-identifies it by USB VID/PID and routes it through the Nollie driver, which is correct.
+A PrismRGB Prism 8 appears in the device list as **"PrismRGB Prism 8"** under the
+PrismRGB family, but it is driven by the `nollie` driver because the Prism 8 is a hardware
+rebrand of the Nollie 8 v2. Hypercolor identifies it by USB VID/PID and routes it through
+the Nollie driver, which is correct.
 
 The specifics, sourced from `data/drivers/vendors/prismrgb.toml` and `nollie.toml`:
 
@@ -29,13 +30,15 @@ The specifics, sourced from `data/drivers/vendors/prismrgb.toml` and `nollie.tom
 | Host brightness scale | **0.75** (not 1.0; the Prism 8 has less hardware headroom) |
 
 The Nollie 8 v2 and PrismRGB Prism 8 share PID `0x1F01` but enumerate on different VIDs.
-Both are handled by a single `nollie` driver entry. The 0.75 brightness scale is applied
+Both are handled by the `nollie` driver module, which registers them as separate
+descriptors with their own protocol bindings. The 0.75 brightness scale is applied
 automatically; you do not need to configure anything.
 
 {% <callout type="info"> %}
-In the driver database this device is named "Nollie 8 v2 / PrismRGB Prism 8", so the
-device list may show it under the Nollie name even though the box says PrismRGB. This is
-expected: the underlying silicon is the same hardware regardless of the badge.
+In the compatibility matrix the shared entry is listed as
+"Nollie 8 v2 / PrismRGB Prism 8" because one matrix row covers both badges. The device
+list keeps them apart. Each VID gets its own name and family even though the underlying
+silicon is the same hardware regardless of the badge.
 {% </callout> %}
 
 ---
@@ -49,7 +52,7 @@ firmware, it will enumerate via a different transport path.
 | Firmware version | USB transport | Notes |
 |---|---|---|
 | v1.0 (AL10) | USB vendor protocol (`usb_vendor`) | Older units; distinct packet framing |
-| v1.7 and later | USB HID (`usb_hid`) | Current shipping firmware |
+| v1.7 | USB HID (`usb_hid`) | Current shipping firmware; matched exactly |
 
 Source: `data/drivers/vendors/lianli.toml`, `pid = 0xA101` notes field.
 

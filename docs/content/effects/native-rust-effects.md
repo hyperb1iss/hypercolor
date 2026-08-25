@@ -10,12 +10,12 @@ A native effect is a Rust renderer compiled directly into the engine. It produce
 You reach for this path when an effect needs to be fast, dependency-free, and present even before any HTML effect loads. Most creative work belongs in the [TypeScript SDK](@/effects/typescript-effects.md) or as a [GLSL shader](@/effects/glsl-effects.md). Native effects are the floor everything else stands on.
 
 {% <callout type="info"> %}
-"Native" means *compiled-in Rust*, not *GPU shader*. `EffectSource::Native` dispatches only to CPU canvas renderers. There is no runnable wgpu/WGSL effect lane today: `EffectSource::Shader` bails with "shader effect is not runnable yet", and the GPU acceleration mode falls back to CPU. GLSL effects authored through the SDK run as WebGL2 inside Servo, not as native Rust. Treat the GPU effect path as future work.
+"Native" means *compiled-in Rust*, not *GPU shader*. `EffectSource::Native` dispatches only to CPU canvas renderers. There is no runnable wgpu/WGSL effect lane today: `EffectSource::Shader` bails with "shader effect is not runnable yet", and requesting `gpu` effect-renderer acceleration errors outright while `auto` falls back to CPU. GLSL effects authored through the SDK run as WebGL2 inside Servo, not as native Rust. Treat the GPU effect path as future work.
 {% </callout> %}
 
 ## Where native effects live
 
-Every built-in renderer lives in its own module under `crates/hypercolor-core/src/effect/builtin/`. There are twelve built-ins today (one, `web_viewport`, is gated behind the `servo` feature). For the full, current catalog, browse the registry through `hypercolor effects list` or the [REST effects endpoint](@/api/rest.md) rather than trusting a pinned number here.
+Every built-in renderer lives in its own module under `crates/hypercolor-core/src/effect/builtin/`. There are eleven built-ins today (one, `web_viewport`, is gated behind the `servo` feature). For the full, current catalog, browse the registry through `hypercolor effects list` or the [REST effects endpoint](@/api/rest.md) rather than trusting a pinned number here.
 
 ```
 crates/hypercolor-core/src/effect/builtin/
@@ -91,7 +91,7 @@ pub struct FrameInput<'a> {
     pub frame_number: u64,        // monotonic counter, starts at 0
     pub audio: &'a AudioData,     // always present; silence() when no source
     pub interaction: &'a InteractionData,
-    pub screen: Option<&'a ScreenData>,
+    pub screen: Option<&'a Arc<ScreenBranchPublication>>,  // ref-counted; CPU renderers read the CPU surface and zone payloads
     pub sensors: &'a SystemSnapshot,
     pub sources: FrameDataSources<'a>,  // media / net / lighting for faces
     pub canvas_width: u32,
@@ -142,7 +142,7 @@ The canvas vocabulary covers the spaces an effect needs:
 | `Oklab` | perceptual | uniform two-color gradients |
 | `Oklch` | perceptual | palette generation, hue rotation |
 
-Transfer functions are real and named: `srgb_to_linear`, `linear_to_srgb`, `srgb_u8_to_linear`, `linear_to_srgb_u8`, plus `to_oklab` / `from_oklab` / `to_oklch` / `from_oklch`. The full reasoning behind gamut, hue tiers, and gamma lives in [Color science for LEDs](@/effects/color-science.md).
+Transfer functions are real and named: `srgb_to_linear`, `linear_to_srgb`, `srgb_u8_to_linear`, `linear_to_srgb_u8`, plus `LinearRgba::to_oklab`, `LinearRgba::to_oklch`, and `Oklch::from_oklab` going in, with `Oklab::to_linear` and `Oklch::to_linear` for the return trip. The full reasoning behind gamut, hue tiers, and gamma lives in [Color science for LEDs](@/effects/color-science.md).
 
 ## Reading audio
 
@@ -233,7 +233,7 @@ fn controls() -> Vec<ControlDefinition> {
 }
 ```
 
-`common.rs` ships `color_control`, `slider_control`, `toggle_control`, `dropdown_control`, `asset_control`, and `rect_control`. Use them rather than hand-building `ControlDefinition` so every field (group, tooltip, step) stays consistent.
+`common.rs` ships `color_control`, `slider_control`, `toggle_control`, `dropdown_control`, `asset_control`, `text_control`, and `rect_control`. Use them rather than hand-building `ControlDefinition` so every field (group, tooltip, step) stays consistent.
 
 {{< img path="img/ui/ui-effect-controls.webp" alt="Live controls in the UI" />}}
 

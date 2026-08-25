@@ -24,7 +24,7 @@ The render pipeline runs on a dedicated thread. Each tick:
 
 1. Input sources (audio FFT, screen capture, keyboard and mouse) feed the renderer.
 2. **SparkleFlinger** composes all active producers into one canonical RGBA canvas (640×480
-   by default, tunable per scene), on the CPU or the GPU.
+   by default, tunable via `daemon.canvas_width` / `daemon.canvas_height`), on the CPU or the GPU.
 3. The **spatial sampler** maps every LED's physical position to a pixel on that canvas.
 4. Encoded frames go to devices over USB/HID, SMBus, or the network, all in parallel.
 

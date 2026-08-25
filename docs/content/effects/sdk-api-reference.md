@@ -80,6 +80,7 @@ interface CanvasFnOptions {
     author?: string
     audio?: boolean      // required when you read audio (enforced at build time)
     screen?: boolean     // opt into screen-zone sampling
+    input?: boolean      // required when you read keyboard/mouse (enforced at build time)
     category?: string
     builtinId?: string
     designBasis?: DesignBasis  // author against a fixed grid, scale automatically
@@ -90,7 +91,10 @@ interface CanvasFnOptions {
 {% <callout type="warning"> %}
 `audio: true` is not cosmetic. If your source touches `audio(`, `ctx.audio`,
 `getAudioData(`, or `engine.audio` without it, the build **fails** with an audio
-reactivity validation error. Same contract for `effect()` shaders.
+reactivity validation error. `input: true` carries the same contract: reading
+`getInputData(`, `engine.keyboard`, or `engine.mouse` without it fails the build
+with "effect uses input helpers but is missing input: true". Both apply to
+`effect()` shaders too.
 {% </callout> %}
 
 ### effect
@@ -119,6 +123,7 @@ interface EffectFnOptions {
     author?: string
     audio?: boolean
     screen?: boolean
+    input?: boolean
     category?: string
     builtinId?: string
     presets?: PresetDef[]
@@ -165,7 +170,7 @@ handle.
 type ControlMap        // record of control key → shorthand or ControlSpec
 type ControlShorthand  // [min,max,default] | [min,max,default,step] | string[] | bool | "#hex" | string | number
 type ControlSpec       // the resolved spec a factory produces
-type PresetDef = { name: string; description?: string; controls: Record<string, unknown> }
+type PresetDef = { id?: string; name: string; description?: string; controls: Record<string, unknown> }
 ```
 
 ## Control factories
@@ -214,7 +219,7 @@ type MediaKind = 'any' | 'image' | 'video' | 'lottie'
 getControlValue<T>(propertyName: string, defaultValue: T): T
 getAllControls<T extends Record<string, unknown>>(controls: T): T
 normalizeSpeed(speed: number): number        // max(0.2, (speed/5) ** 1.5)
-normalizePercentage(value: number, defaultValue?: number, minValue?: number): number  // value / 100
+normalizePercentage(value: number, defaultValue?: number, minValue?: number): number  // max(minValue, value / 100); defaults 100 / 0.01
 comboboxValueToIndex(value: string | number, options: string[], defaultIndex?: number): number
 boolToInt(value: boolean | number): number
 ```
@@ -276,7 +281,7 @@ getPitchClassName(pitchClass: number): string
 getPitchClassIndex(name: string): number
 pitchClassToHue(pitchClass: number): number              // Circle of Fifths → hue
 getHarmonicColor(audio: AudioData, saturation?: number, lightness?: number): [number, number, number]
-getMoodColor(audio: AudioData, ...): [number, number, number]
+getMoodColor(majorColor: [number, number, number], minorColor: [number, number, number], audio: AudioData): [number, number, number]
 getBeatAnticipation(audio: AudioData, anticipation?: number): number
 isOnBeat(audio: AudioData, division?: number, tolerance?: number): boolean
 normalizeFrequencyBin(value: number, max?: number): number
@@ -356,7 +361,9 @@ keyToGridPosition(key: string): { x: number; y: number } | null
 
 Exported input types: `InputData`, `EngineKeyboard`, `EngineMouse`,
 `KeyboardInputState`, `MouseInputState`, `MouseMode`, `KeyInputEvent`,
-`MouseInputEvent`, `KeyEventState`, `PressEnvelopeOptions`, `TypingRateOptions`.
+`MouseInputEvent`, `MouseButtonInputEvent`, `MouseScrollInputEvent`,
+`MouseScrollPhase`, `MouseScrollState`, `MouseScrollUnit`, `KeyEventState`,
+`PressEnvelopeOptions`, `TypingRateOptions`.
 
 ## Palettes
 
@@ -367,8 +374,8 @@ createPaletteFn(name: string): PaletteFn                       // t in [0,1] →
 samplePalette(name: string, t: number): [number, number, number]
 samplePaletteCSS(name: string, t: number, alpha?: number): string
 
-type PaletteFn = (t: number) => string
-type PaletteEntry  // { stops, background, ... }, the registry shape
+type PaletteFn = (t: number, alpha?: number) => string
+type PaletteEntry  // { id, name, mood, stops, iq, accent, background }, the registry shape
 ```
 
 Palette interpolation is **Oklab** (256-entry LUT, cached per name). An unknown
@@ -559,7 +566,7 @@ createArcGauge(base: Omit<ArcGaugeOptions, 'value'>, animate?: GaugeAnimateOptio
 createBarGauge(base: Omit<BarGaugeOptions, 'value'>, animate?: GaugeAnimateOptions): AnimatedBarGauge
 createRingGauge(base, animate?: GaugeAnimateOptions): AnimatedRingGauge
 
-class ValueHistory   // rolling buffer for sparklines; push(value), values(), min, max
+class ValueHistory   // rolling buffer for sparklines; push(value), values(), latest(), length
 
 type ArcGaugeOptions; type BarGaugeOptions; type RingGaugeOptions
 type SparklineOptions; type SparklineBand; type GaugeAnimateOptions
@@ -605,7 +612,7 @@ type HSLColor; type RGBColor; type UpdateFunction
 // Initialization (called for you by canvas/effect/face; rarely needed directly)
 initializeEffect(initFunction: () => void, options?: InitOptions): void
 type InitializationMode = 'immediate' | 'deferred' | 'metadata-only'
-interface InitOptions { mode?: InitializationMode; instance?: unknown }
+interface InitOptions { mode?: InitializationMode; onReady?: () => void; instance?: object }
 ```
 
 `metadata-only` mode is what the build harness sets to extract control and preset

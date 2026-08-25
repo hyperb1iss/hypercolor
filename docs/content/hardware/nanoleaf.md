@@ -136,6 +136,8 @@ Supported shape types:
 |---|---|---|
 | Triangle Light Panels | 0 | Point |
 | Canvas (Square) | 2 | Point |
+| Control Square Master | 3 | Point |
+| Control Square Passive | 4 | Point |
 | Hexagon Shapes | 7 | Point |
 | Triangle Shapes | 8 | Point |
 | Mini Triangle | 9 | Point |
@@ -145,6 +147,8 @@ Supported shape types:
 | Light Lines Single Zone | 18 | Strip |
 | 4D Lightstrip | 29 | Strip |
 | Skylight Panel | 30 | Point |
+| Skylight Control Primary | 31 | Point |
+| Skylight Control Passive | 32 | Point |
 
 ## Driver controls
 
@@ -231,7 +235,7 @@ stream. Only one streaming client can be active at a time.
 **Enable debug logging for detailed diagnosis:**
 
 ```bash
-RUST_LOG=hypercolor_driver_nanoleaf=debug hypercolor daemon
+RUST_LOG=hypercolor_driver_nanoleaf=debug just daemon
 ```
 
 See also: [Network discovery troubleshooting](@/troubleshooting/network-discovery.md),

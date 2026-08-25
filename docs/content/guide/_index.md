@@ -131,7 +131,7 @@ The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/p
 
 {{< img path="img/ui/studio.webp" alt="Web UI showing the Studio zone editor" />}}
 
-**Studio**: the zone editor inside the web UI. Divide your canvas into zones, each running an independent effect with its own controls and priority. See the [Studio section](@/studio/_index.md) for the full walkthrough.
+**Studio**: the zone editor inside the web UI. Divide your canvas into zones, each running an independent effect with its own controls. See the [Studio section](@/studio/_index.md) for the full walkthrough.
 
 **TUI**: a Ratatui terminal dashboard with true-color LED preview, audio visualization, and fullscreen effect rendering.
 

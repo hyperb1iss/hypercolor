@@ -13,7 +13,7 @@ If you want the conceptual model first (what a scene, zone, layer, and layout ar
 
 ## The header
 
-The page header runs across the top of Studio. It carries the title, a one-line tagline ("Compose scenes across zones"), the scene selector, and a device search box.
+The page header runs across the top of Studio. It carries the Studio title and the scene selector on the top row, and a device search box in the toolbar row below it.
 
 ### Scene selector
 
@@ -43,7 +43,7 @@ Each zone card has three interactive regions:
 
 - **The chevron** on the left expands or collapses the zone's nested device list. Collapsed state is remembered per browser.
 - **The zone header** selects the zone.
-- **The kebab** (the three-dot menu on the right) opens zone settings: rename, recolor, enable, make-default, and delete. The kebab is always present so even a single-zone scene can rename or recolor its Default zone. Make-default and delete stay gated for zones that are not eligible. See [Zones](@/studio/zones.md) for the full set.
+- **The kebab** (the three-dot menu on the right) opens zone settings: rename, recolor, enable, and delete. The kebab is always present so even a single-zone scene can rename or recolor its Default zone. Delete stays gated for zones that are not eligible. See [Zones](@/studio/zones.md) for the full set.
 
 A zone that has a failed or asset-missing layer shows a red warning triangle next to its name, so trouble is visible without opening the zone.
 
@@ -80,8 +80,6 @@ The zone-canvas controls appear only once the zone has a layout:
 - **Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Shift+Z`) for layout edits.
 - **Revert** and **Save** for the zone's layout. Save doubles as the dirty indicator: it glows green when you have unsaved changes and dims when the layout is clean. Revert discards your in-progress edits.
 
-When a zone is genuinely multi-zone, a zone-assignment panel docks below the canvas so you can move individual outputs between zones.
-
 ### A Screen: the live face
 
 For a display-face screen, the Stage shows that device's live face. The header carries a Preview label and an external-link button that opens the face in a full-screen preview tab. A caption below the preview reports the screen's resolution as `width×height`.
@@ -98,7 +96,7 @@ Selecting the Unassigned entry shows the scene's unassigned-lights policy instea
 - **Hold last colors**: the outputs keep whatever they last showed.
 - **Follow `<zone>`**: the outputs mirror a chosen LED zone.
 
-This policy is editable only when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it renders as a read-only label. To give these outputs a real layer stack, assign them to a zone with the zone-assignment panel below the canvas.
+This policy is editable only when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it renders as a read-only label. To give these outputs a real layer stack, assign them to a zone with the green `+` on a device card in the zone tree.
 
 ### The degraded banner
 
@@ -130,7 +128,7 @@ Tapping **Zones** slides the tree in from the left over a dark scrim. Picking a 
 
 - [Studio overview](@/studio/overview.md): the Scene → Zone → Layers + Layout model.
 - [Scenes](@/studio/scenes.md): switch, create, rename, and delete whole-rig configs.
-- [Zones](@/studio/zones.md): create, color, enable, make-default, and delete partitions.
+- [Zones](@/studio/zones.md): create, color, enable, and delete partitions.
 - [Device assignment](@/studio/device-assignment.md): the device card, channels, and assignment.
 - [Layers](@/studio/layers.md): the layer stack, blend modes, and health.
 - [Layouts](@/studio/layouts.md): the spatial canvas, drag, resize, and save.

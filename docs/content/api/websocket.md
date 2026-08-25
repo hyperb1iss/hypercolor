@@ -321,7 +321,7 @@ client-assigned and echoed back so concurrent commands can be correlated.
   "id": "cmd-001",
   "method": "POST",
   "path": "/api/v1/effects/borealis/apply",
-  "body": { "controls": { "speed": { "float": 7.0 } } }
+  "body": { "controls": { "speed": { "kind": "float", "value": 7.0 } } }
 }
 ```
 

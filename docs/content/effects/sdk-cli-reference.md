@@ -38,7 +38,6 @@ bunx hypercolor --help
 hypercolor <command>
 
 Commands:
-  dev        Deprecated. Use build/install against the real daemon preview
   build      Build effect entrypoints into HTML artifacts
   validate   Validate built HTML artifacts
   install    Install HTML artifacts into the user effects directory
@@ -54,7 +53,7 @@ graph TD
     VALIDATE --> INSTALL["install: ship to the daemon or user dir"]
 {% </mermaid> %}
 
-The everyday loop is `add` to create an effect, `build` to compile it, `validate` to confirm the artifact is well-formed, then `install` to deliver it. The deprecated `dev` command is documented at the end so you know why it no longer works.
+The everyday loop is `add` to create an effect, `build` to compile it, `validate` to confirm the artifact is well-formed, then `install` to deliver it. Those four are the whole surface; there is no preview-server command.
 
 ## `build`
 
@@ -105,7 +104,7 @@ On success each artifact prints a line: a `✓` for canvas and shader effects, a
 ```
 
 {% <callout type="danger"> %}
-**The build enforces correctness: these fail the build, they do not warn.** If your source reads audio (`audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`) but the effect didn't set `audio: true` in its options, the build throws an audio-validation error. Every shader control except `asset` must have a matching `uniform i<Key>` in the GLSL, or the build reports missing control uniforms. And a module that never calls `canvas()`, `effect()`, or `face()` fails metadata extraction with "no effect definitions were registered." Treat a clean build as a real gate, not a formality.
+**The build enforces correctness: these fail the build, they do not warn.** If your source reads audio (`audio(`, `ctx.audio`, `getAudioData(`, or `engine.audio`) but the effect didn't set `audio: true` in its options, the build throws an audio-validation error. Reading input (`getInputData(`, `engine.keyboard`, or `engine.mouse`) without `input: true` throws the matching input-validation error. Every shader control except `asset` must have a matching `uniform i<Key>` in the GLSL, or the build reports missing control uniforms. And a module that never calls `canvas()`, `effect()`, or `face()` fails metadata extraction with "no effect definitions were registered." Treat a clean build as a real gate, not a formality.
 {% </callout> %}
 
 ## `validate`
@@ -191,7 +190,7 @@ hypercolor effects rescan
 The `--daemon` path POSTs each validated artifact as a multipart form (field `file`) to `/api/v1/effects/install` on the daemon base URL:
 
 {% <api_endpoint method="POST" path="/api/v1/effects/install"> %}
-Upload a built HTML effect to the running daemon. Multipart form, field `file`, content type `text/html`. Returns the standard `{ data, meta }` envelope where `data` carries `{ name, path, controls, presets }`: the installed effect name, its on-disk path, and the count of controls and presets the daemon extracted.
+Upload a built HTML effect to the running daemon. Multipart form, field `file`, content type `text/html`. Returns the standard `{ data, meta }` envelope where `data` carries `{ id, name, path, controls, presets }`: the installed effect id (the value you pass to apply it afterwards), its name, its on-disk path, and the count of controls and presets the daemon extracted.
 {% </api_endpoint> %}
 
 On a successful daemon install the CLI prints the installed name and control count:
@@ -231,15 +230,9 @@ Entry: effects/aurora/main.ts
 
 If `$VISUAL` or `$EDITOR` is set, `add` opens the new entrypoint in that editor.
 
-## `dev` (removed)
+## There is no `dev` command
 
-The old `bunx hypercolor dev` preview server is gone. It now prints an error and exits non-zero:
-
-```
-hypercolor dev has been removed. Use build, validate, and install
-against the real daemon/app preview instead.
-Try: bun run build && bun run ship:daemon
-```
+`build`, `validate`, `install`, and `add` are the complete command set. `bunx hypercolor dev` takes the unknown-command path: it prints `Unknown command "dev".` on stderr, follows it with the usage banner, and exits `1`.
 
 The real iteration loop is build, ship, then preview inside the actual daemon or desktop app. Any guide that mentions a standalone effect preview server is stale.
 
@@ -253,8 +246,7 @@ Every command returns a process exit code you can rely on in scripts and CI.
 | `validate` | All artifacts valid; under `--strict`, also no warnings. | Any artifact invalid, any warning under `--strict`, or no files given. |
 | `install` | At least one artifact installed and none failed. | Any artifact failed, or zero artifacts installed. |
 | `add` | Effect scaffolded. | Missing name or template after prompting. |
-| `dev` | — | Always `1` (removed). |
-| unknown command | — | `1`, after printing help. |
+| unknown command (including `dev`) | — | `1`, after printing the error and the help banner. |
 
 ## Environment variables
 
@@ -298,6 +290,7 @@ A fresh workspace defines the everyday commands as package scripts, so the typic
 | Script | Runs | Purpose |
 |---|---|---|
 | `bun run build` | `hypercolor build --all` | Build every effect to `dist/`. |
+| `bun run build:one` | `hypercolor build` | Build a single effect by entry path. |
 | `bun run validate` | `hypercolor validate dist/*.html` | Validate built artifacts. |
 | `bun run ship` | `hypercolor install dist/*.html` | Local install into the user effects directory. |
 | `bun run ship:daemon` | `hypercolor install dist/*.html --daemon` | Upload to the running daemon. |

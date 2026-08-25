@@ -55,7 +55,7 @@ Priority is declared in the event type itself, not by the publisher:
 
 ## Watch: high-frequency data streams
 
-Four watch senders handle continuous data. Each returns the latest value immediately on subscribe, then notifies on every update. A slow subscriber sees the current value when it gets around to checking; no queue accumulates.
+Eight watch senders handle continuous data, plus one sender per display zone. Each returns the latest value immediately on subscribe, then notifies on every update. A slow subscriber sees the current value when it gets around to checking; no queue accumulates. The four carrying the bulk of the traffic are:
 
 | Sender | Type | Published by | Rate |
 |---|---|---|---|

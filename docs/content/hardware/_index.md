@@ -46,12 +46,15 @@ Network drivers live in separate crates behind the `hypercolor-driver-api` trait
 | Nanoleaf | HTTP pairing + UDP External Control | mDNS `_nanoleafapi._tcp.local.` | Hold power button 5-7 s to enter pairing mode |
 | WLED | DDP (default) or E1.31/sACN | mDNS `_wled._tcp.local.` | No authentication needed |
 | Govee | LAN UDP + optional cloud API | UDP multicast `239.255.255.250:4001` | LAN control must be enabled in the Govee Home app first |
+| OpenRGB bridge | OpenRGB SDK over TCP | Connects on demand to `127.0.0.1:6742` | Fallback bridge; ships compiled in but disabled by default |
+
+The ROLI Blocks bridge is a fifth registered driver module, but it speaks to a local `blocksd` Unix socket rather than the network. Both bridges are covered further down this page.
 
 See [network devices](@/hardware/network-devices.md) for the setup overview, then follow the per-vendor guide for pairing details.
 
 ### LCD and display devices
 
-Some hardware carries a small LCD or display panel that Hypercolor can drive alongside its RGB zones. The Corsair AIO LCD modules, Elite Capellix LCD (PIDs `0x0C39`, `0x0C33`) and iCUE LINK LCD (PID `0x0C4E`), stream 480×480 JPEG frames over USB HID/HIDAPI reports at up to 30 fps. The Ableton Push 2 uses a composite MIDI + bulk transport for its pad-grid lighting and display. These are treated as ordinary device zones in Hypercolor; effect output is composited from the same canvas as everything else.
+Some hardware carries a small LCD or display panel that Hypercolor can drive alongside its RGB zones. The Corsair LCD modules, Elite Capellix (`0x0C39`, `0x0C33`), iCUE LINK (`0x0C4E`), Nautilus RS (`0x0C55`), XC7 RGB Elite (`0x0C42`), and XD6 Elite (`0x0C43`), stream 480×480 JPEG frames over USB HID/HIDAPI reports at up to 30 fps. The Ableton Push 2 uses a composite MIDI + bulk transport for its pad-grid lighting and display. These are treated as ordinary device outputs in Hypercolor; effect output is composited from the same canvas as everything else.
 
 ### OpenRGB bridge
 
@@ -84,7 +87,7 @@ graph TD
     SMB --> ASUS_SMB[ASUS motherboard / GPU / DRAM]
 {% </mermaid> %}
 
-Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:<mac>`, Govee: `net:govee:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
+Device fingerprints are stable across reconnects: USB devices key on VID/PID plus descriptor heuristics; network devices key on MAC address (WLED: `net:wled:<mac>`, Govee: `net:govee:<mac>`) or bridge serial (Hue, Nanoleaf). A DHCP IP change does not lose pairing.
 
 ---
 
@@ -97,7 +100,7 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **Razer** | USB HID | Keyboards, mice, mousepads, laptops, headsets | Supported |
 | **Corsair** | USB HID | Peripherals (Bragi + legacy HID), Lighting Node, iCUE LINK hub, LCD modules | Supported |
 | **ASUS** | USB HID + SMBus/I2C | Aura USB peripherals; motherboard/GPU/DRAM Aura over SMBus | Supported |
-| **Lian Li** | USB HID / USB Vendor | Uni Hub (ENE), TL Fan Hub; AL v1.0 uses vendor transport, v1.7+ uses HID | Supported |
+| **Lian Li** | USB HID / USB Vendor | Uni Hub (ENE), TL Fan Hub; AL firmware 1.0 uses vendor transport, 1.7 uses HID | Supported |
 | **PrismRGB** | USB HID | Custom chunked protocol; Prism 8 is a Nollie 8 v2 rebrand | Supported |
 | **Nollie** | USB HID | ARGB controllers; distinct from PrismRGB despite overlapping SKUs | Supported |
 | **QMK** | USB HID | Raw HID on any QMK keyboard | Supported |
@@ -107,10 +110,10 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **WLED** | Network / UDP | DDP and E1.31/sACN; RGB and RGBW; no authentication | Supported |
 | **Govee** | Network / UDP + Cloud | LAN UDP control; optional cloud API fallback | Supported |
 | **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
-| **ROLI Blocks bridge** | Unix socket / blocksd | Lightpad, LUMI Keys, and Seaboard Blocks as pixel-addressable surfaces; Unix only | Supported (opt-in) |
+| **ROLI Blocks bridge** | Unix socket / blocksd | Lightpad, LUMI Keys, and Seaboard Blocks as pixel-addressable surfaces | Supported (Unix only) |
 | **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
 
-Neither bridge is counted among the 12 driver families with shipping device support, and both are off by default. Enable the OpenRGB one per [OpenRGB fallback](@/hardware/openrgb-fallback.md) and the ROLI one with `discovery.blocks_scan`. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
+Neither bridge is counted among the 12 driver families with shipping device support. The OpenRGB bridge ships compiled in but its config entry is minted disabled, so enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md). The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
 
 {% <callout type="warning"> %}
 If another RGB manager (OpenRGB, Aura Sync, openrazer daemon, iCUE via Wine) has a USB device open, Hypercolor cannot claim it. The device will appear in `lsusb` but not in `hypercolor devices list`. Close or disable the conflicting tool first. See [conflicting software](@/hardware/conflicting-software.md).
@@ -124,7 +127,7 @@ Hypercolor discovers devices automatically at startup and whenever a rescan is t
 
 **USB/SMBus:** scans for known VID/PID combinations and probes `/dev/i2c-*` bus nodes at startup. Hotplug events trigger rescan automatically when the daemon is running.
 
-**Network:** runs mDNS browsing for each network driver's service type. Devices can also be added by IP address in the config (`known_ips` per driver section) for networks where mDNS is blocked across VLANs.
+**Network:** runs mDNS browsing for each network driver's service type. Devices can also be added by IP address in the config; the key differs per driver (`known_ips` for WLED and Govee, `bridge_ips` for Hue, `device_ips` for Nanoleaf) for networks where mDNS is blocked across VLANs. See [network discovery troubleshooting](@/troubleshooting/network-discovery.md) for the exact snippets.
 
 Trigger a manual scan:
 

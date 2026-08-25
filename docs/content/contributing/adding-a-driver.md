@@ -81,10 +81,12 @@ mandatory, not optional. Manual offset indexing produces silent misalignment bug
 rejected in review.
 
 ```rust
-use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
+use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
 
 /// 64-byte command packet for My Family devices.
-#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+/// `FromBytes` because Step 5 parses device responses back into this type;
+/// a write-only packet can drop to `FromZeros`.
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub(super) struct MyFamilyPacket {
     pub report_id: u8,

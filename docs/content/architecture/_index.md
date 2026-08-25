@@ -27,11 +27,10 @@ graph TD
     C[hypercolor-color] --> T[hypercolor-types]
     T --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
-    T --> LGI[hypercolor-linux-gpu-interop]
-    T --> WPI[hypercolor-windows-pawnio]
+    GF[hypercolor-gpu-frame] --> LGI[hypercolor-linux-gpu-interop]
     HAL --> CORE
     LGI --> CORE
-    WPI --> CORE
+    WPI[hypercolor-windows-pawnio] --> HAL
     T & CORE --> DAPI[hypercolor-driver-api]
     DAPI --> HUE[hypercolor-driver-hue]
     DAPI --> NL[hypercolor-driver-nanoleaf]
@@ -43,23 +42,25 @@ graph TD
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     CORE & T --> APP[hypercolor-app]
-    APP --> D
     T --> UI["hypercolor-ui (excluded from workspace)"]
     LE[hypercolor-leptos-ext] --> UI & D & TUI
 {% </mermaid> %}
 
-**Golden rule:** `hypercolor-hal` must never depend on `hypercolor-core`; that would be circular. Network drivers depend on `driver-api`, not on `core` directly.
+**Golden rule:** `hypercolor-hal` must never depend on `hypercolor-core`; that would be circular. Network drivers depend on `driver-api`, not on `core` directly. `hypercolor-app` does not link the daemon: it supervises `hypercolor-daemon` as a subprocess.
+
+This graph shows the crates a reader needs to follow the render path. The workspace is larger: the platform crates (`macos-*`, `windows-*`, `linux-*`), `hypercolor-gpu-frame`, `hypercolor-pipewire-interop`, `hypercolor-worker-retention`, `hypercolor-persistence`, and `hypercolor-platform-fs` are omitted here. The repository's `CLAUDE.md` carries the full graph.
 
 | Crate | Role |
 |---|---|
 | `hypercolor-types` | Shared vocabulary above `hypercolor-color`: canvas, effect, control, and API types |
 | `hypercolor-core` | Engine: render loop, effect registry, spatial sampler, input pipeline, scene management |
 | `hypercolor-hal` | Hardware abstraction: USB/HID/SMBus protocol encoding and transport |
+| `hypercolor-gpu-frame` | Neutral imported-GPU-frame vocabulary shared by every interop crate |
 | `hypercolor-linux-gpu-interop` | Linux zero-copy GL to wgpu texture import; stubbed on other platforms |
 | `hypercolor-windows-pawnio` | Windows SMBus via the PawnIO kernel driver; stubbed on other platforms |
 | `hypercolor-driver-api` | Stable trait boundary between the daemon and all driver implementations |
 | `hypercolor-driver-builtin` | Compile-time bundle of HAL and network drivers, assembled via feature flags |
-| Network drivers | `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network` |
+| Network drivers | `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network`, plus the opt-in `driver-openrgb` bridge over `openrgb-sdk`, all layered on `driver-support` |
 | `hypercolor-daemon` | Daemon binary: render-loop host, SparkleFlinger compositor, REST/WebSocket/MCP server on `:9420` |
 | `hypercolor-cli` | The `hypercolor` CLI binary |
 | `hypercolor-tui` | Ratatui terminal UI library |
@@ -99,7 +100,7 @@ pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 
 At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent; tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries; never hardcode pixel dimensions in effects or drivers.
 
-Sampling from the canvas to LED positions supports three interpolation strategies: nearest-neighbor, bilinear (the default), and area averaging. Bilinear reads 4 surrounding pixels and blends by distance; it is gamma-correct via precomputed sRGB LUTs, which makes it essentially free in the hot path.
+Sampling from the canvas to LED positions supports four interpolation strategies: nearest-neighbor, bilinear (the default), area averaging, and Gaussian-weighted area. Bilinear reads 4 surrounding pixels and blends by distance; it is gamma-correct via precomputed sRGB LUTs, which makes it essentially free in the hot path.
 
 ### SparkleFlinger
 
@@ -107,7 +108,7 @@ SparkleFlinger is the frame compositor inside the daemon. Each active producer (
 
 This design decouples producer cadence from the render deadline. Servo might deliver frames at 30 fps while a native effect runs at 60 fps and a screen capture arrives whenever PipeWire hands one over. SparkleFlinger handles all of that without coupling or stalling.
 
-Blend modes available for layer compositing are defined in `BlendMode` (in `hypercolor-types/src/canvas.rs`): `Normal`, `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, and `Difference`. A single full-opacity layer with no transform takes a bypass fast path with no per-pixel work.
+Layer blend modes are defined by `BlendMode` in `hypercolor-types/src/layer.rs`: `Replace`, `Alpha` (the default), `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, `Difference`, `Tint`, and `LumaReveal`. The eight alpha-composable ones map into the per-pixel kernel `PixelBlendMode` in `hypercolor-color/src/blend.rs`; `Replace`, `Tint`, and `LumaReveal` are handled by the compositor rather than the pixel kernel. A single full-opacity layer with no transform takes a bypass fast path with no per-pixel work.
 
 ### Adaptive FPS: five tiers
 
@@ -135,7 +136,7 @@ Hypercolor supports two rendering paths, both producing an RGBA `Canvas` that fe
 
 The primary authoring surface. An embedded Servo browser engine runs headlessly on a dedicated worker thread, keeping the `EffectRenderer` trait `Send` while Servo itself stays pinned to one OS thread. Effects are `.html` files that use Canvas 2D, WebGL2, and the `hypercolor` JavaScript API.
 
-**Startup cost:** The Servo worker initializes once per daemon session, not per effect load. Initial startup takes a few seconds; subsequent effect loads into the running worker are fast. The circuit breaker tracks consecutive failures with exponential cooldown so transient faults cannot poison the shared worker. A separate `ServoSessionHandle` manages `Idle → Loading → Running` state transitions.
+**Startup cost:** The Servo worker initializes once per daemon session, not per effect load. Initial startup takes a few seconds; subsequent effect loads into the running worker are fast. The circuit breaker tracks consecutive failures with exponential cooldown so transient faults cannot poison the shared worker. The `ServoWorkerClient` owns the `Idle → Loading → Running` state machine; a per-effect `ServoSessionHandle` bridges the renderer to it.
 
 GLSL effects in the SDK compile to WebGL2 and run inside Servo; there is no separate native GLSL lane. The `EffectSource::Shader` variant exists in the type system but bails immediately at renderer creation:
 

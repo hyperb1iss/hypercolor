@@ -36,13 +36,16 @@ Stored scenes use collection and whole-document operations:
 ```text
 GET    /scenes
 POST   /scenes
+POST   /scenes/snapshot
 GET    /scenes/{id}
 PUT    /scenes/{id}
 DELETE /scenes/{id}
 POST   /scenes/{id}/activate
 ```
 
-`POST /scenes` seeds a Default zone server-side. Activating a stored scene
+`POST /scenes` seeds a Default zone server-side. `POST /scenes/snapshot` is the
+other creation path: it captures the live scene as a new stored scene instead of
+starting from a fresh default. Activating a stored scene
 makes it the resource returned by `GET /scene`. To edit stored scene structure,
 activate it and edit the live tree, or replace the stored scene document with
 `PUT /scenes/{id}`.
@@ -73,8 +76,8 @@ canonical stop gesture and optionally accepts `If-Match`.
 ### Zones and members
 
 {% <api_endpoint method="POST" path="/api/v1/scene/zones"> %}
-Create a custom zone. Primary and display zones are created by their owning
-engine flows.
+Create a custom zone. The Default zone and display zones are created by their
+owning engine flows, not through this route.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/scene/zones/{zone}"> %}
@@ -135,8 +138,8 @@ Patch effect controls with the shared shape:
 ```json
 {
   "values": {
-    "speed": { "float": 45.0 },
-    "palette": { "enum": "Midnight" }
+    "speed": { "kind": "float", "value": 45.0 },
+    "palette": { "kind": "enum", "value": "Midnight" }
   },
   "clear_bindings": ["speed"]
 }
@@ -188,7 +191,7 @@ The live tree embeds the ids a client needs for every follow-up:
     "zones": [
       {
         "id": "84b20af9-0700-4b82-8488-88314b87fb5c",
-        "name": "Primary",
+        "name": "Default zone",
         "role": "primary",
         "enabled": true,
         "brightness": 1.0,
@@ -208,7 +211,7 @@ The live tree embeds the ids a client needs for every follow-up:
             "source": {
               "type": "effect",
               "effect_id": "0198c5b6-1111-7000-8000-000000000004",
-              "controls": { "speed": { "float": 45.0 } }
+              "controls": { "speed": { "kind": "float", "value": 45.0 } }
             },
             "blend": "replace",
             "opacity": 1.0
@@ -264,8 +267,8 @@ the canonical `412 Precondition Failed` envelope:
 {
   "error": {
     "code": "precondition_failed",
-    "message": "scene revision does not match",
-    "details": { "current": 43 }
+    "message": "version mismatch: expected 42, current 43",
+    "details": { "expected": 42, "current": 43 }
   },
   "meta": {
     "api_version": "1.0",

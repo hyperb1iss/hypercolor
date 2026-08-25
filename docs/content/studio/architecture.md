@@ -80,8 +80,14 @@ if let Some(zone_id) = selected_led_zone {
 | `hovered_output_ids` | `RwSignal<HashSet<String>>` | Rail hover highlight bridged into the canvas |
 | `attachment_cache` | `RwSignal<HashMap<String, Vec<ComponentBindingSummary>>>` | Per-device component-binding cache the cards fill lazily |
 | `device_search` | `Signal<String>` | Header search term, filters the tree's device rows |
+| `render_canvas_size` | `Memo<(u32, u32)>` | The daemon's render canvas extent, read by anything fitting a footprint to the canvas |
+| `rail_disclosure` | `RwSignal<Option<String>>` | The single open-disclosure slot shared by the zone menu, the device kebab, and the add-device picker |
+| `zone_rename_draft` | `RwSignal<Option<(String, String)>>` | An in-flight zone rename as `(zone id, draft text)` |
+| `pointer_output_id` | `RwSignal<Option<String>>` | The canvas box under the pointer, mirrored back so the rail can highlight the owning card |
 
-Two details are easy to get wrong. The hidden-output state is keyed `(scene_id, zone_id)` through `hidden_outputs_storage_key` and persisted to `localStorage`. It is purely client UI state and is never mirrored to the daemon's `layout_auto_exclusions`, which is discovery-reconciliation memory and a different concept entirely. And the rail highlight signals (`selected_output_ids`, `hovered_output_ids`) clear on every surface switch, so a stale highlight from the previous zone never lingers on the new one.
+`rail_disclosure` and `zone_rename_draft` exist because the rail rebuilds on every scene event and every search keystroke. Disclosure state and in-flight text have to outlive the DOM that renders them, or a menu snaps shut and a half-typed name vanishes mid-edit. One shared disclosure slot also means opening a menu closes the previous one.
+
+Two more details are easy to get wrong. The hidden-output state is keyed `(scene_id, zone_id)` through `hidden_outputs_storage_key` and persisted to `localStorage`. It is purely client UI state and is never mirrored to the daemon's `layout_auto_exclusions`, which is discovery-reconciliation memory and a different concept entirely. And the rail highlight signals (`selected_output_ids`, `hovered_output_ids`) clear on every surface switch, so a stale highlight from the previous zone never lingers on the new one.
 
 ## How selection drives everything
 

@@ -20,7 +20,7 @@ Never lower the FPS cap, canvas resolution, or LED output rate as a "fix." Those
 hypercolor diagnose
 ```
 
-This calls `POST /api/v1/diagnose` against the running daemon. By default it runs four check groups: `daemon`, `render`, `devices`, and `config`. Use `--check` to focus on one:
+This calls `POST /api/v1/diagnose` against the running daemon. By default it runs six check groups: `daemon`, `render`, `devices`, `config`, `input`, and `memory`. Use `--check` to focus on one:
 
 ```bash
 hypercolor diagnose --check render
@@ -41,7 +41,7 @@ Output is a styled table by default. Use `--format plain` for a one-line text su
 
 ## Step 2: read the render checks
 
-The `render` category has three checks for FPS problems.
+The `render` category has four checks for FPS problems.
 
 ### `render_loop`
 
@@ -84,6 +84,18 @@ Key flags to watch:
 - `gpu_sample_queue_saturated=true`: the GPU import slot pool is exhausted; multiple frames are queued behind a single GPU fence.
 - `output_source`: `current_frame` is healthy. `published_frame` or `routed_reuse` means the loop is serving a cached frame because the current render is not keeping up.
 - `sample_us` / `push_us`: time in microseconds for spatial sampling (canvas to LED positions) and writing to devices. Elevated `push_us` across many devices points to USB saturation (step 3).
+
+### `recent_output_sources`
+
+```
+recent_output_sources   frames=18432, current_frame=18201, published_frame=140, routed_reuse=91, reused_published_frame=12, gpu_sample_stale=3
+```
+
+This check always reports `pass`; it is a counter readout, not a threshold. It totals which
+frame each output push actually served over the session, so it tells you how often the loop
+fell back on a cached frame rather than the frame it had just rendered. A `current_frame`
+count close to `frames` is healthy. A large `published_frame` or `routed_reuse` share is the
+same signal `led_freshness` reports per frame, accumulated over time.
 
 ---
 
@@ -131,14 +143,14 @@ Fields to watch:
 - `gpu_sample_cpu_fallback`: Servo fell back from GPU import to a CPU readback path. This adds a full-frame pixel readback cost and is significantly slower.
 - `push_p95_ms` / `publish_p95_ms`: 95th-percentile device write and event-bus publish latency. Healthy values sit well under the frame budget for your current tier.
 
-For Servo-specific timings, the system response (`GET /api/v1/system`) carries `status.effect_health`, with fields including `render_frame_max_us`, `render_evaluate_scripts_max_us`, `render_paint_max_us`, and `render_readback_max_us`. A `render_frame_max_us` value near or above the tier budget is a clear Servo bottleneck.
+For Servo-specific timings, the system response (`GET /api/v1/system`) carries `status.effect_health`, with fields including `servo_render_frame_max_ms`, `servo_render_evaluate_scripts_max_ms`, `servo_render_paint_max_ms`, and `servo_render_readback_max_ms`. These are milliseconds, not microseconds. A `servo_render_frame_max_ms` value near or above the tier budget is a clear Servo bottleneck.
 
 ### Servo circuit breaker
 
 Servo uses a circuit breaker to protect the daemon when the effect renderer fails repeatedly. After 3 consecutive failures it opens, blocking new render attempts for a 30-second cooldown with exponential backoff up to 5 minutes. The breaker state is visible in the Servo telemetry fields:
 
-- `breaker_opens_total` non-zero: Servo has tripped the breaker at least once this session.
-- `soft_stalls_total`: frames that stalled without a fatal failure.
+- `servo_breaker_opens_total` non-zero: Servo has tripped the breaker at least once this session.
+- `servo_soft_stalls_total`: frames that stalled without a fatal failure.
 
 When the breaker is open, effects fall back to a black/idle canvas, meaning your LEDs stop updating or hold the last frame. Switching to a native (non-HTML) effect clears the dependency on Servo immediately.
 
@@ -146,7 +158,7 @@ When the breaker is open, effects fall back to a black/idle canvas, meaning your
 
 - Switch to one of the native built-in effects if frame timing is critical; they run in compiled Rust with no browser overhead. Browse what is available in the [effects section](@/effects/_index.md).
 - If you want to keep an HTML effect, reduce the effect's JavaScript complexity. Heavy `requestAnimationFrame` work, large canvas operations, and expensive audio FFT processing are common culprits. See [debugging and diagnostics](@/contributing/debugging.md) for Servo profiling techniques.
-- If `render_gpu_import_fallback_reason` appears in the JSON output, the GPU zero-copy import path is unavailable and Servo is doing full CPU readbacks every frame. Verify that your GPU drivers support the required Vulkan or OpenGL extensions for your platform.
+- If `servo_gpu_import_fallback_reason` appears in the JSON output, the GPU zero-copy import path is unavailable and Servo is doing full CPU readbacks every frame. Verify that your GPU drivers support the required Vulkan or OpenGL extensions for your platform.
 
 ---
 
@@ -200,7 +212,7 @@ N device worker threads have exited. This is a hard error: those devices are no 
 
 ### Servo breaker open
 
-Check daemon logs for Servo-related errors or `session_create_failures`. If the breaker is cycling (opens, cools down, opens again), the effect itself is broken, likely from a JavaScript runtime error. Switch effects to confirm, then file a bug with the `--report` output attached.
+Check daemon logs for Servo-related errors, and check `servo_session_create_failures_total` in the system response. If the breaker is cycling (opens, cools down, opens again), the effect itself is broken, likely from a JavaScript runtime error. Switch effects to confirm, then file a bug with the `--report` output attached.
 
 ---
 

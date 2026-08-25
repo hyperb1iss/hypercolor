@@ -50,7 +50,7 @@ The root `HypercolorConfig` struct has these sections:
 | `[discovery]`     | mDNS, scan interval, ROLI Blocks                         |
 | `[network]`       | Remote access modes and client scope                     |
 | `[drivers.<id>]`  | Per-driver enable/settings (keyed by driver ID)          |
-| `[session]`       | Idle, lock, suspend, and lid lighting behavior (Linux)   |
+| `[session]`       | Idle, lock, suspend, and lid lighting behavior           |
 
 ---
 
@@ -104,6 +104,7 @@ enabled       = true    # Serve the web UI and REST API on the daemon port
 open_browser  = false   # Auto-open browser when the daemon starts
 cors_origins  = []      # Extra allowed CORS origins (only active with API key auth)
 websocket_fps = 30      # LED preview frame rate pushed to WebSocket clients
+interactive_preview_resource_bytes = 1073741824  # Byte budget for interactive preview resources (1 GiB)
 ```
 
 The web UI is served at `http://localhost:9420`. Disabling `web.enabled` removes the UI routes but leaves the REST and WebSocket API intact. `cors_origins` only matters when `HYPERCOLOR_API_KEY` authentication is active.
@@ -380,7 +381,9 @@ Driver IDs correspond to the names registered in the driver registry. Available 
 
 ## `[session]`
 
-Desktop session and power awareness: idle dimming, screen lock, suspend, and laptop lid behavior. Session events fire on Linux only today; on Windows and macOS these settings are inert.
+Desktop session and power awareness: screen lock, suspend, idle dimming, and laptop lid behavior.
+
+`on_screen_lock` and `on_suspend` fire on all three platforms. Linux reads the screensaver and logind D-Bus interfaces, Windows decodes `WM_POWERBROADCAST` plus session lock and unlock notifications, and macOS decodes session resign and activate alongside the system sleep and wake notifications. `on_lid_close` and the idle-dimming keys are accepted and validated, but no platform emits lid or idle events yet, so those settings are inert everywhere today.
 
 ```toml
 [session]
@@ -510,7 +513,7 @@ curl http://localhost:9420/api/v1/config/schema | jq
 
 Keys are addressed with dotted paths matching the TOML structure (`daemon.target_fps`, `audio.device`, `drivers.govee.known_ips`, etc.), each a single path segment. A write returns the key's canonicalized effective value, a `"live"` boolean saying whether the running daemon re-applied it, a `"requires_restart"` boolean from the key registry, and `"pending_restart"`, the sections whose persisted values now differ from the ones the daemon booted with.
 
-Reads mask what the key registry classifies as secret. Every `drivers` entry renders as `{"redacted": true}` on `/api/v1/config` and on a key read; driver settings are read and edited through `/api/v1/drivers/{id}/config` instead.
+Reads mask what the key registry classifies as secret. Every `drivers` entry renders as `{"redacted": true}` on `/api/v1/config` and on a key read; driver settings are read through `GET /api/v1/drivers/{id}/config`, and edited through the driver's control surface: read it from `GET /api/v1/drivers/{id}/controls`, then write with `PATCH /api/v1/control-surfaces/{id}/values`. That is exactly what `hypercolor drivers set-control` and `hypercolor drivers action` do.
 
 {% <callout type="tip"> %}
 Which keys reload live is the key registry's answer, not a list to memorize: `GET /api/v1/config/schema` reports `live` (with the subsystem the daemon re-applies), `live_on_read`, `next_scan`, `restart`, or `inert` for every key. Today the live sections are audio, screen capture, host input, and the render loop (`daemon.target_fps`, `daemon.canvas_width`, `daemon.canvas_height`). Every live section honors the same `?live=` flag, which defaults to applying; the CLI's `--live` maps onto it.

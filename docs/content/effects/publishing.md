@@ -43,13 +43,14 @@ These are **errors** that fail the build or the install:
 - An unknown control type, a duplicate control property, or a numeric control with `min >= max`.
 - A combobox control declared with no values.
 - An `asset` control with an unrecognized media kind (valid kinds are `any`, `image`, `video`, `lottie`).
-- A preset whose `preset-controls` JSON does not parse.
+- A preset whose `preset-controls` JSON does not parse, or two presets that normalize to the same preset id.
+- A declared canvas width or height that is not a positive 32-bit integer.
 
 These are **warnings**: the effect still installs, but clean them up before sharing:
 
 - Missing `hypercolor-version`, `description`, or `publisher` metadata.
 - A control default that falls outside its declared range.
-- Canvas width or height outside the 100-1920 range.
+- An `audio-reactive` meta tag holding something other than `true` or `false`.
 - A preset referencing a control that does not exist, or a combobox preset value not in the control's options.
 - External `<script>` or `<link>` references, which mean the artifact may not be self-contained, a hard rule for a publishable effect.
 
@@ -57,7 +58,7 @@ These are **warnings**: the effect still installs, but clean them up before shar
 Treat `--strict` as your publish bar. `bunx hypercolor validate dist/*.html --strict` exits non-zero on any warning, so a clean strict pass means the artifact has full metadata, no external references, and consistent presets. That is the standard for an effect you intend to share.
 {% </callout> %}
 
-Two more checks run at build time, before validation even sees the file, and both fail the build hard. If your source reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or `engine.audio`) but the effect options omit `audio: true`, the build throws. And in a GLSL effect, every control must have a matching `i<Key>` uniform in the shader, or the build reports the missing uniforms. See [effect troubleshooting](@/effects/troubleshooting.md) for the full error catalog.
+Three more checks run at build time, before validation even sees the file, and all three fail the build hard. If your source reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or `engine.audio`) but the effect options omit `audio: true`, the build throws. The same goes for input: reading `getInputData()`, `engine.keyboard`, or `engine.mouse` without `input: true` fails with "effect uses input helpers but is missing input: true". And in a GLSL effect, every control must have a matching `i<Key>` uniform in the shader, or the build reports the missing uniforms. See [effect troubleshooting](@/effects/troubleshooting.md) for the full error catalog.
 
 ## The effect-ID rule
 
@@ -100,14 +101,15 @@ bun run ship:daemon
 This POSTs each validated file as a multipart form (field name `file`) to the daemon's install endpoint. By default it targets `http://127.0.0.1:9420`; override the target with `--daemon-url` or the `HYPERCOLOR_DAEMON_URL` environment variable.
 
 {% <api_endpoint method="POST" path="/api/v1/effects/install"> %}
-Multipart upload of a single self-contained effect HTML file (form field `file`). The daemon validates, stores, and registers the effect, then returns the installed name, the stored path, and how many controls and presets it parsed.
+Multipart upload of a single self-contained effect HTML file (form field `file`). The daemon validates, stores, and registers the effect, then returns the installed effect id, its name, the stored path, and how many controls and presets it parsed.
 {% </api_endpoint> %}
 
-A successful daemon install returns an envelope whose `data` carries the registered name, the stored path, and the control and preset counts:
+A successful daemon install returns an envelope whose `data` carries the registered id and name, the stored path, and the control and preset counts:
 
 ```json
 {
   "data": {
+    "id": "aurora-drift",
     "name": "Aurora Drift",
     "path": "/home/you/.local/share/hypercolor/effects/user/aurora-drift.html",
     "controls": 4,
@@ -126,7 +128,7 @@ Once installed, the effect is a first-class catalog entry. The catalog is the so
 hypercolor effects list
 ```
 
-Your effect appears alongside the built-ins. The repository ships roughly 47 SDK-authored HTML effects plus the compiled-in native renderers, and that set grows, so browse the catalog instead of memorizing a count. You can also open the effects browser in the web UI to see your effect with its controls and presets wired up.
+Your effect appears alongside the built-ins. The repository ships roughly 46 SDK-authored HTML effects plus the compiled-in native renderers, and that set grows, so browse the catalog instead of memorizing a count. You can also open the effects browser in the web UI to see your effect with its controls and presets wired up.
 
 {{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 

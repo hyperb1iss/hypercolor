@@ -93,7 +93,7 @@ Via REST:
 ```bash
 curl -X POST http://localhost:9420/api/v1/effects/borealis/apply \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": {"float": 50.0}, "intensity": {"float": 75.0}}}'
+  -d '{"controls": {"speed": {"kind": "float", "value": 50.0}, "intensity": {"kind": "float", "value": 75.0}}}'
 ```
 
 ## 4. Tweak controls in real time
@@ -118,7 +118,7 @@ layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
 curl -X PATCH \
   "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
   -H "Content-Type: application/json" \
-  -d '{"values": {"speed": {"float": 30.0}, "palette": {"enum": "Midnight"}}}'
+  -d '{"values": {"speed": {"kind": "float", "value": 30.0}, "palette": {"kind": "enum", "value": "Midnight"}}}'
 ```
 
 The control route uses the real layer id from the live scene document and never

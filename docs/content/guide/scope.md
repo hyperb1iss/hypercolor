@@ -33,7 +33,7 @@ Hypercolor drives hardware through two transport layers.
 | `wled` | DDP / E1.31 sACN | mDNS (`_wled._tcp`) |
 | `govee` | Govee LAN UDP | UDP multicast scan (LAN control must be enabled in the Govee Home app first) |
 
-**Bridged devices** reach Hypercolor through another process rather than a driver of its own, and both bridges are off by default:
+**Bridged devices** reach Hypercolor through another process rather than a driver of its own. The OpenRGB bridge is off by default. ROLI Blocks discovery is on by default (`discovery.blocks_scan = true`) but stays inert unless `blocksd` is running:
 
 | Bridge | Protocol | Enable with |
 |---|---|---|

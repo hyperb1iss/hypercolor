@@ -122,13 +122,7 @@ A successful stream start logs the message `Audio capture stream configured` wit
 Audio capture stream configured source=SystemMonitor device=alsa_output.pci-0000_00_1f.3.analog-stereo.monitor sample_rate_hz=48000 channels=2
 ```
 
-If you instead see:
-
-```
-Audio capture unavailable; LightScript audio input will fall back to silence
-```
-
-The source name is wrong or PipeWire/PulseAudio refused the connection. Double-check the exact name from `pactl list sources short`.
+If that line never appears, the source name is wrong or PipeWire/PulseAudio refused the connection. Double-check the exact name from `pactl list sources short`.
 
 ---
 

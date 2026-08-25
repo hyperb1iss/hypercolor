@@ -63,7 +63,7 @@ just udev-install
 
 This copies both rules files (`udev/99-hypercolor.rules` for USB and hidraw access, `udev/70-hypercolor-input.rules` for input capture) to `/etc/udev/rules.d/`, reloads the udev database, and retriggers existing device events. After installation you must either re-plug the device or log out and back in for the session ACLs to take effect.
 
-If you installed from a release (via `scripts/install-release.sh`, the `.deb`, or the AUR package), the rules are already handled: the installer prompts before applying them, and the packages install them automatically. Release payloads from 0.3.0 onward carry both files under `lib/udev/rules.d/` inside the release directory. An install made from an older payload lacks the input rules; copy them manually from a repo checkout, or upgrade:
+The `.deb` and the AUR package install both rules files for you. The `scripts/install-release.sh` one-liner does not: it never asks for `sudo`, so it leaves the rules unapplied even though release payloads from 0.3.0 onward carry them under `lib/udev/rules.d/` inside the release directory. Copy them from that directory or from a repo checkout:
 
 ```bash
 sudo cp /path/to/hypercolor/udev/99-hypercolor.rules /etc/udev/rules.d/

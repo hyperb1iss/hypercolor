@@ -112,7 +112,7 @@ Use the returned zone and layer IDs to tune the running layer atomically:
 {
   "zone": "0199...",
   "layer": "0199...",
-  "values": { "speed": { "float": 0.2 } }
+  "values": { "speed": { "kind": "float", "value": 0.2 } }
 }
 ```
 

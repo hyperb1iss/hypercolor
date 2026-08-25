@@ -1,10 +1,10 @@
 +++
 title = "Device assignment"
-description = "Add and move devices between Studio zones, read the device card, hide/identify/remove outputs, and assign at output level in multi-zone scenes."
+description = "Add and move devices between Studio zones, read the device card, and hide, identify, move, or remove a placed device."
 weight = 50
 +++
 
-Devices land in zones through the Studio zone tree. Each device shows up as a card under the zone that owns it, with one-tap actions to add it, move it, hide its outputs, flash the hardware, or pull it back out. In a multi-zone scene you can go finer still and reassign individual outputs across zones. This page walks the whole flow.
+Devices land in zones through the Studio zone tree. Each device shows up as a card under the zone that owns it, with one-tap actions to add it, move it, hide its outputs, flash the hardware, or pull it back out. This page walks the whole flow.
 
 The unit that actually moves between zones is an **output**, not a whole device. An output is one device output or addressable segment. A single-segment strip has one output; a multi-channel controller contributes several. A device output lives in exactly one zone's layout at a time, so adding a device to a new zone *moves* its outputs there rather than copying them.
 
@@ -53,39 +53,49 @@ In a **single-zone scene**, devices that sit in no zone fold under the sole LED 
 Can't find a device in the picker? It may already be entirely in this zone, or it may not be connected yet. Check [Finding devices](@/guide/finding-devices.md) to confirm the daemon sees it.
 {% </callout> %}
 
-## Hide, identify, remove
+## Hide, identify, move, remove
 
-Each placed device card carries a trailing action cluster:
+A placed device card carries exactly two trailing icons: the **eye** hide-all
+toggle, and a **⋯ kebab** titled "Device options". The kebab expands an inline
+menu below the card body:
 
-| Action | Icon | What it does |
+| Where | Action | What it does |
 | --- | --- | --- |
-| Hide all | eye | Hides every output of this device in this zone, or shows them again if all are hidden |
-| Identify | lightning | Flashes the hardware so you can spot it physically |
-| Remove | trash | Unassigns every output this device has in this zone |
+| Card | Hide all (eye) | Hides every output of this device in this zone, or shows them again if all are hidden |
+| Kebab | Identify | Flashes the hardware so you can spot it physically |
+| Kebab | Move to `<zone>` | One row per other LED zone in the scene; moves every output the device has here into that zone |
+| Kebab | Remove from zone | Unassigns every output this device has in this zone |
+
+Cards that are not placed look different. An **Available** card (a device with
+no zone, in a single-zone scene) shows a lightning Identify button and a green
+`+` that drops it straight into the zone. An **Unassigned** card (a device with
+no zone, in a multi-zone scene) shows Identify plus a green `+` that opens a
+picker of every LED zone, because "add" has to say where.
 
 **Hide** is a Studio view convenience, not a render change. Hidden state is client-side UI state keyed per scene and per zone, persisted in your browser. It hides the output's box on the canvas so you can declutter a busy layout. It is **not** the daemon's discovery-reconciliation memory, and hiding an output does not stop it rendering. Use the per-channel eye toggle to hide a single output, or the card's hide-all toggle to move every output of the device in unison.
 
-**Identify** flashes the device's LEDs through the daemon so you can match the on-screen card to a physical light. It is available whenever the device is online. A brief toast confirms the flash.
+**Identify** flashes the device's LEDs through the daemon so you can match the on-screen card to a physical light. On a placed card it lives in the kebab menu; on an Available or Unassigned card it is a lightning button in the cluster itself. A brief toast confirms the flash.
 
-**Remove** pulls every one of the device's outputs out of this zone. For a multi-output controller the removals run in sequence as a single user action, so the whole device leaves the zone in one click. The device then becomes Unassigned (or Available, in a single-zone scene) and can be added to a different zone.
+**Remove from zone** pulls every one of the device's outputs out of this zone. For a multi-output controller the removals run in sequence as a single user action, so the whole device leaves the zone in one click. The device then becomes Unassigned (or Available, in a single-zone scene) and can be added to a different zone.
 
 ### Offline devices
 
-A device that is placed in the layout but not currently connected renders as a muted, dashed row tagged **Offline**. It shows a friendly vendor word (Razer, Corsair, Philips Hue) rather than its raw backend id, which is never shown to you. An offline device can still be **removed** from the zone, but it cannot be identified, since there is no hardware to flash.
+A device that is placed in the layout but not currently connected renders as a muted, dashed row tagged **Offline**. It shows a friendly vendor word (Razer, Corsair, Philips Hue) rather than its raw backend id, which is never shown to you. The offline row carries a single red trash button that removes it from the zone: no eye, no kebab, and no Identify, since there is no hardware to flash.
 
-## Output-level assignment in multi-zone scenes
+## Moving devices between zones
 
-When a scene has more than one zone, a **Zone assignment** panel docks below the Stage canvas. This is the fine-grained tool: instead of moving a whole device, you select individual outputs and reassign them.
+When a scene has more than one zone, the device card's kebab grows one **Move
+to `<zone>`** row per other LED zone. One click reassigns every output the
+device has in this zone to the target, so a move is never a nested picker. The
+Stage canvas has no assignment panel docked under it; every move starts from a
+card in the zone tree.
 
-The panel lists every output grouped by its owning zone, and within a zone by physical device. A multi-channel controller can have its segments split across different zones: one fan ring in `Desk`, another in `Shelf`.
-
-To reassign:
-
-1. Click output chips to multi-select them. Selected chips highlight in the accent color.
-2. The toolbar shows the selection count and an **Assign to** zone picker.
-3. Pick a target zone. The selected outputs move there, and the selection clears.
-
-Each output chip names its device, and a multi-channel device also names the segment (for example `Lian Li · Front fans`). Like the device picker, chips never show a raw id.
+The rail moves a device as a unit. Splitting one multi-channel controller across
+zones (one fan ring in `Desk`, another in `Shelf`) is expressible on the wire
+but not in the UI: `POST /api/v1/scene/zones/{zone}/members` takes a per-member
+`segment`, so an API client can place individual segments. The per-channel rows
+under a card show topology, bound components, LED count, and a hide toggle, but
+no move control.
 
 {% <callout type="info"> %}
 Every assignment carries the active scene's revision as a precondition. If another client or the CLI changed the scene while you were working, the move is rejected cleanly, the scene reloads, and a toast asks you to try again. Your edit is never silently clobbered. See [Zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the mechanics.

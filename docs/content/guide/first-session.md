@@ -231,7 +231,7 @@ layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
 curl -X PATCH \
   "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
   -H "Content-Type: application/json" \
-  -d '{"values": {"speed": {"float": 3.0}}}'
+  -d '{"values": {"speed": {"kind": "float", "value": 3.0}}}'
 ```
 
 The control patch deliberately has no `If-Match` header. A replaced layer gets
@@ -249,7 +249,7 @@ The web UI's controls panel lets you adjust these with sliders, which is easier 
 
 ## 7. Build a spatial layout
 
-Without a layout, every device zone gets the same averaged color from the canvas, so all your LEDs pulse together as one blob. A layout tells Hypercolor where each zone sits in the virtual canvas, so gradients actually flow across your desk from left to right, and a vertical strip gets the top of the canvas while a keyboard gets the bottom.
+Without a layout, every device output gets the same averaged color from the canvas, so all your LEDs pulse together as one blob. A layout tells Hypercolor where each output sits in the virtual canvas, so gradients actually flow across your desk from left to right, and a vertical strip gets the top of the canvas while a keyboard gets the bottom.
 
 Canvas coordinates are normalized to `[0.0, 1.0]`, so positions stay valid regardless of the configured canvas resolution.
 
@@ -272,7 +272,7 @@ curl http://localhost:9420/api/v1/layouts | jq .data.items
 curl http://localhost:9420/api/v1/layouts/active | jq
 ```
 
-**Create a layout** from the web UI or via REST with a JSON zone definition. The web UI is the recommended tool here: open `http://localhost:9420`, navigate to Layouts, and use the drag-and-drop zone editor to position your device zones on the canvas. Topology options include strip, matrix, and ring configurations. Once you're satisfied, save it from the UI.
+**Create a layout** from the web UI or via REST with a JSON zone definition. The web UI is the recommended tool here: open `http://localhost:9420`, go to Studio, select a zone, and drag its device outputs around the Stage canvas. Once you're satisfied, save the layout from the Stage toolbar.
 
 From the CLI, you can create a layout by providing a JSON definition:
 
@@ -299,7 +299,7 @@ hypercolor layouts delete "Old Layout"
 ```
 
 {% <callout type="tip"> %}
-The Studio workspace offers a full visual zone editor for spatial layouts. Open `http://localhost:9420`, click the Studio tab, and use the zone canvas to drag device zones into position. See [Studio overview](@/studio/overview.md) and [Layouts](@/studio/layouts.md) for the full walkthrough.
+The Studio workspace offers a full visual editor for spatial layouts. Open `http://localhost:9420`, click the Studio tab, and drag device outputs into position on the selected zone's Stage canvas. See [Studio overview](@/studio/overview.md) and [Layouts](@/studio/layouts.md) for the full walkthrough.
 {% </callout> %}
 
 ## 8. Set up audio-reactive effects
@@ -389,9 +389,9 @@ hypercolor scenes create "Late Night" --description "Dim amber for late sessions
 hypercolor scenes activate "Focus Mode"
 ```
 
-Scene activation uses the stored scene transition. The CLI `--transition` flag
-is accepted for forward compatibility, but the activate endpoint does not
-override the stored value yet.
+Scene activation uses the transition stored in the scene. Pass
+`--transition <ms>` to override its duration for this activation only; the
+scene's stored transition is left untouched.
 
 **Return to the Default scene:**
 
@@ -436,8 +436,8 @@ The UI is organized into panels:
 - **Effects browser**: search and filter the full effect catalog, preview effects in the canvas panel before committing to hardware
 - **Controls panel**: per-parameter sliders for the active effect; equivalent to `effects patch` but much easier for exploration
 - **Devices panel**: connection status for every discovered device, per-device brightness, and an identify button to flash a test pattern
-- **Layouts editor**: drag-and-drop zone positioning with topology selection (strip, matrix, ring); the canonical way to build spatial layouts
-- **Scenes**: create, snapshot, activate, and delete named configurations
+- **Studio Stage**: the spatial layout editor, always on for the selected lighting zone; drag, resize, and rotate that zone's device outputs on its own canvas
+- **Scenes**: the Studio header's scene selector creates, renames, deletes, and switches scenes, and the dashboard's scene pill switches between them; snapshotting the live rig is CLI and REST only (`hypercolor scenes snapshot`)
 - **Studio**: the full multi-zone authoring workspace (see below)
 
 The canvas preview shows exactly what the render loop is producing, updated at the daemon's current target FPS.
@@ -452,8 +452,8 @@ Open Studio from the top navigation, or navigate directly to `http://localhost:9
 
 What Studio adds on top of the basic effects browser:
 
-- **Zone canvas**: position and resize device zones visually; zones are flexible canvas partitions, not rooms
-- **Per-zone effect layers**: assign a different effect to each zone, with independent control values and priority ordering
+- **Zone canvas**: position and resize device outputs visually; zones are flexible canvas partitions, not rooms
+- **Per-zone effect layers**: assign a different effect to each zone, with independent control values and its own bottom-to-top layer order
 - **Layer compositing**: stack effects with blend modes to create layered lighting compositions
 - **Scene authoring**: save the full multi-zone composition as a scene that can be recalled with one click
 - **Display faces**: when an effect supports it, you can target specific display faces (front, top, rear) of a device; see [Display faces](@/effects/display-faces.md) for how effects declare and use face geometry

@@ -117,9 +117,9 @@ Glows are energy, not depth. `box-shadow` for a colored bloom is fine.
   border: 1px solid var(--border-subtle);
   border-radius: $radius-lg;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow 0.4s var(--ease-smooth),
-    filter var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-slow) var(--ease-silk),
+    filter var(--duration-normal) var(--ease-silk);
 
   // Hover: border brightens + ambient glow. No translateY.
   &:hover {
@@ -192,11 +192,10 @@ Motion communicates an entrance, a state change, or feedback. It is never decora
 | Token | Curve | Use |
 |---|---|---|
 | `--ease-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | Physical interactive elements: buttons, toggles, pressed states |
-| `--ease-silk` | `cubic-bezier(0.4, 0, 0.2, 1)` | Transitions and reveals: cards fading in, panels opening |
-| `--ease-smooth` | `cubic-bezier(0.25, 0.1, 0.25, 1)` | Ambient state changes: border color shifting on hover |
+| `--ease-silk` | `cubic-bezier(0.4, 0, 0.2, 1)` | Transitions, reveals, and ambient state changes: cards fading in, panels opening, border color shifting on hover |
 | `--ease-out` | `cubic-bezier(0, 0, 0.2, 1)` | Directional exits |
 
-**Duration tokens:** `--duration-fast` (120ms), `--duration-normal` (200ms), `--duration-medium` (300ms), `--duration-slow` (400ms).
+**Duration tokens:** `--duration-fast` (120ms), `--duration-normal` (200ms), `--duration-slow` (400ms).
 
 **Stagger pattern for multi-item lists**, the "one orchestrated cascade per view":
 
@@ -266,7 +265,7 @@ Use the SCSS variables, not arbitrary values.
 
 Luminary is deliberately sharp: 8px is the largest corner in the product. If you find yourself reaching for 12px or 16px, check whether you need a pill shape instead.
 
-**Spacing:** `--spacing-xs` (4px), `--spacing-sm` (8px), `--spacing-md` (16px), `--spacing-lg` (24px), `--spacing-xl` (32px). In docs SCSS, components use these as pixel values in padding and gap rules.
+**Spacing:** the app defines `--spacing-xs` (4px), `--spacing-sm` (8px), `--spacing-md` (16px), `--spacing-lg` (24px), `--spacing-xl` (32px) in `primitives.css`. The docs Sass has no spacing scale, so write literal pixels in padding and gap rules and keep them on that same 4/8/16/24/32 ladder.
 
 ---
 

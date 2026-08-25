@@ -109,12 +109,10 @@ Then re-plug the device.
 
 If the device node is accessible but Hypercolor still cannot connect, another
 application has likely claimed the USB interface first. When this happens the HAL
-transport receives a permission-denied error from the OS and reports it at `debug`
-level as:
-
-```
-permission denied opening hidraw node ...
-```
+transport receives a permission-denied error from the OS and surfaces it as a
+`TransportError::PermissionDenied` carrying the OS detail string. Running the daemon at
+`debug` level also shows the node-selection trace, which lists the candidate nodes the
+transport considered and why each was rejected.
 
 Common offenders:
 
@@ -187,9 +185,15 @@ lsof /dev/hidraw*
 # 5. Full daemon health check (devices, render, config)
 hypercolor diagnose
 
-# 6. Discovery with debug logging
-RUST_LOG=hypercolor_hal=debug hypercolor devices discover --target usb
+# 6. Discovery with debug logging: start the daemon with the HAL target enabled
+#    in one terminal, then trigger discovery from another
+RUST_LOG=hypercolor_hal=debug just daemon
+hypercolor devices discover --target usb
 ```
+
+The `RUST_LOG` filter has to go on the daemon, not the CLI. The HAL scan runs inside the
+daemon process; `hypercolor-cli` does not link the HAL at all, so setting the filter on
+the CLI command produces no extra output.
 
 The daemon exposes the same health checks via REST while it is running:
 

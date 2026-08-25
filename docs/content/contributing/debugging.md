@@ -48,7 +48,7 @@ with `RUST_LOG`.
 ## Built-in diagnostics
 
 `hypercolor diagnose` posts to `POST /api/v1/diagnose` and runs a set of named health checks
-against the live daemon. The default check set is `daemon`, `render`, `devices`, `config`.
+against the live daemon. The default check set is `daemon`, `render`, `devices`, `config`, `input`, and `memory`.
 
 ```bash
 # Tabular output (the default, easiest to read)
@@ -78,6 +78,12 @@ line at the end counts totals across all checks.
 | `render` | render | Render loop state, frame liveness (stale > 2 s → warning, > 10 s → fail), LED freshness |
 | `devices` | devices | Registry count, output queue health, USB actor display lane, display output encoder |
 | `config` | config | Config manager availability |
+| `input` | input | Input-source lifecycle and data freshness: a demanded source that is failed, unavailable, stopped, degraded, or stale |
+| `memory` | memory | Servo memory-profiler summary (warning on Windows and on builds without the `servo` feature) |
+
+One further check, `macos_screen_parity`, is opt-in: it never runs by default, and requesting it
+requires protected-control authorization, so an unauthenticated call asking for it is rejected
+rather than answered.
 
 The response also includes a `snapshot` object with detailed render timing, USB actor metrics,
 display output encoder counters, and per-device queue state. Inspect it with:
@@ -370,7 +376,7 @@ Then fetch the current frame:
 curl -s http://localhost:9420/api/v1/simulators/displays/{id}/frame -o /tmp/face-preview.jpg
 ```
 
-The display preview WebSocket channel (binary tag `0x07`) streams JPEG frames to subscribers.
+The display preview WebSocket channel (binary tags `0x07` and `0x12`) streams JPEG frames to subscribers.
 Those payloads are binary JPEG, not JSON, so you subscribe with a config message rather than
 piping through `jq`. See the [WebSocket reference](@/api/websocket.md) for the `display_preview`
 channel configuration and frame layout.
@@ -429,9 +435,11 @@ up to 5 min with repeated failures) or restart the daemon. If it reopens immedia
 `RUST_LOG=hypercolor_core::effect::servo=trace` to capture the failure reason before the
 breaker trips again.
 
-**Servo memory diagnostics return 404**: this endpoint is disabled on Windows. On Linux/macOS
-with the `servo` feature it should always be available; without the feature it also returns
-`404`.
+**Servo memory check reports a warning**: on Windows the embedded reporter can abort the daemon
+process, so the check is disabled and answers `warning` with "Servo memory reporting is disabled
+on Windows"; a build without the `servo` feature answers the same way. There is no separate memory
+endpoint, so nothing here returns `404`: `memory` is a check inside `POST /api/v1/diagnose`, which
+is always routed.
 
 ## Related pages
 

@@ -264,7 +264,7 @@ Atomically patch typed values and remove bindings on one live scene layer. Mutat
   "arguments": {
     "zone": "Primary",
     "layer": "0199...",
-    "values": { "speed": { "float": 0.2 } },
+    "values": { "speed": { "kind": "float", "value": 0.2 } },
     "clear_bindings": ["speed"]
   }
 }

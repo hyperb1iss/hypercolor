@@ -70,6 +70,12 @@ Each entry in `items` is an effect summary with this shape:
   "tags": ["aurora", "ambient", "cool"],
   "version": "1.0.0",
   "audio_reactive": false,
+  "input_reactive": false,
+  "capabilities": {
+    "audio_reactive": false,
+    "screen_reactive": false,
+    "input_reactive": false
+  },
   "cover_image_url": "/api/v1/effects/borealis/cover"
 }
 ```
@@ -95,8 +101,8 @@ Effects carry a category for discovery and filtering. The canonical taxonomy liv
 | `utility` | Functional: solid color, off, system monitor |
 | `display` | Full-fidelity HTML display faces for LCD surfaces |
 
-{% <callout type="warning"> %}
-The MCP `list_effects` tool exposes its own filter enum (`ambient`, `reactive`, `audio`, `gaming`, `productivity`, `utility`, `interactive`, `generative`) which does not map one-to-one onto `EffectCategory`. When you filter from an agent, use the MCP enum; when you filter over REST or the CLI, use the canonical category names in the table above.
+{% <callout type="info"> %}
+The MCP `list_effects` tool advertises the same vocabulary. Its `category` enum is generated from `EffectCategory::VARIANTS` precisely so it cannot drift, so the names in the table above are the names an agent sends, byte for byte.
 {% </callout> %}
 
 ## Browse from an MCP agent
@@ -114,7 +120,7 @@ An agent driving Hypercolor reads the catalog with the read-only `list_effects` 
 }
 ```
 
-The companion `set_effect` tool takes a `query` that accepts an exact name, a partial match, or a natural-language description ("something with northern lights", "calm blue waves") and returns the matched effect with a confidence score. The canonical agent loop is read state, discover options with `list_effects`, then apply with `set_effect`. The MCP server is off by default; enable it in the daemon's `[mcp]` config before an agent can reach the catalog.
+The companion `set_effect` tool takes a `query` that accepts an exact effect ID, an exact name, or a unique name substring, and returns the updated zone resource. There is no fuzzy matching and no confidence score; natural-language colour descriptions are handled by `set_color`, not `set_effect`. The canonical agent loop is read state, discover options with `list_effects`, then apply with `set_effect`. The MCP server is off by default; enable it in the daemon's `[mcp]` config before an agent can reach the catalog.
 
 ## Visual gallery
 
