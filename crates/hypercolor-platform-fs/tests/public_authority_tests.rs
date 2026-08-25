@@ -52,13 +52,20 @@ fn write_mode(path: &Path, bytes: &[u8], mode: u32) {
 /// Create a socket filesystem entry at `path`.
 ///
 /// A deep fixture path can exceed the `sockaddr_un` limit, so the socket is
-/// bound in the short system temp directory and its inode renamed into the
-/// fixture when the direct bind cannot address the path.
+/// bound at the shorter workspace root on the same filesystem and its inode
+/// renamed into the fixture when the direct bind cannot address the path.
 fn create_socket_entry(path: &std::path::Path) {
     if UnixListener::bind(path).is_ok() {
         return;
     }
-    let staging = tempfile::tempdir().expect("short socket staging directory");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate should live under the workspace root");
+    let staging = tempfile::Builder::new()
+        .prefix(".socket-")
+        .tempdir_in(workspace_root)
+        .expect("short socket staging directory");
     let staged = staging.path().join("s");
     let _listener = UnixListener::bind(&staged).expect("bind staged socket entry");
     fs::rename(&staged, path).expect("move socket entry into the fixture");
