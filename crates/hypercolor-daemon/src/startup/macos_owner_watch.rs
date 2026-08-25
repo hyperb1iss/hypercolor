@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -187,7 +187,7 @@ impl PendingMacosOwnerWatch {
             signal_tx,
             stopping,
             worker: Some(worker),
-            worker_done_rx,
+            worker_done_rx: Mutex::new(worker_done_rx),
             publisher: Some(publisher),
         })
     }
@@ -241,7 +241,7 @@ pub(crate) struct MacosOwnerWatch {
     signal_tx: SyncSender<WatchSignal>,
     stopping: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
-    worker_done_rx: Receiver<()>,
+    worker_done_rx: Mutex<Receiver<()>>,
     publisher: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -255,6 +255,8 @@ impl Drop for MacosOwnerWatch {
         }
         if self
             .worker_done_rx
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv_timeout(WATCH_WORKER_SHUTDOWN_TIMEOUT)
             .is_ok()
             && let Some(worker) = self.worker.take()

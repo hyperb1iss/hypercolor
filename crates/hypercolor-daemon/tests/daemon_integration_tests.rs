@@ -182,6 +182,13 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
 // DaemonState Lifecycle Tests
 // ═════════════════════════════════════════════════════════════════════════════
 
+#[test]
+fn daemon_state_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    assert_send_sync::<DaemonState>();
+}
+
 #[tokio::test]
 async fn daemon_lifecycle_initialize_start_shutdown() {
     let _guard = TestDataDirGuard::new().await;
