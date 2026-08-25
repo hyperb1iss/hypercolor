@@ -302,15 +302,15 @@ bench-gate *args='':
 
 # Save a named Criterion baseline for all benchmark suites
 bench-baseline name:
-    just bench-core -- --save-baseline {{ name }}
-    just bench-hal -- --save-baseline {{ name }}
-    just bench-daemon -- --save-baseline {{ name }}
+    just bench-core --save-baseline {{ name }}
+    just bench-hal --save-baseline {{ name }}
+    just bench-daemon --save-baseline {{ name }}
 
 # Compare all benchmark suites against a named Criterion baseline
 bench-compare name:
-    just bench-core -- --baseline {{ name }}
-    just bench-hal -- --baseline {{ name }}
-    just bench-daemon -- --baseline {{ name }}
+    just bench-core --baseline {{ name }}
+    just bench-hal --baseline {{ name }}
+    just bench-daemon --baseline {{ name }}
 
 # ─── Linting & Formatting ────────────────────────────────
 
