@@ -34,9 +34,22 @@ with you once a fix is available.
 
 ## Scope
 
-Hypercolor runs as a local daemon communicating with USB/HID devices and a web UI. The daemon
-binds to localhost by default; non-loopback control surfaces require an API key. The primary
-attack surface includes:
+Hypercolor runs as a local daemon communicating with USB/HID devices and a web UI. Out of the
+box the daemon binds to `127.0.0.1:9420` with `network.access_mode = "local_only"` and
+`network.allow_unauthenticated_remote_access = false`. Under those defaults it refuses to bind a
+non-loopback address unless `HYPERCOLOR_API_KEY` is set.
+
+Two supported settings lift that requirement, and either one exposes an unauthenticated control
+API to whoever can reach the bound address:
+
+- `network.access_mode = "lan_trusted"` drops the API key requirement unconditionally.
+- `network.allow_unauthenticated_remote_access = true` drops it under the `local_only` and
+  `custom` access modes.
+
+Anyone who reaches the daemon under either setting gets full control of devices, scenes, and
+effects, so treat both as a deliberate trust decision about the surrounding network.
+
+The primary attack surface includes:
 
 - **REST API / WebSocket / MCP** on localhost by default (`:9420`)
 - **USB/HID communication** with connected devices

@@ -14,8 +14,8 @@ The foundation works on Linux, Windows, and macOS today.
 - Effect system: Servo HTML renderer with GPU framebuffer import on all three platforms, 57 built-in effects (46 SDK, 11 native Rust), curated cover art and presets
 - Effect SDK: TypeScript + GLSL authoring, watch-rebuild workflow, bundled HTML output, published to npm as `hypercolor` with the `create-hypercolor` scaffolder
 - Face SDK: 7 display faces for LCD panels (clocks, sensors, now-playing, spectrum) with the `face()` declarative API
-- Interactive input pipeline: consent-gated keyboard/mouse capture (evdev on Linux, Raw Input on Windows, polling bridge on macOS) driving interactive effects like Keystrike
-- Screen capture: Desktop Duplication on Windows (GPU path, on by default), Wayland portal + PipeWire on Linux (opt-in), with byte-admission capacity control
+- Interactive input pipeline: consent-gated keyboard/mouse capture (evdev on Linux, Raw Input on Windows, CGEventTap on macOS) driving interactive effects like Keystrike
+- Screen capture: Desktop Duplication on Windows (GPU path, on by default), Wayland portal + PipeWire on Linux (opt-in), ScreenCaptureKit on macOS (opt-in), with byte-admission capacity control
 - Hardware: 179 supported devices across 12 driver families (Razer, Corsair, ASUS, Lian Li, Nollie, PrismRGB, QMK, Ableton Push 2, Hue, Nanoleaf, WLED, Govee), plus a thirteenth family, Dygma, whose driver ships but stays dark until firmware allows it, and two opt-in bridges: the OpenRGB SDK bridge for anything OpenRGB drives and the `blocksd` bridge for ROLI Blocks
 - Portable device identity: devices survive cable moves, IP churn, and BIOS renumbering; layouts rebind after hardware swaps
 - Web UI: effects browser, live canvas preview, Studio multi-zone workspace, viewport designer, spatial layout editor, scene management, mobile-responsive shell
@@ -24,10 +24,11 @@ The foundation works on Linux, Windows, and macOS today.
 - REST API + WebSocket (binary preview transport v2) + MCP server (17 tools, 5 resources, 3 prompts) on `:9420`
 - CLI (`hypercolor`) with shell completions
 - Installers everywhere: Linux tarball/`.deb`/AUR/Homebrew formula, per-machine Windows NSIS with PawnIO hardware setup, macOS DMGs (both architectures) + Homebrew cask, all published automatically on tag
+- Per-PR CI lanes for Linux, Windows, and macOS (both Apple Silicon and Intel runners)
 - Python client on PyPI as `hypercolor` (sdist + wheel, trusted publishing)
 - Virtual display simulator for developing effects and faces without physical hardware
 - Scene engine with Oklab cross-fades and priority stacking
-- Linux session integration via D-Bus (logind, screensaver)
+- Session and power integration: D-Bus on Linux (logind, screensaver) and native session/system-power monitors on macOS
 
 ---
 
@@ -56,7 +57,6 @@ If you own hardware in the `researched` column of the [compatibility matrix](doc
 
 ### Platform
 
-- **macOS**: a per-PR CI test lane (macOS currently compiles only on release tags), ScreenCaptureKit screen capture, and session/power integration
 - **Windows**: deeper session/power integration, and compiling the Servo lane in the per-PR Windows CI job (it currently builds only in the tag-gated release job)
 - **Code signing**: Windows Authenticode and macOS Developer ID + notarization, once signing credentials exist; until then first launches hit SmartScreen and Gatekeeper speed bumps
 
@@ -84,7 +84,7 @@ A community effect gallery: browse, install, and share effects without leaving t
 
 Things we want but haven't committed to a shape for yet.
 
-- **ROLI Blocks**: expressive pressure/tilt MIDI instruments with LED output. A HAL protocol encoder exists; end-to-end device support is unproven.
+- **ROLI Blocks**: expressive pressure/tilt MIDI instruments with LED output. Support is a `DeviceBackend` that bridges to a separate `blocksd` daemon over a Unix socket, not a HAL protocol encoder, and no ROLI device appears in the compatibility database. End-to-end device support is unproven.
 - **X11 screen capture**: Linux capture is Wayland-portal-only today; an XShm path would cover legacy sessions.
 - **SMBus / I2C on more silicon**: motherboard and DRAM RGB beyond ASUS Aura (MSI Mystic Light and friends). The Windows PawnIO path and the Linux i2c-dev path both exist; each new controller family needs a hardened probe model.
 - **Wired / wireless headset RGB**: most headset protocols are closed; community reverse-engineering is the prerequisite.

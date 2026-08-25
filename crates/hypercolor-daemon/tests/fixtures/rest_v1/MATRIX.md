@@ -80,8 +80,9 @@ when it does:
 | `malformed_request` | 400 | `Malformed` | none |
 | `unauthorized` | 401 | `Unauthorized` | none |
 | `forbidden` | 403 | `Forbidden` | optional, caller-supplied |
-| `not_found` | 404 | `NotFound` | none |
+| `{kind}_not_found` | 404 | `NotFound` | none |
 | `conflict` | 409 | `Conflict` | optional, caller-supplied |
+| `control_bound` | 409 | `ControlBound` | `{bound}` |
 | `precondition_failed` | 412 | `PreconditionFailed` | `{expected, current}` |
 | `payload_too_large` | 413 | `PayloadTooLarge` | `{limit_bytes}` |
 | `unsupported_media_type` | 415 | `UnsupportedMediaType` | none |
@@ -90,6 +91,13 @@ when it does:
 | `internal_error` | 500 | `Internal` | none |
 | `device_unavailable` | 503 | `DeviceUnavailable` | none |
 | `service_unavailable` | 503 | `ServiceUnavailable` | optional, caller-supplied |
+
+There is no bare `not_found` code. `DomainError::NotFound` carries a
+`ResourceKind`, and `ResourceKind::not_found_code()`
+(`src/domain/mod.rs`) renders one code per kind: `scene_not_found`,
+`zone_not_found`, `layer_not_found`, `effect_not_found`, and twenty-one more,
+through `route_not_found` for the unmatched-path fallback. A client branching on
+a miss matches the `_not_found` suffix, not a single literal.
 
 `device_unavailable` is the one row no route emits today. The variant is
 contract (Spec 76 §2.1) and the MCP projection consumes it, but every device
@@ -118,14 +126,14 @@ Not everything on the wire is enveloped, and the exceptions are contract:
 | --- | --- |
 | `GET /health` | Bare probe object (§4) |
 | Binary routes (`/effects/{id}/cover`, `/assets/{id}/blob`, `/displays/{id}/frame`) | Raw bytes |
-| Axum's own rejections (malformed JSON, 405, body-limit 413) | Plain text, no envelope |
+| Axum's own rejections (malformed JSON, body-limit 413) | Plain text, no envelope |
 
 Axum's own rejections are the only errors that bypass the envelope, because
 they are answered by the framework before a handler runs. Everything the daemon
 itself refuses goes out enveloped.
 
 **An unmatched path is not one of them.** A fallback scoped to `/api/v1` and
-registered inside the nest renders `404 not_found` with the canonical envelope
+registered inside the nest renders `404 route_not_found` with the canonical envelope
 and the message `route not found: {path}`, echoing the caller's original path.
 It exists because the web UI installs an SPA fallback on the outer router: with
 a UI mounted, an unmatched API path would otherwise miss `ServeDir`, fall
@@ -139,6 +147,12 @@ deletion fences in `rest_wire_contract_tests.rs` under the two
 `deleted_*_routes_leave_nothing_behind` tests
 assert the envelope rather than the status alone for the same reason.
 
+**A method mismatch is not one of them either.** The API router registers
+`method_not_allowed_fallback(api_route_not_found)` (`src/api/mod.rs:201`), so
+sending the wrong verb to a real `/api/v1` path renders the same canonical
+`404 route_not_found` envelope as an unmatched path. No request under `/api/v1`
+answers a bare `405`.
+
 Paths outside `/api/v1` still belong to the SPA, which is what makes
 client-side routing work; `/health` has no sub-paths to protect.
 
@@ -146,7 +160,7 @@ client-side routing work; `/health` has no sub-paths to protect.
 
 ## 2. Canonical list responses
 
-Every collection uses `ListResponse<T>`. Complete collections omit `page`;
+Twelve collections use `ListResponse<T>`. Complete collections omit `page`;
 collections that accept `offset` and `limit` include a real `PageInfo`.
 
 ```json
@@ -159,9 +173,17 @@ collections that accept `offset` and `limit` include a real `PageInfo`.
 }
 ```
 
-The complete collections are effects, effect presets, scenes, assets,
-favorites, saved presets, and playlists. `total` counts the rows after any
-server-side filtering.
+The complete collections are effects, effect presets, scenes, drivers, scene
+zone layers, assets, favorites, saved presets, and playlists. `total` counts the
+rows after any server-side filtering.
+
+Five list-shaped routes are **not** `ListResponse`. `GET /api/v1/displays`,
+`GET /api/v1/capture/monitors`, `GET /api/v1/simulators/displays`, and
+`GET /api/v1/config/schema` put a bare JSON array straight into `data`;
+`GET /api/v1/control-surfaces` puts an object, `{"surfaces": [ ]}`. All five
+still carry the standard envelope, so `meta` is unchanged and only `data`
+deviates, but a client cannot read `data.items` or `data.total` on any of
+them.
 
 `GET /api/v1/effects` is the one row that reads its query string (Spec 78
 wave 78.0a). It honors `category`, `audio_reactive`, `screen_reactive`,
@@ -201,10 +223,13 @@ was deleted outright, so nothing in this table has a second address. What
 earns a row is a body or header contract that diverges from the neighbouring
 routes, noted per row.
 
-Retired paths answer 404, with one pinned exception: a POST to
-`/api/v1/effects/pause` or `/api/v1/effects/resume` falls through to the
-GET-only `/api/v1/effects/{id}` sibling and answers `405`. That is still a
-deletion, and the 405 is what would catch someone re-adding a handler.
+Retired paths answer 404, with no exceptions. A POST to
+`/api/v1/effects/pause` or `/api/v1/effects/resume` matches the GET-only
+`/api/v1/effects/{id}` sibling as a method mismatch, and the API router's
+`method_not_allowed_fallback` turns that into the canonical `404` envelope
+rather than a `405` (§1.3). Pinned by
+`api_tests.rs::the_merged_output_routes_leave_nothing_behind`, which asserts
+`404` for both spellings.
 
 **One effective output state.** A destructive stop reads as stopped everywhere.
 `GET /api/v1/output` reports `power: "paused"`; WS `hello`, MCP `get_status`,
@@ -229,10 +254,10 @@ the same effective power state directly.
 | PATCH | `/api/v1/scene/zones/{zone}/layers/order` | `{order: […]}` | `200`, enveloped zone resource, ETag | |
 | PUT/DELETE | `/api/v1/scene/zones/{zone}/layers/{layer}` | Layer creation shape on PUT | `200`, enveloped zone resource, ETag | PUT mints a fresh layer id |
 | GET | `/api/v1/config` | Empty | `200`, enveloped whole config | Secret-classified sections render as `{redacted: true}`: every `drivers` entry, plus any top-level section the build does not model |
-| GET | `/api/v1/config/keys/{key}` | Dotted key as one **path segment** | `200`, enveloped `{key, value}` | `key` echoes the *normalized* key; a 404 message echoes the caller's raw key; a malformed key (empty segment) is `400 bad_request` |
+| GET | `/api/v1/config/keys/{key}` | Dotted key as one **path segment** | `200`, enveloped `{key, value}` | `key` echoes the *normalized* key; a 404 message echoes the caller's raw key; a malformed key (empty segment) is `400 malformed_request` |
 | PUT | `/api/v1/config/keys/{key}` | **The value itself** as the JSON body; `?live=` (default `true`) gates the live apply | `200`, enveloped `{key, value, live, requires_restart, pending_restart, path}` | The body is typed JSON, so `true` is boolean and `"hello"` is a string. Returns `500 internal_error` when no `ConfigManager` is wired |
 | DELETE | `/api/v1/config/keys/{key}` | `?live=` (default `true`) | `200`, same mutation body, `value` carrying the restored default | |
-| POST | `/api/v1/config/reset` | No body; `?live=` (default `true`) | `200`, mutation body with `key` and `value` null | Whole-config reset only; the `drivers` map, unmodeled sections, and the include list survive |
+| POST | `/api/v1/config/reset` | No body; `?live=` (default `true`) | `200`, mutation body with `key` and `value` null | Whole-config reset only; `full_reset_config` carries exactly two things across, the `drivers` map and the `extensions` catch-all, which is where retired keys such as `include` now land |
 | GET | `/api/v1/config/schema` | Empty | `200`, enveloped list of `{pattern, apply, redaction, has_validator, protection}` | The key registry as clients read it; `apply` is `{kind, section?}` |
 
 ---

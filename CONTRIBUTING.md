@@ -9,7 +9,7 @@ drivers, effects, UI improvements, documentation, bug reports, and ideas.
 # Clone and build
 git clone https://github.com/hyperb1iss/hypercolor.git
 cd hypercolor
-just verify        # fmt + lint + test: run this after every change
+just verify        # the full nine-gate check: run this after every change
 ```
 
 **Requirements:**
@@ -42,7 +42,7 @@ development skills in `.agents/skills/hal-driver-development/` and
 ## Development Workflow
 
 ```bash
-just verify          # Format, lint, and test the Rust workspace
+just verify          # All nine gates over the Rust workspace
 just check           # Quick type-check
 just test            # Run tests only
 just test-crate hypercolor-hal   # Test a specific crate
@@ -53,9 +53,17 @@ just sdk-dev         # SDK dev server with HMR
 
 ### Verification Gates
 
-`just verify` is the baseline for Rust changes. Some areas live outside that
-workspace or generate checked-in artifacts, so run the matching gate before you
-open a PR:
+`just verify` is the baseline for Rust changes. It runs nine gates in order:
+`oss-boundary-check-strict`, `api-doc-route-check`, `macos-gpu-only-check`,
+`build-wrapper-test`, `cargo-gc-test`, `fmt-check`, `lint`, `test`, and
+`alloc-contracts`. The four that are not self-explanatory: the boundary check
+keeps commercial-only markers out of the open-source tree, the route check
+fails if current documentation still advertises a retired public API route,
+the macOS check keeps production capture on the native path, and
+`alloc-contracts` runs the allocation-counter tests single-threaded.
+
+Some areas live outside that workspace or generate checked-in artifacts, so run
+the matching gate before you open a PR:
 
 - **Rust crates:** `just verify`; add `just deny` when dependencies change.
 - **Web UI:** `just ui-test` and `just ui-build`.
