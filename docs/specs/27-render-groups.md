@@ -2,13 +2,25 @@
 
 > Independent rendering pipelines within a Scene — each with its own effect, layout, and canvas.
 
-**Status:** Draft
+**Status:** Historical. The naming decision this spec exists to record was reversed.
+Do not implement from it.
 **API status:** Historical scene-route snapshot. The canonical resource model in
 [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Crate:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
 **Depends on:** Spatial Layout Engine (06), Effect System (07), Scenes & Automation (13)
-**Evolves:** Scene struct (13 §1), ZoneAssignment (13 §2), render thread pipeline
-**See also:** Spec 48 (Canonical Render Pipeline) for the current render loop contract
+**See also:** [Spec 64](64-multi-zone-scenes.md), which owns the shipped zone model
+
+> **Vocabulary warning (2026-08-25):** this spec was written to settle a naming question,
+> and the answer it gives is now banned. `RenderGroup` has no definition anywhere in
+> `crates/`; its only two occurrences are inside guard tests that assert the term is gone
+> (`shared_crates_and_sdk_keep_zone_vocabulary_canonical` in
+> `crates/hypercolor-daemon/tests/internal_api_surface_tests.rs`, mirrored in
+> `crates/hypercolor-core/tests/bus_tests.rs`). `DeviceZone`, the collision this spec was
+> written to avoid, no longer exists either. The shipped noun is `Zone`
+> (`crates/hypercolor-types/src/scene.rs`), holding `layers: Vec<SceneLayer>`. Code
+> written from this document's naming will fail `just test` on the first run. The routes
+> in its API section are gone too: the live surface is the `/scene/zones/{zone}/layers/{layer}`
+> singleton, not `/scenes/{id}/zones`.
 
 ---
 

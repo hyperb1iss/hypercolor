@@ -2,9 +2,21 @@
 
 > Know when the human leaves. Fade gracefully, wake instantly, respect the machine's power state.
 
-**Status:** Draft
-**Crate:** `hypercolor-core`
+**Status:** Partly historical. The neutral half shipped; section 14's file layout is
+wrong and following it re-violates the platform boundary.
+**Crate:** `hypercolor-core` for policy; `hypercolor-linux-session` for the Linux backends
 **Module path:** `hypercolor_core::session`
+
+> **Note (2026-08-25):** the neutral half of this spec is live: `SessionMonitor`
+> (`crates/hypercolor-core/src/session/mod.rs`) and `SleepPolicy`
+> (`crates/hypercolor-core/src/session/policy.rs`) both ship. Section 14's module layout
+> is not. It places `logind.rs`, `screensaver.rs`, `idle_wayland.rs`, `idle_x11.rs`,
+> `idle_dbus.rs`, and `lid.rs` inside `hypercolor-core/src/session/`, which holds only
+> `mod.rs`, `policy.rs`, and `tests.rs`. Linux session and power code lives in
+> `crates/hypercolor-linux-session/` (`logind.rs`, `screensaver.rs`, `systemd.rs`,
+> `procfs.rs`, `parent_death.rs`); the `idle_*` and `lid.rs` files were never built at
+> all. Putting OS calls back into `hypercolor-core` breaks the boundary rule in CLAUDE.md
+> and `docs/design/72-cross-platform-boundary-review.md`.
 **Depends on:** Event Bus (spec 09), Configuration (spec 12), Scenes & Automation (spec 13)
 **Feeds into:** `DesktopTriggerSource` (spec 13 §7), `SystemTriggerSource` (spec 13 §7)
 

@@ -10,7 +10,8 @@
 **Author:** Nova
 **Date:** 2026-04-09
 **Crates:** `hypercolor-tui`
-**Related:** `docs/specs/37-cli-completeness-and-styling.md`, `docs/specs/15-cli-commands.md`
+**Related:** `docs/specs/37-cli-completeness-and-styling.md`;
+`docs/archive/15-cli-commands.md` (archived 2026-08-25)
 **Depends On:** Spec 37 Phase 4 (shared `hypercolor-types::ws` module)
 
 ---

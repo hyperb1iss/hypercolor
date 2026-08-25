@@ -2,7 +2,8 @@
 
 > IPC bridge to blocksd for driving ROLI Lightpad, LUMI Keys, and Seaboard Blocks as pixel-addressable RGB surfaces. The first out-of-process device backend.
 
-**Status:** Draft
+**Status:** Implemented (status corrected 2026-08-25). `BlocksBackend` ships exactly
+where this spec places it, at `crates/hypercolor-core/src/device/blocks/backend.rs`.
 **Crate:** `hypercolor-core`
 **Module path:** `hypercolor_core::device::blocks`
 **Author:** Nova

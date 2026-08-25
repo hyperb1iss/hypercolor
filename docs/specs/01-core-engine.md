@@ -2,7 +2,7 @@
 
 > The beating heart. Every type, trait, and thread boundary that makes Hypercolor render at 60fps.
 
-**Status:** Implementation-ready
+**Status:** Historical draft. Do not implement section 3 from this document.
 **Crate:** `hypercolor-core`
 **Module path:** `hypercolor_core::{effect, engine, input, scene, spatial, bus}`
 
@@ -13,7 +13,19 @@
 > Minimal/Low/Medium/High/Full (see corrected enum below). `Canvas` lives in
 > `hypercolor_types::canvas`, not in `hypercolor-core`. The frame timer is exposed as
 > `FpsController` in `hypercolor_core::engine::fps`, not a standalone `FrameTimer`
-> module. The overall design intent remains accurate.
+> module.
+>
+> **Note (2026-08-25):** The drift is not only naming. Section 3.1 specifies an
+> `#[async_trait]` renderer with `load_effect`, `render`, `set_control`, `unload`,
+> and `is_healthy`. The shipped `EffectRenderer`
+> (`crates/hypercolor-core/src/effect/traits.rs:169`) is synchronous and shares none
+> of those signatures: the required methods are `init`, `render_into`,
+> `apply_controls`, and `destroy`, with `initialize_controls`, `render_output`,
+> `advance_output`, `bind_asset_library`, `set_display_descriptor`, and
+> `preview_canvas` defaulted. Section 2.3's tier values are also wrong, not just its
+> names: the shipped tiers are 10/20/30/45/60 fps. Read
+> `.agents/skills/native-effect-authoring/SKILL.md` and the trait source for the
+> current contract; treat section 3 here as history.
 
 ---
 

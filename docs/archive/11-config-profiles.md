@@ -2,6 +2,22 @@
 
 > The memory layer. Every profile, scene, calibration, and preference — persisted, portable, and conflict-free.
 
+**Status:** Superseded and archived. Do not implement from this document.
+
+> **Archived (banner added 2026-08-25):** profiles no longer exist as a concept.
+> They were folded into scenes, so there is no profiles module in
+> `hypercolor_types::api`, no profile route on the daemon, and no `profiles/` directory
+> in the config tree. Snapshot semantics now live on scenes at
+> `POST /api/v1/scenes/snapshot`. For the persisted-state layout see
+> [Spec 12](../specs/12-configuration.md); for the scene model see
+> [Spec 64](../specs/64-multi-zone-scenes.md); for the route surface see
+> [Spec 78](../specs/78-api-resource-model.md). This file is retained for historical
+> reference only.
+>
+> Note that this number collides with the archived
+> [MCP server spec](11-mcp-server.md); "Spec 11" is ambiguous and should not be used
+> as a bare reference.
+
 ---
 
 ## Overview

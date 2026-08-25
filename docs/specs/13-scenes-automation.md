@@ -2,10 +2,20 @@
 
 > Technical specification for the scene graph, transition engine, scheduling system, trigger framework, rule engine, priority management, context awareness, and safety subsystem.
 
-**Status:** Draft
+**Status:** Historical draft. The `Scene` struct in section 1 is not the shipped one.
 **Design Doc:** [07-scenes-automation.md](../design/07-scenes-automation.md)
 **Depends on:** Effect Engine, Spatial Layout Engine, Audio Pipeline, Event Bus (`HypercolorBus`)
-**See also:** Spec 27 (Render Groups) which evolved the Scene struct defined here
+**See also:** [Spec 64](64-multi-zone-scenes.md), which owns the shipped scene model
+
+> **Note (2026-08-25):** the scene model here was replaced. The shipped `Scene`
+> (`crates/hypercolor-types/src/scene.rs`) carries `zones: Vec<Zone>`, `zones_revision`,
+> `layout_id`, `kind`, and `mutation_mode`; it has no `scope`, no `assignments`, and no
+> `global_brightness`. Section 7's three automation engines were never built under those
+> names: `TransitionEngine`, `CircadianEngine`, and `ContextEngine` have no definitions
+> anywhere. What shipped is `AutomationEngine` (`crates/hypercolor-core/src/scene/automation.rs`)
+> and `TransitionPlan` (`crates/hypercolor-core/src/scene/transition.rs`). Spec 27, which
+> this header used to point at, is itself written in retired vocabulary; Spec 64 is the
+> live authority.
 
 ---
 

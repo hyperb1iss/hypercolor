@@ -2,6 +2,10 @@
 
 **Status:** LOCKED rev 6 (2026-08-19), with the Design 72 input-manager sequence reconciliation recorded in §10.
 **Findings base:** `docs/review/tech-debt-review-2026-08-15.md` — six-lane audit with file:line receipts. Local audit artifact (`docs/review/` is gitignored); receipts were verified against the tree on 2026-08-15 and line numbers should be re-checked at execution time.
+**Vocabulary note (2026-08-25):** several passages list "profiles" alongside scenes,
+layouts, and presets as a persisted user-content kind. Profiles no longer exist; they
+folded into scenes, and snapshot semantics live on scenes at
+`POST /api/v1/scenes/snapshot`. Read those lists without the profiles entry.
 **Authorship model:** Fable writes and owns the contracts here and holds final signoff. Opus 5 workers execute mechanical refactors and tests per wave. Codex reviews inline per PR.
 
 ---
@@ -409,8 +413,12 @@ land without waiting for the other managers. The remaining conversion order
 is SceneManager, SpatialEngine, then EffectRegistry. `SessionWatcher` and
 `usb_hotplug` side buses become bus lanes or documented internal transports.
 
-**Status (2026-08-19):** `InputManager` is complete. `SceneManager`,
-`SpatialEngine`, and `EffectRegistry` remain pending in that order.
+**Status (corrected 2026-08-25):** the 2026-08-19 line here claimed `InputManager` was
+complete. The later §8.2 audit disagreed, and the tree agrees with the audit:
+`InputManager` is still a raw field on `AppState`
+(`crates/hypercolor-daemon/src/app_state.rs`), not a converted domain service with
+private sinks. `SceneManager`, `SpatialEngine`, `EffectRegistry`, and `InputManager` all
+remain pending.
 
 ### 6.4 Domain contexts
 
@@ -583,11 +591,11 @@ annotations before this pass).
 | 4.2, 4.3 | Shipped | |
 | 4.4 | Partial | asset index and driver credential store never register with `flush_all`; the asset tier resolves to the config dir, not data |
 | 5.1 | Partial | four of five evictions never started; `RenderSurfacePool` needs a ruling (below) |
-| 5.2 | Partial | no generic `Rect<T>` against nine bespoke rects; `canvas::ColorFormat` is a dead third authority; audio configs still doubled |
-| 6.1 | Partial | per-frame locks remain (`render_thread/pipeline_driver.rs:28`, `scene_snapshot.rs:549,623`, `frame_executor.rs:544,817,826`, `frame_throttle.rs:42,67,119,135,225`); the zero-lock claim at `render_thread.rs:255-256` is stale |
+| 5.2 | Partial | no generic `Rect<T>` against nine bespoke rects (still true 2026-08-25); audio configs still doubled. The `canvas::ColorFormat` receipt is stale: no `ColorFormat` enum remains, only `DeviceColorFormat` |
+| 6.1 | Partial | per-frame locks remain (`render_thread/pipeline_driver.rs:28` and `frame_throttle.rs:42` still hold as of 2026-08-25; the `scene_snapshot.rs:549,623` receipts have drifted off their lines); the zero-lock claim at `render_thread.rs:255-256` is stale |
 | 6.2 | Shipped | |
 | 6.3 | Partial | private sinks not done (`domain/scene.rs:110,254`); `EffectRegistry` and `InputManager` unconverted |
-| 6.4 | Partial | `AppState` still carries 52 fields |
+| 6.4 | Partial | `AppState` carried 52 fields at audit time; 49 as of 2026-08-25 |
 | 6.5a, 6.5b | Shipped | |
 | 7.1, 7.2, 7.3, 7.4, 7.5 | Shipped | |
 

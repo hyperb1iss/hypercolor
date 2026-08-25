@@ -1,8 +1,15 @@
 # 47. Device Metrics
 
-**Status:** Superseded by [Spec 78](78-api-resource-model.md). Device metrics
-remain available through the `device_metrics` WebSocket topic and canonical
-diagnostics, but no longer have a dedicated REST resource.
+**Status:** Superseded and archived on 2026-08-25. Do not implement from this document.
+**Superseded by:** [Spec 78](../specs/78-api-resource-model.md). Device metrics remain
+available through the `device_metrics` WebSocket topic and canonical diagnostics, but no
+longer have a dedicated REST resource.
+
+> **Why this was archived (2026-08-25):** the summary and scope sections below still
+> describe `GET /api/v1/devices/metrics` as a live endpoint. That route was deleted and
+> is absent from all 83 documented paths. The collector itself survives at
+> `crates/hypercolor-daemon/src/device_metrics.rs` and is surfaced over the WebSocket
+> `device_metrics` topic instead.
 
 ## Summary
 

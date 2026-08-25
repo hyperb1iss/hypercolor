@@ -5,7 +5,10 @@
 > extends cleanly to future viewport-style effects. Reuses the existing
 > Servo rendering path and the existing region-picker UI patterns.
 
-**Status:** Implemented — `WebViewportRenderer` fully implemented in `hypercolor-core`
+**Status:** Implemented. `WebViewportRenderer` ships in `hypercolor-core`. The route
+examples in this document are not; treat every endpoint below as historical, and read
+the "profile loader" and "profile migration" tasks as library and scene migration, since
+profiles folded into scenes.
 **API status:** Historical control-route snapshot. The canonical resource model
 in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova

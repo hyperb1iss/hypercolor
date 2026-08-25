@@ -2,10 +2,14 @@
 
 > Technical specification for capturing screen content and transforming it into LED color data.
 
-**Status:** Draft
+**Status:** Implemented (status corrected 2026-08-25). `ScreenCaptureInput` and
+`SectorGrid` ship in `crates/hypercolor-core/src/input/screen/`, with per-platform
+Wayland, Windows, and macOS seams alongside. Specs 73 and 74 carry the later hardening
+work. Note that "per-profile" configuration overrides no longer exist; profiles folded
+into scenes.
 **Design doc:** [08-screen-capture.md](../design/08-screen-capture.md)
 **Performance doc:** [13-performance.md](../design/13-performance.md)
-**macOS authority:** [Spec 76](76-macos-screen-capture-and-host-input.md)
+**macOS authority:** [Spec 79](79-macos-screen-capture-and-host-input.md)
 supersedes this draft for macOS capture, permission, publication, and release
 requirements.
 
@@ -1513,7 +1517,7 @@ At every tier, the ambient lighting quality remains perceptually good. The human
 
 Hypercolor has first-class Wayland, Windows, and native macOS capture backends.
 The macOS design, physical acceptance gates, and release claims are governed by
-[Spec 76](76-macos-screen-capture-and-host-input.md).
+[Spec 79](79-macos-screen-capture-and-host-input.md).
 
 The `xcap` fallback this section originally specified was never built. Windows
 uses a purpose-built DXGI Desktop Duplication backend instead, in the
@@ -1560,7 +1564,7 @@ Three properties drove the design:
 ### macOS
 
 Implemented by the native ScreenCaptureKit source defined in
-[Spec 76](76-macos-screen-capture-and-host-input.md). That authority owns the
+[Spec 79](79-macos-screen-capture-and-host-input.md). That authority owns the
 demand-driven TCC consent flow, system picker, exact CPU and Metal publication,
 HDR color processing, diagnostics, and release acceptance for macOS.
 

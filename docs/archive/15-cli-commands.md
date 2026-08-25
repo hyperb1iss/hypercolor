@@ -2,6 +2,23 @@
 
 > Every `hypercolor` invocation speaks to the daemon's REST API. Make it count.
 
+**Status:** Superseded and archived on 2026-08-25. Do not implement from this document.
+**Superseded by:** [Spec 37](../specs/37-cli-completeness-and-styling.md) for the CLI
+design work, and the [CLI reference](../content/api/cli.md) for the shipping command
+surface.
+
+> **Why this was archived (2026-08-25):** not one command documented here survives.
+> The shipped top-level commands are `install-release`, `status`, `effects`,
+> `brightness`, `scenes`, `devices`, `controls`, `drivers`, `layouts`, `audio`,
+> `access`, `library`, `server`, `servers`, `service`, `config`, `diagnose`,
+> `completions`, `tui`, and `external`
+> (`crates/hypercolor-cli/src/lib.rs`). The `set`, `off`, `list`, `device`, `capture`,
+> `plugin`, `watch`, `export`, `import`, and `setup` commands specified here were never
+> built under those names, and section 12's `hypercolor profile` tree died when
+> profiles folded into scenes. This file carried no status line at all until it was
+> archived, which is what made it dangerous: it reads as an authoritative
+> specification of a user-facing surface.
+
 ---
 
 ## Table of Contents

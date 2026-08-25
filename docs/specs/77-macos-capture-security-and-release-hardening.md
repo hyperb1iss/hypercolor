@@ -1,9 +1,13 @@
 # Spec 77: macOS Capture Security and Release Hardening
 
-Status: APPROVED
+Status: Approved, Wave 1 landed (status corrected 2026-08-25). H3.5 shipped: CPU
+publication is gated behind `#[cfg(feature = "macos-capture-fixtures")]`
+(`crates/hypercolor-core/src/input/screen/macos.rs`) with the GPU-only guard enforced in
+CI. H1.1 shipped as `ProtectedControl`
+(`crates/hypercolor-daemon/src/api/security.rs`).
 Author: Nova
 Date: 2026-08-13
-Depends on: spec 61, spec 73, spec 76
+Depends on: spec 61, spec 73, spec 79 (macOS capture and host input)
 Baseline: `854f36f9ece49794f7c069da8e31cfcc86c0f96d`
 Scope: macOS screen and host-input capture, GPU publication, daemon API
 authorization, desktop trust, daemon ownership, installers, signing, CI, and
@@ -109,7 +113,7 @@ current frame. Persistent and unclassified failures invalidate immediately.
 
 ### H0.1 Make GPU-only capture normative
 
-**Files:** `docs/specs/76-macos-screen-capture-and-host-input.md`, this spec
+**Files:** `docs/specs/79-macos-screen-capture-and-host-input.md`, this spec
 
 **Depends on:** none
 

@@ -2,9 +2,16 @@
 
 > From soundwave to photon. Every struct, every constant, every clock edge.
 
-**Status:** Implemented
-**Crate:** `hypercolor-core`
-**Module path:** `hypercolor_core::input`
+**Status:** Implemented, but the `AudioData` contract below is stale. Verify every
+field against the source before using section 1.
+**Crate:** `hypercolor-types` (the DSP pipeline itself is in `hypercolor-core`)
+**Module path:** `hypercolor_types::audio` for the type; `hypercolor_core::input` for the pipeline
+
+> **Note (2026-08-25):** `AudioData` moved to `crates/hypercolor-types/src/audio.rs`, and
+> its shape changed. The fields this spec documents as `freq: [f32; 200]`, `density`, and
+> `width` do not exist. The shipped struct leads with `spectrum: Vec<f32>` (200 log-spaced
+> bins), followed by `mel_bands`, `chromagram`, and the `beat_*` family. Section 1 calls
+> itself "the canonical API"; it is not, the source is.
 
 ---
 

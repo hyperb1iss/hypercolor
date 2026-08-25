@@ -1,6 +1,9 @@
 # 56 - Linux Servo GPU Surface Interop
 
-**Status:** Implemented; Linux opt-in soak passed, default-on deferred
+**Status:** Implemented and default-on (status corrected 2026-08-25). The deferral this
+spec records has since been lifted: `servo-gpu-import` is in the daemon's default feature
+set (`crates/hypercolor-daemon/Cargo.toml`) and the config default is
+`ServoGpuImportMode::Auto` (`crates/hypercolor-types/src/config/`).
 **Author:** Nova
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`

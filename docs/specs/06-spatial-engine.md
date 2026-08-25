@@ -2,9 +2,17 @@
 
 > Maps effect canvas pixels to physical LED positions. The bridge between beautiful pixels and physical photons.
 
-**Status:** Draft
+**Status:** Partly historical. The file list and the central type name below are both wrong.
 **Crate:** `hypercolor-core::spatial`
-**Files:** `layout.rs`, `sampler.rs`, `topology.rs`, `editor.rs`
+**Files:** `mod.rs`, `plan.rs`, `sampler/`, `topology.rs`, `viewport.rs`
+
+> **Note (2026-08-25):** two things in this spec will send an implementer to the wrong
+> place. `layout.rs` and `editor.rs` do not exist, so the instruction that layout
+> migrations live "in `editor.rs`" cannot be followed; the shipped modules are the ones
+> listed above. And the spec's central `DeviceZone` type is gone. The shipped type is
+> `Output` (`crates/hypercolor-types/src/spatial.rs`), renamed when the zone vocabulary
+> converged on scenes. Normalized `[0.0, 1.0]` coordinates and the sampling model the
+> spec describes are still current.
 **Synthesizes from:** `ARCHITECTURE.md` (Spatial Layout Engine section), `docs/design/03-spatial-layout.md` (sections 1, 3, 4, 7-9), `docs/design/18-room-mapping.md` (sections 2-5, 7)
 
 ---

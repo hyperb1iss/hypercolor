@@ -1,8 +1,12 @@
 # Spec 73: Input and Capture Hardening
 
-Status: APPROVED (Claude cross-model review PASS, round 6; T11 amendment PASS,
-round 5 plus final delta); arbitrary-resolution amendment PASS, round 2 plus
-final delta
+Status: Approved and substantially landed (status corrected 2026-08-25). The target
+contracts are in the tree: `SourceStatus`
+(`crates/hypercolor-core/src/input/status.rs`), `CaptureFrame<S>`
+(`crates/hypercolor-core/src/input/screen/frame.rs`), and the acceptance procedure at
+`docs/development/LINUX_CAPTURE_ACCEPTANCE.md`. Original review record: Claude
+cross-model review PASS round 6; T11 amendment PASS round 5 plus final delta;
+arbitrary-resolution amendment PASS round 2 plus final delta.
 Author: Nova
 Date: 2026-07-26
 Depends on: spec 14, spec 71, spec 72

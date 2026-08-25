@@ -8,7 +8,7 @@ discharged. `just dev` defaults to `auto`.
 **Date:** 2026-05-08
 **Crates:** `hypercolor-core`, `hypercolor-daemon`, optional interop crate
 **Related:** Specs 48, 56, 59, and
-[76](76-macos-screen-capture-and-host-input.md), the macOS authority;
+[79](79-macos-screen-capture-and-host-input.md), the macOS authority;
 `docs/design/34-servo-perf-and-crash-isolation.md`,
 `docs/design/45-graphics-pipeline-unification-plan.md`
 

@@ -2,9 +2,25 @@
 
 > Every file, every field, every default. The complete schema for Hypercolor's persistent state.
 
-**Status:** Implementation-ready
+**Status:** Partly historical. Two sections below describe things that no longer exist.
 **Crate:** `hypercolor-types`
 **Module path:** `hypercolor_types::config`
+
+> **Note (2026-08-25):** Two parts of this spec are stale and will mislead.
+>
+> **Profiles are gone.** The `profiles/<name>.toml` format and its inheritance rules
+> were removed when profiles folded into scenes. Snapshot semantics now live on
+> scenes (`POST /api/v1/scenes/snapshot`); there is no profiles module in
+> `hypercolor_types::api` and no profile route on the daemon.
+>
+> **The env-override table is a no-op.** `EnvOverrides::from_process_env()` returns
+> an empty overlay (`crates/hypercolor-core/src/config/sources.rs:72-74`), because the
+> process-env grammar is deliberately unminted. The precedence and provenance
+> machinery described here is real; the `HYPERCOLOR_<SECTION>__<KEY>` variables are
+> not read by anything today, so setting one changes nothing.
+>
+> The rest of the schema is broadly current; verify any field against
+> `crates/hypercolor-types/src/config/` before relying on it.
 
 ---
 

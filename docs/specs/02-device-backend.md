@@ -2,10 +2,20 @@
 
 > Implementation-ready technical specification for Hypercolor's device backend layer.
 
-**Status:** Draft
+**Status:** Partly historical. The crate layout below is wrong; do not follow it.
 **Author:** Nova
 **Date:** 2026-03-01
-**Crate:** `hypercolor-core::device`
+**Crate:** `hypercolor-driver-api` (this spec was written against `hypercolor-core::device`)
+
+> **Note (2026-08-25):** the `DeviceBackend` trait moved out of `hypercolor-core`. It now
+> lives at `crates/hypercolor-driver-api/src/backend.rs`, which is the stable boundary
+> between the daemon and every driver implementation. Section 14's module layout is also
+> retired: `wled.rs` and `hue.rs` are the separate crates `hypercolor-driver-wled` and
+> `hypercolor-driver-hue`, and `hid.rs` is `hypercolor-hal`. Adding a driver back into
+> `hypercolor-core` violates the platform boundary rule in CLAUDE.md and
+> `docs/design/72-cross-platform-boundary-review.md`. The trait's behavioral contract
+> (discovery adopting devices before connect, frame and display sinks owning hot-path
+> delivery) is still current; only the placement changed.
 
 ---
 

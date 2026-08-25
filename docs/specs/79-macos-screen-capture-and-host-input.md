@@ -1,4 +1,4 @@
-# 76 - macOS Screen Capture and Host Input
+# 79 - macOS Screen Capture and Host Input
 
 **Status:** Implemented, revision 28; cross-platform boundary amendment applied
 **Author:** Nova

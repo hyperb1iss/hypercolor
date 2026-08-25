@@ -2,6 +2,33 @@
 
 > The nervous system. Every signal between daemon, TUI, CLI, and web UI flows through here.
 
+**Status:** Historical draft. Do not implement sections 2.1, 5.2, or 7.1 from this document.
+**Crate:** `hypercolor-types` for the event enum; `hypercolor-core` for the bus
+**Module path:** `hypercolor_types::event`, `hypercolor_core::bus`
+
+> **Note (2026-08-25):** this file carried no status line at all until today, and three
+> parts of it are wrong.
+>
+> **The profile events are gone.** `ProfileLoaded`, `ProfileSaved`, and `ProfileDeleted`
+> are routed in the section 2.3 category table and the section 2.4 priority table, but
+> `crates/hypercolor-types/src/event.rs` contains no `Profile` anything. Profiles folded
+> into scenes; snapshot semantics now live on scenes at `POST /api/v1/scenes/snapshot`.
+> The enum has also grown sixteen variants this spec never mentions, among them
+> `ActiveSceneChanged`, `ExtensionStateChanged`, `LayerHealthChanged`, `SessionChanged`,
+> `Paused`, and `Resumed`.
+>
+> **Section 5.2's binary frame layout is a hand-roll.** It specifies a 9-byte header with
+> a `u8` zone count. The real tag `0x01` header is 11 bytes with a `u16_le` zone count
+> (`crates/hypercolor-daemon/src/api/ws/cache.rs`), and `FrameData` carries no codec of
+> its own. Per CLAUDE.md, `hypercolor-leptos-ext::ws` is the single definition of the
+> binary wire format and those layouts must never be hand-rolled. Read
+> `crates/hypercolor-leptos-ext/src/ws/` instead.
+>
+> **The bus type is named `HypercolorBus`**, not `EventBus`
+> (`crates/hypercolor-core/src/bus/mod.rs`). `EventBus`, `ActiveEffectInfo`, and
+> `FpsSnapshot` have no definitions anywhere. The broadcast-versus-watch design the spec
+> describes is still exactly right; only these names and layouts are stale.
+
 _Synthesized from: [ARCHITECTURE.md](../../ARCHITECTURE.md) (Event Bus, Render Loop), [05-api-design.md](../design/05-api-design.md) (Sections 3, 6, 8), [10-tui-cli.md](../design/10-tui-cli.md) (IPC Appendix B, TUI Performance)._
 
 ---
