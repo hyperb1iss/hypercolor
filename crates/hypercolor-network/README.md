@@ -26,8 +26,12 @@ trait imported from `hypercolor-driver-api`. Concrete drivers are assembled in
   - `ids()`, `descriptors()`, `module_descriptors()`
   - `discovery_drivers()`, `pairing_drivers()`, `control_drivers()`,
     `protocol_catalog_drivers()`, `presentation_drivers()` — capability-filtered vecs
-- `DriverModuleRegistryError` — `thiserror` enum with `DuplicateDriverId` and
-  `SchemaVersionMismatch` variants
+- `finalize_output_bindings(...)` — resolves shared output backends into
+  `FinalizedOutputProvider` entries, reachable afterwards via `providers()` and
+  `provider(backend_id)`
+- `DriverModuleRegistryError` — `thiserror` enum with five variants:
+  `DuplicateDriverId`, `SchemaVersionMismatch`, `DuplicateOutputProvider`,
+  `UnresolvedSharedOutput`, and `UnknownEnabledDriverId`
 
 ## Cargo Features
 
@@ -36,4 +40,5 @@ None.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB
-lighting orchestration for Linux. Licensed under Apache-2.0.
+lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.

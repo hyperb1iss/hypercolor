@@ -86,11 +86,11 @@ from hypercolor import HypercolorClient
 async def main() -> None:
     async with HypercolorClient() as client:
         effects = await client.get_effects()
-        aurora = next(effect for effect in effects if effect.name == "Aurora")
+        borealis = next(effect for effect in effects if effect.name == "Borealis")
 
         await client.apply_effect(
-            aurora.id,
-            controls={"speed": 72, "palette": "silkcircuit"},
+            borealis.id,
+            controls={"speed": 5, "palette": "SilkCircuit"},
             transition="cut",
         )
 

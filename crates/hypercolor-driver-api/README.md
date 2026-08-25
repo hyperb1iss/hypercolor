@@ -12,8 +12,8 @@ rejected by the registry.
 
 ## Position in the Workspace
 
-- Depends on: `hypercolor-types`, `serde`, `serde_json`, `anyhow`,
-  `async-trait`, `thiserror`
+- Depends on: `hypercolor-types`, `hypercolor-platform-fs`, `serde`,
+  `serde_json`, `anyhow`, `async-trait`, `thiserror`
 - Consumed by: every network driver crate (`hypercolor-driver-hue`,
   `hypercolor-driver-nanoleaf`, `hypercolor-driver-wled`, `hypercolor-driver-govee`),
   HAL catalog wrappers in `hypercolor-driver-builtin`, `hypercolor-network`, and
@@ -29,6 +29,11 @@ rejected by the registry.
 - `DiscoveryCapability`, `PairingCapability`, `DriverControlProvider`,
   `DriverRuntimeCacheProvider`, `DriverProtocolCatalog`, `DriverPresentationProvider`
 
+The pairing value types (`DeviceAuthState`, `DeviceAuthSummary`, `PairingDescriptor`,
+`PairDeviceRequest`, `PairDeviceOutcome`, `ClearPairingOutcome`) live in
+`hypercolor_types::pairing`; this crate exports the `PairingCapability` trait that consumes
+them, not the types themselves.
+
 **Host-side service interfaces (injected into driver calls)**
 
 - `DriverHost`, `DriverCredentialStore`, `DriverRuntimeActions`, `DriverDiscoveryState`,
@@ -37,8 +42,6 @@ rejected by the registry.
 **Protocol types**
 
 - `DriverDescriptor`, `DRIVER_API_SCHEMA_VERSION`
-- `DeviceAuthState`, `DeviceAuthSummary`, `PairingDescriptor`, `PairDeviceRequest`,
-  `PairDeviceOutcome`, `ClearPairingOutcome`
 - `DiscoveredDevice`, `DiscoveryRequest`
 - `ValidatedControlChanges`, `DriverConfigProvider`, `DriverConfigView`
 
@@ -49,4 +52,5 @@ None. All types are unconditionally available.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor), open-source RGB
-lighting orchestration for Linux. Licensed under Apache-2.0.
+lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.

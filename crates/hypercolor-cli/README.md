@@ -10,8 +10,11 @@ full-screen terminal UI rather than routing through the REST client.
 
 ## Role in the Workspace
 
-Leaf binary. Depends on hypercolor-core for shared types and config helpers, and optionally
-on hypercolor-tui (feature-gated). Nothing in the workspace depends on this crate.
+Leaf binary. Depends on hypercolor-core, hypercolor-types, hypercolor-color, and
+hypercolor-platform-fs for shared vocabulary and config helpers; `opaline` for output
+theming; hypercolor-macos-owner on macOS for the `service choose-owner` handoff; and
+optionally on hypercolor-tui (feature-gated). Nothing in the workspace depends on this
+crate.
 
 ## Binary
 
@@ -24,7 +27,7 @@ on hypercolor-tui (feature-gated). Nothing in the workspace depends on this crat
 | Subcommand | Description |
 |------------|-------------|
 | `effects` | List, activate, and patch effects |
-| `brightness` | Set device brightness |
+| `brightness` | Get or set global output brightness (0-100) |
 | `scenes` | Create, snapshot, list, and activate scenes |
 | `devices` | Show connected devices |
 | `layouts` | Manage spatial layouts |
@@ -85,4 +88,4 @@ single-range.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB lighting
-orchestration for Linux. Apache-2.0 licensed.
+orchestration for Linux, Windows, and macOS. Apache-2.0 licensed.

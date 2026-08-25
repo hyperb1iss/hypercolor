@@ -14,7 +14,7 @@ the layout on demand.
 ## Position in the Workspace
 
 - Depends on: `hypercolor-driver-api`, `hypercolor-driver-support`,
-  `hypercolor-types`, `anyhow`, `async-trait`, `reqwest`, `serde`,
+  `hypercolor-color`, `hypercolor-types`, `anyhow`, `async-trait`, `reqwest`, `serde`,
   `serde_json`, `tokio`, `tracing`
 - Consumed by: `hypercolor-driver-builtin` (via the `nanoleaf` feature)
 
@@ -48,4 +48,5 @@ None.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor), open-source RGB
-lighting orchestration for Linux. Licensed under Apache-2.0.
+lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.

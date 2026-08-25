@@ -9,7 +9,9 @@ and wire values remain in `hypercolor-driver-api`.
 
 ## Position in the Workspace
 
-- Depends on `hypercolor-driver-api`, never `hypercolor-core` or the daemon.
+- Depends on `hypercolor-driver-api`, `hypercolor-types`,
+  `hypercolor-persistence`, and `hypercolor-platform-fs`; never
+  `hypercolor-core` or the daemon.
 - Consumed by network drivers, `hypercolor-driver-builtin`, and the daemon.
 - Owns native dependencies such as `aes-gcm`, `mdns-sd`, and filesystem I/O.
 
@@ -27,4 +29,5 @@ and wire values remain in `hypercolor-driver-api`.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor), open-source RGB
-lighting orchestration for Linux. Licensed under Apache-2.0.
+lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.
