@@ -12,6 +12,7 @@ mod drivers;
 mod effects;
 mod layouts;
 mod library;
+mod media;
 mod output;
 mod scene;
 mod scenes;
@@ -39,6 +40,7 @@ pub(super) fn versioned(asset_upload_body_limit: usize) -> OpenApiRouter<Arc<App
         .merge(effects::router())
         .merge(layouts::router())
         .merge(library::router())
+        .merge(media::router())
         .merge(output::router())
         .merge(scene::router())
         .merge(scenes::router())

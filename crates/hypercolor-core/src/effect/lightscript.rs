@@ -521,7 +521,7 @@ impl LightscriptRuntime {
             .then(|| self.audio_payload(input.audio));
         let screen = options
             .include_screen
-            .then(|| LightScriptScreenPayload::from_screen(input.screen));
+            .then(|| LightScriptScreenPayload::from_screen(input.screen.map(AsRef::as_ref)));
         let sensors = options
             .include_sensors
             .then(|| self.sensor_payload(input.sensors, options.selected_sensor_labels))

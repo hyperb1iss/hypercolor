@@ -37,6 +37,8 @@
     <dict>
         <key>HYPERCOLOR_MACOS_OWNER</key>
         <string>direct-launchd</string>
+        <key>HYPERCOLOR_SERVICE_IDENTITY</key>
+        <string>user_service:launchd:tech.hyperbliss.hypercolor</string>
         <key>HYPERCOLOR_LOG</key>
         <string>info</string>
         <key>PATH</key>

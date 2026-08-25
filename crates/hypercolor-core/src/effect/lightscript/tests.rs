@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use super::*;
-use crate::input::{InteractionData, ScreenData};
+use crate::input::{InteractionData, ScreenBranchPublication};
 
 fn default_options() -> LightScriptFrameUpdateOptions<'static> {
     LightScriptFrameUpdateOptions {
@@ -20,7 +22,7 @@ fn frame_input_with<'a>(
     audio: &'a AudioData,
     interaction: &'a InteractionData,
     sensors: &'a SystemSnapshot,
-    screen: Option<&'a ScreenData>,
+    screen: Option<&'a Arc<ScreenBranchPublication>>,
     width: u32,
     height: u32,
 ) -> FrameInput<'a> {

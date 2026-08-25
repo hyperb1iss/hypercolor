@@ -885,21 +885,37 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
     assert_eq!(lifecycle_state, Some(DeviceState::Connected));
 }
 
-#[test]
-fn session_resume_targets_are_host_recovery_targets() {
-    let targets = DiscoveryTarget::session_resume_targets();
+#[tokio::test]
+async fn session_resume_targets_are_available_host_recovery_targets() {
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        DeviceRegistry::new(),
+        Arc::new(Mutex::new(DeviceLifecycleManager::new())),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+    let targets = DiscoveryTarget::session_resume_targets(
+        &HypercolorConfig::default(),
+        runtime.driver_registry.as_ref(),
+    )
+    .expect("resume targets should resolve");
     let ids = targets
         .iter()
         .map(DiscoveryTarget::as_str)
         .collect::<Vec<_>>();
 
-    assert_eq!(ids, vec!["usb", "smbus"]);
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    assert_eq!(ids, vec!["smbus", "usb"]);
+    #[cfg(target_os = "macos")]
+    assert_eq!(ids, vec!["usb"]);
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    assert!(ids.is_empty());
     assert!(
         targets
             .iter()
-            .find(|target| target.as_str() == "smbus")
-            .is_some_and(DiscoveryTarget::preserves_renderable_on_discovery_miss),
-        "SMBus resume scans should keep renderable devices during transient misses"
+            .find(|target| target.as_str() == "usb")
+            .is_some_and(|target| !target.preserves_renderable_on_discovery_miss()),
+        "USB resume scans should retire vanished devices after a clean scan"
     );
 }
 

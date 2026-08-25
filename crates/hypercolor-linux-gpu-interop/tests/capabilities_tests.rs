@@ -3,7 +3,7 @@ use std::ptr;
 
 use hypercolor_linux_gpu_interop::{
     GlExternalMemoryFunctions, ImportedFrameFormat, LinuxGlFramebufferImportDescriptor,
-    LinuxGpuInteropError, missing_gl_external_memory_functions,
+    LinuxGpuInteropError, LinuxImportedFrameFormatExt, missing_gl_external_memory_functions,
 };
 
 #[test]
@@ -14,7 +14,7 @@ fn imported_frame_format_maps_rgba8() {
     );
     assert_eq!(
         ImportedFrameFormat::Rgba8Unorm.gl_internal_format(),
-        glow::RGBA8
+        Some(glow::RGBA8)
     );
 }
 
@@ -30,6 +30,16 @@ fn import_descriptor_rejects_invalid_dimensions() {
     assert!(
         LinuxGlFramebufferImportDescriptor::new(64, 64, ImportedFrameFormat::Rgba8Unorm).is_ok()
     );
+}
+
+#[test]
+fn import_descriptor_rejects_foreign_frame_format() {
+    assert!(matches!(
+        LinuxGlFramebufferImportDescriptor::new(64, 64, ImportedFrameFormat::Bgra8Unorm),
+        Err(LinuxGpuInteropError::UnsupportedFrameFormat {
+            format: ImportedFrameFormat::Bgra8Unorm,
+        })
+    ));
 }
 
 #[test]

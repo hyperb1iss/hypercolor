@@ -1,0 +1,40 @@
+//! Linux session and power event monitors for Hypercolor.
+
+#[cfg(target_os = "linux")]
+mod logind;
+#[cfg(target_os = "linux")]
+mod parent_death;
+mod procfs;
+#[cfg(target_os = "linux")]
+mod screensaver;
+mod systemd;
+
+use hypercolor_core::session::SessionMonitor;
+use hypercolor_types::session::SessionConfig;
+
+#[cfg(target_os = "linux")]
+pub use self::logind::LogindMonitor;
+#[cfg(target_os = "linux")]
+pub use self::parent_death::arm_parent_death;
+pub use self::procfs::process_resident_memory_mb;
+#[cfg(target_os = "linux")]
+pub use self::screensaver::ScreensaverMonitor;
+pub use self::systemd::{notify_ready, spawn_watchdog};
+
+/// Build the Linux session monitors for daemon composition.
+#[must_use]
+pub fn monitors(config: &SessionConfig) -> Vec<Box<dyn SessionMonitor>> {
+    #[cfg(target_os = "linux")]
+    {
+        vec![
+            Box::new(ScreensaverMonitor::new()),
+            Box::new(LogindMonitor::new(config)),
+        ]
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = config;
+        Vec::new()
+    }
+}

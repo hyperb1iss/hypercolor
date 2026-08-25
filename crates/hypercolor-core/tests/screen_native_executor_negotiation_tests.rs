@@ -2,13 +2,18 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use hypercolor_core::input::screen::{
-    AdmittedScreenNativeTargetPreparation, CaptureColorimetry, CaptureEpoch, CaptureGeometry,
-    CapturePixelFormat, CaptureRotation, CaptureSourceId, InputPublicationDemandRevision,
-    PhysicalOrigin, PixelExtent, PlatformGpuApi, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenColorTransformCapabilities,
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, PixelExtent, ScreenByteAdmissionCoordinator,
+};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureGeometry, CapturePixelFormat, CaptureRotation, PhysicalOrigin,
+    PlatformGpuApi, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    AdmittedScreenNativeTargetPreparation, InputPublicationDemandRevision,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenColorTransformCapabilities,
     ScreenCursorCapabilities, ScreenExecutorColorCapabilities, ScreenExtentRequest,
     ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
     ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetPreparation,
@@ -18,8 +23,7 @@ use hypercolor_core::input::screen::{
     ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenResourceApi,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerExactLedgerBuilder,
-    ScreenWorkerLedgerBuildError, SourceScale,
+    ScreenSourceReflection, ScreenSourceSelector,
 };
 
 #[path = "support/native_target.rs"]
@@ -468,7 +472,6 @@ fn native_target_rejects_foreign_plan_generation_before_quote_or_prepare() {
     let mut preparing = plan_builder
         .prepare(
             [demand.clone()],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -528,7 +531,6 @@ fn native_target_rejects_renderer_allocation_drift_from_preflight_quote() {
     let mut preparing = plan_builder
         .prepare(
             [resolved.clone()],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -632,7 +634,6 @@ fn admitted_native_target_keeps_its_quote_after_builder_and_plan_drop() {
     let mut preparing = plan_builder
         .prepare(
             [demand.clone()],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -697,7 +698,6 @@ fn shared_admission_failure_never_dispatches_renderer_preparation() {
     let mut preparing = plan_builder
         .prepare(
             [demand.clone()],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -751,7 +751,7 @@ fn source(
     .expect("test geometry is valid");
     let resources = match device {
         Some(device) => ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-            ScreenCaptureBackend::WindowsDesktopDuplication,
+            ScreenCaptureBackend::DesktopDuplication,
             api,
             device,
             3,
@@ -822,7 +822,6 @@ fn prepare_with_admission(
     let mut plan_builder = ScreenPlanBuilder::new();
     let mut preparing = plan_builder.prepare(
         [ticket_demand.clone()],
-        None,
         InputPublicationDemandRevision::new(1),
         ScreenInputGraphGeneration::new(1),
         ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -935,6 +934,61 @@ fn native_negotiation_reports_source_api_and_device_fallbacks() {
 }
 
 #[test]
+fn required_native_negotiation_rejects_every_structural_fallback() {
+    let device = gpu_device(43);
+    let matching_source = source(
+        extent(1920, 1080),
+        ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+        Some(device.clone()),
+    );
+    let cases = [
+        (
+            source(extent(1920, 1080), ScreenResourceApi::Cpu, None),
+            target(1, PlatformGpuApi::Direct3d11, device.clone(), 16_384),
+            ScreenPublicationExecutorFallbackReason::CpuSource,
+        ),
+        (
+            matching_source.clone(),
+            target(2, PlatformGpuApi::Vulkan, device.clone(), 16_384),
+            ScreenPublicationExecutorFallbackReason::PlatformApiMismatch,
+        ),
+        (
+            source(
+                extent(1920, 1080),
+                ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
+                None,
+            ),
+            target(3, PlatformGpuApi::Direct3d11, device.clone(), 16_384),
+            ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice,
+        ),
+        (
+            matching_source.clone(),
+            target(4, PlatformGpuApi::Direct3d11, gpu_device(44), 16_384),
+            ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch,
+        ),
+        (
+            matching_source,
+            target(5, PlatformGpuApi::Direct3d11, device, 1_024),
+            ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded,
+        ),
+    ];
+
+    for (source, target, reason) in cases {
+        let error = request(
+            ScreenPublicationExecutorRequest::SourceNativeRequired(target),
+            exact_profile(),
+            60,
+        )
+        .resolve_with_executor_capabilities(&source, ScreenExecutorColorCapabilities::NONE)
+        .expect_err("required native demand must not fall back to CPU");
+        assert_eq!(
+            error,
+            ScreenPublicationError::RequiredNativeUnavailable(reason)
+        );
+    }
+}
+
+#[test]
 fn native_target_limit_falls_back_without_changing_odd_geometry() {
     let device = gpu_device(51);
     let source = source(
@@ -1008,7 +1062,6 @@ fn native_grouping_uses_target_identity_and_coalesces_equal_targets() {
     let separate = separate_builder
         .prepare(
             [first.clone(), second],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -1027,7 +1080,6 @@ fn native_grouping_uses_target_identity_and_coalesces_equal_targets() {
     let shared = shared_builder
         .prepare(
             [first, same_target],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -1067,6 +1119,24 @@ fn lane_specific_color_capabilities_choose_native_or_exact_cpu() {
     assert_cpu_fallback(
         &cpu_fallback,
         ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
+    );
+
+    let required = request(
+        ScreenPublicationExecutorRequest::SourceNativeRequired(native_target.clone()),
+        Arc::clone(&profile),
+        60,
+    );
+    assert_eq!(
+        required.resolve_with_executor_capabilities(
+            &source,
+            ScreenExecutorColorCapabilities::new(
+                linear_light,
+                ScreenColorTransformCapabilities::NONE,
+            ),
+        ),
+        Err(ScreenPublicationError::RequiredNativeUnavailable(
+            ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
+        ))
     );
 
     let native = registered
@@ -1124,7 +1194,6 @@ fn explicit_cpu_and_native_fallback_share_physical_reduction() {
     let preparing = builder
         .prepare(
             [cpu, fallback],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

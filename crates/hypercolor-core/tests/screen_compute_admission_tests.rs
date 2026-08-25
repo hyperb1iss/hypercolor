@@ -1,6 +1,6 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::consumer::{
     CaptureConfig, PixelExtent, ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity,
     ScreenAnalysisComputeLane, ScreenAnalysisWorkPlan, ScreenCaptureInput,
     ScreenComputeCapacityPolicy,

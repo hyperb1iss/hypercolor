@@ -441,9 +441,9 @@ pub(crate) async fn execute_frame(
         &mut render.screen_queue,
         screen_plan_generation.get(),
     );
-    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    #[cfg(feature = "wgpu")]
     if let Some(render_device) = state.render_gpu_device.as_ref() {
-        render.service_macos_screen_parity(
+        render.service_screen_parity(
             render_device,
             inputs.screen_publication.as_ref(),
             inputs.screen_descriptor.as_ref(),
@@ -677,7 +677,7 @@ pub(crate) async fn execute_frame(
     }
     super::screen_canvas::publish_screen_zones(
         state,
-        inputs.screen_data.as_ref(),
+        inputs.screen_zones.as_ref(),
         frame_num_u32,
         u64_to_u32(scene_snapshot.elapsed_ms),
     );
@@ -691,10 +691,6 @@ pub(crate) async fn execute_frame(
                 canvas: sampling_canvas,
                 frame_surface: sampling_surface,
                 preview_surface,
-                screen_capture_surface: inputs
-                    .screen_data
-                    .as_ref()
-                    .and_then(|data| data.canvas_downscale.clone()),
                 web_viewport_preview_surface: render_stage.web_viewport_preview,
                 effect_running: scene_snapshot.effect_demand.effect_running,
                 screen_capture_active: scene_snapshot.effect_demand.screen_capture_active,

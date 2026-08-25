@@ -3,11 +3,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::AtomicBool;
-#[cfg(any(target_os = "macos", test))]
-use std::sync::atomic::AtomicU64;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -88,7 +86,6 @@ fn test_constructor_task_spawner() -> tokio::runtime::Handle {
         .clone()
 }
 
-#[cfg(target_os = "macos")]
 type CapturePickerPersistenceTask = Arc<StdMutex<Option<(u64, tokio::task::JoinHandle<()>)>>>;
 
 /// Shared application state injected into every API handler.
@@ -165,17 +162,15 @@ pub struct AppState {
     pub api_extensions: Vec<Arc<dyn ApiExtension>>,
 
     /// Live input graph shared with the daemon render thread.
-    input_manager: Arc<Mutex<InputManager>>,
+    input_manager: InputManager,
 
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,
 
-    /// Monotonic request order for macOS picker-persistence observers.
-    #[cfg(target_os = "macos")]
+    /// Monotonic request order for picker-persistence observers.
     pub(crate) capture_picker_request_epoch: Arc<AtomicU64>,
 
-    /// Latest macOS picker-persistence observer, fenced by request order.
-    #[cfg(target_os = "macos")]
+    /// Latest picker-persistence observer, fenced by request order.
     pub(crate) capture_picker_persistence_task: CapturePickerPersistenceTask,
 
     /// Aggregate typed input demand shared with render and connection consumers.
@@ -501,7 +496,7 @@ impl AppState {
         let standalone_input_manager = input_manager.unwrap_or_else(InputManager::new);
         let input_status = standalone_input_manager.source_status_registry();
         let screen_capacity_status = standalone_input_manager.screen_capacity_status_handle();
-        let input_manager = Arc::new(Mutex::new(standalone_input_manager));
+        let input_manager = standalone_input_manager;
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
         let attachment_registry = Arc::new(RwLock::new(attachment_registry));
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
@@ -584,7 +579,7 @@ impl AppState {
                 display_preferences: Arc::clone(&display_preferences),
                 display_frames: Arc::clone(&display_frames),
                 device_metrics: Arc::clone(&device_metrics),
-                input_manager: Arc::clone(&input_manager),
+                input_manager: input_manager.clone(),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -649,11 +644,9 @@ impl AppState {
             api_extensions: Vec::new(),
             input_manager,
             screen_capacity_status,
-            #[cfg(target_os = "macos")]
             capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),
-            #[cfg(target_os = "macos")]
             capture_picker_persistence_task: Arc::new(StdMutex::new(None)),
-            input_publication_demands: InputPublicationDemandHandle::new(),
+            input_publication_demands: InputPublicationDemandHandle::default(),
             browser_input,
             interaction_routing,
             discovery_in_progress,
@@ -690,7 +683,7 @@ impl AppState {
 
     #[doc(hidden)]
     #[must_use]
-    pub const fn input_manager(&self) -> &Arc<Mutex<InputManager>> {
+    pub const fn input_manager(&self) -> &InputManager {
         &self.input_manager
     }
 
@@ -750,11 +743,9 @@ impl AppState {
             state_dir,
             extensions: daemon.extensions.clone(),
             api_extensions: daemon.api_extensions.clone(),
-            input_manager: Arc::clone(daemon.input_manager()),
+            input_manager: daemon.input_manager().clone(),
             screen_capacity_status: daemon.screen_capacity_status.clone(),
-            #[cfg(target_os = "macos")]
             capture_picker_request_epoch: Arc::new(AtomicU64::new(0)),
-            #[cfg(target_os = "macos")]
             capture_picker_persistence_task: Arc::new(StdMutex::new(None)),
             input_publication_demands: daemon
                 .input_publication_demands()

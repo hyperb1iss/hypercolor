@@ -11,7 +11,8 @@
 //! cross-checked against the real ones by a Windows-only test, so a
 //! transcription slip fails the build rather than silently mis-decoding.
 
-use crate::shared::{RawButton, RawKeyPrefix};
+use crate::shared::RawKeyPrefix;
+use hypercolor_types::host_input::HostPointerButton;
 
 /// A keyboard past its rollover limit reports this instead of a key. It is
 /// not a position and must never reach the key table or the `VKey` fallback.
@@ -158,42 +159,29 @@ pub const fn classify_key(make_code: u16, flags: u16) -> KeyReport {
 /// Reading only the last flag would swallow fast clicks, which is exactly the
 /// input a shockwave effect is built for.
 #[must_use]
-pub fn button_edges(flags: u32) -> Vec<(RawButton, bool)> {
-    const TABLE: [(u32, u32, RawButton); 5] = [
-        (
-            button_flags::LEFT_DOWN,
-            button_flags::LEFT_UP,
-            RawButton::Left,
-        ),
-        (
-            button_flags::RIGHT_DOWN,
-            button_flags::RIGHT_UP,
-            RawButton::Right,
-        ),
-        (
-            button_flags::MIDDLE_DOWN,
-            button_flags::MIDDLE_UP,
-            RawButton::Middle,
-        ),
+pub fn button_edges(flags: u32) -> Vec<(HostPointerButton, bool)> {
+    const TABLE: [(u32, u32, &str); 5] = [
+        (button_flags::LEFT_DOWN, button_flags::LEFT_UP, "left"),
+        (button_flags::RIGHT_DOWN, button_flags::RIGHT_UP, "right"),
+        (button_flags::MIDDLE_DOWN, button_flags::MIDDLE_UP, "middle"),
         (
             button_flags::BUTTON_4_DOWN,
             button_flags::BUTTON_4_UP,
-            RawButton::Side,
+            "side",
         ),
         (
             button_flags::BUTTON_5_DOWN,
             button_flags::BUTTON_5_UP,
-            RawButton::Extra,
+            "extra",
         ),
     ];
-
     let mut edges = Vec::new();
     for (down, up, button) in TABLE {
         if flags & down != 0 {
-            edges.push((button, true));
+            edges.push((HostPointerButton::new(button), true));
         }
         if flags & up != 0 {
-            edges.push((button, false));
+            edges.push((HostPointerButton::new(button), false));
         }
     }
     edges

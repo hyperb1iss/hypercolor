@@ -13,7 +13,6 @@ use hypercolor_types::api::diagnose::{
 };
 use hypercolor_types::api::system::InputStatus;
 use hypercolor_types::device::USB_OUTPUT_BACKEND_ID;
-use tokio::sync::Mutex;
 
 use crate::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::display_frames::DisplayOutputMetricsSnapshot;
@@ -37,8 +36,8 @@ const DEFAULT_SAFE_CHECKS: [&str; 6] = ["daemon", "render", "devices", "config",
 #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
 #[derive(Clone)]
 struct MacosScreenParityCapability {
-    handle: Arc<arc_swap::ArcSwapOption<crate::render_thread::MacosScreenParityDiagnosticHandle>>,
-    input: Arc<Mutex<InputManager>>,
+    handle: Arc<arc_swap::ArcSwapOption<crate::render_thread::ScreenParityDiagnosticHandle>>,
+    input: InputManager,
     spatial: SpatialService,
 }
 
@@ -48,7 +47,7 @@ struct MacosScreenParityCapability;
 
 impl MacosScreenParityCapability {
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-    fn new(input: Arc<Mutex<InputManager>>, spatial: SpatialService) -> Self {
+    fn new(input: InputManager, spatial: SpatialService) -> Self {
         Self {
             handle: Arc::new(arc_swap::ArcSwapOption::empty()),
             input,
@@ -57,12 +56,12 @@ impl MacosScreenParityCapability {
     }
 
     #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
-    fn new(_input: Arc<Mutex<InputManager>>, _spatial: SpatialService) -> Self {
+    fn new(_input: InputManager, _spatial: SpatialService) -> Self {
         Self
     }
 
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
-    fn install(&self, handle: Option<crate::render_thread::MacosScreenParityDiagnosticHandle>) {
+    fn install(&self, handle: Option<crate::render_thread::ScreenParityDiagnosticHandle>) {
         self.handle.store(handle.map(Arc::new));
     }
 
@@ -172,7 +171,7 @@ impl DiagnosticsContext {
         devices: DeviceContext,
         display: DisplayContext,
         device_metrics: DeviceMetricsSnapshotStore,
-        input: Arc<Mutex<InputManager>>,
+        input: InputManager,
         spatial: SpatialService,
     ) -> Self {
         Self {
@@ -191,7 +190,7 @@ impl DiagnosticsContext {
     #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
     pub(crate) fn install_macos_screen_parity(
         &self,
-        handle: Option<crate::render_thread::MacosScreenParityDiagnosticHandle>,
+        handle: Option<crate::render_thread::ScreenParityDiagnosticHandle>,
     ) {
         self.authorities.parity.install(handle);
     }

@@ -16,7 +16,9 @@ use surfman::{
 };
 use webrender_api::units::DeviceIntRect;
 
-use crate::{ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor, Result};
+use crate::{
+    FrameOrigin, ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor, Result,
+};
 
 const GL_TEXTURE_RECTANGLE_ARB: gl::GLenum = 0x84F5;
 const GL_READ_FRAMEBUFFER: gl::GLenum = 0x8CA8;
@@ -30,14 +32,6 @@ const IOSURFACE_RING_SLOTS: usize = 3;
 /// fence timeout instead of stalling the render thread.
 const IOSURFACE_FENCE_TIMEOUT_NS: gl::GLuint64 = 8_000_000;
 
-/// Origin convention for a native macOS Servo frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum MacosServoFrameOrigin {
-    /// The first row in native framebuffer coordinates is the bottom row.
-    BottomLeft,
-}
-
 /// Native FBO-backed frame exposed by the macOS Servo hardware context.
 #[derive(Debug, Clone)]
 pub struct MacosServoNativeFrame {
@@ -48,7 +42,7 @@ pub struct MacosServoNativeFrame {
     /// Native IOSurface pixel format.
     pub format: ImportedFrameFormat,
     /// Native framebuffer origin.
-    pub origin: MacosServoFrameOrigin,
+    pub origin: FrameOrigin,
     /// IOSurface identity for diagnostics and cache comparisons.
     pub surface_id: usize,
     /// Monotonically increasing content version for this frame.
@@ -551,7 +545,7 @@ impl MacosServoFramebuffer {
             width: self.size.width,
             height: self.size.height,
             format: ImportedFrameFormat::Bgra8Unorm,
-            origin: MacosServoFrameOrigin::BottomLeft,
+            origin: FrameOrigin::BottomLeft,
             surface_id: usize::try_from(slot.iosurface.id()).unwrap_or(usize::MAX),
             content_generation: slot.content_generation,
             iosurface: slot.iosurface.clone(),

@@ -27,6 +27,7 @@ use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::screen::ScreenCapacityStatusHandle;
 use hypercolor_core::input::{InputManager, SourceStatusRegistry};
+use hypercolor_core::session::SessionMonitor;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
@@ -48,6 +49,7 @@ use crate::logical_devices::LogicalDevice;
 use crate::network::DaemonDriverHost;
 use crate::output_power::OutputPower;
 use crate::performance::PerformanceTracker;
+use crate::persistence::AtomicWriteOutcome;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::preview_runtime::PreviewRuntime;
 use crate::render_thread::{ConfiguredFpsTier, InputPublicationDemandHandle, RenderThread};
@@ -63,7 +65,6 @@ mod discovery_worker;
 pub(crate) mod input_status_events;
 mod lifecycle;
 pub mod logging;
-#[cfg(target_os = "macos")]
 mod macos_owner_watch;
 pub(crate) mod services;
 mod signals;
@@ -77,11 +78,16 @@ pub use config::{config_sources, default_config, parse_config_toml};
 pub use discovery_worker::{
     collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
 };
-#[cfg(test)]
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use lifecycle::persist_scene_store_snapshot;
-pub use signals::{SUPERVISED_PARENT_PID_ENV, install_signal_handlers};
+pub use signals::{
+    ParentLifetime, SUPERVISED_PARENT_PID_ENV, install_signal_handlers,
+    install_signal_handlers_with_parent_claim,
+};
+
+pub(crate) async fn persist_scene_store_snapshot(
+    scene_manager: &crate::domain::scene::SceneService,
+) -> anyhow::Result<Option<AtomicWriteOutcome>> {
+    scene_manager.persist_snapshot().await
+}
 
 /// The top-level daemon state, holding all subsystems.
 ///
@@ -123,7 +129,12 @@ pub struct DaemonState {
     pub macos_daemon_ownership:
         Arc<arc_swap::ArcSwapOption<crate::macos_owner::MacosOwnerSnapshot>>,
 
-    #[cfg(target_os = "macos")]
+    /// Latest corroborated launcher identity the daemon reports.
+    pub service_status: Arc<arc_swap::ArcSwapOption<hypercolor_types::service::ServiceStatus>>,
+
+    /// Durable owner-store watch that republishes launcher identity. Only
+    /// ever populated when a platform owner snapshot exists; stays `None`
+    /// elsewhere.
     _macos_owner_watch: Option<macos_owner_watch::MacosOwnerWatch>,
 
     /// Daemon-managed user media asset library.
@@ -184,7 +195,7 @@ pub struct DaemonState {
     pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
 
     /// Input orchestrator — audio and screen capture sampling sources.
-    input_manager: Arc<Mutex<InputManager>>,
+    input_manager: InputManager,
 
     /// Exact lock-free screen capacity policy and physical usage.
     pub screen_capacity_status: ScreenCapacityStatusHandle,
@@ -269,6 +280,9 @@ pub struct DaemonState {
     /// Session/power-awareness watcher and policy controller.
     pub(super) session_controller: Option<SessionController>,
 
+    /// Explicit platform monitors supplied by the process host.
+    pub(super) session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
+
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,
 
@@ -279,7 +293,7 @@ pub struct DaemonState {
 impl DaemonState {
     #[doc(hidden)]
     #[must_use]
-    pub const fn input_manager(&self) -> &Arc<Mutex<InputManager>> {
+    pub const fn input_manager(&self) -> &InputManager {
         &self.input_manager
     }
 

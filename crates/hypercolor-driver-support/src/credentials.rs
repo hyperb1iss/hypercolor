@@ -184,22 +184,20 @@ fn scoped_credential_key(driver_id: &str, key: &str) -> String {
     format!("{driver_id}:{key}")
 }
 
-fn load_or_create_seed_blocking(path: &Path) -> Result<[u8; 32]> {
-    if path.exists() {
-        restrict_file_permissions_blocking(path)?;
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("failed to read credential seed {}", path.display()))?;
-        if bytes.len() != 32 {
-            bail!(
-                "credential seed {} must be exactly 32 bytes, found {}",
-                path.display(),
-                bytes.len()
-            );
-        }
+fn seed_from_bytes(path: &Path, bytes: &[u8]) -> Result<[u8; 32]> {
+    let seed: [u8; 32] = bytes.try_into().map_err(|_| {
+        anyhow!(
+            "credential seed {} must be exactly 32 bytes, found {}",
+            path.display(),
+            bytes.len()
+        )
+    })?;
+    Ok(seed)
+}
 
-        let mut seed = [0_u8; 32];
-        seed.copy_from_slice(&bytes);
-        return Ok(seed);
+fn load_or_create_seed_blocking(path: &Path) -> Result<[u8; 32]> {
+    if let Some(bytes) = read_secret_file_blocking(path)? {
+        return seed_from_bytes(path, &bytes);
     }
 
     let seed = rand::random::<[u8; 32]>();
@@ -209,63 +207,36 @@ fn load_or_create_seed_blocking(path: &Path) -> Result<[u8; 32]> {
 }
 
 async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
-    if path.exists() {
-        restrict_file_permissions(path).await?;
-        let bytes = fs::read(path)
-            .await
-            .with_context(|| format!("failed to read credential seed {}", path.display()))?;
-        if bytes.len() != 32 {
-            bail!(
-                "credential seed {} must be exactly 32 bytes, found {}",
-                path.display(),
-                bytes.len()
-            );
-        }
-
-        let mut seed = [0_u8; 32];
-        seed.copy_from_slice(&bytes);
-        return Ok(seed);
+    if let Some(bytes) = read_secret_file(path.to_path_buf()).await? {
+        return seed_from_bytes(path, &bytes);
     }
 
     let seed = rand::random::<[u8; 32]>();
-    write_secret_file(path, &seed)
+    write_secret_file(path.to_path_buf(), seed.to_vec())
         .await
         .with_context(|| format!("failed to write credential seed {}", path.display()))?;
     Ok(seed)
 }
 
 fn load_cache_blocking(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Value>> {
-    if !store_path.exists() {
-        return Ok(HashMap::new());
+    match read_secret_file_blocking(store_path)? {
+        Some(payload) => decrypt_cache(cipher, store_path, &payload),
+        None => Ok(HashMap::new()),
     }
-
-    restrict_file_permissions_blocking(store_path)?;
-    let payload = std::fs::read(store_path)
-        .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
-    if payload.is_empty() {
-        return Ok(HashMap::new());
-    }
-    if payload.len() <= NONCE_BYTES {
-        bail!("credential store {} is truncated", store_path.display());
-    }
-
-    let nonce = Nonce::from_slice(&payload[..NONCE_BYTES]);
-    let plaintext = cipher
-        .decrypt(nonce, &payload[NONCE_BYTES..])
-        .map_err(|error| anyhow!("failed to decrypt credential store: {error}"))?;
-
-    deserialize_cache(&plaintext, store_path)
 }
 
 async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Value>> {
-    if !store_path.exists() {
-        return Ok(HashMap::new());
+    match read_secret_file(store_path.to_path_buf()).await? {
+        Some(payload) => decrypt_cache(cipher, store_path, &payload),
+        None => Ok(HashMap::new()),
     }
+}
 
-    restrict_file_permissions(store_path).await?;
-    let payload = fs::read(store_path)
-        .await
-        .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
+fn decrypt_cache(
+    cipher: &Aes256Gcm,
+    store_path: &Path,
+    payload: &[u8],
+) -> Result<HashMap<String, Value>> {
     if payload.is_empty() {
         return Ok(HashMap::new());
     }
@@ -305,86 +276,65 @@ fn encrypt_snapshot(cipher: &Aes256Gcm, snapshot: &HashMap<String, Value>) -> Re
     Ok(payload)
 }
 
-#[cfg(unix)]
+/// Create `path` as a new private file holding `payload`.
+///
+/// Creation, mode, and sync all go through `hypercolor-platform-fs`, so a
+/// pre-existing file or symlink at `path` is refused rather than replaced.
 fn write_secret_file_blocking(path: &Path, payload: &[u8]) -> Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(CREDENTIAL_FILE_MODE)
-        .open(path)
-        .with_context(|| format!("failed to create secret file {}", path.display()))?;
-    file.write_all(payload)
-        .with_context(|| format!("failed to write secret file {}", path.display()))?;
-    Ok(())
+    hypercolor_platform_fs::write_secret(path, payload)
+        .with_context(|| format!("failed to create secret file {}", path.display()))
 }
 
-#[cfg(not(unix))]
-fn write_secret_file_blocking(path: &Path, payload: &[u8]) -> Result<()> {
-    std::fs::write(path, payload)
-        .with_context(|| format!("failed to write secret file {}", path.display()))
+async fn write_secret_file(path: PathBuf, payload: Vec<u8>) -> Result<()> {
+    tokio::task::spawn_blocking(move || write_secret_file_blocking(&path, &payload))
+        .await
+        .context("secret file write task was cancelled")?
+}
+
+/// Read a secret file without following a final symlink.
+///
+/// Returns `None` when the file does not exist. On Unix the open handle is
+/// tightened to `0600` before reading so a loosened mode is repaired without
+/// a path-based chmod that a symlink swap could redirect.
+fn read_secret_file_blocking(path: &Path) -> Result<Option<Vec<u8>>> {
+    use std::io::Read as _;
+
+    let mut file = match hypercolor_platform_fs::open_no_follow(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to open secret file {}", path.display()));
+        }
+    };
+    restrict_file_permissions(&file)
+        .with_context(|| format!("failed to restrict secret file {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read secret file {}", path.display()))?;
+    Ok(Some(bytes))
+}
+
+async fn read_secret_file(path: PathBuf) -> Result<Option<Vec<u8>>> {
+    tokio::task::spawn_blocking(move || read_secret_file_blocking(&path))
+        .await
+        .context("secret file read task was cancelled")?
 }
 
 #[cfg(unix)]
-async fn write_secret_file(path: &Path, payload: &[u8]) -> Result<()> {
-    use tokio::io::AsyncWriteExt as _;
-
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(CREDENTIAL_FILE_MODE)
-        .open(path)
-        .await
-        .with_context(|| format!("failed to create secret file {}", path.display()))?;
-    file.write_all(payload)
-        .await
-        .with_context(|| format!("failed to write secret file {}", path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-async fn write_secret_file(path: &Path, payload: &[u8]) -> Result<()> {
-    fs::write(path, payload)
-        .await
-        .with_context(|| format!("failed to write secret file {}", path.display()))
-}
-
-#[cfg(unix)]
-fn restrict_file_permissions_blocking(path: &Path) -> Result<()> {
+fn restrict_file_permissions(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let mut permissions = std::fs::metadata(path)
-        .with_context(|| format!("failed to inspect secret file {}", path.display()))?
-        .permissions();
+    let mut permissions = file.metadata()?.permissions();
+    if permissions.mode() & 0o777 == CREDENTIAL_FILE_MODE {
+        return Ok(());
+    }
     permissions.set_mode(CREDENTIAL_FILE_MODE);
-    std::fs::set_permissions(path, permissions)
-        .with_context(|| format!("failed to restrict secret file {}", path.display()))
+    file.set_permissions(permissions)
 }
 
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps)]
-fn restrict_file_permissions_blocking(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-async fn restrict_file_permissions(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let mut permissions = fs::metadata(path)
-        .await
-        .with_context(|| format!("failed to inspect secret file {}", path.display()))?
-        .permissions();
-    permissions.set_mode(CREDENTIAL_FILE_MODE);
-    fs::set_permissions(path, permissions)
-        .await
-        .with_context(|| format!("failed to restrict secret file {}", path.display()))
-}
-
-#[cfg(not(unix))]
-#[allow(clippy::unused_async, clippy::unnecessary_wraps)]
-async fn restrict_file_permissions(_path: &Path) -> Result<()> {
+fn restrict_file_permissions(_file: &std::fs::File) -> std::io::Result<()> {
     Ok(())
 }

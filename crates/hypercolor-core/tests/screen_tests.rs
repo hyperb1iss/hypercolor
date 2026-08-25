@@ -4,14 +4,14 @@
 
 use std::time::Duration;
 
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, ColorTuning, MAX_REPRESENTABLE_CAPTURE_FPS, PixelExtent,
+    ScreenAnalysisResourcePlan, ScreenCaptureInput,
+};
 use hypercolor_core::input::screen::sector::{
     LetterboxBars, SectorGrid, proportional_sector_bounds,
 };
 use hypercolor_core::input::screen::smooth::TemporalSmoother;
-use hypercolor_core::input::screen::{
-    CaptureConfig, ColorTuning, MAX_REPRESENTABLE_CAPTURE_FPS, PixelExtent,
-    ScreenAnalysisResourcePlan, ScreenCaptureInput,
-};
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 

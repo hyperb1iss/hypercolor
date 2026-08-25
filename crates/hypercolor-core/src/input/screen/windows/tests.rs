@@ -1,4 +1,4 @@
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -11,15 +11,17 @@ use hypercolor_windows_capture::{
 };
 
 use super::{
-    ActiveCaptureEpoch, CapturePublication, CaptureWorker, ExactBoxList, ExactPublicationShared,
-    WindowsCaptureResourceAdmission, WindowsExactRuntime, WindowsExactRuntimes,
-    WindowsPhysicalReductionRoute, WindowsPublicationSource, WindowsScreenCaptureInput,
-    WorkerCaptureSchedule, WorkerCommand, bind_current_exact_runtime, capture_epoch,
-    capture_freshness, capture_geometry, capture_gpu_descriptor, capture_gpu_reduction_descriptor,
-    capture_issue, classify_windows_physical_reduction, native_capture_extent, reap_exact_runtimes,
+    ActiveCaptureEpoch, CaptureWorker, ExactBoxList, ExactPublicationShared,
+    WindowsCaptureActivity, WindowsCaptureResourceAdmission, WindowsExactRuntime,
+    WindowsExactRuntimes, WindowsPhysicalReductionRoute, WindowsPublicationSource,
+    WindowsScreenCaptureInput, WorkerCommand, capture_epoch, capture_freshness, capture_geometry,
+    capture_gpu_descriptor, capture_gpu_reduction_descriptor, capture_issue,
+    classify_windows_physical_reduction, display_rotation, native_capture_extent,
     record_capture_health, resolve_windows_publication_branch, settle_inactive_capture,
-    windows_gpu_attempt_at, windows_gpu_candidate_admission, windows_gpu_preparation_gate,
-    windows_gpu_retry_at,
+    windows_gpu_candidate_admission, windows_gpu_preparation_gate,
+};
+use crate::input::screen::adapter::{
+    CaptureSessionAuthority, bind_current_capture_exact_runtime, reap_capture_exact_runtimes,
 };
 
 #[test]
@@ -46,21 +48,20 @@ fn capture_resource_adapter_reconciles_and_releases_source_bytes() {
     assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 }
 use crate::input::screen::{
-    CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
+    CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureFrame,
     CaptureFrameError, CaptureFrameMetadata, CapturePixelFormat, CaptureRotation, CaptureSourceId,
     CaptureStorage, CpuCaptureStorage, MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent,
     RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenPublicationDescriptor, ScreenAdmissionCapacity, ScreenAnalysisComputeCapacity,
-    ScreenAspectPolicy, ScreenByteAdmissionCoordinator, ScreenCaptureDemand,
-    ScreenComputeCapacityPolicy, ScreenExtentRequest, ScreenInputGraphGeneration,
-    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
-    ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPayloadKind,
-    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPreparedWorkerToken,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
-    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenPublicationResidency, ScreenReductionFilter,
-    ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ResolvedScreenPublicationDescriptor, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenByteAdmissionCoordinator, ScreenCaptureDemand, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
+    ScreenPayloadKind, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
+    ScreenPreparedWorkerToken, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
+    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationKind,
+    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationResidency,
+    ScreenReductionFilter, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparationTicket,
 };
 use crate::input::status::{ScreenCaptureReductionPath, SourceDiagnostics};
@@ -199,7 +200,7 @@ fn extent(width: u32, height: u32) -> PixelExtent {
 }
 
 fn active_demand() -> ScreenCaptureDemand {
-    ScreenCaptureDemand::active(extent(640, 480))
+    ScreenCaptureDemand::active()
 }
 
 fn publication_source() -> WindowsPublicationSource {
@@ -488,12 +489,14 @@ fn gpu_preparation_gate_is_shared_per_adapter() {
 fn cpu_executor_is_shared_across_exact_plan_generations() {
     let exact = ExactPublicationShared::default();
     let first = exact
-        .cpu_executor()
+        .cpu_executor
+        .executor()
         .expect("the source CPU executor prepares");
 
     for _ in 0..100 {
         let next = exact
-            .cpu_executor()
+            .cpu_executor
+            .executor()
             .expect("later plan generations reuse the executor");
         assert!(Arc::ptr_eq(&first, &next));
     }
@@ -567,11 +570,8 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
     let exact = ExactPublicationShared::default();
-    *exact
-        .hub
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&hub));
-    exact.replace_source(Some(source.clone()));
+    exact.install_hub(Arc::clone(&hub));
+    exact.install_test_source(Some(source.clone()));
     let mut runtimes = WindowsExactRuntimes::default();
 
     let initial_revision = builder
@@ -582,7 +582,6 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut stale_preparing = builder
         .prepare(
             mixed_demands.clone(),
-            None,
             initial_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -608,7 +607,6 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut preparing = builder
         .prepare(
             initial_demands,
-            None,
             initial_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -648,8 +646,8 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .1
         .try_reclaim()
         .expect("initial plan retires no exact runtime resources");
-    reap_exact_runtimes(&mut runtimes, &exact);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("initial runtime binds")
         .expect("initial committed runtime is selected");
     assert!(selected.binding.is_same(&initial_binding));
@@ -663,7 +661,6 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut retained_preparing = builder
         .prepare(
             retained_demands,
-            None,
             retained_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -709,9 +706,9 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, retained_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("retained-only plan commits: {}", failure.error()));
     let (_, retained_retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("retained-only runtime binds")
         .expect("retained-only committed runtime is selected");
     assert!(selected.binding.is_same(&retained_binding));
@@ -726,7 +723,6 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut mixed_preparing = builder
         .prepare(
             mixed_demands,
-            None,
             mixed_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -788,9 +784,9 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, mixed_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("mixed plan commits: {}", failure.error()));
     let (_, mixed_retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 1);
-    let selected = bind_current_exact_runtime(&mut runtimes, &source, &hub)
+    let selected = bind_current_capture_exact_runtime(&mut runtimes, &source, &hub, |_, _| Ok(()))
         .expect("mixed runtime binds")
         .expect("mixed committed runtime is selected");
     assert!(selected.binding.is_same(&mixed_binding));
@@ -851,7 +847,6 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
     let mut removal_preparing = builder
         .prepare(
             std::iter::empty::<ResolvedScreenBranchDemand>(),
-            None,
             removal_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -886,7 +881,7 @@ fn exact_runtime_identity_survives_retention_mixed_publication_and_removal() {
         .commit(armed, removal_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("removal plan commits: {}", failure.error()));
     let (_, retirement) = committed.into_parts();
-    reap_exact_runtimes(&mut runtimes, &exact);
+    reap_capture_exact_runtimes(CaptureSessionAuthority::new(1), &mut runtimes, &exact);
     assert_eq!(runtimes.iter().count(), 0);
     assert!(
         builder
@@ -987,49 +982,6 @@ fn exact_reduction_route_charges_only_work_that_can_execute_on_cpu() {
 }
 
 #[test]
-fn large_native_source_admits_the_gpu_reduced_analysis_plane() {
-    let mut source = publication_source();
-    source.native_extent = extent(15_360, 8_640);
-    source.logical_extent = source.native_extent;
-    source.rotation = CaptureRotation::Identity;
-    let input = WindowsScreenCaptureInput::new(CaptureConfig::default());
-    input.exact.replace_source(Some(source));
-
-    let prepared = input
-        .prepare_active_settings(CaptureConfig::default(), 0, active_demand())
-        .expect("the reduced compatibility plane is admitted");
-    let analysis = prepared
-        .analyzer
-        .analysis_work_plan()
-        .expect("known topology pre-admits analysis work");
-
-    assert_eq!(analysis.input_extent(), extent(640, 480));
-}
-
-#[test]
-fn calibrated_analysis_capacity_rejects_known_work_before_preparation() {
-    let capacity = ScreenAnalysisComputeCapacity::new_split(
-        NonZeroUsize::MIN,
-        NonZeroU64::MIN,
-        NonZeroU64::MIN,
-    );
-    let policy = ScreenComputeCapacityPolicy::calibrated(capacity, NonZeroU64::MIN);
-    let mut source = publication_source();
-    source.native_extent = extent(15_360, 8_640);
-    source.logical_extent = source.native_extent;
-    let input =
-        WindowsScreenCaptureInput::with_compute_capacity_policy(CaptureConfig::default(), policy);
-    input.exact.replace_source(Some(source));
-
-    let Err(error) = input.prepare_active_settings(CaptureConfig::default(), 0, active_demand())
-    else {
-        panic!("caller-calibrated capacity must reject known excess work");
-    };
-
-    assert!(error.to_string().contains("weighted work units/s"));
-}
-
-#[test]
 fn selector_claims_only_the_current_windows_output() {
     let source = publication_source();
     let wrong = CaptureSourceId::new("windows:display:other").expect("test source id is non-empty");
@@ -1059,24 +1011,41 @@ fn unrepresentable_cadence_cannot_activate_capture() {
         .expect_err("an unrepresentable scheduler cadence must fail admission");
 
     assert!(error.to_string().contains("scheduler clock limit"));
-    assert_eq!(input.capture_demand, ScreenCaptureDemand::Inactive);
+    assert_eq!(
+        input.settings.snapshot().demand,
+        ScreenCaptureDemand::Inactive
+    );
 }
 
+#[cfg(feature = "windows-capture-fixtures")]
 #[test]
-fn shared_admission_rejects_windows_analysis_before_backend_start() {
-    let coordinator = ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(0, 0));
-    let mut input = WindowsScreenCaptureInput::with_admission_coordinator(
-        CaptureConfig::default(),
-        coordinator.clone(),
-    );
+fn failed_activation_rolls_back_adapter_demand_with_a_second_revision() {
+    let epoch = capture_epoch("display:main", 1, 1).expect("fixture epoch is valid");
+    let (mut input, _fixture) =
+        WindowsScreenCaptureInput::new_deterministic_fixture(CaptureConfig::default(), epoch)
+            .expect("deterministic fixture constructs");
+    input.start().expect("fixture source starts idle");
+    // Activity fences are reissued on every demand transition, so only a
+    // stale source generation can fence the activation itself.
+    let fenced_source_generation = input.settings.snapshot().source_generation + 1;
+    input
+        .shell
+        .adapter
+        .activity()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .fence_source(fenced_source_generation);
+    let revision = input.settings.values.revision();
 
-    let error = input
+    input
         .set_capture_demand_state(active_demand())
-        .expect_err("manager-owned capacity must gate Windows analysis construction");
+        .expect_err("fenced activation rolls back the tentative demand");
 
-    assert!(error.to_string().contains("capacity is 0 bytes"));
-    assert_eq!(input.capture_demand, ScreenCaptureDemand::Inactive);
-    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
+    assert_eq!(
+        input.settings.snapshot().demand,
+        ScreenCaptureDemand::Inactive
+    );
+    assert_eq!(input.settings.values.revision(), revision + 2);
 }
 
 #[test]
@@ -1086,6 +1055,7 @@ fn active_reconfigure_retains_last_good_cadence_after_admission_failure() {
         .set_capture_demand_state(active_demand())
         .expect("baseline capture demand is admitted");
     let baseline = input.settings.snapshot().config;
+    let revision = input.settings.values.revision();
     let mut rejected = baseline.clone();
     rejected.target_fps = MAX_REPRESENTABLE_CAPTURE_FPS + 1;
 
@@ -1095,13 +1065,15 @@ fn active_reconfigure_retains_last_good_cadence_after_admission_failure() {
 
     assert!(error.to_string().contains("scheduler clock limit"));
     assert_eq!(input.settings.snapshot().config, baseline);
-    assert_eq!(input.capture_demand, active_demand());
+    assert_eq!(input.settings.snapshot().demand, active_demand());
+    assert_eq!(input.settings.values.revision(), revision);
 }
 
 #[test]
 fn inactive_reconfigure_retains_last_good_cadence_after_admission_failure() {
     let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
     let baseline = input.settings.snapshot().config;
+    let revision = input.settings.values.revision();
     let mut rejected = baseline.clone();
     rejected.target_fps = MAX_REPRESENTABLE_CAPTURE_FPS + 1;
 
@@ -1111,66 +1083,11 @@ fn inactive_reconfigure_retains_last_good_cadence_after_admission_failure() {
 
     assert!(error.to_string().contains("scheduler clock limit"));
     assert_eq!(input.settings.snapshot().config, baseline);
-    assert_eq!(input.capture_demand, ScreenCaptureDemand::Inactive);
-}
-
-#[test]
-fn worker_schedule_gates_analysis_and_never_catches_up_in_a_burst() {
-    let cadence = CaptureCadence::new(30).expect("30 FPS is representable");
-    let started_at = Instant::now();
-    let mut schedule = WorkerCaptureSchedule::new(cadence, started_at);
-
-    assert_eq!(schedule.wait_duration(started_at), None);
-    schedule
-        .record_frame(started_at, started_at)
-        .expect("live scheduler deadline fits Instant");
-    assert!(schedule.wait_duration(started_at).is_some());
-
-    let late = started_at + Duration::from_secs(1);
-    schedule
-        .record_frame(late, late)
-        .expect("live scheduler deadline fits Instant");
-    assert!(
-        schedule.wait_duration(late).is_some(),
-        "lateness must schedule a future interval instead of an immediate burst"
-    );
-}
-
-#[test]
-fn exact_route_deadlines_are_independent_of_the_legacy_analysis_cadence() {
-    let started_at = Instant::now();
-    let mut legacy = WorkerCaptureSchedule::new(
-        CaptureCadence::new(30).expect("30 FPS is representable"),
-        started_at,
-    );
-    legacy
-        .record_frame(started_at, started_at)
-        .expect("legacy deadline fits Instant");
-    let legacy_deadline = started_at
-        + legacy
-            .wait_duration(started_at)
-            .expect("legacy cadence has a future deadline");
-    let exact_144 = windows_gpu_retry_at(
-        CaptureCadence::new(144)
-            .expect("144 FPS is representable")
-            .pacer(),
-        started_at,
-    )
-    .expect("exact route deadline fits Instant");
-    let exact_60 = windows_gpu_retry_at(
-        CaptureCadence::new(60)
-            .expect("60 FPS is representable")
-            .pacer(),
-        started_at,
-    )
-    .expect("exact route deadline fits Instant");
-
-    assert!(exact_144 < exact_60);
-    assert!(exact_60 < legacy_deadline);
     assert_eq!(
-        windows_gpu_attempt_at(started_at, Some(exact_144)),
-        exact_144
+        input.settings.snapshot().demand,
+        ScreenCaptureDemand::Inactive
     );
+    assert_eq!(input.settings.values.revision(), revision);
 }
 
 fn active_epoch(
@@ -1192,8 +1109,9 @@ fn wait_for_activity(input: &WindowsScreenCaptureInput, expected: u64) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let processed = input
-            .worker
-            .as_ref()
+            .shell
+            .adapter
+            .active_worker()
             .expect("capture owns a worker while activity is changing")
             .processed_activity_generation
             .load(Ordering::Acquire);
@@ -1230,32 +1148,67 @@ fn inactive_settlement_drops_capture_before_acknowledging_generation() {
 }
 
 #[test]
-fn activity_fence_rejects_a_pre_deactivation_frame_after_reactivation() {
+fn activity_fence_rejects_a_pre_deactivation_epoch_after_reactivation() {
     let mut old_activity = active_epoch("display:main", 3, 7, 1);
     old_activity.activity_generation = 1;
     let mut reactivated = old_activity.clone();
     reactivated.activity_generation = 3;
-    let mut publication = CapturePublication::default();
+    let mut activity = WindowsCaptureActivity::default();
 
-    publication.fence_activity(1);
-    assert!(publication.activate(old_activity.clone()));
-    assert!(publication.publish(&old_activity, "old frame"));
-    publication.fence_activity(2);
-    publication.fence_activity(3);
+    activity.fence_activity(1);
+    assert!(activity.activate(old_activity.clone()).is_ok());
+    activity.fence_activity(2);
+    activity.fence_activity(3);
 
-    assert!(!publication.activate(old_activity.clone()));
-    assert!(!publication.publish(&old_activity, "in-flight old frame"));
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(publication.activate(reactivated.clone()));
-    assert!(publication.publish(&reactivated, "reactivated frame"));
+    assert!(activity.activate(old_activity.clone()).is_err());
+    assert!(activity.active().is_none());
+    assert!(activity.activate(reactivated.clone()).is_ok());
+    assert_eq!(activity.active(), Some(&reactivated));
+}
+
+#[test]
+fn source_fence_prevents_an_in_flight_worker_from_reactivating_old_epochs() {
+    let old_source = active_epoch("display:old", 3, 7, 1);
+    let mut new_source = active_epoch("display:new", 3, 7, 1);
+    new_source.source_generation = 1;
+    let mut activity = WindowsCaptureActivity::default();
+
+    assert!(activity.activate(old_source.clone()).is_ok());
+    activity.fence_source(1);
+
+    assert!(activity.activate(old_source.clone()).is_err());
+    assert!(activity.active().is_none());
+    assert!(activity.activate(new_source.clone()).is_ok());
+    assert_eq!(activity.active(), Some(&new_source));
+}
+
+#[test]
+fn activity_replaces_a_superseded_source_topology_session_or_duplication_epoch() {
+    let first = active_epoch("display:first", 3, 7, 1);
+    let mut activity = WindowsCaptureActivity::default();
+    assert!(activity.activate(first.clone()).is_ok());
+    for replacement in [
+        active_epoch("display:replacement", 3, 7, 1),
+        active_epoch("display:replacement", 4, 7, 1),
+        active_epoch("display:replacement", 4, 8, 1),
+        active_epoch("display:replacement", 4, 8, 2),
+    ] {
+        let displaced = activity
+            .activate(replacement.clone())
+            .expect("the fence admits every epoch of the same source and activity");
+        assert!(displaced.is_some());
+        assert_eq!(activity.active(), Some(&replacement));
+        assert!(matches!(activity.activate(replacement.clone()), Ok(None)));
+    }
+    assert!(activity.clear().is_some());
+    assert!(activity.active().is_none());
 }
 
 #[test]
 fn deactivated_worker_is_reused_when_capture_reactivates() {
     let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
     input.start().expect("idle capture source starts");
-    assert!(input.worker.is_none());
+    assert!(input.shell.adapter.active_worker().is_none());
 
     input
         .set_capture_demand_state(active_demand())
@@ -1263,13 +1216,20 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let first_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, first_activity);
     let first_thread = input
-        .worker
-        .as_ref()
+        .shell
+        .adapter
+        .active_worker()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("active capture owns a worker thread")
         .thread()
         .id();
-    let first_generation = input.settings.session_generation.load(Ordering::Acquire);
+    let first_generation = input
+        .shell
+        .adapter
+        .exact_state()
+        .current_authority()
+        .expect("active worker owns exact authority")
+        .generation();
 
     input
         .set_capture_demand_state(ScreenCaptureDemand::Inactive)
@@ -1277,7 +1237,7 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let inactive_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, inactive_activity);
     assert!(
-        input.worker.is_some(),
+        input.shell.adapter.active_worker().is_some(),
         "acknowledged idle capture retains worker ownership"
     );
 
@@ -1287,8 +1247,9 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
     let reactivated_activity = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, reactivated_activity);
     let reactivated_thread = input
-        .worker
-        .as_ref()
+        .shell
+        .adapter
+        .active_worker()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("reactivated capture still owns a worker thread")
         .thread()
@@ -1296,7 +1257,13 @@ fn deactivated_worker_is_reused_when_capture_reactivates() {
 
     assert_eq!(reactivated_thread, first_thread);
     assert_eq!(
-        input.settings.session_generation.load(Ordering::Acquire),
+        input
+            .shell
+            .adapter
+            .exact_state()
+            .current_authority()
+            .expect("reactivated worker retains exact authority")
+            .generation(),
         first_generation,
         "reactivation must not spawn a replacement worker"
     );
@@ -1329,13 +1296,20 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     });
     ready_rx.recv().expect("fake worker is running");
     let disconnected_thread = join_handle.thread().id();
-    input.worker = Some(CaptureWorker {
-        command_tx,
-        exit_rx,
-        join_handle: Some(join_handle),
-        cancel,
-        processed_activity_generation: Arc::new(AtomicU64::new(0)),
-    });
+    assert!(
+        input
+            .shell
+            .adapter
+            .install_worker_for_test(CaptureWorker {
+                authority: CaptureSessionAuthority::new(1),
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel,
+                processed_activity_generation: Arc::new(AtomicU64::new(0)),
+            })
+            .is_ok()
+    );
 
     input
         .set_capture_demand_state(active_demand())
@@ -1343,8 +1317,9 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     let activity_generation = input.settings.activity_generation.load(Ordering::Acquire);
     wait_for_activity(&input, activity_generation);
     let replacement_thread = input
-        .worker
-        .as_ref()
+        .shell
+        .adapter
+        .active_worker()
         .and_then(|worker| worker.join_handle.as_ref())
         .expect("activation owns the replacement worker")
         .thread()
@@ -1353,7 +1328,13 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
     assert!(exited.load(Ordering::Acquire));
     assert_ne!(replacement_thread, disconnected_thread);
     assert_eq!(
-        input.settings.session_generation.load(Ordering::Acquire),
+        input
+            .shell
+            .adapter
+            .exact_state()
+            .current_authority()
+            .expect("replacement worker owns exact authority")
+            .generation(),
         1,
         "only the replacement worker allocates a capture session"
     );
@@ -1362,98 +1343,89 @@ fn disconnected_worker_is_reaped_before_activation_retries_once() {
 }
 
 #[test]
-fn source_fence_prevents_an_in_flight_worker_from_reactivating_old_frames() {
-    let old_source = active_epoch("display:old", 3, 7, 1);
-    let mut new_source = active_epoch("display:new", 3, 7, 1);
-    new_source.source_generation = 1;
-    let mut publication = CapturePublication::default();
+fn retired_worker_cannot_republish_after_stop_returns() {
+    let mut input = WindowsScreenCaptureInput::new(CaptureConfig::default());
+    let authority = CaptureSessionAuthority::new(1);
+    let reservation = input
+        .shell
+        .adapter
+        .reserve_exact_authority()
+        .expect("authority reserves");
+    assert_eq!(reservation.authority(), authority);
+    drop(
+        input
+            .shell
+            .adapter
+            .exact_state()
+            .activate_reserved_authority(reservation)
+            .expect("authority activates"),
+    );
 
-    assert!(publication.activate(old_source.clone()));
-    assert!(publication.publish(&old_source, "old frame"));
-    publication.fence_source(1);
+    let epoch = active_epoch("display:main", 3, 1, 1);
+    {
+        let mut activity = input
+            .shell
+            .adapter
+            .activity()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(activity.activate(epoch.clone()).is_ok());
+        assert_eq!(activity.active(), Some(&epoch));
+    }
 
-    assert!(!publication.activate(old_source.clone()));
-    assert!(!publication.publish(&old_source, "late old frame"));
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(publication.activate(new_source.clone()));
-    assert!(publication.publish(&new_source, "new frame"));
-}
+    let (command_tx, command_rx) = mpsc::channel::<WorkerCommand>();
+    let (_exit_tx, exit_rx) = mpsc::sync_channel(1);
+    let release = Arc::new(AtomicBool::new(false));
+    let worker_release = Arc::clone(&release);
+    let join_handle = thread::spawn(move || {
+        let _command_rx = command_rx;
+        while !worker_release.load(Ordering::Acquire) {
+            thread::yield_now();
+        }
+    });
+    assert!(
+        input
+            .shell
+            .adapter
+            .install_worker_for_test(CaptureWorker {
+                authority,
+                command_tx,
+                exit_rx,
+                join_handle: Some(join_handle),
+                cancel: Arc::new(AtomicBool::new(false)),
+                processed_activity_generation: Arc::new(AtomicU64::new(0)),
+            })
+            .is_ok()
+    );
 
-#[test]
-fn publication_rejects_frames_from_a_replaced_source() {
-    let first = active_epoch("display:first", 3, 7, 1);
-    let replacement = active_epoch("display:replacement", 3, 7, 1);
-    let mut publication = CapturePublication::default();
+    input.stop();
 
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert_eq!(publication.latest, Some("first frame"));
+    assert!(
+        !input
+            .shell
+            .adapter
+            .exact_state()
+            .is_current_authority(authority)
+    );
+    let mut activity = input
+        .shell
+        .adapter
+        .activity()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(activity.activate(epoch.clone()).is_err());
+    assert!(activity.active().is_none());
+    drop(activity);
 
-    assert!(publication.activate(replacement.clone()));
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale frame"));
-    assert!(publication.publish(&replacement, "replacement frame"));
-    assert_eq!(publication.latest, Some("replacement frame"));
-}
-
-#[test]
-fn publication_rejects_frames_from_a_replaced_topology() {
-    let first = active_epoch("display:main", 3, 7, 1);
-    let replacement = active_epoch("display:main", 4, 7, 1);
-    let mut publication = CapturePublication::default();
-
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(replacement.clone()));
-
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale topology frame"));
-    assert!(publication.publish(&replacement, "replacement frame"));
-}
-
-#[test]
-fn publication_rejects_frames_from_a_replaced_worker_session() {
-    let first = active_epoch("display:main", 3, 7, 1);
-    let restarted = active_epoch("display:main", 3, 8, 1);
-    let mut publication = CapturePublication::default();
-
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(restarted.clone()));
-
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "stale worker frame"));
-    assert!(publication.publish(&restarted, "restarted frame"));
-}
-
-#[test]
-fn publication_rejects_frames_from_a_rebuilt_duplication_interface() {
-    let first = active_epoch("display:main", 3, 7, 1);
-    let rebuilt = active_epoch("display:main", 3, 7, 2);
-    let mut publication = CapturePublication::default();
-
-    assert!(publication.activate(first.clone()));
-    assert!(publication.publish(&first, "first frame"));
-    assert!(publication.activate(rebuilt.clone()));
-
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&first, "access-lost frame"));
-    assert!(publication.publish(&rebuilt, "rebuilt frame"));
-}
-
-#[test]
-fn cleared_publication_fails_closed_until_a_new_epoch_is_activated() {
-    let active = active_epoch("display:main", 3, 7, 1);
-    let mut publication = CapturePublication::default();
-
-    assert!(publication.activate(active.clone()));
-    assert!(publication.publish(&active, "frame"));
-    publication.clear();
-
-    assert!(publication.active.is_none());
-    assert!(publication.latest.is_none());
-    assert!(!publication.publish(&active, "late frame"));
+    release.store(true, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while input.shell.adapter.retiring_worker_count() != 0 {
+        input.shell.adapter.reap_finished_workers(|_, result| {
+            result.expect("retired worker exits cleanly");
+        });
+        assert!(Instant::now() < deadline, "retired worker did not exit");
+        thread::yield_now();
+    }
 }
 
 #[test]
@@ -1476,6 +1448,18 @@ fn adapter_preserves_native_and_stored_geometry_for_every_dxgi_rotation() {
         assert_eq!(geometry.storage_extent(), extent(1280, 720));
         assert_eq!(geometry.origin(), PhysicalOrigin { x: -3840, y: 120 });
         assert_eq!(geometry.rotation(), expected_rotation);
+    }
+}
+
+#[test]
+fn reflected_capture_transforms_cannot_cross_the_dxgi_rotation_boundary() {
+    for transform in [
+        CaptureRotation::Flipped,
+        CaptureRotation::Flipped90,
+        CaptureRotation::Flipped180,
+        CaptureRotation::Flipped270,
+    ] {
+        assert!(display_rotation(transform).is_err());
     }
 }
 

@@ -3,24 +3,29 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, CommittedScreenPlan, InputPublicationDemandRevision, LetterboxBars,
-    PhysicalOrigin, PixelExtent, PlatformGpuApi, PlatformGpuSurface, PreparedScreenPublication,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, LetterboxBars, PixelExtent,
+};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureGeometry, CapturePixelFormat, CaptureRotation, PhysicalOrigin,
+    PlatformGpuApi, PlatformGpuSurface, PreparedScreenPublication, ScreenBranchPayload,
+    ScreenGpuSurfacePayload, ScreenLiveBranchReceipt, ScreenNativeWorkPayload,
+    ScreenPublicationColorimetry, ScreenPublicationHealth, ScreenPublicationMetadata,
+    ScreenSurfacePayload, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    CommittedScreenPlan, InputPublicationDemandRevision, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan,
     ScreenColorTransformCapabilities, ScreenCursorCapabilities, ScreenExactResource,
     ScreenExactResourceLedger, ScreenExecutorColorCapabilities, ScreenExtentRequest,
-    ScreenGpuSurfacePayload, ScreenInputGraphGeneration, ScreenLiveBranchReceipt,
-    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativeWorkPayload,
+    ScreenInputGraphGeneration, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
     ScreenPayloadKind, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError,
-    ScreenProcessingProfile, ScreenPublicationColorimetry, ScreenPublicationExecutorRequest,
-    ScreenPublicationHealth, ScreenPublicationHub, ScreenPublicationHubError,
-    ScreenPublicationKind, ScreenPublicationMetadata, ScreenPublicationRequest,
+    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationHub,
+    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationRequest,
     ScreenPublicationResidency, ScreenPublicationSlotPolicy, ScreenResourceApi,
-    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenSurfacePayload,
-    ScreenWorkerBinding, SourceScale,
+    ScreenResourceLifetime, ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
 };
 
 #[path = "support/native_target.rs"]
@@ -110,7 +115,7 @@ fn gpu_source(width: u32, height: u32) -> ResolvedScreenSource {
         CaptureColorimetry::SRGB,
         ScreenCursorCapabilities::clean_with_separate_cursor(),
         ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-            ScreenCaptureBackend::WindowsDesktopDuplication,
+            ScreenCaptureBackend::DesktopDuplication,
             ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
             gpu_device(),
             1,
@@ -201,7 +206,6 @@ fn commit(
     let mut preparing = builder
         .prepare(
             demands,
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -1105,7 +1109,6 @@ fn eight_k_slots_are_admitted_by_exact_bytes_without_resolution_caps() {
     let preparing = builder
         .prepare(
             [demand],
-            None,
             revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

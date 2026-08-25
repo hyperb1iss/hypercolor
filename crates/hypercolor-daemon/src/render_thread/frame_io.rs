@@ -28,7 +28,6 @@ pub(crate) struct FramePublicationSurfaces {
     pub(crate) canvas: Option<Canvas>,
     pub(crate) frame_surface: Option<PublishedSurface>,
     pub(crate) preview_surface: Option<PublishedSurface>,
-    pub(crate) screen_capture_surface: Option<PublishedSurface>,
     pub(crate) web_viewport_preview_surface: Option<PublishedSurface>,
     pub(crate) effect_running: bool,
     pub(crate) screen_capture_active: bool,
@@ -50,11 +49,8 @@ impl FramePublicationSurfaces {
             self.preview_surface
                 .as_ref()
                 .or(self.frame_surface.as_ref())
-                .or(self.screen_capture_surface.as_ref())
         } else {
-            self.preview_surface
-                .as_ref()
-                .or(self.screen_capture_surface.as_ref())
+            self.preview_surface.as_ref()
         }
     }
 
@@ -868,7 +864,7 @@ mod tests {
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             scene_manager,
             scene_plan,
-            input_manager: Arc::new(Mutex::new(InputManager::new())),
+            input_manager: InputManager::new(),
             interaction_routing: crate::interaction_routing::InteractionRoutingControl::default(),
             power_state,
             scene_transactions: SceneTransactionQueue::default(),
@@ -899,7 +895,6 @@ mod tests {
                     canvas: None,
                     frame_surface: None,
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -933,7 +928,6 @@ mod tests {
                     canvas: None,
                     frame_surface: None,
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1088,7 +1082,6 @@ mod tests {
                     canvas: None,
                     frame_surface: None,
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1139,7 +1132,6 @@ mod tests {
                     canvas: None,
                     frame_surface: Some(surface),
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1186,7 +1178,6 @@ mod tests {
                     canvas: None,
                     frame_surface: Some(surface),
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1214,7 +1205,6 @@ mod tests {
                     canvas: None,
                     frame_surface: None,
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1261,7 +1251,6 @@ mod tests {
                     canvas: None,
                     frame_surface: Some(surface),
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1289,7 +1278,6 @@ mod tests {
                     canvas: None,
                     frame_surface: None,
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1342,7 +1330,6 @@ mod tests {
                     canvas: None,
                     frame_surface: Some(first_surface),
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1380,7 +1367,6 @@ mod tests {
                         100,
                     )),
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1419,7 +1405,6 @@ mod tests {
                     canvas: None,
                     frame_surface: Some(third_surface),
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: true,
                     screen_capture_active: false,
@@ -1469,12 +1454,10 @@ mod tests {
     fn screen_watch_surface_prefers_preview_for_passthrough_capture() {
         let preview_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 1, 16);
         let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
-        let capture_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 3, 48);
         let surfaces = FramePublicationSurfaces {
             canvas: None,
             frame_surface: Some(frame_surface),
             preview_surface: Some(preview_surface.clone()),
-            screen_capture_surface: Some(capture_surface),
             web_viewport_preview_surface: None,
             effect_running: false,
             screen_capture_active: true,
@@ -1493,12 +1476,10 @@ mod tests {
     #[test]
     fn screen_watch_surface_uses_frame_surface_for_passthrough_capture_without_preview() {
         let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
-        let capture_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 3, 48);
         let surfaces = FramePublicationSurfaces {
             canvas: None,
             frame_surface: Some(frame_surface.clone()),
             preview_surface: None,
-            screen_capture_surface: Some(capture_surface),
             web_viewport_preview_surface: None,
             effect_running: false,
             screen_capture_active: true,
@@ -1517,24 +1498,18 @@ mod tests {
     #[test]
     fn screen_watch_surface_skips_frame_surface_when_effect_is_running() {
         let frame_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 2, 32);
-        let capture_surface = PublishedSurface::from_owned_canvas(Canvas::new(4, 4), 3, 48);
         let surfaces = FramePublicationSurfaces {
             canvas: None,
             frame_surface: Some(frame_surface),
             preview_surface: None,
-            screen_capture_surface: Some(capture_surface.clone()),
             web_viewport_preview_surface: None,
             effect_running: true,
             screen_capture_active: true,
         };
 
-        let selected = surfaces
-            .screen_watch_surface()
-            .expect("capture surface should back active effects");
-
-        assert_eq!(
-            selected.storage_identity(),
-            capture_surface.storage_identity()
+        assert!(
+            surfaces.screen_watch_surface().is_none(),
+            "an active effect never exposes its composed frame as the screen watch"
         );
     }
 }

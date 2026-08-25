@@ -28,8 +28,9 @@ The proprietary release pipeline produces the signed and notarized DMGs.
 |---|---|---|
 | Tauri bundle config (icons, identifier, hardened runtime, DMG layout) | `crates/hypercolor-app/tauri.conf.json` | Live |
 | macOS entitlements (JIT, USB, network, audio-input) | `crates/hypercolor-app/entitlements.plist` | Live |
-| `Info.plist` with microphone and screen-capture purpose strings; no Apple Events string | `crates/hypercolor-app/Info.plist` | Live |
-| Exact six-key daemon hardened-runtime entitlement profile | `packaging/macos/daemon.entitlements.plist` | Live |
+| `Info.plist` with microphone, screen-capture, and media Automation purpose strings | `crates/hypercolor-app/Info.plist` | Live |
+| Exact seven-key daemon hardened-runtime entitlement profile | `packaging/macos/daemon.entitlements.plist` | Live |
+| App-sidecar entitlement profile with media Automation access | `packaging/macos/daemon-sidecar.entitlements.plist` | Live |
 | Sidecar staging (daemon + CLI under `target/bundle-stage/binaries/`) | `scripts/stage-app-bundle-assets.sh` | Live |
 | Per-arch CI build matrix (`macos-arm64`, `macos-x64`) | `.github/workflows/ci.yml` § `build-native-app` | Live; uploads short-lived unsigned `.app` fixtures only |
 | Manifest-driven Developer ID signing and notarization actor | `scripts/sign-macos-artifacts.sh` | Live; invoked only by local or proprietary builds |

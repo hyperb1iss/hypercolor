@@ -16,7 +16,7 @@ use axum::extract::ws::Utf8Bytes;
 use hypercolor_core::bus::{EventTimestamp, PreviewKind};
 use hypercolor_core::device::usb_actor_metrics_snapshot;
 use hypercolor_core::engine::RenderLoopState;
-use hypercolor_core::input::BrowserInputPublicationId;
+use hypercolor_core::input::{BrowserInputPublicationId, DataSourceKind, InputGraphHandle};
 use hypercolor_leptos_ext::ws::registry::{
     Cadence, CanvasConfig, CanvasFormat, DisplayPreviewConfig, FramesConfig, METRICS_FPS_MIN,
     MetricsConfig, ScreenZonesConfig, SpectrumConfig, TopicId,
@@ -2716,7 +2716,11 @@ pub(super) async fn relay_sensors(
     json_tx: tokio::sync::mpsc::Sender<Utf8Bytes>,
     mut subscriptions: watch::Receiver<SubscriptionState>,
 ) {
-    let mut sensor_rx = sensor_snapshot_receiver(&state).await;
+    let graph = state.input_manager().input_graph_handle();
+    let mut graph_generation = graph.subscribe_generation();
+    let mut sensor_slot_id = None;
+    let mut sensor_rx = None;
+    let _ = refresh_sensor_publication(&graph, &mut sensor_slot_id, &mut sensor_rx);
     let mut sent_current_snapshot = false;
 
     loop {
@@ -2726,6 +2730,10 @@ pub(super) async fn relay_sensors(
                 break;
             }
             let _ = subscriptions.borrow_and_update();
+            let _ = graph_generation.borrow_and_update();
+            if refresh_sensor_publication(&graph, &mut sensor_slot_id, &mut sensor_rx) {
+                sent_current_snapshot = false;
+            }
             continue;
         }
 
@@ -2737,6 +2745,19 @@ pub(super) async fn relay_sensors(
                             break;
                         }
                         let _ = subscriptions.borrow_and_update();
+                    }
+                    changed = graph_generation.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let _ = graph_generation.borrow_and_update();
+                        if refresh_sensor_publication(
+                            &graph,
+                            &mut sensor_slot_id,
+                            &mut sensor_rx,
+                        ) {
+                            sent_current_snapshot = false;
+                        }
                     }
                     permit = json_tx.reserve() => {
                         let Ok(permit) = permit else {
@@ -2753,11 +2774,27 @@ pub(super) async fn relay_sensors(
                 continue;
             }
 
-            if subscriptions.changed().await.is_err() {
-                break;
+            tokio::select! {
+                changed = subscriptions.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = subscriptions.borrow_and_update();
+                }
+                changed = graph_generation.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = graph_generation.borrow_and_update();
+                    if refresh_sensor_publication(
+                        &graph,
+                        &mut sensor_slot_id,
+                        &mut sensor_rx,
+                    ) {
+                        sent_current_snapshot = false;
+                    }
+                }
             }
-            let _ = subscriptions.borrow_and_update();
-            sensor_rx = sensor_snapshot_receiver(&state).await;
             continue;
         };
 
@@ -2769,9 +2806,23 @@ pub(super) async fn relay_sensors(
                     }
                     let _ = subscriptions.borrow_and_update();
                 }
+                changed = graph_generation.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let _ = graph_generation.borrow_and_update();
+                    if refresh_sensor_publication(&graph, &mut sensor_slot_id, &mut sensor_rx) {
+                        sent_current_snapshot = false;
+                    }
+                }
                 changed = rx.changed() => {
                     if changed.is_err() {
-                        sensor_rx = sensor_snapshot_receiver(&state).await;
+                        sensor_slot_id = None;
+                        let _ = refresh_sensor_publication(
+                            &graph,
+                            &mut sensor_slot_id,
+                            &mut sensor_rx,
+                        );
                     }
                     sent_current_snapshot = false;
                 }
@@ -2786,9 +2837,26 @@ pub(super) async fn relay_sensors(
                 }
                 let _ = subscriptions.borrow_and_update();
             }
+            changed = graph_generation.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let _ = graph_generation.borrow_and_update();
+                if refresh_sensor_publication(&graph, &mut sensor_slot_id, &mut sensor_rx) {
+                    sent_current_snapshot = false;
+                }
+                continue;
+            }
             changed = rx.changed() => {
                 if changed.is_err() {
-                    sensor_rx = sensor_snapshot_receiver(&state).await;
+                    sensor_slot_id = None;
+                    let _ = refresh_sensor_publication(
+                        &graph,
+                        &mut sensor_slot_id,
+                        &mut sensor_rx,
+                    );
+                    sent_current_snapshot = false;
+                    continue;
                 }
             }
             permit = json_tx.reserve() => {
@@ -2796,7 +2864,8 @@ pub(super) async fn relay_sensors(
                     break;
                 };
                 if subscriptions.borrow().contains(TopicId::Sensors) {
-                    let snapshot = Arc::clone(&rx.borrow_and_update());
+                    let _ = rx.borrow_and_update();
+                    let snapshot = crate::api::system::latest_sensor_snapshot(&state);
                     if let Some(message) = sensor_snapshot_message(snapshot.as_ref()) {
                         permit.send(message);
                         sent_current_snapshot = true;
@@ -2805,6 +2874,22 @@ pub(super) async fn relay_sensors(
             }
         }
     }
+}
+
+fn refresh_sensor_publication(
+    graph: &InputGraphHandle,
+    slot_id: &mut Option<u64>,
+    receiver: &mut Option<watch::Receiver<u64>>,
+) -> bool {
+    let snapshot = graph.snapshot();
+    let slot = snapshot.data_source_slot(DataSourceKind::Sensors);
+    let next_id = slot.map(hypercolor_core::input::InputSourceSlot::id);
+    if *slot_id == next_id {
+        return false;
+    }
+    *slot_id = next_id;
+    *receiver = slot.map(hypercolor_core::input::InputSourceSlot::subscribe_publication);
+    true
 }
 
 pub(super) fn try_enqueue_json<T>(
@@ -2992,7 +3077,7 @@ pub(super) async fn build_metrics_message(
         .saturating_mul(WS_CANVAS_BYTES_PER_PIXEL_RGBA);
     let canvas_buffer_kb = u32::try_from(canvas_buffer_bytes / 1024).unwrap_or(u32::MAX);
 
-    let daemon_rss_mb = process_rss_mb().unwrap_or(0.0);
+    let daemon_rss_mb = hypercolor_linux_session::process_resident_memory_mb().unwrap_or(0.0);
     let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
     let preview_runtime = state.preview_runtime.snapshot();
     let canvas_preview = preview_runtime.preview(PreviewKind::Canvas);
@@ -3417,13 +3502,6 @@ pub(super) fn build_device_metrics_message(state: &AppState) -> ServerMessage {
     }
 }
 
-async fn sensor_snapshot_receiver(
-    state: &AppState,
-) -> Option<watch::Receiver<Arc<SystemSnapshot>>> {
-    let input_manager = state.input_manager().lock().await;
-    input_manager.sensor_snapshot_receiver()
-}
-
 fn sensor_snapshot_message(snapshot: &SystemSnapshot) -> Option<Utf8Bytes> {
     let message = ServerMessage::Sensors {
         timestamp: format_iso8601_now(),
@@ -3473,21 +3551,6 @@ fn frame_time_summary(
             p99_ms: fallback_avg_ms,
             max_ms: fallback_avg_ms,
         }
-    }
-}
-
-fn process_rss_mb() -> Option<f64> {
-    #[cfg(target_os = "linux")]
-    {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
-        let kb = line.split_whitespace().nth(1)?.parse::<f64>().ok()?;
-        Some(kb / 1024.0)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
     }
 }
 

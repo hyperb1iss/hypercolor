@@ -321,17 +321,6 @@ impl Default for ServoRenderer {
     }
 }
 
-fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
-    metadata.tags.iter().any(|tag| {
-        tag.eq_ignore_ascii_case("sensor")
-            || tag.eq_ignore_ascii_case("sensors")
-            || tag.eq_ignore_ascii_case("system-monitor")
-    }) || metadata
-        .controls
-        .iter()
-        .any(|control| matches!(control.kind, ControlKind::Sensor))
-}
-
 fn scoped_sensor_control_ids(metadata: &EffectMetadata) -> Vec<String> {
     let has_broad_sensor_tag = metadata.tags.iter().any(|tag| {
         tag.eq_ignore_ascii_case("sensor")

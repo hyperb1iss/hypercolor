@@ -1,9 +1,9 @@
 use hypercolor_core::input::media::{
     ArtCache, ArtworkBlockingBackend, ArtworkError, ArtworkFetcher, ArtworkPolicy, ArtworkRequest,
     ArtworkSource, MAX_CONCURRENT_MEDIA_PLAYER_POLLS, MEDIA_PLAYER_CACHE_TTL,
-    MediaMetadataProvider, MediaProviderError, MediaProviderFailure, MediaProviderSession,
-    MediaSource, PlaybackStatus, PlayerSnapshot, PlayerSnapshotScanner, collect_player_snapshots,
-    media_state_from_player, pick_active_player, run_artwork_loop,
+    MediaMetadataProvider, MediaProviderError, MediaProviderErrorKind, MediaProviderFailure,
+    MediaProviderSession, MediaSource, PlaybackStatus, PlayerSnapshot, PlayerSnapshotScanner,
+    collect_player_snapshots, media_state_from_player, pick_active_player, run_artwork_loop,
 };
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_core::input::{SourceFreshness, SourceState};
@@ -27,6 +27,21 @@ fn player(bus_name: &str, status: PlaybackStatus, track: &str) -> PlayerSnapshot
         position_ms: 1_000,
         duration_ms: 200_000,
     }
+}
+
+#[test]
+fn provider_errors_retain_their_neutral_failure_class() {
+    let error = MediaProviderError::classified(
+        MediaProviderErrorKind::AuthorizationRequired,
+        "media authorization is required",
+    );
+
+    assert_eq!(error.kind(), MediaProviderErrorKind::AuthorizationRequired);
+    assert_eq!(error.to_string(), "media authorization is required");
+    assert_eq!(
+        MediaProviderError::new("backend failed").kind(),
+        MediaProviderErrorKind::BackendFailure
+    );
 }
 
 #[test]
@@ -151,7 +166,11 @@ fn art_cache_fetches_once_per_track() {
 fn artwork_url(source: &ArtworkSource) -> &str {
     match source {
         ArtworkSource::Url(url) => url,
-        ArtworkSource::WindowsSession(_) => panic!("test expected URL artwork"),
+        ArtworkSource::Bytes { .. }
+        | ArtworkSource::Deferred(_)
+        | ArtworkSource::DeferredBlocking(_) => {
+            panic!("test expected URL artwork")
+        }
     }
 }
 
@@ -1268,6 +1287,28 @@ fn encoded_data_url_has_an_independent_output_limit() {
     );
 }
 
+#[tokio::test]
+async fn embedded_artwork_is_encoded_and_bounded_before_decode() {
+    let fetcher = ArtworkFetcher::new(artwork_policy(1_024)).expect("test policy builds");
+    let data_url = fetcher
+        .fetch_data_url(&ArtworkSource::embedded(
+            "windows-session-art",
+            one_pixel_png(),
+        ))
+        .await
+        .expect("captured platform artwork encodes");
+    assert!(data_url.starts_with("data:image/jpeg;base64,"));
+
+    let fetcher = ArtworkFetcher::new(artwork_policy(4)).expect("test policy builds");
+    assert_eq!(
+        fetcher
+            .fetch_data_url(&ArtworkSource::embedded("oversized-art", vec![0_u8; 5]))
+            .await
+            .expect_err("embedded artwork obeys the source-byte limit"),
+        ArtworkError::SourceTooLarge { limit: 4 }
+    );
+}
+
 struct ScriptedProvider {
     connect_results: VecDeque<Result<(), MediaProviderError>>,
     poll_results: VecDeque<Result<Vec<PlayerSnapshot>, MediaProviderError>>,
@@ -1295,6 +1336,53 @@ impl MediaMetadataProvider for ScriptedProvider {
     fn disconnect(&mut self) {
         self.disconnects.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+struct WarningProvider {
+    warning: Option<MediaProviderError>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl MediaMetadataProvider for WarningProvider {
+    fn backend_name(&self) -> &'static str {
+        "warning_fixture"
+    }
+
+    async fn connect(&mut self) -> Result<(), MediaProviderError> {
+        Ok(())
+    }
+
+    async fn poll_players(&mut self) -> Result<Vec<PlayerSnapshot>, MediaProviderError> {
+        Ok(vec![player(
+            "healthy-player",
+            PlaybackStatus::Playing,
+            "healthy metadata",
+        )])
+    }
+
+    fn take_poll_warning(&mut self) -> Option<MediaProviderError> {
+        self.warning.take()
+    }
+
+    fn disconnect(&mut self) {}
+}
+
+#[tokio::test]
+async fn partial_provider_warning_preserves_healthy_metadata() {
+    let warning = MediaProviderError::classified(
+        MediaProviderErrorKind::AuthorizationDenied,
+        "Music permission denied",
+    );
+    let mut session = MediaProviderSession::new(Box::new(WarningProvider {
+        warning: Some(warning.clone()),
+    }));
+
+    let poll = session
+        .poll()
+        .await
+        .expect("healthy sibling remains usable");
+    assert_eq!(poll.state.track, "healthy metadata");
+    assert_eq!(poll.warning, Some(warning));
 }
 
 #[tokio::test]
@@ -1383,9 +1471,7 @@ async fn provider_retries_an_initially_unavailable_session_bus() {
 
 #[tokio::test]
 async fn identical_same_app_sessions_keep_the_selected_artwork_identity() {
-    let artwork = |session: &str| {
-        ArtworkSource::windows_session_fixture(session, "browser", "same", "Artist", "Album")
-    };
+    let artwork = |session: &str| ArtworkSource::embedded(session, vec![1_u8, 2, 3]);
     let mut stopped = player("browser", PlaybackStatus::Stopped, "same");
     stopped.artwork = Some(artwork("stopped-session"));
     let mut playing = player("browser", PlaybackStatus::Playing, "same");
@@ -1782,6 +1868,45 @@ fn successful_media_poll_heartbeat_advances_when_payload_is_unchanged() {
             .freshness,
         SourceFreshness::Stale
     );
+}
+
+#[test]
+fn degraded_media_poll_stays_degraded_after_sampling() {
+    let mut source = MediaSource::new();
+    let handle = source
+        .source_status_handle()
+        .expect("production media source exposes status");
+    source.set_source_graph_generation(1);
+    source
+        .source_status_reporter()
+        .expect("production media source exposes reporter")
+        .begin_session()
+        .expect("media status session starts");
+    let snapshot = player(
+        "org.mpris.MediaPlayer2.healthy",
+        PlaybackStatus::Playing,
+        "healthy metadata",
+    );
+    let completed_at = Instant::now();
+    let issue = hypercolor_core::input::SourceIssue::new(
+        "authorization_denied",
+        "Music permission denied",
+        true,
+    );
+
+    assert!(source.publisher().publish_degraded_completed_for_test(
+        media_state_from_player(Some(&snapshot), None),
+        completed_at,
+        issue.clone(),
+    ));
+    assert!(matches!(
+        source.sample().expect("degraded poll samples"),
+        InputData::Media(_)
+    ));
+    let status = handle.snapshot();
+    assert_eq!(status.state, SourceState::Degraded);
+    assert_eq!(status.issue, Some(issue));
+    assert_eq!(status.last_sample_at, Some(completed_at));
 }
 
 #[test]

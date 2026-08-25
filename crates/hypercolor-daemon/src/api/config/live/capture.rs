@@ -2,7 +2,11 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use hypercolor_core::input::{InputSource, ScreenReconfigurationConflict, SourceKind, SourceState};
+use hypercolor_core::input::screen::ScreenAnalysisResourcePlan;
+use hypercolor_core::input::{
+    ScreenReconfigurationConflict, ScreenSource, ScreenSourceSwapCommitError, SourceKind,
+    SourceState,
+};
 use hypercolor_types::config::{CaptureConfig, HypercolorConfig};
 
 use crate::app_state::AppState;
@@ -30,50 +34,54 @@ pub(in crate::api::config) async fn apply_capture_config_transaction(
             "config manager unavailable"
         )));
     };
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    let (plan, capacity_plan, capacity_preparation, admission_coordinator) = {
-        let input_manager = state.input_manager().lock().await;
-        let plan = input_manager.plan_screen_runtime_config(capture.enabled);
+    let staged = manager
+        .stage_capture_config(expected_config, capture.clone())
+        .map_err(CaptureConfigTransactionError::Persist)?
+        .ok_or(CaptureConfigTransactionError::Conflict)?;
+    let (plan, capacity_plan, admission_coordinator) = {
+        let input_manager = state.input_manager();
         let installed_capacity = input_manager.screen_resource_capacity();
         let capacity_plan = crate::startup::services::screen_capacity_plan_for_backend(
             &capture,
             installed_capacity.backend_capacity(),
         )
         .map_err(CaptureConfigTransactionError::Prepare)?;
-        let analysis = crate::startup::services::screen_analysis_plan_for_demand(
-            &capture,
-            plan.capture_demand(),
-            capacity_plan.total_capacity(),
-        )
-        .map_err(CaptureConfigTransactionError::Prepare)?;
-        let capacity_preparation = input_manager
-            .prepare_screen_capacity_plan(
-                capacity_plan.total_capacity(),
-                analysis.map_or(
-                    0,
-                    hypercolor_core::input::screen::ScreenAnalysisResourcePlan::peak_bytes,
-                ),
+        let analysis_peak_bytes = if capture.enabled {
+            let analysis_capacity = capacity_plan
+                .total_capacity()
+                .byte_budget()
+                .min(capacity_plan.total_capacity().backend_capacity());
+            ScreenAnalysisResourcePlan::try_new(
+                capture.grid_cols,
+                capture.grid_rows,
+                capture.capture_fps,
+                analysis_capacity,
             )
+            .map_err(|error| CaptureConfigTransactionError::Prepare(anyhow::anyhow!(error)))?
+            .peak_bytes()
+        } else {
+            0
+        };
+        let capacity_preparation = input_manager
+            .prepare_screen_capacity_plan(capacity_plan.total_capacity(), analysis_peak_bytes)
             .map_err(|error| CaptureConfigTransactionError::Prepare(anyhow::anyhow!(error)))?;
-        if plan.enabled() && capacity_preparation.is_none() {
+        if capture.enabled && capacity_preparation.is_none() {
             return Err(CaptureConfigTransactionError::Prepare(anyhow::anyhow!(
                 "screen capacity admission is not installed"
             )));
         }
+        let plan = input_manager
+            .plan_screen_source_swap(capture.enabled, capacity_preparation)
+            .map_err(|error| {
+                CaptureConfigTransactionError::Commit(ScreenReconfigurationConflict::Source(error))
+            })?;
         (
             plan,
             capacity_plan,
-            capacity_preparation,
             input_manager.screen_admission_coordinator(),
         )
     };
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    let plan = {
-        let input_manager = state.input_manager().lock().await;
-        input_manager.plan_screen_runtime_config(capture.enabled)
-    };
     let (mut replacement, persistence) = if plan.enabled() {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         let (mut source, persistence) =
             crate::startup::services::prepare_platform_screen_capture_source(
                 &capture,
@@ -81,14 +89,6 @@ pub(in crate::api::config) async fn apply_capture_config_transaction(
                 expected_config,
                 admission_coordinator,
                 capacity_plan.total_capacity(),
-            )
-            .map_err(CaptureConfigTransactionError::Prepare)?;
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        let (mut source, persistence) =
-            crate::startup::services::prepare_platform_screen_capture_source(
-                &capture,
-                Arc::clone(manager),
-                expected_config,
             )
             .map_err(CaptureConfigTransactionError::Prepare)?;
         source.set_source_graph_generation(plan.replacement_source_graph_generation());
@@ -125,80 +125,51 @@ pub(in crate::api::config) async fn apply_capture_config_transaction(
         return Err(CaptureConfigTransactionError::Prepare(error));
     }
 
-    let mut input_manager = state.input_manager().lock().await;
-    if let Err(error) = input_manager.validate_screen_runtime_config(&plan, &replacement) {
-        if let Some(persistence) = &persistence {
-            persistence.revoke();
-        }
-        drop(input_manager);
-        stop_prepared_capture_source(replacement).await;
-        return Err(CaptureConfigTransactionError::Commit(error));
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    if let Some(capacity_preparation) = &capacity_preparation
-        && let Err(error) = input_manager.validate_screen_capacity(capacity_preparation)
-    {
-        if let Some(persistence) = &persistence {
-            persistence.revoke();
-        }
-        drop(input_manager);
-        stop_prepared_capture_source(replacement).await;
-        return Err(CaptureConfigTransactionError::Commit(error));
-    }
-    let persistence_result = if let Some(persistence) = &persistence {
-        manager.save_capture_and_activate_if_current(
-            expected_config,
-            persistence.epoch(),
-            persistence.source_identity(),
-            capture.clone(),
-        )
-    } else {
-        manager
-            .modify_and_save_if_current(expected_config, |config| {
-                config.capture.clone_from(&capture);
-            })
-            .map(|saved| saved.then(|| Arc::clone(&manager.get())))
-    };
-    match persistence_result {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            if let Some(persistence) = &persistence {
-                persistence.revoke();
-            }
-            drop(input_manager);
-            stop_prepared_capture_source(replacement).await;
-            return Err(CaptureConfigTransactionError::Conflict);
-        }
+    let mut prepared = match plan.prepare(&mut replacement) {
+        Ok(prepared) => prepared,
         Err(error) => {
             if let Some(persistence) = &persistence {
                 persistence.revoke();
             }
-            drop(input_manager);
             stop_prepared_capture_source(replacement).await;
-            return Err(CaptureConfigTransactionError::Persist(error));
+            return Err(CaptureConfigTransactionError::Commit(
+                ScreenReconfigurationConflict::Source(error),
+            ));
         }
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-    let retirement = if let Some(capacity_preparation) = capacity_preparation {
-        input_manager.commit_screen_capacity_and_runtime_config(
-            capacity_preparation,
-            &plan,
-            &mut replacement,
-        )
-    } else {
-        input_manager.commit_screen_runtime_config(&plan, &mut replacement)
-    }
-    .expect("screen capacity and runtime were validated under the same input-manager lock");
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    let retirement = input_manager
-        .commit_screen_runtime_config(&plan, &mut replacement)
-        .expect("screen runtime plan was validated under the same input-manager lock");
-    if !capture.enabled {
-        input_manager.remove_screen_sources();
-    }
-    manager.mark_capture_runtime_applied(&capture);
-    drop(input_manager);
+    };
+    let persistence_authority = persistence
+        .as_ref()
+        .map(|gate| (gate.epoch(), gate.source_identity()));
+    let input_manager = state.input_manager();
+    let retirement = match input_manager.commit_screen_source_swap(&mut prepared, |commit| {
+        manager
+            .commit_staged_capture_if_current(
+                expected_config,
+                persistence_authority,
+                staged,
+                |install_live| commit.commit(install_live),
+            )
+            .map_err(CaptureConfigTransactionError::Persist)?
+            .map(|(_, retirement)| retirement)
+            .ok_or(CaptureConfigTransactionError::Conflict)
+    }) {
+        Ok(retirement) => retirement,
+        Err(ScreenSourceSwapCommitError::Conflict(error)) => {
+            if let Some(persistence) = &persistence {
+                persistence.revoke();
+            }
+            prepared.discard();
+            return Err(CaptureConfigTransactionError::Commit(error));
+        }
+        Err(ScreenSourceSwapCommitError::Persistence(error)) => {
+            if let Some(persistence) = &persistence {
+                persistence.revoke();
+            }
+            prepared.discard();
+            return Err(error);
+        }
+    };
+    prepared.discard();
 
     if let Err(error) = tokio::task::spawn_blocking(move || retirement.retire()).await {
         warn!(%error, "Detached capture source retirement task failed");
@@ -276,7 +247,7 @@ pub(in crate::api::config) async fn capture_runtime_matches(
     let Some(manager) = state.config_manager.as_ref() else {
         return false;
     };
-    let input_manager = state.input_manager().lock().await;
+    let input_manager = state.input_manager();
     if !manager.is_current(expected_config)
         || !manager.capture_runtime_matches(&expected_config.capture)
     {
@@ -309,7 +280,7 @@ pub(in crate::api::config) fn capture_statuses_match(
         || matches!(status.state, SourceState::Stopped) && !status.demanded
 }
 
-async fn stop_prepared_capture_source(source: Option<Box<dyn InputSource>>) {
+async fn stop_prepared_capture_source(source: Option<Box<dyn ScreenSource>>) {
     let Some(mut source) = source else {
         return;
     };

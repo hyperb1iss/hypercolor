@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::Context;
 use tracing::{info, warn};
 
-use hypercolor_core::input::AudioReconfigurationConflict;
 use hypercolor_types::audio::AudioPipelineConfig;
 
 use crate::app_state::AppState;
@@ -40,7 +39,7 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
         let audio_name = format!("AudioInput({audio_device})");
         let effective_config = AudioPipelineConfig::from(&latest_config.audio);
         let (plan, previous_sources) = {
-            let input_manager = state.input_manager().lock().await;
+            let input_manager = state.input_manager();
             (
                 input_manager.plan_audio_runtime_config(
                     latest_config.audio.enabled,
@@ -67,18 +66,18 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
             "Applying targeted live audio config change"
         );
 
-        let mut prepared = tokio::task::spawn_blocking(move || plan.prepare())
+        let prepared = tokio::task::spawn_blocking(move || plan.prepare())
             .await
             .context("audio reconfiguration preparation task failed")??;
         if !manager.is_current(&latest_config) {
             anyhow::bail!("audio config changed while live reconfiguration was prepared");
         }
-        let mut input_manager = state.input_manager().lock().await;
-        match input_manager.commit_audio_runtime_config(&mut prepared) {
+        let input_manager = state.input_manager();
+        let mut prepared = prepared.into_source_swap();
+        match input_manager.commit_source_swap(&mut prepared) {
             Ok(retirement) => {
                 let sources = input_manager.source_names();
-                drop(input_manager);
-                drop(prepared);
+                prepared.discard();
                 retirement.retire();
                 info!(
                     audio_device = %audio_device,
@@ -88,20 +87,14 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
                 );
                 return Ok(());
             }
-            Err(error)
-                if error
-                    .downcast_ref::<AudioReconfigurationConflict>()
-                    .is_some()
-                    && manager.is_current(&latest_config) =>
-            {
+            Err(error) if manager.is_current(&latest_config) => {
                 conflict_count = conflict_count.saturating_add(1);
-                drop(input_manager);
-                drop(prepared);
+                prepared.discard();
+                tracing::debug!(%error, conflict_count, "Retrying stale audio source swap");
             }
             Err(error) => {
-                drop(input_manager);
-                drop(prepared);
-                return Err(error);
+                prepared.discard();
+                return Err(error.into());
             }
         }
     }

@@ -325,9 +325,15 @@ beat_sensitivity = 0.6               # Beat detection threshold (0.0 = never, 1.
 
 [capture]
 enabled = false                      # Enable screen capture for ambient effects
-source = "auto"                      # "auto" | "pipewire" | "x11" | "dxgi" (Windows)
+source = "auto"                      # Backend source selector; see below
 capture_fps = 30                     # Capture rate, independent of render FPS
 monitor = 0                          # Monitor index (0 = primary)
+
+# `source` is validated against the capture backend compiled for the target
+# (`CaptureBackendId`): the PipeWire portal owns selection and requires
+# "auto"; Desktop Duplication accepts a stable display id or index; and
+# ScreenCaptureKit accepts "auto", "primary_display", "session_scoped", or
+# "display:<canonical UUID>".
 
 # ─── Device Discovery ─────────────────────────────────────────
 

@@ -1,14 +1,12 @@
 use std::path::Path;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Error, Result, anyhow};
-use servo::RenderingContext;
+use hypercolor_gpu_frame::servo::{ServoGpuFrameImporter, ServoGpuImportFailure};
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use tracing::debug;
 
-#[cfg(target_os = "linux")]
-use super::telemetry::record_servo_gpu_import_slot_state;
-use super::telemetry::{ServoGpuImportFallbackReason, record_servo_gpu_import_frame};
+use super::telemetry::{record_servo_gpu_import_frame, record_servo_gpu_import_slot_state};
 use super::worker_client::ServoSessionId;
 use crate::effect::servo_bootstrap::ServoRenderingContextHandle;
 use crate::effect::traits::ImportedEffectFrame;
@@ -48,27 +46,15 @@ impl ServoFrameUnavailable {
 }
 
 pub(super) struct ServoGpuImportBackend {
-    #[cfg(target_os = "linux")]
-    linux_context: Option<Rc<hypercolor_linux_gpu_interop::LinuxServoRenderingContext>>,
-    #[cfg(target_os = "macos")]
-    macos_hardware_context: Option<Rc<hypercolor_macos_gpu_interop::MacosHardwareRenderingContext>>,
-    #[cfg(target_os = "windows")]
-    windows_angle_context: Option<Rc<hypercolor_windows_gpu_interop::WindowsAngleRenderingContext>>,
-    #[cfg(target_os = "linux")]
-    importer: Option<hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter>,
-    #[cfg(target_os = "macos")]
-    importer: Option<hypercolor_macos_gpu_interop::MacosIosurfaceImporter>,
-    #[cfg(target_os = "windows")]
-    importer: Option<hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter>,
+    importer: Option<Box<dyn ServoGpuFrameImporter>>,
     retry_after: Option<Instant>,
     transient_failures: u32,
     last_frame: Option<ImportedEffectFrame>,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// Neutral session context logged next to a platform import failure.
 pub(super) struct ServoGpuImportSessionContext<'a> {
     pub(super) session_id: ServoSessionId,
-    pub(super) rendering_context: &'a Rc<dyn RenderingContext>,
     pub(super) loaded_html_path: Option<&'a Path>,
     pub(super) loaded_at: Option<Instant>,
     pub(super) renders_since_load: u64,
@@ -77,37 +63,25 @@ pub(super) struct ServoGpuImportSessionContext<'a> {
 impl ServoGpuImportBackend {
     pub(super) fn new(handle: &mut ServoRenderingContextHandle) -> Self {
         Self {
-            #[cfg(target_os = "linux")]
-            linux_context: handle.linux_context.take(),
-            #[cfg(target_os = "macos")]
-            macos_hardware_context: handle.macos_hardware_context.take(),
-            #[cfg(target_os = "windows")]
-            windows_angle_context: handle.windows_angle_context.take(),
-            #[cfg(target_os = "linux")]
-            importer: None,
-            #[cfg(target_os = "macos")]
-            importer: None,
-            #[cfg(target_os = "windows")]
-            importer: None,
+            importer: handle.gpu_importer.take(),
             retry_after: None,
             transient_failures: 0,
             last_frame: None,
         }
     }
 
-    pub(super) fn warm_if_available(
-        &mut self,
-        rendering_context: &Rc<dyn RenderingContext>,
-        width: u32,
-        height: u32,
-    ) {
+    pub(super) fn warm_if_available(&mut self, width: u32, height: u32) {
         if !super::servo_gpu_import_should_attempt() {
             return;
         }
         let Ok(device) = super::gpu_import::servo_gpu_import_device() else {
             return;
         };
-        if let Err(error) = self.warm_platform_importer(rendering_context, device, width, height) {
+        let Some(importer) = self.importer.as_mut() else {
+            return;
+        };
+        self.last_frame = None;
+        if let Err(error) = importer.warm(device, width, height) {
             debug!(%error, "Servo GPU import pool warmup skipped");
         }
     }
@@ -119,11 +93,48 @@ impl ServoGpuImportBackend {
         height: u32,
     ) -> Result<ImportedEffectFrame> {
         let device = super::gpu_import::servo_gpu_import_device()?;
-        self.import_platform_frame(context, device, width, height)
+        let importer = self
+            .importer
+            .as_mut()
+            .ok_or_else(|| anyhow!("Servo GPU import context is unavailable for this session"))?;
+        let result = importer.import_frame(device, width, height);
+        if let Some(slot_state) = importer.slot_state() {
+            record_servo_gpu_import_slot_state(
+                slot_state.slot_count,
+                slot_state.pending_slots,
+                slot_state.completed_slots,
+                slot_state.available_slots,
+                slot_state.oldest_pending_age_ms,
+            );
+        }
+        match result {
+            Ok(frame) => Ok(frame),
+            Err(ServoGpuImportFailure { error, diagnostics }) => {
+                let loaded_html_path = context
+                    .loaded_html_path
+                    .map_or_else(String::new, |path| path.display().to_string());
+                debug!(
+                    %error,
+                    ?context.session_id,
+                    width,
+                    height,
+                    loaded_html_path,
+                    page_age_ms = context
+                        .loaded_at
+                        .map(|loaded_at| duration_millis_u64(loaded_at.elapsed())),
+                    renders_since_load = context.renders_since_load,
+                    diagnostics = diagnostics.as_deref().unwrap_or_default(),
+                    "Servo GPU import failed"
+                );
+                Err(error)
+            }
+        }
     }
 
-    pub(super) fn clear_importer(&mut self, rendering_context: &Rc<dyn RenderingContext>) {
-        self.clear_platform_importer(rendering_context);
+    pub(super) fn clear_importer(&mut self) {
+        if let Some(importer) = self.importer.as_mut() {
+            importer.clear();
+        }
         self.last_frame = None;
     }
 
@@ -165,632 +176,81 @@ impl ServoGpuImportBackend {
         self.last_frame = None;
     }
 
-    #[cfg(target_os = "macos")]
-    pub(super) fn trace_macos_native_surface(&self, session_id: ServoSessionId) {
-        let Some(context) = self.macos_hardware_context.as_ref() else {
+    /// Log what the platform knows about the native surface behind this
+    /// session's rendering context, when it exposes one.
+    pub(super) fn trace_native_surface(&self, session_id: ServoSessionId) {
+        let Some(summary) = self
+            .importer
+            .as_ref()
+            .and_then(|importer| importer.native_surface_summary())
+        else {
             return;
         };
-        match context.native_frame() {
-            Ok(frame) => {
-                debug!(
-                    width = frame.width,
-                    height = frame.height,
-                    surface_id = frame.surface_id,
-                    content_generation = frame.content_generation,
-                    format = ?frame.format,
-                    origin = ?frame.origin,
-                    "macOS Servo hardware context exposes IOSurface FBO"
-                );
-            }
-            Err(error) => {
-                debug!(%error, ?session_id, "macOS Servo IOSurface diagnostics unavailable");
-            }
-        }
+        debug!(?session_id, summary, "Servo GPU import native surface");
     }
-
-    #[cfg(target_os = "linux")]
-    fn warm_platform_importer(
-        &mut self,
-        rendering_context: &Rc<dyn RenderingContext>,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> Result<()> {
-        let descriptor = hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor::new(
-            width,
-            height,
-            hypercolor_linux_gpu_interop::ImportedFrameFormat::Rgba8Unorm,
-        )?;
-        self.ensure_linux_importer(rendering_context, device, descriptor)
-    }
-
-    #[cfg(target_os = "windows")]
-    fn warm_platform_importer(
-        &mut self,
-        _rendering_context: &Rc<dyn RenderingContext>,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> Result<()> {
-        let descriptor =
-            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
-                width,
-                height,
-                hypercolor_windows_gpu_interop::ImportedFrameFormat::Bgra8Unorm,
-            )?;
-        self.ensure_windows_importer(device, descriptor)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn warm_platform_importer(
-        &mut self,
-        _rendering_context: &Rc<dyn RenderingContext>,
-        device: &wgpu::Device,
-        _width: u32,
-        _height: u32,
-    ) -> Result<()> {
-        let native_frame = self.macos_native_frame()?;
-        let descriptor = hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor::new(
-            native_frame.width,
-            native_frame.height,
-            native_frame.format,
-        )?;
-        self.ensure_macos_importer(device, descriptor)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn warm_platform_importer(
-        &mut self,
-        _rendering_context: &Rc<dyn RenderingContext>,
-        _device: &wgpu::Device,
-        _width: u32,
-        _height: u32,
-    ) -> Result<()> {
-        anyhow::bail!("Servo GPU import is unsupported on this platform")
-    }
-
-    #[cfg(target_os = "linux")]
-    fn import_platform_frame(
-        &mut self,
-        context: ServoGpuImportSessionContext<'_>,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> Result<ImportedEffectFrame> {
-        use hypercolor_linux_gpu_interop::{
-            GlFramebufferSource, ImportedFrameFormat, LinuxGlFramebufferImportDescriptor,
-        };
-
-        let descriptor = LinuxGlFramebufferImportDescriptor::new(
-            width,
-            height,
-            ImportedFrameFormat::Rgba8Unorm,
-        )?;
-        context
-            .rendering_context
-            .make_current()
-            .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
-        context.rendering_context.prepare_for_rendering();
-        let linux_context = self
-            .linux_context
-            .as_ref()
-            .ok_or_else(|| anyhow!("Linux Servo GPU import context is unavailable"))?;
-        let linux_target = linux_context.target_snapshot();
-        let framebuffer = linux_context.framebuffer().ok_or_else(|| {
-            anyhow!("Linux Servo GPU import target did not expose a framebuffer: {linux_target:?}")
-        })?;
-        let source_framebuffer = GlFramebufferSource::Framebuffer(Some(framebuffer));
-        let gl = context.rendering_context.glow_gl_api();
-
-        if let Err(error) =
-            self.ensure_linux_importer(context.rendering_context, device, descriptor)
-        {
-            let loaded_html_path = context
-                .loaded_html_path
-                .map_or_else(String::new, |path| path.display().to_string());
-            debug!(
-                %error,
-                ?context.session_id,
-                width = descriptor.width,
-                height = descriptor.height,
-                loaded_html_path,
-                "Servo GPU importer setup failed"
-            );
-            return Err(error);
-        }
-        let size = context.rendering_context.size();
-        let importer = self
-            .importer
-            .as_mut()
-            .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        let import_result = importer.import_framebuffer_pipelined(gl.as_ref(), source_framebuffer);
-        let importer_state = importer.state_snapshot();
-        record_linux_gpu_importer_state(importer_state);
-        if let Err(error) = import_result.as_ref() {
-            let blit_state = importer.framebuffer_state_for_blit(gl.as_ref(), source_framebuffer);
-            let loaded_html_path = context
-                .loaded_html_path
-                .map_or_else(String::new, |path| path.display().to_string());
-            debug!(
-                %error,
-                ?context.session_id,
-                width = descriptor.width,
-                height = descriptor.height,
-                context_width = size.width,
-                context_height = size.height,
-                loaded_html_path,
-                page_age_ms = context
-                    .loaded_at
-                    .map(|loaded_at| duration_millis_u64(loaded_at.elapsed())),
-                renders_since_load = context.renders_since_load,
-                ?source_framebuffer,
-                ?linux_target,
-                ?importer_state,
-                ?blit_state,
-                "Servo GPU import GL diagnostics"
-            );
-        }
-        Ok(import_result?)
-    }
-
-    #[cfg(target_os = "windows")]
-    fn import_platform_frame(
-        &mut self,
-        _context: ServoGpuImportSessionContext<'_>,
-        device: &wgpu::Device,
-        _width: u32,
-        _height: u32,
-    ) -> Result<ImportedEffectFrame> {
-        let native_frame = self.windows_native_frame()?;
-        let descriptor =
-            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor::new(
-                native_frame.width,
-                native_frame.height,
-                native_frame.format,
-            )?;
-        self.ensure_windows_importer(device, descriptor)?;
-        let importer = self
-            .importer
-            .as_mut()
-            .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        Ok(importer.import_servo_native_frame(device, native_frame)?)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn import_platform_frame(
-        &mut self,
-        _context: ServoGpuImportSessionContext<'_>,
-        device: &wgpu::Device,
-        _width: u32,
-        _height: u32,
-    ) -> Result<ImportedEffectFrame> {
-        let native_frame = self.macos_native_frame()?;
-        let descriptor = hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor::new(
-            native_frame.width,
-            native_frame.height,
-            native_frame.format,
-        )?;
-        self.ensure_macos_importer(device, descriptor)?;
-        let importer = self
-            .importer
-            .as_mut()
-            .ok_or_else(|| anyhow!("Servo GPU importer was not initialized"))?;
-        Ok(importer.import_iosurface(
-            device,
-            &native_frame.iosurface,
-            native_frame.content_generation,
-        )?)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn import_platform_frame(
-        &mut self,
-        _context: ServoGpuImportSessionContext<'_>,
-        _device: &wgpu::Device,
-        _width: u32,
-        _height: u32,
-    ) -> Result<ImportedEffectFrame> {
-        anyhow::bail!("Servo GPU import is unsupported on this platform")
-    }
-
-    #[cfg(target_os = "linux")]
-    fn ensure_linux_importer(
-        &mut self,
-        rendering_context: &Rc<dyn RenderingContext>,
-        device: &wgpu::Device,
-        descriptor: hypercolor_linux_gpu_interop::LinuxGlFramebufferImportDescriptor,
-    ) -> Result<()> {
-        let should_recreate = self
-            .importer
-            .as_ref()
-            .is_none_or(|importer| importer.descriptor() != descriptor);
-        if !should_recreate {
-            return Ok(());
-        }
-
-        rendering_context
-            .make_current()
-            .map_err(|error| anyhow!("failed to make Servo GL context current: {error:?}"))?;
-        rendering_context.prepare_for_rendering();
-        let gl = rendering_context.glow_gl_api();
-
-        if let Some(importer) = self.importer.as_mut() {
-            importer.destroy_gl_resources(gl.as_ref());
-        }
-        self.importer = None;
-        self.last_frame = None;
-        let importer = hypercolor_linux_gpu_interop::LinuxGlFramebufferImporter::new_from_process(
-            device,
-            gl.as_ref(),
-            descriptor,
-        )?;
-        self.importer = Some(importer);
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    fn ensure_windows_importer(
-        &mut self,
-        device: &wgpu::Device,
-        descriptor: hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImportDescriptor,
-    ) -> Result<()> {
-        let should_recreate = self
-            .importer
-            .as_ref()
-            .is_none_or(|importer| importer.descriptor() != descriptor);
-        if !should_recreate {
-            return Ok(());
-        }
-
-        self.importer = Some(
-            hypercolor_windows_gpu_interop::WindowsD3d11SharedTextureImporter::new(
-                device, descriptor,
-            )?,
-        );
-        self.last_frame = None;
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    fn ensure_macos_importer(
-        &mut self,
-        device: &wgpu::Device,
-        descriptor: hypercolor_macos_gpu_interop::MacosIosurfaceImportDescriptor,
-    ) -> Result<()> {
-        let should_recreate = self
-            .importer
-            .as_ref()
-            .is_none_or(|importer| importer.descriptor() != descriptor);
-        if !should_recreate {
-            return Ok(());
-        }
-
-        self.importer = Some(hypercolor_macos_gpu_interop::MacosIosurfaceImporter::new(
-            device, descriptor,
-        )?);
-        self.last_frame = None;
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    fn windows_native_frame(
-        &self,
-    ) -> Result<hypercolor_windows_gpu_interop::WindowsServoNativeFrame> {
-        let context = self.windows_angle_context.as_ref().ok_or(
-            hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext,
-        )?;
-        Ok(context.native_frame()?)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn macos_native_frame(&self) -> Result<hypercolor_macos_gpu_interop::MacosServoNativeFrame> {
-        let context = self
-            .macos_hardware_context
-            .as_ref()
-            .ok_or(hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface)?;
-        Ok(context.native_frame()?)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn clear_platform_importer(&mut self, rendering_context: &Rc<dyn RenderingContext>) {
-        if let Err(error) = rendering_context.make_current() {
-            debug!(?error, "Servo GPU import pool cleanup skipped");
-            return;
-        }
-        let gl = rendering_context.glow_gl_api();
-        if let Some(importer) = self.importer.as_mut() {
-            importer.destroy_gl_resources(gl.as_ref());
-        }
-        self.importer = None;
-    }
-
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    fn clear_platform_importer(&mut self, _rendering_context: &Rc<dyn RenderingContext>) {
-        self.importer = None;
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    fn clear_platform_importer(&mut self, _rendering_context: &Rc<dyn RenderingContext>) {}
-}
-
-#[cfg(target_os = "linux")]
-fn record_linux_gpu_importer_state(
-    snapshot: hypercolor_linux_gpu_interop::LinuxGlImporterStateSnapshot,
-) {
-    record_servo_gpu_import_slot_state(
-        snapshot.slot_count,
-        snapshot.pending_slots,
-        snapshot.completed_slots,
-        snapshot.available_slots,
-        snapshot.oldest_pending_age_ms,
-    );
 }
 
 pub(super) fn record_imported_frame(frame: &ImportedEffectFrame) {
-    #[cfg(target_os = "linux")]
-    {
-        record_servo_gpu_import_frame(
-            frame.timings.blit_us,
-            frame.timings.sync_us,
-            frame.timings.total_us,
-        );
-    }
-    #[cfg(target_os = "macos")]
-    {
-        record_servo_gpu_import_frame(frame.timings.wrap_us, 0, frame.timings.total_us);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        record_servo_gpu_import_frame(
-            frame.timings.wrap_us,
-            frame.timings.sync_us,
-            frame.timings.total_us,
-        );
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        record_servo_gpu_import_frame(0, 0, frame.timings.total_us);
-    }
+    record_servo_gpu_import_frame(
+        frame
+            .timings
+            .blit_us
+            .or(frame.timings.wrap_us)
+            .unwrap_or_default(),
+        frame.timings.sync_us.unwrap_or_default(),
+        frame.timings.total_us,
+    );
 }
 
 fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-pub(super) fn failure_is_transient(reason: ServoGpuImportFallbackReason) -> bool {
+pub(super) fn failure_is_transient(reason: GpuFrameImportFallbackReason) -> bool {
     matches!(
         reason,
-        ServoGpuImportFallbackReason::GlOperation
-            | ServoGpuImportFallbackReason::GlFramebufferIncomplete
-            | ServoGpuImportFallbackReason::ImportSlotsExhausted
-            | ServoGpuImportFallbackReason::MissingMacosServoSurface
-            | ServoGpuImportFallbackReason::WindowsImportStaleFrame
+        GpuFrameImportFallbackReason::GlOperation
+            | GpuFrameImportFallbackReason::GlFramebufferIncomplete
+            | GpuFrameImportFallbackReason::ImportSlotsExhausted
+            | GpuFrameImportFallbackReason::MissingMacosServoSurface
+            | GpuFrameImportFallbackReason::WindowsImportStaleFrame
     )
 }
 
-pub(super) fn failure_should_clear_importer(reason: ServoGpuImportFallbackReason) -> bool {
+pub(super) fn failure_should_clear_importer(reason: GpuFrameImportFallbackReason) -> bool {
     !failure_is_transient(reason)
 }
 
 pub(super) fn failure_detail(error: &Error) -> String {
-    for cause in error.chain() {
-        #[cfg(target_os = "linux")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
-        {
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlOperation {
-                    operation,
-                    code,
-                } => format!("gl_operation={operation} gl_error=0x{code:04x}"),
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
-                    status,
-                } => format!("gl_framebuffer_status=0x{status:04x}"),
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    slot_count,
-                } => format!("import_slots_exhausted={slot_count}"),
-                _ => error.to_string(),
-            };
-        }
-
-        #[cfg(target_os = "macos")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
-        {
-            return match error {
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlCreateResource {
-                    resource,
-                    message,
-                } => format!("gl_resource={resource} message={message}"),
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlOperation {
-                    operation,
-                    code,
-                } => format!("gl_operation={operation} gl_error=0x{code:04x}"),
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlFramebufferIncomplete {
-                    status,
-                } => format!("gl_framebuffer_status=0x{status:04x}"),
-                _ => error.to_string(),
-            };
-        }
-
-        #[cfg(target_os = "windows")]
-        if let Some(error) =
-            cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
-        {
-            return error.to_string();
-        }
-    }
-
     error.to_string()
 }
 
-pub(super) fn classify_failure(error: &Error) -> ServoGpuImportFallbackReason {
+pub(super) fn classify_failure(error: &Error) -> GpuFrameImportFallbackReason {
     for cause in error.chain() {
-        #[cfg(target_os = "macos")]
         if let Some(error) =
             cause.downcast_ref::<hypercolor_macos_gpu_interop::MacosGpuInteropError>()
         {
-            return match error {
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingWgpuMetalDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuMetalDevice
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::InvalidDimensions { .. }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfaceShapeMismatch {
-                    ..
-                }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::PixelBufferSizeMismatch {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::ServoContext { .. }
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::MissingServoSurface
-                | hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfaceFenceTimeout => {
-                    ServoGpuImportFallbackReason::MissingMacosServoSurface
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlCreateResource {
-                    ..
-                } => ServoGpuImportFallbackReason::GlResource,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlOperation { .. } => {
-                    ServoGpuImportFallbackReason::GlOperation
-                }
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::GlFramebufferIncomplete {
-                    ..
-                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::IosurfacePixelFormatMismatch {
-                    ..
-                } => ServoGpuImportFallbackReason::IosurfacePixelFormatMismatch,
-                hypercolor_macos_gpu_interop::MacosGpuInteropError::MetalTextureCreateFailed => {
-                    ServoGpuImportFallbackReason::MetalTextureCreateFailed
-                }
-                _ => ServoGpuImportFallbackReason::Other,
-            };
+            return error.fallback_reason();
         }
 
-        #[cfg(target_os = "windows")]
         if let Some(error) =
             cause.downcast_ref::<hypercolor_windows_gpu_interop::WindowsGpuInteropError>()
         {
-            use hypercolor_windows_gpu_interop::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION;
-
-            return match error {
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWgpuVulkanDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingVulkanExternalMemoryWin32 => {
-                    ServoGpuImportFallbackReason::MissingVulkanExternalMemoryWin32
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::MissingWindowsAngleContext => {
-                    ServoGpuImportFallbackReason::MissingWindowsAngleContext
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::WindowsImportStaleFrame => {
-                    ServoGpuImportFallbackReason::WindowsImportStaleFrame
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::DxgiAdapterNotFound {
-                    ..
-                } => ServoGpuImportFallbackReason::AdapterLuidMismatch,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11DeviceCreateFailed {
-                    ..
-                }
-                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11ImmediateContextUnavailable => {
-                    ServoGpuImportFallbackReason::D3d11DeviceCreateFailed
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedTextureCreateFailed {
-                    ..
-                }
-                | hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11TextureInterfaceQueryFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::D3d11SharedTextureCreateFailed,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::D3d11SharedHandleCreateFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::D3d11SharedHandleCreateFailed,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::InvalidDimensions {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::VulkanD3d11ImportFailed => {
-                    ServoGpuImportFallbackReason::VulkanD3d11ImportFailed
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlCreateResource {
-                    ..
-                } => ServoGpuImportFallbackReason::GlResource,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlOperation { .. } => {
-                    ServoGpuImportFallbackReason::GlOperation
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::GlFramebufferIncomplete {
-                    ..
-                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::PublishFenceTimeout => {
-                    ServoGpuImportFallbackReason::WindowsImportStaleFrame
-                }
-                hypercolor_windows_gpu_interop::WindowsGpuInteropError::ServoContext {
-                    operation,
-                    ..
-                } if *operation == WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION => {
-                    ServoGpuImportFallbackReason::AngleClientBufferSurfaceFailed
-                }
-                _ => ServoGpuImportFallbackReason::Other,
-            };
+            return error.fallback_reason();
         }
 
         if let Some(error) =
             cause.downcast_ref::<hypercolor_linux_gpu_interop::LinuxGpuInteropError>()
         {
-            #[cfg(target_os = "linux")]
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingWgpuVulkanDevice => {
-                    ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingVulkanDeviceExtension(
-                    _,
-                ) => ServoGpuImportFallbackReason::MissingVulkanExternalMemoryFd,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::MissingGlFunction(_) => {
-                    ServoGpuImportFallbackReason::MissingGlFunction
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlProcLoaderUnavailable => {
-                    ServoGpuImportFallbackReason::GlProcLoaderUnavailable
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions { .. } => {
-                    ServoGpuImportFallbackReason::InvalidDimensions
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::Vulkan { .. }
-                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::MemoryTypeUnavailable
-                | hypercolor_linux_gpu_interop::LinuxGpuInteropError::DuplicateFdFailed {
-                    ..
-                } => ServoGpuImportFallbackReason::Vulkan,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlCreateResource {
-                    ..
-                } => ServoGpuImportFallbackReason::GlResource,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlOperation { .. } => {
-                    ServoGpuImportFallbackReason::GlOperation
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::GlFramebufferIncomplete {
-                    ..
-                } => ServoGpuImportFallbackReason::GlFramebufferIncomplete,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    ..
-                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
-                _ => ServoGpuImportFallbackReason::Other,
-            };
-            #[cfg(not(target_os = "linux"))]
-            return match error {
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::UnsupportedPlatform => {
-                    ServoGpuImportFallbackReason::UnsupportedPlatform
-                }
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::InvalidDimensions {
-                    ..
-                } => ServoGpuImportFallbackReason::InvalidDimensions,
-                hypercolor_linux_gpu_interop::LinuxGpuInteropError::ImportSlotsExhausted {
-                    ..
-                } => ServoGpuImportFallbackReason::ImportSlotsExhausted,
-                _ => ServoGpuImportFallbackReason::Other,
-            };
+            return error.fallback_reason();
         }
     }
 
     let message = error.to_string().to_ascii_lowercase();
     if message.contains("not installed") || message.contains("device is not installed") {
-        ServoGpuImportFallbackReason::DeviceUnavailable
+        GpuFrameImportFallbackReason::DeviceUnavailable
     } else {
-        ServoGpuImportFallbackReason::Other
+        GpuFrameImportFallbackReason::Other
     }
 }
 
@@ -808,42 +268,42 @@ mod tests {
 
         assert_eq!(
             classify_failure(&error),
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
+            GpuFrameImportFallbackReason::ImportSlotsExhausted
         );
     }
 
     #[test]
     fn transient_gpu_import_failures_skip_global_auto_backoff() {
         assert!(failure_is_transient(
-            ServoGpuImportFallbackReason::GlOperation
+            GpuFrameImportFallbackReason::GlOperation
         ));
         assert!(failure_is_transient(
-            ServoGpuImportFallbackReason::GlFramebufferIncomplete
+            GpuFrameImportFallbackReason::GlFramebufferIncomplete
         ));
         assert!(failure_is_transient(
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
+            GpuFrameImportFallbackReason::ImportSlotsExhausted
         ));
         assert!(!failure_is_transient(
-            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+            GpuFrameImportFallbackReason::MissingWgpuVulkanDevice
         ));
     }
 
     #[test]
     fn transient_gpu_import_failures_preserve_importer_state() {
         assert!(!failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlOperation
+            GpuFrameImportFallbackReason::GlOperation
         ));
         assert!(!failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlFramebufferIncomplete
+            GpuFrameImportFallbackReason::GlFramebufferIncomplete
         ));
         assert!(!failure_should_clear_importer(
-            ServoGpuImportFallbackReason::ImportSlotsExhausted
+            GpuFrameImportFallbackReason::ImportSlotsExhausted
         ));
         assert!(failure_should_clear_importer(
-            ServoGpuImportFallbackReason::GlResource
+            GpuFrameImportFallbackReason::GlResource
         ));
         assert!(failure_should_clear_importer(
-            ServoGpuImportFallbackReason::MissingWgpuVulkanDevice
+            GpuFrameImportFallbackReason::MissingWgpuVulkanDevice
         ));
     }
 }

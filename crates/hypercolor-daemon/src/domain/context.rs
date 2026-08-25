@@ -76,7 +76,7 @@ pub(crate) struct DomainContextResources {
     pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
     pub device_metrics: DeviceMetricsSnapshotStore,
-    pub input_manager: Arc<tokio::sync::Mutex<hypercolor_core::input::InputManager>>,
+    pub input_manager: hypercolor_core::input::InputManager,
 }
 
 impl DomainContexts {
@@ -802,9 +802,10 @@ impl DeviceContext {
                 .filter_map(|driver| {
                     let descriptor = driver.module_descriptor();
                     let is_network_driver = descriptor.module_kind == DriverModuleKind::Network
-                        || descriptor
-                            .transports
-                            .contains(&DriverTransportKind::Network);
+                        || descriptor.transports.iter().any(|transport| {
+                            transport.is_available()
+                                && transport.kind == DriverTransportKind::Network
+                        });
                     is_network_driver.then_some(descriptor.id)
                 })
                 .collect::<Vec<_>>()

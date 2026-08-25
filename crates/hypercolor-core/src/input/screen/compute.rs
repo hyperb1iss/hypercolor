@@ -80,7 +80,7 @@ impl ScreenComputeCapacityPolicy {
     }
 }
 
-/// Caller-calibrated CPU capacity available to compatibility screen analysis.
+/// Caller-calibrated CPU capacity available to the reference screen analyzer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenAnalysisComputeCapacity {
     worker_count: NonZeroUsize,

@@ -386,9 +386,11 @@ mod tests {
                 asset_library: Some(Arc::clone(&state.asset_library)),
                 event_bus: Arc::clone(&state.event_bus),
                 input_graph: InputGraphHandle::default(),
-                sensor_snapshots: None,
                 interaction_routing: state.interaction_routing.clone(),
-                input_demands: InputPublicationDemandHandle::new(),
+                input_demands: InputPublicationDemandHandle::default(),
+                screen_publications:
+                    hypercolor_core::input::screen::planner::ScreenPlanBuilder::new()
+                        .publication_hub(),
                 canvas_width: 64,
                 canvas_height: 64,
                 acceleration: InteractivePreviewAcceleration::cpu(),

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use hypercolor_core::bus::{DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget};
 use hypercolor_core::effect::media::MediaProducer;
 use hypercolor_core::effect::{EffectRegistry, FrameDataSources, InputSourceAvailability};
-use hypercolor_core::input::{InteractionData, ScreenData};
+use hypercolor_core::input::{InteractionData, ScreenBranchPublication};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::AudioData;
 #[cfg(test)]
@@ -73,7 +74,7 @@ pub(crate) struct ZoneFrameInputs<'a> {
     pub(crate) delta_secs: f32,
     pub(crate) audio: &'a AudioData,
     pub(crate) interaction: &'a InteractionData,
-    pub(crate) screen: Option<&'a ScreenData>,
+    pub(crate) screen: Option<&'a Arc<ScreenBranchPublication>>,
     pub(crate) sensors: &'a SystemSnapshot,
     pub(crate) input_availability: InputSourceAvailability,
     pub(crate) media: Option<&'a MediaState>,

@@ -162,16 +162,20 @@ fn write_request_file(verb: Verb) -> Result<PathBuf> {
         "flags": {},
     });
 
-    let dir = request_dir()?;
+    let dir = request_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join(format!("{nonce}.json"));
     std::fs::write(&path, body.to_string()).with_context(|| format!("write {}", path.display()))?;
     Ok(path)
 }
 
-fn request_dir() -> Result<PathBuf> {
-    let local = dirs::data_local_dir().context("LOCALAPPDATA is unavailable")?;
-    Ok(local.join("hypercolor").join("helper-requests"))
+/// Request drop directory shared with the signed helper binary.
+///
+/// The helper has no workspace dependencies and derives the same
+/// `%LOCALAPPDATA%\\hypercolor\\helper-requests` root on its own, so the two
+/// derivations must stay in step.
+fn request_dir() -> PathBuf {
+    hypercolor_core::config::paths::data_dir().join("helper-requests")
 }
 
 fn next_nonce() -> u64 {

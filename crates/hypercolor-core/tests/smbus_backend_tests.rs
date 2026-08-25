@@ -10,6 +10,10 @@ use hypercolor_core::device::{SmBusBackend, SmBusScanner};
 use hypercolor_driver_api::{
     DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior,
 };
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+use hypercolor_hal::SmBusProbeError;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+use hypercolor_hal::transport::TransportPlatform;
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusOperation, decode_operations};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{
@@ -245,13 +249,38 @@ impl Transport for ConcurrentSmBusTransport {
     }
 }
 
+fn assert_root_scoped_smbus_scan<T: std::fmt::Debug>(result: Result<Vec<T>>) {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        let devices = result.expect("scan should succeed on supported platforms");
+        assert!(devices.is_empty());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let error = result.expect_err("scan should reject an unsupported platform");
+        let error_chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(
+            matches!(
+                error.downcast_ref::<SmBusProbeError>(),
+                Some(SmBusProbeError::Transport(
+                    TransportError::UnsupportedPlatform {
+                        transport: "SMBus",
+                        platform,
+                    }
+                )) if *platform == TransportPlatform::CURRENT
+            ),
+            "unexpected SMBus scan error chain: {error_chain:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn smbus_scanner_ignores_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
     let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
 
-    let devices = scanner.scan().await.expect("scan should succeed");
-    assert!(devices.is_empty());
+    assert_root_scoped_smbus_scan(scanner.scan().await);
 }
 
 #[tokio::test]
@@ -261,9 +290,7 @@ async fn smbus_scanner_ignores_non_device_i2c_nodes() {
     fs::write(&fake_bus, b"not a real i2c bus").expect("fake i2c node should write");
 
     let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
-    let devices = scanner.scan().await.expect("scan should succeed");
-
-    assert!(devices.is_empty());
+    assert_root_scoped_smbus_scan(scanner.scan().await);
 }
 
 #[test]
@@ -294,8 +321,7 @@ async fn smbus_discovery_source_is_empty_on_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
     let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
 
-    let devices = scanner.scan().await.expect("discovery should succeed");
-    assert!(devices.is_empty());
+    assert_root_scoped_smbus_scan(scanner.scan().await);
 }
 
 #[tokio::test]

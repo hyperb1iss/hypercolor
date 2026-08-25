@@ -27,14 +27,16 @@ impl SleepPolicy {
     #[must_use]
     pub fn sleep_action(&self, event: &SessionEvent) -> Option<SleepAction> {
         match event {
-            SessionEvent::ScreenLocked => Some(sleep_action_from_behavior(
-                self.config.off_output_behavior,
-                &self.config.off_output_color,
-                self.config.on_screen_lock,
-                self.config.screen_lock_brightness,
-                &self.config.screen_lock_scene,
-                self.config.screen_lock_fade_ms,
-            )),
+            SessionEvent::ScreenLocked | SessionEvent::SessionInactive => {
+                Some(sleep_action_from_behavior(
+                    self.config.off_output_behavior,
+                    &self.config.off_output_color,
+                    self.config.on_screen_lock,
+                    self.config.screen_lock_brightness,
+                    &self.config.screen_lock_scene,
+                    self.config.screen_lock_fade_ms,
+                ))
+            }
             SessionEvent::Suspending => Some(sleep_action_from_behavior(
                 self.config.off_output_behavior,
                 &self.config.off_output_color,
@@ -73,6 +75,7 @@ impl SleepPolicy {
                 }
             }
             SessionEvent::ScreenUnlocked
+            | SessionEvent::SessionActive
             | SessionEvent::Resumed
             | SessionEvent::IdleExited
             | SessionEvent::LidOpened => None,
@@ -83,9 +86,11 @@ impl SleepPolicy {
     #[must_use]
     pub fn wake_action(&self, event: &SessionEvent) -> Option<WakeAction> {
         match event {
-            SessionEvent::ScreenUnlocked => Some(WakeAction::Restore {
-                fade_ms: self.config.screen_unlock_fade_ms,
-            }),
+            SessionEvent::ScreenUnlocked | SessionEvent::SessionActive => {
+                Some(WakeAction::Restore {
+                    fade_ms: self.config.screen_unlock_fade_ms,
+                })
+            }
             SessionEvent::Resumed => Some(WakeAction::Restore {
                 fade_ms: self.config.resume_fade_ms,
             }),
@@ -99,6 +104,7 @@ impl SleepPolicy {
                 fade_ms: self.config.lid_open_fade_ms,
             }),
             SessionEvent::ScreenLocked
+            | SessionEvent::SessionInactive
             | SessionEvent::Suspending
             | SessionEvent::IdleEntered { .. }
             | SessionEvent::LidClosed => None,
@@ -169,6 +175,29 @@ mod tests {
         assert_eq!(
             policy.wake_action(&SessionEvent::ScreenUnlocked),
             Some(WakeAction::Restore { fade_ms: 500 })
+        );
+    }
+
+    #[test]
+    fn session_activity_uses_the_configured_lock_policy_without_claiming_a_lock() {
+        let policy = SleepPolicy::new(SessionConfig {
+            on_screen_lock: SleepBehavior::Dim,
+            screen_lock_brightness: 0.25,
+            screen_lock_fade_ms: 1_234,
+            screen_unlock_fade_ms: 432,
+            ..SessionConfig::default()
+        });
+
+        assert_eq!(
+            policy.sleep_action(&SessionEvent::SessionInactive),
+            Some(SleepAction::Dim {
+                brightness: 0.25,
+                fade_ms: 1_234,
+            })
+        );
+        assert_eq!(
+            policy.wake_action(&SessionEvent::SessionActive),
+            Some(WakeAction::Restore { fade_ms: 432 })
         );
     }
 

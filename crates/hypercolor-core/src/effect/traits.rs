@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+pub use hypercolor_gpu_frame::{ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::control::{ControlDeltaBatch, ControlSet};
@@ -18,20 +19,7 @@ use hypercolor_types::sensor::SystemSnapshot;
 use tokio::sync::RwLock;
 
 use crate::asset::AssetLibrary;
-use crate::input::{InteractionData, ScreenData};
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-pub use hypercolor_linux_gpu_interop::{
-    ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
-};
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-pub use hypercolor_macos_gpu_interop::{
-    ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
-};
-#[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-pub use hypercolor_windows_gpu_interop::{
-    ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings,
-};
+use crate::input::{InteractionData, ScreenBranchPublication};
 
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
@@ -94,8 +82,13 @@ pub struct FrameInput<'a> {
     /// Host keyboard and mouse state for interactive HTML effects.
     pub interaction: &'a InteractionData,
 
-    /// Latest screen-capture snapshot for screen-reactive effects.
-    pub screen: Option<&'a ScreenData>,
+    /// Latest exact screen publication leased for screen-reactive effects.
+    ///
+    /// The snapshot is shared by reference count, so renderers that queue
+    /// frames retain it without copying pixels. CPU renderers read only CPU
+    /// surface and zone payloads; GPU-resident publications carry no CPU
+    /// pixels and read as absent screen content.
+    pub screen: Option<&'a Arc<ScreenBranchPublication>>,
 
     /// Latest system telemetry snapshot shared across all renderers.
     pub sensors: &'a SystemSnapshot,

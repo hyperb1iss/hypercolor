@@ -1,16 +1,23 @@
+use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::effect::{EffectEntry, EffectRegistry};
+use hypercolor_core::input::routing::{ConsumerIncarnation, SourceIncarnation};
 use hypercolor_core::input::{
     BrowserConnectionIncarnation, BrowserInputAttachment, BrowserInputChildKey, BrowserInputHandle,
     BrowserPreviewId, InputManager,
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_types::config::InteractionRoutePolicy;
+use hypercolor_types::effect::{
+    ControlBinding, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+};
 use hypercolor_types::layer::{
-    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
+    BindingMap, BindingSource, BlendMode, LayerAdjust, LayerBinding, LayerParameter, LayerSource,
+    LayerTransform, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -21,10 +28,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     InteractivePreviewAcceleration, InteractivePreviewContext, InteractivePreviewExecutor,
-    InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget,
-    PreviewCapacityLedger, PreviewLaneCommand, PreviewLaneId, PreviewResourceLedger,
-    ResolvedPreviewScene, advance_deadline, duration_millis_u32, preview_input_demand,
-    request_preview_lane_update,
+    InteractivePreviewFrame, InteractivePreviewSpec, InteractivePreviewTarget, PixelExtent,
+    PreviewCapacityLedger, PreviewLaneCommand, PreviewLaneId, PreviewLaneInput,
+    PreviewResourceLedger, ResolvedPreviewScene, advance_deadline, duration_millis_u32,
+    preview_input_demand, request_preview_lane_update,
 };
 use crate::interaction_routing::InteractionRoutingControl;
 use crate::preview_runtime::PreviewPixelFormat;
@@ -49,7 +56,8 @@ impl PreviewTestRig {
             InteractionRoutePolicy::Host,
             InteractionRoutePolicy::Browser,
         );
-        let demands = InputPublicationDemandHandle::new();
+        let demands = InputPublicationDemandHandle::default();
+        let input_manager = InputManager::new();
         let event_bus = Arc::new(HypercolorBus::new());
         let executor = InteractivePreviewExecutor::start_cpu(InteractivePreviewContext {
             scene_manager: crate::domain::scene::SceneService::in_memory(
@@ -59,10 +67,10 @@ impl PreviewTestRig {
             effect_registry: Arc::new(RwLock::new(EffectRegistry::new(Vec::new()))),
             asset_library: None,
             event_bus,
-            input_graph: InputManager::new().input_graph_handle(),
-            sensor_snapshots: None,
+            input_graph: input_manager.input_graph_handle(),
             interaction_routing: routing,
             input_demands: demands.clone(),
+            screen_publications: input_manager.screen_publication_hub(),
             canvas_width: 8,
             canvas_height: 6,
             acceleration: InteractivePreviewAcceleration::cpu(),
@@ -85,6 +93,53 @@ impl PreviewTestRig {
             ))
             .expect("browser preview should attach")
     }
+}
+
+#[test]
+fn preview_lane_routes_one_exact_browser_publication_with_coherent_generations() {
+    let handle = BrowserInputHandle::new();
+    let attachment = handle
+        .attach(BrowserInputChildKey::new(
+            BrowserConnectionIncarnation::new(41),
+            BrowserPreviewId::new("catalog-lane"),
+        ))
+        .expect("browser preview should attach");
+    let manager = InputManager::new();
+    let graph = manager.input_graph_handle();
+    let routing = InteractionRoutingControl::new(
+        handle.registry(),
+        19,
+        InteractionRoutePolicy::Host,
+        InteractionRoutePolicy::Browser,
+    );
+    let consumer = ConsumerIncarnation::new(23);
+    let graph_generation = graph.snapshot().generation();
+    let browser_generation = routing.browser_registry_snapshot().generation();
+    let mut input = PreviewLaneInput::new(
+        graph,
+        routing,
+        manager.screen_publication_hub(),
+        attachment.publication_id(),
+        consumer,
+    );
+
+    input.read(PixelExtent::new(8, 6).expect("preview extent is non-empty"));
+
+    assert_eq!(input.routed.diagnostics.consumer, consumer);
+    assert_eq!(input.routed.diagnostics.config_generation, 19);
+    assert_eq!(
+        input.routed.diagnostics.source_graph_generation,
+        graph_generation
+    );
+    assert_eq!(
+        input.routed.diagnostics.browser_registry_generation,
+        browser_generation
+    );
+    assert_eq!(input.routed.diagnostics.selected.len(), 1);
+    assert_eq!(
+        input.routed.diagnostics.selected[0].incarnation,
+        SourceIncarnation::browser_child(attachment.publication_id().get())
+    );
 }
 
 fn lane_resource_bytes(spec: InteractivePreviewSpec) -> u64 {
@@ -150,6 +205,80 @@ fn color_zone(color: [f32; 4]) -> Zone {
         role: ZoneRole::Primary,
         controls_version: 0,
         layers_version: 0,
+    }
+}
+
+fn preview_effect_entry(effect_id: EffectId) -> EffectEntry {
+    EffectEntry {
+        metadata: EffectMetadata {
+            id: effect_id,
+            name: "Preview sensors".into(),
+            author: "test".into(),
+            version: "0.1.0".into(),
+            description: "sensor demand fixture".into(),
+            category: EffectCategory::Ambient,
+            tags: Vec::new(),
+            controls: Vec::new(),
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Native {
+                path: "native/preview-sensors.wgsl".into(),
+            },
+            license: None,
+        },
+        source_path: "/effects/native/preview-sensors.wgsl".into(),
+        modified: std::time::SystemTime::now(),
+        state: EffectState::Loading,
+    }
+}
+
+fn preview_effect_group(effect_id: EffectId) -> Zone {
+    let mut group = color_zone([0.0, 0.0, 0.0, 1.0]);
+    group.layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    )];
+    group
+}
+
+fn bind_effect_layer_control(group: &mut Zone, control_id: &str, binding: ControlBinding) {
+    let LayerSource::Effect {
+        control_bindings, ..
+    } = &mut group.layers[0].source
+    else {
+        panic!("preview effect group should lead with an effect layer");
+    };
+    control_bindings.insert(control_id.to_owned(), binding);
+}
+
+fn resolved_preview_scene(group: Zone, entry: EffectEntry) -> ResolvedPreviewScene {
+    let mut registry = EffectRegistry::default();
+    registry.register(entry);
+    ResolvedPreviewScene {
+        scene_id: None,
+        zones_revision: 0,
+        zones: Arc::from([group]),
+        registry: Arc::new(registry),
+        catalog_generation: 0,
+        canvas_width: 8,
+        canvas_height: 6,
+    }
+}
+
+fn preview_control_binding() -> ControlBinding {
+    ControlBinding {
+        sensor: "cpu.temperature".into(),
+        sensor_min: 20.0,
+        sensor_max: 100.0,
+        target_min: 0.0,
+        target_max: 1.0,
+        deadband: 0.0,
+        smoothing: 0.0,
     }
 }
 
@@ -270,12 +399,59 @@ fn screen_preview_demands_the_resolved_scene_extent() {
         demand.requested_hz(hypercolor_core::input::SourceKind::Screen),
         45
     );
+    let requests = demand.renderer_screen_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].requested_hz().get(), 45);
+    let hypercolor_core::input::screen::ScreenExtentRequest::Bounded(bounds) = requests[0].extent()
+    else {
+        panic!("preview request should preserve bounded renderer dimensions");
+    };
+    assert_eq!(bounds.max_width().map(NonZeroU32::get), Some(5_120));
+    assert_eq!(bounds.max_height().map(NonZeroU32::get), Some(720));
+}
+
+#[test]
+fn preview_sensor_demand_covers_metadata_control_and_layer_bindings() {
+    let metadata_effect_id = EffectId::new(uuid::Uuid::now_v7());
+    let mut metadata_entry = preview_effect_entry(metadata_effect_id);
+    metadata_entry.metadata.tags = vec!["system-monitor".into()];
+    let metadata_demand = preview_input_demand(
+        &resolved_preview_scene(preview_effect_group(metadata_effect_id), metadata_entry),
+        45,
+    );
     assert_eq!(
-        demand.screen_requested_extent(),
-        Some(
-            hypercolor_core::input::screen::PixelExtent::new(5_120, 720)
-                .expect("test screen extent should be non-empty")
-        )
+        metadata_demand.requested_hz(hypercolor_core::input::SourceKind::Sensors),
+        1
+    );
+
+    let control_effect_id = EffectId::new(uuid::Uuid::now_v7());
+    let mut control_group = preview_effect_group(control_effect_id);
+    bind_effect_layer_control(&mut control_group, "intensity", preview_control_binding());
+    let control_demand = preview_input_demand(
+        &resolved_preview_scene(control_group, preview_effect_entry(control_effect_id)),
+        45,
+    );
+    assert_eq!(
+        control_demand.requested_hz(hypercolor_core::input::SourceKind::Sensors),
+        1
+    );
+
+    let layer_effect_id = EffectId::new(uuid::Uuid::now_v7());
+    let mut layer_group = preview_effect_group(layer_effect_id);
+    layer_group.layers[0].bindings.push(LayerBinding {
+        target: LayerParameter::Opacity,
+        source: BindingSource::Sensor {
+            name: "gpu.temperature".into(),
+        },
+        map: BindingMap::linear(20.0..=100.0, 0.0..=1.0),
+    });
+    let layer_demand = preview_input_demand(
+        &resolved_preview_scene(layer_group, preview_effect_entry(layer_effect_id)),
+        45,
+    );
+    assert_eq!(
+        layer_demand.requested_hz(hypercolor_core::input::SourceKind::Sensors),
+        1
     );
 }
 

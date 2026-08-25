@@ -102,17 +102,9 @@ The three top-level commands that look similar but do different things:
 
 For the full CLI reference, see [CLI reference](@/api/cli.md).
 
-## The standalone tray is for daemon-only setups
+## The desktop app owns the tray
 
-`hypercolor-tray` is a separate, lightweight binary that adds system tray presence without the full app shell. It communicates with the daemon exclusively over REST and WebSocket at `localhost:9420`. The tray menu lets you switch effects, adjust brightness, pause/resume, and open the web UI.
-
-```bash
-just tray    # or run hypercolor-tray directly
-```
-
-Use the standalone tray when you are running the daemon as a service and do not want or need the Tauri window. On a Linux system where autostart brings up the daemon via systemd and you want tray presence without a full native window, `hypercolor-tray` is the right tool.
-
-If you installed the desktop app, you already have a tray icon: the app registers its own tray and you do not need the standalone binary. The two are not meant to run simultaneously.
+`hypercolor-app` provides the system tray on every desktop platform. Its tray menu communicates with the daemon over REST and WebSocket at `localhost:9420`, and lets you switch effects, adjust brightness, pause or resume output, and open the web UI. Start the app minimized when you want tray presence without opening its window.
 
 ## How they connect
 
@@ -137,7 +129,7 @@ The only port a normal install uses is **9420**. Port 9430 is the Leptos hot-rel
 | Quick effect or brightness change | Tray menu |
 | Terminal dashboard with live preview | `hypercolor tui` |
 | Script, cron, or shell pipeline | `hypercolor <command>` |
-| Run headless (no window) | Daemon + standalone tray |
+| Run headless (no window) | Daemon only, or desktop app started minimized for tray access |
 | AI agent integration | Enable MCP in config, then connect your agent |
 
 In most cases, the desktop app is the right answer. It starts the daemon for you, shows up in your tray, and opens the full web UI when you click the window: everything from one install.

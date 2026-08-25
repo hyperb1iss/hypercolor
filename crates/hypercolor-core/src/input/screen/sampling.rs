@@ -169,6 +169,13 @@ impl CpuSamplingTransform {
                 y.checked_reflect(self.crop_extent.height())?,
             ),
             CaptureRotation::Clockwise270 => (y.checked_reflect(self.crop_extent.width())?, x),
+            CaptureRotation::Flipped => (x.checked_reflect(self.crop_extent.width())?, y),
+            CaptureRotation::Flipped90 => (
+                y.checked_reflect(self.crop_extent.width())?,
+                x.checked_reflect(self.crop_extent.height())?,
+            ),
+            CaptureRotation::Flipped180 => (x, y.checked_reflect(self.crop_extent.height())?),
+            CaptureRotation::Flipped270 => (y, x),
         };
         let storage_x = native_x
             .checked_add_integer(self.crop_origin.0)?
@@ -231,8 +238,14 @@ impl CpuSamplingTransform {
             y: end.y,
         })?;
         let logical_x_axis = match self.geometry.rotation() {
-            CaptureRotation::Identity | CaptureRotation::Clockwise180 => CpuStorageAxis::X,
-            CaptureRotation::Clockwise90 | CaptureRotation::Clockwise270 => CpuStorageAxis::Y,
+            CaptureRotation::Identity
+            | CaptureRotation::Clockwise180
+            | CaptureRotation::Flipped
+            | CaptureRotation::Flipped180 => CpuStorageAxis::X,
+            CaptureRotation::Clockwise90
+            | CaptureRotation::Clockwise270
+            | CaptureRotation::Flipped90
+            | CaptureRotation::Flipped270 => CpuStorageAxis::Y,
         };
         let logical_y_axis = logical_x_axis.other();
         let logical_x = ExactAxisGrid::new(
@@ -1271,6 +1284,10 @@ fn storage_axis_directions(
         CaptureRotation::Clockwise90 => (logical_y_reversed, !logical_x_reversed),
         CaptureRotation::Clockwise180 => (!logical_x_reversed, !logical_y_reversed),
         CaptureRotation::Clockwise270 => (!logical_y_reversed, logical_x_reversed),
+        CaptureRotation::Flipped => (!logical_x_reversed, logical_y_reversed),
+        CaptureRotation::Flipped90 => (!logical_y_reversed, !logical_x_reversed),
+        CaptureRotation::Flipped180 => (logical_x_reversed, !logical_y_reversed),
+        CaptureRotation::Flipped270 => (logical_y_reversed, logical_x_reversed),
     }
 }
 

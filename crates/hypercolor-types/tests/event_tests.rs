@@ -9,13 +9,12 @@ use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
     EffectRef, EffectStopReason, EventCategory, EventPriority, FrameData, FrameTiming,
     HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
-    MacosDaemonHandoverPhaseEvent, MacosDaemonOwnerConflictEvent, MacosDaemonOwnerEvent,
-    MacosDaemonOwnerRecoveryRequiredEvent, PointerScrollPhase, PointerScrollUnit,
-    SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
-    ZoneRef,
+    PointerScrollPhase, PointerScrollUnit, SceneChangeReason, Severity, TimedInputEvent,
+    TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
 };
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
+use hypercolor_types::service::{ServiceConflict, ServiceIdentity, ServiceRecoveryRequired};
 use hypercolor_types::session::SessionEvent;
 
 fn fixture_origin() -> DeviceOrigin {
@@ -313,8 +312,8 @@ fn system_events_have_system_category() {
         HypercolorEvent::DaemonShutdown {
             reason: "user".into(),
         },
-        HypercolorEvent::MacosDaemonOwnershipChanged {
-            active_owner: MacosDaemonOwnerEvent::AppSidecar,
+        HypercolorEvent::ServiceIdentityChanged {
+            identity: ServiceIdentity::APP_SIDECAR,
             owner_epoch: 7,
             conflict: None,
             recovery_required: None,
@@ -326,6 +325,8 @@ fn system_events_have_system_category() {
         HypercolorEvent::Paused,
         HypercolorEvent::Resumed,
         HypercolorEvent::SessionChanged(SessionEvent::ScreenLocked),
+        HypercolorEvent::SessionChanged(SessionEvent::SessionInactive),
+        HypercolorEvent::SessionChanged(SessionEvent::SessionActive),
         HypercolorEvent::Error {
             code: "E001".into(),
             message: "out of memory".into(),
@@ -343,34 +344,35 @@ fn system_events_have_system_category() {
 }
 
 #[test]
-fn macos_daemon_ownership_event_round_trips_bounded_payload() {
-    let event = HypercolorEvent::MacosDaemonOwnershipChanged {
-        active_owner: MacosDaemonOwnerEvent::LaunchdService,
+fn service_identity_event_round_trips_bounded_payload() {
+    let event = HypercolorEvent::ServiceIdentityChanged {
+        identity: ServiceIdentity::launchd_direct(),
         owner_epoch: 42,
-        conflict: Some(MacosDaemonOwnerConflictEvent {
-            active: MacosDaemonOwnerEvent::LaunchdService,
-            contender: MacosDaemonOwnerEvent::HomebrewService,
+        conflict: Some(ServiceConflict {
+            active: ServiceIdentity::launchd_direct(),
+            contender: ServiceIdentity::homebrew(),
             observed_at_ms: 1_777,
         }),
-        recovery_required: Some(MacosDaemonOwnerRecoveryRequiredEvent {
-            requested_owner: MacosDaemonOwnerEvent::AppSidecar,
-            prior_owner: MacosDaemonOwnerEvent::LaunchdService,
-            phase: MacosDaemonHandoverPhaseEvent::RollbackStartRequested,
+        recovery_required: Some(ServiceRecoveryRequired {
+            requested: ServiceIdentity::APP_SIDECAR,
+            prior: ServiceIdentity::launchd_direct(),
+            phase: "rollback_start_requested".into(),
         }),
     };
 
-    let json = serde_json::to_value(&event).expect("serialize ownership event");
-    assert_eq!(json["type"], "MacosDaemonOwnershipChanged");
-    assert_eq!(json["data"]["active_owner"], "launchd_service");
+    let json = serde_json::to_value(&event).expect("serialize identity event");
+    assert_eq!(json["type"], "ServiceIdentityChanged");
+    assert_eq!(json["data"]["identity"]["run_mode"], "user_service");
+    assert_eq!(json["data"]["identity"]["manager"], "launchd");
     assert_eq!(json["data"]["owner_epoch"], 42);
-    assert_eq!(json["data"]["conflict"]["contender"], "homebrew_service");
+    assert_eq!(json["data"]["conflict"]["contender"]["manager"], "homebrew");
     assert_eq!(
         json["data"]["recovery_required"]["phase"],
         "rollback_start_requested"
     );
     assert_eq!(
         serde_json::from_value::<HypercolorEvent>(json)
-            .expect("deserialize ownership event")
+            .expect("deserialize identity event")
             .category(),
         EventCategory::System
     );
@@ -806,6 +808,24 @@ fn serialize_session_changed_roundtrip() {
         deserialized,
         HypercolorEvent::SessionChanged(SessionEvent::IdleEntered { .. })
     ));
+}
+
+#[test]
+fn serialize_session_activity_roundtrip() {
+    for (event, expected_json) in [
+        (
+            SessionEvent::SessionInactive,
+            r#"{"event":"session_inactive"}"#,
+        ),
+        (SessionEvent::SessionActive, r#"{"event":"session_active"}"#),
+    ] {
+        let json = serde_json::to_string(&event).expect("serialize session activity");
+        let deserialized: SessionEvent =
+            serde_json::from_str(&json).expect("deserialize session activity");
+
+        assert_eq!(json, expected_json);
+        assert_eq!(deserialized, event);
+    }
 }
 
 #[test]

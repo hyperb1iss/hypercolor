@@ -238,16 +238,10 @@ fn screen_region_layer_uses_latest_capture_canvas() {
         bindings: Vec::new(),
         enabled: true,
     }];
-    let source = Canvas::from_vec(vec![255, 0, 0, 255, 0, 255, 0, 255], 2, 1);
-    let screen = ScreenData {
-        zone_colors: Vec::new().into(),
-        grid_width: 0,
-        grid_height: 0,
-        canvas_downscale: Some(PublishedSurface::from_canvas(&source, 7, 11)),
-        source_width: 2,
-        source_height: 1,
-        letterbox: [0; 4],
-    };
+    let screen = hypercolor_core::input::SyntheticScreenPublisher::surface(
+        hypercolor_core::input::screen::PixelExtent::new(2, 1).expect("fixture extent"),
+    )
+    .publish_rgba(&[255, 0, 0, 255, 0, 255, 0, 255]);
     let mut zones = Vec::new();
 
     let result = render_scene_for_test_with_screen(

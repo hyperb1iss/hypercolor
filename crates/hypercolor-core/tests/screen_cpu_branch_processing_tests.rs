@@ -4,27 +4,32 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::sector::{LetterboxDetectionError, PreparedLetterboxDetector};
-use hypercolor_core::input::screen::smooth::PreparedTemporalSmoother;
-use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
-    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction, ColorTuning,
-    CommittedScreenPlan, CpuReductionExecutor, CpuSurfaceMaterializationError,
-    CpuZoneMaterializationError, KnownCaptureColorimetry, PhysicalOrigin, PixelExtent,
-    PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer, PreparedScreenPublication,
-    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning,
-    ScreenContentBarsPolicy, ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest,
-    ScreenGridPolicy, ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPayloadKind,
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, ColorTuning, PixelExtent,
+};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureGeometry,
+    CapturePixelFormat, CaptureRotation, CaptureTransferFunction, CpuReductionExecutor,
+    CpuSurfaceMaterializationError, CpuZoneMaterializationError, KnownCaptureColorimetry,
+    PhysicalOrigin, PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer,
+    PreparedScreenPublication, ScreenPublicationMetadata, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    CommittedScreenPlan, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
+    ResolvedScreenPublicationDescriptor, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
+    ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning, ScreenContentBarsPolicy,
+    ScreenExactResource, ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy,
+    ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenPayloadKind,
     ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError, ScreenPlanGeneration,
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
     ScreenPublicationExecutorRequest, ScreenPublicationHub, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenResourceApi, ScreenResourceLifetime,
-    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
-    ScreenWorkerPreparationTicket, SourceScale,
+    ScreenPublicationRequest, ScreenResourceApi, ScreenResourceLifetime, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
+    ScreenUpscalePolicy, ScreenWorkerBinding, ScreenWorkerPreparationTicket,
 };
+use hypercolor_core::input::screen::sector::{LetterboxDetectionError, PreparedLetterboxDetector};
+use hypercolor_core::input::screen::smooth::PreparedTemporalSmoother;
 use hypercolor_types::canvas::SurfaceResourceError;
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -118,7 +123,6 @@ fn commit(
     let mut preparing = builder
         .prepare(
             [demand],
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

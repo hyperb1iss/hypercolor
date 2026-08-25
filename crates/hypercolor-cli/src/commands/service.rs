@@ -13,10 +13,7 @@ use crate::output::OutputContext;
 const SERVICE_NAME: &str = "hypercolor";
 
 #[cfg(target_os = "macos")]
-const LAUNCHD_LABEL: &str = "tech.hyperbliss.hypercolor";
-
-#[cfg(target_os = "macos")]
-const PLIST_FILENAME: &str = "tech.hyperbliss.hypercolor.plist";
+const LAUNCHD_LABEL: &str = hypercolor_macos_owner::MACOS_DIRECT_LAUNCHD_LABEL;
 
 // ── CLI Args ────────────────────────────────────────────────────────────
 
@@ -67,6 +64,19 @@ pub enum MacosServiceOwner {
     Homebrew,
 }
 
+impl MacosServiceOwner {
+    /// The neutral launcher identity this choice names.
+    #[must_use]
+    pub fn identity(self) -> hypercolor_types::service::ServiceIdentity {
+        use hypercolor_types::service::ServiceIdentity;
+        match self {
+            Self::AppSidecar => ServiceIdentity::APP_SIDECAR,
+            Self::DirectLaunchd => ServiceIdentity::launchd_direct(),
+            Self::Homebrew => ServiceIdentity::homebrew(),
+        }
+    }
+}
+
 /// Arguments for `service logs`.
 #[derive(Debug, Args)]
 pub struct LogsArgs {
@@ -110,13 +120,7 @@ pub async fn execute(args: &ServiceArgs, ctx: &OutputContext) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 async fn execute_choose_owner(args: &ChooseOwnerArgs, ctx: &OutputContext) -> Result<()> {
-    use hypercolor_macos_owner::MacosDaemonOwner;
-
-    let owner = match args.owner {
-        MacosServiceOwner::AppSidecar => MacosDaemonOwner::AppSidecar,
-        MacosServiceOwner::DirectLaunchd => MacosDaemonOwner::DirectLaunchd,
-        MacosServiceOwner::Homebrew => MacosDaemonOwner::Homebrew,
-    };
+    let owner = macos_owner_for_identity(&args.owner.identity())?;
     let outcome = tokio::task::spawn_blocking(move || choose_owner_locally(owner))
         .await
         .context("macOS daemon owner coordinator task failed")??;
@@ -332,8 +336,8 @@ fn run_systemctl_output(args: &[&str]) -> Result<String> {
 #[cfg(target_os = "macos")]
 #[expect(clippy::unused_async, reason = "async signature required by dispatch")]
 async fn execute_start(ctx: &OutputContext) -> Result<()> {
-    let plist_path = plist_path()?;
-    run_launchctl(&["load", &plist_path])?;
+    let (launchd, target) = direct_launchd_target()?;
+    launchd.start(&target, &plist_path()?)?;
     ctx.success("Daemon service started");
     Ok(())
 }
@@ -341,8 +345,8 @@ async fn execute_start(ctx: &OutputContext) -> Result<()> {
 #[cfg(target_os = "macos")]
 #[expect(clippy::unused_async, reason = "async signature required by dispatch")]
 async fn execute_stop(ctx: &OutputContext) -> Result<()> {
-    let plist_path = plist_path()?;
-    run_launchctl(&["unload", &plist_path])?;
+    let (launchd, target) = direct_launchd_target()?;
+    launchd.stop(&target)?;
     ctx.success("Daemon service stopped");
     Ok(())
 }
@@ -350,10 +354,12 @@ async fn execute_stop(ctx: &OutputContext) -> Result<()> {
 #[cfg(target_os = "macos")]
 #[expect(clippy::unused_async, reason = "async signature required by dispatch")]
 async fn execute_restart(ctx: &OutputContext) -> Result<()> {
-    let plist_path = plist_path()?;
-    // Ignore errors on stop — service may not be running
-    let _ = run_launchctl(&["unload", &plist_path]);
-    run_launchctl(&["load", &plist_path])?;
+    let (launchd, target) = direct_launchd_target()?;
+    if launchd.is_loaded(&target)? {
+        launchd.kickstart_restart(&target)?;
+    } else {
+        launchd.bootstrap(&plist_path()?)?;
+    }
     ctx.success("Daemon service restarted");
     Ok(())
 }
@@ -361,11 +367,10 @@ async fn execute_restart(ctx: &OutputContext) -> Result<()> {
 #[cfg(target_os = "macos")]
 #[expect(clippy::unused_async, reason = "async signature required by dispatch")]
 async fn execute_status(ctx: &OutputContext) -> Result<()> {
-    let uid = get_uid()?;
-    let domain_target = format!("gui/{uid}/{LAUNCHD_LABEL}");
+    let (_, target) = direct_launchd_target()?;
 
-    let output = std::process::Command::new("launchctl")
-        .args(["print", &domain_target])
+    let output = std::process::Command::new(hypercolor_macos_owner::LAUNCHCTL_PATH)
+        .args(["print", &target.service()])
         .output()
         .context("Failed to run launchctl")?;
 
@@ -410,8 +415,11 @@ async fn execute_status(ctx: &OutputContext) -> Result<()> {
 #[cfg(target_os = "macos")]
 #[expect(clippy::unused_async, reason = "async signature required by dispatch")]
 async fn execute_enable(ctx: &OutputContext) -> Result<()> {
-    let plist_path = plist_path()?;
-    run_launchctl(&["load", &plist_path])?;
+    let (launchd, target) = direct_launchd_target()?;
+    launchd.set_autostart(&target, true)?;
+    if !launchd.is_loaded(&target)? {
+        launchd.bootstrap(&plist_path()?)?;
+    }
     ctx.success("Daemon service enabled for autostart");
     Ok(())
 }
@@ -419,8 +427,9 @@ async fn execute_enable(ctx: &OutputContext) -> Result<()> {
 #[cfg(target_os = "macos")]
 #[expect(clippy::unused_async, reason = "async signature required by dispatch")]
 async fn execute_disable(ctx: &OutputContext) -> Result<()> {
-    let plist_path = plist_path()?;
-    run_launchctl(&["unload", &plist_path])?;
+    let (launchd, target) = direct_launchd_target()?;
+    launchd.set_autostart(&target, false)?;
+    launchd.bootout(&target)?;
     ctx.success("Daemon service disabled for autostart");
     Ok(())
 }
@@ -464,47 +473,33 @@ async fn execute_logs(args: &LogsArgs, ctx: &OutputContext) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn plist_path() -> Result<String> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    let path = home
-        .join("Library")
-        .join("LaunchAgents")
-        .join(PLIST_FILENAME);
-    Ok(path.to_string_lossy().into_owned())
+fn plist_path() -> Result<std::path::PathBuf> {
+    let launch_agents = hypercolor_core::config::paths::macos_launch_agents_dir()
+        .context("Could not determine home directory")?;
+    let (_, target) = direct_launchd_target()?;
+    Ok(hypercolor_macos_owner::launch_agent_plist(
+        &launch_agents,
+        &target,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn direct_launchd_target() -> Result<(
+    hypercolor_macos_owner::LaunchdAdapter,
+    hypercolor_macos_owner::LaunchdTarget,
+)> {
+    let launchd = hypercolor_macos_owner::LaunchdAdapter::for_current_user()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let target = launchd.target(LAUNCHD_LABEL);
+    Ok((launchd, target))
 }
 
 #[cfg(target_os = "macos")]
 fn macos_log_path() -> Result<String> {
-    let home = dirs::home_dir().context("Could not determine home directory")?;
-    let path = home
-        .join("Library")
-        .join("Logs")
-        .join("hypercolor")
+    let path = hypercolor_core::config::paths::macos_user_log_dir()
+        .context("Could not determine home directory")?
         .join("hypercolor.log");
     Ok(path.to_string_lossy().into_owned())
-}
-
-#[cfg(target_os = "macos")]
-fn run_launchctl(args: &[&str]) -> Result<()> {
-    let output = std::process::Command::new("launchctl")
-        .args(args)
-        .output()
-        .context("Failed to run launchctl")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("launchctl {} failed: {}", args.join(" "), stderr.trim());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn get_uid() -> Result<String> {
-    let output = std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .context("Failed to run `id -u`")?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -532,29 +527,20 @@ fn choose_owner_locally(
 #[cfg(target_os = "macos")]
 struct CliOwnerExecutor {
     store: hypercolor_macos_owner::MacosOwnerStore,
-    uid: String,
+    launchd: hypercolor_macos_owner::LaunchdAdapter,
     launch_agents: std::path::PathBuf,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum CliOwnerStopAuthority {
-    AppSupervisor,
-    LaunchctlService(String),
-    HomebrewService(&'static str),
-    UserDirected,
 }
 
 #[cfg(target_os = "macos")]
 impl CliOwnerExecutor {
     fn new(store: hypercolor_macos_owner::MacosOwnerStore) -> Result<Self> {
-        let uid = command_stdout("/usr/bin/id", &["-u"])?;
-        let launch_agents = dirs::home_dir()
-            .context("failed to resolve the user home directory")?
-            .join("Library/LaunchAgents");
+        let launchd = hypercolor_macos_owner::LaunchdAdapter::for_current_user()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let launch_agents = hypercolor_core::config::paths::macos_launch_agents_dir()
+            .context("failed to resolve the user home directory")?;
         Ok(Self {
             store,
-            uid,
+            launchd,
             launch_agents,
         })
     }
@@ -567,7 +553,7 @@ impl CliOwnerExecutor {
         match owner {
             MacosDaemonOwner::AppSidecar => Ok(hypercolor_macos_owner::MACOS_APP_PRODUCT_NAME),
             MacosDaemonOwner::DirectLaunchd => Ok(LAUNCHD_LABEL),
-            MacosDaemonOwner::Homebrew => Ok("homebrew.mxcl.hypercolor"),
+            MacosDaemonOwner::Homebrew => Ok(hypercolor_types::service::HOMEBREW_UNIT),
             MacosDaemonOwner::Standalone => Err(MacosOwnerExecutionError::new(
                 "standalone has no service label",
             )),
@@ -589,23 +575,26 @@ impl CliOwnerExecutor {
     fn target(
         &self,
         owner: hypercolor_macos_owner::MacosDaemonOwner,
-    ) -> Result<String, hypercolor_macos_owner::MacosOwnerExecutionError> {
-        Ok(format!("gui/{}/{}", self.uid, Self::label(owner)?))
+    ) -> Result<
+        hypercolor_macos_owner::LaunchdTarget,
+        hypercolor_macos_owner::MacosOwnerExecutionError,
+    > {
+        Ok(self.launchd.target(Self::label(owner)?))
     }
 
+    /// Who may stop an owner, derived from its neutral identity; the same
+    /// rule the app executor applies.
     fn stop_authority(
-        &self,
         owner: hypercolor_macos_owner::MacosDaemonOwner,
-    ) -> Result<CliOwnerStopAuthority, hypercolor_macos_owner::MacosOwnerExecutionError> {
+    ) -> hypercolor_types::service::StopAuthority {
         use hypercolor_macos_owner::MacosDaemonOwner;
+        use hypercolor_types::service::{ServiceIdentity, StopAuthority};
 
-        Ok(match owner {
-            MacosDaemonOwner::AppSidecar => CliOwnerStopAuthority::AppSupervisor,
-            MacosDaemonOwner::DirectLaunchd => {
-                CliOwnerStopAuthority::LaunchctlService(self.target(owner)?)
-            }
-            MacosDaemonOwner::Homebrew => CliOwnerStopAuthority::HomebrewService("hypercolor"),
-            MacosDaemonOwner::Standalone => CliOwnerStopAuthority::UserDirected,
+        StopAuthority::for_identity(&match owner {
+            MacosDaemonOwner::AppSidecar => ServiceIdentity::APP_SIDECAR,
+            MacosDaemonOwner::DirectLaunchd => ServiceIdentity::launchd_direct(),
+            MacosDaemonOwner::Homebrew => ServiceIdentity::homebrew(),
+            MacosDaemonOwner::Standalone => ServiceIdentity::STANDALONE,
         })
     }
 }
@@ -620,19 +609,7 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
         if !plist.is_file() {
             return Ok(false);
         }
-        let output = owner_command_output(
-            "/bin/launchctl",
-            &["print-disabled", &format!("gui/{}", self.uid)],
-        )?;
-        if !output.status.success() {
-            return Err(hypercolor_macos_owner::MacosOwnerExecutionError::new(
-                "launchctl failed to inspect service autostart state",
-            ));
-        }
-        Ok(!launchctl_service_disabled(
-            &String::from_utf8_lossy(&output.stdout),
-            Self::label(owner)?,
-        ))
+        self.launchd.autostart_enabled(&self.target(owner)?)
     }
 
     fn set_autostart(
@@ -649,8 +626,7 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
         {
             install_app_sidecar_launch_agent(path)?;
         }
-        let action = if enabled { "enable" } else { "disable" };
-        owner_run_command("/bin/launchctl", &[action, &self.target(owner)?])?;
+        self.launchd.set_autostart(&self.target(owner)?, enabled)?;
         if !enabled
             && let Some(path) = app_plist
             && path.is_file()
@@ -673,13 +649,14 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
     ) -> Result<(), hypercolor_macos_owner::MacosOwnerExecutionError> {
         use hypercolor_macos_owner::MacosOwnerExecutionError;
 
-        match self.stop_authority(incarnation.owner)? {
-            CliOwnerStopAuthority::AppSupervisor => Err(MacosOwnerExecutionError::new(
+        use hypercolor_types::service::StopAuthority;
+
+        match Self::stop_authority(incarnation.owner) {
+            StopAuthority::SupervisedChild => Err(MacosOwnerExecutionError::new(
                 "app-sidecar termination requires the app supervisor's retained child handle",
             )),
-            CliOwnerStopAuthority::LaunchctlService(_)
-            | CliOwnerStopAuthority::HomebrewService(_) => Ok(()),
-            CliOwnerStopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
+            StopAuthority::ServiceManager(_) => Ok(()),
+            StopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
                 "standalone termination requires its terminal user",
             )),
         }
@@ -691,22 +668,27 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
     ) -> Result<(), hypercolor_macos_owner::MacosOwnerExecutionError> {
         use hypercolor_macos_owner::MacosOwnerExecutionError;
 
-        match self.stop_authority(incarnation.owner)? {
-            CliOwnerStopAuthority::AppSupervisor => Err(MacosOwnerExecutionError::new(
+        use hypercolor_types::service::{ServiceManager, StopAuthority};
+
+        match Self::stop_authority(incarnation.owner) {
+            StopAuthority::SupervisedChild => Err(MacosOwnerExecutionError::new(
                 "app-sidecar termination requires the app supervisor's retained child handle",
             )),
-            CliOwnerStopAuthority::LaunchctlService(target) => {
-                let output = owner_command_output("/bin/launchctl", &["print", &target])?;
-                if !output.status.success() {
-                    return Ok(());
+            StopAuthority::ServiceManager(identity) => match identity.manager {
+                Some(ServiceManager::Launchd) => {
+                    self.launchd.stop(&self.target(incarnation.owner)?)
                 }
-                owner_run_command("/bin/launchctl", &["kill", "SIGTERM", &target])
-            }
-            CliOwnerStopAuthority::HomebrewService(formula) => {
-                let brew = homebrew_binary()?;
-                owner_run_command(&brew.to_string_lossy(), &["services", "stop", formula])
-            }
-            CliOwnerStopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
+                Some(ServiceManager::Homebrew) => {
+                    let brew = homebrew_binary()?;
+                    owner_run_command(&brew.to_string_lossy(), &["services", "stop", "hypercolor"])
+                }
+                Some(ServiceManager::Systemd | ServiceManager::WindowsScm) | None => {
+                    Err(MacosOwnerExecutionError::new(format!(
+                        "{identity} is not a macOS service manager"
+                    )))
+                }
+            },
+            StopAuthority::UserDirected => Err(MacosOwnerExecutionError::new(
                 "standalone termination requires its terminal user",
             )),
         }
@@ -725,21 +707,8 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
             ),
             MacosDaemonOwner::DirectLaunchd => {
                 let target = self.target(owner)?;
-                if owner_command_output("/bin/launchctl", &["print", &target])?
-                    .status
-                    .success()
-                {
-                    owner_run_command("/bin/launchctl", &["kickstart", &target])
-                } else {
-                    owner_run_command(
-                        "/bin/launchctl",
-                        &[
-                            "bootstrap",
-                            &format!("gui/{}", self.uid),
-                            &self.plist(owner)?.to_string_lossy(),
-                        ],
-                    )
-                }
+                let plist = self.plist(owner)?;
+                self.launchd.start(&target, &plist)
             }
             MacosDaemonOwner::Homebrew => {
                 let brew = homebrew_binary()?;
@@ -777,14 +746,6 @@ impl hypercolor_macos_owner::MacosOwnerExecutor for CliOwnerExecutor {
 }
 
 #[cfg(target_os = "macos")]
-fn launchctl_service_disabled(output: &str, label: &str) -> bool {
-    output.lines().any(|line| {
-        let line = line.trim();
-        line.contains(&format!("\"{label}\"")) && line.ends_with("=> true")
-    })
-}
-
-#[cfg(target_os = "macos")]
 fn homebrew_binary() -> Result<std::path::PathBuf, hypercolor_macos_owner::MacosOwnerExecutionError>
 {
     ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
@@ -799,18 +760,6 @@ fn homebrew_binary() -> Result<std::path::PathBuf, hypercolor_macos_owner::Macos
 }
 
 #[cfg(target_os = "macos")]
-fn command_stdout(program: &str, args: &[&str]) -> Result<String> {
-    let output = std::process::Command::new(program).args(args).output()?;
-    if !output.status.success() {
-        bail!("{program} failed with {}", output.status);
-    }
-    if output.stdout.len() > 64 * 1024 {
-        bail!("{program} output exceeds 64 KiB");
-    }
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
-}
-
-#[cfg(target_os = "macos")]
 fn install_app_sidecar_launch_agent(
     path: &std::path::Path,
 ) -> Result<(), hypercolor_macos_owner::MacosOwnerExecutionError> {
@@ -819,9 +768,9 @@ fn install_app_sidecar_launch_agent(
 
     let bundle = [
         std::path::PathBuf::from("/Applications/Hypercolor.app"),
-        dirs::home_dir()
+        hypercolor_core::config::paths::macos_user_applications_dir()
             .unwrap_or_default()
-            .join("Applications/Hypercolor.app"),
+            .join("Hypercolor.app"),
     ]
     .into_iter()
     .find(|candidate| candidate.is_dir())
@@ -1014,11 +963,33 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// The macOS owner a neutral identity names on this host.
+#[cfg(target_os = "macos")]
+fn macos_owner_for_identity(
+    identity: &hypercolor_types::service::ServiceIdentity,
+) -> Result<hypercolor_macos_owner::MacosDaemonOwner> {
+    use hypercolor_macos_owner::MacosDaemonOwner;
+    use hypercolor_types::service::{DaemonRunMode, ServiceManager};
+
+    match (identity.run_mode, identity.manager) {
+        (DaemonRunMode::SupervisedChild, None) => Ok(MacosDaemonOwner::AppSidecar),
+        (DaemonRunMode::Standalone, None) => Ok(MacosDaemonOwner::Standalone),
+        (DaemonRunMode::UserService, Some(ServiceManager::Launchd)) => {
+            Ok(MacosDaemonOwner::DirectLaunchd)
+        }
+        (DaemonRunMode::UserService, Some(ServiceManager::Homebrew)) => {
+            Ok(MacosDaemonOwner::Homebrew)
+        }
+        _ => bail!("{identity} is not a macOS daemon topology"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{Parser, ValueEnum};
 
     use super::MacosServiceOwner;
+    use hypercolor_types::service::ServiceIdentity;
 
     #[test]
     fn macos_owner_values_use_stable_local_cli_names() {
@@ -1033,6 +1004,32 @@ mod tests {
         assert_eq!(
             MacosServiceOwner::from_str("homebrew", false),
             Ok(MacosServiceOwner::Homebrew)
+        );
+    }
+
+    #[test]
+    fn owner_choices_name_the_neutral_identities() {
+        assert_eq!(
+            MacosServiceOwner::AppSidecar.identity(),
+            ServiceIdentity::APP_SIDECAR
+        );
+        assert_eq!(
+            MacosServiceOwner::DirectLaunchd.identity(),
+            ServiceIdentity::launchd_direct()
+        );
+        assert_eq!(
+            MacosServiceOwner::Homebrew.identity(),
+            ServiceIdentity::homebrew()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn foreign_identities_are_rejected_on_macos() {
+        assert!(super::macos_owner_for_identity(&ServiceIdentity::systemd_user()).is_err());
+        assert_eq!(
+            super::macos_owner_for_identity(&ServiceIdentity::STANDALONE).expect("standalone maps"),
+            hypercolor_macos_owner::MacosDaemonOwner::Standalone
         );
     }
 
@@ -1053,23 +1050,6 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn disabled_service_parser_is_exact_to_the_requested_label() {
-        let output = r#"disabled services = {
-            "tech.hyperbliss.hypercolor" => true
-            "homebrew.mxcl.hypercolor" => false
-        }"#;
-        assert!(super::launchctl_service_disabled(
-            output,
-            "tech.hyperbliss.hypercolor"
-        ));
-        assert!(!super::launchctl_service_disabled(
-            output,
-            "homebrew.mxcl.hypercolor"
-        ));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
     fn app_sidecar_service_identity_matches_tauri_artifacts() {
         use hypercolor_macos_owner::{
             MacosDaemonOwner, MacosOwnerExecutor, MacosOwnerIdentity, MacosOwnerStore,
@@ -1078,7 +1058,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory should build");
         let executor = super::CliOwnerExecutor {
             store: MacosOwnerStore::new(directory.path()),
-            uid: "501".to_owned(),
+            launchd: hypercolor_macos_owner::LaunchdAdapter::with_uid("501"),
             launch_agents: directory.path().to_path_buf(),
         };
         assert_eq!(
@@ -1095,10 +1075,8 @@ mod tests {
             Some(hypercolor_macos_owner::MACOS_APP_LAUNCH_AGENT_PLIST_FILE_NAME)
         );
         assert_eq!(
-            executor
-                .stop_authority(MacosDaemonOwner::AppSidecar)
-                .expect("app-sidecar authority should resolve"),
-            super::CliOwnerStopAuthority::AppSupervisor
+            super::CliOwnerExecutor::stop_authority(MacosDaemonOwner::AppSidecar),
+            hypercolor_types::service::StopAuthority::SupervisedChild
         );
 
         let record = executor
@@ -1134,25 +1112,33 @@ mod tests {
     fn cli_external_owner_stops_use_only_exact_launcher_identities() {
         use hypercolor_macos_owner::{MacosDaemonOwner, MacosOwnerStore};
 
+        use hypercolor_types::service::{ServiceIdentity, StopAuthority};
+
         let directory = tempfile::tempdir().expect("temporary directory should build");
         let executor = super::CliOwnerExecutor {
             store: MacosOwnerStore::new(directory.path()),
-            uid: "501".to_owned(),
+            launchd: hypercolor_macos_owner::LaunchdAdapter::with_uid("501"),
             launch_agents: directory.path().to_path_buf(),
         };
         assert_eq!(
             executor
-                .stop_authority(MacosDaemonOwner::DirectLaunchd)
-                .expect("launchd authority should resolve"),
-            super::CliOwnerStopAuthority::LaunchctlService(
-                "gui/501/tech.hyperbliss.hypercolor".to_owned()
-            )
+                .target(MacosDaemonOwner::DirectLaunchd)
+                .expect("launchd target should resolve")
+                .service(),
+            "gui/501/tech.hyperbliss.hypercolor"
         );
         assert_eq!(
-            executor
-                .stop_authority(MacosDaemonOwner::Homebrew)
-                .expect("Homebrew authority should resolve"),
-            super::CliOwnerStopAuthority::HomebrewService("hypercolor")
+            super::CliOwnerExecutor::stop_authority(MacosDaemonOwner::DirectLaunchd),
+            StopAuthority::ServiceManager(ServiceIdentity::launchd_direct())
         );
+        assert_eq!(
+            super::CliOwnerExecutor::stop_authority(MacosDaemonOwner::Homebrew),
+            StopAuthority::ServiceManager(ServiceIdentity::homebrew())
+        );
+        assert_eq!(
+            super::CliOwnerExecutor::stop_authority(MacosDaemonOwner::Standalone),
+            StopAuthority::UserDirected
+        );
+        let _ = executor.store;
     }
 }

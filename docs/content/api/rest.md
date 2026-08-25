@@ -257,6 +257,24 @@ List available audio capture devices for reactive effects. Pick the **monitor**
 of your output, not a microphone, if you want lights to follow what's playing.
 {% </api_endpoint> %}
 
+## Media
+
+{% <api_endpoint method="POST" path="/api/v1/media/authorize"> %}
+Request macOS Automation access for an already-running media application. The
+endpoint requires a control credential and accepts either Apple Music or
+Spotify:
+
+```json
+{
+  "adapter": "music"
+}
+```
+
+The response reports the selected adapter and whether access was authorized.
+The daemon returns `422` when the application is not running and `409` when
+Automation access is unavailable or denied.
+{% </api_endpoint> %}
+
 ## Effects
 
 {{< img path="img/ui/effects.webp" alt="Browsing the effect catalog in the web UI" />}}

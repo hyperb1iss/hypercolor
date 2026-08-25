@@ -1,19 +1,19 @@
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use std::sync::Arc;
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use hypercolor_core::config::{BootConfig, ConfigManager};
-use hypercolor_core::input::screen::{PixelExtent, ScreenAdmissionCapacity, ScreenCaptureDemand};
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::ResolvedCaptureSource;
+use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
 use hypercolor_core::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use super::CaptureConfigPersistenceGate;
 #[cfg(target_os = "linux")]
 use super::CaptureConfigPersistenceUpdate;
+#[cfg(target_os = "windows")]
+use super::windows_capture_source_sink;
 use super::{
-    screen_analysis_plan_for_demand, screen_capacity_plan, screen_capacity_plan_for_backend,
-    screen_capture_config_from, screen_capture_config_with_capacity_from,
+    screen_capacity_plan, screen_capacity_plan_for_backend, screen_capture_config_from,
+    screen_capture_config_with_capacity_from,
 };
 
 #[test]
@@ -43,45 +43,21 @@ fn steady_capacity_defaults_to_live_backend_memory() {
     assert_eq!(total.byte_budget(), 1_000_000);
 }
 
-#[test]
-fn analysis_quote_uses_the_actual_requested_extent() {
-    let mut capture = hypercolor_types::config::CaptureConfig::default();
-    let extent = PixelExtent::new(3840, 2160).expect("4K extent is non-empty");
-    let demand = ScreenCaptureDemand::active(extent);
-    let unbounded = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
-    let baseline = screen_analysis_plan_for_demand(&capture, demand, unbounded)
-        .expect("4K analysis is representable")
-        .expect("active demand has an analysis plan");
-    let peak = baseline.peak_bytes();
-
-    capture.publication_memory_bytes = Some(peak);
-    let exact = screen_capacity_plan_for_backend(&capture, peak).expect("exact peak is configured");
-    let admitted = screen_analysis_plan_for_demand(&capture, demand, exact.total_capacity())
-        .expect("exact 4K peak is admitted")
-        .expect("active demand has an analysis plan");
-    assert_eq!(admitted.peak_bytes(), peak);
-
-    capture.publication_memory_bytes = Some(peak - 1);
-    let undersized = screen_capacity_plan_for_backend(&capture, peak)
-        .expect("steady policy is valid while capture is inactive");
-    assert!(
-        screen_analysis_plan_for_demand(&capture, demand, undersized.total_capacity()).is_err()
-    );
-
-    capture.publication_memory_bytes = Some(peak + 777);
-    let capacity = screen_capacity_plan_for_backend(&capture, peak + 333)
-        .expect("independent steady and physical fences resolve");
-    assert_eq!(
-        capacity.resource_capacity(),
-        ScreenAdmissionCapacity::new(peak + 333, peak + 333)
-    );
-    assert_eq!(
-        capacity.total_capacity(),
-        ScreenAdmissionCapacity::new(peak + 777, peak + 333)
-    );
+#[cfg(target_os = "windows")]
+fn persistence_gate(
+    manager: &Arc<ConfigManager>,
+    committed: bool,
+) -> (
+    CaptureConfigPersistenceGate,
+    Arc<hypercolor_types::config::HypercolorConfig>,
+) {
+    let expected = Arc::clone(&manager.get());
+    let persistence = CaptureConfigPersistenceGate::new(Arc::clone(manager), &expected, committed)
+        .expect("capture persistence authority is reserved");
+    persistence.bind_source(live_screen_status());
+    (persistence, expected)
 }
 
-#[cfg(target_os = "macos")]
 fn live_screen_status() -> SourceStatusHandle {
     let mut reporter =
         SourceStatusReporter::new("test-screen", SourceKind::Screen, "test", true, true, true);
@@ -94,15 +70,14 @@ fn live_screen_status() -> SourceStatusHandle {
     reporter.handle()
 }
 
-#[cfg(target_os = "macos")]
-fn macos_picker_gate(
+fn picker_gate(
     manager: &Arc<ConfigManager>,
 ) -> (
     CaptureConfigPersistenceGate,
     Arc<hypercolor_types::config::HypercolorConfig>,
 ) {
     let expected = Arc::clone(&manager.get());
-    let persistence = CaptureConfigPersistenceGate::for_macos_picker(
+    let persistence = CaptureConfigPersistenceGate::for_picker(
         Arc::clone(manager),
         &expected,
         live_screen_status(),
@@ -111,15 +86,14 @@ fn macos_picker_gate(
     (persistence, expected)
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn macos_display_picker_selection_persists_stable_uuid() {
+fn display_picker_selection_persists_stable_uuid() {
     let directory = tempfile::tempdir().expect("test config directory is created");
     let path = directory.path().join("hypercolor.toml");
     let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
-    let (persistence, expected) = macos_picker_gate(&manager);
+    let (persistence, expected) = picker_gate(&manager);
 
-    persistence.publish_macos_selection(
+    persistence.publish_picker_selection(
         expected.capture.source.clone(),
         "display:7a3f4954-3d72-47a6-a914-16ef68d02122".to_owned(),
     );
@@ -136,16 +110,15 @@ fn macos_display_picker_selection_persists_stable_uuid() {
     );
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn macos_window_picker_selection_persists_only_session_scope() {
+fn window_picker_selection_persists_only_session_scope() {
     let directory = tempfile::tempdir().expect("test config directory is created");
     let path = directory.path().join("hypercolor.toml");
     let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
-    let (persistence, expected) = macos_picker_gate(&manager);
+    let (persistence, expected) = picker_gate(&manager);
 
     persistence
-        .publish_macos_selection(expected.capture.source.clone(), "session_scoped".to_owned());
+        .publish_picker_selection(expected.capture.source.clone(), "session_scoped".to_owned());
 
     assert_eq!(manager.get().capture.source, "session_scoped");
     drop(persistence);
@@ -154,17 +127,16 @@ fn macos_window_picker_selection_persists_only_session_scope() {
     assert_eq!(restarted.get().capture.source, "session_scoped");
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn macos_picker_update_cannot_overwrite_newer_config() {
+fn picker_update_cannot_overwrite_newer_config() {
     let directory = tempfile::tempdir().expect("test config directory is created");
     let manager = Arc::new(
         ConfigManager::new(directory.path().join("hypercolor.toml")).expect("config manager opens"),
     );
-    let (persistence, expected) = macos_picker_gate(&manager);
+    let (persistence, expected) = picker_gate(&manager);
     manager.modify(|config| config.capture.source = "primary_display".to_owned());
 
-    persistence.publish_macos_selection(
+    persistence.publish_picker_selection(
         expected.capture.source.clone(),
         "display:7a3f4954-3d72-47a6-a914-16ef68d02122".to_owned(),
     );
@@ -172,20 +144,124 @@ fn macos_picker_update_cannot_overwrite_newer_config() {
     assert_eq!(manager.get().capture.source, "primary_display");
 }
 
-#[cfg(target_os = "macos")]
 #[test]
-fn revoked_macos_picker_gate_preserves_current_selection() {
+fn revoked_picker_gate_preserves_current_selection() {
     let directory = tempfile::tempdir().expect("test config directory is created");
     let manager = Arc::new(
         ConfigManager::new(directory.path().join("hypercolor.toml")).expect("config manager opens"),
     );
-    let (persistence, expected) = macos_picker_gate(&manager);
+    let (persistence, expected) = picker_gate(&manager);
     persistence.revoke();
 
     persistence
-        .publish_macos_selection(expected.capture.source.clone(), "session_scoped".to_owned());
+        .publish_picker_selection(expected.capture.source.clone(), "session_scoped".to_owned());
 
     assert_eq!(manager.get().capture.source, expected.capture.source);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn resolved_windows_capture_source_survives_daemon_restart() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
+    manager.modify(|config| config.capture.source = "monitor:1".to_owned());
+    manager.save().expect("legacy source is persisted");
+
+    let (persistence, _) = persistence_gate(&manager, true);
+    windows_capture_source_sink(persistence)(ResolvedCaptureSource {
+        configured_source: "monitor:1".to_owned(),
+        stable_source: "monitor:display:stable".to_owned(),
+    });
+    drop(manager);
+
+    let restarted = ConfigManager::new(path).expect("config manager reopens after restart");
+    assert_eq!(restarted.get().capture.source, "monitor:display:stable");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn resolved_windows_capture_source_does_not_overwrite_a_newer_selection() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
+    manager.modify(|config| config.capture.source = "monitor:new-choice".to_owned());
+    manager.save().expect("new source is persisted");
+
+    let (persistence, _) = persistence_gate(&manager, true);
+    windows_capture_source_sink(persistence)(ResolvedCaptureSource {
+        configured_source: "monitor:1".to_owned(),
+        stable_source: "monitor:display:stale".to_owned(),
+    });
+    drop(manager);
+
+    let restarted = ConfigManager::new(path).expect("config manager reopens after restart");
+    assert_eq!(restarted.get().capture.source, "monitor:new-choice");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn resolved_windows_capture_source_waits_for_graph_commit() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
+    manager.modify(|config| config.capture.source = "monitor:1".to_owned());
+    let (persistence, expected) = persistence_gate(&manager, false);
+
+    windows_capture_source_sink(persistence.clone())(ResolvedCaptureSource {
+        configured_source: "monitor:1".to_owned(),
+        stable_source: "monitor:display:stable".to_owned(),
+    });
+
+    assert_eq!(manager.get().capture.source, "monitor:1");
+    assert!(!path.exists());
+    let activated = manager
+        .save_capture_and_activate_if_current(
+            &expected,
+            persistence.epoch(),
+            persistence.source_identity(),
+            expected.capture.clone(),
+        )
+        .expect("prepared capture config is persisted")
+        .expect("prepared capture authority activates");
+    assert_eq!(activated.capture.source, "monitor:1");
+    persistence.commit();
+    assert_eq!(manager.get().capture.source, "monitor:display:stable");
+    assert!(path.exists());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn stale_windows_callback_cannot_rewrite_a_newer_capture_epoch() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path).expect("config manager opens"));
+    manager.modify(|config| config.capture.source = "monitor:1".to_owned());
+    let (stale, _) = persistence_gate(&manager, true);
+    let (current, expected) = persistence_gate(&manager, false);
+    let activated = manager
+        .save_capture_and_activate_if_current(
+            &expected,
+            current.epoch(),
+            current.source_identity(),
+            expected.capture.clone(),
+        )
+        .expect("new capture config is persisted")
+        .expect("new capture epoch activates");
+    assert_eq!(activated.capture.source, "monitor:1");
+    current.commit();
+
+    windows_capture_source_sink(stale)(ResolvedCaptureSource {
+        configured_source: "monitor:1".to_owned(),
+        stable_source: "monitor:display:stale".to_owned(),
+    });
+    assert_eq!(manager.get().capture.source, "monitor:1");
+
+    windows_capture_source_sink(current)(ResolvedCaptureSource {
+        configured_source: "monitor:1".to_owned(),
+        stable_source: "monitor:display:current".to_owned(),
+    });
+    assert_eq!(manager.get().capture.source, "monitor:display:current");
 }
 
 #[test]

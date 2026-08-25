@@ -20,8 +20,7 @@ use super::super::worker_client::ServoProducerRole;
 use super::super::{ServoSessionHandle, SessionConfig, note_servo_session_error};
 use super::{
     ServoRenderer, animation_cadence, effect_uses_lighting_data, effect_uses_media_data,
-    effect_uses_net_data, effect_uses_sensor_data, host_driven_animation,
-    scoped_sensor_control_ids,
+    effect_uses_net_data, host_driven_animation, scoped_sensor_control_ids,
 };
 use crate::effect::lightscript::LightscriptRuntime;
 use crate::effect::paths::resolve_html_source_path;
@@ -115,7 +114,7 @@ impl ServoRenderer {
         self.command_queue_saturated = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.include_screen_updates = metadata.screen_reactive;
-        self.include_sensor_updates = effect_uses_sensor_data(metadata);
+        self.include_sensor_updates = metadata.requires_sensors();
         self.scoped_sensor_control_ids = scoped_sensor_control_ids(metadata);
         self.include_interaction_updates = metadata.requires_interaction();
         self.include_media_updates = effect_uses_media_data(metadata);

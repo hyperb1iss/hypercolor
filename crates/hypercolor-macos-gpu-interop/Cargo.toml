@@ -12,6 +12,7 @@ description = "macOS IOSurface/Metal texture import boundary for Hypercolor"
 default = []
 screen-capture = ["dep:hypercolor-macos-capture", "dep:objc2-core-video"]
 servo-context = [
+  "dep:anyhow",
   "dep:cgl",
   "dep:dpi",
   "dep:euclid",
@@ -22,9 +23,12 @@ servo-context = [
   "dep:surfman",
   "dep:tracing",
   "dep:webrender_api",
+  "hypercolor-gpu-frame/servo-context",
 ]
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
+hypercolor-gpu-frame = { workspace = true }
 hypercolor-macos-capture = { workspace = true, optional = true }
 thiserror = { workspace = true }
 wgpu = { workspace = true }

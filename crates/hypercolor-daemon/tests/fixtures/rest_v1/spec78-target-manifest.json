@@ -1,6 +1,6 @@
 {
-  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8), amended by the Spec 76/77 protected-authorization contract",
-  "_regenerate": "parse the appendix table, then preserve the input and capture authorization actions required by Specs 76 and 77",
+  "_source": "docs/specs/78-api-resource-model.md Appendix A (LOCKED rev 8), amended by the Spec 76/77 and Design 72 E3 protected-authorization contracts",
+  "_regenerate": "parse the appendix table, then preserve the input, capture, and media authorization actions required by Specs 76 and 77 and Design 72 E3",
   "_scope": "the /api/v1 surface (JSON routes plus the /ws upgrade, matched by path only) and /health; document routes excluded",
   "paths": [
     {
@@ -514,6 +514,12 @@
     },
     {
       "path": "/api/v1/capture/authorize",
+      "methods": [
+        "POST"
+      ]
+    },
+    {
+      "path": "/api/v1/media/authorize",
       "methods": [
         "POST"
       ]

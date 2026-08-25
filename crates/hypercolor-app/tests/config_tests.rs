@@ -285,6 +285,10 @@ fn macos_bundle_plists_declare_required_permissions() {
             "Hypercolor uses your microphone for audio-reactive lighting effects.",
         ),
         (
+            "NSAppleEventsUsageDescription",
+            "Hypercolor reads playback metadata from supported media apps for media-reactive lighting effects.",
+        ),
+        (
             "NSScreenCaptureUsageDescription",
             "Hypercolor captures your screen to create screen-reactive lighting effects.",
         ),
@@ -293,10 +297,6 @@ fn macos_bundle_plists_declare_required_permissions() {
         plist_string_entries(&info_plist),
         expected_privacy_entries,
         "Info.plist should declare only the required privacy purpose strings"
-    );
-    assert!(
-        !info_plist.contains("NSAppleEventsUsageDescription"),
-        "Info.plist should not request unrelated Apple Events permission"
     );
 }
 
@@ -307,6 +307,9 @@ fn macos_daemon_signing_contract_is_exact() {
         .expect("macOS signing manifest should be readable");
     let entitlements = fs::read_to_string(root.join("packaging/macos/daemon.entitlements.plist"))
         .expect("macOS daemon entitlements should be readable");
+    let sidecar_entitlements =
+        fs::read_to_string(root.join("packaging/macos/daemon-sidecar.entitlements.plist"))
+            .expect("macOS daemon sidecar entitlements should be readable");
 
     let expected_manifest = BTreeMap::from([
         (
@@ -320,7 +323,7 @@ fn macos_daemon_signing_contract_is_exact() {
             ("app", "Contents/MacOS/hypercolor-daemon-{target}"),
             (
                 "tech.hyperbliss.hypercolor.sidecar",
-                "packaging/macos/daemon.entitlements.plist",
+                "packaging/macos/daemon-sidecar.entitlements.plist",
             ),
         ),
         (
@@ -345,10 +348,6 @@ fn macos_daemon_signing_contract_is_exact() {
                 "crates/hypercolor-app/entitlements.plist",
             ),
         ),
-        (
-            ("standalone", "bin/hypercolor-tray"),
-            ("tech.hyperbliss.hypercolor.tray", "none"),
-        ),
     ]);
     assert_eq!(signing_manifest_entries(&manifest), expected_manifest);
 
@@ -365,6 +364,12 @@ fn macos_daemon_signing_contract_is_exact() {
         ("com.apple.security.network.server", true),
     ]);
     assert_eq!(plist_boolean_entries(&entitlements), expected_entitlements);
+    let mut expected_sidecar_entitlements = expected_entitlements;
+    expected_sidecar_entitlements.insert("com.apple.security.automation.apple-events", true);
+    assert_eq!(
+        plist_boolean_entries(&sidecar_entitlements),
+        expected_sidecar_entitlements
+    );
 }
 
 #[test]

@@ -20,7 +20,7 @@ fn main() {
     {
         use std::time::{Duration, Instant};
 
-        use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput};
+        use hypercolor_core::input::screen::consumer::{CaptureConfig, ScreenCaptureInput};
         use hypercolor_core::input::{InputData, InputSource};
         use hypercolor_windows_capture::DesktopDuplicator;
 

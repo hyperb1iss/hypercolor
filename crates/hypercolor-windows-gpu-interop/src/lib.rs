@@ -2,6 +2,11 @@
 
 //! Windows GPU interop helpers for Servo effect frames.
 
+pub use hypercolor_gpu_frame::{
+    FrameOrigin, GpuFrameImportError, GpuFrameImportFallbackReason, ImportedEffectFrame,
+    ImportedFrameAllocationId, ImportedFrameFormat, ImportedFrameLease, ImportedFrameTimings,
+};
+
 /// Operation label used when creating the ANGLE client-buffer surface fails.
 pub const WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION: &str =
     "create ANGLE client-buffer surface";
@@ -15,6 +20,12 @@ mod screen;
 mod screen_stubs;
 #[cfg(all(target_os = "windows", feature = "servo-context"))]
 mod servo_context;
+#[cfg(all(target_os = "windows", feature = "servo-window"))]
+mod servo_platform;
+#[cfg(all(not(target_os = "windows"), feature = "servo-window"))]
+mod servo_platform_stub;
+#[cfg(all(target_os = "windows", feature = "servo-window"))]
+mod servo_window;
 #[cfg(not(target_os = "windows"))]
 mod stubs;
 #[cfg(target_os = "windows")]
@@ -26,6 +37,12 @@ pub use screen::*;
 pub use screen_stubs::*;
 #[cfg(all(target_os = "windows", feature = "servo-context"))]
 pub use servo_context::*;
+#[cfg(all(target_os = "windows", feature = "servo-window"))]
+pub use servo_platform::{WindowsServoPlatform, servo_render_platform};
+#[cfg(all(not(target_os = "windows"), feature = "servo-window"))]
+pub use servo_platform_stub::servo_render_platform;
+#[cfg(all(target_os = "windows", feature = "servo-window"))]
+pub use servo_window::hidden_window_rendering_context;
 #[cfg(not(target_os = "windows"))]
 pub use stubs::*;
 #[cfg(target_os = "windows")]

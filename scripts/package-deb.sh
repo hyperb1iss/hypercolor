@@ -81,7 +81,6 @@ info "Packaging ${DIST_DIR} as ${DEB_NAME}"
 install -Dm755 "${DIST_DIR}/bin/hypercolor-daemon" "${PACKAGE_ROOT}/usr/bin/hypercolor-daemon"
 install -Dm755 "${DIST_DIR}/bin/hypercolor" "${PACKAGE_ROOT}/usr/bin/hypercolor"
 install -Dm755 "${DIST_DIR}/bin/hypercolor-app" "${PACKAGE_ROOT}/usr/bin/hypercolor-app"
-install -Dm755 "${DIST_DIR}/bin/hypercolor-tray" "${PACKAGE_ROOT}/usr/bin/hypercolor-tray"
 install -Dm755 "${DIST_DIR}/bin/hypercolor-tui" "${PACKAGE_ROOT}/usr/bin/hypercolor-tui"
 install -Dm755 "${DIST_DIR}/bin/hypercolor-open" "${PACKAGE_ROOT}/usr/bin/hypercolor-open"
 
@@ -131,7 +130,7 @@ Suggests: i2c-tools
 Homepage: https://github.com/hyperb1iss/hypercolor
 Description: Open-source RGB lighting orchestration engine
  Hypercolor orchestrates RGB lighting devices with a daemon, CLI,
- tray applet, bundled web UI, and native desktop shell.
+ bundled web UI, and native desktop shell with a system tray.
 EOF
 
 cat > "${PACKAGE_ROOT}/DEBIAN/postinst" <<'EOF'

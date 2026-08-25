@@ -1,0 +1,33 @@
+[package]
+name = "hypercolor-linux-session"
+description = "Linux session and power event monitors for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+# The parent-death arm runs inside Command::pre_exec, an unsafe hook.
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[dependencies]
+hypercolor-core = { workspace = true }
+hypercolor-types = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow = { workspace = true }
+nix = { version = "0.30.1", features = ["process", "signal"] }
+sd-notify = "0.4"
+async-trait = { workspace = true }
+futures-core = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+zbus = { workspace = true }

@@ -4,11 +4,13 @@ use std::time::Instant;
 
 use glow::HasContext;
 
+use crate::{ImportedFrameTimings, LinuxImportedFrameFormatExt};
+
 use super::fence::{create_gl_fence, delete_gl_fence, wait_for_gl_blit_completion};
 use super::loader::{lookup_process_gl_symbol, process_gl_loader_available};
 use super::{
-    GlFramebufferSource, GlFramebufferStateSnapshot, ImportedFrameTimings,
-    LinuxGlFramebufferImportDescriptor, LinuxGpuInteropError, Result, elapsed_micros,
+    GlFramebufferSource, GlFramebufferStateSnapshot, LinuxGlFramebufferImportDescriptor,
+    LinuxGpuInteropError, Result, elapsed_micros,
 };
 
 const GL_DEDICATED_MEMORY_OBJECT_EXT: u32 = 0x9581;
@@ -184,7 +186,10 @@ impl GlImportedImageBinding {
                 (gl_external_memory.tex_storage_mem_2d_ext)(
                     glow::TEXTURE_2D,
                     1,
-                    descriptor.format.gl_internal_format(),
+                    descriptor
+                        .format
+                        .gl_internal_format()
+                        .expect("validated Linux import format"),
                     descriptor.width_i32(),
                     descriptor.height_i32(),
                     memory_object,
@@ -290,8 +295,9 @@ impl GlImportedImageBinding {
             let sync_us = wait_for_gl_blit_completion(gl)?;
 
             Ok(ImportedFrameTimings {
-                blit_us,
-                sync_us,
+                blit_us: Some(blit_us),
+                wrap_us: None,
+                sync_us: Some(sync_us),
                 total_us: 0,
             })
         })();
@@ -356,8 +362,9 @@ impl GlImportedImageBinding {
             Ok(PendingGlBlit {
                 fence,
                 timings: ImportedFrameTimings {
-                    blit_us,
-                    sync_us,
+                    blit_us: Some(blit_us),
+                    wrap_us: None,
+                    sync_us: Some(sync_us),
                     total_us: 0,
                 },
             })

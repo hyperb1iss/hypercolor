@@ -10,8 +10,6 @@ use crate::mcp::results::{
     LayoutZoneResult, OutputPowerResult, SensorDataResult, StatusResult,
 };
 use hypercolor_types::api::output::{OutputPatchRequest, OutputPowerMode};
-use hypercolor_types::sensor::SystemSnapshot;
-use std::sync::Arc;
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
 
@@ -162,12 +160,12 @@ pub(super) async fn handle_get_status_with_state(state: &AppState) -> Result<Val
     serialize_result(crate::mcp::payload::build_status_payload(state).await)
 }
 
-pub(super) async fn handle_get_sensor_data_with_state(
+pub(super) fn handle_get_sensor_data_with_state(
     params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
     let label = params.get("label").and_then(Value::as_str);
-    let snapshot = latest_sensor_snapshot(state).await;
+    let snapshot = crate::api::system::latest_sensor_snapshot(state);
     let reading = label.and_then(|value| snapshot.reading(value));
 
     serialize_result(SensorDataResult {
@@ -198,13 +196,6 @@ pub(super) fn handle_get_audio_state_with_state(state: &AppState) -> Result<Valu
         },
         spectrum_bins: spectrum.bins.len(),
     })
-}
-
-async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
-    let input_manager = state.input_manager().lock().await;
-    input_manager
-        .latest_sensor_snapshot()
-        .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))
 }
 
 pub(super) async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolError> {

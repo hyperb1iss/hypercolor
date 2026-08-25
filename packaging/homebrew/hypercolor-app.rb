@@ -30,6 +30,6 @@ cask "hypercolor-app" do
     "~/Library/Application Support/hypercolor",
     "~/Library/Caches/hypercolor",
     "~/Library/Logs/Hypercolor",
-    "~/Library/LaunchAgents/tech.hyperbliss.hypercolor.app.plist",
+    "~/Library/LaunchAgents/Hypercolor.plist",
   ]
 end

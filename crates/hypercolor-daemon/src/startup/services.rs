@@ -40,12 +40,17 @@ use hypercolor_core::input::screen::CaptureConfig as ScreenCaptureConfig;
 use hypercolor_core::input::screen::MacosScreenCaptureInput;
 #[cfg(target_os = "linux")]
 use hypercolor_core::input::screen::WaylandScreenCaptureInput;
-#[cfg(target_os = "windows")]
-use hypercolor_core::input::screen::WindowsScreenCaptureInput;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
-use hypercolor_core::input::screen::{ScreenAdmissionCapacity, ScreenAnalysisResourcePlan};
+use hypercolor_core::input::screen::consumer::ScreenAnalysisResourcePlan;
+#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::implementer::{
+    CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput,
+};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
+use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
-    InputManager, SensorPoller, SourceStatusHandle, SourceStatusRegistry,
+    InputManager, InteractionSource, ManagedSourceRole, ScreenSource, SensorSource,
+    SourceStatusHandle, SourceStatusRegistry,
 };
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -53,6 +58,7 @@ use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::audio::AudioPipelineConfig;
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::ComponentProfileStore;
@@ -129,15 +135,24 @@ fn open_persisted_library_store_with_effect_id_migrations(
 
 impl DaemonState {
     pub fn initialize(boot: BootConfig, config_manager: Arc<ConfigManager>) -> Result<Self> {
-        Self::initialize_with_macos_owner(boot, config_manager, None)
+        Self::initialize_with_launcher(boot, config_manager, None, None)
     }
 
-    pub fn initialize_with_macos_owner(
+    /// Initialize with the launcher facts the process host resolved: the
+    /// durable macOS owner snapshot (macOS only) and the corroborated
+    /// neutral service status every platform reports.
+    pub fn initialize_with_launcher(
         boot: BootConfig,
         config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
+        initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
     ) -> Result<Self> {
-        Self::initialize_inner(boot, config_manager, macos_owner_snapshot)
+        Self::initialize_inner(
+            boot,
+            config_manager,
+            macos_owner_snapshot,
+            initial_service_status,
+        )
     }
 
     /// Initialize all subsystems from a loaded configuration.
@@ -165,13 +180,12 @@ impl DaemonState {
         boot: BootConfig,
         config_manager: Arc<ConfigManager>,
         macos_owner_snapshot: Option<crate::macos_owner::MacosOwnerSnapshot>,
+        initial_service_status: Option<hypercolor_types::service::ServiceStatus>,
     ) -> Result<Self> {
         let config: &HypercolorConfig = &boot;
         let data_dir = ConfigManager::data_dir();
         let state_dir = ConfigManager::state_dir();
         info!("Initializing daemon subsystems");
-        #[cfg(not(target_os = "macos"))]
-        let _ = macos_owner_snapshot;
         config
             .capture
             .validate()
@@ -230,12 +244,26 @@ impl DaemonState {
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
         let macos_daemon_ownership = Arc::new(ArcSwapOption::empty());
-        #[cfg(target_os = "macos")]
+        let service_status = Arc::new(ArcSwapOption::empty());
+        if let Some(status) = initial_service_status {
+            info!(identity = %status.identity, "Launcher identity corroborated");
+            event_bus.publish(HypercolorEvent::ServiceIdentityChanged {
+                identity: status.identity.clone(),
+                owner_epoch: status.owner_epoch,
+                conflict: status.conflict.clone(),
+                recovery_required: status.recovery_required.clone(),
+            });
+            service_status.store(Some(Arc::new(status)));
+        }
+        let ownership_slots = super::macos_owner_watch::OwnershipSlots::new(
+            Arc::clone(&service_status),
+            Arc::clone(&macos_daemon_ownership),
+        );
         let mut pending_macos_owner_watch = macos_owner_snapshot
             .map(|snapshot| {
                 super::macos_owner_watch::PendingMacosOwnerWatch::start(
                     ConfigManager::data_dir(),
-                    Arc::clone(&macos_daemon_ownership),
+                    ownership_slots.clone(),
                     Arc::clone(&event_bus),
                     snapshot,
                 )
@@ -407,7 +435,6 @@ impl DaemonState {
         info!("Device lifecycle manager created");
 
         // ── Input Manager ───────────────────────────────────────────────
-        #[cfg(target_os = "macos")]
         let macos_owner_publication =
             match (pending_macos_owner_watch.as_mut(), macos_owner_snapshot) {
                 (Some(watch), Some(snapshot)) => {
@@ -421,13 +448,10 @@ impl DaemonState {
                 (Some(_), None) => None,
             };
         let (built_input_manager, browser_input) = build_input_manager(config, &config_manager)?;
-        #[cfg(target_os = "macos")]
-        let mut built_input_manager = built_input_manager;
-        #[cfg(target_os = "macos")]
         if let Some(publication) = macos_owner_publication {
             super::macos_owner_watch::publish_owner_snapshot(
-                &macos_daemon_ownership,
-                &mut built_input_manager,
+                &ownership_slots,
+                &built_input_manager,
                 &event_bus,
                 publication,
             )?;
@@ -440,10 +464,9 @@ impl DaemonState {
         );
         let input_status = built_input_manager.source_status_registry();
         let screen_capacity_status = built_input_manager.screen_capacity_status_handle();
-        let input_manager = Arc::new(Mutex::new(built_input_manager));
-        #[cfg(target_os = "macos")]
+        let input_manager = built_input_manager;
         let macos_owner_watch = pending_macos_owner_watch
-            .map(|watch| watch.attach(Arc::clone(&input_manager)))
+            .map(|watch| watch.attach(input_manager.clone()))
             .transpose()?;
         info!(
             audio_enabled = config.audio.enabled,
@@ -696,7 +719,7 @@ impl DaemonState {
                 display_preferences: Arc::clone(&display_preferences),
                 display_frames: Arc::clone(&display_frames),
                 device_metrics: Arc::clone(&device_metrics),
-                input_manager: Arc::clone(&input_manager),
+                input_manager: input_manager.clone(),
             },
             |layout| {
                 let discovery_runtime = crate::discovery::DiscoveryRuntime {
@@ -766,7 +789,7 @@ impl DaemonState {
             scene_manager,
             event_bus,
             macos_daemon_ownership,
-            #[cfg(target_os = "macos")]
+            service_status,
             _macos_owner_watch: macos_owner_watch,
             asset_library,
             library_store,
@@ -817,7 +840,8 @@ impl DaemonState {
             device_metrics_collector_task: None,
             input_status_event_publisher: None,
             session_controller: None,
-            start_time,
+            session_monitors: None,
+            start_time: Instant::now(),
             server_identity,
         })
     }
@@ -827,66 +851,60 @@ pub(crate) fn build_input_manager(
     config: &HypercolorConfig,
     config_manager: &Arc<ConfigManager>,
 ) -> Result<(InputManager, hypercolor_core::input::BrowserInputHandle)> {
-    let mut input_manager = InputManager::new();
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    let input_manager = InputManager::new();
     let capacity_plan = screen_capacity_plan(&config.capture)?;
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     input_manager.set_screen_capacity_plan(
         capacity_plan.resource_capacity(),
         capacity_plan.total_capacity(),
         capacity_plan.total_capacity(),
     )?;
-    input_manager.set_sensor_poller(SensorPoller::new());
+    input_manager.add_source(ManagedSourceRole::data(Box::new(SensorSource::new())))?;
     // Host input capture is consent-gated and platform-native: evdev on Linux,
     // Raw Input on Windows. Capture stays closed until an interactive effect
     // creates demand, so no window is created and no registration is taken
     // while nothing is listening.
     if let Some(source) = build_interaction_source(&config.input) {
-        input_manager.add_source(source);
+        input_manager.add_source(ManagedSourceRole::interaction(source))?;
     }
-    // Browser-preview injection is an always-live direct publication registry.
-    // Its children stay outside the manager's sampled source graph.
+    // Browser-preview injection is an always-live child registry rather than
+    // a manager-owned host source. Each WebSocket preview owns its child slot.
     let browser_input = hypercolor_core::input::BrowserInputHandle::new();
-    input_manager.add_source(Box::new(hypercolor_core::input::MediaSource::new()));
-    input_manager.add_source(Box::new(hypercolor_core::input::NetSource::new()));
+    input_manager.add_source(ManagedSourceRole::data(Box::new(
+        hypercolor_core::input::MediaSource::new(),
+    )))?;
+    input_manager.add_source(ManagedSourceRole::data(Box::new(
+        hypercolor_core::input::NetSource::new(),
+    )))?;
 
     if config.audio.enabled {
         let audio_pipeline_config = AudioPipelineConfig::from(&config.audio);
         let audio_input = AudioInput::new(&audio_pipeline_config)
             .with_name(format!("AudioInput({})", config.audio.device));
-        input_manager.add_source(Box::new(audio_input));
+        input_manager.add_source(ManagedSourceRole::audio(Box::new(audio_input)))?;
     }
 
     if config.capture.enabled {
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-        {
-            let admission_coordinator = input_manager.screen_admission_coordinator();
-            input_manager.add_source(build_platform_screen_capture_source(
+        let admission_coordinator = input_manager.screen_admission_coordinator();
+        input_manager.add_source(ManagedSourceRole::screen(
+            build_platform_screen_capture_source(
                 &config.capture,
                 Arc::clone(config_manager),
                 admission_coordinator,
                 capacity_plan.total_capacity(),
-            )?);
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        input_manager.add_source(build_platform_screen_capture_source(
-            &config.capture,
-            Arc::clone(config_manager),
-        )?);
+            )?,
+        ))?;
     }
     config_manager.mark_capture_runtime_applied(&config.capture);
 
     Ok((input_manager, browser_input))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ScreenCapacityPlan {
     resource: ScreenAdmissionCapacity,
     total: ScreenAdmissionCapacity,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 impl ScreenCapacityPlan {
     pub(crate) const fn resource_capacity(self) -> ScreenAdmissionCapacity {
         self.resource
@@ -897,7 +915,6 @@ impl ScreenCapacityPlan {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(crate) fn screen_capacity_plan(
     capture: &hypercolor_types::config::CaptureConfig,
 ) -> Result<ScreenCapacityPlan> {
@@ -905,7 +922,6 @@ pub(crate) fn screen_capacity_plan(
     screen_capacity_plan_for_backend(capture, backend_capacity)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
 pub(crate) fn screen_capacity_plan_for_backend(
     capture: &hypercolor_types::config::CaptureConfig,
     backend_capacity: u64,
@@ -919,27 +935,6 @@ pub(crate) fn screen_capacity_plan_for_backend(
     Ok(ScreenCapacityPlan { resource, total })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
-pub(crate) fn screen_analysis_plan_for_demand(
-    capture: &hypercolor_types::config::CaptureConfig,
-    demand: hypercolor_core::input::screen::ScreenCaptureDemand,
-    capacity: ScreenAdmissionCapacity,
-) -> Result<Option<ScreenAnalysisResourcePlan>> {
-    let Some(requested_extent) = demand.requested_extent() else {
-        return Ok(None);
-    };
-    ScreenAnalysisResourcePlan::try_new_for_extent(
-        capture.grid_cols,
-        capture.grid_rows,
-        capture.capture_fps,
-        requested_extent,
-        capacity.byte_budget().min(capacity.backend_capacity()),
-    )
-    .map(Some)
-    .context("screen analysis demand exceeds configured steady capacity")
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn available_host_memory_bytes() -> Result<u64> {
     let mut system = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
@@ -952,13 +947,12 @@ fn available_host_memory_bytes() -> Result<u64> {
     Ok(available)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(crate) fn build_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     let expected = Arc::clone(&config_manager.get());
     let persistence = CaptureConfigPersistenceGate::new(config_manager, &expected, true)?;
     build_platform_screen_capture_source_with_persistence(
@@ -969,27 +963,13 @@ pub(crate) fn build_platform_screen_capture_source(
     )
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-pub(crate) fn build_platform_screen_capture_source(
-    capture: &hypercolor_types::config::CaptureConfig,
-    config_manager: Arc<ConfigManager>,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
-    let expected = Arc::clone(&config_manager.get());
-    let persistence = CaptureConfigPersistenceGate::new(config_manager, &expected, true)?;
-    build_platform_screen_capture_source_with_persistence(capture, persistence)
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub(crate) fn prepare_platform_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     config_manager: Arc<ConfigManager>,
     expected: &Arc<HypercolorConfig>,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<(
-    Box<dyn hypercolor_core::input::InputSource>,
-    CaptureConfigPersistenceGate,
-)> {
+) -> Result<(Box<dyn ScreenSource>, CaptureConfigPersistenceGate)> {
     let persistence = CaptureConfigPersistenceGate::new(config_manager, expected, false)?;
     let source = build_platform_screen_capture_source_with_persistence(
         capture,
@@ -1000,30 +980,19 @@ pub(crate) fn prepare_platform_screen_capture_source(
     Ok((source, persistence))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-pub(crate) fn prepare_platform_screen_capture_source(
-    capture: &hypercolor_types::config::CaptureConfig,
-    config_manager: Arc<ConfigManager>,
-    expected: &Arc<HypercolorConfig>,
-) -> Result<(
-    Box<dyn hypercolor_core::input::InputSource>,
-    CaptureConfigPersistenceGate,
-)> {
-    let persistence = CaptureConfigPersistenceGate::new(config_manager, expected, false)?;
-    let source =
-        build_platform_screen_capture_source_with_persistence(capture, persistence.clone())?;
-    Ok((source, persistence))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn build_platform_screen_capture_source_with_persistence(
     capture: &hypercolor_types::config::CaptureConfig,
     persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     #[cfg(target_os = "windows")]
-    let source = build_windows_screen_capture_source(capture, admission_coordinator, capacity)?;
+    let source = build_windows_screen_capture_source(
+        capture,
+        persistence.clone(),
+        admission_coordinator,
+        capacity,
+    )?;
     #[cfg(target_os = "linux")]
     let source = build_screen_capture_source(
         capture,
@@ -1044,8 +1013,10 @@ fn build_platform_screen_capture_source_with_persistence(
 fn build_platform_screen_capture_source_with_persistence(
     capture: &hypercolor_types::config::CaptureConfig,
     persistence: CaptureConfigPersistenceGate,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
-    let _ = (capture, persistence);
+    admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
+    capacity: ScreenAdmissionCapacity,
+) -> Result<Box<dyn ScreenSource>> {
+    let _ = (capture, persistence, admission_coordinator, capacity);
     anyhow::bail!("screen capture is not supported on this platform")
 }
 
@@ -1071,23 +1042,21 @@ impl Drop for CaptureConfigPersistenceInner {
 }
 
 struct CaptureConfigPersistenceState {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     committed: bool,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     revoked: bool,
     epoch: CapturePersistenceEpoch,
     source_status: Option<SourceStatusHandle>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pending: Option<CaptureConfigPersistenceUpdate>,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 enum CaptureConfigPersistenceUpdate {
-    #[cfg(target_os = "macos")]
-    MacosSource {
+    /// A picker-accepted source string replacing the configured source.
+    PickerSource {
         configured: String,
         resolved: String,
     },
+    #[cfg(target_os = "windows")]
+    WindowsSource(ResolvedCaptureSource),
     #[cfg(target_os = "linux")]
     RestoreToken {
         configured: Option<String>,
@@ -1112,13 +1081,10 @@ impl CaptureConfigPersistenceGate {
             inner: Arc::new(CaptureConfigPersistenceInner {
                 config_manager,
                 state: StdMutex::new(CaptureConfigPersistenceState {
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     committed,
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     revoked: false,
                     epoch,
                     source_status: None,
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     pending: None,
                 }),
             }),
@@ -1134,8 +1100,7 @@ impl CaptureConfigPersistenceGate {
         state.source_status = Some(status);
     }
 
-    #[cfg(target_os = "macos")]
-    pub(crate) fn for_macos_picker(
+    pub(crate) fn for_picker(
         config_manager: Arc<ConfigManager>,
         expected: &Arc<HypercolorConfig>,
         status: SourceStatusHandle,
@@ -1145,9 +1110,8 @@ impl CaptureConfigPersistenceGate {
         Ok(persistence)
     }
 
-    #[cfg(target_os = "macos")]
-    pub(crate) fn publish_macos_selection(&self, configured: String, resolved: String) {
-        self.publish(CaptureConfigPersistenceUpdate::MacosSource {
+    pub(crate) fn publish_picker_selection(&self, configured: String, resolved: String) {
+        self.publish(CaptureConfigPersistenceUpdate::PickerSource {
             configured,
             resolved,
         });
@@ -1170,7 +1134,6 @@ impl CaptureConfigPersistenceGate {
         source_identity(&state)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn publish(&self, update: CaptureConfigPersistenceUpdate) {
         let persistence = {
             let mut state = self
@@ -1183,17 +1146,26 @@ impl CaptureConfigPersistenceGate {
             } else if !state.committed {
                 state.pending = Some(update);
                 None
-            } else {
+            } else if !requires_source_identity(&update) {
                 state.pending = None;
-                Some((state.epoch, update))
+                Some((state.epoch, None, update))
+            } else if let Some(source) = source_identity(&state) {
+                state.pending = None;
+                Some((state.epoch, Some(source), update))
+            } else {
+                warn!(
+                    "capture persistence update parked: source identity \
+                     not yet observable"
+                );
+                state.pending = Some(update);
+                None
             }
         };
-        if let Some((epoch, update)) = persistence {
-            self.persist(epoch, update, false);
+        if let Some((epoch, source, update)) = persistence {
+            self.persist(epoch, source, update, false);
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn commit(&self) {
         let persistence = {
             let mut state = self
@@ -1205,18 +1177,34 @@ impl CaptureConfigPersistenceGate {
                 return;
             }
             state.committed = true;
-            state.pending.take().map(|update| (state.epoch, update))
+            let identity = match state.pending.as_ref() {
+                Some(update) if !requires_source_identity(update) => Some(None),
+                Some(_) => source_identity(&state).map(Some),
+                None => None,
+            };
+            if let Some(source) = identity {
+                state
+                    .pending
+                    .take()
+                    .map(|update| (state.epoch, source, update))
+            } else {
+                // Keep the parked update until its source identity becomes
+                // observable instead of losing the newest stable selection.
+                if state.pending.is_some() {
+                    warn!(
+                        "capture persistence commit deferred: source \
+                         identity not yet observable"
+                    );
+                }
+                None
+            }
         };
-        if let Some((epoch, update)) = persistence {
-            self.persist(epoch, update, true);
+        if let Some((epoch, source, update)) = persistence {
+            self.persist(epoch, source, update, true);
         }
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub(crate) const fn commit(&self) {}
-
     pub(crate) fn revoke(&self) {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let epoch = {
             let mut state = self
                 .inner
@@ -1224,21 +1212,16 @@ impl CaptureConfigPersistenceGate {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.revoked = true;
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                state.pending = None;
-            }
+            state.pending = None;
             state.epoch
         };
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let epoch = self.epoch();
         self.inner.config_manager.revoke_capture_persistence(epoch);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn persist(
         &self,
         epoch: CapturePersistenceEpoch,
+        source: Option<CapturePersistenceSource>,
         update: CaptureConfigPersistenceUpdate,
         deferred: bool,
     ) {
@@ -1247,9 +1230,12 @@ impl CaptureConfigPersistenceGate {
         let config_manager = &self.inner.config_manager;
         let snapshot = Arc::clone(&config_manager.get());
         let should_persist = match &update {
-            #[cfg(target_os = "macos")]
-            CaptureConfigPersistenceUpdate::MacosSource { configured, .. } => {
+            CaptureConfigPersistenceUpdate::PickerSource { configured, .. } => {
                 snapshot.capture.source == *configured
+            }
+            #[cfg(target_os = "windows")]
+            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
+                snapshot.capture.source == resolved.configured_source
             }
             #[cfg(target_os = "linux")]
             CaptureConfigPersistenceUpdate::RestoreToken {
@@ -1269,16 +1255,22 @@ impl CaptureConfigPersistenceGate {
         }
 
         let mutate = |capture: &mut hypercolor_types::config::CaptureConfig| match update {
-            #[cfg(target_os = "macos")]
-            CaptureConfigPersistenceUpdate::MacosSource { resolved, .. } => {
+            CaptureConfigPersistenceUpdate::PickerSource { resolved, .. } => {
                 capture.source = resolved;
+            }
+            #[cfg(target_os = "windows")]
+            CaptureConfigPersistenceUpdate::WindowsSource(resolved) => {
+                capture.source = resolved.stable_source;
             }
             #[cfg(target_os = "linux")]
             CaptureConfigPersistenceUpdate::RestoreToken { resolved, .. } => {
                 capture.restore_token = resolved;
             }
         };
-        let result = config_manager.modify_capture_if_epoch_current(epoch, mutate);
+        let result = match source {
+            Some(source) => config_manager.modify_capture_if_authorized(epoch, source, mutate),
+            None => config_manager.modify_capture_if_epoch_current(epoch, mutate),
+        };
         match result {
             Ok(Some(_)) => {}
             // A rejection here is a stale epoch or a superseded source, and
@@ -1307,17 +1299,43 @@ fn source_identity(state: &CaptureConfigPersistenceState) -> Option<CapturePersi
     ))
 }
 
+/// Whether an update's authorization must pin a source identity.
+///
+/// Restore tokens authorize by persistence epoch because their session
+/// generations legitimately advance across reconnects. Picker updates also
+/// authorize by epoch: the observer is bound to one exact status handle and
+/// accepts only the first strictly newer native selection revision, even
+/// while capture has no active session generation.
+fn requires_source_identity(update: &CaptureConfigPersistenceUpdate) -> bool {
+    match update {
+        CaptureConfigPersistenceUpdate::PickerSource { .. } => false,
+        #[cfg(target_os = "windows")]
+        CaptureConfigPersistenceUpdate::WindowsSource(_) => true,
+        #[cfg(target_os = "linux")]
+        CaptureConfigPersistenceUpdate::RestoreToken { .. } => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_capture_source_sink(persistence: CaptureConfigPersistenceGate) -> CaptureSourceSink {
+    Arc::new(move |resolved: ResolvedCaptureSource| {
+        persistence.publish(CaptureConfigPersistenceUpdate::WindowsSource(resolved));
+    })
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) fn build_windows_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
+    persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     Ok(Box::new(
         WindowsScreenCaptureInput::with_admission_coordinator(
             windows_screen_capture_config_from(capture, capacity)?,
             admission_coordinator,
-        ),
+        )
+        .with_capture_source_sink(windows_capture_source_sink(persistence)),
     ))
 }
 
@@ -1326,7 +1344,7 @@ pub(crate) fn build_macos_screen_capture_source(
     capture: &hypercolor_types::config::CaptureConfig,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     Ok(Box::new(MacosScreenCaptureInput::new(
         screen_capture_config_with_capacity_from(capture, capacity)?,
         admission_coordinator,
@@ -1340,7 +1358,7 @@ pub(crate) fn build_macos_screen_capture_source(
 /// no source kind is enabled.
 pub(crate) fn build_interaction_source(
     input: &hypercolor_types::config::InputConfig,
-) -> Option<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Option<Box<dyn InteractionSource>> {
     if !input.enabled {
         return None;
     }
@@ -1348,8 +1366,7 @@ pub(crate) fn build_interaction_source(
     #[cfg(target_os = "linux")]
     {
         (input.keyboard || input.mouse).then(|| {
-            Box::new(EvdevHostInput::new(input.keyboard, input.mouse))
-                as Box<dyn hypercolor_core::input::InputSource>
+            Box::new(EvdevHostInput::new(input.keyboard, input.mouse)) as Box<dyn InteractionSource>
         })
     }
 
@@ -1360,14 +1377,14 @@ pub(crate) fn build_interaction_source(
     {
         (input.keyboard || input.mouse).then(|| {
             Box::new(WindowsHostInput::new(input.keyboard, input.mouse))
-                as Box<dyn hypercolor_core::input::InputSource>
+                as Box<dyn InteractionSource>
         })
     }
 
     #[cfg(target_os = "macos")]
     {
         build_macos_host_input_source(input)
-            .map(|source| Box::new(source) as Box<dyn hypercolor_core::input::InputSource>)
+            .map(|source| Box::new(source) as Box<dyn InteractionSource>)
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
@@ -1393,7 +1410,7 @@ pub(crate) fn build_screen_capture_source(
     persistence: CaptureConfigPersistenceGate,
     admission_coordinator: hypercolor_core::input::screen::ScreenByteAdmissionCoordinator,
     capacity: ScreenAdmissionCapacity,
-) -> Result<Box<dyn hypercolor_core::input::InputSource>> {
+) -> Result<Box<dyn ScreenSource>> {
     let capture_config = screen_capture_config_with_capacity_from(capture, capacity)?;
     let configured = capture.restore_token.clone();
     let sink = Arc::new(move |token: Option<String>| {
@@ -1507,7 +1524,7 @@ pub(crate) struct DomainAssemblyResources {
     pub display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
     pub display_frames: Arc<RwLock<DisplayFrameRuntime>>,
     pub device_metrics: DeviceMetricsSnapshotStore,
-    pub input_manager: Arc<Mutex<InputManager>>,
+    pub input_manager: InputManager,
 }
 
 /// The assembled domain graph and the driver host it was wired around.

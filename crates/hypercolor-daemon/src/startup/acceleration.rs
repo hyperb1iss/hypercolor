@@ -89,13 +89,7 @@ pub(crate) fn resolve_compositor_acceleration_mode(
 
 #[cfg(feature = "wgpu")]
 const fn gpu_backend_preference(servo_gpu_import_mode: ServoGpuImportMode) -> GpuBackendPreference {
-    #[cfg(all(feature = "servo-gpu-import", target_os = "windows"))]
-    if matches!(servo_gpu_import_mode, ServoGpuImportMode::On) {
-        return GpuBackendPreference::VulkanRequiredForServoImport;
-    }
-
-    let _ = servo_gpu_import_mode;
-    GpuBackendPreference::Default
+    GpuBackendPreference::for_servo_gpu_import_mode(servo_gpu_import_mode)
 }
 
 #[cfg(feature = "wgpu")]
@@ -269,10 +263,8 @@ mod tests {
         AUTO_GPU_PROBE_FAILED_REASON, GpuCompositorProbeInfo, GpuCompositorProbeResult,
         resolve_auto_mode_from_probe,
     };
-    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    #[cfg(feature = "wgpu")]
     use super::{gpu_backend_preference, probe_gpu_compositor_with};
-    #[cfg(all(feature = "wgpu", target_os = "windows"))]
-    use crate::render_thread::gpu_device::{GpuBackendPreference, windows_backends_for_preference};
 
     fn resolve_compositor_acceleration_mode(
         requested_mode: RenderAccelerationMode,
@@ -292,7 +284,7 @@ mod tests {
             software_adapter_reason: None,
             servo_gpu_import_backend_compatible: true,
             servo_gpu_import_backend_reason: None,
-            linux_servo_gpu_import_backend_compatible: cfg!(target_os = "linux"),
+            linux_servo_gpu_import_backend_compatible: true,
             linux_servo_gpu_import_backend_reason: None,
         }
     }
@@ -306,34 +298,7 @@ mod tests {
         assert!(resolution.gpu_probe.is_none());
     }
 
-    #[cfg(all(feature = "wgpu", target_os = "windows"))]
-    #[test]
-    fn windows_startup_defaults_to_dx12_backend_policy() {
-        let preference = gpu_backend_preference(ServoGpuImportMode::Auto);
-
-        assert_eq!(preference, GpuBackendPreference::Default);
-        assert_eq!(
-            windows_backends_for_preference(preference),
-            wgpu::Backends::DX12
-        );
-    }
-
-    #[cfg(all(feature = "wgpu", feature = "servo-gpu-import", target_os = "windows"))]
-    #[test]
-    fn windows_startup_servo_import_on_requires_vulkan_backend() {
-        let preference = gpu_backend_preference(ServoGpuImportMode::On);
-
-        assert_eq!(
-            preference,
-            GpuBackendPreference::VulkanRequiredForServoImport
-        );
-        assert_eq!(
-            windows_backends_for_preference(preference),
-            wgpu::Backends::VULKAN
-        );
-    }
-
-    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    #[cfg(feature = "wgpu")]
     #[test]
     fn startup_probe_and_device_constructor_share_backend_preference() {
         let observed = std::cell::Cell::new(None);

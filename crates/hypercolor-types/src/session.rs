@@ -16,6 +16,10 @@ pub enum SessionEvent {
     ScreenLocked,
     /// The user's session was unlocked.
     ScreenUnlocked,
+    /// The user's session became inactive, such as during fast user switching.
+    SessionInactive,
+    /// The user's session became active again.
+    SessionActive,
     /// The system is about to suspend.
     Suspending,
     /// The system resumed from suspend.

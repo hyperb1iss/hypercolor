@@ -55,11 +55,32 @@ pub fn parse_macos_owner_claim(value: &str) -> Result<MacosDaemonOwner> {
     }
 }
 
+/// Resolve the corroborated macOS owner from every launcher claim.
+///
+/// `neutral_claim` is the platform-neutral `HYPERCOLOR_SERVICE_IDENTITY`
+/// declaration; `environment_claim` and `argument_claim` are the legacy
+/// `HYPERCOLOR_MACOS_OWNER` env and `--macos-owner` argument. Every claim
+/// that is present must name the same owner, that owner must match the
+/// measured authority, and the measured authority is what gets returned.
+///
+/// # Errors
+///
+/// Returns an error for a malformed claim, disagreeing claims, a claim
+/// naming a topology that does not exist on macOS, or a claim the
+/// authority does not corroborate.
 pub fn resolve_macos_launcher_owner(
+    neutral_claim: Option<&OsStr>,
     environment_claim: Option<&OsStr>,
     argument_claim: Option<MacosDaemonOwner>,
     evidence: MacosLauncherAuthorityEvidence,
 ) -> Result<MacosDaemonOwner> {
+    let neutral_claim = crate::launcher_claim::read_service_identity_claim(neutral_claim)?
+        .map(|identity| {
+            crate::macos_service_identity::macos_owner(&identity).with_context(|| {
+                format!("launcher declaration {identity} is not a macOS daemon topology")
+            })
+        })
+        .transpose()?;
     let environment_claim = environment_claim
         .map(|value| {
             value
@@ -76,8 +97,17 @@ pub fn resolve_macos_launcher_owner(
             owner_name(argument)
         );
     }
+    let legacy_claim = environment_claim.or(argument_claim);
+    if let (Some(neutral), Some(legacy)) = (neutral_claim, legacy_claim) {
+        anyhow::ensure!(
+            neutral == legacy,
+            "conflicting macOS daemon launcher claims: service_identity={} legacy={}",
+            owner_name(neutral),
+            owner_name(legacy)
+        );
+    }
 
-    let claim = environment_claim.or(argument_claim);
+    let claim = neutral_claim.or(legacy_claim);
     let authority = evidence.exact_owner()?;
     if let Some(claim) = claim {
         anyhow::ensure!(
@@ -485,6 +515,7 @@ mod tests {
         ] {
             assert_eq!(
                 resolve_macos_launcher_owner(
+                    None,
                     environment.map(OsStr::new),
                     argument,
                     evidence(authority),
@@ -496,6 +527,7 @@ mod tests {
 
         assert!(
             resolve_macos_launcher_owner(
+                None,
                 Some(OsStr::new("homebrew")),
                 Some(MacosDaemonOwner::DirectLaunchd),
                 evidence(MacosDaemonOwner::Homebrew),
@@ -504,6 +536,7 @@ mod tests {
         );
         assert!(
             resolve_macos_launcher_owner(
+                None,
                 Some(OsStr::new("invalid")),
                 Some(MacosDaemonOwner::DirectLaunchd),
                 evidence(MacosDaemonOwner::DirectLaunchd),
@@ -512,6 +545,7 @@ mod tests {
         );
         assert!(
             resolve_macos_launcher_owner(
+                None,
                 Some(OsStr::from_bytes(&[0xff])),
                 Some(MacosDaemonOwner::DirectLaunchd),
                 evidence(MacosDaemonOwner::DirectLaunchd),
@@ -520,6 +554,7 @@ mod tests {
         );
         assert!(
             resolve_macos_launcher_owner(
+                None,
                 Some(OsStr::new("app-sidecar")),
                 None,
                 evidence(MacosDaemonOwner::Homebrew),
@@ -529,13 +564,95 @@ mod tests {
     }
 
     #[test]
+    fn neutral_declaration_joins_the_compatibility_matrix() {
+        // New launcher (neutral + legacy) and new daemon.
+        assert_eq!(
+            resolve_macos_launcher_owner(
+                Some(OsStr::new("user_service:homebrew:homebrew.mxcl.hypercolor")),
+                Some(OsStr::new("homebrew")),
+                Some(MacosDaemonOwner::Homebrew),
+                evidence(MacosDaemonOwner::Homebrew),
+            )
+            .expect("agreeing claims should resolve"),
+            MacosDaemonOwner::Homebrew
+        );
+        // Neutral-only launcher; the unit label is diagnostic and may be absent.
+        assert_eq!(
+            resolve_macos_launcher_owner(
+                Some(OsStr::new("user_service:launchd")),
+                None,
+                None,
+                evidence(MacosDaemonOwner::DirectLaunchd),
+            )
+            .expect("neutral claim should resolve"),
+            MacosDaemonOwner::DirectLaunchd
+        );
+        assert_eq!(
+            resolve_macos_launcher_owner(
+                Some(OsStr::new("supervised_child")),
+                None,
+                None,
+                evidence(MacosDaemonOwner::AppSidecar),
+            )
+            .expect("sidecar claim should resolve"),
+            MacosDaemonOwner::AppSidecar
+        );
+        // Neutral and legacy disagree.
+        assert!(
+            resolve_macos_launcher_owner(
+                Some(OsStr::new("user_service:launchd")),
+                Some(OsStr::new("homebrew")),
+                None,
+                evidence(MacosDaemonOwner::Homebrew),
+            )
+            .is_err()
+        );
+        // Neutral claim names a launcher that cannot exist on macOS.
+        assert!(
+            resolve_macos_launcher_owner(
+                Some(OsStr::new("user_service:systemd:hypercolor.service")),
+                None,
+                None,
+                evidence(MacosDaemonOwner::Standalone),
+            )
+            .is_err()
+        );
+        // Malformed neutral claim.
+        assert!(
+            resolve_macos_launcher_owner(
+                Some(OsStr::new("launchd")),
+                None,
+                None,
+                evidence(MacosDaemonOwner::DirectLaunchd),
+            )
+            .is_err()
+        );
+        // Neutral claim not corroborated by authority.
+        assert!(
+            resolve_macos_launcher_owner(
+                Some(OsStr::new("standalone")),
+                None,
+                None,
+                evidence(MacosDaemonOwner::AppSidecar),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn missing_and_ambiguous_authority_fail_closed() {
         assert!(
-            resolve_macos_launcher_owner(None, None, MacosLauncherAuthorityEvidence::default())
-                .is_err()
+            resolve_macos_launcher_owner(
+                None,
+                None,
+                None,
+                MacosLauncherAuthorityEvidence::default()
+            )
+            .is_err()
         );
         assert!(
             resolve_macos_launcher_owner(
+                None,
                 None,
                 None,
                 MacosLauncherAuthorityEvidence {

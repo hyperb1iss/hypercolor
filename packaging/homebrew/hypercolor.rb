@@ -52,7 +52,6 @@ class Hypercolor < Formula
       hypercolor-daemon
       hypercolor
       hypercolor-app
-      hypercolor-tray
       hypercolor-tui
       hypercolor-open
     ].each do |b|
@@ -89,7 +88,7 @@ class Hypercolor < Formula
     keep_alive successful_exit: false
     log_path var/"log/hypercolor/hypercolor.log"
     error_log_path var/"log/hypercolor/hypercolor.log"
-    environment_variables HYPERCOLOR_LOG: "info", HYPERCOLOR_MACOS_OWNER: "homebrew"
+    environment_variables HYPERCOLOR_LOG: "info", HYPERCOLOR_MACOS_OWNER: "homebrew", HYPERCOLOR_SERVICE_IDENTITY: "user_service:homebrew:homebrew.mxcl.hypercolor"
   end
 
   test do

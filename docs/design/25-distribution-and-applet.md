@@ -273,23 +273,23 @@ implementation must detect the platform at runtime and dispatch to the correct b
 
 ## Status Bar Applet
 
-A lightweight, separate binary that provides system tray / menu bar presence. It
-communicates with the daemon exclusively via the REST API on `localhost:9420`.
+The unified desktop app provides system tray and menu bar presence. It communicates
+with the daemon through the REST API and WebSocket endpoint on `localhost:9420`.
 
 ### Architecture
 
 ```mermaid
 graph LR
-    Tray["hypercolor-tray<br/>(applet binary)"] <-->|HTTP/WS<br/>localhost:9420| Daemon["hypercolor<br/>(daemon)"]
-    Tray --> SysTray["System Tray / Menu Bar"]
+    App["hypercolor-app<br/>(unified desktop app)"] <-->|HTTP/WS<br/>localhost:9420| Daemon["hypercolor-daemon"]
+    App --> SysTray["System Tray / Menu Bar"]
 ```
 
-**Why a separate binary (not embedded in the daemon):**
+**Why the tray lives in the app instead of the daemon:**
 
-- Daemon runs headless — no GUI toolkit dependency
-- Tray binary can crash/restart independently
-- Different lifecycle: tray follows desktop session, daemon can outlive it
-- Different dependencies: tray needs platform GUI APIs, daemon doesn't
+- The daemon remains headless with no GUI toolkit dependency
+- The app can restart independently from the daemon
+- The tray follows the desktop session while the daemon can outlive it
+- The app owns platform GUI dependencies and daemon supervision
 
 **Why REST API (not D-Bus on Linux):**
 
@@ -301,7 +301,7 @@ graph LR
 
 ### Linux Implementation
 
-**Toolkit:** `ksni` crate for StatusNotifierItem (SNI) protocol.
+**Toolkit:** Tauri's tray integration using the StatusNotifierItem protocol.
 
 SNI is the modern replacement for the legacy XEmbed system tray. Supported by:
 
@@ -312,13 +312,13 @@ SNI is the modern replacement for the legacy XEmbed system tray. Supported by:
 - GNOME (via AppIndicator extension — pre-installed on Ubuntu)
 - Sway/wlroots (via `waybar` SNI module)
 
-**Autostart:** XDG autostart entry at `~/.config/autostart/hypercolor-tray.desktop`:
+**Autostart:** XDG autostart entry at `~/.config/autostart/hypercolor-app.desktop`:
 
 ```ini
 [Desktop Entry]
 Type=Application
 Name=Hypercolor Tray
-Exec=hypercolor-tray
+Exec=hypercolor-app --minimized
 Icon=hypercolor
 Comment=Hypercolor system tray indicator
 X-GNOME-Autostart-enabled=true
@@ -326,29 +326,16 @@ X-GNOME-Autostart-Phase=Applications
 NoDisplay=true
 ```
 
-This starts the tray applet on login. The applet connects to the daemon (which is started
-independently by systemd). If the daemon isn't running, the tray shows a disconnected state
-and retries every 5 seconds.
+This starts the desktop app minimized on login. The app supervises the daemon and keeps
+the tray state synchronized over the daemon API.
 
 ### macOS Implementation
 
-**Toolkit:** `objc2` + `objc2-app-kit` crates for native `NSStatusItem` menu bar integration.
+**Toolkit:** Tauri's native `NSStatusItem` integration.
 
-A native macOS menu bar item using AppKit APIs directly — no Electron, no webview, no
-cross-platform abstraction. This produces a ~2MB binary that feels native.
-
-**Alternative considered:** `tao` + `tray-icon` crates (cross-platform). Rejected because
-the macOS menu bar has specific conventions (no left-click action, no scroll events) that
-cross-platform abstractions handle poorly.
-
-**Autostart:** The launchd agent for the daemon handles background startup. The tray applet
-is a separate launchd agent or a Login Item:
-
-`~/Library/LaunchAgents/tech.hyperbliss.hypercolor-tray.plist` — same pattern as the daemon
-plist, but with `LSUIElement: true` equivalent (no Dock icon).
-
-Alternatively, register as a Login Item via `SMAppService` (macOS 13+) which integrates
-with System Settings > General > Login Items.
+The signed `Hypercolor.app` bundle owns the menu bar item and registers itself as a Login
+Item. The daemon remains a supervised sidecar, so no second tray process or launch agent
+is required.
 
 ### Tray Menu Structure
 
@@ -368,8 +355,7 @@ with System Settings > General > Login Items.
 ├────────────────────────────┤
 │ Open Web UI                │  ← opens http://localhost:9420 in default browser
 ├────────────────────────────┤
-│ Quit Hypercolor            │  ← stops tray applet (daemon keeps running)
-│ Quit Everything            │  ← stops tray + daemon
+│ Quit Hypercolor            │  ← stops the app and its supervised daemon
 └────────────────────────────┘
 ```
 
@@ -389,7 +375,7 @@ Icons should be provided as:
 
 ### WebSocket State Sync
 
-The tray applet connects to `ws://localhost:9420/api/v1/ws` and subscribes to real-time
+The app-owned tray connects to `ws://localhost:9420/api/v1/ws` and subscribes to real-time
 state updates. This keeps the menu current without polling:
 
 - Effect changes → update "current effect" label
@@ -418,9 +404,9 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 
 ```
 ~/.local/bin/
-    hypercolor              # daemon
+    hypercolor-daemon       # daemon
     hypercolor              # CLI (hosts `hypercolor tui`)
-    hypercolor-tray         # status bar applet
+    hypercolor-app          # unified desktop app and tray
     hypercolor-open         # legacy launcher helper (kept for .desktop)
 ~/.local/share/hypercolor/
     ui/                     # embedded web UI static files
@@ -431,7 +417,7 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 ~/.config/systemd/user/
     hypercolor.service      # daemon service unit
 ~/.config/autostart/
-    hypercolor-tray.desktop # tray applet autostart
+    hypercolor-app.desktop  # desktop app autostart
 ~/.config/hypercolor/
     config.toml             # user configuration
     profiles/               # saved profiles
@@ -445,12 +431,11 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 
 ```
 ~/.local/bin/
-    hypercolor              # daemon
+    hypercolor-daemon       # daemon
     hypercolor              # CLI (hosts `hypercolor tui`)
-    hypercolor-tray         # menu bar applet
+    hypercolor-app          # unified desktop app host
 ~/Library/LaunchAgents/
-    tech.hyperbliss.hypercolor.plist       # daemon agent
-    tech.hyperbliss.hypercolor-tray.plist  # tray applet agent
+    tech.hyperbliss.hypercolor.plist       # daemon agent for standalone installs
 ~/Library/Logs/hypercolor/
     hypercolor.log          # daemon log output
 ~/Library/Application Support/hypercolor/
@@ -478,16 +463,13 @@ The primary interaction. Clicking "Open Web UI" (or left-clicking the tray icon 
 - [ ] `hypercolor service` CLI commands with platform detection
 - [ ] Launchd lifecycle management in CLI
 
-### Phase 3: Status Bar Applet
+### Phase 3: Unified App Tray
 
-- [ ] `hypercolor-tray` binary scaffold (separate crate: `crates/hypercolor-tray`)
-- [ ] Linux: `ksni` SNI implementation with icon states
-- [ ] macOS: `objc2-app-kit` NSStatusItem implementation
-- [ ] WebSocket state sync from daemon
-- [ ] Menu structure with effect switching, brightness, pause
-- [ ] "Open Web UI" action
-- [ ] XDG autostart entry (Linux)
-- [ ] Launchd agent for tray (macOS)
+- [x] `hypercolor-app` owns tray presence on Linux, Windows, and macOS
+- [x] WebSocket state synchronization from the daemon
+- [x] Menu structure with effect switching, brightness, and pause
+- [x] "Open Web UI" action
+- [x] Cross-platform app autostart
 
 ### Phase 4: Polish
 

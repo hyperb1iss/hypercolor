@@ -1,40 +1,32 @@
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-use std::num::{NonZeroU32, NonZeroU64};
-#[cfg(any(
-    all(feature = "servo-gpu-import", target_os = "linux"),
-    all(feature = "servo-gpu-import", target_os = "macos"),
-    all(feature = "screen-capture", target_os = "macos")
-))]
-use std::sync::Arc;
-use std::sync::mpsc;
-
+use super::compositor::{ComposeShaderMode, encode_compose_params};
+use super::screen_upload::{
+    ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
+    ScreenUploadResidencyPolicy, resident_frame_bytes,
+};
+#[cfg(feature = "servo-gpu-import")]
+use super::source::CachedGpuSourceCopy;
+#[cfg(feature = "servo-gpu-import")]
+use super::source::GpuSourceFrame;
+use super::{
+    DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight, GpuCanvasAdmission,
+    GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
+    GpuSparkleFlinger, GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES,
+    MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap,
+    PendingPreviewReadback, ensure_readback_buffer_capacity, ensure_storage_buffer_capacity,
+    gpu_canvas_admission,
+};
+use crate::performance::CompositorBackendKind;
+use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
+#[cfg(feature = "servo-gpu-import")]
+use crate::render_thread::producer_queue::{ProducerFrameState, ProducerQueue};
+use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
+use crate::render_thread::sparkleflinger::{
+    CompositionLayer, CompositionPlan, CompositionTransform, DisplayFinalizeCacheKey,
+    DisplayFinalizeParams, PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend,
+    cpu::CpuSparkleFlinger,
+};
 use hypercolor_core::blend_math::encode_srgb_channel;
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
-    CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar, CaptureRotation,
-    CaptureSourceId, CaptureTransferFunction, InputPublicationDemandRevision,
-    KnownCaptureColorimetry, LedToneMapCalibration, PhysicalOrigin, PixelExtent, PlatformGpuApi,
-    PlatformGpuSurface, PreparedLedToneMap, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenColorTransformCapabilities,
-    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenInputGraphGeneration,
-    ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetPreparation,
-    ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenPublicationSlotPolicy, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenUpscalePolicy, ScreenWorkerExactLedgerBuilder, SourceScale,
-};
 use hypercolor_core::spatial::SpatialEngine;
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-use hypercolor_macos_capture::{
-    MacosCaptureColorimetry, MacosCaptureFrame, MacosCaptureGeometry, MacosCapturePixelFormat,
-    MacosCaptureSurface, MacosChromaLocation, MacosColorPrimaries, MacosColorRange,
-    MacosPixelExtent, MacosPixelRect, MacosPointRect, MacosScale, MacosTransferFunction,
-    MacosYuvMatrix,
-};
 use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
 };
@@ -48,46 +40,9 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 use hypercolor_types::viewport::FitMode;
-#[cfg(target_os = "windows")]
-use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-use super::CachedGpuSourceCopy;
-use super::compositor::{ComposeShaderMode, encode_compose_params};
-use super::screen_upload::{
-    ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
-    ScreenUploadResidencyPolicy, resident_frame_bytes,
-};
-use super::{
-    DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight, GpuCanvasAdmission,
-    GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
-    GpuSparkleFlinger, GpuZoneSamplingDispatch, MEDIA_UPLOAD_TEXTURE_POOL_IDLE_FRAMES,
-    MEDIA_UPLOAD_TEXTURE_RING_LEN, MediaTextureSourceKey, MediaUploadTextureKey, PendingPreviewMap,
-    PendingPreviewReadback, ensure_readback_buffer_capacity, ensure_storage_buffer_capacity,
-    gpu_canvas_admission,
-};
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-use super::{
-    MacosNativeColorTransform, MacosNativeOutputTransfer, MacosNativeReductionDescriptor,
-    MacosNativeReductionFilter, MacosNativeTargetFormat, PreparedMacosScreenTarget,
-    UnsupportedMacosNativeTargetFormat, macos_native_target_format,
-    native_screen_copy_error_invalidates_frame,
-};
-#[cfg(target_os = "windows")]
-use super::{
-    NativeScreenCopyFailurePolicy, native_screen_copy_failure_policy,
-    screen_storage_requires_cache_turnover, validate_windows_plan_generation,
-};
-use crate::performance::CompositorBackendKind;
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-use crate::render_thread::producer_queue::MacosScreenTextureLease;
-use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
-use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
-use crate::render_thread::sparkleflinger::{
-    CompositionLayer, CompositionPlan, CompositionTransform, DisplayFinalizeCacheKey,
-    DisplayFinalizeParams, PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend,
-    cpu::CpuSparkleFlinger,
-};
+#[cfg(feature = "servo-gpu-import")]
+use std::sync::Arc;
+use std::sync::mpsc;
 
 #[test]
 fn compose_params_encode_target_space_as_float_flag() {
@@ -110,7 +65,7 @@ fn compose_params_encode_target_space_as_float_flag() {
     assert_eq!(flag, 1.0);
 }
 
-fn solid_canvas(color: Rgba) -> Canvas {
+pub(super) fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(4, 4);
     canvas.fill(color);
     canvas
@@ -132,12 +87,89 @@ fn required_gpu<T>(result: anyhow::Result<T>) -> Option<T> {
     }
 }
 
-fn gpu_test_compositor() -> Option<GpuSparkleFlinger> {
+pub(super) fn gpu_test_compositor() -> Option<GpuSparkleFlinger> {
     required_gpu(GpuSparkleFlinger::new())
 }
 
 fn gpu_test_sparkleflinger() -> Option<SparkleFlinger> {
     required_gpu(SparkleFlinger::new(RenderAccelerationMode::Gpu))
+}
+
+#[cfg(feature = "servo-gpu-import")]
+#[test]
+fn imported_frame_identity_separates_allocation_content_and_origin() {
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
+    };
+    let texture = Arc::new(compositor.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("SparkleFlinger imported frame identity test"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    }));
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    let lease = hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture));
+    let frame = |content_generation, origin| hypercolor_gpu_frame::ImportedEffectFrame {
+        width: 1,
+        height: 1,
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Rgba8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(41),
+        content_generation,
+        origin,
+        texture: Arc::clone(&texture),
+        view: Arc::clone(&view),
+        lease: lease.clone(),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
+    };
+    let top_left = frame(7, hypercolor_gpu_frame::FrameOrigin::TopLeft);
+    let bottom_left = frame(8, hypercolor_gpu_frame::FrameOrigin::BottomLeft);
+
+    assert!(!GpuSourceFrame::Imported(&top_left).needs_shader_copy());
+    assert!(GpuSourceFrame::Imported(&bottom_left).needs_shader_copy());
+
+    let mut queue = ProducerQueue::new();
+    assert!(queue.submit_latest(ProducerFrame::Gpu(top_left)).is_none());
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("first imported contents should latch")
+            .state,
+        ProducerFrameState::Fresh
+    );
+
+    assert!(
+        queue
+            .submit_latest(ProducerFrame::Gpu(bottom_left.clone()))
+            .is_some()
+    );
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("new contents in the same allocation should latch")
+            .state,
+        ProducerFrameState::Fresh
+    );
+
+    assert!(
+        queue
+            .submit_latest(ProducerFrame::Gpu(bottom_left))
+            .is_some()
+    );
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("duplicate imported contents should stay retained")
+            .state,
+        ProducerFrameState::Retained
+    );
 }
 
 fn bypass_surface_plan(width: u32, height: u32) -> CompositionPlan {
@@ -870,7 +902,6 @@ fn texture_composition_survives_scoped_full_frame_readback_rejection() {
         crate::performance::CompositorBackendKind::Gpu
     );
     assert!(compositor.canvas_gpu_admitted());
-    #[cfg(target_os = "windows")]
     let native_target_available = compositor.screen_native_execution_target().is_some();
 
     let error = compositor
@@ -885,7 +916,6 @@ fn texture_composition_survives_scoped_full_frame_readback_rejection() {
         .expect_err("full-size CPU readback should reject its local buffer request");
     assert!(error.to_string().contains("requires 64 bytes"));
     assert!(compositor.canvas_gpu_admitted());
-    #[cfg(target_os = "windows")]
     assert_eq!(
         compositor.screen_native_execution_target().is_some(),
         native_target_available
@@ -1260,7 +1290,7 @@ fn display_finalize_params_for_format(
     }
 }
 
-fn patterned_canvas(seed: u8) -> Canvas {
+pub(super) fn patterned_canvas(seed: u8) -> Canvas {
     patterned_canvas_with_size(4, 4, seed)
 }
 
@@ -1321,7 +1351,7 @@ fn slot_surface_with_size(width: u32, height: u32, color: Rgba) -> PublishedSurf
     clippy::unnecessary_wraps,
     reason = "test helper mirrors the Option<PreviewSurfaceRequest> shape accepted by compositor entry points"
 )]
-fn full_preview_request(plan: &CompositionPlan) -> Option<PreviewSurfaceRequest> {
+pub(super) fn full_preview_request(plan: &CompositionPlan) -> Option<PreviewSurfaceRequest> {
     Some(PreviewSurfaceRequest {
         width: plan.width,
         height: plan.height,
@@ -1376,7 +1406,9 @@ fn assert_gpu_samples_match_cpu(
     assert_zone_colors_within(&sampled, &expected_zones, tolerance);
 }
 
-fn resolve_preview_surface_blocking(compositor: &mut GpuSparkleFlinger) -> PublishedSurface {
+pub(super) fn resolve_preview_surface_blocking(
+    compositor: &mut GpuSparkleFlinger,
+) -> PublishedSurface {
     loop {
         if let Some(surface) = compositor
             .resolve_preview_surface()
@@ -1474,7 +1506,7 @@ fn defer_pending_preview_map(compositor: &mut GpuSparkleFlinger) {
     assert!(compositor.pending_preview_map.is_some());
 }
 
-fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
+pub(super) fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
     sampling_layout_with_led_count(mode, 4)
 }
 
@@ -1560,1115 +1592,9 @@ fn gpu_compositor_probe_reports_a_texture_format() {
     assert!(!probe.texture_format.is_empty());
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(feature = "servo-gpu-import")]
 #[test]
-fn dx12_compositor_exposes_one_renderer_bound_screen_target() {
-    let Some(compositor) = gpu_test_compositor() else {
-        return;
-    };
-    if compositor.probe.backend == "dx12" {
-        let target = compositor
-            .screen_native_execution_target()
-            .expect("DX12 compositor should expose a D3D11On12 target");
-        assert_eq!(
-            target.max_texture_dimension().get(),
-            compositor.probe.max_texture_dimension_2d
-        );
-    } else {
-        assert!(compositor.screen_native_execution_target().is_none());
-    }
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn native_screen_copy_failure_policy_separates_pressure_from_stale_structure() {
-    use std::num::NonZeroU64;
-
-    use hypercolor_windows_capture::{CaptureError, GpuSurfaceDescriptorId};
-
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::KeyedMutexTimeout),
-        NativeScreenCopyFailurePolicy::Retain
-    );
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::Capture(
-            CaptureError::GpuSurfaceUseUnavailable {
-                descriptor_id: GpuSurfaceDescriptorId::new(NonZeroU64::MIN),
-                source_sequence: 7,
-            },
-        )),
-        NativeScreenCopyFailurePolicy::Retain
-    );
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::PreparedTargetMismatch {
-            field: "plan_generation",
-        },),
-        NativeScreenCopyFailurePolicy::Reprepare
-    );
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::TargetContentUncertain {
-            operation: "release capture keyed mutex",
-            source: Box::new(D3d11On12ScreenInteropError::KeyedMutexTimeout),
-        },),
-        NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare
-    );
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn macos_native_screen_copy_errors_invalidate_retained_output() {
-    let error = anyhow::anyhow!("structural native screen copy failure");
-    assert!(native_screen_copy_error_invalidates_frame(&error));
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn native_screen_storage_turnover_purges_only_changed_targets() {
-    assert!(screen_storage_requires_cache_turnover(None, 7));
-    assert!(!screen_storage_requires_cache_turnover(Some(7), 7));
-    assert!(screen_storage_requires_cache_turnover(Some(7), 8));
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn native_screen_manifest_generation_is_an_exact_fence() {
-    validate_windows_plan_generation(7, 7).expect("matching plan generation is accepted");
-    assert!(validate_windows_plan_generation(7, 8).is_err());
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn metal_compositor_registers_and_composes_native_capture() {
-    let Some(mut compositor) = gpu_test_compositor() else {
-        return;
-    };
-    let target = compositor
-        .screen_native_execution_target()
-        .expect("Metal compositor should expose a native screen target");
-    let bridge = Arc::clone(
-        compositor
-            .screen_bridge
-            .as_ref()
-            .expect("Metal compositor should retain its screen bridge"),
-    );
-    assert_eq!(target.accepted_api(), &PlatformGpuApi::Metal);
-    assert_eq!(
-        target.physical_gpu_device(),
-        &ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(bridge.interop.metal_registry_id())
-    );
-    assert_eq!(
-        target.max_texture_dimension().get(),
-        compositor.probe.max_texture_dimension_2d
-    );
-
-    let pixels = [17, 43, 91, 255].repeat(12);
-    let capture = Arc::new(macos_capture_frame(&pixels));
-    let (imported, storage_id) = bridge
-        .import_frame(&compositor.device, 11, Arc::clone(&capture))
-        .expect("native capture should import through the daemon bridge");
-    let (_, repeated_storage_id) = bridge
-        .import_frame(&compositor.device, 11, capture)
-        .expect("the same native storage should import again");
-    assert_eq!(storage_id, repeated_storage_id);
-
-    let plan = CompositionPlan::single(
-        4,
-        3,
-        CompositionLayer::replace(ProducerFrame::GpuTexture(GpuTextureFrame {
-            width: 4,
-            height: 3,
-            storage_id,
-            content_generation: imported.content_sequence(),
-            origin: GpuTextureFrameOrigin::ProducerTexture,
-            texture: imported
-                .texture()
-                .expect("BGRA imports expose a wgpu texture")
-                .as_ref()
-                .clone(),
-            view: imported
-                .view()
-                .expect("BGRA imports expose a wgpu texture view")
-                .as_ref()
-                .clone(),
-            immutable_lease: None,
-            macos_screen_lease: None,
-        })),
-    );
-    compositor
-        .compose(&plan, false, full_preview_request(&plan))
-        .expect("native capture should compose without CPU materialization");
-    let preview = resolve_preview_surface_blocking(&mut compositor);
-    assert!(
-        preview
-            .rgba_bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == [91, 43, 17, 255])
-    );
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn native_metal_target_formats_reject_disguised_source_storage() {
-    assert_eq!(
-        macos_native_target_format(CapturePixelFormat::Rgba8)
-            .expect("RGBA8 is a truthful compositor target"),
-        MacosNativeTargetFormat::Rgba8,
-    );
-    assert_eq!(
-        macos_native_target_format(CapturePixelFormat::Bgra8)
-            .expect("BGRA8 is a truthful compositor target"),
-        MacosNativeTargetFormat::Bgra8,
-    );
-    assert_eq!(
-        macos_native_target_format(CapturePixelFormat::Argb2101010)
-            .expect_err("packed source storage cannot masquerade as a compositor target"),
-        UnsupportedMacosNativeTargetFormat(CapturePixelFormat::Argb2101010),
-    );
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-struct MacosLeaseTargetPreparer {
-    bridge: Arc<super::MacosScreenBridge>,
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-impl ScreenNativeTargetPreparer for MacosLeaseTargetPreparer {
-    fn quote_retained_bytes(
-        &self,
-        descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
-        _platform: &ScreenNativePreparationPayload,
-    ) -> anyhow::Result<u64> {
-        super::prepared_macos_screen_target_exclusive_bytes(descriptor)
-    }
-
-    fn quote_retention(
-        &self,
-        descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
-        _platform: &ScreenNativePreparationPayload,
-    ) -> anyhow::Result<ScreenNativeRetentionQuote> {
-        super::prepared_macos_screen_target_retention(descriptor)
-    }
-
-    fn prepare(
-        &self,
-        descriptor: &hypercolor_core::input::screen::ResolvedScreenPublicationDescriptor,
-        platform: &ScreenNativePreparationPayload,
-    ) -> anyhow::Result<ScreenNativeTargetPreparation> {
-        let prepared = self
-            .bridge
-            .prepare_target(descriptor, platform.plan_generation())?;
-        Ok(ScreenNativeTargetPreparation::with_retention(
-            ScreenNativePreparationPayload::new(
-                descriptor,
-                platform.plan_generation(),
-                Arc::new(prepared),
-            ),
-            super::prepared_macos_screen_target_retention(descriptor)?,
-        ))
-    }
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn equal_native_physical_descriptors_share_the_reduction_target() {
-    let Some(compositor) = gpu_test_compositor() else {
-        return;
-    };
-    let target = compositor
-        .screen_native_execution_target()
-        .expect("Metal compositor exposes a native screen target")
-        .clone();
-    let bridge = Arc::clone(
-        compositor
-            .screen_bridge
-            .as_ref()
-            .expect("Metal compositor retains its screen bridge"),
-    );
-    let target_color_capabilities = target.color_capabilities();
-    let extent = PixelExtent::new(4, 3).expect("fixture extent is valid");
-    let source = ResolvedScreenSource::new(
-        ScreenSourceSelector::Configured,
-        CaptureEpoch {
-            source_id: CaptureSourceId::new("macos:fixture:shared-physical")
-                .expect("fixture source id is valid"),
-            topology_generation: 3,
-            session_generation: 5,
-        },
-        ResolvedScreenSourceConfig::new(
-            CaptureGeometry::new(
-                PhysicalOrigin::default(),
-                extent,
-                extent,
-                CaptureRotation::Identity,
-                None,
-                SourceScale::ONE,
-            )
-            .expect("fixture geometry is valid"),
-            extent,
-            ScreenSourceReflection::None,
-            CapturePixelFormat::Bgra8,
-            CaptureColorimetry::SRGB,
-            ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                ScreenCaptureBackend::MacosScreenCaptureKit,
-                ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
-                target.physical_gpu_device().clone(),
-                5,
-                7,
-            ),
-        ),
-    );
-    let descriptor = ScreenPublicationRequest::new(
-        ScreenSourceSelector::Configured,
-        ScreenPublicationKind::Surface,
-        ScreenPublicationExecutorRequest::SourceNative(target.clone()),
-        ScreenExtentRequest::bounded(
-            NonZeroU32::new(2),
-            NonZeroU32::new(1),
-            ScreenUpscalePolicy::Never,
-        ),
-        ScreenAspectPolicy::Contain,
-        Arc::new(ScreenProcessingProfile::new(
-            ScreenProcessingProfileConfig::exact_encoded_identity(CapturePixelFormat::Bgra8),
-        )),
-    )
-    .resolve_with_executor_capabilities(
-        &source,
-        ScreenExecutorColorCapabilities::new(
-            ScreenColorTransformCapabilities::NONE,
-            target_color_capabilities,
-        ),
-    )
-    .expect("native fixture descriptor resolves");
-
-    let plan_generation = hypercolor_core::input::screen::ScreenPlanGeneration::default();
-    let first = bridge
-        .prepare_target(&descriptor, plan_generation)
-        .expect("first native target prepares");
-    let second = bridge
-        .prepare_target(&descriptor, plan_generation)
-        .expect("equal native target prepares");
-    let first_physical = first
-        .physical
-        .as_ref()
-        .expect("bounded native descriptor has physical work");
-    let second_physical = second
-        .physical
-        .as_ref()
-        .expect("equal bounded descriptor has physical work");
-
-    assert!(Arc::ptr_eq(first_physical, second_physical));
-    assert_eq!(first_physical.storage_id, second_physical.storage_id);
-
-    let edge_extended = ScreenPublicationRequest::new(
-        ScreenSourceSelector::Configured,
-        ScreenPublicationKind::Surface,
-        ScreenPublicationExecutorRequest::SourceNative(target),
-        ScreenExtentRequest::bounded(
-            NonZeroU32::new(2),
-            NonZeroU32::new(1),
-            ScreenUpscalePolicy::Never,
-        ),
-        ScreenAspectPolicy::Contain,
-        Arc::new(ScreenProcessingProfile::new(
-            ScreenProcessingProfileConfig {
-                letterbox_fill: ScreenLetterboxFill::EdgeExtend,
-                ..ScreenProcessingProfileConfig::exact_encoded_identity(CapturePixelFormat::Bgra8)
-            },
-        )),
-    )
-    .resolve_with_executor_capabilities(
-        &source,
-        ScreenExecutorColorCapabilities::new(
-            ScreenColorTransformCapabilities::NONE,
-            target_color_capabilities,
-        ),
-    )
-    .expect("edge-extended native descriptor resolves");
-    let error = bridge
-        .prepare_target(&edge_extended, plan_generation)
-        .expect_err("edge extension must fail native preparation");
-    assert!(error.to_string().contains("edge-extended letterbox fill"));
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn macos_texture_lease_retains_exclusive_shared_and_capture_admissions() {
-    let Some(compositor) = gpu_test_compositor() else {
-        return;
-    };
-    let registered_target = compositor
-        .screen_native_execution_target()
-        .expect("Metal compositor exposes a native screen target")
-        .clone();
-    let bridge = Arc::clone(
-        compositor
-            .screen_bridge
-            .as_ref()
-            .expect("Metal compositor retains its screen bridge"),
-    );
-    let target = ScreenNativeExecutionTarget::new(
-        ScreenNativeExecutionTargetId::new(
-            NonZeroU64::new(991).expect("fixture target id is non-zero"),
-        ),
-        PlatformGpuApi::Metal,
-        registered_target.physical_gpu_device().clone(),
-        NonZeroU32::new(compositor.probe.max_texture_dimension_2d)
-            .expect("fixture texture limit is non-zero"),
-        Arc::new(MacosLeaseTargetPreparer {
-            bridge: Arc::clone(&bridge),
-        }),
-    )
-    .with_color_capabilities(registered_target.color_capabilities());
-    let extent = PixelExtent::new(4, 3).expect("fixture extent is valid");
-    let source_id =
-        CaptureSourceId::new("macos:fixture:lease").expect("fixture source id is valid");
-    let source = ResolvedScreenSource::new(
-        ScreenSourceSelector::Configured,
-        CaptureEpoch {
-            source_id: source_id.clone(),
-            topology_generation: 3,
-            session_generation: 5,
-        },
-        ResolvedScreenSourceConfig::new(
-            CaptureGeometry::new(
-                PhysicalOrigin::default(),
-                extent,
-                extent,
-                CaptureRotation::Identity,
-                None,
-                SourceScale::ONE,
-            )
-            .expect("fixture geometry is valid"),
-            extent,
-            ScreenSourceReflection::None,
-            CapturePixelFormat::Bgra8,
-            CaptureColorimetry::SRGB,
-            ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-                ScreenCaptureBackend::MacosScreenCaptureKit,
-                ScreenResourceApi::PlatformGpu(PlatformGpuApi::Metal),
-                registered_target.physical_gpu_device().clone(),
-                5,
-                7,
-            ),
-        ),
-    );
-    let demand = hypercolor_core::input::screen::RegisteredScreenBranchDemand::new(
-        ScreenPublicationRequest::new(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Surface,
-            ScreenPublicationExecutorRequest::SourceNative(target),
-            ScreenExtentRequest::bounded(
-                NonZeroU32::new(2),
-                NonZeroU32::new(1),
-                ScreenUpscalePolicy::Never,
-            ),
-            ScreenAspectPolicy::Contain,
-            Arc::new(ScreenProcessingProfile::default()),
-        ),
-        NonZeroU32::new(60).expect("fixture cadence is non-zero"),
-    )
-    .resolve_with_executor_capabilities(
-        &source,
-        ScreenExecutorColorCapabilities::new(
-            ScreenColorTransformCapabilities::NONE,
-            registered_target.color_capabilities(),
-        ),
-    )
-    .expect("native lease demand resolves");
-    let coordinator =
-        ScreenByteAdmissionCoordinator::new(ScreenAdmissionCapacity::new(u64::MAX, u64::MAX));
-    let mut builder = ScreenPlanBuilder::with_publication_slots_and_admission(
-        ScreenPublicationSlotPolicy::default(),
-        coordinator.clone(),
-    );
-    let revision = InputPublicationDemandRevision::new(1);
-    let graph = ScreenInputGraphGeneration::new(1);
-    let mut preparing = builder
-        .prepare(
-            [demand],
-            None,
-            revision,
-            graph,
-            ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
-        )
-        .expect("native lease plan prepares");
-    let ticket = preparing
-        .worker_ticket(&source_id)
-        .expect("native lease source owns a worker ticket");
-    let mut ledger =
-        ScreenWorkerExactLedgerBuilder::new(ticket).expect("native lease ledger begins");
-    let descriptor = ledger.ticket().candidate_plan().branches()[0]
-        .descriptor()
-        .clone();
-    let ScreenPublicationExecutor::SourceNative(target) = descriptor.executor() else {
-        panic!("native lease descriptor keeps its native executor");
-    };
-    let prepared = ledger
-        .prepare_native_target(
-            target,
-            &descriptor,
-            &hypercolor_core::input::screen::ScreenNativePreparationPayload::new(
-                &descriptor,
-                ledger.ticket().plan_generation(),
-                Arc::new(()),
-            ),
-            "native-target-test",
-            "worker-runtime-total",
-        )
-        .expect("native renderer target is admitted");
-    let shared_resource_name = prepared
-        .shared_resource_name()
-        .cloned()
-        .expect("native reduction has a shared physical resource");
-    ledger
-        .preflight_additional_bytes(1)
-        .expect("capture admission byte fits");
-    ledger
-        .report_scoped("capture-plan-test", "worker-runtime-total", 1)
-        .expect("capture admission is exact");
-    let required = ledger
-        .ticket()
-        .required_minimums()
-        .iter()
-        .map(|minimum| (Arc::clone(minimum.name()), minimum.minimum_bytes()))
-        .collect::<Vec<_>>();
-    for (name, bytes) in required {
-        ledger
-            .report(&name, bytes)
-            .expect("required native lease resource is exact");
-    }
-    let (token, lifetimes) = ledger
-        .finish()
-        .expect("native lease ledger finishes")
-        .into_parts();
-    preparing
-        .acknowledge(token)
-        .expect("native lease worker acknowledges");
-    let target_lifetime = lifetimes
-        .iter()
-        .find(|lifetime| lifetime.resource().name().as_ref() == "native-target-test")
-        .cloned()
-        .expect("target lifetime is present");
-    let capture_lifetime = lifetimes
-        .iter()
-        .find(|lifetime| lifetime.resource().name().as_ref() == "capture-plan-test")
-        .cloned()
-        .expect("capture lifetime is present");
-    let shared_target_lifetime = lifetimes
-        .iter()
-        .find(|lifetime| lifetime.resource().name() == &shared_resource_name)
-        .cloned()
-        .expect("shared physical lifetime is present");
-    let bound = prepared
-        .bind_with_shared(
-            target_lifetime.clone(),
-            Some(shared_target_lifetime.clone()),
-        )
-        .expect("prepared target binds its exclusive and shared lifetimes");
-    let capture = Arc::new(macos_capture_frame(&[17, 43, 91, 255].repeat(12)));
-    let imported = bridge
-        .interop
-        .import_frame(&compositor.device, 7, Arc::clone(&capture))
-        .expect("lease fixture imports");
-    let surface = bound
-        .retain_on_surface_with_capture_allocation(
-            PlatformGpuSurface::new(
-                PlatformGpuApi::Metal,
-                u64::from(capture.surface.iosurface_id),
-                extent,
-                CapturePixelFormat::Bgra8,
-                capture,
-            )
-            .expect("lease fixture surface is valid"),
-            capture_lifetime.clone(),
-        )
-        .expect("surface retains both exact allocations");
-    let capture_owner = surface
-        .owner::<MacosCaptureFrame>()
-        .expect("surface retains the capture owner");
-    let target_owner = surface
-        .retained_owner::<PreparedMacosScreenTarget>()
-        .expect("surface retains the renderer owner");
-    assert_eq!(
-        surface
-            .shared_resource_lifetime()
-            .expect("surface retains the shared physical lifetime")
-            .resource()
-            .name(),
-        shared_target_lifetime.resource().name()
-    );
-    let lease = MacosScreenTextureLease::new(
-        imported,
-        capture_owner,
-        target_owner,
-        target_lifetime,
-        Some(shared_target_lifetime),
-        capture_lifetime,
-    );
-    drop(surface);
-    drop(bound);
-    drop(lifetimes);
-    drop(preparing);
-    drop(builder);
-    let retained_bytes = coordinator.snapshot().reserved_bytes();
-    assert!(retained_bytes > 0);
-    drop(lease);
-    assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn native_metal_reduction_feeds_gpu_zone_sampling_without_readback() {
-    let Some(mut compositor) = gpu_test_compositor() else {
-        return;
-    };
-    let bridge = Arc::clone(
-        compositor
-            .screen_bridge
-            .as_ref()
-            .expect("Metal compositor retains its screen bridge"),
-    );
-    let capture = Arc::new(macos_capture_frame(&[17, 43, 91, 255].repeat(12)));
-    let imported = bridge
-        .interop
-        .import_frame(&compositor.device, 23, capture)
-        .expect("native zone fixture imports");
-    let target = bridge
-        .reducer
-        .create_target(&compositor.device, 4, 4, MacosNativeTargetFormat::Rgba8)
-        .expect("native zone target allocates");
-    let descriptor = MacosNativeReductionDescriptor::new(
-        [4, 4],
-        [0, 0, 4, 4],
-        [0.0, 0.0, 4.0, 3.0],
-        MacosNativeReductionFilter::Area,
-        None,
-    )
-    .expect("native zone reduction geometry is valid");
-    let mut encoder = compositor
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("SparkleFlinger native zone reduction"),
-        });
-    bridge
-        .reducer
-        .encode(&imported, &target, descriptor, &mut encoder)
-        .expect("native zone reduction encodes");
-    let _ = compositor.queue.submit(Some(encoder.finish()));
-
-    let plan = CompositionPlan::single(
-        4,
-        4,
-        CompositionLayer::replace(ProducerFrame::GpuTexture(GpuTextureFrame {
-            width: 4,
-            height: 4,
-            storage_id: 29,
-            content_generation: imported.content_sequence(),
-            origin: GpuTextureFrameOrigin::ProducerTexture,
-            texture: target.texture().clone(),
-            view: target.view().clone(),
-            immutable_lease: None,
-            macos_screen_lease: None,
-        })),
-    );
-    compositor
-        .compose(&plan, false, None)
-        .expect("native reduced texture composes without readback");
-    let engine = SpatialEngine::new(sampling_layout(SamplingMode::Bilinear));
-    let mut expected = Canvas::new(4, 4);
-    expected.fill(Rgba::new(91, 43, 17, 255));
-    let mut sampled = Vec::new();
-    assert!(
-        compositor
-            .sample_zone_plan_into(engine.sampling_plan().as_ref(), &mut sampled)
-            .expect("native reduced texture samples into zones")
-    );
-    assert_eq!(sampled, engine.sample(&expected));
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn native_metal_color_pipeline_matches_shared_sdr_p3_pq_hlg_extended_linear_and_yuv_vectors() {
-    let Some(compositor) = gpu_test_compositor() else {
-        return;
-    };
-    let bridge = Arc::clone(
-        compositor
-            .screen_bridge
-            .as_ref()
-            .expect("Metal compositor should retain its screen bridge"),
-    );
-    for (format, source, color, planes) in managed_native_vectors() {
-        let capture = Arc::new(macos_native_capture_frame(format, color, &planes));
-        let imported = bridge
-            .interop
-            .import_frame(&compositor.device, 19, Arc::clone(&capture))
-            .expect("managed native vector imports");
-        let prepared = PreparedLedToneMap::prepare(
-            source,
-            KnownCaptureColorimetry::SRGB,
-            LedToneMapCalibration::DEFAULT,
-        )
-        .expect("managed native vector prepares");
-        let constants = prepared.constants();
-        let target = bridge
-            .reducer
-            .create_target(&compositor.device, 1, 1, MacosNativeTargetFormat::Rgba8)
-            .expect("managed native target allocates");
-        let descriptor = MacosNativeReductionDescriptor::new(
-            [1, 1],
-            [0, 0, 1, 1],
-            [0.0, 0.0, 1.0, 1.0],
-            MacosNativeReductionFilter::Nearest,
-            Some((
-                MacosNativeOutputTransfer::Srgb,
-                MacosNativeColorTransform::new(
-                    constants.source_to_target,
-                    constants.source_luminance_and_exposure,
-                    constants.curve,
-                ),
-            )),
-        )
-        .expect("managed native descriptor is valid");
-        let mut encoder =
-            compositor
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("SparkleFlinger managed native color parity"),
-                });
-        bridge
-            .reducer
-            .encode(&imported, &target, descriptor, &mut encoder)
-            .expect("managed native vector encodes");
-        let _ = compositor.queue.submit(Some(encoder.finish()));
-        let actual = read_texture_rgba8(
-            &compositor.device,
-            &compositor.queue,
-            target.texture(),
-            1,
-            1,
-        );
-        let encoded = capture
-            .with_cpu_source(|source| source.sample_rgba32f(0, 0))
-            .expect("scalar source maps")
-            .expect("scalar source decodes");
-        let mapped = prepared.decode_and_map_source(encoded);
-        let expected = prepared.encode(mapped);
-        assert_eq!(actual.as_slice(), expected, "{format:?} managed parity");
-    }
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-#[test]
-fn native_metal_sdr_output_transfers_match_the_shared_encoder() {
-    let Some(compositor) = gpu_test_compositor() else {
-        return;
-    };
-    let bridge = Arc::clone(
-        compositor
-            .screen_bridge
-            .as_ref()
-            .expect("Metal compositor should retain its screen bridge"),
-    );
-    let source = KnownCaptureColorimetry::try_new(
-        CaptureColorSpace::Srgb,
-        CaptureTransferFunction::Linear,
-        CaptureDynamicRange::Standard,
-        None,
-    )
-    .expect("linear source contract is valid");
-    let color = MacosCaptureColorimetry {
-        primaries: MacosColorPrimaries::Srgb,
-        transfer: MacosTransferFunction::Linear,
-        matrix: None,
-        range: MacosColorRange::Full,
-        chroma_location: None,
-    };
-    let planes = vec![
-        [0x3400_u16, 0x3800, 0x3a00, 0x3c00]
-            .into_iter()
-            .flat_map(u16::to_le_bytes)
-            .collect(),
-    ];
-    let capture = Arc::new(macos_native_capture_frame(
-        MacosCapturePixelFormat::Rgba16Float,
-        color,
-        &planes,
-    ));
-    let imported = bridge
-        .interop
-        .import_frame(&compositor.device, 29, Arc::clone(&capture))
-        .expect("SDR transfer fixture imports");
-    let encoded_source = capture
-        .with_cpu_source(|source| source.sample_rgba32f(0, 0))
-        .expect("scalar source maps")
-        .expect("scalar source decodes");
-
-    for (transfer, native_transfer, color_space) in [
-        (
-            CaptureTransferFunction::Srgb,
-            MacosNativeOutputTransfer::Srgb,
-            CaptureColorSpace::Srgb,
-        ),
-        (
-            CaptureTransferFunction::Linear,
-            MacosNativeOutputTransfer::Linear,
-            CaptureColorSpace::Srgb,
-        ),
-        (
-            CaptureTransferFunction::Rec709,
-            MacosNativeOutputTransfer::Rec709,
-            CaptureColorSpace::Srgb,
-        ),
-        (
-            CaptureTransferFunction::Rec2020,
-            MacosNativeOutputTransfer::Rec2020,
-            CaptureColorSpace::Rec2020,
-        ),
-    ] {
-        let output = KnownCaptureColorimetry::try_new(
-            color_space,
-            transfer,
-            CaptureDynamicRange::Standard,
-            None,
-        )
-        .expect("SDR output contract is valid");
-        let prepared = PreparedLedToneMap::prepare(source, output, LedToneMapCalibration::DEFAULT)
-            .expect("SDR output fixture prepares");
-        let constants = prepared.constants();
-        let target = bridge
-            .reducer
-            .create_target(&compositor.device, 1, 1, MacosNativeTargetFormat::Rgba8)
-            .expect("SDR output target allocates");
-        let descriptor = MacosNativeReductionDescriptor::new(
-            [1, 1],
-            [0, 0, 1, 1],
-            [0.0, 0.0, 1.0, 1.0],
-            MacosNativeReductionFilter::Nearest,
-            Some((
-                native_transfer,
-                MacosNativeColorTransform::new(
-                    constants.source_to_target,
-                    constants.source_luminance_and_exposure,
-                    constants.curve,
-                ),
-            )),
-        )
-        .expect("SDR output descriptor is valid");
-        let mut encoder =
-            compositor
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("SparkleFlinger native SDR output parity"),
-                });
-        bridge
-            .reducer
-            .encode(&imported, &target, descriptor, &mut encoder)
-            .expect("SDR output vector encodes");
-        let _ = compositor.queue.submit(Some(encoder.finish()));
-        let actual = read_texture_rgba8(
-            &compositor.device,
-            &compositor.queue,
-            target.texture(),
-            1,
-            1,
-        );
-        let expected = prepared.encode(prepared.decode_and_map_source(encoded_source));
-        assert_eq!(actual.as_slice(), expected, "{transfer:?} output parity");
-    }
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-fn managed_native_vectors() -> Vec<(
-    MacosCapturePixelFormat,
-    KnownCaptureColorimetry,
-    MacosCaptureColorimetry,
-    Vec<Vec<u8>>,
-)> {
-    let p3 = KnownCaptureColorimetry::try_new(
-        CaptureColorSpace::DisplayP3,
-        CaptureTransferFunction::Srgb,
-        CaptureDynamicRange::Standard,
-        None,
-    )
-    .expect("P3 source contract is valid");
-    let hdr_luminance = CaptureLuminanceContext::new(
-        CapturePositiveScalar::try_new(203.0).expect("reference white is valid"),
-        CapturePositiveScalar::try_new(1_000.0).expect("peak is valid"),
-    )
-    .expect("HDR luminance is ordered");
-    let rec2020_pq = KnownCaptureColorimetry::try_new(
-        CaptureColorSpace::Rec2020,
-        CaptureTransferFunction::Pq,
-        CaptureDynamicRange::High,
-        Some(hdr_luminance),
-    )
-    .expect("PQ source contract is valid");
-    let rec2020_linear = KnownCaptureColorimetry::try_new(
-        CaptureColorSpace::Rec2020,
-        CaptureTransferFunction::Linear,
-        CaptureDynamicRange::High,
-        Some(hdr_luminance),
-    )
-    .expect("extended-linear source contract is valid");
-    let rec2020_hlg = KnownCaptureColorimetry::try_new(
-        CaptureColorSpace::Rec2020,
-        CaptureTransferFunction::Hlg,
-        CaptureDynamicRange::High,
-        Some(hdr_luminance),
-    )
-    .expect("HLG source contract is valid");
-    vec![
-        (
-            MacosCapturePixelFormat::Bgra8,
-            KnownCaptureColorimetry::SRGB,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::Srgb,
-                transfer: MacosTransferFunction::Srgb,
-                matrix: None,
-                range: MacosColorRange::Full,
-                chroma_location: None,
-            },
-            vec![vec![208, 72, 24, 255]],
-        ),
-        (
-            MacosCapturePixelFormat::Bgra8,
-            p3,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::DisplayP3,
-                transfer: MacosTransferFunction::Srgb,
-                matrix: None,
-                range: MacosColorRange::Full,
-                chroma_location: None,
-            },
-            vec![vec![32, 96, 224, 255]],
-        ),
-        (
-            MacosCapturePixelFormat::Argb2101010,
-            rec2020_pq,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::Rec2020,
-                transfer: MacosTransferFunction::Pq,
-                matrix: None,
-                range: MacosColorRange::Full,
-                chroma_location: None,
-            },
-            vec![
-                ((3_u32 << 30) | (600_u32 << 20) | (450_u32 << 10) | 0x012c_u32)
-                    .to_le_bytes()
-                    .to_vec(),
-            ],
-        ),
-        (
-            MacosCapturePixelFormat::Rgba16Float,
-            rec2020_linear,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::Rec2020,
-                transfer: MacosTransferFunction::Linear,
-                matrix: None,
-                range: MacosColorRange::Full,
-                chroma_location: None,
-            },
-            vec![
-                [0x4000_u16, 0x3c00, 0x3800, 0x3c00]
-                    .into_iter()
-                    .flat_map(u16::to_le_bytes)
-                    .collect(),
-            ],
-        ),
-        (
-            MacosCapturePixelFormat::Yuv420VideoRange,
-            rec2020_pq,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::Rec2020,
-                transfer: MacosTransferFunction::Pq,
-                matrix: Some(MacosYuvMatrix::Bt2020),
-                range: MacosColorRange::Video,
-                chroma_location: Some(MacosChromaLocation::Center),
-            },
-            vec![vec![128], vec![64, 192]],
-        ),
-        (
-            MacosCapturePixelFormat::Yuv420FullRange,
-            rec2020_pq,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::Rec2020,
-                transfer: MacosTransferFunction::Pq,
-                matrix: Some(MacosYuvMatrix::Bt2020),
-                range: MacosColorRange::Full,
-                chroma_location: Some(MacosChromaLocation::Left),
-            },
-            vec![vec![144], vec![80, 176]],
-        ),
-        (
-            MacosCapturePixelFormat::Yuv44410BiPlanar,
-            rec2020_pq,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::Rec2020,
-                transfer: MacosTransferFunction::Pq,
-                matrix: Some(MacosYuvMatrix::Bt2020),
-                range: MacosColorRange::Video,
-                chroma_location: Some(MacosChromaLocation::TopLeft),
-            },
-            vec![
-                (600_u16 << 6).to_le_bytes().to_vec(),
-                [(320_u16 << 6), (700_u16 << 6)]
-                    .into_iter()
-                    .flat_map(u16::to_le_bytes)
-                    .collect(),
-            ],
-        ),
-        (
-            MacosCapturePixelFormat::Bgra8,
-            rec2020_hlg,
-            MacosCaptureColorimetry {
-                primaries: MacosColorPrimaries::Rec2020,
-                transfer: MacosTransferFunction::Hlg,
-                matrix: None,
-                range: MacosColorRange::Full,
-                chroma_location: None,
-            },
-            vec![vec![64, 128, 192, 255]],
-        ),
-    ]
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-fn macos_native_capture_frame(
-    format: MacosCapturePixelFormat,
-    color: MacosCaptureColorimetry,
-    planes: &[Vec<u8>],
-) -> MacosCaptureFrame {
-    let extent = MacosPixelExtent::new(1, 1).expect("fixture extent is valid");
-    let borrowed = planes.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    let (surface, planes) =
-        MacosCaptureSurface::new_native_fixture(extent, format, color, &borrowed)
-            .expect("native managed fixture is valid");
-    MacosCaptureFrame {
-        epoch: 5,
-        sequence: 1,
-        display_time: 13,
-        storage_extent: extent,
-        planes: Arc::from(planes),
-        pixel_format: format,
-        color,
-        geometry: MacosCaptureGeometry {
-            display_scale_factor: MacosScale::display(1.0).expect("fixture display scale is valid"),
-            content_scale: MacosScale::new(1.0).expect("fixture content scale is valid"),
-            content_rect_points: MacosPointRect::new(0.0, 0.0, 1.0, 1.0)
-                .expect("fixture content points are valid"),
-            content_rect_pixels: MacosPixelRect::new(0, 0, 1, 1)
-                .expect("fixture content pixels are valid"),
-            screen_rect_points: None,
-            bounding_rect_points: None,
-            bounding_rect_pixels: None,
-        },
-        damage: Arc::from([]),
-        cursor_composed: false,
-        surface,
-    }
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-fn read_texture_rgba8(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
-    let row_bytes = width * 4;
-    let padded =
-        row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("SparkleFlinger managed native color readback"),
-        size: u64::from(padded) * u64::from(height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("SparkleFlinger managed native color readback"),
-    });
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    let submission = queue.submit(Some(encoder.finish()));
-    let slice = buffer.slice(..);
-    let (sender, receiver) = mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
-    });
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: None,
-        })
-        .expect("managed native color readback poll succeeds");
-    receiver
-        .recv()
-        .expect("managed native color callback arrives")
-        .expect("managed native color buffer maps");
-    let mapped = slice.get_mapped_range();
-    let mut result = Vec::with_capacity((row_bytes * height) as usize);
-    for row in mapped.chunks_exact(padded as usize) {
-        result.extend_from_slice(&row[..row_bytes as usize]);
-    }
-    result
-}
-
-#[cfg(all(feature = "screen-capture", target_os = "macos"))]
-fn macos_capture_frame(pixels: &[u8]) -> MacosCaptureFrame {
-    let extent = MacosPixelExtent::new(4, 3).expect("fixture extent should be valid");
-    let (surface, plane) = MacosCaptureSurface::new_native_bgra_fixture(extent, pixels)
-        .expect("native BGRA fixture should be valid");
-    MacosCaptureFrame {
-        epoch: 5,
-        sequence: 0,
-        display_time: 13,
-        storage_extent: extent,
-        planes: Arc::from([plane]),
-        pixel_format: MacosCapturePixelFormat::Bgra8,
-        color: MacosCaptureColorimetry {
-            primaries: MacosColorPrimaries::Srgb,
-            transfer: MacosTransferFunction::Srgb,
-            matrix: None,
-            range: MacosColorRange::Full,
-            chroma_location: None,
-        },
-        geometry: MacosCaptureGeometry {
-            display_scale_factor: MacosScale::display(1.0)
-                .expect("fixture display scale should be valid"),
-            content_scale: MacosScale::new(1.0).expect("fixture content scale should be valid"),
-            content_rect_points: MacosPointRect::new(0.0, 0.0, 4.0, 3.0)
-                .expect("fixture content points should be valid"),
-            content_rect_pixels: MacosPixelRect::new(0, 0, 4, 3)
-                .expect("fixture content pixels should be valid"),
-            screen_rect_points: None,
-            bounding_rect_points: None,
-            bounding_rect_pixels: None,
-        },
-        damage: Arc::from([]),
-        cursor_composed: true,
-        surface,
-    }
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-#[test]
-fn gpu_macos_imported_frame_composes_without_cpu_readback() {
+fn gpu_imported_frame_composes_without_cpu_readback() {
     let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
@@ -2711,14 +1637,18 @@ fn gpu_macos_imported_frame_composes_without_cpu_readback() {
         },
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let frame = hypercolor_core::effect::ImportedEffectFrame {
+    let texture = Arc::new(texture);
+    let frame = hypercolor_gpu_frame::ImportedEffectFrame {
         width,
         height,
-        format: hypercolor_core::effect::ImportedFrameFormat::Bgra8Unorm,
-        storage_id: 1,
-        texture: Arc::new(texture),
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Bgra8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(1),
+        content_generation: 1,
+        origin: hypercolor_gpu_frame::FrameOrigin::BottomLeft,
+        lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+        texture,
         view: Arc::new(view),
-        timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
     };
 
     let composed = compositor
@@ -2866,10 +1796,7 @@ fn gpu_compositor_rejects_every_cached_surface_texture_before_reactivation() {
                 texture: texture.texture.clone(),
                 view: texture.view.clone(),
                 immutable_lease: None,
-                #[cfg(target_os = "windows")]
-                windows_screen_lease: None,
-                #[cfg(all(target_os = "macos", feature = "screen-capture"))]
-                macos_screen_lease: None,
+                native_screen_lease: None,
             }
         };
         [
@@ -3812,7 +2739,7 @@ fn gpu_compositor_reuses_source_bind_groups_across_frames() {
     );
 }
 
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+#[cfg(feature = "servo-gpu-import")]
 #[test]
 fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
     let Some(mut compositor) = gpu_test_compositor() else {
@@ -3820,7 +2747,7 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
     };
     let width = 4;
     let height = 4;
-    let imported_frame = |storage_id: u64| {
+    let imported_frame = |allocation_id: u64| {
         let texture = compositor.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SparkleFlinger test flipped imported source"),
             size: wgpu::Extent3d {
@@ -3866,14 +2793,18 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
             },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        hypercolor_core::effect::ImportedEffectFrame {
+        let texture = Arc::new(texture);
+        hypercolor_gpu_frame::ImportedEffectFrame {
             width,
             height,
-            format: hypercolor_core::effect::ImportedFrameFormat::Bgra8Unorm,
-            storage_id,
-            texture: Arc::new(texture),
+            format: hypercolor_gpu_frame::ImportedFrameFormat::Bgra8Unorm,
+            allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(allocation_id),
+            content_generation: allocation_id,
+            origin: hypercolor_gpu_frame::FrameOrigin::BottomLeft,
+            lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+            texture,
             view: Arc::new(view),
-            timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+            timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
         }
     };
 

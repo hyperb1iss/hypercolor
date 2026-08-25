@@ -515,7 +515,12 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
                                 "id": "nollie",
                                 "display_name": "Nollie",
                                 "module_kind": "hal",
-                                "transports": ["usb"],
+                                "transports": [
+                                    {
+                                        "kind": "usb",
+                                        "availability": {"status": "available"},
+                                    }
+                                ],
                                 "capabilities": {
                                     "config": False,
                                     "discovery": True,
@@ -527,7 +532,7 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
                                     "presentation": True,
                                     "controls": False,
                                 },
-                                "api_schema_version": 1,
+                                "api_schema_version": 3,
                                 "config_version": 1,
                                 "default_enabled": True,
                             },
@@ -557,6 +562,11 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
 
     assert route.called
     assert isinstance(drivers[0], DriverSummary)
+    assert drivers[0].descriptor.api_schema_version == 3
+    assert drivers[0].descriptor.transports[0].to_dict() == {
+        "availability": {"status": "available"},
+        "kind": "usb",
+    }
     assert drivers[0].presentation.label == "Nollie"
     protocols = drivers[0].protocols
     assert not isinstance(protocols, Unset)

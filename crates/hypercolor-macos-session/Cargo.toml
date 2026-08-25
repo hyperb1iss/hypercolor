@@ -1,0 +1,43 @@
+[package]
+name = "hypercolor-macos-session"
+description = "macOS session and power event monitoring for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+hypercolor-core = { workspace = true }
+hypercolor-types = { workspace = true }
+hypercolor-worker-retention = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = { workspace = true, features = ["std"] }
+objc2-app-kit = { workspace = true, features = ["std", "NSWorkspace"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFRunLoop"] }
+objc2-foundation = { workspace = true, features = [
+  "std",
+  "block2",
+  "NSNotification",
+  "NSObject",
+  "NSOperation",
+  "NSString",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

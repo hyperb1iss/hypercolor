@@ -2,11 +2,15 @@
 
 use hypercolor_core::input::{MacosHostInput, PointerMode, Q16_16_SCALE};
 use hypercolor_macos_input::{
-    MacosInputBatch, MacosInputEvent, MacosInputGapReason, MacosModifierFlags, MacosPointerButton,
-    MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop,
+    MacosModifierFlags, MacosVirtualDesktop, normalize_button_event, normalize_key_event,
+    normalize_media_key_event, normalize_modifier_event, normalize_motion_event,
+    normalize_scroll_event,
 };
 use hypercolor_types::event::{
     InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit,
+};
+use hypercolor_types::host_input::{
+    HostInputBatch, HostInputEvent, HostInputGapReason, HostPointerButton, HostPointerSnapshot,
 };
 
 fn desktop(topology_generation: u64) -> MacosVirtualDesktop {
@@ -16,17 +20,41 @@ fn desktop(topology_generation: u64) -> MacosVirtualDesktop {
 
 fn fold(
     input: &mut MacosHostInput,
-    events: &[MacosInputEvent],
+    events: &[HostInputEvent],
 ) -> (
     hypercolor_core::input::InteractionData,
     Vec<hypercolor_types::event::TimedInputEvent>,
 ) {
-    input.fold_and_snapshot(MacosInputBatch {
-        epoch: input.epoch(),
-        at_ms: 100,
+    input.fold_and_snapshot(HostInputBatch {
         events,
-        virtual_desktop: desktop(1),
+        pointer: None,
+        at_ms: 100,
+        device_catalog_generation: 0,
     })
+}
+
+fn fold_with_pointer(
+    input: &mut MacosHostInput,
+    events: &[HostInputEvent],
+    pointer: HostPointerSnapshot,
+) -> (
+    hypercolor_core::input::InteractionData,
+    Vec<hypercolor_types::event::TimedInputEvent>,
+) {
+    input.fold_and_snapshot(HostInputBatch {
+        events,
+        pointer: Some(pointer),
+        at_ms: 100,
+        device_catalog_generation: 0,
+    })
+}
+
+fn key(virtual_keycode: u16, pressed: bool, repeat: bool) -> HostInputEvent {
+    normalize_key_event(virtual_keycode, pressed, repeat).expect("fixture key is supported")
+}
+
+fn modifier(virtual_keycode: u16, flags: MacosModifierFlags) -> HostInputEvent {
+    normalize_modifier_event(virtual_keycode, flags).expect("fixture modifier is supported")
 }
 
 fn key_states(events: &[hypercolor_types::event::TimedInputEvent]) -> Vec<InputButtonState> {
@@ -43,31 +71,10 @@ fn key_states(events: &[hypercolor_types::event::TimedInputEvent]) -> Vec<InputB
 fn native_repeat_and_impossible_edges_preserve_canonical_state() {
     let mut input = MacosHostInput::new(true, false);
     let events = [
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: false,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: true,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: false,
-            autorepeat: false,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: false,
-            autorepeat: false,
-        },
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: true,
-        },
+        key(0x00, true, false),
+        key(0x00, true, true),
+        key(0x00, false, false),
+        key(0x00, false, false),
     ];
 
     let (data, folded) = fold(&mut input, &events);
@@ -81,10 +88,9 @@ fn native_repeat_and_impossible_edges_preserve_canonical_state() {
             InputButtonState::Repeated,
             InputButtonState::Released,
             InputButtonState::Released,
-            InputButtonState::Repeated,
         ]
     );
-    assert_eq!(input.fold_diagnostics().impossible_key_edges, 2);
+    assert_eq!(input.fold_diagnostics().impossible_key_edges, 1);
 }
 
 #[test]
@@ -93,30 +99,12 @@ fn modifier_flags_keep_sides_distinct_and_toggle_caps_lock() {
     let shift = MacosModifierFlags::SHIFT;
     let caps = MacosModifierFlags::ALPHA_SHIFT;
     let events = [
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x38,
-            flags: shift,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x3c,
-            flags: shift,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x38,
-            flags: shift,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x3c,
-            flags: MacosModifierFlags::default(),
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x39,
-            flags: caps,
-        },
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode: 0x39,
-            flags: MacosModifierFlags::default(),
-        },
+        modifier(0x38, shift),
+        modifier(0x3c, shift),
+        modifier(0x38, shift),
+        modifier(0x3c, MacosModifierFlags::default()),
+        modifier(0x39, caps),
+        modifier(0x39, MacosModifierFlags::default()),
     ];
 
     let (data, folded) = fold(&mut input, &events);
@@ -139,15 +127,8 @@ fn modifier_flags_keep_sides_distinct_and_toggle_caps_lock() {
 fn media_keys_and_extra_buttons_use_canonical_names() {
     let mut input = MacosHostInput::new(true, true);
     let events = [
-        MacosInputEvent::MediaKey {
-            nx_key_type: 16,
-            pressed: true,
-            repeat: false,
-        },
-        MacosInputEvent::Button {
-            button: MacosPointerButton::Other(3),
-            pressed: true,
-        },
+        normalize_media_key_event(16, true, false).expect("fixture media key is supported"),
+        normalize_button_event(HostPointerButton::new("button4"), true),
     ];
 
     let (data, folded) = fold(&mut input, &events);
@@ -167,13 +148,13 @@ fn media_keys_and_extra_buttons_use_canonical_names() {
 #[test]
 fn physical_wheel_emits_exact_axes() {
     let mut input = MacosHostInput::new(false, true);
-    let events = [MacosInputEvent::Wheel {
-        fixed_delta_x: Q16_16_SCALE,
-        fixed_delta_y: -2 * Q16_16_SCALE,
-        unit: MacosScrollUnit::Notches,
-        phase: MacosScrollPhase::Changed,
-        momentum_phase: MacosScrollPhase::None,
-    }];
+    let events = [normalize_scroll_event(
+        Q16_16_SCALE,
+        -2 * Q16_16_SCALE,
+        false,
+        PointerScrollPhase::Changed,
+        PointerScrollPhase::None,
+    )];
 
     let (_, folded) = fold(&mut input, &events);
 
@@ -191,15 +172,15 @@ fn physical_wheel_emits_exact_axes() {
 }
 
 #[test]
-fn continuous_scroll_preserves_pixels_and_phases() {
+fn continuous_scroll_preserves_pixels_and_phases_without_legacy_shadow() {
     let mut input = MacosHostInput::new(false, true);
-    let events = [MacosInputEvent::Wheel {
-        fixed_delta_x: 3 * Q16_16_SCALE,
-        fixed_delta_y: -4 * Q16_16_SCALE,
-        unit: MacosScrollUnit::Pixels,
-        phase: MacosScrollPhase::Began,
-        momentum_phase: MacosScrollPhase::MayBegin,
-    }];
+    let events = [normalize_scroll_event(
+        3 * Q16_16_SCALE,
+        -4 * Q16_16_SCALE,
+        true,
+        PointerScrollPhase::Began,
+        PointerScrollPhase::MayBegin,
+    )];
 
     let (_, folded) = fold(&mut input, &events);
 
@@ -218,27 +199,15 @@ fn continuous_scroll_preserves_pixels_and_phases() {
 #[test]
 fn motion_normalizes_negative_origins_and_resets_on_topology_change() {
     let mut input = MacosHostInput::new(false, true);
-    let first = [MacosInputEvent::Motion {
-        x: -100.0,
-        y: 0.0,
-        delta_x: 90.0,
-        delta_y: 90.0,
-    }];
-    let second = [MacosInputEvent::Motion {
-        x: 100.0,
-        y: 50.0,
-        delta_x: 20.0,
-        delta_y: -10.0,
-    }];
+    let (first_event, first_pointer) = normalize_motion_event(desktop(1), -100.0, 0.0);
+    let (second_event, second_pointer) = normalize_motion_event(desktop(1), 100.0, 50.0);
+    let first = [first_event];
+    let second = [second_event.clone()];
 
-    let (first_data, _) = fold(&mut input, &first);
-    let (second_data, _) = fold(&mut input, &second);
-    let (reset_data, _) = input.fold_and_snapshot(MacosInputBatch {
-        epoch: input.epoch(),
-        at_ms: 101,
-        events: &second,
-        virtual_desktop: desktop(2),
-    });
+    let (first_data, _) = fold_with_pointer(&mut input, &first, first_pointer);
+    let (second_data, _) = fold_with_pointer(&mut input, &second, second_pointer);
+    let (reset_event, reset_pointer) = normalize_motion_event(desktop(2), 100.0, 50.0);
+    let (reset_data, _) = fold_with_pointer(&mut input, &[reset_event], reset_pointer);
 
     assert_eq!(first_data.mouse.mode, PointerMode::Absolute);
     assert_eq!((first_data.mouse.x, first_data.mouse.y), (-100, 0));
@@ -246,39 +215,27 @@ fn motion_normalizes_negative_origins_and_resets_on_topology_change() {
         (first_data.mouse.norm_x, first_data.mouse.norm_y),
         (0.25, 0.5)
     );
-    assert!((second_data.batch.motion.dx - 0.05).abs() < f32::EPSILON);
-    assert!((second_data.batch.motion.dy + 0.05).abs() < f32::EPSILON);
+    assert!((second_data.batch.motion.dx - 0.5).abs() < f32::EPSILON);
+    assert!((second_data.batch.motion.dy - 0.25).abs() < f32::EPSILON);
     assert_eq!(reset_data.batch.motion.dx, 0.0);
     assert_eq!(reset_data.batch.motion.dy, 0.0);
-    assert_eq!(input.fold_diagnostics().topology_resets, 2);
+    assert_eq!(input.fold_diagnostics().coordinate_space_resets, 1);
 }
 
 #[test]
-fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
+fn state_gap_synthesizes_releases() {
     let mut input = MacosHostInput::new(true, true);
     let held = [
-        MacosInputEvent::Key {
-            virtual_keycode: 0x00,
-            pressed: true,
-            autorepeat: false,
-        },
-        MacosInputEvent::Button {
-            button: MacosPointerButton::Left,
-            pressed: true,
-        },
+        key(0x00, true, false),
+        normalize_button_event(HostPointerButton::left(), true),
     ];
     fold(&mut input, &held);
-    let gap = [MacosInputEvent::StateGap {
-        reason: MacosInputGapReason::QueueOverflow,
+    let gap = [HostInputEvent::StateGap {
+        device: None,
+        reason: HostInputGapReason::QueueOverflow,
     }];
 
     let (data, releases) = fold(&mut input, &gap);
-    let (_, stale) = input.fold_and_snapshot(MacosInputBatch {
-        epoch: input.epoch().wrapping_add(1),
-        at_ms: 102,
-        events: &held,
-        virtual_desktop: desktop(1),
-    });
 
     assert!(data.keyboard.pressed_keys.is_empty());
     assert!(data.mouse.buttons.is_empty());
@@ -293,22 +250,46 @@ fn state_gap_synthesizes_releases_and_stale_epoch_is_inert() {
             ..
         }
     )));
-    assert!(stale.is_empty());
     assert_eq!(input.fold_diagnostics().state_gaps, 1);
 }
 
 #[cfg(feature = "macos-native-fixtures")]
 mod fixtures {
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use hypercolor_core::input::{
-        InputData, InputManager, InputSource, MacosAuthorizationState, MacosCapabilityOwner,
-        MacosDaemonOwnerConflict, MacosHostInput, MacosInputFixtureBackend,
-        MacosProtectedSourceState, SourcePlatformStatus, SourceState,
+        CapabilityActionDisposition, InputData, InputManager, InputSource, InteractionSource,
+        MacosHostInput, MacosInputFixtureBackend, ManagedSourceRole, SourceCapabilityConflict,
+        SourceCapabilityContext, SourceState, SourceStatus,
     };
-    use hypercolor_macos_input::{MacosInputEvent, event_masks};
+    use hypercolor_macos_input::{event_masks, normalize_button_event};
+    use hypercolor_types::host_input::HostPointerButton;
 
-    use super::desktop;
+    use super::{desktop, key};
+
+    fn capability_context(
+        owner: &'static str,
+        conflict: Option<SourceCapabilityConflict>,
+        identity_hash: Option<&str>,
+    ) -> SourceCapabilityContext {
+        SourceCapabilityContext {
+            owner: Arc::from(owner),
+            conflict,
+            identity_hash: identity_hash.map(Arc::from),
+            features: BTreeMap::new(),
+        }
+    }
+
+    fn diagnostics_payload(snapshot: &SourceStatus) -> &serde_json::Value {
+        let diagnostics = snapshot
+            .diagnostics
+            .as_deref()
+            .expect("fixture should publish macOS input diagnostics");
+        assert_eq!(diagnostics.schema(), "macos.input");
+        assert_eq!(diagnostics.version(), 1);
+        diagnostics.payload()
+    }
 
     #[test]
     fn denied_keyboard_permission_keeps_pointer_capture_live() {
@@ -329,20 +310,44 @@ mod fixtures {
         assert_eq!(status.snapshot().state, SourceState::Degraded);
         assert_eq!(status.snapshot().resource_count, 1);
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard"], "needs_user_action");
+        assert_eq!(platform["pointer"], "live");
+        assert_eq!(platform["keyboard_tcc"], "not_determined");
+        assert_eq!(platform["keyboard_owner"], "standalone");
+        assert_eq!(platform["pointer_owner"], "standalone");
         assert_eq!(
-            platform.keyboard,
-            MacosProtectedSourceState::NeedsUserAction
+            snapshot
+                .diagnostics
+                .as_deref()
+                .expect("fixture should publish macOS input diagnostics")
+                .display()
+                .iter()
+                .map(|field| {
+                    (
+                        field.key.as_str(),
+                        field.label.as_str(),
+                        field.value.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("keyboard", "Keyboard", "Needs authorization"),
+                ("pointer", "Pointer", "Live"),
+                ("authorization", "Authorization", "Not determined"),
+                ("owner", "Owner", "Standalone"),
+                ("secure_input", "Secure input", "Inactive"),
+            ]
         );
-        assert_eq!(platform.pointer, MacosProtectedSourceState::Live);
         assert_eq!(
-            platform.keyboard_tcc,
-            MacosAuthorizationState::NotDetermined
+            snapshot
+                .action_issue
+                .as_ref()
+                .expect("authorization action issue is published")
+                .code
+                .as_ref(),
+            "authorization_required"
         );
-        assert_eq!(platform.keyboard_owner, MacosCapabilityOwner::Standalone);
-        assert_eq!(platform.pointer_owner, MacosCapabilityOwner::Standalone);
         assert_eq!(
             status
                 .snapshot()
@@ -356,10 +361,7 @@ mod fixtures {
 
         fixture
             .publish(
-                &[MacosInputEvent::Button {
-                    button: hypercolor_macos_input::MacosPointerButton::Left,
-                    pressed: true,
-                }],
+                &[normalize_button_event(HostPointerButton::left(), true)],
                 100,
             )
             .expect("pointer batch publishes");
@@ -394,15 +396,7 @@ mod fixtures {
         assert_ne!(fixture.active_epoch(), Some(first_epoch));
         assert!(
             !fixture
-                .publish_with_epoch(
-                    first_epoch,
-                    &[MacosInputEvent::Key {
-                        virtual_keycode: 0x00,
-                        pressed: true,
-                        autorepeat: false,
-                    }],
-                    200,
-                )
+                .publish_with_epoch(first_epoch, &[key(0x00, true, false)], 200,)
                 .expect("stale publication is rejected without an error")
         );
 
@@ -438,15 +432,19 @@ mod fixtures {
             "macos_input_tap_create_failed"
         );
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard"], "needs_process_restart");
+        assert_eq!(platform["pointer"], "failed");
+        assert_eq!(platform["keyboard_tcc"], "authorized");
         assert_eq!(
-            platform.keyboard,
-            MacosProtectedSourceState::NeedsProcessRestart
+            snapshot
+                .action_issue
+                .as_ref()
+                .expect("restart action issue is published")
+                .code
+                .as_ref(),
+            "process_restart_required"
         );
-        assert_eq!(platform.pointer, MacosProtectedSourceState::Failed);
-        assert_eq!(platform.keyboard_tcc, MacosAuthorizationState::Authorized);
     }
 
     #[test]
@@ -459,35 +457,51 @@ mod fixtures {
             .expect("macOS host source exposes status");
 
         source
-            .set_macos_daemon_ownership(
-                MacosCapabilityOwner::AppSidecar,
-                Some(MacosDaemonOwnerConflict {
-                    active: MacosCapabilityOwner::AppSidecar,
-                    contender: MacosCapabilityOwner::HomebrewService,
+            .set_capability_context(&capability_context(
+                "app_sidecar",
+                Some(SourceCapabilityConflict {
+                    active: Arc::from("app_sidecar"),
+                    contender: Arc::from("homebrew_service"),
                     observed_at_ms: 42,
                 }),
-                Some(Arc::from("designated-app-sidecar")),
-            )
+                Some("designated-app-sidecar"),
+            ))
             .expect("owner update should publish");
 
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
-        assert_eq!(platform.keyboard_owner, MacosCapabilityOwner::AppSidecar);
-        assert_eq!(platform.pointer_owner, MacosCapabilityOwner::AppSidecar);
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard_owner"], "app_sidecar");
+        assert_eq!(platform["pointer_owner"], "app_sidecar");
+        assert_eq!(platform["owner_conflict"]["active"], "app_sidecar");
+        assert_eq!(platform["owner_conflict"]["contender"], "homebrew_service");
+        assert_eq!(platform["owner_conflict"]["observed_at_ms"], 42);
         assert_eq!(
-            platform.owner_conflict.as_deref(),
-            Some(&MacosDaemonOwnerConflict {
-                active: MacosCapabilityOwner::AppSidecar,
-                contender: MacosCapabilityOwner::HomebrewService,
-                observed_at_ms: 42,
-            })
+            platform["owner_designated_requirement_hash"],
+            "designated-app-sidecar"
         );
-        assert_eq!(
-            platform.owner_designated_requirement_hash.as_deref(),
-            Some("designated-app-sidecar")
-        );
+    }
+
+    #[test]
+    fn invalid_platform_diagnostics_do_not_block_neutral_status() {
+        let backend =
+            MacosInputFixtureBackend::new(true, true, event_masks(true, true), true, desktop(1));
+        let (mut source, _) = MacosHostInput::new_deterministic_fixture(true, true, backend);
+        let status = source
+            .source_status_handle()
+            .expect("macOS host source exposes status");
+        let oversized_identity = "x".repeat(17 * 1024);
+
+        source
+            .set_capability_context(&capability_context(
+                "app_sidecar",
+                None,
+                Some(&oversized_identity),
+            ))
+            .expect("invalid diagnostics should degrade without failing status publication");
+
+        let snapshot = status.snapshot();
+        assert_eq!(snapshot.source_id.as_ref(), "macos_host_input");
+        assert!(snapshot.diagnostics.is_none());
     }
 
     #[test]
@@ -525,26 +539,24 @@ mod fixtures {
             .expect("source should consume action result");
 
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
-        assert_eq!(platform.keyboard_tcc, MacosAuthorizationState::Authorized);
-        assert_eq!(platform.keyboard, MacosProtectedSourceState::ReadyIdle);
-        assert!(platform.authorization_last_transition_at.is_some());
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard_tcc"], "authorized");
+        assert_eq!(platform["keyboard"], "ready_idle");
+        assert!(platform["authorization_last_transition_age_ms"].is_number());
         assert_eq!(
-            platform.executable_architecture,
+            platform["executable_architecture"],
             if cfg!(target_arch = "aarch64") {
-                hypercolor_core::input::MacosArchitecture::AppleSilicon
+                "apple_silicon"
             } else {
-                hypercolor_core::input::MacosArchitecture::Intel
+                "intel"
             }
         );
         if cfg!(target_os = "macos") {
-            assert!(platform.host_architecture.is_some());
-            assert!(platform.translated_process.is_some());
+            assert!(platform["host_architecture"].is_string());
+            assert!(platform["translated_process"].is_boolean());
         } else {
-            assert_eq!(platform.host_architecture, None);
-            assert_eq!(platform.translated_process, None);
+            assert!(platform["host_architecture"].is_null());
+            assert!(platform["translated_process"].is_null());
         }
     }
 
@@ -556,10 +568,12 @@ mod fixtures {
         let status = source
             .source_status_handle()
             .expect("macOS host source exposes status");
-        let mut manager = InputManager::new();
-        manager.add_source(Box::new(source));
+        let manager = InputManager::new();
         manager
-            .set_macos_daemon_ownership(MacosCapabilityOwner::Broker, None, None)
+            .add_source(ManagedSourceRole::interaction(Box::new(source)))
+            .expect("macOS host fixture should match its declared role");
+        manager
+            .set_source_capability_context(capability_context("broker", None, None))
             .expect("owner update should publish");
 
         let action = manager
@@ -567,17 +581,21 @@ mod fixtures {
             .expect("manager should preserve the explicit request");
         assert!(matches!(
             action,
-            hypercolor_core::input::ResolvedProtectedSourceAction::RequiresAppUi {
-                active_owner: MacosCapabilityOwner::Broker,
-            }
+            hypercolor_core::input::ResolvedProtectedSourceAction::RequiresUi { ref identity }
+                if identity.owner() == "broker"
+                    && identity.disposition() == CapabilityActionDisposition::RequiresUi
         ));
         let snapshot = status.snapshot();
-        let Some(SourcePlatformStatus::MacosInput(platform)) = snapshot.platform.as_deref() else {
-            panic!("fixture should publish macOS input platform status");
-        };
+        let platform = diagnostics_payload(&snapshot);
+        assert_eq!(platform["keyboard_tcc"], "not_determined");
         assert_eq!(
-            platform.keyboard_tcc,
-            MacosAuthorizationState::NotDetermined
+            snapshot
+                .action_issue
+                .as_ref()
+                .expect("authorization action remains required")
+                .code
+                .as_ref(),
+            "authorization_required"
         );
     }
 }

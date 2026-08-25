@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use hypercolor_core::input::{ManagedSourceKey, ManagedSourceRole, SourceSwapTarget};
+
 use crate::app_state::AppState;
 
 /// Apply host-input config changes live.
@@ -36,27 +38,52 @@ pub(in crate::api::config) async fn apply_input_config_change(
         return route_changed;
     }
 
-    let mut input_manager = state.input_manager().lock().await;
+    let input_manager = state.input_manager();
     // Only the host hardware source is consent-gated; the browser injection
     // source is always registered and must survive enable/disable toggles.
     let had_source = input_manager.has_host_capture_source();
-    let replacement = crate::startup::services::build_interaction_source(&input);
+    let mut replacement = crate::startup::services::build_interaction_source(&input);
 
     // Rebuild on any change so keyboard/mouse toggles apply, not just enable
     // and disable.
-    input_manager.remove_host_capture_sources();
-    let Some(mut source) = replacement else {
-        if had_source {
-            info!("Disabled host input capture live");
-        }
-        return had_source || route_changed;
-    };
-
-    if let Err(error) = source.start() {
-        warn!(%error, "Failed to start live host input source");
-        return had_source || route_changed;
+    if let Some(source) = replacement.as_mut()
+        && let Err(error) = source.start()
+    {
+        warn!(%error, "Failed to prepare live host input source");
+        return route_changed;
     }
-    input_manager.add_source(source);
+    let enabling = replacement.is_some();
+    let target = if enabling {
+        SourceSwapTarget::Present { running: true }
+    } else {
+        SourceSwapTarget::Absent
+    };
+    let Ok(plan) = input_manager.plan_source_swap(ManagedSourceKey::Interaction, target) else {
+        warn!("Failed to plan live host input source swap");
+        return route_changed;
+    };
+    let mut replacement = replacement.map(ManagedSourceRole::interaction);
+    let Ok(mut prepared) = plan.prepare(&mut replacement) else {
+        if let Some(source) = replacement.as_mut() {
+            source.source_mut().stop();
+        }
+        warn!("Failed to prepare live host input source swap");
+        return route_changed;
+    };
+    let retirement = match input_manager.commit_source_swap(&mut prepared) {
+        Ok(retirement) => retirement,
+        Err(error) => {
+            prepared.discard();
+            warn!(%error, "Failed to commit live host input source swap");
+            return route_changed;
+        }
+    };
+    prepared.discard();
+    retirement.retire();
+    if !enabling && had_source {
+        info!("Disabled host input capture live");
+        return true;
+    }
     info!("Applied live host input capture config");
     true
 }

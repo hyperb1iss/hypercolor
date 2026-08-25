@@ -16,7 +16,7 @@ and schema support in `hypercolor-color`.
 
 **Depended on by:** most workspace crates — `hypercolor-core`,
 `hypercolor-hal`, `hypercolor-driver-api`, all network driver crates,
-`hypercolor-daemon`, `hypercolor-tui`, `hypercolor-tray`, `hypercolor-ui`,
+`hypercolor-daemon`, `hypercolor-tui`, `hypercolor-ui`,
 and others. Crates that operate purely at a higher abstraction layer (e.g.
 `hypercolor-cli`, infrastructure adapters, proc-macro crates) may not depend
 on it directly.

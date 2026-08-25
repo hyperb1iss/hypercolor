@@ -1,6 +1,5 @@
 use super::super::*;
 
-#[cfg(all(target_os = "macos", feature = "screen-capture"))]
 #[test]
 fn gpu_sampler_reads_diagnostic_texture_without_replacing_live_output() {
     let Some(mut compositor) = gpu_test_compositor() else {

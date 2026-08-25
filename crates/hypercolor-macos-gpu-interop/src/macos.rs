@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use objc2::{runtime::NSObjectProtocol, sel};
 #[cfg(feature = "screen-capture")]
 use objc2_core_foundation::CFRetained;
@@ -26,6 +27,11 @@ use objc2_metal::{
 };
 use thiserror::Error;
 
+use crate::{
+    FrameOrigin, ImportedEffectFrame, ImportedFrameAllocationId, ImportedFrameFormat,
+    ImportedFrameLease, ImportedFrameTimings,
+};
+
 const BGRA_BYTES_PER_PIXEL: u32 = 4;
 const PIXEL_FORMAT_BGRA: i32 = u32::from_be_bytes(*b"BGRA") as i32;
 /// Maximum cached wgpu wraps before the importer cache resets. The Servo
@@ -33,7 +39,8 @@ const PIXEL_FORMAT_BGRA: i32 = u32::from_be_bytes(*b"BGRA") as i32;
 const MAX_CACHED_WRAPS: usize = 8;
 /// Fallback content versions for fixture imports that have no producer
 /// generation (see [`MacosIosurfaceImporter::import_iosurface_for_test`]).
-static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ALLOCATION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_CONTENT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(feature = "screen-capture")]
 type CoreVideoMetalTexturePlane = (
@@ -202,6 +209,13 @@ pub enum MacosGpuInteropError {
         width: u32,
         /// Requested frame height.
         height: u32,
+    },
+
+    /// The neutral frame format is not supported by the macOS import path.
+    #[error("unsupported macOS import frame format {format:?}")]
+    UnsupportedFrameFormat {
+        /// Requested frame format.
+        format: ImportedFrameFormat,
     },
 
     /// IOSurface creation failed.
@@ -390,6 +404,34 @@ pub enum MacosGpuInteropError {
     CoreVideoTextureCreateFailed(i32),
 }
 
+impl GpuFrameImportError for MacosGpuInteropError {
+    fn fallback_reason(&self) -> GpuFrameImportFallbackReason {
+        match self {
+            Self::MissingWgpuMetalDevice => GpuFrameImportFallbackReason::MissingWgpuMetalDevice,
+            Self::InvalidDimensions { .. }
+            | Self::IosurfaceShapeMismatch { .. }
+            | Self::PixelBufferSizeMismatch { .. } => {
+                GpuFrameImportFallbackReason::InvalidDimensions
+            }
+            Self::ServoContext { .. } | Self::MissingServoSurface | Self::IosurfaceFenceTimeout => {
+                GpuFrameImportFallbackReason::MissingMacosServoSurface
+            }
+            Self::GlCreateResource { .. } => GpuFrameImportFallbackReason::GlResource,
+            Self::GlOperation { .. } => GpuFrameImportFallbackReason::GlOperation,
+            Self::GlFramebufferIncomplete { .. } => {
+                GpuFrameImportFallbackReason::GlFramebufferIncomplete
+            }
+            Self::IosurfacePixelFormatMismatch { .. } => {
+                GpuFrameImportFallbackReason::IosurfacePixelFormatMismatch
+            }
+            Self::MetalTextureCreateFailed => {
+                GpuFrameImportFallbackReason::MetalTextureCreateFailed
+            }
+            _ => GpuFrameImportFallbackReason::Other,
+        }
+    }
+}
+
 /// Family-selected Metal storage mode for imported IOSurfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacosMetalStorageMode {
@@ -418,58 +460,28 @@ impl MacosMetalStorageMode {
     }
 }
 
-/// Pixel format shared by the IOSurface and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ImportedFrameFormat {
-    /// 8-bit normalized BGRA.
-    Bgra8Unorm,
-    /// 16-bit floating-point RGBA.
-    Rgba16Float,
-    /// One 8-bit normalized component.
-    R8Unorm,
-    /// Two 8-bit normalized components.
-    Rg8Unorm,
-    /// One 16-bit normalized component.
-    R16Unorm,
-    /// Two 16-bit normalized components.
-    Rg16Unorm,
+const fn metal_format(format: ImportedFrameFormat) -> Option<MTLPixelFormat> {
+    match format {
+        ImportedFrameFormat::Bgra8Unorm => Some(MTLPixelFormat::BGRA8Unorm),
+        ImportedFrameFormat::Rgba16Float => Some(MTLPixelFormat::RGBA16Float),
+        ImportedFrameFormat::R8Unorm => Some(MTLPixelFormat::R8Unorm),
+        ImportedFrameFormat::Rg8Unorm => Some(MTLPixelFormat::RG8Unorm),
+        ImportedFrameFormat::R16Unorm => Some(MTLPixelFormat::R16Unorm),
+        ImportedFrameFormat::Rg16Unorm => Some(MTLPixelFormat::RG16Unorm),
+        _ => None,
+    }
 }
 
-impl ImportedFrameFormat {
-    /// Returns the matching wgpu texture format.
-    #[must_use]
-    pub const fn wgpu_format(self) -> wgpu::TextureFormat {
-        match self {
-            Self::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
-            Self::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
-            Self::R8Unorm => wgpu::TextureFormat::R8Unorm,
-            Self::Rg8Unorm => wgpu::TextureFormat::Rg8Unorm,
-            Self::R16Unorm => wgpu::TextureFormat::R16Unorm,
-            Self::Rg16Unorm => wgpu::TextureFormat::Rg16Unorm,
-        }
-    }
-
-    const fn metal_format(self) -> MTLPixelFormat {
-        match self {
-            Self::Bgra8Unorm => MTLPixelFormat::BGRA8Unorm,
-            Self::Rgba16Float => MTLPixelFormat::RGBA16Float,
-            Self::R8Unorm => MTLPixelFormat::R8Unorm,
-            Self::Rg8Unorm => MTLPixelFormat::RG8Unorm,
-            Self::R16Unorm => MTLPixelFormat::R16Unorm,
-            Self::Rg16Unorm => MTLPixelFormat::RG16Unorm,
-        }
-    }
-
-    pub(crate) const fn bytes_per_texel(self) -> u32 {
-        match self {
-            Self::Bgra8Unorm => 4,
-            Self::Rgba16Float => 8,
-            Self::R8Unorm => 1,
-            Self::Rg8Unorm | Self::R16Unorm => 2,
-            Self::Rg16Unorm => 4,
-        }
-    }
+const fn is_macos_import_format(format: ImportedFrameFormat) -> bool {
+    matches!(
+        format,
+        ImportedFrameFormat::Bgra8Unorm
+            | ImportedFrameFormat::Rgba16Float
+            | ImportedFrameFormat::R8Unorm
+            | ImportedFrameFormat::Rg8Unorm
+            | ImportedFrameFormat::R16Unorm
+            | ImportedFrameFormat::Rg16Unorm
+    )
 }
 
 /// Description of a macOS IOSurface import.
@@ -492,6 +504,8 @@ impl MacosIosurfaceImportDescriptor {
             || height > i32::MAX as u32
         {
             Err(MacosGpuInteropError::InvalidDimensions { width, height })
+        } else if !is_macos_import_format(format) {
+            Err(MacosGpuInteropError::UnsupportedFrameFormat { format })
         } else {
             Ok(Self {
                 width,
@@ -502,38 +516,9 @@ impl MacosIosurfaceImportDescriptor {
     }
 }
 
-/// GPU-resident Servo effect frame imported into Hypercolor's wgpu device.
-#[derive(Debug, Clone)]
-pub struct ImportedEffectFrame {
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// Frame pixel format.
-    pub format: ImportedFrameFormat,
-    /// Monotonically increasing content version; contents changed iff this
-    /// changed. Does NOT imply distinct GPU storage — the same IOSurface (and
-    /// cached wgpu texture) can carry many successive versions.
-    pub storage_id: u64,
-    /// Imported wgpu texture.
-    pub texture: Arc<wgpu::Texture>,
-    /// Default view over `texture`.
-    pub view: Arc<wgpu::TextureView>,
-    /// Import timing counters for observability.
-    pub timings: ImportedFrameTimings,
-}
-
-/// Timing counters captured while importing an IOSurface.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ImportedFrameTimings {
-    /// Time spent creating the Metal texture wrapper.
-    pub wrap_us: u64,
-    /// Total import time, including wgpu wrapping.
-    pub total_us: u64,
-}
-
 /// Cached wgpu texture/view pair wrapping one IOSurface identity.
 struct CachedIosurfaceWrap {
+    allocation_id: ImportedFrameAllocationId,
     texture: Arc<wgpu::Texture>,
     view: Arc<wgpu::TextureView>,
     capture_owner: Option<MacosCaptureCacheOwner>,
@@ -624,16 +609,16 @@ impl MacosIosurfaceImporter {
 
     /// Imports an IOSurface into the supplied wgpu device.
     ///
-    /// `content_generation` is the producer's monotonic content version for
-    /// the surface contents and becomes the frame's `storage_id`. Repeated
-    /// imports of the same IOSurface reuse the cached wgpu texture.
+    /// `content_generation` is the producer's monotonic content version.
+    /// Repeated imports of the same IOSurface retain one allocation identity.
     pub fn import_iosurface(
         &mut self,
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
         content_generation: u64,
+        origin: FrameOrigin,
     ) -> Result<ImportedEffectFrame> {
-        self.import_iosurface_scoped(device, iosurface, content_generation, 0, 0)
+        self.import_iosurface_scoped(device, iosurface, content_generation, origin, 0, 0)
     }
 
     pub(crate) fn import_iosurface_scoped(
@@ -641,6 +626,7 @@ impl MacosIosurfaceImporter {
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
         content_generation: u64,
+        origin: FrameOrigin,
         capture_session_generation: u64,
         resource_generation: u64,
     ) -> Result<ImportedEffectFrame> {
@@ -648,6 +634,7 @@ impl MacosIosurfaceImporter {
             device,
             iosurface,
             content_generation,
+            origin,
             capture_session_generation,
             resource_generation,
             0,
@@ -662,6 +649,7 @@ impl MacosIosurfaceImporter {
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
         content_generation: u64,
+        origin: FrameOrigin,
         capture_session_generation: u64,
         resource_generation: u64,
         plane: usize,
@@ -707,11 +695,16 @@ impl MacosIosurfaceImporter {
                 width: self.descriptor.width,
                 height: self.descriptor.height,
                 format: self.descriptor.format,
-                storage_id: content_generation,
+                allocation_id: cached.allocation_id,
+                content_generation,
+                origin,
                 texture: Arc::clone(&cached.texture),
                 view: Arc::clone(&cached.view),
+                lease: ImportedFrameLease::new(Arc::clone(&cached.texture)),
                 timings: ImportedFrameTimings {
-                    wrap_us: 0,
+                    blit_us: None,
+                    wrap_us: Some(0),
+                    sync_us: None,
                     total_us: elapsed_micros(total_start),
                 },
             });
@@ -733,7 +726,7 @@ impl MacosIosurfaceImporter {
             self.descriptor.width,
             self.descriptor.height,
             self.storage_mode,
-            self.descriptor.format.metal_format(),
+            metal_format(self.descriptor.format).expect("validated macOS import format"),
         )?;
         let wrap_us = elapsed_micros(wrap_start);
 
@@ -771,21 +764,33 @@ impl MacosIosurfaceImporter {
         self.wraps.insert(
             cache_key,
             CachedIosurfaceWrap {
+                allocation_id: ImportedFrameAllocationId::new(
+                    NEXT_ALLOCATION_ID.fetch_add(1, Ordering::Relaxed),
+                ),
                 texture: Arc::clone(&texture),
                 view: Arc::clone(&view),
                 capture_owner: capture_owner.cloned(),
             },
         );
 
+        let cached = self
+            .wraps
+            .get(&cache_key)
+            .expect("new IOSurface wrap remains cached through frame construction");
         Ok(ImportedEffectFrame {
             width: self.descriptor.width,
             height: self.descriptor.height,
             format: self.descriptor.format,
-            storage_id: content_generation,
+            allocation_id: cached.allocation_id,
+            content_generation,
+            origin,
             texture,
             view,
+            lease: ImportedFrameLease::new(Arc::clone(&cached.texture)),
             timings: ImportedFrameTimings {
-                wrap_us,
+                blit_us: None,
+                wrap_us: Some(wrap_us),
+                sync_us: None,
                 total_us: elapsed_micros(total_start),
             },
         })
@@ -800,9 +805,10 @@ impl MacosIosurfaceImporter {
         &mut self,
         device: &wgpu::Device,
         iosurface: &IOSurfaceRef,
+        origin: FrameOrigin,
     ) -> Result<ImportedEffectFrame> {
-        let content_generation = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
-        self.import_iosurface(device, iosurface, content_generation)
+        let content_generation = NEXT_CONTENT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        self.import_iosurface(device, iosurface, content_generation, origin)
     }
 }
 
@@ -905,7 +911,7 @@ fn metal_texture_descriptor(
     // MacosIosurfaceImportDescriptor::new.
     let texture_descriptor = unsafe {
         MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-            descriptor.format.metal_format(),
+            metal_format(descriptor.format).expect("validated macOS import format"),
             descriptor.width as usize,
             descriptor.height as usize,
             false,
@@ -1128,7 +1134,7 @@ pub(crate) fn import_core_video_pixel_buffer_plane(
         descriptor.width,
         descriptor.height,
         plane,
-        descriptor.format.metal_format(),
+        metal_format(descriptor.format).expect("validated macOS import format"),
         expected_surface_id,
         expected_storage_mode,
     )?;
@@ -1270,15 +1276,23 @@ fn wrap_metal_texture(
     let texture =
         unsafe { device.create_texture_from_hal::<wgpu_hal::api::Metal>(hal_texture, &wgpu_desc) };
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = Arc::new(texture);
     ImportedEffectFrame {
         width: descriptor.width,
         height: descriptor.height,
         format: descriptor.format,
-        storage_id: content_generation,
-        texture: Arc::new(texture),
+        allocation_id: ImportedFrameAllocationId::new(
+            NEXT_ALLOCATION_ID.fetch_add(1, Ordering::Relaxed),
+        ),
+        content_generation,
+        origin: FrameOrigin::TopLeft,
+        texture: Arc::clone(&texture),
         view: Arc::new(view),
+        lease: ImportedFrameLease::new(texture),
         timings: ImportedFrameTimings {
-            wrap_us,
+            blit_us: None,
+            wrap_us: Some(wrap_us),
+            sync_us: None,
             total_us: elapsed_micros(total_start),
         },
     }

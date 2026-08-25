@@ -1645,7 +1645,10 @@ async fn drivers_list_json_output_preserves_the_daemon_payload() -> Result<()> {
                 "id": "wled",
                 "display_name": "WLED",
                 "module_kind": "network",
-                "transports": ["network"],
+                "transports": [{
+                    "kind": "network",
+                    "availability": { "status": "available" }
+                }],
                 "capabilities": {
                     "config": true,
                     "discovery": true,

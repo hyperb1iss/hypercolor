@@ -1,7 +1,9 @@
 //! Screen Cast renderer — maps the latest captured screen frame onto the effect canvas.
 //!
-//! The renderer consumes a downscaled screen snapshot from the input pipeline,
-//! applies a normalized crop rect, and fits that region into the output canvas.
+//! The renderer consumes the exact CPU surface publication leased for the
+//! effect, applies a normalized crop rect, and fits that region into the
+//! output canvas. GPU-resident publications carry no CPU pixels, so the
+//! canvas stays black until a CPU surface is published.
 
 use std::path::PathBuf;
 
@@ -50,13 +52,9 @@ impl EffectRenderer for ScreenCastRenderer {
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         canvas.clear();
-        let Some(screen) = input.screen else {
+        let Some(source) = input.screen.and_then(|screen| screen.surface_canvas()) else {
             return Ok(());
         };
-        let Some(source_surface) = screen.canvas_downscale.as_ref() else {
-            return Ok(());
-        };
-        let source = Canvas::from_published_surface(source_surface);
 
         sample_viewport(
             canvas,

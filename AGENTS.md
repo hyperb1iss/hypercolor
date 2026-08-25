@@ -16,7 +16,7 @@ just release         # Full release build (LTO, stripped)
 just daemon          # Daemon on :9420 (preview profile, debug logging)
 just daemon-servo    # Daemon with Servo HTML effect rendering
 just tui             # TUI client (auto-starts daemon)
-just tray            # System tray applet
+just app             # Unified desktop app with system tray
 just cli             # CLI tool (`hypercolor`)
 just dev             # Daemon + UI dev server together
 
@@ -49,15 +49,24 @@ crates/
   hypercolor-types/                # Shared data vocabulary above the color kernel; every crate depends on it
   hypercolor-core/                 # Engine: render loop, device backends, Servo effect renderer, event bus, spatial sampler, input pipeline, scene/session management
   hypercolor-hal/                  # Hardware abstraction: USB/HID/SMBus protocol encoding and transport for the local driver families
+  hypercolor-gpu-frame/            # Neutral imported-GPU-frame vocabulary (format, timings, origin, leases) shared by every interop crate
+  hypercolor-worker-retention/     # Leaf: process-wide reaper for workers that outlive bounded shutdown
+  hypercolor-pipewire-interop/     # Audited XDG Portal + PipeWire capture boundary (native on Linux, stubs elsewhere)
   hypercolor-linux-gpu-interop/    # Linux GL/Vulkan texture import boundary for Servo frames
+  hypercolor-linux-input/          # Linux evdev host keyboard and pointer capture
+  hypercolor-linux-session/        # Linux session/power monitors, systemd notify, procfs, parent-death guard
   hypercolor-macos-capture/        # macOS ScreenCaptureKit acquisition and retained frame ownership
   hypercolor-macos-gpu-interop/    # macOS IOSurface/Metal texture import boundary
   hypercolor-macos-input/          # macOS CGEventTap keyboard and pointer capture
-  hypercolor-macos-owner/          # Shared durable macOS daemon ownership and handover coordination
+  hypercolor-macos-media/          # macOS now-playing media Automation adapters
+  hypercolor-macos-session/        # macOS session and system-power monitoring
+  hypercolor-macos-owner/          # Shared durable macOS daemon ownership, launchd adapter, kqueue lifetime guard
   hypercolor-windows-gpu-interop/  # Windows D3D11/Vulkan texture import boundary
   hypercolor-windows-pawnio/       # Windows SMBus access via the PawnIO kernel driver, with a broker service; stubbed on other platforms
   hypercolor-windows-capture/      # Windows DXGI Desktop Duplication screen capture
   hypercolor-windows-input/        # Windows Raw Input host keyboard and pointer capture
+  hypercolor-windows-session/      # Windows session and power event monitors
+  hypercolor-windows-telemetry/    # Windows WMI/PawnIO sensors and board identity (stubs elsewhere)
   hypercolor-windows-helper/       # Signed elevated helper for Windows privileged operations
   hypercolor-platform-fs/          # Audited platform filesystem operations
   hypercolor-persistence/          # Durable file replacement and the process-wide flush registry every store writes through
@@ -74,7 +83,6 @@ crates/
   hypercolor-daemon/               # Daemon binary: render-loop host + REST/WebSocket/MCP server on :9420
   hypercolor-cli/                  # The `hypercolor` CLI binary
   hypercolor-tui/                  # Ratatui terminal UI library, launched via `hypercolor tui`
-  hypercolor-tray/                 # System tray applet binary
   hypercolor-app/                  # Unified desktop app shell: supervises the daemon, owns the tray, handles autostart and single-instance
   hypercolor-leptos-ext/           # Leptos 0.8 extension helpers for the web UI
   hypercolor-ui/                   # Leptos 0.8 CSR web UI (WASM, Trunk), EXCLUDED from workspace
@@ -96,15 +104,25 @@ graph TD
     T --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
     HAL --> CORE
+    GF[hypercolor-gpu-frame] --> LGI & MGI & WGI & CORE & D
+    WR[hypercolor-worker-retention] --> CORE & LI & MI & WI & MS
+    PWI[hypercolor-pipewire-interop] --> CORE
     LGI[hypercolor-linux-gpu-interop] --> CORE
+    LI[hypercolor-linux-input] --> CORE
     MC[hypercolor-macos-capture] --> CORE
     MGI[hypercolor-macos-gpu-interop] --> CORE
     MI[hypercolor-macos-input] --> CORE
-    MO[hypercolor-macos-owner] --> D[hypercolor-daemon] & CLI[hypercolor-cli] & APP[hypercolor-app]
+    MM[hypercolor-macos-media] --> CORE
+    MO[hypercolor-macos-owner] --> D[hypercolor-daemon] & APP[hypercolor-app]
+    MO -.->|macOS only| CLI[hypercolor-cli]
     WGI[hypercolor-windows-gpu-interop] --> CORE
-    WPI[hypercolor-windows-pawnio] --> CORE
+    WT[hypercolor-windows-telemetry] --> CORE
+    WPI[hypercolor-windows-pawnio] --> WT
     WC[hypercolor-windows-capture] --> CORE & WGI
     WI[hypercolor-windows-input] --> CORE
+    CORE --> LS[hypercolor-linux-session] & WS[hypercolor-windows-session] & MS[hypercolor-macos-session]
+    LS --> D & APP
+    WS & MS --> D
     WH[hypercolor-windows-helper]
     PER[hypercolor-persistence] --> CORE
     T --> DAPI[hypercolor-driver-api]
@@ -120,7 +138,6 @@ graph TD
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
     TUI -.->|optional| CLI
-    CORE & T --> TRAY[hypercolor-tray]
     CORE & T --> APP[hypercolor-app]
     T --> UI[hypercolor-ui<br><i>excluded from workspace</i>]
     LE[hypercolor-leptos-ext] --> UI & D & TUI
@@ -133,6 +150,20 @@ than linking it.
 
 Do NOT create cross-crate circular dependencies. `hypercolor-hal` must NEVER depend
 on `core` (would be circular). Network drivers depend on `driver-api`, not on `core` directly.
+
+**Platform layer (Design 72).** Shared engines in `core` and the daemon own
+lifecycle, publication, and policy; platform crates own native acquisition and
+OS calls behind one seam per capability, compile on every target via stubs,
+and produce neutral vocabulary (`hypercolor-types`, `hypercolor-gpu-frame`)
+rather than mirroring it. `cfg(target_os)` is allowed only inside platform
+crates and at composition roots (`daemon/src/{process.rs,session.rs,
+startup/services.rs,render_thread/gpu_device.rs,render_thread/sparkleflinger/
+gpu/{runtime.rs,native_screen.rs}}` plus `core/src/input/{media.rs,audio/mod.rs}`
+until their seams land). `rg -l 'cfg\(target_os' crates/hypercolor-core/src
+crates/hypercolor-daemon/src` must stay at or under ten files. Never add a
+`Macos*`/`Windows*`/`Linux*` type, variant, or field to shared code; carry
+per-platform facts as data (`Option`, unit variants, opaque diagnostics
+envelopes). See `docs/design/72-cross-platform-boundary-review.md`.
 
 `hypercolor-leptos-ext::ws` (feature `ws-core`, pure, no leptos/wasm) is the
 single definition of the daemon's binary WebSocket wire format: the daemon's
@@ -267,7 +298,7 @@ without the runtime cliffs of unoptimized Servo.
 
 - **Edition 2024**, Rust 1.94+
 - **Tests:** integration and public-API coverage lives in `tests/` directories, named `{feature}_tests.rs`. Small private-internals unit tests may use `#[cfg(test)]` modules; avoid large inline test bodies.
-- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
+- **`unsafe_code` is forbidden** workspace-wide by default. The audited opt-outs are `linux-gpu-interop`, `linux-session`, `macos-capture`, `macos-gpu-interop`, `macos-input`, `macos-media`, `macos-session`, `windows-gpu-interop`, `windows-pawnio`, `windows-capture`, `windows-input`, `windows-session`, `windows-helper`, `platform-fs`, and `hypercolor-app` (Win32 power-event FFI); each denies `clippy::undocumented_unsafe_blocks`
 - **Clippy pedantic** at deny level; see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden**: use `?`, `.ok()`, `expect("reason")`, or handle errors properly
 - **`thiserror`** for library errors, **`anyhow`** for application errors

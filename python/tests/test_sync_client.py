@@ -256,7 +256,12 @@ def test_sync_client_delegates_driver_inventory() -> None:
                                     "id": "nollie",
                                     "display_name": "Nollie",
                                     "module_kind": "hal",
-                                    "transports": ["usb"],
+                                    "transports": [
+                                        {
+                                            "kind": "usb",
+                                            "availability": {"status": "available"},
+                                        }
+                                    ],
                                     "capabilities": {
                                         "config": False,
                                         "discovery": True,
@@ -268,7 +273,7 @@ def test_sync_client_delegates_driver_inventory() -> None:
                                         "presentation": True,
                                         "controls": False,
                                     },
-                                    "api_schema_version": 1,
+                                    "api_schema_version": 3,
                                     "config_version": 1,
                                     "default_enabled": True,
                                 },
@@ -304,6 +309,11 @@ def test_sync_client_delegates_driver_inventory() -> None:
         client.close()
 
     assert result[0].descriptor.id == "nollie"
+    assert result[0].descriptor.api_schema_version == 3
+    assert result[0].descriptor.transports[0].to_dict() == {
+        "availability": {"status": "available"},
+        "kind": "usb",
+    }
     protocols = result[0].protocols
     assert not isinstance(protocols, Unset)
     assert protocols[0].route_backend_id == "usb"

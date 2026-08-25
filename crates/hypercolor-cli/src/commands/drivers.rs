@@ -8,7 +8,9 @@ use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlSurfaceDocument,
 };
-use hypercolor_types::device::{DriverModuleKind, DriverTransportKind};
+use hypercolor_types::device::{
+    DriverModuleKind, DriverTransportAvailability, DriverTransportDescriptor, DriverTransportKind,
+};
 
 use crate::client::DaemonClient;
 use crate::commands::controls;
@@ -215,8 +217,8 @@ fn transport_summary(driver: &DriverSummary) -> String {
     }
 }
 
-fn transport_label(transport: &DriverTransportKind) -> String {
-    match transport {
+fn transport_label(transport: &DriverTransportDescriptor) -> String {
+    let label = match &transport.kind {
         DriverTransportKind::Network => "network".to_owned(),
         DriverTransportKind::Usb => "usb".to_owned(),
         DriverTransportKind::Smbus => "smbus".to_owned(),
@@ -225,5 +227,12 @@ fn transport_label(transport: &DriverTransportKind) -> String {
         DriverTransportKind::Virtual => "virtual".to_owned(),
         DriverTransportKind::Bridge => "bridge".to_owned(),
         DriverTransportKind::Custom(kind) => kind.clone(),
+    };
+
+    match &transport.availability {
+        DriverTransportAvailability::Available => label,
+        DriverTransportAvailability::UnsupportedPlatform { platform } => {
+            format!("{label} (not available on {platform})")
+        }
     }
 }

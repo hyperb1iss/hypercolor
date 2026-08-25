@@ -1,0 +1,27 @@
+[package]
+name = "hypercolor-gpu-frame"
+description = "Neutral GPU frame vocabulary for Hypercolor interop boundaries"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Servo rendering-context and frame-import seam shared by the GPU interop
+# crates and the Servo worker.
+servo-context = ["dep:anyhow", "dep:paint_api"]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+paint_api = { workspace = true, optional = true }
+wgpu = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

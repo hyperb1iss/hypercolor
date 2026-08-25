@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 
-use hypercolor_core::input::ScreenData;
+use hypercolor_core::input::ScreenBranchPublication;
 use hypercolor_core::spatial::sample_viewport;
 use hypercolor_types::canvas::{
     Canvas, LinearRgba, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
@@ -154,13 +155,12 @@ pub(super) fn color_fill_frame(
 }
 
 pub(super) fn screen_region_layer_frame(
-    screen: Option<&ScreenData>,
+    screen: Option<&Arc<ScreenBranchPublication>>,
     viewport: ViewportRect,
 ) -> anyhow::Result<Option<ProducerFrame>> {
-    let Some(source_surface) = screen.and_then(|screen| screen.canvas_downscale.as_ref()) else {
+    let Some(source) = screen.and_then(|screen| screen.surface_canvas()) else {
         return Ok(None);
     };
-    let source = Canvas::from_published_surface(source_surface);
     if source.width() == 0 || source.height() == 0 {
         return Ok(None);
     }

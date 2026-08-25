@@ -19,8 +19,10 @@ impl HalCatalogDriverModule {
     ) -> Self {
         let transport = module_descriptor
             .transports
-            .first()
-            .cloned()
+            .iter()
+            .find(|transport| transport.is_available())
+            .or_else(|| module_descriptor.transports.first())
+            .map(|transport| transport.kind.clone())
             .unwrap_or(DriverTransportKind::Usb);
         let descriptor = DriverDescriptor::new(
             leak_string(module_descriptor.id.clone()),
@@ -55,20 +57,21 @@ impl DriverModule for HalCatalogDriverModule {
     }
 
     fn output(&self) -> OutputBinding<'_> {
-        if self
-            .module_descriptor
-            .transports
-            .contains(&DriverTransportKind::Smbus)
-        {
+        if self.module_descriptor.transports.iter().any(|transport| {
+            transport.is_available() && matches!(&transport.kind, DriverTransportKind::Smbus)
+        }) {
             return OutputBinding::Shared(
                 BackendId::new(SMBUS_OUTPUT_BACKEND_ID).expect("SMBus backend ID must be valid"),
             );
         }
         if self.module_descriptor.transports.iter().any(|transport| {
-            matches!(
-                transport,
-                DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial
-            )
+            transport.is_available()
+                && matches!(
+                    &transport.kind,
+                    DriverTransportKind::Usb
+                        | DriverTransportKind::Midi
+                        | DriverTransportKind::Serial
+                )
         }) {
             return OutputBinding::Shared(
                 BackendId::new(USB_OUTPUT_BACKEND_ID).expect("USB backend ID must be valid"),

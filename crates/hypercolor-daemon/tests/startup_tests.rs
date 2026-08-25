@@ -25,9 +25,12 @@ use hypercolor_daemon::daemon::{
 };
 use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
 use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
+#[cfg(unix)]
+use hypercolor_daemon::startup::install_signal_handlers_with_parent_claim;
 use hypercolor_daemon::startup::{
-    DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
-    config_sources, default_config, install_signal_handlers, parse_config_toml,
+    DaemonState, ParentLifetime, collect_unmapped_driver_layout_targets,
+    collect_unmapped_prefixed_layout_targets, config_sources, default_config,
+    install_signal_handlers, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state};
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputCadence};
@@ -1321,7 +1324,9 @@ async fn app_state_projection_preserves_composed_authority_identity() {
     daemon.start().await.expect("daemon state should start");
     let app = AppState::from_daemon_state(&daemon);
 
-    assert!(Arc::ptr_eq(daemon.input_manager(), app.input_manager()));
+    let daemon_input_graph = daemon.input_manager().input_graph_handle().snapshot();
+    let app_input_graph = app.input_manager().input_graph_handle().snapshot();
+    assert!(Arc::ptr_eq(&daemon_input_graph, &app_input_graph));
     assert!(Arc::ptr_eq(daemon.driver_host(), app.driver_host()));
     assert!(Arc::ptr_eq(daemon.driver_registry(), app.driver_registry()));
     assert!(Arc::ptr_eq(daemon.library_store(), app.library_store()));
@@ -1594,8 +1599,50 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
 
 #[tokio::test]
 async fn signal_handler_channel_starts_false() {
-    let rx = install_signal_handlers();
+    let rx = install_signal_handlers(ParentLifetime::Kernel);
     assert!(!*rx.borrow(), "shutdown signal should start as false");
+}
+
+/// The platform waiter flips shutdown once the claimed parent exits. The
+/// claim must equal the live parent, so the test names its own parent and
+/// hands in a waiter that returns immediately, standing in for the kqueue
+/// watch firing.
+#[cfg(unix)]
+#[tokio::test]
+async fn parent_death_watch_flips_shutdown_when_the_waiter_returns() {
+    let parent = std::os::unix::process::parent_id();
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let mut rx = install_signal_handlers_with_parent_claim(
+        Some(parent),
+        ParentLifetime::Watch(Box::new(move |pid| {
+            let _ = seen_tx.send(pid);
+        })),
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx.changed())
+        .await
+        .expect("parent-death watch should flip shutdown")
+        .expect("watch sender should stay alive");
+    assert!(*rx.borrow());
+    assert_eq!(seen_rx.recv().expect("waiter ran"), parent);
+}
+
+/// A claim that does not match the live parent disarms the watch, so the
+/// waiter never runs and shutdown never flips on its own.
+#[cfg(unix)]
+#[tokio::test]
+async fn mismatched_parent_claim_disarms_the_watch() {
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let rx = install_signal_handlers_with_parent_claim(
+        Some(1),
+        ParentLifetime::Watch(Box::new(move |pid| {
+            let _ = seen_tx.send(pid);
+        })),
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!*rx.borrow());
+    assert!(seen_rx.try_recv().is_err());
 }
 
 // ── Shutdown Sequence ───────────────────────────────────────────────────────

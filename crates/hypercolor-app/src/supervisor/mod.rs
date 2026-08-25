@@ -26,8 +26,13 @@ use hypercolor_types::api::system::{
     MacosCapabilityOwner, MacosDaemonOwnershipStatus, SystemResource,
 };
 use hypercolor_types::event::MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE;
+use hypercolor_types::service::{SERVICE_IDENTITY_ENV, SUPERVISED_PARENT_PID_ENV, ServiceIdentity};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
+
+mod plan;
+
+pub use plan::{HoldReason, LauncherPlan, LauncherProbe, OwnerPreference, launcher_plan};
 
 /// Default daemon bind address used by the app-spawned daemon.
 pub const DEFAULT_DAEMON_BIND: &str = "127.0.0.1:9420";
@@ -68,9 +73,6 @@ pub const DAEMON_STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Delay between daemon startup health probes.
 pub const DAEMON_STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-#[cfg(target_os = "macos")]
-const EXTERNAL_OWNER_VERIFY_INTERVAL: Duration = Duration::from_secs(1);
-
 /// Watchdog circuit-breaker: max rapid daemon restarts within
 /// [`WATCHDOG_FAILURE_WINDOW`] before the supervisor gives up.
 pub const WATCHDOG_MAX_RAPID_RESTARTS: u32 = 5;
@@ -105,15 +107,31 @@ pub enum SystemdUserServiceProbe {
     Unavailable,
 }
 
-/// Supervisor action selected for a Linux systemd user service probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SystemdUserServicePlan {
-    /// Reuse the already-active service.
-    Reuse,
-    /// Start the enabled service through systemd.
-    Start,
-    /// Spawn the bundled daemon as an app-owned child process.
-    SpawnChild,
+impl From<SystemdUserServiceProbe> for LauncherProbe {
+    fn from(probe: SystemdUserServiceProbe) -> Self {
+        match probe {
+            SystemdUserServiceProbe::Active => Self::online(ServiceIdentity::systemd_user()),
+            SystemdUserServiceProbe::EnabledInactive => {
+                Self::startable(ServiceIdentity::systemd_user())
+            }
+            SystemdUserServiceProbe::Unavailable => Self::NOTHING,
+        }
+    }
+}
+
+impl LauncherProbe {
+    /// Fold a registered service-manager launcher status (the Windows SCM
+    /// adapter today) into a probe: running reuses, stopped-but-installed
+    /// starts, unregistered falls through to the endpoint health probe.
+    #[must_use]
+    pub fn from_launcher_status(status: &crate::support::DaemonLauncherStatus) -> Option<Self> {
+        let identity = status.identity.clone()?;
+        Some(if status.online {
+            Self::online(identity)
+        } else {
+            Self::startable(identity)
+        })
+    }
 }
 
 /// App-managed daemon supervisor state.
@@ -700,15 +718,22 @@ pub fn build_daemon_command(
 ) -> DaemonCommand {
     let mut args = vec!["--bind".to_owned(), bind.to_owned()];
     let environment = vec![
-        // Arms the daemon's parent-death watch (the daemon's
-        // SUPERVISED_PARENT_PID_ENV): if this app dies without reaping its
-        // child, the daemon observes the reparent and shuts itself down
-        // instead of orphaning on the port and the ownership guard.
-        #[cfg(unix)]
+        // The daemon corroborates its supervised-child identity against this
+        // pid (it must equal the live parent) and, where the kernel guard is
+        // the parent-death signal, uses it to confirm the supervisor is still
+        // alive after exec.
         (
-            "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
+            SUPERVISED_PARENT_PID_ENV.to_owned(),
             std::process::id().to_string(),
         ),
+        // Neutral launcher declaration (Design 72 L1); every platform's
+        // daemon reads it.
+        (
+            SERVICE_IDENTITY_ENV.to_owned(),
+            ServiceIdentity::APP_SIDECAR.declaration(),
+        ),
+        // Legacy macOS claim kept equal to the neutral one until the
+        // supported-version floor moves (spec 77 H1.5).
         #[cfg(target_os = "macos")]
         (
             "HYPERCOLOR_MACOS_OWNER".to_owned(),
@@ -764,7 +789,6 @@ fn system_url(base: &Url) -> Url {
         .expect("static system endpoint path should be valid")
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
 fn health_verified_daemon_connection(base: &Url) -> VerifiedDaemonConnection {
     VerifiedDaemonConnection {
         base_url: base.as_str().trim_end_matches('/').to_owned(),
@@ -921,6 +945,29 @@ async fn verify_macos_daemon_connection(
     })
 }
 
+/// Why the external-owner monitor re-verifies the connection.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalOwnerChange {
+    /// The owner store directory changed (record, attestation, journal).
+    OwnerStore,
+    /// The daemon's event socket opened: a live session to confirm.
+    SessionOpened,
+    /// The daemon's event socket closed or could not open: the session the
+    /// verified connection named may be gone.
+    SessionLost,
+    /// The daemon published a launcher identity change.
+    IdentityChanged,
+}
+
+/// Keep the verified connection to a selected external owner current.
+///
+/// Re-verification is event driven: a `notify` watch on the owner store
+/// directory reports record and attestation changes, and one WebSocket
+/// subscription to the daemon's `events` topic reports session loss (the
+/// socket closes when the daemon exits or restarts) and identity changes.
+/// There is no periodic poll; the socket reconnect after a loss uses the
+/// restart backoff ladder.
 #[cfg(target_os = "macos")]
 async fn monitor_external_macos_daemon_connection(
     client: &reqwest::Client,
@@ -930,8 +977,17 @@ async fn monitor_external_macos_daemon_connection(
 ) {
     let store = MacosOwnerStore::new(data_dir());
     let guard_path = canonical_daemon_guard_path();
-    loop {
-        tokio::time::sleep(EXTERNAL_OWNER_VERIFY_INTERVAL).await;
+    let (change_tx, mut change_rx) = tokio::sync::mpsc::channel::<ExternalOwnerChange>(16);
+    let _store_watch = match watch_owner_store(&store, change_tx.clone()) {
+        Ok(watch) => Some(watch),
+        Err(error) => {
+            tracing::warn!(%error, "owner store watch unavailable; relying on the daemon session socket");
+            None
+        }
+    };
+    let session_watch = tokio::spawn(watch_daemon_session(base.clone(), change_tx));
+    while let Some(change) = change_rx.recv().await {
+        tracing::debug!(?change, "re-verifying the external macOS daemon connection");
         let connection = verify_macos_daemon_connection(
             client,
             base,
@@ -943,6 +999,114 @@ async fn monitor_external_macos_daemon_connection(
         .await;
         state.replace_verified_connection(connection);
     }
+    session_watch.abort();
+}
+
+#[cfg(target_os = "macos")]
+fn watch_owner_store(
+    store: &MacosOwnerStore,
+    change_tx: tokio::sync::mpsc::Sender<ExternalOwnerChange>,
+) -> Result<notify::RecommendedWatcher> {
+    use notify::Watcher as _;
+
+    let directory = store
+        .owner_record_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .context("owner record path has no parent directory")?;
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("failed to create {}", directory.display()))?;
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_ok() {
+            // A full queue already carries a pending re-verify; dropping the
+            // duplicate loses nothing.
+            let _ = change_tx.try_send(ExternalOwnerChange::OwnerStore);
+        }
+    })
+    .context("failed to create the owner store watcher")?;
+    watcher
+        .watch(&directory, notify::RecursiveMode::NonRecursive)
+        .with_context(|| format!("failed to watch {}", directory.display()))?;
+    Ok(watcher)
+}
+
+/// Hold one `events` subscription to the daemon and report session edges.
+#[cfg(target_os = "macos")]
+async fn watch_daemon_session(
+    base: Url,
+    change_tx: tokio::sync::mpsc::Sender<ExternalOwnerChange>,
+) {
+    use futures_util::{SinkExt as _, StreamExt as _};
+
+    let Some(ws_url) = daemon_events_socket_url(&base) else {
+        tracing::warn!(url = %base, "daemon base URL has no WebSocket form; session watch disabled");
+        return;
+    };
+    let mut attempt: u32 = 0;
+    loop {
+        let connected = match tokio_tungstenite::connect_async(ws_url.as_str()).await {
+            Ok((stream, _)) => Some(stream),
+            Err(error) => {
+                tracing::debug!(%error, "daemon session socket unavailable");
+                None
+            }
+        };
+        if let Some(stream) = connected {
+            let (mut write, mut read) = stream.split();
+            let subscribe = serde_json::json!({
+                "type": "subscribe",
+                "topics": [{ "topic": "events" }]
+            });
+            if write
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    subscribe.to_string().into(),
+                ))
+                .await
+                .is_ok()
+            {
+                attempt = 0;
+                if change_tx
+                    .send(ExternalOwnerChange::SessionOpened)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                while let Some(Ok(message)) = read.next().await {
+                    if let tokio_tungstenite::tungstenite::Message::Text(text) = message
+                        && text.contains("service_identity_changed")
+                        && change_tx
+                            .send(ExternalOwnerChange::IdentityChanged)
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+        if change_tx
+            .send(ExternalOwnerChange::SessionLost)
+            .await
+            .is_err()
+        {
+            return;
+        }
+        tokio::time::sleep(restart_backoff(attempt)).await;
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_events_socket_url(base: &Url) -> Option<Url> {
+    let mut url = base.join("/api/v1/ws").ok()?;
+    let scheme = match url.scheme() {
+        "http" => "ws",
+        "https" => "wss",
+        _ => return None,
+    };
+    url.set_scheme(scheme).ok()?;
+    Some(url)
 }
 
 #[cfg(target_os = "macos")]
@@ -1095,16 +1259,6 @@ pub fn systemctl_is_enabled_output(output: &str) -> bool {
     )
 }
 
-/// Select the supervisor action for a Linux systemd user service probe.
-#[must_use]
-pub const fn systemd_user_service_plan(probe: SystemdUserServiceProbe) -> SystemdUserServicePlan {
-    match probe {
-        SystemdUserServiceProbe::Active => SystemdUserServicePlan::Reuse,
-        SystemdUserServiceProbe::EnabledInactive => SystemdUserServicePlan::Start,
-        SystemdUserServiceProbe::Unavailable => SystemdUserServicePlan::SpawnChild,
-    }
-}
-
 fn first_systemctl_output_line(output: &str) -> &str {
     output
         .lines()
@@ -1130,17 +1284,68 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, daemon_url: Url) -> Result<()> {
             store.clone(),
         )? {
             crate::ownership::MacosStartupRecoveryDisposition::Continue => {}
-            crate::ownership::MacosStartupRecoveryDisposition::SupervisorStarted
-            | crate::ownership::MacosStartupRecoveryDisposition::SuppressSupervisor => {
+            // Recovery already spawned and registered the sidecar supervisor;
+            // a second plan would race it.
+            crate::ownership::MacosStartupRecoveryDisposition::SupervisorStarted => {
                 return Ok(());
+            }
+            // A standalone owner still holds the guard and the user must stop
+            // it first; the plan holds rather than spawning beside it.
+            crate::ownership::MacosStartupRecoveryDisposition::SuppressSupervisor => {
+                return start_with_plan_inputs(
+                    app,
+                    daemon_url,
+                    StartupLauncherInputs::hold(
+                        ServiceIdentity::STANDALONE,
+                        HoldReason::PendingStandaloneExit,
+                    ),
+                );
             }
         }
         let external_owner = selected_external_owner_for_startup(&store)?;
-        start_with_external_owner(app, daemon_url, external_owner)
+        start_with_plan_inputs(
+            app,
+            daemon_url,
+            StartupLauncherInputs::probe(external_owner),
+        )
     }
     #[cfg(not(target_os = "macos"))]
     {
-        start_with_external_owner(app, daemon_url, None)
+        start_with_plan_inputs(app, daemon_url, StartupLauncherInputs::probe(None))
+    }
+}
+
+/// How the supervisor should derive its launcher plan at startup.
+enum StartupLauncherInputs {
+    /// Probe the platform service manager and plan from what it reports.
+    Probe {
+        external_owner: Option<MacosExternalOwnerMode>,
+    },
+    /// The plan is already decided: hold with this remedy. Only the macOS
+    /// ownership arbitration pre-decides a hold today; other targets reach
+    /// holds through the probe.
+    #[cfg_attr(not(target_os = "macos"), expect(dead_code))]
+    Hold {
+        identity: ServiceIdentity,
+        reason: HoldReason,
+    },
+}
+
+impl StartupLauncherInputs {
+    const fn probe(external_owner: Option<MacosExternalOwnerMode>) -> Self {
+        Self::Probe { external_owner }
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn hold(identity: ServiceIdentity, reason: HoldReason) -> Self {
+        Self::Hold { identity, reason }
+    }
+
+    const fn external_owner(&self) -> Option<MacosExternalOwnerMode> {
+        match self {
+            Self::Probe { external_owner } => *external_owner,
+            Self::Hold { .. } => None,
+        }
     }
 }
 
@@ -1159,14 +1364,15 @@ pub(crate) fn start_app_sidecar_for_handover<R: Runtime>(
     app: &AppHandle<R>,
     daemon_url: Url,
 ) -> Result<()> {
-    start_with_external_owner(app, daemon_url, None)
+    start_with_plan_inputs(app, daemon_url, StartupLauncherInputs::probe(None))
 }
 
-fn start_with_external_owner<R: Runtime>(
+fn start_with_plan_inputs<R: Runtime>(
     app: &AppHandle<R>,
     daemon_url: Url,
-    external_owner: Option<MacosExternalOwnerMode>,
+    inputs: StartupLauncherInputs,
 ) -> Result<()> {
+    let external_owner = inputs.external_owner();
     let current_exe = std::env::current_exe().context("failed to resolve app executable path")?;
     let resource_dir = app.path().resource_dir().ok();
     let daemon_candidates = daemon_path_candidates(&current_exe, resource_dir.as_deref());
@@ -1196,86 +1402,320 @@ fn start_with_external_owner<R: Runtime>(
 
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::new();
-        #[cfg(target_os = "macos")]
-        let authoritative_owner_online = if let Some(owner) = external_owner {
-            verify_macos_daemon_connection(
-                &client,
-                &daemon_url,
-                &MacosOwnerStore::new(data_dir()),
-                &canonical_daemon_guard_path(),
-                &state,
-                external_mode_owner(owner),
-            )
-            .await
-        } else {
-            None
+        let spawn = build_daemon_command(
+            &daemon_path,
+            &bind,
+            ui_dir.as_deref(),
+            effects_dir.as_deref(),
+        );
+        let plan = match inputs {
+            StartupLauncherInputs::Hold { identity, reason } => {
+                LauncherPlan::Hold { identity, reason }
+            }
+            StartupLauncherInputs::Probe { external_owner } => {
+                let (probe, preference) =
+                    probe_launcher(&client, &daemon_url, &state, external_owner).await;
+                launcher_plan(&probe, &preference, &daemon_url, spawn)
+            }
         };
-        #[cfg(not(target_os = "macos"))]
-        let authoritative_owner_online = probe_health(&client, &daemon_url, HEALTH_PROBE_TIMEOUT)
-            .await
-            .then(|| health_verified_daemon_connection(&daemon_url));
-        if let Some(connection) = authoritative_owner_online {
-            state.replace_verified_connection(Some(connection));
-            state.set_macos_owner_offline(None);
-            tracing::info!(url = %daemon_url, "daemon already running; reusing existing instance");
-            #[cfg(target_os = "macos")]
-            if let Some(owner) = external_owner {
-                monitor_external_macos_daemon_connection(
-                    &client,
-                    &daemon_url,
-                    &state,
-                    external_mode_owner(owner),
-                )
-                .await;
-            }
-            return;
-        }
-
-        if let Some(owner) = external_owner {
-            let status = macos_external_owner_offline(owner);
-            state.set_macos_owner_offline(Some(status));
-            if let Err(error) = app.emit("macos_daemon_owner_offline", status) {
-                tracing::warn!(%error, "failed to publish app-local daemon owner status");
-            }
-            tracing::warn!(
-                selected_owner = ?status.selected_owner,
-                remedy = ?status.remedy,
-                "persisted external macOS daemon owner is offline; sidecar remains suppressed"
-            );
-            return;
-        }
-
-        #[cfg(target_os = "linux")]
-        if try_start_systemd_user_service(&client, &daemon_url).await {
-            if probe_health(&client, &daemon_url, HEALTH_PROBE_TIMEOUT).await {
-                state.replace_verified_connection(Some(health_verified_daemon_connection(
-                    &daemon_url,
-                )));
-            }
-            return;
-        }
-
-        if !daemon_path.is_file() {
-            tracing::warn!(
-                path = %daemon_path.display(),
-                "daemon executable not found; skipping app-owned daemon spawn"
-            );
-            return;
-        }
-
-        run_watchdog_loop(
-            client,
-            daemon_url,
-            daemon_path,
-            bind,
-            ui_dir,
-            effects_dir,
-            state,
+        execute_launcher_plan(
+            plan,
+            LauncherPlanContext {
+                app,
+                client,
+                daemon_url,
+                daemon_path,
+                bind,
+                ui_dir,
+                effects_dir,
+                state,
+                external_owner,
+            },
         )
         .await;
     });
 
     Ok(())
+}
+
+struct LauncherPlanContext<R: Runtime> {
+    app: AppHandle<R>,
+    client: reqwest::Client,
+    daemon_url: Url,
+    daemon_path: PathBuf,
+    bind: String,
+    ui_dir: Option<PathBuf>,
+    effects_dir: Option<PathBuf>,
+    state: SupervisorState,
+    external_owner: Option<MacosExternalOwnerMode>,
+}
+
+/// Measure the launcher already registered for the daemon and the owner
+/// preference that constrains the plan.
+///
+/// macOS probes the selected external owner through the owner store and
+/// session attestation; Linux asks systemd about the user unit; Windows
+/// asks the Service Control Manager; every platform falls back to an
+/// endpoint health probe, which reports an unidentified daemon as
+/// standalone.
+async fn probe_launcher(
+    client: &reqwest::Client,
+    daemon_url: &Url,
+    state: &SupervisorState,
+    external_owner: Option<MacosExternalOwnerMode>,
+) -> (LauncherProbe, OwnerPreference) {
+    #[cfg(target_os = "macos")]
+    if let Some(owner) = external_owner {
+        let identity = crate::ownership::service_identity(external_mode_owner(owner));
+        let connection = verify_macos_daemon_connection(
+            client,
+            daemon_url,
+            &MacosOwnerStore::new(data_dir()),
+            &canonical_daemon_guard_path(),
+            state,
+            external_mode_owner(owner),
+        )
+        .await;
+        let probe = if connection.is_some() {
+            state.replace_verified_connection(connection);
+            LauncherProbe::online(identity.clone())
+        } else {
+            LauncherProbe::offline(identity.clone())
+        };
+        return (probe, OwnerPreference::Selected(identity));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Without a selected external owner the app owns the sidecar; the
+        // watchdog reconciles any already-running sidecar itself.
+        let _ = (client, daemon_url, state);
+        (LauncherProbe::NOTHING, OwnerPreference::Flexible)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = external_owner;
+        let managed = registered_launcher_probe();
+        if let Some(probe) = managed {
+            return (probe, OwnerPreference::Flexible);
+        }
+        let probe = if probe_health(client, daemon_url, HEALTH_PROBE_TIMEOUT).await {
+            state.replace_verified_connection(Some(health_verified_daemon_connection(daemon_url)));
+            LauncherProbe::online(ServiceIdentity::STANDALONE)
+        } else {
+            LauncherProbe::NOTHING
+        };
+        (probe, OwnerPreference::Flexible)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn registered_launcher_probe() -> Option<LauncherProbe> {
+    match detect_systemd_user_service() {
+        SystemdUserServiceProbe::Unavailable => None,
+        probe => Some(probe.into()),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn registered_launcher_probe() -> Option<LauncherProbe> {
+    LauncherProbe::from_launcher_status(&crate::support::detect_daemon_launcher())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn registered_launcher_probe() -> Option<LauncherProbe> {
+    None
+}
+
+async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: LauncherPlanContext<R>) {
+    let LauncherPlanContext {
+        app,
+        client,
+        daemon_url,
+        daemon_path,
+        bind,
+        ui_dir,
+        effects_dir,
+        state,
+        external_owner,
+    } = context;
+    match plan {
+        LauncherPlan::Reuse { identity, endpoint } => {
+            state.set_macos_owner_offline(None);
+            tracing::info!(
+                url = %endpoint,
+                launcher = %identity,
+                "daemon already running; reusing existing instance"
+            );
+            if state.verified_daemon_connection().connection.is_none() {
+                if wait_until_healthy(
+                    &client,
+                    &endpoint,
+                    DAEMON_STARTUP_TIMEOUT,
+                    DAEMON_STARTUP_POLL_INTERVAL,
+                )
+                .await
+                {
+                    state.replace_verified_connection(Some(health_verified_daemon_connection(
+                        &endpoint,
+                    )));
+                } else {
+                    tracing::warn!(
+                        launcher = %identity,
+                        timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                        "registered launcher is active but the daemon did not become healthy"
+                    );
+                }
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(owner) = external_owner {
+                monitor_external_macos_daemon_connection(
+                    &client,
+                    &endpoint,
+                    &state,
+                    external_mode_owner(owner),
+                )
+                .await;
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (external_owner, app);
+        }
+        LauncherPlan::Hold { identity, reason } => {
+            tracing::warn!(
+                launcher = %identity,
+                ?reason,
+                "supervisor holding; no daemon will be spawned beside the selected owner"
+            );
+            if let Some(owner) = external_owner {
+                let status = macos_external_owner_offline(owner);
+                state.set_macos_owner_offline(Some(status));
+                if let Err(error) = app.emit("macos_daemon_owner_offline", status) {
+                    tracing::warn!(%error, "failed to publish app-local daemon owner status");
+                }
+            }
+        }
+        LauncherPlan::Start { identity, unit } => {
+            tracing::info!(launcher = %identity, unit, "starting registered launcher");
+            if start_registered_launcher(&unit) {
+                if wait_until_healthy(
+                    &client,
+                    &daemon_url,
+                    DAEMON_STARTUP_TIMEOUT,
+                    DAEMON_STARTUP_POLL_INTERVAL,
+                )
+                .await
+                {
+                    tracing::info!(launcher = %identity, "registered launcher reported healthy");
+                    state.replace_verified_connection(Some(health_verified_daemon_connection(
+                        &daemon_url,
+                    )));
+                } else {
+                    tracing::warn!(
+                        launcher = %identity,
+                        timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
+                        "started registered launcher but the daemon did not become healthy"
+                    );
+                }
+                return;
+            }
+            // The service manager refused (typically privilege on the SCM
+            // path). The registration is stopped, so a supervised child
+            // cannot collide with it; fall through explicitly.
+            tracing::warn!(
+                launcher = %identity,
+                "registered launcher did not start; spawning a supervised child instead"
+            );
+            spawn_supervised_child(
+                client,
+                daemon_url,
+                daemon_path,
+                bind,
+                ui_dir,
+                effects_dir,
+                state,
+            )
+            .await;
+        }
+        LauncherPlan::SpawnChild { .. } => {
+            spawn_supervised_child(
+                client,
+                daemon_url,
+                daemon_path,
+                bind,
+                ui_dir,
+                effects_dir,
+                state,
+            )
+            .await;
+        }
+    }
+}
+
+async fn spawn_supervised_child(
+    client: reqwest::Client,
+    daemon_url: Url,
+    daemon_path: PathBuf,
+    bind: String,
+    ui_dir: Option<PathBuf>,
+    effects_dir: Option<PathBuf>,
+    state: SupervisorState,
+) {
+    if !daemon_path.is_file() {
+        tracing::warn!(
+            path = %daemon_path.display(),
+            "daemon executable not found; skipping app-owned daemon spawn"
+        );
+        return;
+    }
+
+    run_watchdog_loop(
+        client,
+        daemon_url,
+        daemon_path,
+        bind,
+        ui_dir,
+        effects_dir,
+        state,
+    )
+    .await;
+}
+
+#[cfg(target_os = "linux")]
+fn start_registered_launcher(unit: &str) -> bool {
+    match start_systemd_user_service(unit) {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            tracing::warn!(unit, status = ?status.code(), "failed to start systemd user service");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(unit, %error, "failed to run systemctl for systemd user service");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn start_registered_launcher(unit: &str) -> bool {
+    let mut command = Command::new("sc.exe");
+    command.args(["start", unit]);
+    crate::process_ext::hide_console_window(&mut command);
+    match command.status() {
+        Ok(status) if status.success() => true,
+        Ok(status) => {
+            tracing::warn!(unit, status = ?status.code(), "failed to start the Windows service");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(unit, %error, "failed to run sc.exe for the Windows service");
+            false
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn start_registered_launcher(unit: &str) -> bool {
+    tracing::warn!(unit, "no service manager start path on this platform");
+    false
 }
 
 /// Exponential backoff for daemon restart attempts: 1s, 2s, 5s, 10s, 30s.
@@ -2514,84 +2954,6 @@ async fn wait_for_exit(daemon: SharedManagedDaemon) -> Result<std::process::Exit
 }
 
 #[cfg(target_os = "linux")]
-async fn try_start_systemd_user_service(client: &reqwest::Client, daemon_url: &Url) -> bool {
-    match systemd_user_service_plan(detect_systemd_user_service()) {
-        SystemdUserServicePlan::Reuse => {
-            tracing::info!(
-                service = SYSTEMD_USER_SERVICE,
-                "systemd user service active; waiting for daemon health"
-            );
-            if wait_until_healthy(
-                client,
-                daemon_url,
-                DAEMON_STARTUP_TIMEOUT,
-                DAEMON_STARTUP_POLL_INTERVAL,
-            )
-            .await
-            {
-                tracing::info!(
-                    service = SYSTEMD_USER_SERVICE,
-                    "systemd-managed daemon reported healthy"
-                );
-            } else {
-                tracing::warn!(
-                    service = SYSTEMD_USER_SERVICE,
-                    timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
-                    "systemd user service is active but the daemon did not become healthy"
-                );
-            }
-            true
-        }
-        SystemdUserServicePlan::Start => {
-            tracing::info!(
-                service = SYSTEMD_USER_SERVICE,
-                "starting enabled systemd user service"
-            );
-            match start_systemd_user_service() {
-                Ok(status) if status.success() => {
-                    if wait_until_healthy(
-                        client,
-                        daemon_url,
-                        DAEMON_STARTUP_TIMEOUT,
-                        DAEMON_STARTUP_POLL_INTERVAL,
-                    )
-                    .await
-                    {
-                        tracing::info!(
-                            service = SYSTEMD_USER_SERVICE,
-                            "systemd-managed daemon reported healthy"
-                        );
-                    } else {
-                        tracing::warn!(
-                            service = SYSTEMD_USER_SERVICE,
-                            timeout_ms = DAEMON_STARTUP_TIMEOUT.as_millis(),
-                            "started systemd user service but daemon did not become healthy"
-                        );
-                    }
-                    true
-                }
-                Ok(status) => {
-                    tracing::warn!(
-                        service = SYSTEMD_USER_SERVICE,
-                        status = ?status.code(),
-                        "failed to start systemd user service"
-                    );
-                    false
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        service = SYSTEMD_USER_SERVICE,
-                        %error,
-                        "failed to run systemctl for systemd user service"
-                    );
-                    false
-                }
-            }
-        }
-        SystemdUserServicePlan::SpawnChild => false,
-    }
-}
-
 #[cfg(target_os = "linux")]
 fn detect_systemd_user_service() -> SystemdUserServiceProbe {
     if systemctl_user_output(&["is-active", SYSTEMD_USER_SERVICE])
@@ -2621,9 +2983,9 @@ fn systemctl_user_output(args: &[&str]) -> std::io::Result<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn start_systemd_user_service() -> std::io::Result<std::process::ExitStatus> {
+fn start_systemd_user_service(unit: &str) -> std::io::Result<std::process::ExitStatus> {
     Command::new("systemctl")
-        .args(["--user", "start", SYSTEMD_USER_SERVICE])
+        .args(["--user", "start", unit])
         .status()
 }
 
@@ -2729,6 +3091,12 @@ fn configure_platform_command(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
     command.process_group(0);
+    // Linux: the kernel delivers SIGTERM to the child when this process
+    // exits (pdeathsig), so supervisor death is a kernel fact rather than
+    // something the daemon has to notice. macOS arms the equivalent on the
+    // daemon side with a kqueue EVFILT_PROC watch on the parent pid.
+    #[cfg(target_os = "linux")]
+    hypercolor_linux_session::arm_parent_death(command, std::process::id());
 }
 
 #[cfg(unix)]

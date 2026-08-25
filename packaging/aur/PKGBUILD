@@ -50,7 +50,6 @@ package() {
   install -Dm755 bin/hypercolor-daemon "${pkgdir}/usr/bin/hypercolor-daemon"
   install -Dm755 bin/hypercolor        "${pkgdir}/usr/bin/hypercolor"
   install -Dm755 bin/hypercolor-app    "${pkgdir}/usr/bin/hypercolor-app"
-  install -Dm755 bin/hypercolor-tray   "${pkgdir}/usr/bin/hypercolor-tray"
   install -Dm755 bin/hypercolor-tui    "${pkgdir}/usr/bin/hypercolor-tui"
   install -Dm755 bin/hypercolor-open   "${pkgdir}/usr/bin/hypercolor-open"
 

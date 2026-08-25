@@ -4,26 +4,30 @@ use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, ColorTuning, PixelExtent,
+};
+use hypercolor_core::input::screen::implementer::{
     CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureDamage, CaptureDynamicRange,
-    CaptureEpoch, CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat,
-    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, ColorTuning,
-    CpuCaptureStorage, CpuReductionBatchJob, CpuReductionError, CpuReductionExecutor,
-    CpuSurfaceReductionJob, CpuZoneMaterializationError, KnownCaptureColorimetry, PhysicalOrigin,
-    PixelExtent, PreparedCpuLogicalFanoutKind, PreparedCpuPublicationFanout,
-    PreparedCpuZoneMaterializer, RawCaptureSurface, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
-    ScreenBackendResourceIdentity, ScreenBranchPayload, ScreenCaptureBackend, ScreenCapturePlan,
-    ScreenColorTuning, ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenExactResource,
+    CaptureFrame, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation,
+    CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, CpuReductionBatchJob,
+    CpuReductionError, CpuReductionExecutor, CpuSurfaceReductionJob, CpuZoneMaterializationError,
+    KnownCaptureColorimetry, PhysicalOrigin, PreparedCpuLogicalFanoutKind,
+    PreparedCpuPublicationFanout, PreparedCpuZoneMaterializer, RawCaptureSurface,
+    ScreenBranchPayload, ScreenPublicationHealth, ScreenPublicationMetadata, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenCapturePlan, ScreenColorTuning,
+    ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenExactResource,
     ScreenExactResourceLedger, ScreenExtentRequest, ScreenGridPolicy, ScreenInputGraphGeneration,
     ScreenPayloadKind, ScreenPhysicalReductionDescriptor, ScreenPlanBuilder, ScreenPlanError,
     ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
-    ScreenPublicationExecutorRequest, ScreenPublicationHealth, ScreenPublicationKind,
-    ScreenPublicationMetadata, ScreenPublicationRequest, ScreenPublicationRetirement,
-    ScreenReductionFilter, ScreenResourceApi, ScreenResourceLifetime, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy, ScreenWorkerBinding,
-    ScreenWorkerPreparationTicket, SourceScale,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenPublicationRetirement, ScreenReductionFilter, ScreenResourceApi, ScreenResourceLifetime,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry, ScreenUpscalePolicy,
+    ScreenWorkerBinding, ScreenWorkerPreparationTicket,
 };
 use hypercolor_types::canvas::linear_to_srgb_u8;
 
@@ -197,7 +201,6 @@ fn commit_with_retirement(
     let mut preparing = builder
         .prepare(
             demands,
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -878,7 +881,6 @@ fn mixed_fanout_materializes_retained_and_added_branch_bindings() {
     let mut preparing = builder
         .prepare(
             [zones, surface],
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

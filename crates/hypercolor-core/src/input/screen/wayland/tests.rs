@@ -1,54 +1,126 @@
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use super::{
-    AdoptionAuthority, AdoptionWaitError, AnalysisEvent, AnalysisExactCommand, AnalysisExchange,
-    CaptureCallbackMetrics, CapturedScreenSnapshot, ChunkDropReason, CopyStats, DoubleBuffer,
-    NegotiatedFormat, NegotiatedPipeWireFormat, PendingPipeWireAdoption,
+    AdoptionAuthority, AdoptionWaitError, AnalysisEvent, AnalysisExchange, CaptureCallbackMetrics,
+    CaptureExactCommand, CaptureFormatRequest, ChunkDropReason, CopyStats, DoubleBuffer,
+    FormatOffer, NegotiatedFormat, NegotiatedVideoFormat, PendingPipeWireAdoption,
     PipeWireFormatAcknowledgment, PipeWireFormatRequest, PipeWireFormatState, PipeWireLoopExit,
     RestoreTokenSink, SharedSettings, SpaChunkView, SpaVideoFormat, UnavailablePark,
-    WaylandAnalysisState, WaylandCaptureUserData, WaylandExactPublicationShared,
-    WaylandScreenCaptureInput, WaylandSourceMetadata, WaylandTopologySignature,
-    build_format_params, commit_if_authorized, convert_packed_to_rgba, decode_chunk,
-    fence_previous_publication, initial_native_extent_correction, initial_worker_demand,
-    park_unavailable_worker, prepare_wayland_exact_runtime, publish_unexpected_exit_status,
-    reap_wayland_exact_runtimes, request_active_worker_demand, set_worker_demand,
-    settle_pipewire_restoration, unavailable_format_outcome, wait_for_adoption_result,
-    worker_demand_epoch, worker_demanded,
+    VersionedCaptureSettings, WaylandAnalysisState, WaylandCaptureActivity, WaylandCaptureUserData,
+    WaylandCaptureWorker, WaylandExactPublicationShared, WaylandScreenCaptureInput,
+    WaylandSourceMetadata, WaylandTopologySignature, commit_if_authorized, convert_packed_to_rgba,
+    decode_chunk, initial_native_extent_correction, initial_worker_demand, park_unavailable_worker,
+    prepare_wayland_exact_runtime, publish_unexpected_exit_status, request_active_worker_demand,
+    set_worker_demand, settle_pipewire_restoration, unavailable_format_outcome,
+    wait_for_adoption_result, worker_demand_epoch, worker_demanded,
 };
+use crate::input::screen::adapter::{CaptureSessionAuthority, reap_capture_exact_runtimes};
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureColorimetry, CaptureConfig, CaptureFrame, CaptureFrameError,
+    CaptureColorimetry, CaptureConfig, CaptureEpoch, CaptureFrame, CaptureFrameError,
     CaptureRotation, CaptureSourceId, InputPublicationDemandRevision,
     MAX_REPRESENTABLE_CAPTURE_FPS, PhysicalOrigin, PixelExtent, PixelRect, RawCaptureSurface,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ScreenAdmissionCapacity,
-    ScreenAnalysisComputeCapacity, ScreenAspectPolicy, ScreenBranchPayload,
-    ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenCaptureDemand,
-    ScreenComputeCapacityPolicy, ScreenContentBarsPolicy, ScreenExtentRequest,
+    ScreenAspectPolicy, ScreenBranchPayload, ScreenByteAdmissionCoordinator, ScreenCaptureBackend,
+    ScreenCaptureDemand, ScreenComputeCapacityPolicy, ScreenExtentRequest,
     ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
     ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenResourceApi, ScreenResourceKind, ScreenSceneCutPolicy, ScreenSmoothingPolicy,
-    ScreenSourceSelector, ScreenUpscalePolicy, ScreenWorkerBindingState, analyze_screen_frame,
+    ScreenResourceApi, ScreenResourceKind, ScreenSourceSelector, ScreenUpscalePolicy,
+    ScreenWorkerBindingState, SourceScale,
 };
-use crate::input::traits::InputSource;
 use crate::input::{SourceIssue, SourceKind, SourceState, SourceStatusReporter};
 
 fn settings(session_generation: u64) -> Arc<SharedSettings> {
+    let publication = Arc::new(Mutex::new(WaylandCaptureActivity::default()));
+    let exact = Arc::new(WaylandExactPublicationShared::default());
+    let mut reservation = None;
+    for _ in 0..session_generation {
+        reservation = Some(exact.reserve_authority().expect("test authority reserves"));
+    }
+    let reservation = reservation.expect("test session generation is nonzero");
+    assert_eq!(reservation.authority().generation(), session_generation);
+    drop(
+        exact
+            .activate_reserved_authority(reservation)
+            .expect("test authority activates"),
+    );
     Arc::new(SharedSettings {
-        config: Mutex::new(CaptureConfig::default()),
-        demand: Mutex::new(active_demand()),
+        values: Arc::new(VersionedCaptureSettings::new(
+            CaptureConfig::default(),
+            active_demand(),
+        )),
         admission_coordinator: ScreenByteAdmissionCoordinator::default(),
         compute_capacity_policy: ScreenComputeCapacityPolicy::UNBOUNDED,
-        generation: 0.into(),
-        frame_generation: 0.into(),
         topology_generation: 0.into(),
         topology: Mutex::new(None),
-        session_generation: session_generation.into(),
-        expected_epoch: Mutex::new(None),
-        exact: WaylandExactPublicationShared::default(),
+        session_guard: Mutex::new(()),
+        publication,
+        exact,
     })
+}
+
+#[test]
+fn adapter_and_wayland_settings_share_capture_state() {
+    let input = WaylandScreenCaptureInput::new(CaptureConfig::default());
+    let settings = input.shell.adapter.settings_handle();
+    let publication = input.shell.adapter.activity_handle();
+    let exact = input.shell.adapter.exact_state_handle();
+
+    assert!(Arc::ptr_eq(&settings, &input.settings.values));
+    assert!(Arc::ptr_eq(&publication, &input.settings.publication));
+    assert!(Arc::ptr_eq(&exact, &input.settings.exact));
+}
+
+#[test]
+fn portal_pending_worker_retirement_does_not_wait_for_picker_exit() {
+    let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
+    let (command_tx, _command_rx) = super::loop_channel();
+    let (start_tx, _start_rx) = mpsc::sync_channel(1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let portal_pending = Arc::new(AtomicBool::new(true));
+    let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));
+    let session_generation = Arc::new(AtomicU64::new(1));
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let join_handle = thread::spawn(move || {
+        started_tx.send(()).expect("test worker reports startup");
+        release_rx.recv().expect("test releases portal picker");
+    });
+    assert!(
+        input
+            .shell
+            .adapter
+            .install_worker_for_test(WaylandCaptureWorker {
+                command_tx,
+                start_tx,
+                join_handle: Some(join_handle),
+                cancel: Arc::clone(&cancel),
+                portal_pending,
+                demand_state,
+                status_writer: None,
+                session_generation,
+                settings: Arc::clone(&input.settings),
+            })
+            .is_ok()
+    );
+    started_rx.recv().expect("portal worker is running");
+    let (returned_tx, returned_rx) = mpsc::sync_channel(0);
+
+    thread::spawn(move || {
+        input.shutdown_worker();
+        assert!(input.shell.adapter.active_worker().is_none());
+        assert!(input.shell.adapter.can_install_successor());
+        returned_tx.send(()).expect("retirement reports completion");
+    });
+
+    returned_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("portal retirement returns before picker exit");
+    assert!(cancel.load(Ordering::Acquire));
+    release_tx.send(()).expect("portal worker may exit");
 }
 
 fn source_id(value: &str) -> CaptureSourceId {
@@ -60,7 +132,7 @@ fn extent(width: u32, height: u32) -> PixelExtent {
 }
 
 fn active_demand() -> ScreenCaptureDemand {
-    ScreenCaptureDemand::active(extent(640, 480))
+    ScreenCaptureDemand::active()
 }
 
 fn format_request(width: u32, height: u32, target_fps: u32) -> PipeWireFormatRequest {
@@ -68,31 +140,28 @@ fn format_request(width: u32, height: u32, target_fps: u32) -> PipeWireFormatReq
         target_fps,
         ..CaptureConfig::default()
     };
-    PipeWireFormatRequest::new_with_compute_capacity(
-        extent(width, height),
-        extent(640, 480),
-        &config,
-        unlimited_compute_capacity(),
-    )
-    .expect("test PipeWire format request is valid")
+    PipeWireFormatRequest::new(extent(width, height), &config)
 }
 
-fn unlimited_compute_capacity() -> ScreenAnalysisComputeCapacity {
-    ScreenAnalysisComputeCapacity::new(NonZeroUsize::MIN, NonZeroU64::MAX)
-}
-
-fn negotiated_format(width: u32, height: u32, target_fps: u32) -> NegotiatedPipeWireFormat {
-    NegotiatedPipeWireFormat {
-        frame: NegotiatedFormat {
-            width,
-            height,
-            format: SpaVideoFormat::Rgba,
-        },
-        framerate: pipewire::spa::utils::Fraction {
-            num: target_fps,
-            denom: 1,
+fn negotiated_format(width: u32, height: u32, target_fps: u32) -> NegotiatedVideoFormat {
+    NegotiatedVideoFormat {
+        width,
+        height,
+        format: SpaVideoFormat::Rgba,
+        framerate: hypercolor_pipewire_interop::VideoFraction {
+            numerator: target_fps,
+            denominator: 1,
         },
     }
+}
+
+fn format_offer(request: PipeWireFormatRequest) -> FormatOffer {
+    FormatOffer::new(CaptureFormatRequest {
+        width: request.extent.width(),
+        height: request.extent.height(),
+        target_fps: request.target_fps,
+    })
+    .expect("test format offer is valid")
 }
 
 fn pending_adoption(id: u64, request: PipeWireFormatRequest) -> PendingPipeWireAdoption {
@@ -103,18 +172,17 @@ fn pending_adoption_with_done(
     id: u64,
     request: PipeWireFormatRequest,
 ) -> (PendingPipeWireAdoption, mpsc::Receiver<Result<(), String>>) {
-    let (analysis_decision, _analysis_decision_rx) = mpsc::sync_channel(1);
-    let (_analysis_done_tx, analysis_done) = mpsc::sync_channel(1);
+    let (_analysis_adoption, analysis) =
+        crate::input::screen::adapter::begin_capture_settings_adoption::<(), bool>(());
     let (done, done_rx) = mpsc::sync_channel(1);
     (
         PendingPipeWireAdoption {
             id,
             request,
-            format_bytes: vec![u8::try_from(id).unwrap_or_default()],
+            offer: format_offer(request),
             callback_buffers: DoubleBuffer::try_with_capacity(4)
                 .expect("test callback storage allocates"),
-            analysis_decision,
-            analysis_done,
+            analysis,
             done,
             authority: Arc::new(AdoptionAuthority::default()),
         },
@@ -132,21 +200,12 @@ fn source(
             source_id: source_id("wayland:portal:stable"),
             origin,
             logical_extent: Some(logical_extent),
+            native_extent: None,
+            transform: CaptureRotation::Identity,
         },
         session_generation,
         topology: None,
     }
-}
-
-fn capture_legacy(
-    state: &mut WaylandAnalysisState,
-    width: u32,
-    height: u32,
-    fill: u8,
-) -> AnalyzedScreenSnapshot {
-    let frame = capture_raw(state, width, height, fill);
-    analyze_screen_frame(&mut state.analyzer, frame)
-        .expect("screen analysis accepts canonical test geometry")
 }
 
 fn capture_raw(
@@ -154,6 +213,16 @@ fn capture_raw(
     width: u32,
     height: u32,
     fill: u8,
+) -> CaptureFrame<RawCaptureSurface> {
+    capture_raw_with_transform(state, width, height, fill, CaptureRotation::Identity)
+}
+
+fn capture_raw_with_transform(
+    state: &mut WaylandAnalysisState,
+    width: u32,
+    height: u32,
+    fill: u8,
+    transform: CaptureRotation,
 ) -> CaptureFrame<RawCaptureSurface> {
     let plane_len = usize::try_from(width)
         .expect("test width fits usize")
@@ -171,7 +240,7 @@ fn capture_raw(
             width,
             height,
             None,
-            CaptureRotation::Identity,
+            transform,
             plane.freeze(),
             CaptureColorimetry::SRGB,
         )
@@ -183,7 +252,10 @@ fn exact_demand(
     exact: &WaylandExactPublicationShared,
     kind: ScreenPublicationKind,
 ) -> ResolvedScreenBranchDemand {
-    let executor = exact.cpu_executor().expect("test CPU executor prepares");
+    let executor = exact
+        .cpu_executor
+        .executor()
+        .expect("test CPU executor prepares");
     RegisteredScreenBranchDemand::new(
         ScreenPublicationRequest::new(
             ScreenSourceSelector::Exact(source.epoch.source_id.clone()),
@@ -228,59 +300,49 @@ fn rgba_view(
 }
 
 #[test]
-fn physical_topology_persists_across_storage_resize_and_session_restart() {
+fn physical_topology_advances_for_extent_transform_and_source_changes() {
     let settings = settings(7);
-    let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
     let physical_origin = PhysicalOrigin { x: -1920, y: 0 };
     let mut first_worker = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::clone(&latest),
         source(7, physical_origin, extent(1920, 1080)),
         CaptureConfig::default(),
         active_demand(),
     )
     .expect("test analysis extent allocates");
 
-    let first = capture_legacy(&mut first_worker, 4, 2, 1);
-    let resized = capture_legacy(&mut first_worker, 2, 1, 2);
-    assert_eq!(first.geometry_frame().metadata().topology_generation, 1);
-    assert_eq!(resized.geometry_frame().metadata().topology_generation, 1);
+    let first = capture_raw(&mut first_worker, 4, 2, 1);
+    let resized = capture_raw(&mut first_worker, 2, 1, 2);
+    assert_eq!(first.metadata().topology_generation, 1);
+    assert_eq!(resized.metadata().topology_generation, 2);
+    assert_eq!(resized.metadata().geometry.native_extent(), extent(2, 1));
+    assert_eq!(resized.metadata().geometry.storage_extent(), extent(2, 1));
+
+    let stable = capture_raw(&mut first_worker, 2, 1, 3);
+    assert_eq!(stable.metadata().topology_generation, 2);
+
+    let transformed =
+        capture_raw_with_transform(&mut first_worker, 2, 1, 4, CaptureRotation::Clockwise90);
+    assert_eq!(transformed.metadata().topology_generation, 3);
     assert_eq!(
-        resized.geometry_frame().metadata().geometry.native_extent(),
-        extent(4, 2)
-    );
-    assert_eq!(
-        resized
-            .geometry_frame()
-            .metadata()
-            .geometry
-            .storage_extent(),
-        extent(2, 1)
+        transformed.metadata().geometry.source_scale(),
+        SourceScale::new(1920, 1).expect("test source scale is valid")
     );
 
     let next_session = settings.begin_session();
     let mut successor = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::clone(&latest),
         source(next_session, physical_origin, extent(1920, 1080)),
         CaptureConfig::default(),
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let restarted = capture_legacy(&mut successor, 1, 1, 3);
-    assert_eq!(restarted.geometry_frame().metadata().topology_generation, 1);
-    assert_eq!(
-        restarted
-            .geometry_frame()
-            .metadata()
-            .geometry
-            .native_extent(),
-        extent(4, 2)
-    );
+    let restarted = capture_raw(&mut successor, 2, 1, 5);
+    assert_eq!(restarted.metadata().topology_generation, 4);
+    assert_eq!(restarted.metadata().geometry.native_extent(), extent(2, 1));
 
     let mut moved_source = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::new(Mutex::new(None)),
         source(
             next_session,
             PhysicalOrigin { x: 0, y: -1080 },
@@ -290,39 +352,31 @@ fn physical_topology_persists_across_storage_resize_and_session_restart() {
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let moved = capture_legacy(&mut moved_source, 2, 1, 4);
-    assert_eq!(moved.geometry_frame().metadata().topology_generation, 2);
-    assert_eq!(
-        moved.geometry_frame().metadata().geometry.native_extent(),
-        extent(2, 1)
-    );
+    let moved = capture_raw(&mut moved_source, 2, 1, 6);
+    assert_eq!(moved.metadata().topology_generation, 5);
+    assert_eq!(moved.metadata().geometry.native_extent(), extent(2, 1));
 }
 
 #[test]
 fn exact_publication_source_is_stable_until_capture_identity_changes() {
     let settings = settings(31);
-    let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
     let mut worker = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        latest,
         source(31, PhysicalOrigin { x: -2560, y: 0 }, extent(2560, 1440)),
         CaptureConfig::default(),
         active_demand(),
     )
     .expect("test analysis extent allocates");
 
-    let first = capture_legacy(&mut worker, 4, 2, 7);
-    let first_revision = settings.exact.resolution_revision.load(Ordering::Acquire);
+    let first = capture_raw(&mut worker, 4, 2, 7);
+    let first_revision = settings.exact.resolution_revision();
     let publication = settings
         .exact
         .source()
         .expect("first capture resolves an exact publication source");
 
     assert_eq!(first_revision, 1);
-    assert_eq!(
-        publication.epoch.source_id,
-        first.geometry_frame().metadata().source_id
-    );
+    assert_eq!(publication.epoch.source_id, first.metadata().source_id);
     assert!(publication.matches_selector(&ScreenSourceSelector::Configured));
     assert!(publication.matches_selector(&ScreenSourceSelector::Primary));
     assert!(publication.matches_selector(&ScreenSourceSelector::Exact(
@@ -337,22 +391,22 @@ fn exact_publication_source_is_stable_until_capture_identity_changes() {
     assert_eq!(publication.config.logical_extent(), extent(2560, 1440));
     assert_eq!(
         publication.config.resources().backend(),
-        &ScreenCaptureBackend::WaylandPipeWire
+        &ScreenCaptureBackend::PipeWire
     );
     assert_eq!(
         publication.config.resources().api(),
         &ScreenResourceApi::Cpu
     );
 
-    capture_legacy(&mut worker, 4, 2, 8);
+    capture_raw(&mut worker, 4, 2, 8);
     assert_eq!(
-        settings.exact.resolution_revision.load(Ordering::Acquire),
+        settings.exact.resolution_revision(),
         first_revision,
         "pixel contents and sequence changes do not invalidate prepared resources"
     );
 
-    capture_legacy(&mut worker, 2, 1, 9);
-    assert!(settings.exact.resolution_revision.load(Ordering::Acquire) > first_revision);
+    capture_raw(&mut worker, 2, 1, 9);
+    assert!(settings.exact.resolution_revision() > first_revision);
 }
 
 #[test]
@@ -377,10 +431,16 @@ fn exact_box_list_mutation_preserves_node_exactness_and_iterative_cleanup() {
 #[test]
 fn cpu_executor_is_shared_across_exact_plan_generations() {
     let exact = WaylandExactPublicationShared::default();
-    let first = exact.cpu_executor().expect("test CPU executor prepares");
+    let first = exact
+        .cpu_executor
+        .executor()
+        .expect("test CPU executor prepares");
 
     for _ in 0..100 {
-        let next = exact.cpu_executor().expect("test CPU executor is reused");
+        let next = exact
+            .cpu_executor
+            .executor()
+            .expect("test CPU executor is reused");
         assert!(Arc::ptr_eq(&first, &next));
     }
 }
@@ -390,7 +450,6 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
     let settings = settings(73);
     let mut worker = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::new(Mutex::new(None)),
         source(73, PhysicalOrigin::default(), extent(4, 2)),
         CaptureConfig::default(),
         active_demand(),
@@ -416,17 +475,12 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
     let mixed_demands = demands.clone();
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    *settings
-        .exact
-        .hub
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&hub));
+    settings.exact.install_hub(Arc::clone(&hub));
     let revision = InputPublicationDemandRevision::new(1);
     let graph_generation = ScreenInputGraphGeneration::new(1);
     let mut preparing = builder
         .prepare(
             demands,
-            None,
             revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -448,7 +502,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .push_boxed(super::WaylandExactRuntimes::boxed_node(runtime));
     settings
         .exact
-        .register_owned_source(crate::input::screen::ExactBoxList::boxed_node(owned_source));
+        .register_test_owned_source(crate::input::screen::ExactBoxList::boxed_node(owned_source));
     preparing
         .acknowledge(token)
         .expect("exact worker token belongs to the candidate plan");
@@ -502,7 +556,6 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
     let mut retained_preparing = builder
         .prepare(
             retained_demands,
-            None,
             retained_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -539,7 +592,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .push_boxed(super::WaylandExactRuntimes::boxed_node(retained_runtime));
     settings
         .exact
-        .register_owned_source(crate::input::screen::ExactBoxList::boxed_node(
+        .register_test_owned_source(crate::input::screen::ExactBoxList::boxed_node(
             retained_owned_source,
         ));
     retained_preparing
@@ -566,7 +619,11 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         retained_runtime_binding.state(),
         ScreenWorkerBindingState::Retired
     );
-    reap_wayland_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        &mut worker.exact_runtimes,
+        &settings.exact,
+    );
     assert_eq!(worker.exact_runtimes.iter().count(), 1);
 
     let retained_frame = capture_raw(&mut worker, 4, 2, 29);
@@ -596,7 +653,6 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
     let mut mixed_preparing = builder
         .prepare(
             mixed_demands,
-            None,
             mixed_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -620,7 +676,7 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .push_boxed(super::WaylandExactRuntimes::boxed_node(mixed_runtime));
     settings
         .exact
-        .register_owned_source(crate::input::screen::ExactBoxList::boxed_node(
+        .register_test_owned_source(crate::input::screen::ExactBoxList::boxed_node(
             mixed_owned_source,
         ));
     mixed_preparing
@@ -643,7 +699,11 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
             .committed_state()
             .owns_runtime_binding(&mixed_runtime_binding)
     );
-    reap_wayland_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        &mut worker.exact_runtimes,
+        &settings.exact,
+    );
     assert_eq!(worker.exact_runtimes.iter().count(), 1);
 
     let mixed_frame = capture_raw(&mut worker, 4, 2, 31);
@@ -678,13 +738,15 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
     drop(mixed_plan);
 
     let owned_source_id = source.epoch.source_id.clone();
-    settings.exact.replace_source(None);
+    settings.exact.replace_source_if_current(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        None,
+    );
     assert!(settings.exact.owns_source(&owned_source_id));
     let retirement_revision = mixed_revision.next().expect("test revision advances");
     let mut preparing = builder
         .prepare(
             std::iter::empty::<ResolvedScreenBranchDemand>(),
-            None,
             retirement_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -717,7 +779,11 @@ fn exact_runtime_publishes_surface_and_zones_from_one_captured_frame() {
         .commit(armed, retirement_revision, graph_generation)
         .unwrap_or_else(|failure| panic!("empty successor plan commits: {}", failure.error()));
     let (_, retirement) = committed.into_parts();
-    reap_wayland_exact_runtimes(&mut worker.exact_runtimes, &settings.exact);
+    reap_capture_exact_runtimes(
+        CaptureSessionAuthority::new(source.epoch.session_generation),
+        &mut worker.exact_runtimes,
+        &settings.exact,
+    );
     assert!(!settings.exact.owns_source(&owned_source_id));
     assert_eq!(worker.exact_runtimes.iter().count(), 0);
     for retirement in [retained_retirement, mixed_retirement, retirement] {
@@ -732,7 +798,6 @@ fn already_cancelled_exact_preparation_never_creates_runtime_state() {
     let settings = settings(74);
     let mut worker = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::new(Mutex::new(None)),
         source(74, PhysicalOrigin::default(), extent(4, 2)),
         CaptureConfig::default(),
         active_demand(),
@@ -753,7 +818,6 @@ fn already_cancelled_exact_preparation_never_creates_runtime_state() {
                 &settings.exact,
                 ScreenPublicationKind::Surface,
             )],
-            None,
             revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -764,7 +828,8 @@ fn already_cancelled_exact_preparation_never_creates_runtime_state() {
         .expect("test source owns an exact worker ticket");
     let (completion, completed) = tokio::sync::oneshot::channel();
 
-    worker.handle_exact_command(AnalysisExactCommand::Prepare {
+    worker.handle_exact_command(CaptureExactCommand::Prepare {
+        authority: CaptureSessionAuthority::new(source.epoch.session_generation),
         ticket,
         cancelled: Arc::new(AtomicBool::new(true)),
         completion,
@@ -776,16 +841,7 @@ fn already_cancelled_exact_preparation_never_creates_runtime_state() {
         .expect_err("cancelled preparation cannot return a worker token");
     assert!(error.to_string().contains("was cancelled"));
     assert_eq!(worker.exact_runtimes.iter().count(), 0);
-    assert_eq!(
-        settings
-            .exact
-            .owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .count(),
-        0
-    );
+    assert_eq!(settings.exact.owned_source_count(), 0);
 }
 
 #[test]
@@ -793,13 +849,12 @@ fn stale_frame_cannot_replace_the_resolved_exact_source() {
     let settings = settings(42);
     let mut worker = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::new(Mutex::new(None)),
         source(42, PhysicalOrigin::default(), extent(1, 1)),
         CaptureConfig::default(),
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    capture_legacy(&mut worker, 1, 1, 1);
+    capture_raw(&mut worker, 1, 1, 1);
     settings.clear_expected_epoch();
 
     let mut plane = worker
@@ -825,56 +880,60 @@ fn stale_frame_cannot_replace_the_resolved_exact_source() {
 #[test]
 fn stale_worker_cannot_overwrite_the_successor_snapshot() {
     let settings = settings(9);
-    let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
+    let latest = Arc::clone(&settings.publication);
     let physical_origin = PhysicalOrigin::default();
     let logical_extent = extent(1920, 1080);
     let mut retiring = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::clone(&latest),
         source(9, physical_origin, logical_extent),
         CaptureConfig::default(),
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let stale = capture_legacy(&mut retiring, 4, 2, 1);
+    let stale = capture_raw(&mut retiring, 4, 2, 1);
 
     let active_session = settings.begin_session();
     let mut active = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::clone(&latest),
         source(active_session, physical_origin, logical_extent),
         CaptureConfig::default(),
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let current = capture_legacy(&mut active, 2, 1, 2);
-    assert!(settings.publish_snapshot(&latest, current));
-    assert!(!settings.publish_snapshot(&latest, stale));
+    let current = capture_raw(&mut active, 2, 1, 2);
+    let stale_epoch = CaptureEpoch {
+        source_id: stale.metadata().source_id.clone(),
+        topology_generation: stale.metadata().topology_generation,
+        session_generation: stale.metadata().session_generation,
+    };
+    let current_epoch = CaptureEpoch {
+        source_id: current.metadata().source_id.clone(),
+        topology_generation: current.metadata().topology_generation,
+        session_generation: current.metadata().session_generation,
+    };
+    drop(retiring);
 
-    let published = latest
-        .lock()
-        .expect("latest snapshot mutex is healthy")
-        .clone()
-        .expect("successor snapshot remains published");
     assert_eq!(
-        published
-            .analysis
-            .geometry_frame()
-            .metadata()
+        settings
+            .exact
+            .source()
+            .expect("successor exact source remains installed")
+            .epoch
             .session_generation,
         active_session
     );
-    assert_eq!(published.generation, 1);
+
+    let mut activity = latest.lock().expect("latest activity mutex is healthy");
+    assert!(activity.activate(stale_epoch).is_err());
+    assert!(matches!(activity.activate(current_epoch.clone()), Ok(None)));
+    assert_eq!(activity.active(), Some(&current_epoch));
+    drop(activity);
 }
 
 #[test]
 fn retired_worker_cannot_read_or_update_successor_settings() {
     let settings = settings(31);
-    settings
-        .config
-        .lock()
-        .expect("capture config mutex is healthy")
-        .restore_token = Some("retiring".to_owned());
+    settings.values.lock_config().restore_token = Some("retiring".to_owned());
     let not_cancelled = AtomicBool::new(false);
     let active_session_generation = AtomicU64::new(31);
     assert_eq!(
@@ -888,14 +947,12 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
     );
 
     let successor_generation = settings.begin_session();
-    settings
-        .config
-        .lock()
-        .expect("capture config mutex is healthy")
-        .restore_token = Some("successor".to_owned());
+    settings.values.lock_config().restore_token = Some("successor".to_owned());
     let sink_calls = Arc::new(AtomicUsize::new(0));
     let sink_calls_for_callback = Arc::clone(&sink_calls);
+    let publication_for_callback = Arc::clone(&settings.publication);
     let sink: RestoreTokenSink = Arc::new(move |_| {
+        assert!(publication_for_callback.try_lock().is_ok());
         sink_calls_for_callback.fetch_add(1, Ordering::Relaxed);
     });
 
@@ -913,12 +970,7 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
     );
     assert_eq!(sink_calls.load(Ordering::Relaxed), 0);
     assert_eq!(
-        settings
-            .config
-            .lock()
-            .expect("capture config mutex is healthy")
-            .restore_token
-            .as_deref(),
+        settings.values.lock_config().restore_token.as_deref(),
         Some("successor")
     );
 
@@ -944,12 +996,7 @@ fn retired_worker_cannot_read_or_update_successor_settings() {
     ));
     assert_eq!(sink_calls.load(Ordering::Relaxed), 1);
     assert_eq!(
-        settings
-            .config
-            .lock()
-            .expect("capture config mutex is healthy")
-            .restore_token
-            .as_deref(),
+        settings.values.lock_config().restore_token.as_deref(),
         Some("current")
     );
 }
@@ -1062,7 +1109,6 @@ fn cancellation_after_status_validation_is_serialized_with_publication() {
     let status = reporter.handle();
     let cancel = Arc::new(AtomicBool::new(false));
     let active_session_generation = Arc::new(AtomicU64::new(61));
-    let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
     let publisher_settings = Arc::clone(&settings);
     let publisher_cancel = Arc::clone(&cancel);
     let (validated_tx, validated_rx) = mpsc::sync_channel(0);
@@ -1086,9 +1132,9 @@ fn cancellation_after_status_validation_is_serialized_with_publication() {
     validated_rx
         .recv()
         .expect("publisher reaches its internal validation point");
-    assert!(settings.expected_epoch.try_lock().is_err());
+    assert!(settings.session_guard.try_lock().is_err());
+    assert!(settings.publication.try_lock().is_ok());
     let cancellation_settings = Arc::clone(&settings);
-    let cancellation_latest = Arc::clone(&latest);
     let cancellation_flag = Arc::clone(&cancel);
     let cancellation_generation = Arc::clone(&active_session_generation);
     let (cancel_started_tx, cancel_started_rx) = mpsc::sync_channel(0);
@@ -1096,11 +1142,7 @@ fn cancellation_after_status_validation_is_serialized_with_publication() {
         cancel_started_tx
             .send(())
             .expect("test observes cancellation invocation");
-        cancellation_settings.cancel_worker_session(
-            &cancellation_latest,
-            &cancellation_flag,
-            &cancellation_generation,
-        );
+        cancellation_settings.cancel_worker_session(&cancellation_flag, &cancellation_generation);
     });
     cancel_started_rx
         .recv()
@@ -1131,6 +1173,106 @@ fn cancellation_after_status_validation_is_serialized_with_publication() {
         snapshot.issue.as_ref().map(|issue| issue.code.as_ref()),
         Some("pre_cancel_publication")
     );
+}
+
+#[test]
+fn retired_worker_cannot_reinstall_its_exact_source_after_stop() {
+    let settings = settings(61);
+    let mut worker = WaylandAnalysisState::new(
+        Arc::clone(&settings),
+        source(61, PhysicalOrigin { x: 0, y: 0 }, extent(1920, 1080)),
+        CaptureConfig::default(),
+        active_demand(),
+    )
+    .expect("test analysis extent allocates");
+    capture_raw(&mut worker, 4, 2, 7);
+    let stale_source = settings
+        .exact
+        .source()
+        .expect("active worker installs its exact source");
+    let cancel = AtomicBool::new(false);
+    let active_session_generation = AtomicU64::new(61);
+
+    settings.cancel_worker_session(&cancel, &active_session_generation);
+
+    assert!(cancel.load(Ordering::Acquire));
+    assert_eq!(settings.exact.current_generation(), 62);
+    assert!(
+        !settings
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(61))
+    );
+    assert!(settings.exact.source().is_none());
+    assert!(
+        !settings
+            .exact
+            .replace_source_if_current(CaptureSessionAuthority::new(61), Some(stale_source))
+    );
+    assert!(settings.exact.source().is_none());
+}
+
+#[test]
+fn rolled_back_session_generation_is_not_reused() {
+    let settings = settings(61);
+
+    let rolled_back = settings
+        .exact
+        .reserve_authority()
+        .expect("first candidate reserves a generation");
+    let successor = settings
+        .exact
+        .reserve_authority()
+        .expect("successor reserves a fresh generation");
+    settings
+        .prepare_reserved_session_commit(&successor)
+        .expect("reserved successor remains newer than current authority")
+        .commit(successor);
+
+    assert_eq!(rolled_back.authority().generation(), 62);
+    let successor = settings
+        .exact
+        .current_authority()
+        .expect("successor authority commits")
+        .generation();
+    assert_eq!(successor, 63);
+    assert_eq!(settings.exact.current_generation(), successor);
+    assert!(
+        settings
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(successor))
+    );
+}
+
+#[test]
+fn successor_commit_serializes_retirement_without_a_tombstone() {
+    let settings = settings(61);
+    let prior_cancel = AtomicBool::new(false);
+    let prior_generation = AtomicU64::new(61);
+    let successor = settings
+        .exact
+        .reserve_authority()
+        .expect("successor reserves a fresh generation");
+    let commit = settings
+        .prepare_reserved_session_commit(&successor)
+        .expect("successor reservation remains current before retirement");
+    let successor_generation = successor.authority().generation();
+
+    prior_cancel.store(true, Ordering::SeqCst);
+    commit.commit(successor);
+    settings.cancel_worker_session(&prior_cancel, &prior_generation);
+
+    assert_eq!(successor_generation, 62);
+    assert_eq!(settings.exact.current_generation(), successor_generation);
+    assert!(
+        settings
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(successor_generation))
+    );
+    let following = settings
+        .exact
+        .reserve_authority()
+        .expect("following authority reserves");
+    assert_eq!(following.authority().generation(), 63);
 }
 
 #[test]
@@ -1349,7 +1491,6 @@ fn analysis_envelope_reports_pending_crop_and_transform() {
     let settings = settings(13);
     let mut analysis = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::new(Mutex::new(None)),
         source(13, PhysicalOrigin { x: -100, y: 50 }, extent(1920, 1080)),
         CaptureConfig::default(),
         active_demand(),
@@ -1378,44 +1519,6 @@ fn analysis_envelope_reports_pending_crop_and_transform() {
         frame.metadata().geometry.rotation(),
         CaptureRotation::Clockwise270
     );
-}
-
-#[test]
-fn legacy_analysis_rejects_unknown_wayland_samples_before_averaging() {
-    let settings = settings(17);
-    let mut analysis = WaylandAnalysisState::new(
-        Arc::clone(&settings),
-        Arc::new(Mutex::new(None)),
-        source(17, PhysicalOrigin::default(), extent(4, 2)),
-        CaptureConfig::default(),
-        active_demand(),
-    )
-    .expect("test analysis extent allocates");
-    let mut plane = analysis
-        .plane_pool
-        .try_acquire(32)
-        .expect("test plane allocation succeeds");
-    plane.resize(32, 0);
-    let frame = analysis
-        .capture_frame(
-            Instant::now(),
-            4,
-            2,
-            None,
-            CaptureRotation::Identity,
-            plane.freeze(),
-            CaptureColorimetry::unknown(),
-        )
-        .expect("raw frame accepts unknown backend metadata");
-
-    let error = analyze_screen_frame(&mut analysis.analyzer, frame)
-        .err()
-        .expect("unknown encoded samples must not reach legacy averaging");
-    assert!(matches!(
-        error.downcast_ref::<CaptureFrameError>(),
-        Some(CaptureFrameError::UnsupportedLegacyAnalysisColorimetry { colorimetry })
-            if *colorimetry == CaptureColorimetry::unknown()
-    ));
 }
 
 #[test]
@@ -1469,7 +1572,7 @@ fn negotiated_format_change_rebuilds_callback_planes_outside_decode() {
 fn initial_format_rejection_becomes_typed_unavailable() {
     let state = PipeWireFormatState {
         current: format_request(640, 480, 30),
-        current_format_bytes: vec![1],
+        current_offer: format_offer(format_request(640, 480, 30)),
         current_acknowledged: false,
         pending: None,
         restoring: None,
@@ -1492,7 +1595,7 @@ fn delayed_current_ack_does_not_consume_pending_format_adoption() {
     let requested = format_request(3840, 2160, 144);
     let state = PipeWireFormatState {
         current,
-        current_format_bytes: vec![1],
+        current_offer: format_offer(current),
         current_acknowledged: true,
         pending: Some(pending_adoption(7, requested)),
         restoring: None,
@@ -1516,7 +1619,7 @@ fn rejected_adoption_settles_only_after_prior_format_ack() {
     let (pending, done_rx) = pending_adoption_with_done(11, requested);
     let mut state = PipeWireFormatState {
         current,
-        current_format_bytes: vec![1],
+        current_offer: format_offer(current),
         current_acknowledged: true,
         pending: Some(pending),
         restoring: None,
@@ -1542,7 +1645,7 @@ fn rejected_adoption_settles_only_after_prior_format_ack() {
     assert!(rejected.authority.cancel());
     assert_eq!(
         state.begin_restoring(rejected, "fixture rejection".to_owned()),
-        vec![1]
+        format_offer(current)
     );
     assert!(!state.can_begin_adoption());
     assert_eq!(state.restoring_id(), Some(11));
@@ -1567,8 +1670,12 @@ fn rejected_adoption_settles_only_after_prior_format_ack() {
         Arc::new(AnalysisExchange::default()),
         Arc::new(CaptureCallbackMetrics::default()),
     );
-    settle_pipewire_restoration(&mut callback, &state, negotiated_format(640, 480, 30).frame)
-        .expect("authoritative prior format settles restoration");
+    settle_pipewire_restoration(
+        &mut callback,
+        &state,
+        NegotiatedFormat::from_native(negotiated_format(640, 480, 30)),
+    )
+    .expect("authoritative prior format settles restoration");
 
     assert_eq!(
         done_rx
@@ -1591,7 +1698,7 @@ fn timed_out_adoption_cannot_consume_its_late_exact_ack() {
     assert!(pending.authority.cancel());
     let state = PipeWireFormatState {
         current: format_request(640, 480, 30),
-        current_format_bytes: vec![1],
+        current_offer: format_offer(format_request(640, 480, 30)),
         current_acknowledged: true,
         pending: Some(pending),
         restoring: None,
@@ -1837,78 +1944,11 @@ fn commit_winner_completes_install_before_signalling_success() {
 }
 
 #[test]
-fn format_pod_offers_negotiable_extent_and_transport_rate_ranges() {
-    let requested = extent(7680, 4320);
-    let bytes = build_format_params(10_000, requested)
-        .expect("representable high cadence and extent serialize");
-
-    let (_, value) = pipewire::spa::pod::deserialize::PodDeserializer::deserialize_any_from(&bytes)
-        .expect("format pod deserializes to a value");
-    let pipewire::spa::pod::Value::Object(object) = value else {
-        panic!("format pod is not an object");
-    };
-
-    let size = object
-        .properties
-        .iter()
-        .find(|property| {
-            property.key == pipewire::spa::param::format::FormatProperties::VideoSize.as_raw()
-        })
-        .expect("format pod carries a size property");
-    let pipewire::spa::pod::Value::Choice(pipewire::spa::pod::ChoiceValue::Rectangle(choice)) =
-        &size.value
-    else {
-        panic!("size must be a rectangle choice so scaled outputs can fixate");
-    };
-    let pipewire::spa::utils::Choice(
-        _,
-        pipewire::spa::utils::ChoiceEnum::Range { default, min, max },
-    ) = choice
-    else {
-        panic!("size choice must be a range");
-    };
-    assert_eq!(
-        (default.width, default.height),
-        (requested.width(), requested.height()),
-        "requested extent stays the preference"
-    );
-    assert_eq!((min.width, min.height), (1, 1));
-    assert_eq!((max.width, max.height), (16_384, 16_384));
-
-    let framerate = object
-        .properties
-        .iter()
-        .find(|property| {
-            property.key == pipewire::spa::param::format::FormatProperties::VideoFramerate.as_raw()
-        })
-        .expect("format pod carries a framerate property");
-    let pipewire::spa::pod::Value::Choice(pipewire::spa::pod::ChoiceValue::Fraction(choice)) =
-        &framerate.value
-    else {
-        panic!("framerate must be a fraction choice, not a fixed fraction");
-    };
-    let pipewire::spa::utils::Choice(
-        _,
-        pipewire::spa::utils::ChoiceEnum::Range { default, min, max },
-    ) = choice
-    else {
-        panic!("framerate choice must be a range");
-    };
-    assert_eq!((default.num, default.denom), (10_000, 1));
-    assert_eq!(
-        (min.num, min.denom),
-        (0, 1),
-        "variable rate must be admissible"
-    );
-    assert_eq!((max.num, max.denom), (1000, 1));
-}
-
-#[test]
 fn initial_extent_correction_only_fires_before_first_acknowledgment() {
     let make_state = |acknowledged: bool| {
         std::sync::Mutex::new(PipeWireFormatState {
             current: format_request(2560, 1440, 30),
-            current_format_bytes: vec![1],
+            current_offer: format_offer(format_request(2560, 1440, 30)),
             current_acknowledged: acknowledged,
             pending: None,
             restoring: None,
@@ -1951,13 +1991,7 @@ fn format_acknowledgment_treats_transport_rate_as_advisory() {
         target_fps: 30,
         ..CaptureConfig::default()
     };
-    let request = PipeWireFormatRequest::new_with_compute_capacity(
-        requested,
-        extent(640, 480),
-        &config,
-        unlimited_compute_capacity(),
-    )
-    .expect("format request builds");
+    let request = PipeWireFormatRequest::new(requested, &config);
 
     assert!(
         request.matches(negotiated_format(2560, 1440, 30)),
@@ -1971,13 +2005,14 @@ fn format_acknowledgment_treats_transport_rate_as_advisory() {
         request.matches(negotiated_format(2560, 1440, 60)),
         "display-pinned transport acknowledges"
     );
-    let malformed = NegotiatedPipeWireFormat {
-        frame: NegotiatedFormat {
-            width: 2560,
-            height: 1440,
-            format: SpaVideoFormat::Rgba,
+    let malformed = NegotiatedVideoFormat {
+        width: 2560,
+        height: 1440,
+        format: SpaVideoFormat::Rgba,
+        framerate: hypercolor_pipewire_interop::VideoFraction {
+            numerator: 30,
+            denominator: 0,
         },
-        framerate: pipewire::spa::utils::Fraction { num: 30, denom: 0 },
     };
     assert!(!request.matches(malformed), "zero-denominator rate rejects");
     assert!(
@@ -1987,41 +2022,10 @@ fn format_acknowledgment_treats_transport_rate_as_advisory() {
 }
 
 #[test]
-fn pipewire_format_uses_the_shared_scheduler_boundary_without_a_product_cap() {
-    let requested = extent(7680, 4320);
-    let config = CaptureConfig {
-        target_fps: MAX_REPRESENTABLE_CAPTURE_FPS,
-        ..CaptureConfig::default()
-    };
-    let request = PipeWireFormatRequest::new_with_compute_capacity(
-        requested,
-        extent(640, 480),
-        &config,
-        unlimited_compute_capacity(),
-    )
-    .expect("scheduler boundary cadence is admitted");
-
-    assert_eq!(request.extent, requested);
-    assert_eq!(request.target_fps, MAX_REPRESENTABLE_CAPTURE_FPS);
-    let rejected = CaptureConfig {
-        target_fps: MAX_REPRESENTABLE_CAPTURE_FPS + 1,
-        ..CaptureConfig::default()
-    };
-    assert!(
-        PipeWireFormatRequest::new_with_compute_capacity(
-            requested,
-            extent(640, 480),
-            &rejected,
-            unlimited_compute_capacity(),
-        )
-        .is_err()
-    );
-}
-
-#[test]
 fn inactive_wayland_reconfigure_rejects_invalid_cadence_transactionally() {
     let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
     let baseline = input.settings.config_snapshot();
+    let revision = input.settings.values.revision();
     let rejected = CaptureConfig {
         target_fps: MAX_REPRESENTABLE_CAPTURE_FPS + 1,
         ..baseline.clone()
@@ -2033,108 +2037,7 @@ fn inactive_wayland_reconfigure_rejects_invalid_cadence_transactionally() {
 
     assert!(error.to_string().contains("scheduler clock limit"));
     assert_eq!(input.settings.config_snapshot(), baseline);
-}
-
-#[test]
-fn live_processing_config_invalidates_and_rebinds_exact_wayland_demand() {
-    let mut input = WaylandScreenCaptureInput::new(CaptureConfig::default());
-    input
-        .set_screen_capture_demand(active_demand())
-        .expect("test demand activates without starting a portal session");
-    input
-        .settings
-        .session_generation
-        .store(43, Ordering::Release);
-    let mut worker = WaylandAnalysisState::new(
-        Arc::clone(&input.settings),
-        Arc::clone(&input.latest_snapshot),
-        source(43, PhysicalOrigin::default(), extent(1920, 1080)),
-        CaptureConfig::default(),
-        active_demand(),
-    )
-    .expect("test analysis extent allocates");
-    capture_legacy(&mut worker, 4, 2, 7);
-    let demand = RegisteredScreenBranchDemand::new(
-        ScreenPublicationRequest::new(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Surface,
-            ScreenPublicationExecutorRequest::Cpu,
-            ScreenExtentRequest::Native,
-            ScreenAspectPolicy::Contain,
-            Arc::new(ScreenProcessingProfile::default()),
-        ),
-        NonZeroU32::new(60).expect("test cadence is nonzero"),
-    );
-    let initial = input
-        .resolve_screen_publication_branch(&demand)
-        .expect("initial configured branch resolves")
-        .expect("Wayland source owns the configured selector");
-    let initial_revision = input.screen_publication_resolution_revision();
-
-    let next = CaptureConfig {
-        smoothing_alpha: 0.0,
-        scene_cut_threshold: 765.0,
-        letterbox_enabled: true,
-        letterbox_threshold: 0.05,
-        ..CaptureConfig::default()
-    };
-    input
-        .reconfigure(next)
-        .expect("valid live processing controls commit");
-    let rebound = input
-        .resolve_screen_publication_branch(&demand)
-        .expect("changed configured branch resolves")
-        .expect("Wayland source still owns the configured selector");
-
-    assert_eq!(
-        input.screen_publication_resolution_revision(),
-        initial_revision + 1
-    );
-    assert_eq!(rebound.consumer_branch_id(), initial.consumer_branch_id());
-    assert_ne!(
-        rebound.descriptor().processing_profile(),
-        initial.descriptor().processing_profile()
-    );
-    assert!(matches!(
-        rebound.descriptor().processing_profile().content_bars(),
-        ScreenContentBarsPolicy::DetectAndCrop { luminance_threshold }
-            if luminance_threshold.value() == 0.05
-    ));
-    assert!(matches!(
-        rebound.descriptor().processing_profile().smoothing(),
-        ScreenSmoothingPolicy::Frozen {
-            scene_cut: ScreenSceneCutPolicy::MeanAbsoluteDelta { threshold }
-        } if threshold.value() == 1.0
-    ));
-}
-
-#[test]
-fn wayland_analysis_schedule_never_catches_up_in_a_burst() {
-    let settings = settings(17);
-    let latest = Arc::new(Mutex::new(None));
-    let mut state = WaylandAnalysisState::new(
-        settings,
-        latest,
-        source(17, PhysicalOrigin::default(), extent(1920, 1080)),
-        CaptureConfig::default(),
-        active_demand(),
-    )
-    .expect("test analysis state is admitted");
-    let initial_deadline = state.next_analysis_at;
-
-    state
-        .advance_deadline(initial_deadline)
-        .expect("live scheduler deadline fits Instant");
-    assert!(state.next_analysis_at > initial_deadline);
-
-    let late = state.next_analysis_at + Duration::from_secs(1);
-    state
-        .advance_deadline(late)
-        .expect("live scheduler deadline fits Instant");
-    assert!(
-        state.next_analysis_at > late,
-        "lateness must schedule a future interval instead of an immediate burst"
-    );
+    assert_eq!(input.settings.values.revision(), revision);
 }
 
 #[test]
@@ -2207,10 +2110,14 @@ fn stopped_analysis_wait_wakes_and_discards_queued_pixels() {
     let handle = thread::spawn(move || {
         match waiter.wait_for_event(
             Instant::now() + Duration::from_secs(30),
+            Instant::now() + Duration::from_secs(30),
             &AtomicBool::new(false),
         ) {
             Some(AnalysisEvent::Frame(frame)) => Some(frame),
-            Some(AnalysisEvent::Adoption(_) | AnalysisEvent::Exact(_)) | None => None,
+            Some(
+                AnalysisEvent::Adoption(_) | AnalysisEvent::Exact(_) | AnalysisEvent::Diagnostics,
+            )
+            | None => None,
         }
     });
     exchange.stop();
@@ -2241,9 +2148,11 @@ fn analysis_exchange_keeps_the_newest_eligible_frame() {
         );
     }
 
-    let Some(AnalysisEvent::Frame(latest)) =
-        exchange.wait_for_event(Instant::now(), &AtomicBool::new(false))
-    else {
+    let Some(AnalysisEvent::Frame(latest)) = exchange.wait_for_event(
+        Instant::now(),
+        Instant::now() + Duration::from_secs(30),
+        &AtomicBool::new(false),
+    ) else {
         panic!("latest frame is immediately eligible");
     };
     assert_eq!(latest.bytes(), &[3; 4]);
@@ -2265,18 +2174,60 @@ fn analysis_exchange_prioritizes_exact_control_over_ready_pixels() {
     );
     assert!(
         exchange
-            .send_exact(AnalysisExactCommand::Reap { completion: None })
+            .send_exact(CaptureExactCommand::Reap {
+                authority: CaptureSessionAuthority::new(1),
+                completion: None,
+            })
             .is_ok()
     );
 
     assert!(matches!(
-        exchange.wait_for_event(Instant::now(), &AtomicBool::new(false)),
-        Some(AnalysisEvent::Exact(AnalysisExactCommand::Reap { .. }))
+        exchange.wait_for_event(
+            Instant::now(),
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false)
+        ),
+        Some(AnalysisEvent::Exact(CaptureExactCommand::Reap { .. }))
     ));
     assert!(matches!(
-        exchange.wait_for_event(Instant::now(), &AtomicBool::new(false)),
+        exchange.wait_for_event(
+            Instant::now(),
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false)
+        ),
         Some(AnalysisEvent::Frame(_))
     ));
+}
+
+#[test]
+fn analysis_exchange_wakes_for_diagnostics_without_a_frame() {
+    let exchange = AnalysisExchange::default();
+
+    assert!(matches!(
+        exchange.wait_for_event(
+            Instant::now() + Duration::from_secs(30),
+            Instant::now(),
+            &AtomicBool::new(false)
+        ),
+        Some(AnalysisEvent::Diagnostics)
+    ));
+}
+
+#[test]
+fn elapsed_frame_deadline_waits_for_diagnostics_without_spinning() {
+    let now = Instant::now();
+    let elapsed_frame_deadline = now
+        .checked_sub(Duration::from_secs(1))
+        .expect("current instant supports a one-second lookback");
+
+    assert_eq!(
+        super::analysis_wait_timeout(
+            elapsed_frame_deadline,
+            now + Duration::from_millis(750),
+            now,
+        ),
+        Duration::from_millis(750)
+    );
 }
 
 #[test]
@@ -2332,50 +2283,36 @@ fn transitionary_format_fences_decoding_and_discards_queued_pixels() {
 }
 
 #[test]
-fn successful_descriptor_commit_fences_the_previous_publication() {
-    let settings = settings(20);
-    let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
-    let mut analysis = WaylandAnalysisState::new(
-        Arc::clone(&settings),
-        Arc::clone(&latest),
-        source(20, PhysicalOrigin::default(), extent(1920, 1080)),
-        CaptureConfig::default(),
-        active_demand(),
-    )
-    .expect("test analysis extent allocates");
-    let snapshot = capture_legacy(&mut analysis, 2, 1, 4);
-    assert!(settings.publish_snapshot(&latest, snapshot));
-
-    fence_previous_publication(
-        &mut latest
-            .lock()
-            .expect("snapshot mutex is healthy before commit"),
-    );
-
-    assert!(latest.lock().expect("snapshot mutex is healthy").is_none());
-}
-
-#[test]
-fn terminal_session_invalidation_clears_only_its_snapshot() {
+fn terminal_session_invalidation_clears_only_its_epoch() {
     let settings = settings(21);
-    let latest = Arc::new(Mutex::new(None::<CapturedScreenSnapshot>));
+    let latest = Arc::clone(&settings.publication);
     let mut analysis = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::clone(&latest),
         source(21, PhysicalOrigin::default(), extent(1920, 1080)),
         CaptureConfig::default(),
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let snapshot = capture_legacy(&mut analysis, 2, 1, 4);
-    assert!(settings.publish_snapshot(&latest, snapshot));
-    assert!(settings.invalidate_session(&latest, 21));
-    assert!(latest.lock().expect("snapshot mutex is healthy").is_none());
+    capture_raw(&mut analysis, 2, 1, 4);
+    assert!(
+        latest
+            .lock()
+            .expect("activity mutex is healthy")
+            .active()
+            .is_some()
+    );
+    assert!(settings.invalidate_session(21));
+    assert!(
+        latest
+            .lock()
+            .expect("activity mutex is healthy")
+            .active()
+            .is_none()
+    );
 
     let successor_session = settings.begin_session();
     let mut successor = WaylandAnalysisState::new(
         Arc::clone(&settings),
-        Arc::clone(&latest),
         source(
             successor_session,
             PhysicalOrigin::default(),
@@ -2385,10 +2322,15 @@ fn terminal_session_invalidation_clears_only_its_snapshot() {
         active_demand(),
     )
     .expect("test analysis extent allocates");
-    let successor_snapshot = capture_legacy(&mut successor, 2, 1, 5);
-    assert!(settings.publish_snapshot(&latest, successor_snapshot));
-    assert!(!settings.invalidate_session(&latest, 21));
-    assert!(latest.lock().expect("snapshot mutex is healthy").is_some());
+    capture_raw(&mut successor, 2, 1, 5);
+    assert!(!settings.invalidate_session(21));
+    assert!(
+        latest
+            .lock()
+            .expect("activity mutex is healthy")
+            .active()
+            .is_some()
+    );
 }
 
 #[test]
@@ -2407,6 +2349,9 @@ fn callback_metrics_count_copy_and_drop_outcomes() {
             copied_frames: 1,
             dropped_frames: 1,
             copied_bytes: 16,
+            drop_reasons: std::array::from_fn(|index| {
+                u64::from(index == ChunkDropReason::TruncatedChunk.index())
+            }),
         }
     );
 }
@@ -2426,7 +2371,58 @@ fn callback_predecode_failures_are_all_counted() {
         callback.record_drop(reason);
     }
 
-    assert_eq!(metrics.snapshot().dropped_frames, 5);
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.dropped_frames, 5);
+    for reason in [
+        ChunkDropReason::MissingBuffer,
+        ChunkDropReason::MissingPlane,
+        ChunkDropReason::MissingFormat,
+        ChunkDropReason::UnmappedPlane,
+        ChunkDropReason::InvalidChunkBounds,
+    ] {
+        assert_eq!(snapshot.drop_reasons[reason.index()], 1);
+    }
+    assert_eq!(
+        snapshot.drop_reasons.iter().copied().sum::<u64>(),
+        snapshot.dropped_frames
+    );
+}
+
+#[test]
+fn callback_diagnostics_publish_exact_drop_reasons_to_source_status() {
+    let metrics = CaptureCallbackMetrics::default();
+    metrics.record(CopyStats::dropped(ChunkDropReason::InvalidCrop));
+    metrics.record(CopyStats::dropped(ChunkDropReason::InvalidCrop));
+    metrics.record(CopyStats::dropped(ChunkDropReason::InvalidTransform));
+
+    let mut reporter = SourceStatusReporter::new(
+        "wayland:diagnostics",
+        SourceKind::Screen,
+        "wayland_pipewire",
+        true,
+        true,
+        true,
+    );
+    reporter.set_source_graph_generation(1);
+    let writer = reporter
+        .begin_session()
+        .expect("diagnostics session should begin")
+        .expect("manager generation should create a diagnostics session");
+    assert!(writer.publish_status_diagnostics(Some(metrics.snapshot().diagnostics())));
+
+    let status = reporter.handle().snapshot();
+    let diagnostics = status
+        .diagnostics
+        .as_ref()
+        .expect("Wayland callback diagnostics should be visible in source status");
+    assert_eq!(diagnostics.schema(), "wayland.pipewire.capture");
+    assert_eq!(diagnostics.payload()["dropped_frames"], 3);
+    assert_eq!(diagnostics.payload()["drop_reasons"]["invalid_crop"], 2);
+    assert_eq!(
+        diagnostics.payload()["drop_reasons"]["invalid_transform"],
+        1
+    );
+    assert_eq!(diagnostics.payload()["drop_reasons"]["missing_buffer"], 0);
 }
 
 #[test]

@@ -1,13 +1,16 @@
 use std::path::Path;
 
 use hypercolor_app::supervisor::{
-    DEFAULT_DAEMON_BIND, SYSTEMD_USER_SERVICE, SupervisorState, SystemdUserServicePlan,
-    SystemdUserServiceProbe, bind_from_daemon_url, build_daemon_command, daemon_executable_name,
-    daemon_path_candidates, health_url, is_terminal_daemon_exit_code, macos_app_resource_dir,
-    restart_backoff, sibling_daemon_path, sibling_ui_dir, startup_retry_delay,
-    systemctl_is_active_output, systemctl_is_enabled_output, systemd_user_service_plan,
-    target_triple_candidates, tauri_sidecar_daemon_name, ui_dir_candidates,
+    DEFAULT_DAEMON_BIND, DaemonCommand, HoldReason, LauncherPlan, LauncherProbe, OwnerPreference,
+    SYSTEMD_USER_SERVICE, SupervisorState, SystemdUserServiceProbe, bind_from_daemon_url,
+    build_daemon_command, daemon_executable_name, daemon_path_candidates, health_url,
+    is_terminal_daemon_exit_code, launcher_plan, macos_app_resource_dir, restart_backoff,
+    sibling_daemon_path, sibling_ui_dir, startup_retry_delay, systemctl_is_active_output,
+    systemctl_is_enabled_output, target_triple_candidates, tauri_sidecar_daemon_name,
+    ui_dir_candidates,
 };
+use hypercolor_app::support::DaemonLauncherStatus;
+use hypercolor_types::service::ServiceIdentity;
 use std::time::Duration;
 use url::Url;
 
@@ -203,10 +206,13 @@ fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
     assert_eq!(
         command.environment,
         [
-            #[cfg(unix)]
             (
                 "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
                 std::process::id().to_string(),
+            ),
+            (
+                "HYPERCOLOR_SERVICE_IDENTITY".to_owned(),
+                "supervised_child".to_owned(),
             ),
             #[cfg(target_os = "macos")]
             (
@@ -241,10 +247,13 @@ fn build_daemon_command_allows_missing_asset_dirs() {
     assert_eq!(
         command.environment,
         [
-            #[cfg(unix)]
             (
                 "HYPERCOLOR_SUPERVISED_PARENT_PID".to_owned(),
                 std::process::id().to_string(),
+            ),
+            (
+                "HYPERCOLOR_SERVICE_IDENTITY".to_owned(),
+                "supervised_child".to_owned(),
             ),
             #[cfg(target_os = "macos")]
             (
@@ -344,19 +353,221 @@ fn systemctl_enabled_parser_accepts_user_managed_enabled_states() {
     assert!(!systemctl_is_enabled_output("masked\n"));
 }
 
+fn endpoint() -> Url {
+    Url::parse("http://127.0.0.1:9420/").expect("endpoint parses")
+}
+
+fn spawn_command() -> DaemonCommand {
+    build_daemon_command(
+        Path::new("hypercolor-daemon"),
+        DEFAULT_DAEMON_BIND,
+        None,
+        None,
+    )
+}
+
+fn plan(probe: LauncherProbe, preference: OwnerPreference) -> LauncherPlan {
+    launcher_plan(&probe, &preference, &endpoint(), spawn_command())
+}
+
 #[test]
-fn systemd_user_service_plan_prefers_systemd_when_available() {
+fn systemd_probe_folds_into_the_launcher_probe() {
     assert_eq!(
-        systemd_user_service_plan(SystemdUserServiceProbe::Active),
-        SystemdUserServicePlan::Reuse
+        LauncherProbe::from(SystemdUserServiceProbe::Active),
+        LauncherProbe::online(ServiceIdentity::systemd_user())
     );
     assert_eq!(
-        systemd_user_service_plan(SystemdUserServiceProbe::EnabledInactive),
-        SystemdUserServicePlan::Start
+        LauncherProbe::from(SystemdUserServiceProbe::EnabledInactive),
+        LauncherProbe::startable(ServiceIdentity::systemd_user())
     );
     assert_eq!(
-        systemd_user_service_plan(SystemdUserServiceProbe::Unavailable),
-        SystemdUserServicePlan::SpawnChild
+        LauncherProbe::from(SystemdUserServiceProbe::Unavailable),
+        LauncherProbe::NOTHING
+    );
+}
+
+#[test]
+fn scm_status_folds_into_the_launcher_probe_with_a_stopped_start_arm() {
+    let running = DaemonLauncherStatus {
+        identity: Some(ServiceIdentity::windows_scm()),
+        online: true,
+        reuse_recommended: true,
+        state: Some("RUNNING".to_owned()),
+    };
+    assert_eq!(
+        LauncherProbe::from_launcher_status(&running),
+        Some(LauncherProbe::online(ServiceIdentity::windows_scm()))
+    );
+    let stopped = DaemonLauncherStatus {
+        identity: Some(ServiceIdentity::windows_scm()),
+        online: false,
+        reuse_recommended: false,
+        state: Some("STOPPED".to_owned()),
+    };
+    assert_eq!(
+        LauncherProbe::from_launcher_status(&stopped),
+        Some(LauncherProbe::startable(ServiceIdentity::windows_scm()))
+    );
+    assert_eq!(
+        LauncherProbe::from_launcher_status(&DaemonLauncherStatus::default()),
+        None
+    );
+}
+
+#[test]
+fn flexible_plan_reuses_starts_then_spawns_on_every_platform() {
+    for identity in [
+        ServiceIdentity::systemd_user(),
+        ServiceIdentity::systemd_system(),
+        ServiceIdentity::windows_scm(),
+        ServiceIdentity::launchd_direct(),
+        ServiceIdentity::homebrew(),
+    ] {
+        assert_eq!(
+            plan(
+                LauncherProbe::online(identity.clone()),
+                OwnerPreference::Flexible
+            ),
+            LauncherPlan::Reuse {
+                identity: identity.clone(),
+                endpoint: endpoint(),
+            },
+            "{identity}"
+        );
+        assert_eq!(
+            plan(
+                LauncherProbe::startable(identity.clone()),
+                OwnerPreference::Flexible
+            ),
+            LauncherPlan::Start {
+                identity: identity.clone(),
+                unit: identity
+                    .unit
+                    .clone()
+                    .expect("managed identities carry a unit"),
+            },
+            "{identity}"
+        );
+        assert_eq!(
+            plan(
+                LauncherProbe::offline(identity.clone()),
+                OwnerPreference::Flexible
+            ),
+            LauncherPlan::SpawnChild {
+                command: spawn_command()
+            },
+            "{identity}"
+        );
+    }
+    // An unidentified daemon answering on the endpoint is reused as standalone.
+    assert_eq!(
+        plan(
+            LauncherProbe::online(ServiceIdentity::STANDALONE),
+            OwnerPreference::Flexible
+        ),
+        LauncherPlan::Reuse {
+            identity: ServiceIdentity::STANDALONE,
+            endpoint: endpoint(),
+        }
+    );
+    assert_eq!(
+        plan(LauncherProbe::NOTHING, OwnerPreference::Flexible),
+        LauncherPlan::SpawnChild {
+            command: spawn_command()
+        }
+    );
+    // A startable launcher without a unit label cannot be addressed.
+    let unit_less = ServiceIdentity {
+        unit: None,
+        ..ServiceIdentity::systemd_user()
+    };
+    assert_eq!(
+        plan(
+            LauncherProbe::startable(unit_less),
+            OwnerPreference::Flexible
+        ),
+        LauncherPlan::SpawnChild {
+            command: spawn_command()
+        }
+    );
+}
+
+#[test]
+fn selected_owner_never_spawns_a_child() {
+    for selected in [
+        ServiceIdentity::launchd_direct(),
+        ServiceIdentity::homebrew(),
+    ] {
+        assert_eq!(
+            plan(
+                LauncherProbe::online(selected.clone()),
+                OwnerPreference::Selected(selected.clone())
+            ),
+            LauncherPlan::Reuse {
+                identity: selected.clone(),
+                endpoint: endpoint(),
+            }
+        );
+        assert_eq!(
+            plan(
+                LauncherProbe::offline(selected.clone()),
+                OwnerPreference::Selected(selected.clone())
+            ),
+            LauncherPlan::Hold {
+                identity: selected.clone(),
+                reason: HoldReason::SelectedOwnerOffline,
+            }
+        );
+        // Startable is not enough: the selected owner holds until an explicit
+        // remedy starts it.
+        assert_eq!(
+            plan(
+                LauncherProbe::startable(selected.clone()),
+                OwnerPreference::Selected(selected.clone())
+            ),
+            LauncherPlan::Hold {
+                identity: selected.clone(),
+                reason: HoldReason::SelectedOwnerOffline,
+            }
+        );
+        assert_eq!(
+            plan(
+                LauncherProbe::online(ServiceIdentity::STANDALONE),
+                OwnerPreference::Selected(selected.clone())
+            ),
+            LauncherPlan::Hold {
+                identity: selected.clone(),
+                reason: HoldReason::SelectedOwnerDisplaced,
+            }
+        );
+        assert_eq!(
+            plan(
+                LauncherProbe::NOTHING,
+                OwnerPreference::Selected(selected.clone())
+            ),
+            LauncherPlan::Hold {
+                identity: selected,
+                reason: HoldReason::SelectedOwnerOffline,
+            }
+        );
+    }
+}
+
+#[test]
+fn selected_owner_matches_on_launcher_not_unit_label() {
+    let relabelled = ServiceIdentity {
+        unit: Some("homebrew.mxcl.hypercolor-renamed".to_owned()),
+        ..ServiceIdentity::homebrew()
+    };
+    assert_eq!(
+        plan(
+            LauncherProbe::online(relabelled.clone()),
+            OwnerPreference::Selected(ServiceIdentity::homebrew())
+        ),
+        LauncherPlan::Reuse {
+            identity: relabelled,
+            endpoint: endpoint(),
+        }
     );
 }
 

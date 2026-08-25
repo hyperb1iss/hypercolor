@@ -4,33 +4,38 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    ArmedScreenPlan, CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureDynamicRange,
-    CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat,
-    CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    CommittedScreenPlan, CpuExactReductionAdmissionError, CpuExactReductionComputeCapacity,
-    CpuExactReductionWorkPlan, InputPublicationDemandRevision, KnownCaptureColorimetry,
-    PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi, RegisteredScreenBranchDemand,
-    ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor, ResolvedScreenSource,
-    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAnalysisResourcePlan,
-    ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBranchDeliveryLifecycle,
-    ScreenBranchPayload, ScreenByteAdmissionCoordinator, ScreenCaptureBackend, ScreenCaptureInput,
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, CaptureEpoch, CaptureSourceId, CpuExactReductionAdmissionError,
+    CpuExactReductionComputeCapacity, CpuExactReductionWorkPlan, PixelExtent, PixelRect,
+    ScreenAnalysisResourcePlan, ScreenByteAdmissionCoordinator, ScreenCaptureInput,
+};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureGeometry,
+    CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar, CaptureRotation,
+    CaptureTransferFunction, KnownCaptureColorimetry, PhysicalOrigin, PlatformGpuApi,
+    ScreenBranchPayload, ScreenPublicationColorimetry, ScreenPublicationFreshness,
+    ScreenPublicationHealth, ScreenPublicationMetadata, ScreenSurfacePayload, ScreenZonesPayload,
+    SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    ArmedScreenPlan, CommittedScreenPlan, InputPublicationDemandRevision,
+    RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
+    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenBranchDeliveryLifecycle, ScreenCaptureBackend,
     ScreenCapturePlan, ScreenColorTransformCapabilities, ScreenColorTuning,
-    ScreenCompatibilitySelection, ScreenContentBarsPolicy, ScreenContinuityError,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExactResource, ScreenExactResourceLedger,
-    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenGridPolicy, ScreenHdrPolicy,
-    ScreenInputGraphGeneration, ScreenLetterboxFill, ScreenNativeExecutionTarget,
-    ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder,
-    ScreenPlanError, ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
-    ScreenPublicationColorimetry, ScreenPublicationError, ScreenPublicationExecutor,
-    ScreenPublicationExecutorRequest, ScreenPublicationFreshness, ScreenPublicationHealth,
-    ScreenPublicationHubError, ScreenPublicationKind, ScreenPublicationMetadata,
-    ScreenPublicationRequest, ScreenPublicationResidency, ScreenPublicationSlotPolicy,
-    ScreenReductionFilter, ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind,
-    ScreenResourceLifetime, ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenSurfacePayload, ScreenTargetColorimetry, ScreenToneMapOperator,
-    ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy, ScreenWorkerBinding,
-    ScreenWorkerBindingState, ScreenWorkerPreparationTicket, ScreenZonesPayload, SourceScale,
+    ScreenContentBarsPolicy, ScreenContinuityError, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExactResource, ScreenExactResourceLedger, ScreenExecutorColorCapabilities,
+    ScreenExtentRequest, ScreenGridPolicy, ScreenHdrPolicy, ScreenInputGraphGeneration,
+    ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+    ScreenPhysicalGpuDeviceIdentity, ScreenPlanBuilder, ScreenPlanError, ScreenProcessingProfile,
+    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationError,
+    ScreenPublicationExecutor, ScreenPublicationExecutorRequest, ScreenPublicationHubError,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency,
+    ScreenPublicationSlotPolicy, ScreenReductionFilter, ScreenRequiredResourceMinimum,
+    ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenTargetColorimetry,
+    ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy, ScreenUpscalePolicy,
+    ScreenWorkerBinding, ScreenWorkerBindingState, ScreenWorkerPreparationTicket,
 };
 
 #[path = "support/native_target.rs"]
@@ -502,39 +507,25 @@ fn publication_metadata(
 fn commit_demands(
     builder: &mut ScreenPlanBuilder,
     demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-    compatibility_descriptor: Option<&ResolvedScreenPublicationDescriptor>,
 ) -> Result<ScreenCapturePlan, ScreenPlanError> {
-    let compatibility = compatibility_descriptor
-        .map(|descriptor| ScreenCompatibilitySelection::try_new(descriptor.clone(), None))
-        .transpose()?;
-    commit_demands_with_compatibility(builder, demands, compatibility.as_ref())
-}
-
-fn commit_demands_with_compatibility(
-    builder: &mut ScreenPlanBuilder,
-    demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-    compatibility: Option<&ScreenCompatibilitySelection>,
-) -> Result<ScreenCapturePlan, ScreenPlanError> {
-    commit_demands_outcome(builder, demands, compatibility).map(reclaim_committed)
+    commit_demands_outcome(builder, demands).map(reclaim_committed)
 }
 
 fn commit_demands_with_retirement(
     builder: &mut ScreenPlanBuilder,
     demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
 ) -> Result<CommittedScreenPlan, ScreenPlanError> {
-    commit_demands_outcome(builder, demands, None)
+    commit_demands_outcome(builder, demands)
 }
 
 fn commit_demands_outcome(
     builder: &mut ScreenPlanBuilder,
     demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-    compatibility: Option<&ScreenCompatibilitySelection>,
 ) -> Result<CommittedScreenPlan, ScreenPlanError> {
     let graph_generation = ScreenInputGraphGeneration::new(1);
     let demand_revision = next_demand_revision(builder);
     let mut preparing = builder.prepare(
         demands,
-        compatibility,
         demand_revision,
         graph_generation,
         ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -590,7 +581,6 @@ fn shared_admission_moves_from_staged_to_physical_lifetimes() {
     let preparing = builder
         .prepare(
             [demand.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -601,7 +591,7 @@ fn shared_admission_moves_from_staged_to_physical_lifetimes() {
     drop(preparing.abort());
     assert_eq!(coordinator.snapshot().reserved_bytes(), 0);
 
-    commit_demands(&mut builder, [demand], None).expect("candidate should commit");
+    commit_demands(&mut builder, [demand]).expect("candidate should commit");
     let committed_bytes = coordinator.snapshot().reserved_bytes();
     assert!(committed_bytes > 0);
 
@@ -640,7 +630,6 @@ fn invalid_worker_acknowledgement_retains_its_combined_quote() {
     let mut preparing = builder
         .prepare(
             [demand],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -688,7 +677,6 @@ fn analyzer_and_plan_preparation_race_on_one_shared_fence() {
     let sizing = sizing_builder
         .prepare(
             [demand.clone()],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -743,7 +731,6 @@ fn analyzer_and_plan_preparation_race_on_one_shared_fence() {
         plan_start.wait();
         let result = builder.prepare(
             [demand],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -768,7 +755,6 @@ fn arm_demands(
     let mut preparing = builder
         .prepare(
             demands,
-            None,
             demand_revision,
             graph_generation,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -828,7 +814,6 @@ fn ultrawide_and_portrait_requests_never_form_a_synthetic_union() {
     let plan = commit_demands(
         &mut builder,
         [resolve(&ultrawide, &source), resolve(&portrait, &source)],
-        None,
     )
     .expect("independent plan resolves");
     let outputs: Vec<_> = plan
@@ -871,7 +856,6 @@ fn selectors_are_control_inputs_while_exact_epochs_are_publication_identity() {
             resolve(&configured_demand, &configured),
             resolve(&primary_demand, &primary),
         ],
-        None,
     )
     .expect("equal resolved epochs group");
 
@@ -886,7 +870,6 @@ fn selectors_are_control_inputs_while_exact_epochs_are_publication_identity() {
             resolve(&configured_demand, &configured),
             resolve(&primary_demand, &different),
         ],
-        None,
     )
     .expect("different exact source ids remain independent");
     assert_eq!(independent.branches().len(), 2);
@@ -1114,7 +1097,6 @@ fn surface_and_zone_branches_are_independent_without_grid_driven_upscale() {
             resolve(&zones, &source),
             resolve(&finer_zones, &source),
         ],
-        None,
     )
     .expect("surface and zones resolve independently");
 
@@ -1265,7 +1247,7 @@ fn every_processing_profile_field_participates_in_exact_grouping() {
         .collect::<Vec<_>>();
     let expected_count = demands.len();
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, demands, None).expect("profiles remain independent");
+    let plan = commit_demands(&mut builder, demands).expect("profiles remain independent");
 
     assert_eq!(plan.branches().len(), expected_count);
 }
@@ -1438,35 +1420,35 @@ fn complete_source_and_output_fields_prevent_false_sharing() {
     transfer_function.transfer_function = CaptureTransferFunction::Linear;
     let mut backend = base.clone();
     backend.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::WaylandPipeWire,
+        ScreenCaptureBackend::PipeWire,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         1,
         1,
     );
     let mut api = base.clone();
     api.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenCaptureBackend::DesktopDuplication,
         ScreenResourceApi::Cpu,
         1,
         1,
     );
     let mut platform_api = base.clone();
     platform_api.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenCaptureBackend::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Vulkan),
         1,
         1,
     );
     let mut device_generation = base.clone();
     device_generation.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenCaptureBackend::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         2,
         1,
     );
     let mut resource_generation = base.clone();
     resource_generation.resources = ScreenBackendResourceIdentity::new(
-        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenCaptureBackend::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         1,
         2,
@@ -1558,8 +1540,8 @@ fn complete_source_and_output_fields_prevent_false_sharing() {
 
     let expected_count = demands.len();
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, demands, None)
-        .expect("complete descriptors remain independent");
+    let plan =
+        commit_demands(&mut builder, demands).expect("complete descriptors remain independent");
     assert_eq!(plan.branches().len(), expected_count);
     assert!(plan.branches().iter().any(|branch| {
         branch.descriptor().aspect() == ScreenAspectPolicy::Cover
@@ -1642,12 +1624,11 @@ fn grouped_matrix_matches_independent_resolution_in_deterministic_order() {
     expected.dedup();
 
     let mut forward_builder = ScreenPlanBuilder::new();
-    let forward = commit_demands(&mut forward_builder, demands.clone(), None)
-        .expect("forward matrix resolves");
+    let forward =
+        commit_demands(&mut forward_builder, demands.clone()).expect("forward matrix resolves");
     demands.reverse();
     let mut reverse_builder = ScreenPlanBuilder::new();
-    let reverse =
-        commit_demands(&mut reverse_builder, demands, None).expect("reverse matrix resolves");
+    let reverse = commit_demands(&mut reverse_builder, demands).expect("reverse matrix resolves");
     let actual: Vec<_> = forward
         .branches()
         .iter()
@@ -1718,7 +1699,7 @@ fn physical_reductions_share_only_complete_compatible_work() {
     ]
     .map(|demand| resolve(&demand, &source));
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, demands, None).expect("compatible work groups");
+    let plan = commit_demands(&mut builder, demands).expect("compatible work groups");
 
     assert_eq!(plan.branches().len(), 4);
     assert_eq!(plan.physical_reductions().len(), 3);
@@ -1778,7 +1759,6 @@ fn admission_counts_shared_physical_work_and_writable_publication_slots() {
     let preparing = builder
         .prepare(
             [surface, zones],
-            None,
             revision,
             ScreenInputGraphGeneration::new(7),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -1802,7 +1782,7 @@ fn admission_counts_shared_physical_work_and_writable_publication_slots() {
 fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
     let mut config = source_config_parts(7680, 4320);
     config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenCaptureBackend::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         gpu_device(),
         9,
@@ -1832,7 +1812,6 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
     let preparing = builder
         .prepare(
             [surface],
-            None,
             revision,
             ScreenInputGraphGeneration::new(11),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -1850,7 +1829,7 @@ fn gpu_surface_admission_does_not_reserve_cpu_publication_planes() {
 fn executor_identity_separates_physical_sharing_and_source_deltas() {
     let mut config = source_config_parts(3840, 2160);
     config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenCaptureBackend::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         gpu_device(),
         9,
@@ -1904,7 +1883,6 @@ fn executor_identity_separates_physical_sharing_and_source_deltas() {
     let grouped = grouped_builder
         .prepare(
             [cpu.clone(), native.clone()],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -1913,12 +1891,11 @@ fn executor_identity_separates_physical_sharing_and_source_deltas() {
     assert_eq!(grouped.candidate_plan().physical_reductions().len(), 2);
 
     let mut delta_builder = ScreenPlanBuilder::new();
-    commit_demands(&mut delta_builder, [cpu], None).expect("CPU branch becomes active");
+    commit_demands(&mut delta_builder, [cpu]).expect("CPU branch becomes active");
     let revision = next_demand_revision(&delta_builder);
     let mut preparing = delta_builder
         .prepare(
             [native],
-            None,
             revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -1971,14 +1948,13 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
         ScreenPublicationSlotPolicy::default(),
         coordinator.clone(),
     );
-    commit_demands(&mut builder, [surface.clone()], None).expect("surface becomes active");
+    commit_demands(&mut builder, [surface.clone()]).expect("surface becomes active");
     let active_reserved_bytes = coordinator.snapshot().reserved_bytes();
 
     let revision = next_demand_revision(&builder);
     let unchanged = builder
         .prepare(
             [surface],
-            None,
             revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -2008,7 +1984,6 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
     let replacement = builder
         .prepare(
             [zones.clone()],
-            None,
             revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(144, 276),
@@ -2043,7 +2018,6 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
     assert!(matches!(
         builder.prepare(
             [zones.clone()],
-            None,
             revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(144, 275),
@@ -2064,7 +2038,6 @@ fn unchanged_and_replacement_admission_use_exact_transition_overlap() {
     assert!(matches!(
         builder.prepare(
             [zones],
-            None,
             revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(131, 276),
@@ -2101,7 +2074,7 @@ fn equal_demand_revision_allows_source_epoch_reconciliation() {
     );
     let surface_v1 = resolve(&request, &source_v1);
     let mut builder = ScreenPlanBuilder::new();
-    commit_demands(&mut builder, [surface_v1], None).expect("initial source epoch commits");
+    commit_demands(&mut builder, [surface_v1]).expect("initial source epoch commits");
     let revision = builder.current().demand_revision();
     let generation = builder.current().generation();
 
@@ -2117,7 +2090,6 @@ fn equal_demand_revision_allows_source_epoch_reconciliation() {
     let mut preparing = builder
         .prepare(
             [surface_v2.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -2159,7 +2131,6 @@ fn equal_demand_revision_allows_source_epoch_reconciliation() {
     let preparing = builder
         .prepare(
             [surface_v2.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -2183,7 +2154,6 @@ fn equal_demand_revision_allows_source_epoch_reconciliation() {
     assert!(matches!(
         builder.prepare(
             [surface_v2],
-            None,
             InputPublicationDemandRevision::default(),
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -2221,7 +2191,6 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
         let error = builder
             .prepare(
                 [surface.clone()],
-                None,
                 revision,
                 ScreenInputGraphGeneration::new(1),
                 capacity,
@@ -2265,7 +2234,6 @@ fn admission_reports_explicit_budget_backend_and_arithmetic_failures() {
     let error = builder
         .prepare(
             [maximum_surface.clone()],
-            None,
             revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -2316,14 +2284,13 @@ fn preparation_wait_arm_and_abort_never_replace_the_active_plan() {
         &source,
     );
     let mut builder = ScreenPlanBuilder::new();
-    commit_demands(&mut builder, [surface], None).expect("surface becomes active");
+    commit_demands(&mut builder, [surface]).expect("surface becomes active");
     let active = builder.current().clone();
     let graph = ScreenInputGraphGeneration::new(17);
     let revision = next_demand_revision(&builder);
     let preparing = builder
         .prepare(
             [zones],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -2371,10 +2338,10 @@ fn worker_tokens_are_candidate_transaction_source_and_nonce_bound() {
     let mut builder = ScreenPlanBuilder::new();
     let revision = next_demand_revision(&builder);
     let mut target = builder
-        .prepare([demand_a.clone()], None, revision, graph, capacity)
+        .prepare([demand_a.clone()], revision, graph, capacity)
         .expect("target prepares");
     let mut foreign_candidate = builder
-        .prepare([demand_a, demand_b], None, revision, graph, capacity)
+        .prepare([demand_a, demand_b], revision, graph, capacity)
         .expect("foreign candidate prepares");
     assert_eq!(
         target.candidate_plan().generation(),
@@ -2430,10 +2397,10 @@ fn resource_lifetimes_are_exact_and_ticket_bound_without_arming_on_failure() {
     let hub = builder.publication_hub();
     let revision = next_demand_revision(&builder);
     let mut target = builder
-        .prepare([demand.clone()], None, revision, graph, capacity)
+        .prepare([demand.clone()], revision, graph, capacity)
         .expect("target prepares");
     let mut foreign = builder
-        .prepare([demand], None, revision, graph, capacity)
+        .prepare([demand], revision, graph, capacity)
         .expect("foreign candidate prepares");
     let ticket = target
         .worker_ticket(&source_id("display-a"))
@@ -2528,7 +2495,6 @@ fn exact_worker_attestation_requires_minimums_and_counts_disjoint_extras() {
     let mut preparing = builder
         .prepare(
             [surface],
-            None,
             revision,
             ScreenInputGraphGeneration::new(3),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -2817,7 +2783,7 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
         ScreenPublicationSlotPolicy::default(),
         coordinator.clone(),
     );
-    commit_demands(&mut builder, [surface], None).expect("surface becomes active");
+    commit_demands(&mut builder, [surface]).expect("surface becomes active");
     let active_reserved_bytes = coordinator.snapshot().reserved_bytes();
     let active = builder.current().clone();
     let graph = ScreenInputGraphGeneration::new(9);
@@ -2826,7 +2792,6 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
     let mut preparing = builder
         .prepare(
             [zones.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(147, 292),
@@ -2864,7 +2829,6 @@ fn exact_worker_ledgers_gate_arming_and_survive_explicit_abort() {
     let mut preparing = builder
         .prepare(
             [zones],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(148, 291),
@@ -2961,7 +2925,6 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
     let mut preparing = builder
         .prepare(
             [surface.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3036,7 +2999,6 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
     let failure = builder
         .prepare(
             [zones.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, 325),
@@ -3057,7 +3019,6 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
     let mut preparing = builder
         .prepare(
             [zones],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3086,7 +3047,6 @@ fn committed_exact_resources_drive_future_overlap_and_retention() {
     let mut preparing = builder
         .prepare(
             [surface],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3131,7 +3091,6 @@ fn same_scope_worker_allocations_retire_independently_by_identity() {
     let mut preparing = builder
         .prepare(
             [surface],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3227,7 +3186,6 @@ fn same_scope_worker_allocations_retire_independently_by_identity() {
     let preparing = builder
         .prepare(
             std::iter::empty(),
-            None,
             pressure_revision,
             graph,
             ScreenAdmissionCapacity::new(0, 7),
@@ -3240,7 +3198,6 @@ fn same_scope_worker_allocations_retire_independently_by_identity() {
     assert!(matches!(
         builder.prepare(
             std::iter::empty(),
-            None,
             pressure_revision,
             graph,
             ScreenAdmissionCapacity::new(6, 6),
@@ -3259,7 +3216,6 @@ fn same_scope_worker_allocations_retire_independently_by_identity() {
     let preparing = builder
         .prepare(
             std::iter::empty(),
-            None,
             recovered_revision,
             graph,
             ScreenAdmissionCapacity::new(0, 0),
@@ -3297,7 +3253,7 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
         &source,
     );
     let mut builder = ScreenPlanBuilder::new();
-    commit_demands(&mut builder, [surface], None).expect("surface becomes active");
+    commit_demands(&mut builder, [surface]).expect("surface becomes active");
     let hub = builder.publication_hub();
     let active = builder.current().clone();
     let graph = ScreenInputGraphGeneration::new(11);
@@ -3306,7 +3262,6 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
     let preparing = builder
         .prepare(
             [zones.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3331,7 +3286,6 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
     let preparing = builder
         .prepare(
             [zones.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3356,7 +3310,6 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
     let preparing = builder
         .prepare(
             [zones.clone()],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3378,7 +3331,6 @@ fn arm_and_commit_recheck_plan_and_graph_generation_fences() {
     let mut preparing = builder
         .prepare(
             [zones],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -3453,7 +3405,7 @@ fn concurrent_armed_candidates_cannot_commit_over_a_newer_plan() {
         &source,
     );
     let mut builder = ScreenPlanBuilder::new();
-    commit_demands(&mut builder, [surface], None).expect("surface becomes active");
+    commit_demands(&mut builder, [surface]).expect("surface becomes active");
     let original = builder.current().clone();
     let graph = ScreenInputGraphGeneration::new(21);
     let first = arm_demands(&mut builder, [zones_two_by_two], graph);
@@ -3504,7 +3456,7 @@ fn matching_lease_observation_couples_branch_to_one_generation() {
     let descriptor = demand.descriptor().clone();
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    let plan = commit_demands(&mut builder, [demand], None).expect("screen branch commits");
+    let plan = commit_demands(&mut builder, [demand]).expect("screen branch commits");
 
     let (generation, lease) = hub.observe_matching_lease(|candidate| candidate == &descriptor);
     assert_eq!(generation, plan.generation());
@@ -3534,7 +3486,7 @@ fn screen_branch_observer_preserves_continuity_for_retained_route() {
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
     let observer = registration.observer(&hub);
-    let initial_plan = commit_demands(&mut builder, [resolve(&registration, &source)], None)
+    let initial_plan = commit_demands(&mut builder, [resolve(&registration, &source)])
         .expect("initial registration route commits");
     let initial = observer.snapshot();
     let initial_revision = initial
@@ -3557,7 +3509,7 @@ fn screen_branch_observer_preserves_continuity_for_retained_route() {
         non_zero(60),
     );
     let faster_plan =
-        commit_demands(&mut builder, [resolve(&faster, &source)], None).expect("cadence commits");
+        commit_demands(&mut builder, [resolve(&faster, &source)]).expect("cadence commits");
     let retained = observer.snapshot();
     assert!(faster_plan.generation() > initial_plan.generation());
     assert_eq!(retained.plan_generation(), faster_plan.generation());
@@ -3600,7 +3552,6 @@ fn screen_branch_observer_revisions_change_only_with_their_routes() {
     commit_demands(
         &mut builder,
         [resolve(&surface, &source), resolve(&zones, &source)],
-        None,
     )
     .expect("independent registration routes commit");
     let surface_revision = surface_observer
@@ -3632,7 +3583,6 @@ fn screen_branch_observer_revisions_change_only_with_their_routes() {
     let changed_plan = commit_demands(
         &mut builder,
         [resolve(&changed_surface, &source), resolve(&zones, &source)],
-        None,
     )
     .expect("one registration changes its exact route");
     let changed_surface = surface_observer.snapshot();
@@ -3667,7 +3617,7 @@ fn screen_branch_observer_sees_live_capture_profile_commit() {
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
     let observer = registration.observer(&hub);
-    commit_demands(&mut builder, [resolve(&registration, &source)], None)
+    commit_demands(&mut builder, [resolve(&registration, &source)])
         .expect("initial configured profile commits");
     let initial_revision = observer
         .snapshot()
@@ -3697,7 +3647,7 @@ fn screen_branch_observer_sees_live_capture_profile_commit() {
         ),
         registration.requested_hz(),
     );
-    let changed_plan = commit_demands(&mut builder, [resolve(&changed, &source)], None)
+    let changed_plan = commit_demands(&mut builder, [resolve(&changed, &source)])
         .expect("changed configured profile commits");
     let observed = observer.snapshot();
 
@@ -3736,7 +3686,7 @@ async fn screen_branch_observer_notifies_plan_swaps() {
     let mut observer = registration.observer(&hub);
     assert!(observer.snapshot().lease().is_none());
 
-    let initial_plan = commit_demands(&mut builder, [resolve(&registration, &source)], None)
+    let initial_plan = commit_demands(&mut builder, [resolve(&registration, &source)])
         .expect("initial observer route commits");
     let initial = tokio::time::timeout(Duration::from_secs(1), observer.changed())
         .await
@@ -3751,7 +3701,7 @@ async fn screen_branch_observer_notifies_plan_swaps() {
         non_zero(60),
     );
     let faster_plan =
-        commit_demands(&mut builder, [resolve(&faster, &source)], None).expect("cadence commits");
+        commit_demands(&mut builder, [resolve(&faster, &source)]).expect("cadence commits");
     let faster = tokio::time::timeout(Duration::from_secs(1), observer.changed())
         .await
         .expect("replacement plan notification arrives")
@@ -3774,11 +3724,11 @@ fn screen_branch_observer_reports_removed_routes_without_pinning_retirement() {
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
     let observer = registration.observer(&hub);
-    commit_demands(&mut builder, [resolve(&registration, &source)], None)
+    commit_demands(&mut builder, [resolve(&registration, &source)])
         .expect("observer route commits");
     assert!(observer.snapshot().lease().is_some());
 
-    let empty = commit_demands(&mut builder, [], None).expect("registration removal commits");
+    let empty = commit_demands(&mut builder, []).expect("registration removal commits");
     let removed = observer.snapshot();
     assert_eq!(removed.plan_generation(), empty.generation());
     assert!(removed.branch_revision().is_none());
@@ -3818,7 +3768,6 @@ fn duplicate_screen_consumer_branch_identity_is_rejected() {
         commit_demands(
             &mut builder,
             [resolve(&surface, &source), resolve(&zones, &source)],
-            None,
         ),
         Err(ScreenPlanError::DuplicateConsumerBranchId {
             consumer_branch_id,
@@ -3859,7 +3808,7 @@ fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
     let new = new_demand.descriptor().clone();
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [old_demand.clone()], None).expect("old branch commits");
+    commit_demands(&mut builder, [old_demand.clone()]).expect("old branch commits");
     let old_binding = binding_for(&builder, &source_id("display-a"));
     let old_publisher = hub
         .publisher(&old, &old_binding)
@@ -3891,7 +3840,7 @@ fn continuity_transition_retains_old_until_exact_new_branch_is_live() {
         .expect("continuity starts from hub-proven liveness");
     assert!(Arc::ptr_eq(old_lease.publication(), &old_snapshot));
 
-    let overlap = commit_demands(&mut builder, [old_demand, new_demand.clone()], None)
+    let overlap = commit_demands(&mut builder, [old_demand, new_demand.clone()])
         .expect("overlap plan contains old and new");
     assert_eq!(hub.generation(), overlap.generation());
     assert_eq!(old_binding.state(), ScreenWorkerBindingState::Active);
@@ -4085,7 +4034,7 @@ fn continuity_rejects_a_staged_branch_committed_away_before_activation() {
     let staged_descriptor = staged_demand.descriptor().clone();
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [active_demand.clone()], None).expect("active branch commits");
+    commit_demands(&mut builder, [active_demand.clone()]).expect("active branch commits");
     let active_binding = binding_for(&builder, &source_id("display-a"));
     let active_publisher = hub
         .publisher(&active_descriptor, &active_binding)
@@ -4112,7 +4061,7 @@ fn continuity_rejects_a_staged_branch_committed_away_before_activation() {
         .continuity_lease(&active_descriptor)
         .expect("active continuity lease is issued");
 
-    commit_demands(&mut builder, [active_demand.clone(), staged_demand], None)
+    commit_demands(&mut builder, [active_demand.clone(), staged_demand])
         .expect("overlap snapshot commits");
     let overlap_binding = binding_for_descriptor(&builder, &staged_descriptor);
     let staged_publisher = hub
@@ -4208,7 +4157,7 @@ fn sibling_delta_preserves_unchanged_entry_and_binding_identity() {
     let graph = ScreenInputGraphGeneration::new(29);
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [surface.clone()], None).expect("surface commits");
+    commit_demands(&mut builder, [surface.clone()]).expect("surface commits");
     let surface_binding = binding_for_descriptor(&builder, &surface_descriptor);
     let surface_publisher = hub
         .publisher(&surface_descriptor, &surface_binding)
@@ -4238,7 +4187,6 @@ fn sibling_delta_preserves_unchanged_entry_and_binding_identity() {
     let mut preparing = builder
         .prepare(
             [surface.clone(), zones],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -4306,7 +4254,6 @@ fn sibling_delta_preserves_unchanged_entry_and_binding_identity() {
     let mut preparing = builder
         .prepare(
             [surface],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -4383,7 +4330,7 @@ fn cadence_update_retains_exact_authority_and_source_removal_retires_it() {
     let graph = ScreenInputGraphGeneration::new(31);
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [surface_30], None).expect("initial cadence commits");
+    commit_demands(&mut builder, [surface_30]).expect("initial cadence commits");
     let old_state = builder.committed_state();
     let old_binding = binding_for(&builder, &source);
     assert_eq!(old_state.plan().generation(), old_binding.plan_generation());
@@ -4424,7 +4371,6 @@ fn cadence_update_retains_exact_authority_and_source_removal_retires_it() {
     let mut preparing = builder
         .prepare(
             [surface_60],
-            None,
             revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -4557,7 +4503,6 @@ fn cadence_update_retains_exact_authority_and_source_removal_retires_it() {
     let mut preparing = builder
         .prepare(
             std::iter::empty(),
-            None,
             removal_revision,
             graph,
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),
@@ -4613,8 +4558,7 @@ fn cadence_update_retains_exact_authority_and_source_removal_retires_it() {
     assert!(matches!(
         builder.prepare(
             std::iter::empty(),
-            None,
-            pressure_revision,
+                        pressure_revision,
             graph,
             ScreenAdmissionCapacity::new(retired_bytes - 1, retired_bytes - 1),
         ),
@@ -4668,7 +4612,7 @@ fn retirement_reclaims_ready_entries_without_unaccounting_pinned_payloads() {
     let small_descriptor = small.descriptor().clone();
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [small, large], None).expect("two branch pools commit");
+    commit_demands(&mut builder, [small, large]).expect("two branch pools commit");
 
     let small_binding = binding_for(&builder, &source_id("display-small"));
     let small_publisher = hub
@@ -4727,7 +4671,6 @@ fn retirement_reclaims_ready_entries_without_unaccounting_pinned_payloads() {
     assert!(matches!(
         builder.prepare(
             std::iter::empty(),
-            None,
             pressure_revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(11, 11),
@@ -4748,7 +4691,6 @@ fn retirement_reclaims_ready_entries_without_unaccounting_pinned_payloads() {
     let preparing = builder
         .prepare(
             std::iter::empty(),
-            None,
             recovered_revision,
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(0, 0),
@@ -4776,7 +4718,7 @@ fn typed_publication_validation_and_fixed_slots_preserve_last_good() {
         .expect("one retained plus two subscriber slots is valid");
     let mut builder = ScreenPlanBuilder::with_publication_slots(policy);
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [demand], None).expect("surface commits");
+    commit_demands(&mut builder, [demand]).expect("surface commits");
     assert_eq!(builder.committed_state().slot_policy().total_slots(), 3);
     let binding = binding_for(&builder, &source_id("display-a"));
     let publisher = hub
@@ -4997,7 +4939,7 @@ fn copied_retained_slot_can_finalize_after_cadence_update() {
     let descriptor = surface_30.descriptor().clone();
     let mut builder = ScreenPlanBuilder::new();
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [surface_30], None).expect("initial cadence commits");
+    commit_demands(&mut builder, [surface_30]).expect("initial cadence commits");
     let old_binding = binding_for(&builder, &source_id("display-a"));
     let old_publisher = hub
         .publisher(&descriptor, &old_binding)
@@ -5023,7 +4965,7 @@ fn copied_retained_slot_can_finalize_after_cadence_update() {
         .expect("old generation reserves and copies outside the commit barrier");
     assert!(lease.read().is_none());
 
-    commit_demands(&mut builder, [surface_60], None).expect("cadence update commits");
+    commit_demands(&mut builder, [surface_60]).expect("cadence update commits");
     assert_eq!(old_binding.state(), ScreenWorkerBindingState::Active);
     hub.finalize_publication(prepared)
         .expect("retained branch accepts its pre-commit reservation");
@@ -5057,7 +4999,7 @@ fn weak_publication_owner_causes_typed_pressure_without_mutation_panic() {
         .expect("two-slot pressure policy is valid");
     let mut builder = ScreenPlanBuilder::with_publication_slots(policy);
     let hub = builder.publication_hub();
-    commit_demands(&mut builder, [demand], None).expect("one-pixel surface commits");
+    commit_demands(&mut builder, [demand]).expect("one-pixel surface commits");
     let binding = binding_for(&builder, &source_id("display-a"));
     let publisher = hub
         .publisher(&descriptor, &binding)
@@ -5142,9 +5084,9 @@ fn large_source_set_rebinds_with_canonical_scaling_paths() {
         ));
     }
     let mut builder = ScreenPlanBuilder::new();
-    let initial = commit_demands(&mut builder, initial, None).expect("large initial plan commits");
+    let initial = commit_demands(&mut builder, initial).expect("large initial plan commits");
     assert_eq!(initial.branches().len(), SOURCE_COUNT);
-    let faster = commit_demands(&mut builder, faster, None).expect("large cadence rebind commits");
+    let faster = commit_demands(&mut builder, faster).expect("large cadence rebind commits");
     assert_eq!(faster.branches().len(), SOURCE_COUNT);
     assert_eq!(
         builder.committed_state().worker_bindings().len(),
@@ -5153,48 +5095,7 @@ fn large_source_set_rebinds_with_canonical_scaling_paths() {
 }
 
 #[test]
-fn compatibility_roles_reject_kind_substitution() {
-    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 4, 3);
-    let surface = resolve(
-        &registered(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Surface,
-            ScreenExtentRequest::Native,
-            ScreenAspectPolicy::Contain,
-            default_profile(),
-            60,
-        ),
-        &source,
-    );
-    let zones = resolve(
-        &registered(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Zones {
-                columns: non_zero(2),
-                rows: non_zero(2),
-            },
-            ScreenExtentRequest::Native,
-            ScreenAspectPolicy::Contain,
-            default_profile(),
-            30,
-        ),
-        &source,
-    );
-    assert_eq!(
-        ScreenCompatibilitySelection::try_new(zones.descriptor().clone(), None),
-        Err(ScreenPlanError::CompatibilitySurfaceKindMismatch)
-    );
-    assert_eq!(
-        ScreenCompatibilitySelection::try_new(
-            surface.descriptor().clone(),
-            Some(surface.descriptor().clone()),
-        ),
-        Err(ScreenPlanError::CompatibilityZonesKindMismatch)
-    );
-}
-
-#[test]
-fn generation_tracks_only_effective_plan_and_mirror_changes() {
+fn generation_tracks_only_effective_plan_changes() {
     let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 1920, 1080);
     let surface_30 = registered(
         ScreenSourceSelector::Configured,
@@ -5230,107 +5131,38 @@ fn generation_tracks_only_effective_plan_and_mirror_changes() {
     let zones_descriptor = zones.descriptor().clone();
     let mut builder = ScreenPlanBuilder::new();
 
-    let first = commit_demands(&mut builder, [surface_30.clone()], None)
-        .expect("first material plan resolves");
+    let first =
+        commit_demands(&mut builder, [surface_30.clone()]).expect("first material plan resolves");
     assert_eq!(first.generation().get(), 1);
 
-    let faster = commit_demands(&mut builder, [surface_30.clone(), surface_60.clone()], None)
+    let faster = commit_demands(&mut builder, [surface_30.clone(), surface_60.clone()])
         .expect("effective cadence change resolves");
     assert_eq!(faster.generation().get(), 2);
 
-    let lower_duplicate = commit_demands(&mut builder, [surface_60.clone(), surface_30], None)
+    let lower_duplicate = commit_demands(&mut builder, [surface_60.clone(), surface_30])
         .expect("registration order and lower duplicate are ineffective");
     assert_eq!(lower_duplicate.generation(), faster.generation());
 
-    let with_zones = commit_demands(
-        &mut builder,
-        [zones.clone(), surface_60.clone()],
-        Some(&surface_descriptor),
-    )
-    .expect("ordinary compatibility branch resolves");
+    let with_zones = commit_demands(&mut builder, [zones.clone(), surface_60.clone()])
+        .expect("independent zones branch resolves");
     assert_eq!(with_zones.generation().get(), 3);
     assert_eq!(with_zones.branches().len(), 2);
-    assert_eq!(
+    assert!(
         with_zones
-            .compatibility_branch()
-            .expect("mirror points to a branch")
-            .descriptor(),
-        &surface_descriptor
+            .branches()
+            .iter()
+            .any(|branch| branch.descriptor() == &surface_descriptor)
+    );
+    assert!(
+        with_zones
+            .branches()
+            .iter()
+            .any(|branch| branch.descriptor() == &zones_descriptor)
     );
 
-    let reordered = commit_demands(
-        &mut builder,
-        [surface_60.clone(), zones.clone()],
-        Some(&surface_descriptor),
-    )
-    .expect("registration order is ineffective");
+    let reordered = commit_demands(&mut builder, [surface_60, zones])
+        .expect("registration order is ineffective");
     assert_eq!(reordered.generation(), with_zones.generation());
-
-    let compatibility = ScreenCompatibilitySelection::try_new(
-        surface_descriptor.clone(),
-        Some(zones_descriptor.clone()),
-    )
-    .expect("surface and zones compatibility roles are valid");
-    let remirrored =
-        commit_demands_with_compatibility(&mut builder, [surface_60, zones], Some(&compatibility))
-            .expect("zones compatibility selection changes independently");
-    assert_eq!(remirrored.generation().get(), 4);
-    assert_eq!(remirrored.branches().len(), 2);
-    assert_eq!(
-        remirrored
-            .compatibility_branch()
-            .expect("mirror points to an ordinary branch")
-            .descriptor(),
-        &surface_descriptor
-    );
-    assert_eq!(
-        remirrored
-            .compatibility_zones_branch()
-            .expect("zones mirror points to an ordinary branch")
-            .descriptor(),
-        &zones_descriptor
-    );
-}
-
-#[test]
-fn compatibility_mirror_rejects_descriptors_absent_from_the_plan() {
-    let source = resolved_source(ScreenSourceSelector::Configured, "display-a", 1920, 1080);
-    let present = resolve(
-        &registered(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Surface,
-            ScreenExtentRequest::Native,
-            ScreenAspectPolicy::Contain,
-            default_profile(),
-            30,
-        ),
-        &source,
-    );
-    let absent = resolve(
-        &registered(
-            ScreenSourceSelector::Configured,
-            ScreenPublicationKind::Zones {
-                columns: non_zero(16),
-                rows: non_zero(9),
-            },
-            ScreenExtentRequest::Native,
-            ScreenAspectPolicy::Contain,
-            default_profile(),
-            30,
-        ),
-        &source,
-    );
-
-    let compatibility = ScreenCompatibilitySelection::try_new(
-        present.descriptor().clone(),
-        Some(absent.descriptor().clone()),
-    )
-    .expect("compatibility roles are structurally valid");
-    let mut builder = ScreenPlanBuilder::new();
-    assert_eq!(
-        commit_demands_with_compatibility(&mut builder, [present], Some(&compatibility)),
-        Err(ScreenPlanError::CompatibilityBranchMissing)
-    );
 }
 
 #[test]
@@ -5460,7 +5292,7 @@ fn exact_cpu_work_sums_multiple_reductions_at_independent_cadences() {
     let nearest = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Nearest, 30);
     let bilinear = exact_surface_demand(&source, 320, 180, ScreenReductionFilter::Bilinear, 60);
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, [nearest, bilinear], None)
+    let plan = commit_demands(&mut builder, [nearest, bilinear])
         .expect("independent exact reductions commit");
 
     let work =
@@ -5477,7 +5309,7 @@ fn exact_area_work_charges_source_footprint_and_target_pixels() {
     let source = resolved_source(ScreenSourceSelector::Configured, "exact-area", 3840, 2160);
     let area = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Area, 30);
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, [area], None).expect("area reduction commits");
+    let plan = commit_demands(&mut builder, [area]).expect("area reduction commits");
 
     let work =
         CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
@@ -5497,7 +5329,7 @@ fn exact_area_work_counts_fractional_support_for_every_target_cell() {
     );
     let area = exact_surface_demand(&source, 3839, 2159, ScreenReductionFilter::Area, 30);
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, [area], None).expect("area reduction commits");
+    let plan = commit_demands(&mut builder, [area]).expect("area reduction commits");
 
     let work =
         CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
@@ -5520,15 +5352,14 @@ fn exact_nearest_and_bilinear_keep_distinct_target_costs() {
     let mut nearest_builder = ScreenPlanBuilder::new();
     let mut bilinear_builder = ScreenPlanBuilder::new();
 
-    let nearest_plan =
-        commit_demands(&mut nearest_builder, [nearest], None).expect("nearest commits");
+    let nearest_plan = commit_demands(&mut nearest_builder, [nearest]).expect("nearest commits");
     let nearest_work =
         CpuExactReductionWorkPlan::try_for_source(&nearest_plan, &source.epoch().source_id, |_| {
             true
         })
         .expect("nearest work is representable");
     let bilinear_plan =
-        commit_demands(&mut bilinear_builder, [bilinear], None).expect("bilinear commits");
+        commit_demands(&mut bilinear_builder, [bilinear]).expect("bilinear commits");
     let bilinear_work = CpuExactReductionWorkPlan::try_for_source(
         &bilinear_plan,
         &source.epoch().source_id,
@@ -5550,7 +5381,7 @@ fn exact_nearest_and_bilinear_keep_distinct_target_costs() {
 fn exact_cpu_work_excludes_native_gpu_and_pre_reduced_routes() {
     let mut config = source_config_parts(1920, 1080);
     config.resources = ScreenBackendResourceIdentity::new_with_physical_gpu_device(
-        ScreenCaptureBackend::WindowsDesktopDuplication,
+        ScreenCaptureBackend::DesktopDuplication,
         ScreenResourceApi::PlatformGpu(PlatformGpuApi::Direct3d11),
         gpu_device(),
         4,
@@ -5577,8 +5408,8 @@ fn exact_cpu_work_excludes_native_gpu_and_pre_reduced_routes() {
         &source,
     );
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, [cpu, native], None)
-        .expect("CPU and native GPU reductions commit");
+    let plan =
+        commit_demands(&mut builder, [cpu, native]).expect("CPU and native GPU reductions commit");
 
     let cpu = CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
         .expect("CPU route work is representable");
@@ -5601,7 +5432,7 @@ fn exact_cpu_compute_admits_boundary_and_rejects_one_under() {
     );
     let area = exact_surface_demand(&source, 640, 360, ScreenReductionFilter::Area, 30);
     let mut builder = ScreenPlanBuilder::new();
-    let plan = commit_demands(&mut builder, [area], None).expect("area reduction commits");
+    let plan = commit_demands(&mut builder, [area]).expect("area reduction commits");
     let work =
         CpuExactReductionWorkPlan::try_for_source(&plan, &source.epoch().source_id, |_| true)
             .expect("exact work is representable");

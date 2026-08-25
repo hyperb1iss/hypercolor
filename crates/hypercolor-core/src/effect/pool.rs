@@ -27,7 +27,7 @@ use super::traits::{
     EffectRenderOutput, EffectRenderer, FrameDataSources, FrameInput, prepare_target_canvas,
 };
 use crate::asset::AssetLibrary;
-use crate::input::{InteractionData, ScreenData};
+use crate::input::{InteractionData, ScreenBranchPublication};
 
 use self::control_sync::{ActiveBindingState, apply_sensor_bindings, canonical_control_set};
 
@@ -265,7 +265,7 @@ impl EffectPool {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
         target: &mut Canvas,
@@ -298,7 +298,7 @@ impl EffectPool {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
         target: &mut Canvas,
@@ -341,7 +341,7 @@ impl EffectPool {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
     ) -> Result<EffectRenderOutput> {
@@ -374,7 +374,7 @@ impl EffectPool {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
     ) -> Result<EffectRenderOutput> {
@@ -416,7 +416,7 @@ impl EffectPool {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
     ) -> Result<()> {
@@ -650,7 +650,7 @@ impl EffectSlot {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
         canvas_width: u32,
@@ -694,7 +694,7 @@ impl EffectSlot {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
         canvas_width: u32,
@@ -737,7 +737,7 @@ impl EffectSlot {
         delta_secs: f32,
         audio: &AudioData,
         interaction: &InteractionData,
-        screen: Option<&ScreenData>,
+        screen: Option<&Arc<ScreenBranchPublication>>,
         sensors: &SystemSnapshot,
         sources: FrameDataSources<'_>,
         canvas_width: u32,

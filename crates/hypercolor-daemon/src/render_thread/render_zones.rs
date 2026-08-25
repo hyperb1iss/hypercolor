@@ -8,8 +8,6 @@ use hypercolor_core::asset::AssetLibrary;
 #[cfg(test)]
 use hypercolor_core::bus::{DisplayZoneFrame, DisplayZoneOutputRoute, DisplayZoneTarget};
 use hypercolor_core::effect::{EffectPool, EffectRegistry};
-#[cfg(test)]
-use hypercolor_core::input::ScreenData;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::spatial::SpatialPlanError;
 #[cfg(test)]

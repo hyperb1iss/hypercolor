@@ -1,4 +1,4 @@
-//! System endpoints for daemon identity, status, sensors, and health.
+//! System endpoints — `/api/v1/status`, `/health`.
 //!
 //! Provides daemon status overview and a lightweight health check
 //! for monitoring and load balancer probes.
@@ -6,12 +6,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::response::{IntoResponse, Response};
 use hypercolor_core::engine::RenderLoopState;
-use hypercolor_core::input::screen::{
-    PixelExtent, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan, ScreenAnalysisWorkPlan,
-};
+use hypercolor_core::input::{DataSourceKind, InputData};
 use hypercolor_types::api::system::{
     FullFrameCopySessionStatus, HealthChecks, HealthResponse, LatencyHistogramBucketStatus,
     LatencyHistogramStatus, LatencyPercentilesStatus, RenderLoopStatus,
@@ -24,6 +22,7 @@ use crate::api::envelope;
 use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::domain::output::brightness_percent;
+use crate::domain::{DomainError, ResourceKind};
 
 use hypercolor_core::config::ConfigManager;
 
@@ -39,10 +38,7 @@ use metrics::{
 };
 
 #[cfg(test)]
-use crate::domain::input_status::{
-    input_source_status, input_status_snapshot, macos_selection_state,
-    macos_tahoe_selection_capabilities,
-};
+use crate::domain::input_status::input_source_status;
 #[cfg(test)]
 mod tests;
 
@@ -58,14 +54,26 @@ const MULTI_ZONE_CAPABILITIES: &[&str] = &[
 
 // ── Handlers ─────────────────────────────────────────────────────────────
 
-/// Build a full status response for trusted in-process callers.
+/// `GET /api/v1/status` — Full system status overview.
+#[utoipa::path(
+    get,
+    path = "/api/v1/status",
+    responses(
+        (
+            status = 200,
+            description = "Full daemon status overview",
+            body = crate::api::envelope::ApiResponse<SystemStatus>
+        )
+    ),
+    tag = "system"
+)]
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     envelope::ok(system_status_with_privacy(state, true).await)
 }
 
 async fn system_status_with_privacy(
     state: Arc<AppState>,
-    include_private_selection_ids: bool,
+    include_private_diagnostics: bool,
 ) -> SystemStatus {
     let device_count = state.device_registry.len().await;
     let effect_count = state.domains.effects.len().await;
@@ -164,7 +172,7 @@ async fn system_status_with_privacy(
     let preview_runtime = preview_runtime_status(&state.preview_runtime);
 
     let input_status =
-        input_status_snapshot_with_privacy(&state.domains.platform, include_private_selection_ids);
+        input_status_snapshot_with_privacy(&state.domains.platform, include_private_diagnostics);
     let audio_available = input_status.sources.iter().any(|source| {
         source.kind == "audio"
             && !source.retired
@@ -178,11 +186,6 @@ async fn system_status_with_privacy(
             let resource_capacity = resource_snapshot.capacity();
             let total_capacity = policy.total_capacity();
             let publication_capacity = policy.publication_capacity();
-            let demand = policy.capture_demand();
-            let analysis = policy.analysis_resource_plan();
-            let analysis_work = policy.analysis_work_plan();
-            let analysis_compute = policy.analysis_compute_capacity();
-            let extent = demand.requested_extent();
             ScreenCaptureCapacityStatus {
                 admission_enforced: true,
                 physical_transition_byte_capacity: Some(resource_capacity.byte_budget()),
@@ -195,21 +198,15 @@ async fn system_status_with_privacy(
                 transition_publication_backend_capacity: Some(
                     publication_capacity.backend_capacity(),
                 ),
-                analysis_width: extent.map(PixelExtent::width),
-                analysis_height: extent.map(PixelExtent::height),
-                analysis_retained_bytes: analysis.map(ScreenAnalysisResourcePlan::retained_bytes),
-                analysis_peak_bytes: analysis.map(ScreenAnalysisResourcePlan::peak_bytes),
-                analysis_weighted_work_units_per_frame: analysis_work
-                    .map(ScreenAnalysisWorkPlan::weighted_work_units_per_frame),
-                analysis_weighted_work_units_per_second: analysis_work
-                    .map(ScreenAnalysisWorkPlan::weighted_work_units_per_second),
-                analysis_parallel_capacity_per_second: analysis_compute.and_then(
-                    ScreenAnalysisComputeCapacity::total_parallel_weighted_work_units_per_second,
-                ),
-                analysis_serial_capacity_per_second: analysis_compute
-                    .map(|capacity| capacity.serial_weighted_work_units_per_second().get()),
-                analysis_worker_count: analysis_compute
-                    .and_then(|capacity| u64::try_from(capacity.worker_count().get()).ok()),
+                analysis_width: None,
+                analysis_height: None,
+                analysis_retained_bytes: None,
+                analysis_peak_bytes: None,
+                analysis_weighted_work_units_per_frame: None,
+                analysis_weighted_work_units_per_second: None,
+                analysis_parallel_capacity_per_second: None,
+                analysis_serial_capacity_per_second: None,
+                analysis_worker_count: None,
             }
         } else {
             ScreenCaptureCapacityStatus::without_capacity(false)
@@ -279,7 +276,36 @@ pub(crate) async fn get_system(
 
 /// `GET /api/v1/system/sensors` — Latest system sensor snapshot.
 pub async fn get_sensors(State(state): State<Arc<AppState>>) -> Response {
-    envelope::ok(latest_sensor_snapshot(&state).await.as_ref().clone())
+    envelope::ok(latest_sensor_snapshot(&state).as_ref().clone())
+}
+
+/// `GET /api/v1/system/sensors/{label}` — Resolve one named sensor.
+// Axum handlers return futures even when their current state access is synchronous.
+#[allow(clippy::unused_async)]
+pub async fn get_sensor(State(state): State<Arc<AppState>>, Path(label): Path<String>) -> Response {
+    let snapshot = latest_sensor_snapshot(&state);
+    if let Some(reading) = snapshot.reading(&label) {
+        return envelope::ok(reading);
+    }
+
+    DomainError::not_found(ResourceKind::Sensor, &label).into_response()
+}
+
+/// `GET /api/v1/server` — Lightweight server identity for discovery probes.
+#[utoipa::path(
+    get,
+    path = "/api/v1/server",
+    responses(
+        (
+            status = 200,
+            description = "Lightweight server identity for discovery probes",
+            body = crate::api::envelope::ApiResponse<ServerInfo>
+        )
+    ),
+    tag = "system"
+)]
+pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
+    envelope::ok(server_info(&state).await)
 }
 
 async fn server_info(state: &AppState) -> ServerInfo {
@@ -335,10 +361,16 @@ fn config_path(state: &AppState) -> PathBuf {
     )
 }
 
-async fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
-    let input_manager = state.input_manager().lock().await;
-    input_manager
-        .latest_sensor_snapshot()
+pub(crate) fn latest_sensor_snapshot(state: &AppState) -> Arc<SystemSnapshot> {
+    state
+        .input_manager()
+        .input_graph_handle()
+        .snapshot()
+        .latest_data_source(DataSourceKind::Sensors)
+        .and_then(|sample| match sample.as_ref() {
+            InputData::Sensors(snapshot) => Some(Arc::clone(snapshot)),
+            _ => None,
+        })
         .unwrap_or_else(|| Arc::new(SystemSnapshot::empty()))
 }
 

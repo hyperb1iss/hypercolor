@@ -1,7 +1,8 @@
 use crate::{
-    EffectiveEventMasks, MacosInputBatch, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
+    EffectiveEventMasks, MacosInputConfig, MacosInputDiagnostics, MacosInputError,
     MacosInputPublicationOutcome, MacosInputResult, MacosVirtualDesktop, MacosWorkerState,
 };
+use hypercolor_types::host_input::HostInputBatch;
 
 /// Native event-tap session placeholder outside macOS.
 pub struct MacosInputSession {
@@ -12,7 +13,7 @@ impl MacosInputSession {
     /// Always fails because Core Graphics event taps are macOS-only.
     pub fn start(
         _config: MacosInputConfig,
-        _sink: impl FnMut(MacosInputBatch<'_>) -> MacosInputPublicationOutcome + Send + 'static,
+        _sink: impl FnMut(HostInputBatch<'_>) -> MacosInputPublicationOutcome + Send + 'static,
     ) -> MacosInputResult<Self> {
         Err(MacosInputError::UnsupportedPlatform)
     }

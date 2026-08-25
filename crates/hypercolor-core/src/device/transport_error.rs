@@ -35,7 +35,9 @@ pub(super) fn map_hal_transport_error(
             device: device_id.to_string(),
             detail: detail.clone(),
         },
-        Some(TransportError::UnsupportedTransfer { .. }) => DeviceError::Unsupported {
+        Some(
+            TransportError::UnsupportedTransfer { .. } | TransportError::UnsupportedPlatform { .. },
+        ) => DeviceError::Unsupported {
             backend: backend_id.to_owned(),
             operation: operation.description(),
         },

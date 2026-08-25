@@ -630,13 +630,13 @@ JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
                 "topic": "events",
             }
         ),
-        "macos_daemon_ownership_changed_v1": MappingProxyType(
+        "service_identity_changed_v1": MappingProxyType(
             {
                 "schema_version": 1,
                 "topic": "events",
-                "event": "macos_daemon_ownership_changed",
+                "event": "service_identity_changed",
                 "required_fields": (
-                    "active_owner",
+                    "identity",
                     "owner_epoch",
                 ),
                 "optional_fields": MappingProxyType(
@@ -645,7 +645,7 @@ JSON_PAYLOAD_CONTRACTS: Final = MappingProxyType(
                         "recovery_required": None,
                     }
                 ),
-                "description": "Authoritative macOS daemon topology snapshot. The event reports ownership state only and cannot request an owner change.",
+                "description": "Corroborated launcher identity of the daemon (run mode, service manager, unit) with its ownership epoch. Reports state only and cannot request an owner change.",
             }
         ),
     }

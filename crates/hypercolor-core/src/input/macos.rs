@@ -1,31 +1,35 @@
 //! macOS host input folded from Core Graphics event-tap batches.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
+#[cfg(feature = "macos-native-fixtures")]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+#[cfg(feature = "macos-native-fixtures")]
+use hypercolor_macos_input::MacosVirtualDesktop;
 use hypercolor_macos_input::{
-    MacosInputBatch, MacosInputConfig, MacosInputError, MacosInputEvent, MacosInputGapReason,
-    MacosInputPublicationOutcome, MacosInputSession, MacosModifierFlags, MacosPointerButton,
-    MacosScrollPhase, MacosScrollUnit, MacosVirtualDesktop, MacosWorkerDegradation,
-    MacosWorkerState, input_monitoring_granted, request_input_monitoring,
+    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonOwnerConflict,
+    MacosInputConfig, MacosInputError, MacosInputGapReason, MacosInputPublicationOutcome,
+    MacosInputSession, MacosInputStatusSnapshot, MacosProtectedSourceState, MacosWorkerDegradation,
+    MacosWorkerState, input_diagnostics_envelope, input_monitoring_granted,
+    request_input_monitoring,
 };
+use hypercolor_types::host_input::{HostInputBatch, HostInputCapabilities};
+#[cfg(feature = "macos-native-fixtures")]
+use hypercolor_types::host_input::{HostInputEvent, HostPointerSnapshot};
 use tracing::{info, warn};
 
-use crate::input::keymap::{macos_key_name, macos_media_key_name};
 use crate::input::traits::{
-    InputData, InputSource, InteractionData, InteractionDegradation, MotionAggregate, PointerMode,
-    ProtectedSourceAuthorizationAction,
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource, InteractionData,
+    InteractionDegradation, InteractionSource, InteractionSourceRole,
+    ProtectedSourceAuthorizationAction, SourceCapabilityContext, SourceRoleBinding,
 };
 use crate::input::{
-    MacosAuthorizationState, MacosCapabilityOwner, MacosInputPlatformStatus,
-    MacosProtectedSourceState, MacosTimingStatus, SourceIssue, SourceKind, SourcePlatformStatus,
-    SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
+    HostInputFold, HostInputFoldDiagnostics, HostInputPublishOutcome, HostInputSink, SourceIssue,
+    SourceKind, SourceSessionSlot, SourceStatusHandle, SourceStatusReporter,
 };
-use hypercolor_types::event::{
-    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
-};
+use hypercolor_types::event::TimedInputEvent;
 
 const SOURCE_ID: &str = "host:macos";
 const DEFAULT_EVENT_LIMIT: usize = crate::input::InteractionBatch::MAX_EVENTS;
@@ -33,85 +37,26 @@ const AUTHORIZATION_NONE: u8 = 0;
 const AUTHORIZATION_GRANTED: u8 = 1;
 const AUTHORIZATION_DENIED: u8 = 2;
 
-fn native_process_architecture() -> (
-    Option<crate::input::MacosArchitecture>,
-    crate::input::MacosArchitecture,
-    Option<bool>,
-) {
+fn native_process_architecture() -> (Option<MacosArchitecture>, MacosArchitecture, Option<bool>) {
     let executable = if cfg!(target_arch = "aarch64") {
-        crate::input::MacosArchitecture::AppleSilicon
+        MacosArchitecture::AppleSilicon
     } else {
-        crate::input::MacosArchitecture::Intel
+        MacosArchitecture::Intel
     };
-    #[cfg(target_os = "macos")]
-    {
-        let capabilities = hypercolor_macos_capture::MacosScreenCaptureSession::capabilities().ok();
-        let host = capabilities.map(|capabilities| match capabilities.host_architecture {
-            hypercolor_macos_capture::MacosHostArchitecture::AppleSilicon => {
-                crate::input::MacosArchitecture::AppleSilicon
-            }
-            hypercolor_macos_capture::MacosHostArchitecture::Intel => {
-                crate::input::MacosArchitecture::Intel
-            }
-        });
-        let translated = capabilities.map(|capabilities| capabilities.translated_process);
-        (host, executable, translated)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        (None, executable, None)
-    }
+    // The capture crate compiles everywhere; off-platform the probe reports
+    // ScreenCaptureKit as unavailable, which collapses to "host unknown".
+    let capabilities = hypercolor_macos_capture::MacosScreenCaptureSession::capabilities().ok();
+    let host = capabilities.map(|capabilities| match capabilities.host_architecture {
+        hypercolor_macos_capture::MacosHostArchitecture::AppleSilicon => {
+            MacosArchitecture::AppleSilicon
+        }
+        hypercolor_macos_capture::MacosHostArchitecture::Intel => MacosArchitecture::Intel,
+    });
+    let translated = capabilities.map(|capabilities| capabilities.translated_process);
+    (host, executable, translated)
 }
 
-type HeldStateKey = (Vec<String>, Vec<String>, i32, i32, i32, i32, bool);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct PointerSnapshot {
-    x: i32,
-    y: i32,
-    norm_x: f32,
-    norm_y: f32,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct MacosInputFoldDiagnostics {
-    pub impossible_key_edges: u64,
-    pub impossible_button_edges: u64,
-    pub unsupported_keys: u64,
-    pub unsupported_media_keys: u64,
-    pub scroll_overflows: u64,
-    pub state_gaps: u64,
-    pub topology_resets: u64,
-}
-
-#[derive(Default)]
-struct SharedState {
-    events: VecDeque<TimedInputEvent>,
-    dropped: u32,
-    pressed_keys: BTreeSet<String>,
-    recent_keys: VecDeque<String>,
-    held_buttons: BTreeSet<String>,
-    motion: MotionAggregate,
-    pointer: Option<PointerSnapshot>,
-    pointer_present: bool,
-    topology_generation: Option<u64>,
-    diagnostics: MacosInputFoldDiagnostics,
-    epoch: u64,
-}
-
-impl SharedState {
-    fn clear_live_state(&mut self) {
-        self.events.clear();
-        self.dropped = 0;
-        self.pressed_keys.clear();
-        self.recent_keys.clear();
-        self.held_buttons.clear();
-        self.motion = MotionAggregate::default();
-        self.pointer = None;
-        self.pointer_present = false;
-        self.topology_generation = None;
-    }
-}
+pub type MacosInputFoldDiagnostics = HostInputFoldDiagnostics;
 
 static NEXT_EPOCH: AtomicU64 = AtomicU64::new(1);
 
@@ -121,10 +66,10 @@ pub struct MacosHostInput {
     capture_active: bool,
     capture_keyboard: bool,
     capture_pointer: bool,
-    event_limit: usize,
-    generation: u64,
-    last_state_key: Option<HeldStateKey>,
-    shared: Arc<Mutex<SharedState>>,
+    session_generation: u64,
+    topology_generation: Arc<AtomicU64>,
+    fold: HostInputFold,
+    sink: Option<HostInputSink>,
     session: Option<MacosInputSession>,
     degraded: Option<InteractionDegradation>,
     status: SourceStatusReporter,
@@ -132,10 +77,10 @@ pub struct MacosHostInput {
     keyboard_tcc: MacosAuthorizationState,
     authorization_last_transition_at: Option<Instant>,
     owner: MacosCapabilityOwner,
-    owner_conflict: Option<Arc<crate::input::MacosDaemonOwnerConflict>>,
+    owner_conflict: Option<Arc<MacosDaemonOwnerConflict>>,
     owner_designated_requirement_hash: Option<Arc<str>>,
-    host_architecture: Option<crate::input::MacosArchitecture>,
-    executable_architecture: crate::input::MacosArchitecture,
+    host_architecture: Option<MacosArchitecture>,
+    executable_architecture: MacosArchitecture,
     translated_process: Option<bool>,
     authorization_result: Arc<AtomicU8>,
     #[cfg(feature = "macos-native-fixtures")]
@@ -175,14 +120,19 @@ impl MacosInputFixtureBackend {
 #[cfg(feature = "macos-native-fixtures")]
 struct FixtureState {
     backend: Mutex<MacosInputFixtureBackend>,
-    active_epoch: Mutex<Option<u64>>,
+    active_session: Mutex<Option<FixtureSession>>,
+    topology_generation: Arc<AtomicU64>,
+}
+
+#[cfg(feature = "macos-native-fixtures")]
+struct FixtureSession {
+    generation: u64,
+    sink: HostInputSink,
 }
 
 #[cfg(feature = "macos-native-fixtures")]
 pub struct MacosHostInputFixture {
     state: Arc<FixtureState>,
-    shared: Arc<Mutex<SharedState>>,
-    event_limit: usize,
 }
 
 #[cfg(feature = "macos-native-fixtures")]
@@ -190,7 +140,7 @@ impl MacosHostInputFixture {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state
-            .active_epoch
+            .active_session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some()
@@ -207,14 +157,15 @@ impl MacosHostInputFixture {
 
     #[must_use]
     pub fn active_epoch(&self) -> Option<u64> {
-        *self
-            .state
-            .active_epoch
+        self.state
+            .active_session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|session| session.generation)
     }
 
-    pub fn publish(&self, events: &[MacosInputEvent], at_ms: u64) -> anyhow::Result<bool> {
+    pub fn publish(&self, events: &[HostInputEvent], at_ms: u64) -> anyhow::Result<bool> {
         let epoch = self
             .active_epoch()
             .ok_or_else(|| anyhow::anyhow!("deterministic macOS input source is inactive"))?;
@@ -224,25 +175,41 @@ impl MacosHostInputFixture {
     pub fn publish_with_epoch(
         &self,
         epoch: u64,
-        events: &[MacosInputEvent],
+        events: &[HostInputEvent],
         at_ms: u64,
     ) -> anyhow::Result<bool> {
-        let desktop = self
+        self.publish_batch_with_epoch(epoch, events, None, at_ms)
+    }
+
+    pub fn publish_batch_with_epoch(
+        &self,
+        epoch: u64,
+        events: &[HostInputEvent],
+        pointer: Option<HostPointerSnapshot>,
+        at_ms: u64,
+    ) -> anyhow::Result<bool> {
+        let active = self
             .state
-            .backend
+            .active_session
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .virtual_desktop;
-        Ok(publish_macos_batch(
-            &self.shared,
-            MacosInputBatch {
-                epoch,
-                at_ms,
-                events,
-                virtual_desktop: desktop,
-            },
-            self.event_limit,
-        ))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(session) = active.as_ref() else {
+            return Ok(false);
+        };
+        if session.generation != epoch {
+            return Ok(false);
+        }
+        if let Some(pointer) = pointer {
+            self.state
+                .topology_generation
+                .store(pointer.coordinate_space_generation, Ordering::Relaxed);
+        }
+        Ok(session.sink.publish(HostInputBatch {
+            events,
+            pointer,
+            at_ms,
+            device_catalog_generation: 0,
+        }) == HostInputPublishOutcome::Published)
     }
 
     pub fn request_input_monitoring_and_restart_owner(&self) -> anyhow::Result<bool> {
@@ -280,10 +247,10 @@ impl MacosHostInput {
             capture_active: false,
             capture_keyboard,
             capture_pointer,
-            event_limit: DEFAULT_EVENT_LIMIT,
-            generation: 0,
-            last_state_key: None,
-            shared: Arc::new(Mutex::new(SharedState::default())),
+            session_generation: 0,
+            topology_generation: Arc::new(AtomicU64::new(0)),
+            fold: HostInputFold::new(DEFAULT_EVENT_LIMIT),
+            sink: None,
             session: None,
             degraded: None,
             status: SourceStatusReporter::new(
@@ -324,7 +291,8 @@ impl MacosHostInput {
         let preflight_granted = backend.preflight_granted;
         let state = Arc::new(FixtureState {
             backend: Mutex::new(backend),
-            active_epoch: Mutex::new(None),
+            active_session: Mutex::new(None),
+            topology_generation: Arc::clone(&source.topology_generation),
         });
         source.fixture = Some(Arc::clone(&state));
         source.keyboard_tcc = if capture_keyboard && preflight_granted {
@@ -337,17 +305,13 @@ impl MacosHostInput {
         source
             .refresh_platform_status()
             .expect("fixture macOS input status is not retired");
-        let fixture = MacosHostInputFixture {
-            state,
-            shared: Arc::clone(&source.shared),
-            event_limit: source.event_limit,
-        };
+        let fixture = MacosHostInputFixture { state };
         (source, fixture)
     }
 
     #[must_use]
     pub fn epoch(&self) -> u64 {
-        self.shared.lock().map_or(0, |state| state.epoch)
+        self.session_generation
     }
 
     #[must_use]
@@ -368,7 +332,7 @@ impl MacosHostInput {
     fn set_daemon_ownership(
         &mut self,
         owner: MacosCapabilityOwner,
-        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
+        conflict: Option<MacosDaemonOwnerConflict>,
         designated_requirement_hash: Option<Arc<str>>,
     ) -> anyhow::Result<()> {
         self.owner = owner;
@@ -379,82 +343,42 @@ impl MacosHostInput {
 
     #[must_use]
     pub fn fold_diagnostics(&self) -> MacosInputFoldDiagnostics {
-        self.shared
-            .lock()
-            .map(|state| state.diagnostics)
-            .unwrap_or_default()
+        self.fold.diagnostics()
     }
 
     pub fn fold_and_snapshot(
         &mut self,
-        batch: MacosInputBatch<'_>,
+        batch: HostInputBatch<'_>,
     ) -> (InteractionData, Vec<TimedInputEvent>) {
-        publish_macos_batch(&self.shared, batch, self.event_limit);
-        let shared = Arc::clone(&self.shared);
-        let Ok(mut state) = shared.lock() else {
-            return (InteractionData::default(), Vec::new());
-        };
-        let events = drain_events(&mut state.events);
-        let snapshot = self.build_snapshot(&mut state);
-        (snapshot, events)
+        if self.sink.is_none() {
+            let _ = self.begin_fold_session(self.capture_keyboard, self.capture_pointer);
+        }
+        if let Some(pointer) = batch.pointer {
+            self.topology_generation
+                .store(pointer.coordinate_space_generation, Ordering::Relaxed);
+        }
+        if let Some(sink) = &self.sink {
+            let _ = sink.publish(batch);
+        }
+        let sample = self.fold.sample_and_drain();
+        (sample.interaction, sample.events)
     }
 
-    fn build_snapshot(&mut self, state: &mut SharedState) -> InteractionData {
-        let mut data = InteractionData::default();
-        data.keyboard.pressed_keys = state.pressed_keys.iter().cloned().collect();
-        data.keyboard.recent_keys = state.recent_keys.drain(..).collect();
-        data.mouse.buttons = state.held_buttons.iter().cloned().collect();
-        data.mouse.down = !data.mouse.buttons.is_empty();
-        if state.pointer_present
-            && let Some(pointer) = state.pointer
-        {
-            data.mouse.mode = PointerMode::Absolute;
-            data.mouse.x = pointer.x;
-            data.mouse.y = pointer.y;
-            data.mouse.norm_x = pointer.norm_x;
-            data.mouse.norm_y = pointer.norm_y;
-        }
-        data.batch.motion = std::mem::take(&mut state.motion);
-        data.batch.dropped_events = std::mem::take(&mut state.dropped);
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::as_conversions,
-            reason = "normalized coordinates are clamped before scaling"
-        )]
-        let cursor_key = (
-            (data.mouse.norm_x * 10_000.0) as i32,
-            (data.mouse.norm_y * 10_000.0) as i32,
-        );
-        let state_key = (
-            data.keyboard.pressed_keys.clone(),
-            data.mouse.buttons.clone(),
-            cursor_key.0,
-            cursor_key.1,
-            data.mouse.x,
-            data.mouse.y,
-            state.pointer_present,
-        );
-        if self.last_state_key.as_ref() != Some(&state_key) || !data.keyboard.recent_keys.is_empty()
-        {
-            self.generation = self.generation.wrapping_add(1);
-            self.last_state_key = Some(state_key);
-        }
-        data.generation = self.generation;
-        data
+    fn begin_fold_session(&mut self, keyboard: bool, pointer: bool) -> HostInputSink {
+        self.session_generation = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        self.topology_generation.store(0, Ordering::Relaxed);
+        let sink = self
+            .fold
+            .begin_session(SOURCE_ID, HostInputCapabilities { keyboard, pointer });
+        self.sink = Some(sink.clone());
+        sink
     }
 
-    fn rotate_epoch_and_clear(&mut self) -> u64 {
-        let epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let mut state = self
-            .shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.clear_live_state();
-        state.epoch = epoch;
-        drop(state);
-        self.last_state_key = None;
-        epoch
+    fn end_fold_session(&mut self) {
+        self.session_generation = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
+        self.topology_generation.store(0, Ordering::Relaxed);
+        self.sink = None;
+        self.fold.end_session();
     }
 
     fn permission_granted(&self) -> bool {
@@ -532,62 +456,43 @@ impl MacosHostInput {
             MacosProtectedSourceState::Failed
         };
         let native = self.session.as_ref().map(MacosInputSession::diagnostics);
-        let (capture_session_generation, topology_generation, folded_state_gaps) = self
-            .shared
-            .lock()
-            .map(|state| {
-                (
-                    self.capture_session_active().then_some(state.epoch),
-                    state.topology_generation,
-                    state.diagnostics.state_gaps,
-                )
-            })
-            .unwrap_or((None, None, 0));
+        let capture_session_generation = self
+            .capture_session_active()
+            .then_some(self.session_generation);
+        let topology_generation = match self.topology_generation.load(Ordering::Relaxed) {
+            0 => None,
+            generation => Some(generation),
+        };
+        let folded_state_gaps = self.fold.diagnostics().state_gaps;
+        // Read from the session's health-tick cache: probing Carbon here would
+        // put an FFI call on the render thread at frame rate.
+        let secure_input_active = native.is_some_and(|diagnostics| diagnostics.secure_input_active);
+        let diagnostics = MacosInputStatusSnapshot {
+            keyboard,
+            pointer,
+            keyboard_tcc: self.keyboard_tcc,
+            secure_input_active,
+            keyboard_owner: self.owner,
+            pointer_owner: self.owner,
+            owner_conflict: self.owner_conflict.as_deref().cloned(),
+            authorization_last_transition_age_ms: self.authorization_last_transition_at.map(
+                |transition| u64::try_from(transition.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ),
+            owner_designated_requirement_hash: self.owner_designated_requirement_hash.clone(),
+            host_architecture: self.host_architecture,
+            executable_architecture: self.executable_architecture,
+            translated_process: self.translated_process,
+            capture_session_generation,
+            topology_generation,
+            native_diagnostics: native,
+            folded_state_gaps,
+        };
         self.status
-            .set_platform(Some(SourcePlatformStatus::MacosInput(
-                MacosInputPlatformStatus {
-                    keyboard,
-                    pointer,
-                    keyboard_tcc: self.keyboard_tcc,
-                    // Read from the session's health-tick cache: probing
-                    // Carbon here would put an FFI call on the render
-                    // thread at frame rate.
-                    secure_input_active: native
-                        .is_some_and(|diagnostics| diagnostics.secure_input_active),
-                    keyboard_owner: self.owner,
-                    pointer_owner: self.owner,
-                    owner_conflict: self.owner_conflict.clone(),
-                    authorization_last_transition_at: self.authorization_last_transition_at,
-                    owner_designated_requirement_hash: self
-                        .owner_designated_requirement_hash
-                        .clone(),
-                    host_architecture: self.host_architecture,
-                    executable_architecture: self.executable_architecture,
-                    translated_process: self.translated_process,
-                    capture_session_generation,
-                    topology_generation,
-                    queue_capacity: native.map(|diagnostics| diagnostics.queue_capacity),
-                    queue_depth: native.map(|diagnostics| diagnostics.queue_depth),
-                    input_events_received: native.map(|diagnostics| diagnostics.events_received),
-                    input_events_published: native.map(|diagnostics| diagnostics.events_published),
-                    input_events_dropped: native.map(|diagnostics| diagnostics.dropped_events),
-                    tap_disabled_timeout: native
-                        .map(|diagnostics| diagnostics.tap_disabled_timeout),
-                    tap_disabled_user_input: native
-                        .map(|diagnostics| diagnostics.tap_disabled_user_input),
-                    tap_reenabled: native.map(|diagnostics| diagnostics.tap_reenabled),
-                    state_gaps: native
-                        .map(|diagnostics| diagnostics.state_gaps)
-                        .or((folded_state_gaps > 0).then_some(folded_state_gaps)),
-                    callback_to_publication_timing: native.map(|diagnostics| MacosTimingStatus {
-                        sample_count: diagnostics.callback_to_publication_sample_count,
-                        total_ns: diagnostics.callback_to_publication_total_ns,
-                        max_ns: diagnostics.callback_to_publication_max_ns,
-                        p95_ns: diagnostics.callback_to_publication_p95_ns,
-                        p99_ns: diagnostics.callback_to_publication_p99_ns,
-                    }),
-                },
-            )))?;
+            .set_action_issue(protected_input_action_issue(keyboard))?;
+        let diagnostics = input_diagnostics_envelope(&diagnostics)
+            .inspect_err(|error| tracing::warn!(%error, "dropping invalid macOS input diagnostics"))
+            .ok();
+        self.status.set_diagnostics(diagnostics)?;
         Ok(())
     }
 
@@ -673,14 +578,12 @@ impl MacosHostInput {
                 });
         #[cfg(not(feature = "macos-native-fixtures"))]
         let (effective_keyboard, effective_pointer) = (requested_keyboard, requested_pointer);
-        let epoch = self.rotate_epoch_and_clear();
-
         if !keyboard_granted {
             self.degraded = Some(InteractionDegradation::InputMonitoringPermissionDenied);
         }
 
         #[cfg(feature = "macos-native-fixtures")]
-        if let Some(fixture) = &self.fixture {
+        if let Some(fixture) = self.fixture.clone() {
             if keyboard_granted
                 && ((self.capture_keyboard && !effective_keyboard)
                     || (self.capture_pointer && !effective_pointer))
@@ -689,11 +592,15 @@ impl MacosHostInput {
                     "macOS event tap did not activate every requested input kind".to_owned(),
                 ));
             }
-            *fixture
-                .active_epoch
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                (effective_keyboard || effective_pointer).then_some(epoch);
+            if effective_keyboard || effective_pointer {
+                let sink = self.begin_fold_session(effective_keyboard, effective_pointer);
+                let generation = self.session_generation;
+                *fixture
+                    .active_session
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(FixtureSession { generation, sink });
+            }
             self.publish_started_status(effective_keyboard, effective_pointer);
             return;
         }
@@ -703,16 +610,18 @@ impl MacosHostInput {
             return;
         }
 
-        let shared = Arc::clone(&self.shared);
-        let event_limit = self.event_limit;
+        let sink = self.begin_fold_session(effective_keyboard, effective_pointer);
+        let topology_generation = Arc::clone(&self.topology_generation);
         let config = MacosInputConfig {
             keyboard: effective_keyboard,
             pointer: effective_pointer,
-            epoch,
             clock: Arc::new(crate::input::input_mono_ms),
         };
         match MacosInputSession::start(config, move |batch| {
-            if publish_macos_batch(&shared, batch, event_limit) {
+            if let Some(pointer) = batch.pointer {
+                topology_generation.store(pointer.coordinate_space_generation, Ordering::Relaxed);
+            }
+            if sink.publish(batch) == HostInputPublishOutcome::Published {
                 MacosInputPublicationOutcome::Published
             } else {
                 MacosInputPublicationOutcome::Rejected
@@ -729,7 +638,7 @@ impl MacosHostInput {
                 self.publish_started_status(effective_keyboard, effective_pointer);
             }
             Err(error) => {
-                self.rotate_epoch_and_clear();
+                self.end_fold_session();
                 self.degraded = Some(classify_start_error(&error));
                 warn!(source = %self.name, %error, "macOS event-tap input capture unavailable");
                 if let Some(status) = self.status.session() {
@@ -766,14 +675,14 @@ impl MacosHostInput {
         #[cfg(feature = "macos-native-fixtures")]
         if let Some(fixture) = &self.fixture {
             *fixture
-                .active_epoch
+                .active_session
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
         if let Some(mut session) = self.session.take() {
             session.stop();
         }
-        self.rotate_epoch_and_clear();
+        self.end_fold_session();
     }
 
     fn fixture_session_active(&self) -> bool {
@@ -781,7 +690,7 @@ impl MacosHostInput {
         {
             self.fixture.as_ref().is_some_and(|fixture| {
                 fixture
-                    .active_epoch
+                    .active_session
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_some()
@@ -834,18 +743,47 @@ impl MacosHostInput {
     }
 }
 
+fn protected_input_action_issue(state: MacosProtectedSourceState) -> Option<SourceIssue> {
+    match state {
+        MacosProtectedSourceState::NeedsUserAction => Some(
+            SourceIssue::new(
+                "authorization_required",
+                "Input Monitoring authorization is required",
+                true,
+            )
+            .with_remediation("Authorize Input Monitoring"),
+        ),
+        MacosProtectedSourceState::PermissionDenied => Some(
+            SourceIssue::new(
+                "authorization_denied",
+                "Input Monitoring authorization was denied",
+                true,
+            )
+            .with_remediation("Authorize Input Monitoring"),
+        ),
+        MacosProtectedSourceState::Revoked => Some(
+            SourceIssue::new(
+                "authorization_revoked",
+                "Input Monitoring authorization was revoked",
+                true,
+            )
+            .with_remediation("Authorize Input Monitoring"),
+        ),
+        MacosProtectedSourceState::NeedsProcessRestart => Some(
+            SourceIssue::new(
+                "process_restart_required",
+                "Input Monitoring authorization requires a process restart",
+                true,
+            )
+            .with_remediation("Restart the active Hypercolor process"),
+        ),
+        _ => None,
+    }
+}
+
 impl InputSource for MacosHostInput {
     fn name(&self) -> &str {
         &self.name
-    }
-
-    fn set_macos_daemon_ownership(
-        &mut self,
-        owner: MacosCapabilityOwner,
-        conflict: Option<crate::input::MacosDaemonOwnerConflict>,
-        designated_requirement_hash: Option<Arc<str>>,
-    ) -> anyhow::Result<()> {
-        self.set_daemon_ownership(owner, conflict, designated_requirement_hash)
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
@@ -879,11 +817,7 @@ impl InputSource for MacosHostInput {
         if !self.running || !self.capture_session_active() {
             return Ok(InputData::None);
         }
-        let shared = Arc::clone(&self.shared);
-        let Ok(mut state) = shared.lock() else {
-            return Ok(InputData::None);
-        };
-        Ok(InputData::Interaction(self.build_snapshot(&mut state)))
+        Ok(InputData::Interaction(self.fold.sample()))
     }
 
     fn sample_and_drain_with_delta_secs(
@@ -900,22 +834,18 @@ impl InputSource for MacosHostInput {
         if !self.running || !self.capture_session_active() {
             return (Ok(InputData::None), Vec::new());
         }
-        let shared = Arc::clone(&self.shared);
-        let Ok(mut state) = shared.lock() else {
-            return (Ok(InputData::None), Vec::new());
-        };
-        let events = drain_events(&mut state.events);
-        let snapshot = self.build_snapshot(&mut state);
-        (Ok(InputData::Interaction(snapshot)), events)
+        let sample = self.fold.sample_and_drain();
+        (
+            Ok(InputData::Interaction(sample.interaction)),
+            sample.events,
+        )
     }
 
     fn drain_events(&mut self) -> Vec<TimedInputEvent> {
         if !self.running || !self.capture_session_active() {
             return Vec::new();
         }
-        self.shared
-            .lock()
-            .map_or_else(|_| Vec::new(), |mut state| drain_events(&mut state.events))
+        self.fold.drain_events()
     }
 
     fn is_running(&self) -> bool {
@@ -929,13 +859,21 @@ impl InputSource for MacosHostInput {
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
         Some(&mut self.status)
     }
+}
 
-    fn is_interaction_source(&self) -> bool {
-        true
-    }
-
-    fn is_host_capture_source(&self) -> bool {
-        true
+impl InteractionSource for MacosHostInput {
+    fn set_capability_context(&mut self, context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        let Some(owner) = MacosCapabilityOwner::from_id(&context.owner) else {
+            return Ok(());
+        };
+        let conflict = context.conflict.as_ref().and_then(|conflict| {
+            Some(MacosDaemonOwnerConflict {
+                active: MacosCapabilityOwner::from_id(&conflict.active)?,
+                contender: MacosCapabilityOwner::from_id(&conflict.contender)?,
+                observed_at_ms: conflict.observed_at_ms,
+            })
+        });
+        self.set_daemon_ownership(owner, conflict, context.identity_hash.clone())
     }
 
     fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
@@ -945,7 +883,7 @@ impl InputSource for MacosHostInput {
         let result = Arc::clone(&self.authorization_result);
         #[cfg(feature = "macos-native-fixtures")]
         let fixture = self.fixture.clone();
-        Some(ProtectedSourceAuthorizationAction::current_macos_process(
+        Some(ProtectedSourceAuthorizationAction::new(
             Arc::new(move || {
                 #[cfg(feature = "macos-native-fixtures")]
                 let granted = fixture
@@ -974,6 +912,7 @@ impl InputSource for MacosHostInput {
                 );
                 Ok(granted)
             }),
+            protected_action_identity(self.owner, false),
         ))
     }
 
@@ -1028,477 +967,30 @@ impl InputSource for MacosHostInput {
     }
 }
 
-fn publish_macos_batch(
-    shared: &Arc<Mutex<SharedState>>,
-    batch: MacosInputBatch<'_>,
-    event_limit: usize,
-) -> bool {
-    let Ok(mut state) = shared.lock() else {
-        return false;
-    };
-    if state.epoch != batch.epoch {
-        return false;
-    }
-    for event in batch.events {
-        fold_event(
-            &mut state,
-            event,
-            batch.virtual_desktop,
-            batch.at_ms,
-            event_limit,
+impl SourceRoleBinding for MacosHostInput {
+    type Role = InteractionSourceRole;
+}
+
+fn protected_action_identity(
+    owner: MacosCapabilityOwner,
+    presentation_required: bool,
+) -> CapabilityActionIdentity {
+    let requires_ui = matches!(
+        owner,
+        MacosCapabilityOwner::App | MacosCapabilityOwner::Broker
+    ) || presentation_required
+        && matches!(
+            owner,
+            MacosCapabilityOwner::LaunchdService | MacosCapabilityOwner::HomebrewService
         );
-    }
-    true
-}
-
-fn fold_event(
-    state: &mut SharedState,
-    event: &MacosInputEvent,
-    desktop: MacosVirtualDesktop,
-    at_ms: u64,
-    event_limit: usize,
-) {
-    match event {
-        MacosInputEvent::Key {
-            virtual_keycode,
-            pressed,
-            autorepeat,
-        } => fold_key(
-            state,
-            *virtual_keycode,
-            *pressed,
-            *autorepeat,
-            at_ms,
-            event_limit,
-        ),
-        MacosInputEvent::ModifierFlags {
-            virtual_keycode,
-            flags,
-        } => fold_modifier(state, *virtual_keycode, *flags, at_ms, event_limit),
-        MacosInputEvent::Button { button, pressed } => {
-            fold_button(state, *button, *pressed, at_ms, event_limit);
-        }
-        MacosInputEvent::Motion {
-            x,
-            y,
-            delta_x,
-            delta_y,
-        } => fold_motion(state, desktop, *x, *y, *delta_x, *delta_y),
-        MacosInputEvent::Wheel {
-            fixed_delta_x,
-            fixed_delta_y,
-            unit,
-            phase,
-            momentum_phase,
-        } => fold_scroll(
-            state,
-            *fixed_delta_x,
-            *fixed_delta_y,
-            *unit,
-            *phase,
-            *momentum_phase,
-            at_ms,
-            event_limit,
-        ),
-        MacosInputEvent::MediaKey {
-            nx_key_type,
-            pressed,
-            repeat,
-        } => fold_media_key(state, *nx_key_type, *pressed, *repeat, at_ms, event_limit),
-        MacosInputEvent::StateGap { reason: _ } => {
-            state.diagnostics.state_gaps = state.diagnostics.state_gaps.saturating_add(1);
-            synthesize_releases(state, at_ms, event_limit);
-            state.topology_generation = None;
-        }
-    }
-}
-
-fn fold_key(
-    state: &mut SharedState,
-    virtual_keycode: u16,
-    pressed: bool,
-    autorepeat: bool,
-    at_ms: u64,
-    event_limit: usize,
-) {
-    let Some(key) = macos_key_name(virtual_keycode) else {
-        state.diagnostics.unsupported_keys = state.diagnostics.unsupported_keys.saturating_add(1);
-        return;
-    };
-    fold_named_key(
-        state,
-        key,
-        pressed,
-        autorepeat,
-        Some(format!("macos:key:{virtual_keycode:02x}")),
-        at_ms,
-        event_limit,
-    );
-}
-
-fn fold_media_key(
-    state: &mut SharedState,
-    nx_key_type: u16,
-    pressed: bool,
-    repeat: bool,
-    at_ms: u64,
-    event_limit: usize,
-) {
-    let Some(key) = macos_media_key_name(nx_key_type) else {
-        state.diagnostics.unsupported_media_keys =
-            state.diagnostics.unsupported_media_keys.saturating_add(1);
-        return;
-    };
-    fold_named_key(
-        state,
-        key,
-        pressed,
-        repeat,
-        Some(format!("macos:nx:{nx_key_type}")),
-        at_ms,
-        event_limit,
-    );
-}
-
-fn fold_named_key(
-    state: &mut SharedState,
-    key: &str,
-    pressed: bool,
-    autorepeat: bool,
-    physical_code: Option<String>,
-    at_ms: u64,
-    event_limit: usize,
-) {
-    let held = state.pressed_keys.contains(key);
-    let button_state = if pressed && autorepeat {
-        if !held {
-            state.diagnostics.impossible_key_edges =
-                state.diagnostics.impossible_key_edges.saturating_add(1);
-        }
-        InputButtonState::Repeated
-    } else if pressed {
-        if held {
-            state.diagnostics.impossible_key_edges =
-                state.diagnostics.impossible_key_edges.saturating_add(1);
-            InputButtonState::Repeated
+    CapabilityActionIdentity::new(
+        owner.as_str(),
+        if requires_ui {
+            CapabilityActionDisposition::RequiresUi
         } else {
-            state.pressed_keys.insert(key.to_owned());
-            state.recent_keys.push_back(key.to_owned());
-            cap_recent(&mut state.recent_keys, event_limit);
-            InputButtonState::Pressed
-        }
-    } else {
-        if !state.pressed_keys.remove(key) {
-            state.diagnostics.impossible_key_edges =
-                state.diagnostics.impossible_key_edges.saturating_add(1);
-        }
-        InputButtonState::Released
-    };
-    push_event(
-        state,
-        TimedInputEvent {
-            event: InputEvent::Key {
-                source_id: SOURCE_ID.to_owned(),
-                key: key.to_owned(),
-                state: button_state,
-            },
-            at_ms,
-            seq: 0,
-            physical_code,
-            repeat_count: 1,
+            CapabilityActionDisposition::Local
         },
-        event_limit,
-    );
-}
-
-fn fold_modifier(
-    state: &mut SharedState,
-    virtual_keycode: u16,
-    flags: MacosModifierFlags,
-    at_ms: u64,
-    event_limit: usize,
-) {
-    let Some((key, mask, counterpart)) = modifier_key(virtual_keycode) else {
-        state.diagnostics.unsupported_keys = state.diagnostics.unsupported_keys.saturating_add(1);
-        return;
-    };
-    let held = state.pressed_keys.contains(key);
-    let active = flags.contains(mask);
-    let pressed = if active != held {
-        active
-    } else if key == "CapsLock" {
-        // The CapsLock flag carries the lock state rather than key travel:
-        // the physical release re-reports the unchanged flag. Not an edge
-        // and not an anomaly, so it neither emits nor counts.
-        return;
-    } else if active && counterpart.is_some_and(|other| state.pressed_keys.contains(other)) {
-        false
-    } else {
-        state.diagnostics.impossible_key_edges =
-            state.diagnostics.impossible_key_edges.saturating_add(1);
-        return;
-    };
-    fold_named_key(
-        state,
-        key,
-        pressed,
-        false,
-        Some(format!("macos:key:{virtual_keycode:02x}")),
-        at_ms,
-        event_limit,
-    );
-}
-
-fn modifier_key(
-    virtual_keycode: u16,
-) -> Option<(&'static str, MacosModifierFlags, Option<&'static str>)> {
-    match virtual_keycode {
-        0x38 => Some(("ShiftLeft", MacosModifierFlags::SHIFT, Some("ShiftRight"))),
-        0x3c => Some(("ShiftRight", MacosModifierFlags::SHIFT, Some("ShiftLeft"))),
-        0x3b => Some((
-            "ControlLeft",
-            MacosModifierFlags::CONTROL,
-            Some("ControlRight"),
-        )),
-        0x3e => Some((
-            "ControlRight",
-            MacosModifierFlags::CONTROL,
-            Some("ControlLeft"),
-        )),
-        0x3a => Some(("AltLeft", MacosModifierFlags::ALTERNATE, Some("AltRight"))),
-        0x3d => Some(("AltRight", MacosModifierFlags::ALTERNATE, Some("AltLeft"))),
-        0x37 => Some(("MetaLeft", MacosModifierFlags::COMMAND, Some("MetaRight"))),
-        0x36 => Some(("MetaRight", MacosModifierFlags::COMMAND, Some("MetaLeft"))),
-        0x39 => Some(("CapsLock", MacosModifierFlags::ALPHA_SHIFT, None)),
-        _ => None,
-    }
-}
-
-fn fold_button(
-    state: &mut SharedState,
-    button: MacosPointerButton,
-    pressed: bool,
-    at_ms: u64,
-    event_limit: usize,
-) {
-    let name = pointer_button_name(button);
-    let changed = if pressed {
-        state.held_buttons.insert(name.clone())
-    } else {
-        state.held_buttons.remove(&name)
-    };
-    if !changed {
-        state.diagnostics.impossible_button_edges =
-            state.diagnostics.impossible_button_edges.saturating_add(1);
-    }
-    push_event(
-        state,
-        TimedInputEvent {
-            event: InputEvent::MouseButton {
-                source_id: SOURCE_ID.to_owned(),
-                button: name.clone(),
-                state: if pressed {
-                    InputButtonState::Pressed
-                } else {
-                    InputButtonState::Released
-                },
-            },
-            at_ms,
-            seq: 0,
-            physical_code: Some(format!("macos:button:{name}")),
-            repeat_count: 1,
-        },
-        event_limit,
-    );
-}
-
-fn pointer_button_name(button: MacosPointerButton) -> String {
-    match button {
-        MacosPointerButton::Left => "left".to_owned(),
-        MacosPointerButton::Right => "right".to_owned(),
-        MacosPointerButton::Middle => "middle".to_owned(),
-        MacosPointerButton::Other(number) => {
-            format!("button{}", u32::from(number).saturating_add(1))
-        }
-    }
-}
-
-fn fold_motion(
-    state: &mut SharedState,
-    desktop: MacosVirtualDesktop,
-    x: f64,
-    y: f64,
-    delta_x: f64,
-    delta_y: f64,
-) {
-    let (norm_x, norm_y) = desktop.normalize(x, y);
-    state.pointer = Some(PointerSnapshot {
-        x: saturating_i32(x),
-        y: saturating_i32(y),
-        norm_x: norm_x as f32,
-        norm_y: norm_y as f32,
-    });
-    state.pointer_present = true;
-    if state.topology_generation != Some(desktop.topology_generation) {
-        state.topology_generation = Some(desktop.topology_generation);
-        state.diagnostics.topology_resets = state.diagnostics.topology_resets.saturating_add(1);
-        return;
-    }
-    let dx = (delta_x / desktop.width) as f32;
-    let dy = (delta_y / desktop.height) as f32;
-    state.motion.dx += dx;
-    state.motion.dy += dy;
-    state.motion.distance += dx.hypot(dy);
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::as_conversions,
-    reason = "finite desktop coordinates saturate at the public i32 boundary"
-)]
-fn saturating_i32(value: f64) -> i32 {
-    value
-        .round()
-        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the native wheel record and fold context are one atomic event"
-)]
-fn fold_scroll(
-    state: &mut SharedState,
-    fixed_delta_x: i64,
-    fixed_delta_y: i64,
-    unit: MacosScrollUnit,
-    phase: MacosScrollPhase,
-    momentum_phase: MacosScrollPhase,
-    at_ms: u64,
-    event_limit: usize,
-) {
-    let (delta_x_q16_16, delta_y_q16_16, canonical_unit) = match unit {
-        MacosScrollUnit::Notches => {
-            let (x, overflow_x) = checked_line120(fixed_delta_x);
-            let (y, overflow_y) = checked_line120(fixed_delta_y);
-            if overflow_x || overflow_y {
-                state.diagnostics.scroll_overflows =
-                    state.diagnostics.scroll_overflows.saturating_add(1);
-            }
-            (x, y, PointerScrollUnit::Line120)
-        }
-        MacosScrollUnit::Pixels => (fixed_delta_x, fixed_delta_y, PointerScrollUnit::Pixels),
-    };
-    push_event(
-        state,
-        TimedInputEvent {
-            event: InputEvent::PointerScroll {
-                source_id: SOURCE_ID.to_owned(),
-                delta_x_q16_16,
-                delta_y_q16_16,
-                unit: canonical_unit,
-                phase: canonical_phase(phase),
-                momentum_phase: canonical_phase(momentum_phase),
-            },
-            at_ms,
-            seq: 0,
-            physical_code: Some("macos:scroll".to_owned()),
-            repeat_count: 1,
-        },
-        event_limit,
-    );
-}
-
-fn checked_line120(value: i64) -> (i64, bool) {
-    value.checked_mul(120).map_or_else(
-        || {
-            (
-                if value.is_negative() {
-                    i64::MIN
-                } else {
-                    i64::MAX
-                },
-                true,
-            )
-        },
-        |scaled| (scaled, false),
     )
-}
-
-const fn canonical_phase(phase: MacosScrollPhase) -> PointerScrollPhase {
-    match phase {
-        MacosScrollPhase::None => PointerScrollPhase::None,
-        MacosScrollPhase::MayBegin => PointerScrollPhase::MayBegin,
-        MacosScrollPhase::Began => PointerScrollPhase::Began,
-        MacosScrollPhase::Stationary => PointerScrollPhase::Stationary,
-        MacosScrollPhase::Changed => PointerScrollPhase::Changed,
-        MacosScrollPhase::Ended => PointerScrollPhase::Ended,
-        MacosScrollPhase::Cancelled => PointerScrollPhase::Cancelled,
-    }
-}
-
-fn synthesize_releases(state: &mut SharedState, at_ms: u64, event_limit: usize) {
-    let keys = std::mem::take(&mut state.pressed_keys);
-    for key in keys {
-        push_event(
-            state,
-            TimedInputEvent {
-                event: InputEvent::Key {
-                    source_id: SOURCE_ID.to_owned(),
-                    key,
-                    state: InputButtonState::Released,
-                },
-                at_ms,
-                seq: 0,
-                physical_code: None,
-                repeat_count: 1,
-            },
-            event_limit,
-        );
-    }
-    let buttons = std::mem::take(&mut state.held_buttons);
-    for button in buttons {
-        push_event(
-            state,
-            TimedInputEvent {
-                event: InputEvent::MouseButton {
-                    source_id: SOURCE_ID.to_owned(),
-                    button,
-                    state: InputButtonState::Released,
-                },
-                at_ms,
-                seq: 0,
-                physical_code: None,
-                repeat_count: 1,
-            },
-            event_limit,
-        );
-    }
-}
-
-fn push_event(state: &mut SharedState, event: TimedInputEvent, limit: usize) {
-    if limit == 0 {
-        state.dropped = state
-            .dropped
-            .saturating_add(u32::try_from(state.events.len()).unwrap_or(u32::MAX))
-            .saturating_add(1);
-        state.events.clear();
-        return;
-    }
-    while state.events.len() >= limit {
-        state.events.pop_front();
-        state.dropped = state.dropped.saturating_add(1);
-    }
-    state.events.push_back(event);
-}
-
-fn cap_recent(recent: &mut VecDeque<String>, limit: usize) {
-    while recent.len() > limit {
-        recent.pop_front();
-    }
-}
-
-fn drain_events(events: &mut VecDeque<TimedInputEvent>) -> Vec<TimedInputEvent> {
-    events.drain(..).collect()
 }
 
 fn permission_issue() -> SourceIssue {

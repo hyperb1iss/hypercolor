@@ -67,6 +67,16 @@ impl MacosDisplayClock {
         )
     }
 
+    /// Reports that the mach display clock is unavailable on this platform.
+    ///
+    /// # Errors
+    ///
+    /// Always returns the unsupported-platform error.
+    #[cfg(not(target_os = "macos"))]
+    pub fn system() -> Result<Self, MacosDisplayClockError> {
+        Err(MacosDisplayClockError::UnsupportedPlatform)
+    }
+
     pub fn timestamp(&self, display_time: u64) -> Result<Instant, MacosDisplayClockError> {
         if display_time >= self.anchor_ticks {
             let elapsed = self.duration(display_time - self.anchor_ticks)?;
@@ -104,4 +114,6 @@ pub enum MacosDisplayClockError {
     DurationOutOfRange,
     #[error("mach display time falls outside the monotonic clock range")]
     InstantOutOfRange,
+    #[error("the mach display clock is unavailable on this platform")]
+    UnsupportedPlatform,
 }

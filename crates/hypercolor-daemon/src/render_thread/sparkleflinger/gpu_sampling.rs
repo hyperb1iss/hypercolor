@@ -324,7 +324,7 @@ impl GpuSamplingPreparation {
 pub(super) enum GpuSampleSource {
     Front,
     Back,
-    #[cfg(all(target_os = "macos", feature = "screen-capture"))]
+    /// A diagnostic texture sampled without replacing the live output.
     Diagnostic,
 }
 
@@ -333,7 +333,6 @@ impl GpuSampleSource {
         match self {
             Self::Front => 0,
             Self::Back => 1,
-            #[cfg(all(target_os = "macos", feature = "screen-capture"))]
             Self::Diagnostic => 2,
         }
     }

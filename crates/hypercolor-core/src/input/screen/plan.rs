@@ -255,47 +255,6 @@ impl ScreenSourcePlanDelta {
     }
 }
 
-/// Ordinary compatibility outputs selected from the canonical branch plan.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScreenCompatibilitySelection {
-    surface: ResolvedScreenPublicationDescriptor,
-    zones: Option<ResolvedScreenPublicationDescriptor>,
-}
-
-impl ScreenCompatibilitySelection {
-    /// Select one ordinary surface and an optional ordinary zones branch.
-    ///
-    /// # Errors
-    ///
-    /// Rejects descriptors whose kinds do not match their compatibility role.
-    pub fn try_new(
-        surface: ResolvedScreenPublicationDescriptor,
-        zones: Option<ResolvedScreenPublicationDescriptor>,
-    ) -> Result<Self, ScreenPlanError> {
-        if !matches!(surface.kind(), ScreenPublicationKind::Surface) {
-            return Err(ScreenPlanError::CompatibilitySurfaceKindMismatch);
-        }
-        if zones.as_ref().is_some_and(|descriptor| {
-            !matches!(descriptor.kind(), ScreenPublicationKind::Zones { .. })
-        }) {
-            return Err(ScreenPlanError::CompatibilityZonesKindMismatch);
-        }
-        Ok(Self { surface, zones })
-    }
-
-    /// Exact ordinary surface descriptor.
-    #[must_use]
-    pub const fn surface(&self) -> &ResolvedScreenPublicationDescriptor {
-        &self.surface
-    }
-
-    /// Optional exact ordinary zones descriptor.
-    #[must_use]
-    pub const fn zones(&self) -> Option<&ResolvedScreenPublicationDescriptor> {
-        self.zones.as_ref()
-    }
-}
-
 /// Immutable, deterministic screen-publication plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenCapturePlan {
@@ -304,8 +263,6 @@ pub struct ScreenCapturePlan {
     branches: Arc<Vec<ScreenBranchDemand>>,
     physical_reductions: Arc<Vec<ScreenPhysicalReductionDemand>>,
     consumer_routes: Arc<Vec<ScreenConsumerBranchRoute>>,
-    compatibility_surface: Option<usize>,
-    compatibility_zones: Option<usize>,
 }
 
 impl ScreenCapturePlan {
@@ -351,26 +308,6 @@ impl ScreenCapturePlan {
             .and_then(|index| self.consumer_routes.get(index).copied())
     }
 
-    /// Index of the ordinary branch selected by the compatibility mirror.
-    #[must_use]
-    pub const fn compatibility_branch_index(&self) -> Option<usize> {
-        self.compatibility_surface
-    }
-
-    /// Ordinary branch selected by the compatibility mirror.
-    #[must_use]
-    pub fn compatibility_branch(&self) -> Option<&ScreenBranchDemand> {
-        self.compatibility_surface
-            .and_then(|index| self.branches.get(index))
-    }
-
-    /// Optional ordinary zones branch paired with the compatibility surface.
-    #[must_use]
-    pub fn compatibility_zones_branch(&self) -> Option<&ScreenBranchDemand> {
-        self.compatibility_zones
-            .and_then(|index| self.branches.get(index))
-    }
-
     fn contains_descriptor(&self, descriptor: &ResolvedScreenPublicationDescriptor) -> bool {
         self.branches
             .binary_search_by(|branch| branch.descriptor.cmp(descriptor))
@@ -392,8 +329,6 @@ impl Default for ScreenCapturePlan {
             branches: Arc::new(Vec::new()),
             physical_reductions: Arc::new(Vec::new()),
             consumer_routes: Arc::new(Vec::new()),
-            compatibility_surface: None,
-            compatibility_zones: None,
         }
     }
 }
@@ -2265,7 +2200,6 @@ impl ScreenPlanBuilder {
     pub fn prepare(
         &mut self,
         demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-        compatibility: Option<&ScreenCompatibilitySelection>,
         demand_revision: InputPublicationDemandRevision,
         graph_generation: ScreenInputGraphGeneration,
         capacity: ScreenAdmissionCapacity,
@@ -2285,8 +2219,7 @@ impl ScreenPlanBuilder {
             NonZeroU64::new(self.next_transaction_id)
                 .ok_or(ScreenPlanError::TransactionIdentityExhausted)?,
         );
-        let candidate =
-            canonicalize_candidate(base_state.plan(), demands, compatibility, demand_revision)?;
+        let candidate = canonicalize_candidate(base_state.plan(), demands, demand_revision)?;
         let admission = admit_candidate(
             base_state.plan(),
             &candidate,
@@ -2471,15 +2404,6 @@ pub enum ScreenPlanError {
     /// A worker ticket exhausted its non-zero allocation identity space.
     #[error("screen publication resource lifetime nonce exhausted")]
     ResourceLifetimeNonceExhausted,
-    /// The compatibility mirror did not name an ordinary candidate branch.
-    #[error("compatibility mirror descriptor is absent from the candidate plan")]
-    CompatibilityBranchMissing,
-    /// Compatibility surface selection named a non-surface branch.
-    #[error("compatibility surface selection must name an ordinary Surface branch")]
-    CompatibilitySurfaceKindMismatch,
-    /// Compatibility zones selection named a non-zones branch.
-    #[error("compatibility zones selection must name an ordinary Zones branch")]
-    CompatibilityZonesKindMismatch,
     /// A candidate predates the committed demand revision.
     #[error(
         "input publication demand revision regressed: committed {committed:?}, candidate {candidate:?}"
@@ -3351,7 +3275,6 @@ fn push_required_minimum(
 fn canonicalize_candidate(
     current: &ScreenCapturePlan,
     demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-    compatibility: Option<&ScreenCompatibilitySelection>,
     demand_revision: InputPublicationDemandRevision,
 ) -> Result<ScreenCapturePlan, ScreenPlanError> {
     let mut resolved = Vec::new();
@@ -3393,35 +3316,9 @@ fn canonicalize_candidate(
         return Err(ScreenPlanError::DuplicateConsumerBranchId { consumer_branch_id });
     }
 
-    let compatibility_surface = compatibility
-        .map(|selection| {
-            branches
-                .binary_search_by(|branch| branch.descriptor.cmp(selection.surface()))
-                .map_err(|_| ScreenPlanError::CompatibilityBranchMissing)
-        })
-        .transpose()?;
-    let compatibility_zones = compatibility
-        .and_then(ScreenCompatibilitySelection::zones)
-        .map(|descriptor| {
-            branches
-                .binary_search_by(|branch| branch.descriptor.cmp(descriptor))
-                .map_err(|_| ScreenPlanError::CompatibilityBranchMissing)
-        })
-        .transpose()?;
     let physical_reductions = group_physical_reductions(&branches)?;
 
-    let routes_changed = current.consumer_routes.len() != route_targets.len()
-        || current.consumer_routes.iter().zip(&route_targets).any(
-            |(current_route, (consumer_branch_id, branch_index))| {
-                current_route.consumer_branch_id != *consumer_branch_id
-                    || current.branches[current_route.branch_index].descriptor
-                        != branches[*branch_index].descriptor
-            },
-        );
-    let changed = current.branches.as_slice() != branches.as_slice()
-        || current.compatibility_surface != compatibility_surface
-        || current.compatibility_zones != compatibility_zones
-        || routes_changed;
+    let changed = current.branches.as_slice() != branches.as_slice();
     let generation = if changed {
         current.generation.next()?
     } else {
@@ -3453,8 +3350,6 @@ fn canonicalize_candidate(
         branches: Arc::new(branches),
         physical_reductions: Arc::new(physical_reductions),
         consumer_routes: Arc::new(consumer_routes),
-        compatibility_surface,
-        compatibility_zones,
     })
 }
 

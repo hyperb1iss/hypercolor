@@ -18,8 +18,8 @@ import path.
 **Depends on:** `hypercolor-types`, `hypercolor-driver-api`, `hypercolor-hal`;
 optionally `hypercolor-linux-gpu-interop` (feature `servo-gpu-import`).
 
-**Depended on by:** `hypercolor-daemon`, `hypercolor-cli`, `hypercolor-tray`,
-`hypercolor-tui`, all network driver crates (`hue`, `nanoleaf`, `wled`,
+**Depended on by:** `hypercolor-daemon`, `hypercolor-cli`, `hypercolor-tui`,
+all network driver crates (`hue`, `nanoleaf`, `wled`,
 `govee`), `hypercolor-driver-builtin`, `hypercolor-app`.
 
 ## Key types and traits

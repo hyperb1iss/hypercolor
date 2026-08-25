@@ -5,23 +5,20 @@
 
 #![cfg(target_os = "windows")]
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hypercolor_core::asset::AssetLibrary;
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::engine::{FpsTier, RenderLoop};
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch, CaptureFrame,
-    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CaptureRotation, CaptureSourceId,
-    CaptureStorage, CpuCaptureStorage, PhysicalOrigin, PixelExtent, RawCaptureSurface, SourceScale,
-    WindowsScreenCaptureInput,
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, CaptureEpoch, CaptureSourceId, PixelExtent,
 };
+use hypercolor_core::input::screen::implementer::WindowsScreenCaptureInput;
 use hypercolor_core::input::{
-    InputManager, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
+    InputManager, ManagedSourceRole, SourceFreshness, SourceKind, SourceState, WindowsHostInput,
 };
 use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
@@ -39,19 +36,22 @@ use hypercolor_daemon::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent};
+use hypercolor_types::host_input::{
+    HostInputBatch, HostInputCapabilities, HostInputDevice, HostInputEvent, HostKeyIdentity,
+    HostKeySignal, HostPointerButton, HostPointerMotion, HostPointerSnapshot, HostRepeatEvidence,
+};
 use hypercolor_types::scene::{UnassignedBehavior, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-use hypercolor_windows_input::{
-    RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputEvent, RawKeyPrefix,
-};
 use tokio::sync::{Mutex, RwLock, watch};
 
-fn raw_device(source_id: &'static str, kind: RawDeviceKind) -> Arc<RawDeviceDescriptor> {
-    Arc::new(RawDeviceDescriptor {
+fn host_device(source_id: &'static str, keyboard: bool) -> Arc<HostInputDevice> {
+    Arc::new(HostInputDevice {
         source_id: Arc::from(source_id),
-        interface_path: Some(Arc::from(format!("fixture:{source_id}"))),
         label: Arc::from(format!("fixture {source_id}")),
-        kind,
+        capabilities: HostInputCapabilities {
+            keyboard,
+            pointer: !keyboard,
+        },
         session_generation: 1,
         device_generation: 1,
     })
@@ -91,7 +91,7 @@ async fn install_effect_with_test_demand_activation(
     stem: &str,
     test_input_reactive: bool,
 ) {
-    let effect_id = {
+    {
         let mut registry = state.effect_registry.write().await;
         let effect_id = builtin_effect_id(&registry, stem);
         if test_input_reactive {
@@ -100,8 +100,7 @@ async fn install_effect_with_test_demand_activation(
                 Some(true)
             );
         }
-        effect_id
-    };
+    }
     let mut scene = make_scene("Windows input capture fixture");
     scene.transition.duration_ms = 0;
     scene.unassigned_behavior = UnassignedBehavior::Off;
@@ -156,7 +155,7 @@ fn render_state(input_manager: InputManager, screen_capture_configured: bool) ->
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         scene_manager,
         scene_plan,
-        input_manager: Arc::new(Mutex::new(input_manager)),
+        input_manager,
         interaction_routing: InteractionRoutingControl::default(),
         power_state,
         scene_transactions: SceneTransactionQueue::default(),
@@ -181,7 +180,7 @@ async fn stop_render_thread(state: &RenderThreadState, render_thread: &mut Rende
         .shutdown()
         .await
         .expect("fixture render thread shuts down");
-    state.input_manager.lock().await.stop_all();
+    state.input_manager.stop_all();
 }
 
 async fn wait_until(description: &str, condition: impl Fn() -> bool) {
@@ -197,27 +196,6 @@ async fn wait_until(description: &str, condition: impl Fn() -> bool) {
     .unwrap_or_else(|_| panic!("timed out waiting for {description}"));
 }
 
-async fn wait_for_canvas(
-    receiver: &mut watch::Receiver<CanvasFrame>,
-    description: &str,
-    accepts: impl Fn(&CanvasFrame) -> bool,
-) -> CanvasFrame {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            receiver
-                .changed()
-                .await
-                .expect("canvas sender remains connected");
-            let frame = receiver.borrow().clone();
-            if accepts(&frame) {
-                break frame;
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {description}"))
-}
-
 fn capture_epoch() -> CaptureEpoch {
     CaptureEpoch {
         source_id: CaptureSourceId::new("windows:fixture-display")
@@ -227,98 +205,59 @@ fn capture_epoch() -> CaptureEpoch {
     }
 }
 
-fn capture_frame(epoch: &CaptureEpoch) -> CaptureFrame<RawCaptureSurface> {
-    let extent = PixelExtent::new(4, 3).expect("fixture extent is nonempty");
-    let captured_at = Instant::now();
-    let pixels: Arc<[u8]> = Arc::from([
-        255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 0, 0, 255, 255, 0, 0,
-        255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 0, 0, 255, 255,
-        0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255,
-    ]);
-    CaptureFrame::new(
-        CaptureFrameMetadata {
-            source_id: epoch.source_id.clone(),
-            topology_generation: epoch.topology_generation,
-            session_generation: epoch.session_generation,
-            sequence: 1,
-            captured_at,
-            fresh_until: captured_at + Duration::from_secs(1),
-            geometry: CaptureGeometry::new(
-                PhysicalOrigin::default(),
-                extent,
-                extent,
-                CaptureRotation::Identity,
-                None,
-                SourceScale::ONE,
-            )
-            .expect("fixture geometry is valid"),
-            colorimetry: CaptureColorimetry::SRGB,
-            cursor: CaptureCursor::default(),
-        },
-        CaptureStorage::Cpu(CpuCaptureStorage::new(
-            pixels,
-            CapturePixelFormat::Rgba8,
-            16,
-            0,
-        )),
-        CaptureDamage::default(),
-    )
-    .expect("fixture capture frame is valid")
-}
-
-fn contains_fixture_colors(frame: &CanvasFrame) -> bool {
-    let mut red = false;
-    let mut blue = false;
-    for pixel in frame.rgba_bytes().chunks_exact(4) {
-        red |= pixel[0] > 240 && pixel[1] < 15 && pixel[2] < 15 && pixel[3] == 255;
-        blue |= pixel[0] < 15 && pixel[1] < 15 && pixel[2] > 240 && pixel[3] == 255;
-        if red && blue {
-            return true;
-        }
-    }
-    false
-}
-
 #[tokio::test]
 async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
-    let keyboard = raw_device("keyboard-1", RawDeviceKind::Keyboard);
-    let mouse = raw_device("mouse-1", RawDeviceKind::Mouse);
+    let keyboard = host_device("keyboard-1", true);
+    let mouse = host_device("mouse-1", false);
+    let key_identity = HostKeyIdentity {
+        key: Arc::from("a"),
+        physical_code: Arc::from("windows:set1:none:1e"),
+    };
     let events = vec![
-        RawInputEvent::DeviceArrived {
+        HostInputEvent::DeviceArrived {
             device: Arc::clone(&keyboard),
         },
-        RawInputEvent::Key {
-            device: Arc::clone(&keyboard),
-            make_code: 0x1e,
-            prefix: RawKeyPrefix::None,
-            vkey: 0,
-            pressed: true,
+        HostInputEvent::Key {
+            device: Some(Arc::clone(&keyboard)),
+            identity: key_identity.clone(),
+            signal: HostKeySignal::Edge {
+                pressed: true,
+                repeat: HostRepeatEvidence::Unknown,
+            },
         },
-        RawInputEvent::Key {
-            device: keyboard,
-            make_code: 0x1e,
-            prefix: RawKeyPrefix::None,
-            vkey: 0,
-            pressed: true,
+        HostInputEvent::Key {
+            device: Some(keyboard),
+            identity: key_identity,
+            signal: HostKeySignal::Edge {
+                pressed: true,
+                repeat: HostRepeatEvidence::Unknown,
+            },
         },
-        RawInputEvent::DeviceArrived {
+        HostInputEvent::DeviceArrived {
             device: Arc::clone(&mouse),
         },
-        RawInputEvent::Button {
-            device: Arc::clone(&mouse),
-            button: RawButton::Left,
+        HostInputEvent::Button {
+            device: Some(Arc::clone(&mouse)),
+            button: HostPointerButton::left(),
             pressed: true,
+            physical_code: Arc::from("windows:button:left"),
         },
-        RawInputEvent::MotionRelative {
-            device: mouse,
-            dx: 120,
-            dy: -60,
+        HostInputEvent::Motion {
+            device: Some(mouse),
+            motion: HostPointerMotion::Relative {
+                delta_x: 120.0,
+                delta_y: -60.0,
+                units_per_x: 1200.0,
+                units_per_y: 1200.0,
+            },
         },
     ];
     let (source, fixture) = WindowsHostInput::new_deterministic_fixture(true, true);
-    let mut manager = InputManager::new();
+    let manager = InputManager::new();
     let statuses = manager.source_status_registry();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::interaction(Box::new(source)))
+        .expect("Windows host fixture should register");
     manager.start_all().expect("fixture source starts");
     let mut state = render_state(manager, false);
     install_effect_with_test_demand_activation(&mut state, "solid_color", true).await;
@@ -341,16 +280,18 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
     );
     assert!(
         fixture
-            .publish(
-                &events,
-                Some(RawCursor {
-                    x: -100,
-                    y: 200,
+            .publish(HostInputBatch {
+                events: &events,
+                pointer: Some(HostPointerSnapshot {
+                    x: -100.0,
+                    y: 200.0,
                     norm_x: 0.25,
                     norm_y: 0.75,
+                    coordinate_space_generation: 1,
                 }),
-                1_000,
-            )
+                at_ms: 1_000,
+                device_catalog_generation: 1,
+            })
             .expect("post-adapter Raw Input batch is accepted")
     );
 
@@ -422,7 +363,7 @@ async fn raw_input_reaches_daemon_frame_routing_and_event_bus() {
 }
 
 #[tokio::test]
-async fn capture_frame_reaches_daemon_screen_and_canvas_watches() {
+async fn daemon_demand_activates_and_releases_the_deterministic_windows_source() {
     let config = CaptureConfig {
         target_fps: 60,
         grid_cols: 2,
@@ -431,20 +372,19 @@ async fn capture_frame_reaches_daemon_screen_and_canvas_watches() {
         ..CaptureConfig::default()
     };
     let epoch = capture_epoch();
-    let (source, fixture) =
-        WindowsScreenCaptureInput::new_deterministic_fixture(config, epoch.clone())
-            .expect("deterministic Windows capture source is valid");
-    let mut manager = InputManager::new();
+    let (source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(config, epoch)
+        .expect("deterministic Windows capture source is valid");
+    let manager = InputManager::new();
     let statuses = manager.source_status_registry();
-    manager.add_source(Box::new(source));
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(source)))
+        .expect("Windows screen fixture should register");
     manager.start_all().expect("fixture source starts idle");
     let mut state = render_state(manager, true);
     install_effect_with_test_demand_activation(&mut state, "screen_cast", false).await;
-    let mut canvas_receiver = state.event_bus.canvas_receiver();
-    let mut screen_receiver = state.event_bus.screen_canvas_receiver();
     let mut render_thread = start_render_thread(&state).await;
     let demand = render_thread.input_publication_demands();
-    let _registration = demand.register(
+    let registration = demand.register(
         InputPublicationConsumer::Diagnostic,
         InputPublicationDemand::default().with_screen(
             60,
@@ -453,37 +393,15 @@ async fn capture_frame_reaches_daemon_screen_and_canvas_watches() {
     );
 
     wait_until("daemon screen-capture demand", || fixture.is_active()).await;
-    assert!(
-        fixture
-            .publish(capture_frame(&epoch))
-            .expect("adapter-boundary frame is accepted")
-    );
-    let screen = wait_for_canvas(
-        &mut screen_receiver,
-        "screen canvas watch",
-        contains_fixture_colors,
-    )
-    .await;
-    let canvas = wait_for_canvas(
-        &mut canvas_receiver,
-        "composed canvas watch",
-        contains_fixture_colors,
-    )
-    .await;
-
-    assert!(screen.width >= 4);
-    assert!(screen.height >= 3);
-    assert!(screen.frame_number > 0);
-    assert_eq!((canvas.width, canvas.height), (4, 3));
-    assert!(canvas.frame_number > 0);
+    assert!(fixture.epoch_is_current());
     let registry = statuses.snapshot();
     let status = registry.handles()[0].snapshot();
     assert_eq!(status.backend.as_ref(), "dxgi_desktop_duplication");
-    assert_eq!(status.state, SourceState::Live);
-    assert_eq!(status.freshness, SourceFreshness::Fresh);
-    assert_eq!(status.resource_count, 1);
+    assert!(status.demanded);
 
+    drop(registration);
     stop_render_thread(&state, &mut render_thread).await;
     assert!(!fixture.is_active());
+    assert!(!fixture.epoch_is_current());
     assert_eq!(registry.handles()[0].snapshot().state, SourceState::Stopped);
 }

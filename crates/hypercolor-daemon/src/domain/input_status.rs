@@ -2,24 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::{
-    MacosArchitecture as CoreMacosArchitecture,
-    MacosAuthorizationState as CoreMacosAuthorizationState,
-    MacosCapabilityOwner as CoreMacosCapabilityOwner, MacosDaemonOwnerConflict,
-    MacosInputPlatformStatus, MacosProtectedSourceState as CoreMacosProtectedSourceState,
-    MacosScreenPlatformStatus, MacosScreenTimingStatus,
-    MacosSelectionState as CoreMacosSelectionState,
-    MacosTahoeCapabilities as CoreMacosTahoeCapabilities,
-    MacosTahoeSelectionCapabilities as CoreMacosTahoeSelectionCapabilities, MacosTimingStatus,
-    SourceFreshness, SourceIssue, SourceKind, SourcePlatformStatus, SourceState, SourceStatus,
-};
+use hypercolor_core::input::{SourceFreshness, SourceIssue, SourceKind, SourceState, SourceStatus};
 use hypercolor_types::api::system::{
-    InputSourceIssueStatus, InputSourcePlatformStatus, InputSourceStatus, InputStatus,
-    MacosArchitecture, MacosAuthorizationState, MacosCapabilityOwner, MacosDaemonHandoverPhase,
-    MacosDaemonOwnerConflictStatus, MacosDaemonOwnerRecoveryRequiredStatus,
-    MacosDaemonOwnershipStatus, MacosFrameDrop, MacosInputTelemetry, MacosProtectedSourceState,
-    MacosScreenTelemetry, MacosScreenTiming, MacosSelectionState, MacosTahoeCapabilities,
-    MacosTahoeSelectionCapabilities, MacosTiming,
+    InputSourceIssueStatus, InputSourceStatus, InputStatus, MacosCapabilityOwner,
+    MacosDaemonHandoverPhase, MacosDaemonOwnerConflictStatus,
+    MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus,
 };
 
 use crate::domain::context::PlatformContext;
@@ -134,7 +121,7 @@ pub(crate) fn actionable_input_diagnostics(input: &InputStatus) -> Vec<InputDiag
 pub(crate) fn input_source_status(
     source: &SourceStatus,
     now: Instant,
-    include_private_selection_ids: bool,
+    _include_private_selection_ids: bool,
 ) -> InputSourceStatus {
     let lifecycle_issue = source.issue.as_ref().map(input_source_issue_status);
     let freshness_issue = source
@@ -164,234 +151,11 @@ pub(crate) fn input_source_status(
         resource_count: source.resource_count,
         denied_resource_count: source.denied_resource_count,
         issue,
+        action_issue: source.action_issue.as_ref().map(input_source_issue_status),
+        diagnostics: source.diagnostics.as_deref().cloned(),
         lifecycle_issue,
         freshness_issue,
-        platform: source.platform.as_deref().and_then(|platform| {
-            input_source_platform_status(platform, now, include_private_selection_ids)
-        }),
         retired: source.retired,
-    }
-}
-
-fn input_source_platform_status(
-    platform: &SourcePlatformStatus,
-    now: Instant,
-    include_private_selection_ids: bool,
-) -> Option<InputSourcePlatformStatus> {
-    match platform {
-        SourcePlatformStatus::MacosInput(status) => Some(macos_input_platform_status(status, now)),
-        SourcePlatformStatus::MacosScreen(status) => Some(macos_screen_platform_status(
-            status,
-            now,
-            include_private_selection_ids,
-        )),
-        _ => None,
-    }
-}
-
-fn macos_input_platform_status(
-    status: &MacosInputPlatformStatus,
-    now: Instant,
-) -> InputSourcePlatformStatus {
-    InputSourcePlatformStatus::MacosInput {
-        keyboard: macos_protected_source_state(status.keyboard),
-        pointer: macos_protected_source_state(status.pointer),
-        keyboard_tcc: macos_authorization_state(status.keyboard_tcc),
-        secure_input_active: status.secure_input_active,
-        keyboard_owner: macos_capability_owner(status.keyboard_owner),
-        pointer_owner: macos_capability_owner(status.pointer_owner),
-        owner_conflict: status
-            .owner_conflict
-            .as_deref()
-            .map(macos_daemon_owner_conflict),
-        telemetry: MacosInputTelemetry {
-            authorization_last_transition_age_ms: status
-                .authorization_last_transition_at
-                .map(|transition| duration_ms(now.saturating_duration_since(transition))),
-            owner_designated_requirement_hash: status
-                .owner_designated_requirement_hash
-                .as_deref()
-                .map(str::to_owned),
-            host_architecture: status.host_architecture.map(macos_architecture),
-            executable_architecture: macos_architecture(status.executable_architecture),
-            translated_process: status.translated_process,
-            capture_session_generation: status.capture_session_generation,
-            topology_generation: status.topology_generation,
-            queue_capacity: status.queue_capacity,
-            queue_depth: status.queue_depth,
-            input_events_received: status.input_events_received,
-            input_events_published: status.input_events_published,
-            input_events_dropped: status.input_events_dropped,
-            tap_disabled_timeout: status.tap_disabled_timeout,
-            tap_disabled_user_input: status.tap_disabled_user_input,
-            tap_reenabled: status.tap_reenabled,
-            state_gaps: status.state_gaps,
-            callback_to_publication_timing: status
-                .callback_to_publication_timing
-                .as_ref()
-                .map(macos_timing_status),
-        },
-    }
-}
-
-fn macos_screen_platform_status(
-    status: &MacosScreenPlatformStatus,
-    now: Instant,
-    include_private_selection_ids: bool,
-) -> InputSourcePlatformStatus {
-    InputSourcePlatformStatus::MacosScreen {
-        state: macos_protected_source_state(status.state),
-        tcc: macos_authorization_state(status.tcc),
-        owner: macos_capability_owner(status.owner),
-        selection: macos_selection_state(&status.selection),
-        tahoe: macos_tahoe_capabilities(&status.tahoe),
-        tahoe_selection: status.tahoe_selection.as_ref().map(|capabilities| {
-            macos_tahoe_selection_capabilities(capabilities, include_private_selection_ids)
-        }),
-        owner_conflict: status
-            .owner_conflict
-            .as_deref()
-            .map(macos_daemon_owner_conflict),
-        telemetry: MacosScreenTelemetry {
-            authorization_last_transition_age_ms: status
-                .authorization_last_transition_at
-                .map(|transition| duration_ms(now.saturating_duration_since(transition))),
-            owner_designated_requirement_hash: status
-                .owner_designated_requirement_hash
-                .as_deref()
-                .map(str::to_owned),
-            executable_architecture: macos_architecture(status.executable_architecture),
-            stream_state: status.stream_state.to_string(),
-            capture_session_generation: status.capture_session_generation,
-            topology_generation: status.topology_generation,
-            resource_generation: status.resource_generation,
-            publication_plan_generation: status.publication_plan_generation,
-            pixel_format: status.pixel_format.as_deref().map(str::to_owned),
-            dynamic_range: status.dynamic_range.as_deref().map(str::to_owned),
-            color_space: status.color_space.as_deref().map(str::to_owned),
-            transfer_function: status.transfer_function.as_deref().map(str::to_owned),
-            selection_diagnostic_label: status
-                .selection_diagnostic_label
-                .as_deref()
-                .map(str::to_owned),
-            display_scale: status.display_scale_bits.map(f64::from_bits),
-            native_width: status.native_width,
-            native_height: status.native_height,
-            queue_depth: status.queue_depth,
-            admitted_native_bytes: status.admitted_native_bytes,
-            pinned_generations: status.pinned_generations,
-            frames_received: status.frames_received,
-            frames_published: status.frames_published,
-            frames_superseded: status.frames_superseded,
-            frames_malformed: status.frames_malformed,
-            frames_dropped: status
-                .frames_dropped
-                .iter()
-                .map(|(reason, count)| MacosFrameDrop {
-                    reason: reason.to_string(),
-                    count: *count,
-                })
-                .collect(),
-            frames_stale: status.frames_stale,
-            publication_path: status.publication_path.as_deref().map(str::to_owned),
-            fallback_reason: status.fallback_reason.as_deref().map(str::to_owned),
-            timing: Some(macos_screen_timing_status(&status.timing)),
-            callback_total_ns: status.callback_total_ns,
-            callback_max_ns: status.callback_max_ns,
-            retain_total_ns: status.retain_total_ns,
-            retain_max_ns: status.retain_max_ns,
-            conversion_total_ns: status.conversion_total_ns,
-            conversion_max_ns: status.conversion_max_ns,
-            cpu_reduction_total_ns: status.cpu_reduction_total_ns,
-            cpu_reduction_max_ns: status.cpu_reduction_max_ns,
-            native_import_total_ns: status.native_import_total_ns,
-            native_import_max_ns: status.native_import_max_ns,
-            native_reduction_submit_total_ns: status.native_reduction_submit_total_ns,
-            native_reduction_submit_max_ns: status.native_reduction_submit_max_ns,
-            publication_total_ns: status.publication_total_ns,
-            publication_max_ns: status.publication_max_ns,
-        },
-    }
-}
-
-fn macos_timing_status(status: &MacosTimingStatus) -> MacosTiming {
-    MacosTiming {
-        sample_count: status.sample_count,
-        total_ns: status.total_ns,
-        max_ns: status.max_ns,
-        p95_ns: status.p95_ns,
-        p99_ns: status.p99_ns,
-    }
-}
-
-fn macos_screen_timing_status(status: &MacosScreenTimingStatus) -> MacosScreenTiming {
-    MacosScreenTiming {
-        callback: macos_timing_status(&status.callback),
-        retain: macos_timing_status(&status.retain),
-        enqueue: macos_timing_status(&status.enqueue),
-        conversion: macos_timing_status(&status.conversion),
-        cpu_reduction: macos_timing_status(&status.cpu_reduction),
-        native_import: macos_timing_status(&status.native_import),
-        native_reduction_submit: macos_timing_status(&status.native_reduction_submit),
-        publication: macos_timing_status(&status.publication),
-        capture_to_native_publication: macos_timing_status(&status.capture_to_native_publication),
-        capture_to_converted_publication: macos_timing_status(
-            &status.capture_to_converted_publication,
-        ),
-    }
-}
-
-const fn macos_protected_source_state(
-    state: CoreMacosProtectedSourceState,
-) -> MacosProtectedSourceState {
-    match state {
-        CoreMacosProtectedSourceState::Disabled => MacosProtectedSourceState::Disabled,
-        CoreMacosProtectedSourceState::NeedsUserAction => {
-            MacosProtectedSourceState::NeedsUserAction
-        }
-        CoreMacosProtectedSourceState::PermissionDenied => {
-            MacosProtectedSourceState::PermissionDenied
-        }
-        CoreMacosProtectedSourceState::NeedsProcessRestart => {
-            MacosProtectedSourceState::NeedsProcessRestart
-        }
-        CoreMacosProtectedSourceState::NeedsSelection => MacosProtectedSourceState::NeedsSelection,
-        CoreMacosProtectedSourceState::ReadyIdle => MacosProtectedSourceState::ReadyIdle,
-        CoreMacosProtectedSourceState::Starting => MacosProtectedSourceState::Starting,
-        CoreMacosProtectedSourceState::Live => MacosProtectedSourceState::Live,
-        CoreMacosProtectedSourceState::Interrupted => MacosProtectedSourceState::Interrupted,
-        CoreMacosProtectedSourceState::Revoked => MacosProtectedSourceState::Revoked,
-        CoreMacosProtectedSourceState::Failed => MacosProtectedSourceState::Failed,
-    }
-}
-
-const fn macos_authorization_state(state: CoreMacosAuthorizationState) -> MacosAuthorizationState {
-    match state {
-        CoreMacosAuthorizationState::Unknown => MacosAuthorizationState::Unknown,
-        CoreMacosAuthorizationState::NotDetermined => MacosAuthorizationState::NotDetermined,
-        CoreMacosAuthorizationState::Denied => MacosAuthorizationState::Denied,
-        CoreMacosAuthorizationState::Authorized => MacosAuthorizationState::Authorized,
-    }
-}
-
-const fn macos_capability_owner(owner: CoreMacosCapabilityOwner) -> MacosCapabilityOwner {
-    match owner {
-        CoreMacosCapabilityOwner::AppSidecar => MacosCapabilityOwner::AppSidecar,
-        CoreMacosCapabilityOwner::App => MacosCapabilityOwner::App,
-        CoreMacosCapabilityOwner::LaunchdService => MacosCapabilityOwner::LaunchdService,
-        CoreMacosCapabilityOwner::HomebrewService => MacosCapabilityOwner::HomebrewService,
-        CoreMacosCapabilityOwner::Broker => MacosCapabilityOwner::Broker,
-        CoreMacosCapabilityOwner::Standalone => MacosCapabilityOwner::Standalone,
-    }
-}
-
-fn macos_daemon_owner_conflict(
-    conflict: &MacosDaemonOwnerConflict,
-) -> MacosDaemonOwnerConflictStatus {
-    MacosDaemonOwnerConflictStatus {
-        active: macos_capability_owner(conflict.active),
-        contender: macos_capability_owner(conflict.contender),
-        observed_at_ms: conflict.observed_at_ms,
     }
 }
 
@@ -464,54 +228,6 @@ const fn macos_daemon_handover_phase(phase: MacosHandoverPhase) -> MacosDaemonHa
     }
 }
 
-pub(crate) fn macos_selection_state(selection: &CoreMacosSelectionState) -> MacosSelectionState {
-    match selection {
-        CoreMacosSelectionState::None => MacosSelectionState::None,
-        CoreMacosSelectionState::Display { source_id } => MacosSelectionState::Display {
-            source_id: source_id.to_string(),
-        },
-        CoreMacosSelectionState::SessionScoped { content_style } => {
-            MacosSelectionState::SessionScoped {
-                content_style: content_style.to_string(),
-            }
-        }
-    }
-}
-
-pub(crate) fn macos_tahoe_selection_capabilities(
-    capabilities: &CoreMacosTahoeSelectionCapabilities,
-    include_private_selection_ids: bool,
-) -> MacosTahoeSelectionCapabilities {
-    MacosTahoeSelectionCapabilities {
-        source_id: if include_private_selection_ids
-            || !capabilities.source_id.starts_with("macos:session:")
-        {
-            capabilities.source_id.to_string()
-        } else {
-            "session_scoped".to_owned()
-        },
-        capture_session_generation: capabilities.capture_session_generation,
-        hdr_capture: capabilities.hdr_capture,
-        dual_range_screenshots: capabilities.dual_range_screenshots,
-    }
-}
-
-fn macos_tahoe_capabilities(capabilities: &CoreMacosTahoeCapabilities) -> MacosTahoeCapabilities {
-    MacosTahoeCapabilities {
-        host_architecture: macos_architecture(capabilities.host_architecture),
-        translated_process: capabilities.translated_process,
-        content_tone_mapping_info: capabilities.content_tone_mapping_info,
-        metal4: capabilities.metal4,
-    }
-}
-
-const fn macos_architecture(architecture: CoreMacosArchitecture) -> MacosArchitecture {
-    match architecture {
-        CoreMacosArchitecture::AppleSilicon => MacosArchitecture::AppleSilicon,
-        CoreMacosArchitecture::Intel => MacosArchitecture::Intel,
-    }
-}
-
 fn input_source_issue_status(issue: &SourceIssue) -> InputSourceIssueStatus {
     InputSourceIssueStatus {
         code: issue.code.to_string(),
@@ -545,6 +261,7 @@ const fn source_kind_name(kind: SourceKind) -> &'static str {
         SourceKind::Interaction => "interaction",
         SourceKind::Media => "media",
         SourceKind::Network => "network",
+        SourceKind::Sensors => "sensors",
     }
 }
 

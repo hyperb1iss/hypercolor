@@ -1,107 +1,80 @@
 //! Wayland screen capture source powered by XDG Desktop Portal + PipeWire.
 //!
 //! This source keeps the portal session and PipeWire stream on a dedicated
-//! worker thread. The render loop only clones the latest processed
-//! [`ScreenData`] snapshot, while capture demand is toggled at runtime by the
+//! worker thread that publishes every committed exact branch into the
+//! publication hub, while capture demand is toggled at runtime by the
 //! daemon depending on the active effect.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
-use std::io::Cursor;
-use std::num::{NonZeroU32, NonZeroUsize};
-use std::os::fd::OwnedFd;
+use std::num::NonZeroU32;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
-use ashpd::desktop::{
-    CreateSessionOptions, PersistMode, Session,
-    screencast::{
-        CursorMode, OpenPipeWireRemoteOptions, Screencast, SelectSourcesOptions, SourceType,
-        StartCastOptions, Stream,
-    },
+pub use hypercolor_pipewire_interop::PackedVideoFormat as SpaVideoFormat;
+use hypercolor_pipewire_interop::{
+    BufferFault, CallbackAction, CaptureFormatRequest, D4Transform, DequeueOutcome, FormatEvent,
+    FormatFault, FormatOffer, LoopReceiver, LoopSender, MetaFault, NegotiatedVideoFormat,
+    PixelCrop, PortalRemote, PortalRequest, PortalSession, PortalStreamDescriptor, ProcessBuffer,
+    StateChange, StreamControl, StreamEventHandler, StreamState, connect_stream, loop_channel,
+    open_portal_session,
 };
-use pipewire as pw;
-use pw::properties::properties;
-use pw::spa;
-use tokio::sync::oneshot;
+use hypercolor_types::source_status::SourceDiagnosticsEnvelope;
+use serde_json::{Map, Value, json};
 use tracing::{debug, info, warn};
 
 use crate::input::screen::{
-    AnalyzedScreenSnapshot, CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor,
-    CaptureDamage, CaptureEpoch, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
-    CaptureGeometry, CapturePacer, CapturePixelFormat, CapturePlanePool, CaptureRotation,
-    CaptureSourceId, CaptureStorage, CpuCaptureStorage, CpuExactReductionWorkPlan,
-    CpuReductionExecutor, ExactBoxList, ExactBoxNode, PhysicalOrigin, PixelExtent, PixelRect,
-    PooledCapturePlane, PreparedCpuPublicationFanout, PreparedCpuPublicationFanoutCandidate,
-    RawCaptureSurface, RegisteredScreenBranchDemand, ResolvedScreenBranchDemand,
-    ResolvedScreenSource, ResolvedScreenSourceConfig, ScreenAdmissionCapacity,
-    ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity, ScreenAnalysisResourcePlan,
-    ScreenAnalysisWorkPlan, ScreenBackendResourceIdentity, ScreenByteAdmissionCoordinator,
-    ScreenByteLease, ScreenCaptureBackend, ScreenCaptureDemand, ScreenCaptureInput,
-    ScreenColorTransformCapabilities, ScreenComputeCapacityPolicy, ScreenPreparedWorkerToken,
+    CaptureCadence, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage, CaptureEpoch,
+    CaptureFrame, CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePacer,
+    CapturePixelFormat, CapturePlanePool, CaptureRotation, CaptureSourceId, CaptureStorage,
+    CpuCaptureStorage, CpuExactReductionWorkPlan, ExactBoxList, ExactBoxNode, PhysicalOrigin,
+    PixelExtent, PixelRect, PooledCapturePlane, PreparedCpuPublicationFanout,
+    PreparedCpuPublicationFanoutCandidate, RawCaptureSurface, RegisteredScreenBranchDemand,
+    ResolvedScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
+    ScreenAdmissionCapacity, ScreenBackendResourceIdentity, ScreenByteAdmissionCoordinator,
+    ScreenByteLease, ScreenCaptureBackend, ScreenCaptureDemand, ScreenColorTransformCapabilities,
+    ScreenCommittedState, ScreenComputeCapacityPolicy, ScreenPreparedWorkerToken,
     ScreenProcessingProfile, ScreenPublicationHealth, ScreenPublicationHub,
     ScreenRequiredResourceMinimum, ScreenResourceApi, ScreenResourceKind, ScreenResourceLifetime,
-    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenSourceReflection, ScreenSourceSelector, ScreenWorkerBinding,
     ScreenWorkerExactLedgerBuilder, ScreenWorkerPreparation, ScreenWorkerPreparationTicket,
-    ScreenWorkerRetirement, SourceScale, analyze_screen_frame,
+    ScreenWorkerRetirement, SourceScale,
 };
-use crate::input::traits::{InputData, InputSource, ScreenSourcePickerAction};
-use crate::input::worker_retention::{retain_input_worker, spawn_input_worker};
+use crate::input::traits::{
+    CapabilityActionDisposition, CapabilityActionIdentity, InputData, InputSource, ScreenSource,
+    ScreenSourcePickerAction, ScreenSourceRole, SourceRoleBinding,
+};
 use crate::input::{
     SourceIssue, SourceKind, SourceSessionSlot, SourceSessionWriter, SourceStatusHandle,
     SourceStatusReporter,
+};
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
+
+use super::adapter::{
+    CaptureActivity, CaptureBackend, CaptureBackendHandles, CaptureCommandEndpoint,
+    CaptureCommandSender, CaptureExactCommand, CaptureExactCommandRejected,
+    CaptureExactPublicationShared, CaptureExactRuntimeOwner, CaptureExactState,
+    CaptureOwnedSourceRecord, CapturePublicationFence, CapturePublicationSource,
+    CaptureRetirementCause, CaptureSession, CaptureSessionAuthority, CaptureSessionDeadline,
+    CaptureSessionExit, CaptureSessionReadiness, CaptureSessionTransaction, CaptureSettingsAdopter,
+    CaptureSettingsAdoption, CaptureSourceShell, CaptureSuccessorPolicy, CaptureWorkerCommand,
+    CpuExecutorSlot, ReservedCaptureSessionAuthority, ScreenCaptureAdapterAssembly,
+    VersionedCaptureSettings, begin_capture_settings_adoption, bind_current_capture_exact_runtime,
+    execute_capture_exact_command, finish_removed_capture_exact_source,
+    preflight_capture_exact_scope_bytes,
 };
 
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(1);
 const WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const FORMAT_ADOPTION_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const CAPTURE_DIAGNOSTICS_INTERVAL: Duration = Duration::from_secs(1);
 const RECONNECT_DELAY: Duration = Duration::from_millis(250);
-
-/// Packed raw pixel formats accepted by the PipeWire callback seam.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SpaVideoFormat {
-    /// Red, green, blue, alpha.
-    Rgba,
-    /// Blue, green, red, alpha.
-    Bgra,
-    /// Red, green, blue, ignored.
-    Rgbx,
-    /// Blue, green, red, ignored.
-    Bgrx,
-    /// Alpha, red, green, blue.
-    Argb,
-    /// Alpha, blue, green, red.
-    Abgr,
-    /// Ignored, red, green, blue.
-    Xrgb,
-    /// Ignored, blue, green, red.
-    Xbgr,
-    /// Red, green, blue.
-    Rgb,
-    /// Blue, green, red.
-    Bgr,
-}
-
-impl SpaVideoFormat {
-    const fn bytes_per_pixel(self) -> usize {
-        match self {
-            Self::Rgb | Self::Bgr => 3,
-            Self::Rgba
-            | Self::Bgra
-            | Self::Rgbx
-            | Self::Bgrx
-            | Self::Argb
-            | Self::Abgr
-            | Self::Xrgb
-            | Self::Xbgr => 4,
-        }
-    }
-}
 
 /// Borrowed, negotiated SPA chunk presented to the synchronous copy seam.
 #[derive(Clone, Copy, Debug)]
@@ -153,6 +126,10 @@ pub enum ChunkDropReason {
     MissingBuffer,
     /// The dequeued PipeWire buffer did not contain a pixel plane.
     MissingPlane,
+    /// The dequeued wrapper did not retain its native buffer.
+    MissingNativeBuffer,
+    /// The first pixel plane did not retain a chunk descriptor.
+    MissingChunk,
     /// A pixel buffer arrived before a supported format was negotiated.
     MissingFormat,
     /// The first PipeWire pixel plane was not mapped into this process.
@@ -161,16 +138,91 @@ pub enum ChunkDropReason {
     InvalidExtent,
     /// The SPA chunk offset or size escapes the mapped plane.
     InvalidChunkBounds,
+    /// Native buffer counts or pointers could not form bounded views.
+    InvalidBufferLayout,
+    /// A DMA-BUF plane did not have a stable kernel allocation identity.
+    InvalidDmaBuf,
     /// The signed stride cannot contain one negotiated row.
     InvalidStride,
     /// The chunk ends before the final row is complete.
     TruncatedChunk,
     /// The SPA crop escapes the negotiated native extent.
     InvalidCrop,
+    /// The SPA transform metadata carried an invalid value.
+    InvalidTransform,
+    /// Core policy panicked inside the guarded native visitor.
+    VisitorPanicked,
     /// Both preallocated buffers are still owned by analysis or publication.
     BufferUnavailable,
     /// The negotiated frame exceeds the capacity prepared outside the callback.
     BufferTooSmall,
+}
+
+impl ChunkDropReason {
+    const ALL: [Self; 17] = [
+        Self::MissingBuffer,
+        Self::MissingPlane,
+        Self::MissingNativeBuffer,
+        Self::MissingChunk,
+        Self::MissingFormat,
+        Self::UnmappedPlane,
+        Self::InvalidExtent,
+        Self::InvalidChunkBounds,
+        Self::InvalidBufferLayout,
+        Self::InvalidDmaBuf,
+        Self::InvalidStride,
+        Self::TruncatedChunk,
+        Self::InvalidCrop,
+        Self::InvalidTransform,
+        Self::VisitorPanicked,
+        Self::BufferUnavailable,
+        Self::BufferTooSmall,
+    ];
+    const COUNT: usize = Self::ALL.len();
+
+    const fn index(self) -> usize {
+        match self {
+            Self::MissingBuffer => 0,
+            Self::MissingPlane => 1,
+            Self::MissingNativeBuffer => 2,
+            Self::MissingChunk => 3,
+            Self::MissingFormat => 4,
+            Self::UnmappedPlane => 5,
+            Self::InvalidExtent => 6,
+            Self::InvalidChunkBounds => 7,
+            Self::InvalidBufferLayout => 8,
+            Self::InvalidDmaBuf => 9,
+            Self::InvalidStride => 10,
+            Self::TruncatedChunk => 11,
+            Self::InvalidCrop => 12,
+            Self::InvalidTransform => 13,
+            Self::VisitorPanicked => 14,
+            Self::BufferUnavailable => 15,
+            Self::BufferTooSmall => 16,
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::MissingBuffer => "missing_buffer",
+            Self::MissingPlane => "missing_plane",
+            Self::MissingNativeBuffer => "missing_native_buffer",
+            Self::MissingChunk => "missing_chunk",
+            Self::MissingFormat => "missing_format",
+            Self::UnmappedPlane => "unmapped_plane",
+            Self::InvalidExtent => "invalid_extent",
+            Self::InvalidChunkBounds => "invalid_chunk_bounds",
+            Self::InvalidBufferLayout => "invalid_buffer_layout",
+            Self::InvalidDmaBuf => "invalid_dma_buf",
+            Self::InvalidStride => "invalid_stride",
+            Self::TruncatedChunk => "truncated_chunk",
+            Self::InvalidCrop => "invalid_crop",
+            Self::InvalidTransform => "invalid_transform",
+            Self::VisitorPanicked => "visitor_panicked",
+            Self::BufferUnavailable => "buffer_unavailable",
+            Self::BufferTooSmall => "buffer_too_small",
+        }
+    }
 }
 
 /// Allocation-free result counters returned by [`decode_chunk`].
@@ -490,17 +542,39 @@ pub type RestoreTokenSink = Arc<dyn Fn(Option<String>) + Send + Sync>;
 /// the worker polls the counter once per frame and only takes the lock when
 /// a reconfiguration actually happened.
 struct SharedSettings {
-    config: Mutex<CaptureConfig>,
-    demand: Mutex<ScreenCaptureDemand>,
+    values: Arc<VersionedCaptureSettings<CaptureConfig>>,
     admission_coordinator: ScreenByteAdmissionCoordinator,
     compute_capacity_policy: ScreenComputeCapacityPolicy,
-    generation: AtomicU64,
-    frame_generation: AtomicU64,
     topology_generation: AtomicU64,
     topology: Mutex<Option<WaylandTopologyState>>,
-    session_generation: AtomicU64,
-    expected_epoch: Mutex<Option<CaptureEpoch>>,
-    exact: WaylandExactPublicationShared,
+    /// Serializes session transitions against publication and settings
+    /// writes so "is this session still current" and the write it guards
+    /// observe one consistent authority.
+    session_guard: Mutex<()>,
+    publication: Arc<Mutex<WaylandCaptureActivity>>,
+    exact: Arc<WaylandExactPublicationShared>,
+}
+
+struct WaylandSessionCommitGuard<'a> {
+    settings: &'a SharedSettings,
+    session_guard: std::sync::MutexGuard<'a, ()>,
+    publication: std::sync::MutexGuard<'a, WaylandCaptureActivity>,
+}
+
+impl WaylandSessionCommitGuard<'_> {
+    fn commit(mut self, reservation: ReservedCaptureSessionAuthority) {
+        let displaced = self
+            .publication
+            .replace_fence(WaylandPublicationFence(None));
+        let displaced_exact = self
+            .settings
+            .exact
+            .activate_reserved_authority(reservation)
+            .expect("reserved Wayland capture authority remains current");
+        drop(self.publication);
+        drop(self.session_guard);
+        drop((displaced, displaced_exact));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -522,127 +596,35 @@ impl WaylandPublicationSource {
     }
 }
 
-struct WaylandOwnedSource {
-    source_id: CaptureSourceId,
-    session_generation: u64,
-    binding: ScreenWorkerBinding,
-    _runtime_lifetime: ScreenResourceLifetime,
+impl CapturePublicationSource for WaylandPublicationSource {
+    fn source_id(&self) -> &CaptureSourceId {
+        &self.epoch.source_id
+    }
 }
+
+type WaylandOwnedSource = CaptureOwnedSourceRecord;
 
 #[derive(Default)]
 struct WaylandExactPublicationShared {
-    source: Mutex<Option<WaylandPublicationSource>>,
-    owned_sources: Mutex<ExactBoxList<WaylandOwnedSource>>,
-    hub: Mutex<Option<Arc<ScreenPublicationHub>>>,
-    cpu_executor: Mutex<Option<Arc<CpuReductionExecutor>>>,
-    resolution_revision: AtomicU64,
+    common: CaptureExactPublicationShared<WaylandPublicationSource, WaylandOwnedSource>,
+    cpu_executor: CpuExecutorSlot,
+}
+
+impl Deref for WaylandExactPublicationShared {
+    type Target = CaptureExactPublicationShared<WaylandPublicationSource, WaylandOwnedSource>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
+    }
 }
 
 impl WaylandExactPublicationShared {
-    fn advance_resolution_revision(&self) {
-        self.resolution_revision
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
-                revision.checked_add(1)
-            })
-            .expect("Wayland screen publication resolution revision exhausted");
-    }
-
-    fn replace_source(&self, next: Option<WaylandPublicationSource>) {
-        let mut source = self
-            .source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *source == next {
-            return;
-        }
-        *source = next;
-        self.advance_resolution_revision();
-    }
-
-    fn source(&self) -> Option<WaylandPublicationSource> {
-        self.source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn hub(&self) -> Option<Arc<ScreenPublicationHub>> {
-        self.hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn owns_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.source()
-            .is_some_and(|source| &source.epoch.source_id == source_id)
-            || self
-                .owned_sources
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .any(|owned| &owned.source_id == source_id)
-    }
-
-    fn register_owned_source(&self, source: Box<ExactBoxNode<WaylandOwnedSource>>) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push_boxed(source);
-    }
-
-    fn reap_owned_sources(&self) {
-        let authority = self.hub().map(|hub| hub.committed_state());
-        let mut sources = self
-            .owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sources.retain(|source| {
-            authority
-                .as_ref()
-                .is_some_and(|authority| authority.owns_runtime_binding(&source.binding))
-        });
-    }
-
-    fn clear_owned_sources_for_session(&self, session_generation: u64) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|source| source.session_generation != session_generation);
-    }
-
-    fn clear_owned_sources(&self) {
-        self.owned_sources
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-    }
-
-    fn cpu_executor(&self) -> anyhow::Result<Arc<CpuReductionExecutor>> {
-        let mut executor = self
-            .cpu_executor
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(executor) = executor.as_ref() {
-            return Ok(Arc::clone(executor));
-        }
-        let prepared = Arc::new(CpuReductionExecutor::new(
-            thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
-            NonZeroU32::new(16).expect("CPU reduction tile height is nonzero"),
-        )?);
-        *executor = Some(Arc::clone(&prepared));
-        Ok(prepared)
-    }
-
-    fn cpu_worker_count(&self) -> NonZeroUsize {
-        self.cpu_executor
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map_or_else(
-                || thread::available_parallelism().unwrap_or(NonZeroUsize::MIN),
-                |executor| executor.worker_count(),
-            )
+    #[cfg(test)]
+    fn register_test_owned_source(&self, source: Box<ExactBoxNode<WaylandOwnedSource>>) -> bool {
+        let authority = self
+            .current_authority()
+            .expect("test owned sources register under a committed authority");
+        self.register_owned_source_if_current(authority, source)
     }
 }
 
@@ -655,13 +637,12 @@ struct PreparedWaylandSettings {
     config: CaptureConfig,
     cadence: CaptureCadence,
     demand: ScreenCaptureDemand,
-    analyzer: ScreenCaptureInput,
     pipewire_format: Option<PreparedPipeWireFormat>,
 }
 
 struct PreparedPipeWireFormat {
     callback_buffers: DoubleBuffer,
-    format_bytes: Vec<u8>,
+    offer: FormatOffer,
     request: PipeWireFormatRequest,
 }
 
@@ -669,55 +650,24 @@ struct PreparedPipeWireFormat {
 struct PipeWireFormatRequest {
     extent: PixelExtent,
     target_fps: u32,
-    analysis_work_plan: ScreenAnalysisWorkPlan,
 }
 
 impl PipeWireFormatRequest {
-    fn new_with_compute_policy(
-        extent: PixelExtent,
-        requested_output_extent: PixelExtent,
-        config: &CaptureConfig,
-        compute_capacity_policy: ScreenComputeCapacityPolicy,
-    ) -> anyhow::Result<Self> {
-        let work_plan = ScreenAnalysisWorkPlan::try_new(extent, requested_output_extent, config)?;
-        let analysis_work_plan = match compute_capacity_policy.analysis() {
-            Some(capacity) => work_plan.admit(capacity)?,
-            None => work_plan,
-        };
-        Ok(Self {
+    const fn new(extent: PixelExtent, config: &CaptureConfig) -> Self {
+        Self {
             extent,
             target_fps: config.target_fps,
-            analysis_work_plan,
-        })
+        }
     }
 
-    #[cfg(test)]
-    fn new_with_compute_capacity(
-        extent: PixelExtent,
-        requested_output_extent: PixelExtent,
-        config: &CaptureConfig,
-        capacity: ScreenAnalysisComputeCapacity,
-    ) -> anyhow::Result<Self> {
-        let analysis_work_plan =
-            ScreenAnalysisWorkPlan::try_new(extent, requested_output_extent, config)?
-                .admit(capacity)?;
-        Ok(Self {
-            extent,
-            target_fps: config.target_fps,
-            analysis_work_plan,
-        })
-    }
-
-    fn matches(self, negotiated: NegotiatedPipeWireFormat) -> bool {
+    fn matches(self, negotiated: NegotiatedVideoFormat) -> bool {
         // The transport tick rate is advisory: compositors negotiate 0/1
         // (variable) or their own display rate, and CapturePacer governs the
         // capture cadence regardless. Extent stays exact.
         let rate = negotiated.framerate;
-        self.analysis_work_plan.input_extent() == self.extent
-            && self.analysis_work_plan.target_fps() == self.target_fps
-            && negotiated.frame.width == self.extent.width()
-            && negotiated.frame.height == self.extent.height()
-            && rate.denom != 0
+        negotiated.width == self.extent.width()
+            && negotiated.height == self.extent.height()
+            && rate.denominator != 0
     }
 }
 
@@ -735,10 +685,9 @@ enum PipeWireFormatAcknowledgment {
 struct PendingPipeWireAdoption {
     id: u64,
     request: PipeWireFormatRequest,
-    format_bytes: Vec<u8>,
+    offer: FormatOffer,
     callback_buffers: DoubleBuffer,
-    analysis_decision: mpsc::SyncSender<SettingsDecision>,
-    analysis_done: mpsc::Receiver<bool>,
+    analysis: CaptureSettingsAdopter<bool>,
     done: mpsc::SyncSender<Result<(), String>>,
     authority: Arc<AdoptionAuthority>,
 }
@@ -750,14 +699,14 @@ struct RestoringPipeWireAdoption {
 
 struct PipeWireFormatState {
     current: PipeWireFormatRequest,
-    current_format_bytes: Vec<u8>,
+    current_offer: FormatOffer,
     current_acknowledged: bool,
     pending: Option<PendingPipeWireAdoption>,
     restoring: Option<RestoringPipeWireAdoption>,
 }
 
 impl PipeWireFormatState {
-    fn acknowledgment(&self, negotiated: NegotiatedPipeWireFormat) -> PipeWireFormatAcknowledgment {
+    fn acknowledgment(&self, negotiated: NegotiatedVideoFormat) -> PipeWireFormatAcknowledgment {
         if self.restoring.is_some() {
             return if self.current.matches(negotiated) {
                 PipeWireFormatAcknowledgment::Restored
@@ -801,9 +750,13 @@ impl PipeWireFormatState {
         }
     }
 
-    fn begin_restoring(&mut self, pending: PendingPipeWireAdoption, failure: String) -> Vec<u8> {
+    fn begin_restoring(
+        &mut self,
+        pending: PendingPipeWireAdoption,
+        failure: String,
+    ) -> FormatOffer {
         self.restoring = Some(RestoringPipeWireAdoption { pending, failure });
-        self.current_format_bytes.clone()
+        self.current_offer
     }
 
     fn restoring_id(&self) -> Option<u64> {
@@ -827,11 +780,6 @@ struct PreparedAnalysisSettings {
     config: CaptureConfig,
     cadence: CaptureCadence,
     demand: ScreenCaptureDemand,
-    analyzer: ScreenCaptureInput,
-}
-
-enum SettingsDecision {
-    Commit,
 }
 
 const ADOPTION_OPEN: u8 = 0;
@@ -1158,6 +1106,8 @@ struct WaylandTopologySignature {
     source_id: CaptureSourceId,
     origin: PhysicalOrigin,
     logical_extent: Option<PixelExtent>,
+    native_extent: Option<PixelExtent>,
+    transform: CaptureRotation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1172,18 +1122,24 @@ struct WaylandTopologyState {
     resolved: ResolvedWaylandTopology,
 }
 
-#[derive(Clone)]
-struct CapturedScreenSnapshot {
-    analysis: AnalyzedScreenSnapshot,
-    generation: u64,
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct WaylandPublicationFence(Option<CaptureEpoch>);
+
+impl CapturePublicationFence<CaptureEpoch> for WaylandPublicationFence {
+    fn admits(&self, epoch: &CaptureEpoch) -> bool {
+        self.0.as_ref() == Some(epoch)
+    }
 }
 
+type WaylandCaptureActivity = CaptureActivity<WaylandPublicationFence, CaptureEpoch>;
+
 impl SharedSettings {
+    fn demand(&self) -> ScreenCaptureDemand {
+        self.values.demand()
+    }
+
     fn config_snapshot(&self) -> CaptureConfig {
-        self.config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.values.lock_config().clone()
     }
 
     fn commit_runtime(&self, next: &PreparedAnalysisSettings) -> u64 {
@@ -1191,24 +1147,14 @@ impl SharedSettings {
     }
 
     fn commit_values(&self, next_config: &CaptureConfig, demand: ScreenCaptureDemand) -> u64 {
-        {
-            let mut config = self
-                .config
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let granted_token = config.restore_token.take();
-            config.clone_from(next_config);
-            if config.restore_token.is_none() {
-                config.restore_token = granted_token;
-            }
+        let mut values = self.values.lock();
+        let granted_token = values.config_mut().restore_token.take();
+        values.config_mut().clone_from(next_config);
+        if values.config().restore_token.is_none() {
+            values.config_mut().restore_token = granted_token;
         }
-        *self
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = demand;
-        self.generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
+        *values.demand_mut() = demand;
+        values.commit()
     }
 
     fn snapshot_for_session(
@@ -1217,39 +1163,67 @@ impl SharedSettings {
         cancel: &AtomicBool,
     ) -> Option<CaptureRuntimeSettings> {
         let _session_guard = self
-            .expected_epoch
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire)
-            || self.session_generation.load(Ordering::Acquire) != session_generation
+            || !self
+                .exact
+                .is_current_authority(CaptureSessionAuthority::new(session_generation))
         {
             return None;
         }
-        let config = self.config_snapshot();
-        let demand = *self
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Some(CaptureRuntimeSettings { config, demand })
+        let snapshot = self.values.snapshot();
+        Some(CaptureRuntimeSettings {
+            config: snapshot.config,
+            demand: snapshot.demand,
+        })
     }
 
     fn expected_epoch(&self) -> Option<CaptureEpoch> {
-        self.expected_epoch
+        let _session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fence()
+            .0
             .clone()
     }
 
-    fn begin_session(&self) -> u64 {
-        let mut expected = self
-            .expected_epoch
+    fn prepare_reserved_session_commit(
+        &self,
+        reservation: &ReservedCaptureSessionAuthority,
+    ) -> Option<WaylandSessionCommitGuard<'_>> {
+        let session_guard = self
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let session_generation = self
-            .session_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
-        *expected = None;
+        let publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.exact
+            .can_activate_reserved_authority(reservation)
+            .then_some(WaylandSessionCommitGuard {
+                settings: self,
+                session_guard,
+                publication,
+            })
+    }
+
+    #[cfg(test)]
+    fn begin_session(&self) -> u64 {
+        let reservation = self
+            .exact
+            .reserve_authority()
+            .expect("Wayland capture session generation exhausted");
+        let session_generation = reservation.authority().generation();
+        self.prepare_reserved_session_commit(&reservation)
+            .expect("reserved Wayland capture session authority must advance")
+            .commit(reservation);
         session_generation
     }
 
@@ -1259,63 +1233,75 @@ impl SharedSettings {
         cancel: &AtomicBool,
         active_session_generation: &AtomicU64,
     ) -> Option<u64> {
-        let mut expected = self
-            .expected_epoch
+        let session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut publication = self
+            .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire) {
             return None;
         }
-        let successor_generation = session_generation.wrapping_add(1);
-        self.session_generation
-            .compare_exchange(
-                session_generation,
-                successor_generation,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .ok()?;
-        *expected = None;
-        self.exact.replace_source(None);
+        if !self
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(session_generation))
+        {
+            return None;
+        }
+        let reservation = self.exact.reserve_authority().ok()?;
+        let successor_generation = reservation.authority().generation();
+        let displaced = publication.replace_fence(WaylandPublicationFence(None));
+        let displaced_exact = self
+            .exact
+            .activate_reserved_authority(reservation)
+            .expect("reserved Wayland successor authority remains current");
         active_session_generation.store(successor_generation, Ordering::Release);
+        drop(publication);
+        drop(session_guard);
+        drop((displaced, displaced_exact));
         Some(successor_generation)
     }
 
-    fn cancel_worker_session(
-        &self,
-        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
-        cancel: &AtomicBool,
-        active_session_generation: &AtomicU64,
-    ) {
-        let mut expected = self
-            .expected_epoch
+    fn cancel_worker_session(&self, cancel: &AtomicBool, active_session_generation: &AtomicU64) {
+        let session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut publication = self
+            .publication
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         cancel.store(true, Ordering::SeqCst);
         let session_generation = active_session_generation.load(Ordering::Acquire);
-        if self.session_generation.load(Ordering::Acquire) != session_generation {
+        if !self
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(session_generation))
+        {
             return;
         }
-        if expected
+        let displaced = if publication
+            .fence()
+            .0
             .as_ref()
             .is_some_and(|epoch| epoch.session_generation == session_generation)
         {
-            *expected = None;
-        }
-        let mut latest = latest_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if latest.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .analysis
-                .geometry_frame()
-                .metadata()
-                .session_generation
-                == session_generation
-        }) {
-            *latest = None;
-        }
-        self.exact.replace_source(None);
+            Some(publication.replace_fence(WaylandPublicationFence(None)))
+        } else {
+            None
+        };
+        let Some(retirement) = self
+            .exact
+            .retire_authority_if_current(CaptureSessionAuthority::new(session_generation))
+            .expect("Wayland capture session generation exhausted during retirement")
+        else {
+            return;
+        };
+        let displaced_exact = retirement.into_displaced();
+        drop(publication);
+        drop(session_guard);
+        drop((displaced, displaced_exact));
     }
 
     fn persist_restore_token_for_session(
@@ -1326,17 +1312,18 @@ impl SharedSettings {
         token_sink: Option<&RestoreTokenSink>,
     ) -> bool {
         let _session_guard = self
-            .expected_epoch
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire)
-            || self.session_generation.load(Ordering::Acquire) != session_generation
+            || !self
+                .exact
+                .is_current_authority(CaptureSessionAuthority::new(session_generation))
         {
             return false;
         }
-        self.config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.values
+            .lock_config()
             .restore_token
             .clone_from(&restore_token);
         if let Some(sink) = token_sink {
@@ -1347,7 +1334,9 @@ impl SharedSettings {
 
     fn session_is_current(&self, session_generation: u64, cancel: &AtomicBool) -> bool {
         !cancel.load(Ordering::Acquire)
-            && self.session_generation.load(Ordering::Acquire) == session_generation
+            && self
+                .exact
+                .is_current_authority(CaptureSessionAuthority::new(session_generation))
     }
 
     fn publish_status_for_session(
@@ -1358,11 +1347,13 @@ impl SharedSettings {
         publish: impl FnOnce(&SourceSessionWriter) -> bool,
     ) -> bool {
         let _session_guard = self
-            .expected_epoch
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cancel.load(Ordering::Acquire)
-            || self.session_generation.load(Ordering::Acquire) != session_generation
+            || !self
+                .exact
+                .is_current_authority(CaptureSessionAuthority::new(session_generation))
         {
             return false;
         }
@@ -1375,11 +1366,18 @@ impl SharedSettings {
         native_extent: PixelExtent,
         session_generation: u64,
     ) -> Option<ResolvedWaylandTopology> {
-        let mut expected = self
-            .expected_epoch
+        let session_guard = self
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.session_generation.load(Ordering::Acquire) != session_generation {
+        let mut publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self
+            .exact
+            .is_current_authority(CaptureSessionAuthority::new(session_generation))
+        {
             return None;
         }
 
@@ -1404,81 +1402,65 @@ impl SharedSettings {
                 resolved
             }
         };
-        *expected = Some(CaptureEpoch {
+        let epoch = CaptureEpoch {
             source_id: signature.source_id.clone(),
             topology_generation: resolved.generation,
             session_generation,
-        });
+        };
+        let displaced_fence =
+            publication.replace_fence_if_changed(WaylandPublicationFence(Some(epoch.clone())));
+        let displaced_activation = publication
+            .activate(epoch)
+            .expect("the active Wayland epoch matches its installed publication fence");
+        drop(topology);
+        drop(publication);
+        drop(session_guard);
+        drop((displaced_fence, displaced_activation));
         Some(resolved)
     }
 
-    fn publish_snapshot(
-        &self,
-        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
-        analysis: AnalyzedScreenSnapshot,
-    ) -> bool {
-        let expected = self
-            .expected_epoch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(expected) = expected.as_ref() else {
-            return false;
-        };
-        if analysis.geometry_frame().validate_epoch(expected).is_err() {
-            return false;
-        }
-        let Ok(mut latest) = latest_snapshot.lock() else {
-            return false;
-        };
-        let generation = self
-            .frame_generation
-            .fetch_add(1, Ordering::Release)
-            .wrapping_add(1);
-        *latest = Some(CapturedScreenSnapshot {
-            analysis,
-            generation,
-        });
-        true
-    }
-
     fn clear_expected_epoch(&self) {
-        *self
-            .expected_epoch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        self.exact.replace_source(None);
-    }
-
-    fn invalidate_session(
-        &self,
-        latest_snapshot: &Mutex<Option<CapturedScreenSnapshot>>,
-        session_generation: u64,
-    ) -> bool {
-        let mut expected = self
-            .expected_epoch
+        let session_guard = self
+            .session_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if expected
+        let displaced = {
+            self.publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .replace_fence(WaylandPublicationFence(None))
+        };
+        let displaced_source = self
+            .exact
+            .current_authority()
+            .map(|authority| self.exact.replace_source_if_current(authority, None));
+        drop(session_guard);
+        drop((displaced, displaced_source));
+    }
+
+    fn invalidate_session(&self, session_generation: u64) -> bool {
+        let session_guard = self
+            .session_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if publication
+            .fence()
+            .0
             .as_ref()
             .is_none_or(|epoch| epoch.session_generation != session_generation)
         {
             return false;
         }
-        *expected = None;
-        let mut latest = latest_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if latest.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .analysis
-                .geometry_frame()
-                .metadata()
-                .session_generation
-                == session_generation
-        }) {
-            *latest = None;
-        }
-        self.exact.replace_source(None);
+        let displaced = publication.replace_fence(WaylandPublicationFence(None));
+        self.exact
+            .replace_source_if_current(CaptureSessionAuthority::new(session_generation), None);
+        drop(publication);
+        drop(session_guard);
+        drop(displaced);
         true
     }
 }
@@ -1486,16 +1468,9 @@ impl SharedSettings {
 /// Wayland-only live screen capture input source.
 pub struct WaylandScreenCaptureInput {
     settings: Arc<SharedSettings>,
-    running: bool,
-    capture_demand: ScreenCaptureDemand,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
-    status_snapshot_generation: u64,
-    worker: Option<WaylandCaptureWorker>,
-    retiring_workers: Vec<WaylandCaptureWorker>,
+    shell: CaptureSourceShell<WaylandCaptureBackend>,
     token_sink: Option<RestoreTokenSink>,
     next_adoption_id: u64,
-    status: SourceStatusReporter,
-    status_session: SourceSessionSlot,
 }
 
 impl WaylandScreenCaptureInput {
@@ -1550,37 +1525,43 @@ impl WaylandScreenCaptureInput {
         admission_coordinator: ScreenByteAdmissionCoordinator,
         compute_capacity_policy: ScreenComputeCapacityPolicy,
     ) -> Self {
+        let exact = Arc::new(WaylandExactPublicationShared::default());
+        let assembly =
+            ScreenCaptureAdapterAssembly::<WaylandCaptureBackend>::new(exact, config.clone());
+        let handles = assembly.handles();
+        let publication = handles.activity_handle();
+        let exact = handles.exact_state_handle();
+        let settings = Arc::new(SharedSettings {
+            values: assembly.handles().settings_handle(),
+            admission_coordinator,
+            compute_capacity_policy,
+            topology_generation: AtomicU64::new(0),
+            topology: Mutex::new(None),
+            session_guard: Mutex::new(()),
+            publication: Arc::clone(&publication),
+            exact,
+        });
+        let status_session = SourceSessionSlot::new();
+        let adapter = assembly.finish(WaylandCaptureBackend {
+            settings: Arc::clone(&settings),
+            status_session: status_session.clone(),
+        });
         Self {
-            settings: Arc::new(SharedSettings {
-                config: Mutex::new(config),
-                demand: Mutex::new(ScreenCaptureDemand::Inactive),
-                admission_coordinator,
-                compute_capacity_policy,
-                generation: AtomicU64::new(0),
-                frame_generation: AtomicU64::new(0),
-                topology_generation: AtomicU64::new(0),
-                topology: Mutex::new(None),
-                session_generation: AtomicU64::new(0),
-                expected_epoch: Mutex::new(None),
-                exact: WaylandExactPublicationShared::default(),
-            }),
-            running: false,
-            capture_demand: ScreenCaptureDemand::Inactive,
-            latest_snapshot: Arc::new(Mutex::new(None)),
-            status_snapshot_generation: 0,
-            worker: None,
-            retiring_workers: Vec::new(),
+            settings,
+            shell: CaptureSourceShell::new(
+                adapter,
+                SourceStatusReporter::new(
+                    "wayland_screen_capture",
+                    SourceKind::Screen,
+                    ScreenCaptureBackend::PipeWire.wire_name(),
+                    true,
+                    true,
+                    false,
+                ),
+                status_session,
+            ),
             token_sink: None,
             next_adoption_id: 0,
-            status: SourceStatusReporter::new(
-                "wayland_screen_capture",
-                SourceKind::Screen,
-                "pipewire",
-                true,
-                true,
-                false,
-            ),
-            status_session: SourceSessionSlot::new(),
         }
     }
 
@@ -1597,29 +1578,13 @@ impl WaylandScreenCaptureInput {
         demand: ScreenCaptureDemand,
         format_changed: bool,
     ) -> anyhow::Result<PreparedWaylandSettings> {
-        let requested_extent = demand
-            .requested_extent()
-            .context("active Wayland capture settings must carry an extent")?;
         let cadence = CaptureCadence::new(config.target_fps)?;
-        let source = self.settings.exact.source();
+        let source = self.shell.adapter.exact_source();
         let acquisition_extent = source
             .as_ref()
-            .map_or(requested_extent, |source| source.config.logical_extent());
-        if source.is_some()
-            && let Some(capacity) = self.settings.compute_capacity_policy.analysis()
-        {
-            ScreenAnalysisWorkPlan::try_new(acquisition_extent, requested_extent, &config)?
-                .admit(capacity)?;
-        }
-        let mut analyzer = build_wayland_analyzer_for_extent(
-            config.clone(),
-            requested_extent,
-            self.settings.admission_coordinator.clone(),
-            self.settings.compute_capacity_policy,
-        )?;
-        if source.is_some() {
-            analyzer.admit_frame_extent(acquisition_extent)?;
-        }
+            .map_or_else(default_acquisition_extent, |source| {
+                source.config.logical_extent()
+            });
         let pipewire_format = if format_changed {
             let callback_capacity = NegotiatedFormat {
                 width: acquisition_extent.width(),
@@ -1633,13 +1598,12 @@ impl WaylandScreenCaptureInput {
                     callback_capacity,
                     &self.settings.admission_coordinator,
                 )?,
-                format_bytes: build_format_params(config.target_fps, acquisition_extent)?,
-                request: PipeWireFormatRequest::new_with_compute_policy(
-                    acquisition_extent,
-                    requested_extent,
-                    &config,
-                    self.settings.compute_capacity_policy,
-                )?,
+                offer: FormatOffer::new(CaptureFormatRequest {
+                    width: acquisition_extent.width(),
+                    height: acquisition_extent.height(),
+                    target_fps: config.target_fps,
+                })?,
+                request: PipeWireFormatRequest::new(acquisition_extent, &config),
             })
         } else {
             None
@@ -1648,7 +1612,6 @@ impl WaylandScreenCaptureInput {
             config,
             cadence,
             demand,
-            analyzer,
             pipewire_format,
         })
     }
@@ -1656,50 +1619,49 @@ impl WaylandScreenCaptureInput {
     fn adopt_worker_settings(&mut self, prepared: PreparedWaylandSettings) -> anyhow::Result<()> {
         self.next_adoption_id = self.next_adoption_id.wrapping_add(1).max(1);
         let adoption_id = self.next_adoption_id;
-        let worker = self
-            .worker
-            .as_ref()
-            .ok_or_else(|| anyhow!("Wayland capture worker is unavailable for live adoption"))?;
+        let worker =
+            self.shell.adapter.active_worker().ok_or_else(|| {
+                anyhow!("Wayland capture worker is unavailable for live adoption")
+            })?;
         if worker.portal_pending.load(Ordering::SeqCst) {
             anyhow::bail!("Wayland capture worker cannot adopt settings while the portal is open");
         }
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (decision_tx, decision_rx) = mpsc::sync_channel(1);
-        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        let (adoption, adopter) = begin_capture_settings_adoption(prepared);
         let authority = Arc::new(AdoptionAuthority::default());
         worker
             .command_tx
-            .send(WorkerCommand::AdoptSettings {
-                adoption_id,
-                prepared,
-                ready: ready_tx,
-                decision: decision_rx,
-                done: done_tx,
-                authority: Arc::clone(&authority),
-            })
+            .send(WorkerCommand::Backend(
+                BackendWorkerCommand::AdoptSettings {
+                    adoption_id,
+                    adoption,
+                    authority: Arc::clone(&authority),
+                },
+            ))
             .map_err(|_| anyhow!("Wayland capture worker rejected prepared settings"))?;
-        if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+        if let Err(error) = adopter.wait_ready(WORKER_READY_TIMEOUT) {
             authority.cancel();
-            let _ = worker
-                .command_tx
-                .send(WorkerCommand::CancelAdoption { adoption_id });
+            let _ = worker.command_tx.send(WorkerCommand::Backend(
+                BackendWorkerCommand::CancelAdoption { adoption_id },
+            ));
             anyhow::bail!("Wayland capture worker adoption timed out: {error}");
         }
-        if decision_tx.send(SettingsDecision::Commit).is_err() {
+        if !adopter.commit() {
             authority.cancel();
             anyhow::bail!("Wayland capture worker exited before settings commit");
         }
         let cancellation_sent = Cell::new(false);
         match wait_for_adoption_result(
-            &done_rx,
+            adopter.done(),
             FORMAT_ADOPTION_TIMEOUT,
             WORKER_STOP_TIMEOUT,
             &authority,
             || {
-                cancellation_sent.set(self.worker.as_ref().is_some_and(|worker| {
+                cancellation_sent.set(self.shell.adapter.active_worker().is_some_and(|worker| {
                     worker
                         .command_tx
-                        .send(WorkerCommand::CancelAdoption { adoption_id })
+                        .send(WorkerCommand::Backend(
+                            BackendWorkerCommand::CancelAdoption { adoption_id },
+                        ))
                         .is_ok()
                 }));
             },
@@ -1737,15 +1699,15 @@ impl WaylandScreenCaptureInput {
         config.exact_processing_profile(&ScreenProcessingProfile::default())?;
         let current = self.settings.config_snapshot();
         let processing_changed = current.processing_controls_differ(&config);
+        let demand = self.settings.demand();
         let reconnecting =
-            self.running && self.capture_demand.is_active() && self.request_active_worker_demand();
+            self.shell.running && demand.is_active() && self.request_active_worker_demand();
         if reconnecting {
-            let prepared = self.prepare_active_settings(config, self.capture_demand, false)?;
+            let prepared = self.prepare_active_settings(config, demand, false)?;
             let next = PreparedAnalysisSettings {
                 config: prepared.config,
                 cadence: prepared.cadence,
                 demand: prepared.demand,
-                analyzer: prepared.analyzer,
             };
             self.settings.commit_runtime(&next);
             if processing_changed {
@@ -1756,18 +1718,16 @@ impl WaylandScreenCaptureInput {
         if current == config {
             return Ok(());
         }
-        if self.capture_demand.is_active() {
+        if demand.is_active() {
             let format_changed = current.target_fps != config.target_fps;
-            let prepared =
-                self.prepare_active_settings(config, self.capture_demand, format_changed)?;
-            if self.running {
+            let prepared = self.prepare_active_settings(config, demand, format_changed)?;
+            if self.shell.running {
                 self.adopt_worker_settings(prepared)?;
             } else {
                 let next = PreparedAnalysisSettings {
                     config: prepared.config,
                     cadence: prepared.cadence,
                     demand: prepared.demand,
-                    analyzer: prepared.analyzer,
                 };
                 self.settings.commit_runtime(&next);
             }
@@ -1776,10 +1736,7 @@ impl WaylandScreenCaptureInput {
             }
             return Ok(());
         }
-        self.settings.commit_values(&config, self.capture_demand);
-        if processing_changed {
-            self.settings.exact.advance_resolution_revision();
-        }
+        self.settings.commit_values(&config, demand);
         Ok(())
     }
 
@@ -1792,7 +1749,7 @@ impl WaylandScreenCaptureInput {
 
         clear_restore_token(&self.settings, self.token_sink.as_ref());
 
-        if !self.running || !self.capture_demand.is_active() {
+        if !self.shell.running || !self.settings.demand().is_active() {
             return Ok(());
         }
 
@@ -1803,54 +1760,62 @@ impl WaylandScreenCaptureInput {
     fn detached_reselect_action(&self) -> ScreenSourcePickerAction {
         let settings = Arc::clone(&self.settings);
         let token_sink = self.token_sink.clone();
-        let worker = self.worker.as_ref().map(|worker| {
+        let worker = self.shell.adapter.active_worker().map(|worker| {
             (
                 Arc::clone(&worker.portal_pending),
                 worker.command_tx.clone(),
             )
         });
-        ScreenSourcePickerAction::platform_backend(Arc::new(move || {
-            if worker
-                .as_ref()
-                .is_some_and(|(portal_pending, _)| portal_pending.load(Ordering::SeqCst))
-            {
-                debug!("Portal source picker is already open; ignoring re-pick request");
-                return Ok(());
-            }
-            clear_restore_token(&settings, token_sink.as_ref());
-            if let Some((_, command_tx)) = &worker {
-                command_tx
-                    .send(WorkerCommand::Reselect)
-                    .map_err(|_| anyhow!("Wayland capture worker rejected source reselect"))?;
-            }
-            Ok(())
-        }))
+        ScreenSourcePickerAction::new(
+            Arc::new(move || {
+                if worker
+                    .as_ref()
+                    .is_some_and(|(portal_pending, _)| portal_pending.load(Ordering::SeqCst))
+                {
+                    debug!("Portal source picker is already open; ignoring re-pick request");
+                    return Ok(());
+                }
+                clear_restore_token(&settings, token_sink.as_ref());
+                if let Some((_, command_tx)) = &worker {
+                    command_tx
+                        .send(WorkerCommand::Backend(BackendWorkerCommand::Reselect))
+                        .map_err(|_| anyhow!("Wayland capture worker rejected source reselect"))?;
+                }
+                Ok(())
+            }),
+            CapabilityActionIdentity::new("platform_backend", CapabilityActionDisposition::Local),
+        )
     }
 
     fn portal_pending(&self) -> bool {
-        self.worker
-            .as_ref()
+        self.shell
+            .adapter
+            .active_worker()
             .is_some_and(|worker| worker.portal_pending.load(Ordering::SeqCst))
     }
 
     fn restart_worker(&mut self) -> anyhow::Result<()> {
         self.shutdown_worker();
-        if !self.running || !self.capture_demand.is_active() {
+        let demand = self.settings.demand();
+        if !self.shell.running || !demand.is_active() {
             return Ok(());
         }
         self.spawn_worker()?;
-        self.send_worker_command(WorkerCommand::SetDemand(self.capture_demand))
+        self.send_worker_command(BackendWorkerCommand::SetDemand(demand))
     }
 
     fn set_capture_demand_state(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
-        let previous = self.capture_demand;
+        let previous = self.settings.demand();
         if previous == demand {
-            if demand.is_active() && self.running {
+            if demand.is_active() && self.shell.running {
                 self.request_active_worker_demand();
             }
-            if demand.is_active() && self.running && self.worker.is_none() {
+            if demand.is_active()
+                && self.shell.running
+                && self.shell.adapter.active_worker().is_none()
+            {
                 self.spawn_worker()?;
-                self.send_worker_command(WorkerCommand::SetDemand(demand))?;
+                self.send_worker_command(BackendWorkerCommand::SetDemand(demand))?;
             }
             return Ok(());
         }
@@ -1858,51 +1823,37 @@ impl WaylandScreenCaptureInput {
         if previous.is_active() && demand.is_active() {
             let config = self.settings.config_snapshot();
             let prepared = self.prepare_active_settings(config, demand, false)?;
-            if self.running {
+            if self.shell.running {
                 self.adopt_worker_settings(prepared)?;
             } else {
                 let next = PreparedAnalysisSettings {
                     config: prepared.config,
                     cadence: prepared.cadence,
                     demand: prepared.demand,
-                    analyzer: prepared.analyzer,
                 };
                 self.settings.commit_runtime(&next);
             }
-            self.capture_demand = demand;
             return Ok(());
         }
 
-        let _admission = demand
-            .requested_extent()
-            .map(|requested_extent| -> anyhow::Result<_> {
-                let config = self.settings.config_snapshot();
-                let cadence = CaptureCadence::new(config.target_fps)?;
-                let analyzer = ScreenCaptureInput::with_requested_extent(config, requested_extent)?;
-                Ok((analyzer, cadence))
-            })
-            .transpose()?;
-
-        if let Ok(mut current) = self.settings.demand.lock() {
-            *current = demand;
+        if demand.is_active() {
+            CaptureCadence::new(self.settings.config_snapshot().target_fps)?;
         }
-        self.settings.generation.fetch_add(1, Ordering::Release);
 
-        if !self.running {
+        *self.settings.values.lock_demand() = demand;
+        self.settings.values.bump_revision();
+
+        if !self.shell.running {
             if !demand.is_active() {
                 self.settings.clear_expected_epoch();
             }
-            if let Ok(mut latest) = self.latest_snapshot.lock() {
-                *latest = None;
-            }
-            self.capture_demand = demand;
             return Ok(());
         }
 
         let result = if demand.is_active() {
             self.spawn_worker()
-                .and_then(|()| self.send_worker_command(WorkerCommand::SetDemand(demand)))
-        } else if self.worker.is_some() {
+                .and_then(|()| self.send_worker_command(BackendWorkerCommand::SetDemand(demand)))
+        } else if self.shell.adapter.active_worker().is_some() {
             self.shutdown_worker();
             Ok(())
         } else {
@@ -1911,13 +1862,12 @@ impl WaylandScreenCaptureInput {
         };
 
         if let Err(error) = result {
-            if let Ok(mut current) = self.settings.demand.lock() {
-                *current = previous;
-            }
-            self.settings.generation.fetch_add(1, Ordering::Release);
+            *self.settings.values.lock_demand() = previous;
+            self.settings.values.bump_revision();
             let rollback = if previous.is_active() {
-                self.spawn_worker()
-                    .and_then(|()| self.send_worker_command(WorkerCommand::SetDemand(previous)))
+                self.spawn_worker().and_then(|()| {
+                    self.send_worker_command(BackendWorkerCommand::SetDemand(previous))
+                })
             } else {
                 self.shutdown_worker();
                 Ok(())
@@ -1930,103 +1880,44 @@ impl WaylandScreenCaptureInput {
             return Err(error);
         }
 
-        if previous.is_active() != demand.is_active()
-            && let Ok(mut latest) = self.latest_snapshot.lock()
-        {
-            *latest = None;
-        }
-        self.capture_demand = demand;
         Ok(())
     }
 
     fn request_active_worker_demand(&self) -> bool {
-        let Some(worker) = self.worker.as_ref() else {
+        let Some(worker) = self.shell.adapter.active_worker() else {
             return false;
         };
         request_active_worker_demand(&worker.demand_state)
     }
 
     fn spawn_worker(&mut self) -> anyhow::Result<()> {
-        self.reap_workers(false);
-        if self.worker.is_some() {
+        self.shell.adapter.reap_retired_workers();
+        if self.shell.adapter.active_worker().is_some() {
             return Ok(());
         }
-
-        let latest_snapshot = Arc::clone(&self.latest_snapshot);
-        let settings = Arc::clone(&self.settings);
-        let token_sink = self.token_sink.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));
-        // Born true: the worker is portal-bound from its first instruction,
-        // and a shutdown landing before the thread even stores the flag must
-        // detach rather than join into the picker freeze.
-        let portal_pending = Arc::new(AtomicBool::new(true));
-        let worker_flags = WorkerFlags {
-            cancel: Arc::clone(&cancel),
-            portal_pending: Arc::clone(&portal_pending),
-            demand_state: Arc::clone(&demand_state),
-        };
-        let (command_tx, command_rx) = pw::channel::channel();
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (exit_tx, exit_rx) = mpsc::sync_channel(1);
-        let status_writer = self.status_session.load();
-        let worker_status_writer = status_writer.clone();
-        let session_generation = Arc::new(AtomicU64::new(settings.begin_session()));
-        let capture_session_generation = Arc::clone(&session_generation);
-        let worker_settings = Arc::clone(&settings);
-        let worker_latest_snapshot = Arc::clone(&latest_snapshot);
-        let join_handle = spawn_input_worker(
-            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
-            move || {
-                let _ = ready_tx.send(());
-                run_capture_worker(
-                    settings,
-                    latest_snapshot,
-                    command_rx,
-                    token_sink,
-                    worker_flags,
-                    status_writer,
-                    capture_session_generation,
-                );
-                let _ = exit_tx.send(());
-            },
-        )
-        .context("failed to spawn Wayland screen capture worker")?;
-
-        self.worker = Some(WaylandCaptureWorker {
-            command_tx,
-            exit_rx,
-            join_handle: Some(join_handle),
-            cancel,
-            portal_pending,
-            demand_state,
-            status_writer: worker_status_writer,
-            session_generation,
-            settings: worker_settings,
-            latest_snapshot: worker_latest_snapshot,
-        });
-        if let Err(error) = ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
-            self.shutdown_worker();
-            anyhow::bail!("Wayland screen capture worker readiness timed out: {error}");
-        }
+        self.shell.adapter.spawn_successor(WaylandWorkerSpawn {
+            token_sink: self.token_sink.clone(),
+        })?;
         if self.observe_worker_exit(true) {
             anyhow::bail!("Wayland screen capture worker exited during startup");
         }
         Ok(())
     }
 
-    fn send_worker_command(&mut self, command: WorkerCommand) -> anyhow::Result<()> {
-        let WorkerCommand::SetDemand(demand) = command else {
+    fn send_worker_command(&mut self, command: BackendWorkerCommand) -> anyhow::Result<()> {
+        let BackendWorkerCommand::SetDemand(demand) = command else {
             anyhow::bail!("only demand commands use the restartable Wayland dispatch path");
         };
-        let Some(worker) = &self.worker else {
+        let Some(worker) = self.shell.adapter.active_worker() else {
             return Ok(());
         };
 
         set_worker_demand(&worker.demand_state, demand.is_active());
         if worker
             .command_tx
-            .send(WorkerCommand::SetDemand(demand))
+            .send(WorkerCommand::Backend(BackendWorkerCommand::SetDemand(
+                demand,
+            )))
             .is_ok()
         {
             return Ok(());
@@ -2037,11 +1928,13 @@ impl WaylandScreenCaptureInput {
 
         if demand.is_active() {
             self.spawn_worker()?;
-            let replacement_accepted = self.worker.as_ref().is_some_and(|worker| {
+            let replacement_accepted = self.shell.adapter.active_worker().is_some_and(|worker| {
                 set_worker_demand(&worker.demand_state, true);
                 worker
                     .command_tx
-                    .send(WorkerCommand::SetDemand(demand))
+                    .send(WorkerCommand::Backend(BackendWorkerCommand::SetDemand(
+                        demand,
+                    )))
                     .is_ok()
             });
             if !replacement_accepted {
@@ -2054,68 +1947,49 @@ impl WaylandScreenCaptureInput {
     }
 
     fn shutdown_worker(&mut self) {
-        let Some(worker) = self.worker.take() else {
-            return;
-        };
-
-        worker.cancel_session();
-        let _ = worker.command_tx.send(WorkerCommand::Stop);
-
-        if !worker.portal_pending.load(Ordering::SeqCst) {
-            let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
-        }
-        if worker.is_finished() {
-            let _ = worker.join(false);
-        } else {
+        let portal_pending = self
+            .shell
+            .adapter
+            .active_worker()
+            .is_some_and(|worker| worker.portal_pending.load(Ordering::SeqCst));
+        if self.shell.adapter.shutdown() && portal_pending {
             debug!("Retaining Wayland capture worker until the portal request terminates");
-            self.retiring_workers.push(worker);
         }
     }
 
     fn observe_worker_exit(&mut self, publish_failure: bool) -> bool {
-        let Some(worker) = self.worker.as_ref() else {
-            self.reap_workers(false);
-            return false;
-        };
-        if !worker.is_finished() {
-            self.reap_workers(false);
-            return false;
-        }
-        let worker = self.worker.take().expect("finished worker remains owned");
-        let status_writer = worker.status_writer.clone();
-        let session_generation = Arc::clone(&worker.session_generation);
-        let cancel = Arc::clone(&worker.cancel);
-        let failure_reason = worker.join(publish_failure);
-        if let (Some(reason), Some(status)) = (failure_reason, status_writer.as_ref()) {
-            publish_unexpected_exit_status(
-                &self.settings,
-                &session_generation,
-                &cancel,
-                status,
-                reason,
-            );
-        }
-        self.settings.invalidate_session(
-            &self.latest_snapshot,
-            session_generation.load(Ordering::Acquire),
-        );
-        self.reap_workers(false);
-        true
+        let settings = Arc::clone(&self.settings);
+        self.shell
+            .adapter
+            .observe_exit(|_, exit| {
+                let failure = exit.failure();
+                if !publish_failure {
+                    if let Some(failure) = failure {
+                        warn!(failure, "Wayland screen capture worker failed");
+                    }
+                    return;
+                }
+                let reason = failure.map_or_else(
+                    || "Wayland screen capture worker exited unexpectedly".to_owned(),
+                    |failure| format!("Wayland screen capture {failure}"),
+                );
+                if let Some(status) = exit.status_writer.as_ref() {
+                    publish_unexpected_exit_status(
+                        &settings,
+                        &exit.session_generation,
+                        &exit.cancel,
+                        status,
+                        reason,
+                    );
+                }
+            })
+            .is_some()
     }
+}
 
-    fn reap_workers(&mut self, wait: bool) {
-        let mut retained = Vec::with_capacity(self.retiring_workers.len());
-        for worker in self.retiring_workers.drain(..) {
-            if wait && !worker.portal_pending.load(Ordering::SeqCst) {
-                let _ = worker.exit_rx.recv_timeout(WORKER_STOP_TIMEOUT);
-            }
-            if worker.is_finished() {
-                let _ = worker.join(false);
-            } else {
-                retained.push(worker);
-            }
-        }
-        self.retiring_workers = retained;
+impl CaptureSessionExit for WaylandCaptureExit {
+    fn failure(&self) -> Option<String> {
+        self.thread_result.failure()
     }
 }
 
@@ -2125,21 +1999,19 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
-        if self.running {
+        if self.shell.running {
             return Ok(());
         }
         CaptureCadence::new(self.settings.config_snapshot().target_fps)?;
 
-        if self.capture_demand.is_active() {
-            if let Some(session) = self.status.begin_session()? {
-                self.status_session.store(session);
-            }
-            if let Err(error) = self.spawn_worker().and_then(|()| {
-                self.send_worker_command(WorkerCommand::SetDemand(self.capture_demand))
-            }) {
-                self.status_session.clear();
-                self.status.stop();
-                self.shutdown_worker();
+        let demand = self.settings.demand();
+        if demand.is_active() {
+            self.shell.arm_status_session()?;
+            if let Err(error) = self
+                .spawn_worker()
+                .and_then(|()| self.send_worker_command(BackendWorkerCommand::SetDemand(demand)))
+            {
+                self.shell.fail_start();
                 return Err(error);
             }
         } else {
@@ -2148,266 +2020,109 @@ impl InputSource for WaylandScreenCaptureInput {
             );
         }
 
-        self.running = true;
+        self.shell.running = true;
         Ok(())
     }
 
     fn stop(&mut self) {
-        self.status_session.clear();
-        self.status.stop();
-        self.running = false;
-        self.capture_demand = ScreenCaptureDemand::Inactive;
-        if let Ok(mut demand) = self.settings.demand.lock() {
-            *demand = ScreenCaptureDemand::Inactive;
-        }
-        if self.worker.is_some() {
+        self.shell.begin_stop();
+        let mut settings = self.settings.values.lock();
+        *settings.demand_mut() = ScreenCaptureDemand::Inactive;
+        settings.commit();
+        if self.shell.adapter.active_worker().is_some() {
             self.shutdown_worker();
         } else {
             self.settings.clear_expected_epoch();
         }
-        self.reap_workers(true);
-        self.settings.exact.clear_owned_sources();
-
-        if let Ok(mut latest) = self.latest_snapshot.lock() {
-            *latest = None;
+        self.shell.adapter.reap_retired_workers();
+        if let Some(authority) = self.settings.exact.current_authority() {
+            self.settings
+                .exact
+                .clear_owned_sources_if_current(authority);
+            self.settings
+                .exact
+                .replace_source_if_current(authority, None);
         }
-        self.settings.exact.replace_source(None);
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        let worker_exited =
-            self.observe_worker_exit(self.running && self.capture_demand.is_active());
-        if !self.running || !self.capture_demand.is_active() {
+        let demand = self.settings.demand();
+        let worker_exited = self.observe_worker_exit(self.shell.running && demand.is_active());
+        if !self.shell.running || !demand.is_active() {
             return Ok(InputData::None);
         }
         if worker_exited {
             self.spawn_worker()?;
-            self.send_worker_command(WorkerCommand::SetDemand(self.capture_demand))?;
-            return Ok(InputData::None);
+            self.send_worker_command(BackendWorkerCommand::SetDemand(demand))?;
         }
-
-        let latest = self
-            .latest_snapshot
-            .lock()
-            .map_err(|_| anyhow!("wayland screen capture snapshot mutex poisoned"))?;
-
-        let snapshot = latest.clone();
-        drop(latest);
-        let Some(snapshot) = snapshot else {
-            return Ok(InputData::None);
-        };
-        let metadata = snapshot.analysis.geometry_frame().metadata();
-        let Some(expected) = self.settings.expected_epoch() else {
-            return Ok(InputData::None);
-        };
-        if snapshot
-            .analysis
-            .geometry_frame()
-            .validate_epoch(&expected)
-            .is_err()
-        {
-            return Ok(InputData::None);
-        }
-        if snapshot.generation != self.status_snapshot_generation {
-            if let Some(status) = self.status.session() {
-                let cadence = CaptureCadence::new(self.settings.config_snapshot().target_fps)?;
-                status.record_sample(
-                    metadata.captured_at,
-                    cadence.freshness_deadline(metadata.captured_at)?,
-                    1,
-                )?;
-            }
-            self.status_snapshot_generation = snapshot.generation;
-        }
-        Ok(InputData::Screen(snapshot.analysis.data().clone()))
+        Ok(InputData::None)
     }
 
     fn is_running(&self) -> bool {
-        self.running
+        self.shell.running
     }
 
     fn source_status_handle(&self) -> Option<SourceStatusHandle> {
-        Some(self.status.handle())
+        Some(self.shell.status_handle())
     }
 
     fn source_status_reporter(&mut self) -> Option<&mut SourceStatusReporter> {
-        Some(&mut self.status)
+        Some(&mut self.shell.status)
     }
+}
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
+impl ScreenSource for WaylandScreenCaptureInput {
     fn screen_capture_demand(&self) -> ScreenCaptureDemand {
-        self.capture_demand
+        self.settings.demand()
     }
 
-    fn screen_analysis_resource_plan(
-        &self,
-        demand: ScreenCaptureDemand,
-    ) -> anyhow::Result<Option<ScreenAnalysisResourcePlan>> {
-        let Some(requested_extent) = demand.requested_extent() else {
-            return Ok(None);
-        };
-        let config = self.settings.config_snapshot();
-        Ok(Some(ScreenAnalysisResourcePlan::try_new_for_extent(
-            config.grid_cols,
-            config.grid_rows,
-            config.target_fps,
-            requested_extent,
-            u64::MAX,
-        )?))
-    }
-
-    fn screen_analysis_work_plan(
-        &self,
-        demand: ScreenCaptureDemand,
-    ) -> anyhow::Result<Option<ScreenAnalysisWorkPlan>> {
-        let Some(requested_extent) = demand.requested_extent() else {
-            return Ok(None);
-        };
-        let input_extent = self
-            .settings
-            .exact
-            .source()
-            .map_or(requested_extent, |source| source.config.logical_extent());
-        let config = self.settings.config_snapshot();
-        Ok(Some(ScreenAnalysisWorkPlan::try_new(
-            input_extent,
-            requested_extent,
-            &config,
-        )?))
-    }
-
-    fn screen_analysis_compute_capacity(&self) -> Option<ScreenAnalysisComputeCapacity> {
-        self.settings.compute_capacity_policy.analysis()
+    /// A portal rebuild is a D-Bus round trip plus PipeWire negotiation; a
+    /// restore-token reconnect settles in one to three seconds, so a 500ms
+    /// budget rejected every live capture reconfiguration on Wayland while
+    /// the last-good publication stayed correctly retained.
+    fn startup_usability_budget(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(6)
     }
 
     fn set_screen_capture_demand(&mut self, demand: ScreenCaptureDemand) -> anyhow::Result<()> {
-        let previous = self.capture_demand;
-        let active = demand.is_active();
-        self.status.set_policy(true, true, active)?;
-        if previous.is_active() != active {
-            if !active {
-                self.status_session.clear();
-            }
-            if active
-                && self.running
-                && let Some(session) = self.status.begin_session()?
-            {
-                self.status_session.store(session);
-            }
-        }
+        let was_active = self.settings.demand().is_active();
+        self.shell
+            .begin_demand_status(was_active, demand.is_active())?;
         if let Err(error) = self.set_capture_demand_state(demand) {
-            self.status_session.clear();
-            self.status.stop();
-            self.status.set_policy(true, true, previous.is_active())?;
-            if previous.is_active()
-                && self.running
-                && let Some(session) = self.status.begin_session()?
-            {
-                self.status_session.store(session);
-            }
+            self.shell.rollback_demand_status(was_active)?;
             return Err(error);
         }
         Ok(())
     }
 
     fn set_screen_publication_hub(&mut self, hub: Arc<ScreenPublicationHub>) {
-        *self
-            .settings
-            .exact
-            .hub
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(hub);
+        self.shell.adapter.install_publication_hub(hub);
     }
 
     fn screen_publication_resolution_revision(&self) -> u64 {
-        self.settings
-            .exact
-            .resolution_revision
-            .load(Ordering::Acquire)
+        self.shell.adapter.exact_resolution_revision()
     }
 
     fn resolve_screen_publication_branch(
         &self,
         demand: &RegisteredScreenBranchDemand,
     ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
-        let Some(source) = self.settings.exact.source() else {
-            return Ok(None);
-        };
-        if !source.matches_selector(demand.request().selector()) {
-            return Ok(None);
-        }
-        let configured = self
-            .settings
-            .config_snapshot()
-            .bind_exact_processing_profile(demand)?;
-        let resolved = source.resolved(demand.request().selector().clone());
-        Ok(Some(configured.resolve_with_color_capabilities(
-            &resolved,
-            ScreenColorTransformCapabilities::new(true, false, false, NonZeroU32::MIN),
-        )?))
+        self.shell.adapter.resolve_exact_publication_branch(demand)
     }
 
     fn owns_screen_publication_source(&self, source_id: &CaptureSourceId) -> bool {
-        self.settings.exact.owns_source(source_id)
+        self.shell.adapter.owns_exact_source(source_id)
     }
 
     fn begin_screen_publication_preparation(
         &mut self,
         ticket: ScreenWorkerPreparationTicket,
     ) -> anyhow::Result<ScreenWorkerPreparation> {
-        let worker = self.worker.as_ref().ok_or_else(|| {
-            anyhow!("Wayland capture worker is unavailable for exact publication preparation")
-        })?;
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let (completion_tx, completion_rx) = oneshot::channel();
-        worker
-            .command_tx
-            .send(WorkerCommand::PrepareExact {
-                ticket,
-                cancelled: Arc::clone(&cancelled),
-                completion: completion_tx,
-            })
-            .map_err(|_| {
-                anyhow!("Wayland capture worker rejected exact publication preparation")
-            })?;
-        let abort_tx = worker.command_tx.clone();
-        Ok(ScreenWorkerPreparation::with_abort(
-            async move {
-                completion_rx.await.map_err(|_| {
-                    anyhow!("Wayland capture worker exited during exact publication preparation")
-                })?
-            },
-            move || {
-                cancelled.store(true, Ordering::Release);
-                let _ = abort_tx.send(WorkerCommand::ReapExact { completion: None });
-            },
-        ))
+        self.shell.adapter.begin_exact_preparation(ticket)
     }
 
     fn begin_screen_publication_retirement(&mut self) -> Option<ScreenWorkerRetirement> {
-        let worker = self.worker.as_ref()?;
-        let (completion_tx, completion_rx) = oneshot::channel();
-        if worker
-            .command_tx
-            .send(WorkerCommand::ReapExact {
-                completion: Some(completion_tx),
-            })
-            .is_err()
-        {
-            return Some(ScreenWorkerRetirement::new(async {
-                Err(anyhow!(
-                    "Wayland capture worker rejected exact publication retirement"
-                ))
-            }));
-        }
-        Some(ScreenWorkerRetirement::new(async move {
-            completion_rx.await.map_err(|_| {
-                anyhow!("Wayland capture worker exited during exact publication retirement")
-            })?
-        }))
+        self.shell.adapter.begin_exact_retirement()
     }
 
     fn reconfigure_screen_capture(&mut self, config: &CaptureConfig) -> anyhow::Result<()> {
@@ -2423,24 +2138,34 @@ impl InputSource for WaylandScreenCaptureInput {
     }
 }
 
+impl SourceRoleBinding for WaylandScreenCaptureInput {
+    type Role = ScreenSourceRole;
+}
+
+/// Stream extent offered before the portal reports the source's logical size.
+///
+/// Exact branches carry their own geometry through the hub; this value only
+/// seeds the first PipeWire format offer, which the negotiated native extent
+/// replaces on the next iteration.
+fn default_acquisition_extent() -> PixelExtent {
+    PixelExtent::new(super::DEFAULT_CANVAS_WIDTH, super::DEFAULT_CANVAS_HEIGHT)
+        .expect("default canvas extent is non-empty")
+}
+
 fn clear_restore_token(settings: &SharedSettings, token_sink: Option<&RestoreTokenSink>) {
     let _session_guard = settings
-        .expected_epoch
+        .session_guard
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    settings
-        .config
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .restore_token = None;
+    settings.values.lock_config().restore_token = None;
     if let Some(sink) = token_sink {
         sink(None);
     }
 }
 
 struct WaylandCaptureWorker {
-    command_tx: pw::channel::Sender<WorkerCommand>,
-    exit_rx: mpsc::Receiver<()>,
+    command_tx: LoopSender<WorkerCommand>,
+    start_tx: mpsc::SyncSender<()>,
     join_handle: Option<thread::JoinHandle<()>>,
     /// Tells the worker to exit at its next checkpoint without touching
     /// shared state (snapshot, settings, restore token).
@@ -2452,16 +2177,201 @@ struct WaylandCaptureWorker {
     status_writer: Option<SourceSessionWriter>,
     session_generation: Arc<AtomicU64>,
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
+}
+
+struct WaylandCaptureBackend {
+    settings: Arc<SharedSettings>,
+    status_session: SourceSessionSlot,
+}
+
+struct WaylandWorkerSpawn {
+    token_sink: Option<RestoreTokenSink>,
+}
+
+struct WaylandCaptureExit {
+    status_writer: Option<SourceSessionWriter>,
+    session_generation: Arc<AtomicU64>,
+    cancel: Arc<AtomicBool>,
+    thread_result: thread::Result<()>,
+}
+
+struct WaylandSessionReadiness(mpsc::Receiver<()>);
+
+impl CaptureSessionReadiness for WaylandSessionReadiness {
+    fn wait(self, deadline: CaptureSessionDeadline) -> anyhow::Result<()> {
+        self.0
+            .recv_timeout(deadline.remaining())
+            .map_err(|error| anyhow!("Wayland screen capture worker readiness timed out: {error}"))
+    }
+}
+
+impl CaptureBackend for WaylandCaptureBackend {
+    type Worker = WaylandCaptureWorker;
+    type Readiness = WaylandSessionReadiness;
+    type SpawnRequest = WaylandWorkerSpawn;
+    type SettingsConfig = CaptureConfig;
+    type ExactState = WaylandExactPublicationShared;
+    type ActivityFence = WaylandPublicationFence;
+    type ActivityEpoch = CaptureEpoch;
+    type AuthorityCommitCheckpoint<'a> = WaylandSessionCommitGuard<'a>;
+
+    const NAME: &'static str = "Wayland capture";
+    const READINESS_TIMEOUT: Duration = WORKER_READY_TIMEOUT;
+
+    fn resolve_publication_branch(
+        &self,
+        settings: &VersionedCaptureSettings<Self::SettingsConfig>,
+        source: &<Self::ExactState as CaptureExactState>::Source,
+        demand: &RegisteredScreenBranchDemand,
+    ) -> anyhow::Result<Option<ResolvedScreenBranchDemand>> {
+        if !source.matches_selector(demand.request().selector()) {
+            return Ok(None);
+        }
+        let configured = settings
+            .snapshot()
+            .config
+            .bind_exact_processing_profile(demand)?;
+        let resolved = source.resolved(demand.request().selector().clone());
+        Ok(Some(configured.resolve_with_color_capabilities(
+            &resolved,
+            ScreenColorTransformCapabilities::new(true, false, false, NonZeroU32::MIN),
+        )?))
+    }
+
+    fn spawn_worker(
+        &self,
+        request: Self::SpawnRequest,
+        _handles: CaptureBackendHandles<'_, Self>,
+        reservation: ReservedCaptureSessionAuthority,
+    ) -> anyhow::Result<CaptureSessionTransaction<Self::Worker, Self::Readiness>> {
+        let WaylandWorkerSpawn { token_sink } = request;
+        let settings = Arc::clone(&self.settings);
+        let status_writer = self.status_session.load();
+        let reserved_generation = reservation.authority().generation();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let demand_state = Arc::new(AtomicU64::new(initial_worker_demand(false)));
+        // Born true: the worker is portal-bound from its first instruction,
+        // and a shutdown landing before the thread even stores the flag must
+        // detach rather than join into the picker freeze.
+        let portal_pending = Arc::new(AtomicBool::new(true));
+        let worker_flags = WorkerFlags {
+            cancel: Arc::clone(&cancel),
+            portal_pending: Arc::clone(&portal_pending),
+            demand_state: Arc::clone(&demand_state),
+        };
+        let (command_tx, command_rx) = loop_channel();
+        let worker_command_tx = command_tx.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (start_tx, start_rx) = mpsc::sync_channel(1);
+        let worker_status_writer = status_writer.clone();
+        let session_generation = Arc::new(AtomicU64::new(reserved_generation));
+        let capture_session_generation = Arc::clone(&session_generation);
+        let worker_settings = Arc::clone(&settings);
+        let join_handle = hypercolor_worker_retention::spawn_worker(
+            thread::Builder::new().name("hypercolor-screen-capture".to_owned()),
+            move || {
+                let _ = ready_tx.send(());
+                if start_rx.recv().is_err() {
+                    return;
+                }
+                run_capture_worker(
+                    settings,
+                    command_rx,
+                    worker_command_tx,
+                    token_sink,
+                    worker_flags,
+                    status_writer,
+                    capture_session_generation,
+                );
+            },
+        )
+        .context("failed to spawn Wayland screen capture worker")?;
+
+        Ok(CaptureSessionTransaction::new(
+            WaylandCaptureWorker {
+                command_tx,
+                start_tx,
+                join_handle: Some(join_handle),
+                cancel,
+                portal_pending,
+                demand_state,
+                status_writer: worker_status_writer,
+                session_generation,
+                settings: worker_settings,
+            },
+            WaylandSessionReadiness(ready_rx),
+            reservation,
+        ))
+    }
+
+    fn prepare_authority_commit<'a>(
+        &'a self,
+        _handles: CaptureBackendHandles<'a, Self>,
+        reservation: &ReservedCaptureSessionAuthority,
+    ) -> Option<Self::AuthorityCommitCheckpoint<'a>> {
+        self.settings.prepare_reserved_session_commit(reservation)
+    }
+
+    fn commit_authority(
+        reservation: ReservedCaptureSessionAuthority,
+        checkpoint: Self::AuthorityCommitCheckpoint<'_>,
+    ) {
+        checkpoint.commit(reservation);
+    }
+
+    fn retire_authority(
+        &self,
+        _handles: CaptureBackendHandles<'_, Self>,
+        authority: CaptureSessionAuthority,
+        cause: CaptureRetirementCause,
+    ) {
+        match cause {
+            CaptureRetirementCause::ActiveStop | CaptureRetirementCause::ExclusiveSettlement => {}
+            CaptureRetirementCause::ObservedExit => {
+                self.settings.invalidate_session(authority.generation());
+            }
+        }
+    }
 }
 
 impl WaylandCaptureWorker {
-    fn cancel_session(&self) {
-        self.settings.cancel_worker_session(
-            &self.latest_snapshot,
-            &self.cancel,
-            &self.session_generation,
-        );
+    fn exact_command_endpoint(&self) -> WaylandExactCommandEndpoint {
+        WaylandExactCommandEndpoint::new(
+            "Wayland capture",
+            Arc::clone(&self.session_generation),
+            self.command_tx.clone(),
+        )
+    }
+}
+
+impl CaptureSession for WaylandCaptureWorker {
+    type Exit = WaylandCaptureExit;
+    type ExactEndpoint = WaylandExactCommandEndpoint;
+
+    const SUCCESSOR_POLICY: CaptureSuccessorPolicy = CaptureSuccessorPolicy::AllowOverlap;
+
+    fn authority(&self) -> CaptureSessionAuthority {
+        CaptureSessionAuthority::new(self.session_generation.load(Ordering::Acquire))
+    }
+
+    fn exact_endpoint(&self) -> Self::ExactEndpoint {
+        self.exact_command_endpoint()
+    }
+
+    fn abort(&self) {
+        self.cancel_session();
+    }
+
+    fn retire_for_successor(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    fn wake(&self) {
+        let _ = self.command_tx.send(WorkerCommand::Stop);
+    }
+
+    fn start(&self) {
+        let _ = self.start_tx.send(());
     }
 
     fn is_finished(&self) -> bool {
@@ -2470,20 +2380,31 @@ impl WaylandCaptureWorker {
             .is_none_or(thread::JoinHandle::is_finished)
     }
 
-    fn join(mut self, publish_failure: bool) -> Option<String> {
-        let Some(join_handle) = self.join_handle.take() else {
-            return None;
-        };
-        let failure = join_handle.join().err();
-        if publish_failure {
-            return Some(failure.map_or_else(
-                || "Wayland screen capture worker exited unexpectedly".to_owned(),
-                |panic| format!("Wayland screen capture worker panicked: {panic:?}"),
-            ));
-        } else if let Some(panic) = failure {
-            warn!(message = ?panic, "Wayland screen capture worker panicked");
+    fn finish(mut self) -> Self::Exit {
+        let thread_result = self
+            .join_handle
+            .take()
+            .expect("finished Wayland worker retains its thread handle")
+            .join();
+        WaylandCaptureExit {
+            status_writer: self.status_writer.take(),
+            session_generation: Arc::clone(&self.session_generation),
+            cancel: Arc::clone(&self.cancel),
+            thread_result,
         }
-        None
+    }
+
+    fn detach(mut self) {
+        if let Some(join_handle) = self.join_handle.take() {
+            retain_worker(join_handle, "Wayland capture worker");
+        }
+    }
+}
+
+impl WaylandCaptureWorker {
+    fn cancel_session(&self) {
+        self.settings
+            .cancel_worker_session(&self.cancel, &self.session_generation);
     }
 }
 
@@ -2494,11 +2415,7 @@ impl Drop for WaylandCaptureWorker {
         };
         self.cancel_session();
         let _ = self.command_tx.send(WorkerCommand::Stop);
-        if join_handle.is_finished() {
-            let _ = join_handle.join();
-            return;
-        }
-        retain_input_worker(join_handle, "Wayland capture worker");
+        retain_worker(join_handle, "Wayland capture worker");
     }
 }
 
@@ -2509,29 +2426,31 @@ struct WorkerFlags {
     demand_state: Arc<AtomicU64>,
 }
 
-enum WorkerCommand {
+enum BackendWorkerCommand {
     SetDemand(ScreenCaptureDemand),
     Reselect,
-    PrepareExact {
-        ticket: ScreenWorkerPreparationTicket,
-        cancelled: Arc<AtomicBool>,
-        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
-    },
-    ReapExact {
-        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
-    },
     AdoptSettings {
         adoption_id: u64,
-        prepared: PreparedWaylandSettings,
-        ready: mpsc::SyncSender<()>,
-        decision: mpsc::Receiver<SettingsDecision>,
-        done: mpsc::SyncSender<Result<(), String>>,
+        adoption: CaptureSettingsAdoption<PreparedWaylandSettings, Result<(), String>>,
         authority: Arc<AdoptionAuthority>,
     },
     CancelAdoption {
         adoption_id: u64,
     },
-    Stop,
+    AnalysisExited,
+}
+
+type WorkerCommand = CaptureWorkerCommand<BackendWorkerCommand>;
+type WaylandExactCommandEndpoint =
+    CaptureCommandEndpoint<BackendWorkerCommand, LoopSender<WorkerCommand>, Arc<AtomicU64>>;
+
+impl<C: Send + 'static> CaptureCommandSender<C> for LoopSender<CaptureWorkerCommand<C>> {
+    fn send_command(
+        &self,
+        command: CaptureWorkerCommand<C>,
+    ) -> Result<(), CaptureExactCommandRejected> {
+        self.send(command).map_err(|_| CaptureExactCommandRejected)
+    }
 }
 
 fn publish_unexpected_exit_status(
@@ -2555,12 +2474,6 @@ fn publish_unexpected_exit_status(
     )
 }
 
-struct PortalCaptureSession {
-    session: Session<Screencast>,
-    stream: Stream,
-    fd: OwnedFd,
-}
-
 #[derive(Clone)]
 struct WaylandSourceMetadata {
     signature: WaylandTopologySignature,
@@ -2569,31 +2482,36 @@ struct WaylandSourceMetadata {
 }
 
 impl WaylandSourceMetadata {
-    fn from_stream(stream: &Stream, session_generation: u64) -> anyhow::Result<Self> {
-        let source_name = stream
-            .id()
-            .or_else(|| stream.mapping_id())
-            .unwrap_or("monitor");
+    fn from_stream(
+        stream: &PortalStreamDescriptor,
+        session_generation: u64,
+    ) -> anyhow::Result<Self> {
+        let source_name = stream.source_name();
         let source_id =
             CaptureSourceId::new(Arc::<str>::from(format!("wayland:portal:{source_name}")))?;
-        let (x, y) = stream.position().unwrap_or_default();
-        let logical_extent = stream.size().and_then(|(width, height)| {
-            let width = u32::try_from(width).ok()?;
-            let height = u32::try_from(height).ok()?;
-            PixelExtent::new(width, height).ok()
-        });
+        let (x, y) = stream.position();
+        let logical_extent = stream
+            .logical_size()
+            .and_then(|(width, height)| PixelExtent::new(width, height).ok());
         Ok(Self {
             signature: WaylandTopologySignature {
                 source_id,
                 origin: PhysicalOrigin { x, y },
                 logical_extent,
+                native_extent: None,
+                transform: CaptureRotation::Identity,
             },
             session_generation,
             topology: None,
         })
     }
 
-    fn source_scale(&self, physical_width: u32) -> SourceScale {
+    fn source_scale(&self) -> SourceScale {
+        let physical_width = self
+            .signature
+            .native_extent
+            .map(|extent| self.signature.transform.apply_to_extent(extent).width())
+            .unwrap_or(1);
         self.signature
             .logical_extent
             .and_then(|logical_extent| {
@@ -2604,7 +2522,6 @@ impl WaylandSourceMetadata {
 }
 
 struct WaylandCaptureUserData {
-    format: spa::param::video::VideoInfoRaw,
     negotiated: Option<NegotiatedFormat>,
     buffers: DoubleBuffer,
     exchange: Arc<AnalysisExchange>,
@@ -2617,7 +2534,6 @@ impl WaylandCaptureUserData {
     #[cfg(test)]
     fn new(exchange: Arc<AnalysisExchange>, metrics: Arc<CaptureCallbackMetrics>) -> Self {
         Self {
-            format: spa::param::video::VideoInfoRaw::default(),
             negotiated: None,
             buffers: DoubleBuffer::try_with_capacity(0)
                 .expect("empty callback planes require no pixel allocation"),
@@ -2636,7 +2552,6 @@ impl WaylandCaptureUserData {
         admission_coordinator: ScreenByteAdmissionCoordinator,
     ) -> Self {
         Self {
-            format: spa::param::video::VideoInfoRaw::default(),
             negotiated: None,
             buffers,
             exchange,
@@ -2693,12 +2608,6 @@ struct NegotiatedFormat {
     format: SpaVideoFormat,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct NegotiatedPipeWireFormat {
-    frame: NegotiatedFormat,
-    framerate: spa::utils::Fraction,
-}
-
 impl NegotiatedFormat {
     fn byte_len(self) -> Option<usize> {
         usize::try_from(self.width)
@@ -2706,13 +2615,324 @@ impl NegotiatedFormat {
             .checked_mul(usize::try_from(self.height).ok()?)?
             .checked_mul(self.format.bytes_per_pixel())
     }
+
+    const fn from_native(format: NegotiatedVideoFormat) -> Self {
+        Self {
+            width: format.width,
+            height: format.height,
+            format: format.format,
+        }
+    }
 }
 
-#[derive(Default)]
+struct WaylandStreamEvents {
+    callback: WaylandCaptureUserData,
+    format_state: Arc<Mutex<PipeWireFormatState>>,
+    loop_exit: Arc<Mutex<Option<PipeWireLoopExit>>>,
+}
+
+impl StreamEventHandler for WaylandStreamEvents {
+    fn format_changed(
+        &mut self,
+        control: &StreamControl<'_>,
+        event: FormatEvent,
+    ) -> CallbackAction {
+        let negotiated = match event {
+            FormatEvent::Removed => {
+                return self.reject_format(
+                    control,
+                    "PipeWire removed the negotiated video format".to_owned(),
+                );
+            }
+            FormatEvent::Invalid(fault) => {
+                return self.reject_format(control, format_fault_reason(fault));
+            }
+            FormatEvent::Negotiated(negotiated) => negotiated,
+        };
+        if let Err(error) = control.acknowledge_format(negotiated) {
+            return terminate_pipewire_loop(
+                &self.loop_exit,
+                PipeWireLoopExit::Terminal(format!(
+                    "failed to advertise PipeWire buffer metadata: {error}"
+                )),
+            );
+        }
+        let frame = NegotiatedFormat::from_native(negotiated);
+        let acknowledgment = self
+            .format_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .acknowledgment(negotiated);
+        match acknowledgment {
+            PipeWireFormatAcknowledgment::Current => {
+                if let Err(error) = self.callback.activate_negotiated_format(frame) {
+                    return terminate_pipewire_loop(
+                        &self.loop_exit,
+                        PipeWireLoopExit::Unavailable(format!(
+                            "failed to activate authoritative PipeWire format: {error}"
+                        )),
+                    );
+                }
+                self.format_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .current_acknowledged = true;
+                debug!(
+                    format = ?negotiated.format,
+                    width = negotiated.width,
+                    height = negotiated.height,
+                    "Accepted authoritative Wayland screen capture format"
+                );
+            }
+            PipeWireFormatAcknowledgment::Pending => {
+                if let Err(reason) = commit_pending_pipewire_adoption(
+                    control,
+                    &mut self.callback,
+                    &self.format_state,
+                    negotiated,
+                ) {
+                    return terminate_pipewire_loop(
+                        &self.loop_exit,
+                        PipeWireLoopExit::Terminal(reason),
+                    );
+                }
+            }
+            PipeWireFormatAcknowledgment::Restored => {
+                if let Err(reason) =
+                    settle_pipewire_restoration(&mut self.callback, &self.format_state, frame)
+                {
+                    return terminate_pipewire_loop(
+                        &self.loop_exit,
+                        PipeWireLoopExit::Terminal(reason),
+                    );
+                }
+            }
+            PipeWireFormatAcknowledgment::Restoring => {
+                self.callback.fence_decoding();
+                debug!(
+                    format = ?negotiated.format,
+                    width = negotiated.width,
+                    height = negotiated.height,
+                    "Ignored stale PipeWire format while awaiting restoration"
+                );
+            }
+            PipeWireFormatAcknowledgment::CancelledCurrent => {
+                self.callback.fence_decoding();
+                let pending = self
+                    .format_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .pending
+                    .take();
+                let Some(pending) = pending else {
+                    return terminate_pipewire_loop(
+                        &self.loop_exit,
+                        PipeWireLoopExit::Terminal(
+                            "cancelled PipeWire adoption had no owner".to_owned(),
+                        ),
+                    );
+                };
+                let _ = self
+                    .format_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .begin_restoring(pending, "PipeWire format adoption timed out".to_owned());
+                if let Err(reason) =
+                    settle_pipewire_restoration(&mut self.callback, &self.format_state, frame)
+                {
+                    return terminate_pipewire_loop(
+                        &self.loop_exit,
+                        PipeWireLoopExit::Terminal(reason),
+                    );
+                }
+            }
+            PipeWireFormatAcknowledgment::Cancelled | PipeWireFormatAcknowledgment::Rejected => {
+                if acknowledgment == PipeWireFormatAcknowledgment::Rejected
+                    && let Some(extent) =
+                        initial_native_extent_correction(&self.format_state, negotiated)
+                {
+                    self.callback.fence_decoding();
+                    return terminate_pipewire_loop(
+                        &self.loop_exit,
+                        PipeWireLoopExit::RequiresNativeExtent(extent),
+                    );
+                }
+                return self.reject_format(
+                    control,
+                    format!(
+                        "PipeWire negotiated {}x{} {:?} at {:?} instead of the exact requested format",
+                        negotiated.width,
+                        negotiated.height,
+                        negotiated.format,
+                        negotiated.framerate
+                    ),
+                );
+            }
+        }
+        CallbackAction::Continue
+    }
+
+    fn state_changed(&mut self, event: StateChange) -> CallbackAction {
+        debug!(
+            previous = ?event.previous,
+            current = ?event.current,
+            "Wayland screen capture stream state changed"
+        );
+        let terminal = match event.current {
+            StreamState::Error(error) => {
+                Some(format!("PipeWire stream entered error state: {error}"))
+            }
+            StreamState::Unconnected if event.previous != StreamState::Unconnected => {
+                Some("PipeWire stream disconnected".to_owned())
+            }
+            StreamState::Unconnected
+            | StreamState::Connecting
+            | StreamState::Paused
+            | StreamState::Streaming => None,
+        };
+        terminal.map_or(CallbackAction::Continue, |reason| {
+            terminate_pipewire_loop(&self.loop_exit, PipeWireLoopExit::Terminal(reason))
+        })
+    }
+
+    fn process(&mut self, buffer: ProcessBuffer<'_>) -> CallbackAction {
+        let outcome = buffer.visit(|native| {
+            if !self.callback.decoding_enabled.load(Ordering::Acquire) {
+                return (CopyStats::dropped(ChunkDropReason::MissingFormat), None);
+            }
+            let Some(negotiated) = self.callback.negotiated else {
+                return (CopyStats::dropped(ChunkDropReason::MissingFormat), None);
+            };
+            if native.dma_buf_identity().is_err() {
+                return (CopyStats::dropped(ChunkDropReason::InvalidDmaBuf), None);
+            }
+            let crop = match native.crop() {
+                None => None,
+                Some(Ok(crop)) => match pixel_rect_from_native(crop) {
+                    Ok(crop) => Some(crop),
+                    Err(reason) => return (CopyStats::dropped(reason), None),
+                },
+                Some(Err(error)) => {
+                    return (CopyStats::dropped(meta_drop_reason(error, true)), None);
+                }
+            };
+            let transform = match native.transform() {
+                None => CaptureRotation::Identity,
+                Some(Ok(transform)) => capture_rotation(transform),
+                Some(Err(error)) => {
+                    return (CopyStats::dropped(meta_drop_reason(error, false)), None);
+                }
+            };
+            let chunk = native.chunk();
+            let view = SpaChunkView::new(
+                native.bytes(),
+                chunk.offset,
+                chunk.size,
+                chunk.stride,
+                negotiated.width,
+                negotiated.height,
+                negotiated.format,
+                crop,
+                transform,
+            );
+            let stats = decode_chunk(&view, &mut self.callback.buffers);
+            let completed = if stats.drop_reason().is_none() {
+                self.callback.buffers.take_completed()
+            } else {
+                None
+            };
+            (stats, completed)
+        });
+        match outcome {
+            DequeueOutcome::Empty => {
+                self.callback.record_drop(ChunkDropReason::MissingBuffer);
+            }
+            DequeueOutcome::Faulted(error) => {
+                self.callback.record_drop(buffer_drop_reason(error));
+            }
+            DequeueOutcome::Visited((stats, completed)) => {
+                self.callback.metrics.record(stats);
+                if let Some(frame) = completed {
+                    self.callback.exchange.publish(frame);
+                }
+            }
+            DequeueOutcome::VisitorPanicked => {
+                self.callback.record_drop(ChunkDropReason::VisitorPanicked);
+                return terminate_pipewire_loop(
+                    &self.loop_exit,
+                    PipeWireLoopExit::Terminal(
+                        "Wayland frame policy panicked inside the guarded PipeWire visitor"
+                            .to_owned(),
+                    ),
+                );
+            }
+        }
+        CallbackAction::Continue
+    }
+}
+
+impl WaylandStreamEvents {
+    fn reject_format(&mut self, control: &StreamControl<'_>, reason: String) -> CallbackAction {
+        reject_pipewire_format(control, &mut self.callback, &self.format_state, reason)
+            .map_or(CallbackAction::Continue, |outcome| {
+                terminate_pipewire_loop(&self.loop_exit, outcome)
+            })
+    }
+}
+
+fn format_fault_reason(fault: FormatFault) -> String {
+    match fault {
+        FormatFault::Unreadable => "PipeWire returned an unreadable video format".to_owned(),
+        FormatFault::NonRawVideo => "PipeWire returned a non-raw video format".to_owned(),
+        FormatFault::InvalidRawVideo => "PipeWire returned an invalid raw video format".to_owned(),
+        FormatFault::UnsupportedPixelFormat => {
+            "PipeWire negotiated an unsupported packed video format".to_owned()
+        }
+    }
+}
+
+const fn capture_rotation(transform: D4Transform) -> CaptureRotation {
+    match transform {
+        D4Transform::Identity => CaptureRotation::Identity,
+        D4Transform::Clockwise90 => CaptureRotation::Clockwise90,
+        D4Transform::Clockwise180 => CaptureRotation::Clockwise180,
+        D4Transform::Clockwise270 => CaptureRotation::Clockwise270,
+        D4Transform::Flipped => CaptureRotation::Flipped,
+        D4Transform::Flipped90 => CaptureRotation::Flipped90,
+        D4Transform::Flipped180 => CaptureRotation::Flipped180,
+        D4Transform::Flipped270 => CaptureRotation::Flipped270,
+    }
+}
+
+fn pixel_rect_from_native(crop: PixelCrop) -> Result<PixelRect, ChunkDropReason> {
+    PixelRect::new(crop.x, crop.y, crop.width, crop.height)
+        .map_err(|_| ChunkDropReason::InvalidCrop)
+}
+
+const fn meta_drop_reason(error: MetaFault, crop: bool) -> ChunkDropReason {
+    match (crop, error) {
+        (true, _) => ChunkDropReason::InvalidCrop,
+        (false, _) => ChunkDropReason::InvalidTransform,
+    }
+}
+
+const fn buffer_drop_reason(error: BufferFault) -> ChunkDropReason {
+    match error {
+        BufferFault::MissingBuffer => ChunkDropReason::MissingBuffer,
+        BufferFault::MissingNativeBuffer => ChunkDropReason::MissingNativeBuffer,
+        BufferFault::MissingPlane => ChunkDropReason::MissingPlane,
+        BufferFault::MissingChunk => ChunkDropReason::MissingChunk,
+        BufferFault::UnmappedPlane => ChunkDropReason::UnmappedPlane,
+        BufferFault::InvalidLayout => ChunkDropReason::InvalidBufferLayout,
+        BufferFault::InvalidChunkBounds => ChunkDropReason::InvalidChunkBounds,
+        BufferFault::InvalidDmaBuf => ChunkDropReason::InvalidDmaBuf,
+    }
+}
+
 struct CaptureCallbackMetrics {
     copied_frames: AtomicU64,
-    dropped_frames: AtomicU64,
     copied_bytes: AtomicU64,
+    drop_reasons: [AtomicU64; ChunkDropReason::COUNT],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2720,12 +2940,23 @@ struct CaptureCallbackMetricsSnapshot {
     copied_frames: u64,
     dropped_frames: u64,
     copied_bytes: u64,
+    drop_reasons: [u64; ChunkDropReason::COUNT],
+}
+
+impl Default for CaptureCallbackMetrics {
+    fn default() -> Self {
+        Self {
+            copied_frames: AtomicU64::new(0),
+            copied_bytes: AtomicU64::new(0),
+            drop_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
 }
 
 impl CaptureCallbackMetrics {
     fn record(&self, stats: CopyStats) {
-        if stats.drop_reason().is_some() {
-            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+        if let Some(reason) = stats.drop_reason() {
+            self.drop_reasons[reason.index()].fetch_add(1, Ordering::Relaxed);
         } else {
             self.copied_frames.fetch_add(1, Ordering::Relaxed);
             self.copied_bytes.fetch_add(
@@ -2736,11 +2967,47 @@ impl CaptureCallbackMetrics {
     }
 
     fn snapshot(&self) -> CaptureCallbackMetricsSnapshot {
+        let drop_reasons =
+            std::array::from_fn(|index| self.drop_reasons[index].load(Ordering::Relaxed));
         CaptureCallbackMetricsSnapshot {
             copied_frames: self.copied_frames.load(Ordering::Relaxed),
-            dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
+            dropped_frames: drop_reasons.iter().copied().sum(),
             copied_bytes: self.copied_bytes.load(Ordering::Relaxed),
+            drop_reasons,
         }
+    }
+}
+
+impl CaptureCallbackMetricsSnapshot {
+    fn diagnostics(self) -> SourceDiagnosticsEnvelope {
+        let mut drop_reasons = Map::with_capacity(ChunkDropReason::COUNT);
+        for reason in ChunkDropReason::ALL {
+            drop_reasons.insert(
+                reason.name().to_owned(),
+                Value::from(self.drop_reasons[reason.index()]),
+            );
+        }
+        SourceDiagnosticsEnvelope::try_new(
+            "wayland.pipewire.capture",
+            1,
+            Vec::new(),
+            json!({
+                "copied_frames": self.copied_frames,
+                "dropped_frames": self.dropped_frames,
+                "copied_bytes": self.copied_bytes,
+                "drop_reasons": drop_reasons,
+            }),
+        )
+        .expect("fixed Wayland callback diagnostics satisfy envelope bounds")
+    }
+}
+
+fn publish_callback_diagnostics(
+    status_writer: Option<&SourceSessionWriter>,
+    metrics: &CaptureCallbackMetrics,
+) {
+    if let Some(status) = status_writer {
+        status.publish_status_diagnostics(Some(metrics.snapshot().diagnostics()));
     }
 }
 
@@ -2748,15 +3015,12 @@ impl CaptureCallbackMetrics {
 struct AnalysisExchangeState {
     latest: Option<DecodedChunk>,
     adoption: Option<AnalysisAdoption>,
-    exact_commands: VecDeque<AnalysisExactCommand>,
+    exact_commands: VecDeque<CaptureExactCommand>,
     stopped: bool,
 }
 
 struct AnalysisAdoption {
-    prepared: PreparedAnalysisSettings,
-    ready: mpsc::SyncSender<()>,
-    decision: mpsc::Receiver<SettingsDecision>,
-    done: mpsc::SyncSender<bool>,
+    adoption: CaptureSettingsAdoption<PreparedAnalysisSettings, bool>,
     authority: Arc<AdoptionAuthority>,
     finalize_authority: bool,
 }
@@ -2764,24 +3028,27 @@ struct AnalysisAdoption {
 enum AnalysisEvent {
     Frame(DecodedChunk),
     Adoption(AnalysisAdoption),
-    Exact(AnalysisExactCommand),
-}
-
-enum AnalysisExactCommand {
-    Prepare {
-        ticket: ScreenWorkerPreparationTicket,
-        cancelled: Arc<AtomicBool>,
-        completion: oneshot::Sender<anyhow::Result<ScreenPreparedWorkerToken>>,
-    },
-    Reap {
-        completion: Option<oneshot::Sender<anyhow::Result<()>>>,
-    },
+    Exact(CaptureExactCommand),
+    Diagnostics,
 }
 
 #[derive(Default)]
 struct AnalysisExchange {
     state: Mutex<AnalysisExchangeState>,
     wake: Condvar,
+}
+
+fn analysis_wait_timeout(
+    frame_deadline: Instant,
+    diagnostics_deadline: Instant,
+    now: Instant,
+) -> Duration {
+    let next_wake = if now >= frame_deadline {
+        diagnostics_deadline
+    } else {
+        frame_deadline.min(diagnostics_deadline)
+    };
+    next_wake.saturating_duration_since(now)
 }
 
 impl AnalysisExchange {
@@ -2818,7 +3085,7 @@ impl AnalysisExchange {
         Ok(())
     }
 
-    fn send_exact(&self, command: AnalysisExactCommand) -> Result<(), Box<AnalysisExactCommand>> {
+    fn send_exact(&self, command: CaptureExactCommand) -> Result<(), Box<CaptureExactCommand>> {
         let mut state = self
             .state
             .lock()
@@ -2842,7 +3109,12 @@ impl AnalysisExchange {
         drop(discarded);
     }
 
-    fn wait_for_event(&self, deadline: Instant, cancel: &AtomicBool) -> Option<AnalysisEvent> {
+    fn wait_for_event(
+        &self,
+        deadline: Instant,
+        diagnostics_deadline: Instant,
+        cancel: &AtomicBool,
+    ) -> Option<AnalysisEvent> {
         let mut state = self
             .state
             .lock()
@@ -2863,11 +3135,10 @@ impl AnalysisExchange {
             {
                 return Some(AnalysisEvent::Frame(frame));
             }
-            let timeout = if now >= deadline {
-                WORKER_POLL_INTERVAL
-            } else {
-                deadline.saturating_duration_since(now)
-            };
+            if now >= diagnostics_deadline {
+                return Some(AnalysisEvent::Diagnostics);
+            }
+            let timeout = analysis_wait_timeout(deadline, diagnostics_deadline, now);
             let waited = self
                 .wake
                 .wait_timeout(state, timeout.min(WORKER_POLL_INTERVAL))
@@ -2906,49 +3177,36 @@ struct WaylandExactRuntime {
 
 type WaylandExactRuntimes = ExactBoxList<WaylandExactRuntime>;
 
-impl WaylandExactRuntime {
-    fn bind_if_current(&mut self, hub: &ScreenPublicationHub) -> anyhow::Result<()> {
-        if self.fanout.is_some() {
-            return Ok(());
-        }
-        let authority = hub.committed_state();
-        if !authority.owns_runtime_binding(&self.binding) {
-            return Ok(());
-        }
-        match self.binding.state() {
-            ScreenWorkerBindingState::Active | ScreenWorkerBindingState::Retired => {}
-            ScreenWorkerBindingState::Prepared | ScreenWorkerBindingState::Armed => return Ok(()),
-            ScreenWorkerBindingState::Aborted => {
-                anyhow::bail!("Wayland exact runtime binding was aborted after commit")
-            }
+impl CaptureExactRuntimeOwner for WaylandExactRuntime {
+    type Source = WaylandPublicationSource;
+
+    const BACKEND_NAME: &'static str = "Wayland";
+    const ABORTED_BINDING_ERROR: &'static str =
+        "Wayland exact runtime binding was aborted after commit";
+
+    fn source(&self) -> &Self::Source {
+        &self.source
+    }
+
+    fn binding(&self) -> &ScreenWorkerBinding {
+        &self.binding
+    }
+
+    fn bind_routes(&mut self, authority: &ScreenCommittedState) -> anyhow::Result<bool> {
+        let was_bound = self.fanout.is_some();
+        if was_bound {
+            return Ok(false);
         }
         let candidate = self
             .fanout_candidate
             .take()
             .ok_or_else(|| anyhow!("Wayland CPU fanout candidate was already consumed"))?;
-        self.fanout = Some(candidate.bind(&authority, &self.binding)?);
-        Ok(())
+        self.fanout = Some(candidate.bind(authority, &self.binding)?);
+        Ok(true)
     }
-}
 
-fn build_wayland_analyzer_for_extent(
-    config: CaptureConfig,
-    requested_extent: PixelExtent,
-    admission_coordinator: ScreenByteAdmissionCoordinator,
-    compute_capacity_policy: ScreenComputeCapacityPolicy,
-) -> Result<ScreenCaptureInput, ScreenAnalysisAdmissionError> {
-    match compute_capacity_policy.analysis() {
-        Some(capacity) => ScreenCaptureInput::with_requested_extent_admission_and_compute_capacity(
-            config,
-            requested_extent,
-            admission_coordinator,
-            capacity,
-        ),
-        None => ScreenCaptureInput::with_requested_extent_and_admission(
-            config,
-            requested_extent,
-            admission_coordinator,
-        ),
+    fn is_bound(&self) -> bool {
+        self.fanout.is_some()
     }
 }
 
@@ -2961,20 +3219,6 @@ fn checked_wayland_metadata_bytes<T>(count: usize, resource: &str) -> anyhow::Re
                 .and_then(|size| count.checked_mul(size))
         })
         .ok_or_else(|| anyhow!("Wayland exact {resource} metadata accounting overflow"))
-}
-
-fn preflight_wayland_scope_bytes(
-    ledger: &mut ScreenWorkerExactLedgerBuilder,
-    minimum_remaining: &mut u64,
-    bytes: u64,
-) -> anyhow::Result<()> {
-    let modeled = bytes.min(*minimum_remaining);
-    *minimum_remaining -= modeled;
-    let additional = bytes - modeled;
-    if additional > 0 {
-        ledger.preflight_additional_bytes(additional)?;
-    }
-    Ok(())
 }
 
 fn prepare_wayland_exact_runtime(
@@ -2992,23 +3236,13 @@ fn prepare_wayland_exact_runtime(
         .iter()
         .any(|branch| branch.descriptor().source_epoch().source_id == *ticket.source_id());
     if !has_source_branches {
-        let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
-        let resource_count = ledger.ticket().required_minimums().len();
-        for index in 0..resource_count {
-            let (name, bytes) = {
-                let minimum = &ledger.ticket().required_minimums()[index];
-                (Arc::clone(minimum.name()), minimum.minimum_bytes())
-            };
-            ledger.report(&name, bytes)?;
-        }
-        let (token, _) = ledger.finish()?.into_parts();
-        return Ok((token, None));
+        return Ok((finish_removed_capture_exact_source(ticket)?, None));
     }
 
     let source = source
         .filter(|source| &source.epoch.source_id == ticket.source_id())
         .ok_or_else(|| anyhow!("Wayland exact publication source changed before preparation"))?;
-    let worker_count = exact.cpu_worker_count();
+    let worker_count = exact.cpu_executor.worker_count();
     let compute_plan =
         CpuExactReductionWorkPlan::try_for_source(&candidate, ticket.source_id(), |_| true)?;
     let capacity = compute_capacity_policy.exact(worker_count);
@@ -3026,7 +3260,7 @@ fn prepare_wayland_exact_runtime(
 
     let resolved_source =
         source.resolved(ScreenSourceSelector::Exact(source.epoch.source_id.clone()));
-    let executor = exact.cpu_executor()?;
+    let executor = exact.cpu_executor.executor()?;
     let mut ledger = ScreenWorkerExactLedgerBuilder::new(ticket)?;
     let mut processing_minimum_remaining = ledger
         .ticket()
@@ -3056,20 +3290,24 @@ fn prepare_wayland_exact_runtime(
                 ExactBoxNode<WaylandOwnedSource>,
             >(1, "owned source node")?)
             .ok_or_else(|| anyhow!("Wayland exact runtime node accounting overflow"))?;
-    preflight_wayland_scope_bytes(
+    preflight_capture_exact_scope_bytes(
         &mut ledger,
         &mut worker_minimum_remaining,
         runtime_node_bytes,
     )?;
 
     let batch_quote = executor.batch_allocation_quote(&resolved_source, &candidate)?;
-    preflight_wayland_scope_bytes(&mut ledger, &mut processing_minimum_remaining, batch_quote)?;
+    preflight_capture_exact_scope_bytes(
+        &mut ledger,
+        &mut processing_minimum_remaining,
+        batch_quote,
+    )?;
     let batch = executor.prepare_batch(&resolved_source, &candidate)?;
     let workspace_quote = batch.materialization_workspace_allocation_quote(&candidate)?;
     let workspace_additional_bytes = workspace_quote
         .checked_sub(plane_minimum_bytes)
         .ok_or_else(|| anyhow!("Wayland workspace quote understates physical-plane minima"))?;
-    preflight_wayland_scope_bytes(
+    preflight_capture_exact_scope_bytes(
         &mut ledger,
         &mut worker_minimum_remaining,
         workspace_additional_bytes,
@@ -3081,7 +3319,7 @@ fn prepare_wayland_exact_runtime(
     let fanout_additional_bytes = fanout_quote
         .checked_sub(batch_quote)
         .ok_or_else(|| anyhow!("Wayland fanout quote understates retained batch backing"))?;
-    preflight_wayland_scope_bytes(
+    preflight_capture_exact_scope_bytes(
         &mut ledger,
         &mut processing_minimum_remaining,
         fanout_additional_bytes,
@@ -3104,7 +3342,7 @@ fn prepare_wayland_exact_runtime(
         expected_lifetime_count,
         "runtime lifetimes",
     )?;
-    preflight_wayland_scope_bytes(
+    preflight_capture_exact_scope_bytes(
         &mut ledger,
         &mut worker_minimum_remaining,
         lifetime_metadata_bytes,
@@ -3157,54 +3395,15 @@ fn prepare_wayland_exact_runtime(
                 fanout_candidate: Some(fanout_candidate),
                 fanout: None,
             },
-            WaylandOwnedSource {
-                source_id: source.epoch.source_id.clone(),
-                session_generation: source.epoch.session_generation,
-                binding,
-                _runtime_lifetime: runtime_lifetime,
-            },
+            WaylandOwnedSource::new(source.epoch.source_id.clone(), binding, runtime_lifetime),
         )),
     ))
 }
 
-fn reap_wayland_exact_runtimes(
-    runtimes: &mut WaylandExactRuntimes,
-    exact: &WaylandExactPublicationShared,
-) {
-    exact.reap_owned_sources();
-    let authority = exact.hub().map(|hub| hub.committed_state());
-    runtimes.retain(|runtime| {
-        authority
-            .as_ref()
-            .is_some_and(|authority| authority.owns_runtime_binding(&runtime.binding))
-    });
-}
-
-fn bind_current_wayland_exact_runtime<'a>(
-    runtimes: &'a mut WaylandExactRuntimes,
-    source: &WaylandPublicationSource,
-    hub: &ScreenPublicationHub,
-) -> anyhow::Result<Option<&'a mut WaylandExactRuntime>> {
-    let authority = hub.committed_state();
-    let Some(current_binding) = authority.runtime_binding(&source.epoch.source_id) else {
-        return Ok(None);
-    };
-    let runtime = runtimes
-        .iter_mut()
-        .find(|runtime| runtime.source == *source && runtime.binding.is_same(current_binding));
-    let Some(runtime) = runtime else {
-        return Ok(None);
-    };
-    runtime.bind_if_current(hub)?;
-    Ok(runtime.fanout.is_some().then_some(runtime))
-}
-
 struct WaylandAnalysisState {
-    analyzer: ScreenCaptureInput,
     cadence: CaptureCadence,
     pacer: CapturePacer,
     next_analysis_at: Instant,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     plane_pool: CapturePlanePool,
     settings: Arc<SharedSettings>,
     applied_generation: u64,
@@ -3217,36 +3416,17 @@ struct WaylandAnalysisState {
 impl WaylandAnalysisState {
     fn new(
         settings: Arc<SharedSettings>,
-        latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
         source: WaylandSourceMetadata,
         config: CaptureConfig,
         demand: ScreenCaptureDemand,
     ) -> anyhow::Result<Self> {
-        let applied_generation = settings.generation.load(Ordering::Acquire);
-        let requested_extent = demand
-            .requested_extent()
-            .expect("an active Wayland analysis worker carries an extent");
-        let source_extent = source.signature.logical_extent.unwrap_or(requested_extent);
+        let applied_generation = settings.values.revision();
         let cadence = CaptureCadence::new(config.target_fps)?;
-        if let Some(capacity) = settings.compute_capacity_policy.analysis() {
-            ScreenAnalysisWorkPlan::try_new(source_extent, requested_extent, &config)?
-                .admit(capacity)?;
-        }
-        let mut analyzer = build_wayland_analyzer_for_extent(
-            config,
-            requested_extent,
-            settings.admission_coordinator.clone(),
-            settings.compute_capacity_policy,
-        )?;
-        analyzer.admit_frame_extent(source_extent)?;
-        analyzer.start()?;
 
         Ok(Self {
-            analyzer,
             cadence,
             pacer: cadence.pacer(),
             next_analysis_at: Instant::now(),
-            latest_snapshot,
             plane_pool: CapturePlanePool::with_admission_coordinator(
                 settings.admission_coordinator.clone(),
             ),
@@ -3260,7 +3440,7 @@ impl WaylandAnalysisState {
     }
 
     fn sync_settings(&mut self, cancel: &AtomicBool) -> bool {
-        let generation = self.settings.generation.load(Ordering::Acquire);
+        let generation = self.settings.values.revision();
         if generation == self.applied_generation {
             return self
                 .settings
@@ -3279,16 +3459,6 @@ impl WaylandAnalysisState {
                 return true;
             }
         };
-        if let Some(requested_extent) = runtime.demand.requested_extent()
-            && let Err(error) = self.analyzer.set_requested_extent(requested_extent)
-        {
-            warn!(%error, generation, previous_demand = ?self.applied_demand, next_demand = ?runtime.demand, "Retaining prior Wayland screen analysis settings");
-            return true;
-        }
-        if let Err(error) = self.analyzer.apply_settings(runtime.config) {
-            warn!(%error, generation, "Retaining prior Wayland capture settings");
-            return true;
-        }
         self.cadence = next_cadence;
         self.pacer = next_cadence.pacer();
         self.next_analysis_at = Instant::now();
@@ -3299,60 +3469,37 @@ impl WaylandAnalysisState {
     }
 
     fn adopt_settings(&mut self, adoption: AnalysisAdoption) {
-        if adoption.ready.send(()).is_err()
-            || !matches!(
-                adoption
-                    .decision
-                    .recv_timeout(FORMAT_ADOPTION_TIMEOUT + WORKER_STOP_TIMEOUT),
-                Ok(SettingsDecision::Commit)
-            )
-        {
+        let Some(committed_adoption) = adoption
+            .adoption
+            .rendezvous(Some(FORMAT_ADOPTION_TIMEOUT + WORKER_STOP_TIMEOUT))
+        else {
             return;
-        }
+        };
+        let (prepared, done) = committed_adoption.into_parts();
         let PreparedAnalysisSettings {
             mut config,
             cadence,
             demand,
-            analyzer,
-        } = adoption.prepared;
-        let mut current_config = self
-            .settings
-            .config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut current_demand = self
-            .settings
-            .demand
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut latest_snapshot = self
-            .latest_snapshot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        } = prepared;
+        let mut current_values = self.settings.values.lock();
         let generation = Cell::new(0);
         let committed = adoption.authority.claim_commit()
             && commit_claimed(&adoption.authority, adoption.finalize_authority, || {
-                let granted_token = current_config.restore_token.take();
+                let granted_token = current_values.config_mut().restore_token.take();
                 if config.restore_token.is_none() {
                     config.restore_token = granted_token;
                 }
-                *current_config = config;
-                *current_demand = demand;
-                let committed_generation = self
-                    .settings
-                    .generation
-                    .fetch_add(1, Ordering::AcqRel)
-                    .wrapping_add(1);
+                *current_values.config_mut() = config;
+                *current_values.demand_mut() = demand;
+                let committed_generation = self.settings.values.commit_revision();
                 generation.set(committed_generation);
-                self.analyzer = analyzer;
                 self.cadence = cadence;
                 self.pacer = cadence.pacer();
                 self.next_analysis_at = Instant::now();
                 self.applied_demand = demand;
                 self.applied_generation = committed_generation;
-                fence_previous_publication(&mut latest_snapshot);
             });
-        let _ = adoption.done.send(committed);
+        let _ = done.send(committed);
         if !committed {
             return;
         }
@@ -3362,58 +3509,20 @@ impl WaylandAnalysisState {
         );
     }
 
-    fn handle_exact_command(&mut self, command: AnalysisExactCommand) {
-        match command {
-            AnalysisExactCommand::Prepare {
-                ticket,
-                cancelled,
-                completion,
-            } => {
-                if cancelled.load(Ordering::Acquire) {
-                    let _ = completion.send(Err(anyhow!(
-                        "Wayland exact publication preparation was cancelled"
-                    )));
-                    return;
-                }
-                let source = self.settings.exact.source();
-                let result = prepare_wayland_exact_runtime(
+    fn handle_exact_command(&mut self, command: CaptureExactCommand) {
+        execute_capture_exact_command(
+            command,
+            &self.settings.exact,
+            &mut self.exact_runtimes,
+            |ticket, source| {
+                prepare_wayland_exact_runtime(
                     ticket,
-                    source.as_ref(),
+                    source,
                     &self.settings.exact,
                     self.settings.compute_capacity_policy,
-                );
-                match result {
-                    Ok((token, runtime)) if !cancelled.load(Ordering::Acquire) => {
-                        if let Some((runtime, owned_source)) = runtime {
-                            let runtime = WaylandExactRuntimes::boxed_node(runtime);
-                            let owned_source = ExactBoxList::boxed_node(owned_source);
-                            self.settings.exact.register_owned_source(owned_source);
-                            self.exact_runtimes.push_boxed(runtime);
-                        }
-                        if completion.send(Ok(token)).is_err() {
-                            reap_wayland_exact_runtimes(
-                                &mut self.exact_runtimes,
-                                &self.settings.exact,
-                            );
-                        }
-                    }
-                    Ok((_token, _runtime)) => {
-                        let _ = completion.send(Err(anyhow!(
-                            "Wayland exact publication preparation was cancelled"
-                        )));
-                    }
-                    Err(error) => {
-                        let _ = completion.send(Err(error));
-                    }
-                }
-            }
-            AnalysisExactCommand::Reap { completion } => {
-                reap_wayland_exact_runtimes(&mut self.exact_runtimes, &self.settings.exact);
-                if let Some(completion) = completion {
-                    let _ = completion.send(Ok(()));
-                }
-            }
-        }
+                )
+            },
+        );
     }
 
     fn publish_exact(&mut self, frame: &CaptureFrame<RawCaptureSurface>) -> anyhow::Result<()> {
@@ -3424,7 +3533,9 @@ impl WaylandAnalysisState {
             return Ok(());
         };
         let Some(runtime) =
-            bind_current_wayland_exact_runtime(&mut self.exact_runtimes, &source, &hub)?
+            bind_current_capture_exact_runtime(&mut self.exact_runtimes, &source, &hub, |_, _| {
+                Ok(())
+            })?
         else {
             return Ok(());
         };
@@ -3453,22 +3564,31 @@ impl WaylandAnalysisState {
     ) -> anyhow::Result<CaptureFrame<RawCaptureSurface>> {
         self.sequence = self.sequence.wrapping_add(1).max(1);
         let storage_extent = PixelExtent::new(width, height)?;
-        let topology = if let Some(topology) = self.source.topology {
-            topology
+        let signature = WaylandTopologySignature {
+            native_extent: Some(storage_extent),
+            transform,
+            ..self.source.signature.clone()
+        };
+        let topology = if self.source.signature == signature {
+            self.source
+                .topology
+                .ok_or_else(|| anyhow!("Wayland topology signature had no resolved generation"))?
         } else {
             let topology = self
                 .settings
-                .activate_topology(
-                    &self.source.signature,
-                    storage_extent,
-                    self.source.session_generation,
-                )
+                .activate_topology(&signature, storage_extent, self.source.session_generation)
                 .ok_or_else(|| {
                     anyhow!("Wayland capture session became stale during topology activation")
                 })?;
+            self.source.signature = signature;
             self.source.topology = Some(topology);
             topology
         };
+        if topology.native_extent != storage_extent {
+            return Err(anyhow!(
+                "Wayland frame storage extent disagreed with its resolved topology"
+            ));
+        }
         let row_stride = i64::from(width)
             .checked_mul(4)
             .ok_or_else(|| anyhow!("Wayland capture row stride overflow"))?;
@@ -3479,7 +3599,7 @@ impl WaylandAnalysisState {
             storage_extent,
             transform,
             crop,
-            self.source.source_scale(topology.native_extent.width()),
+            self.source.source_scale(),
         )?;
         let epoch = CaptureEpoch {
             source_id: self.source.signature.source_id.clone(),
@@ -3498,7 +3618,7 @@ impl WaylandAnalysisState {
                 CapturePixelFormat::Rgba8,
                 colorimetry,
                 ScreenBackendResourceIdentity::new(
-                    ScreenCaptureBackend::WaylandPipeWire,
+                    ScreenCaptureBackend::PipeWire,
                     ScreenResourceApi::Cpu,
                     self.source.session_generation,
                     topology.generation,
@@ -3530,7 +3650,10 @@ impl WaylandAnalysisState {
             .expected_epoch()
             .ok_or_else(|| anyhow!("Wayland capture epoch is not active"))?;
         frame.validate_epoch(&expected)?;
-        self.settings.exact.replace_source(Some(publication_source));
+        self.settings.exact.replace_source_if_current(
+            CaptureSessionAuthority::new(self.source.session_generation),
+            Some(publication_source),
+        );
         Ok(frame)
     }
 
@@ -3542,33 +3665,40 @@ impl WaylandAnalysisState {
 
 impl Drop for WaylandAnalysisState {
     fn drop(&mut self) {
+        // Owned sources only ever belong to the current authority (activating
+        // a successor displaces the whole ledger), so releasing this
+        // session's sources is releasing all of them.
         self.settings
             .exact
-            .clear_owned_sources_for_session(self.source.session_generation);
+            .clear_owned_sources_if_current(CaptureSessionAuthority::new(
+                self.source.session_generation,
+            ));
     }
 }
 
 fn run_analysis_worker(
     exchange: &AnalysisExchange,
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
     source: WaylandSourceMetadata,
     config: CaptureConfig,
     demand: ScreenCaptureDemand,
     cancel: &AtomicBool,
     status_writer: Option<SourceSessionWriter>,
+    callback_metrics: &CaptureCallbackMetrics,
 ) {
-    let mut state =
-        match WaylandAnalysisState::new(settings, latest_snapshot, source, config, demand) {
-            Ok(state) => state,
-            Err(error) => {
-                warn!(%error, "Failed to admit Wayland screen analysis extent");
-                return;
-            }
-        };
+    let mut state = match WaylandAnalysisState::new(settings, source, config, demand) {
+        Ok(state) => state,
+        Err(error) => {
+            warn!(%error, "Failed to start the Wayland screen publication worker");
+            return;
+        }
+    };
     let mut analysis_failure_latched = false;
     let mut exact_failure_latched = false;
-    while let Some(event) = exchange.wait_for_event(state.next_analysis_at, cancel) {
+    let mut diagnostics_deadline = Instant::now();
+    while let Some(event) =
+        exchange.wait_for_event(state.next_analysis_at, diagnostics_deadline, cancel)
+    {
         let decoded = match event {
             AnalysisEvent::Frame(decoded) => decoded,
             AnalysisEvent::Adoption(adoption) => {
@@ -3577,6 +3707,11 @@ fn run_analysis_worker(
             }
             AnalysisEvent::Exact(command) => {
                 state.handle_exact_command(command);
+                continue;
+            }
+            AnalysisEvent::Diagnostics => {
+                publish_callback_diagnostics(status_writer.as_ref(), callback_metrics);
+                diagnostics_deadline = Instant::now() + CAPTURE_DIAGNOSTICS_INTERVAL;
                 continue;
             }
         };
@@ -3636,40 +3771,22 @@ fn run_analysis_worker(
                 continue;
             }
         };
-        let exact_failure = match state.publish_exact(&frame) {
+        let captured_at = frame.metadata().captured_at;
+        let fresh_until = frame.metadata().fresh_until;
+        match state.publish_exact(&frame) {
             Ok(()) => {
                 exact_failure_latched = false;
-                None
+                analysis_failure_latched = false;
+                if let Some(status) = status_writer.as_ref() {
+                    let _ = status.record_sample(captured_at, fresh_until, 1);
+                }
             }
             Err(error) => {
                 if !exact_failure_latched {
                     warn!(%error, "Wayland exact publication rejected a frame");
                     exact_failure_latched = true;
                 }
-                Some(error)
-            }
-        };
-        let analysis = match analyze_screen_frame(&mut state.analyzer, frame) {
-            Ok(analysis) => analysis,
-            Err(error) => {
-                latch_wayland_analysis_failure(
-                    status_writer.as_ref(),
-                    &mut analysis_failure_latched,
-                    &error,
-                );
-                continue;
-            }
-        };
-        let metadata = analysis.geometry_frame().metadata();
-        let captured_at = metadata.captured_at;
-        let fresh_until = metadata.fresh_until;
-        if state
-            .settings
-            .publish_snapshot(&state.latest_snapshot, analysis)
-        {
-            analysis_failure_latched = false;
-            if let Some(status) = status_writer.as_ref() {
-                if let Some(error) = exact_failure.as_ref() {
+                if let Some(status) = status_writer.as_ref() {
                     let _ = status.record_degraded_sample(
                         captured_at,
                         fresh_until,
@@ -3680,8 +3797,6 @@ fn run_analysis_worker(
                             true,
                         ),
                     );
-                } else {
-                    let _ = status.record_sample(captured_at, fresh_until, 1);
                 }
             }
         }
@@ -3696,10 +3811,10 @@ fn latch_wayland_analysis_failure(
     if *latched {
         return;
     }
-    warn!(%error, "Wayland screen analysis rejected a frame; retaining last good publication");
+    warn!(%error, "Wayland screen capture rejected a frame; retaining last good publication");
     if let Some(status) = status_writer {
         status.degraded(SourceIssue::new(
-            "wayland_screen_analysis_rejected",
+            "wayland_screen_frame_rejected",
             error.to_string(),
             true,
         ));
@@ -3709,8 +3824,8 @@ fn latch_wayland_analysis_failure(
 
 fn run_capture_worker(
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
-    command_rx: pw::channel::Receiver<WorkerCommand>,
+    command_rx: LoopReceiver<WorkerCommand>,
+    command_tx: LoopSender<WorkerCommand>,
     token_sink: Option<RestoreTokenSink>,
     flags: WorkerFlags,
     status_writer: Option<SourceSessionWriter>,
@@ -3765,7 +3880,7 @@ fn run_capture_worker(
             }
             continue;
         };
-        let (portal, restore_token) = match portal_result {
+        let portal = match portal_result {
             Ok(portal) => portal,
             Err(error) => {
                 flags.portal_pending.store(false, Ordering::SeqCst);
@@ -3811,6 +3926,7 @@ fn run_capture_worker(
             return;
         }
 
+        let (portal_guard, portal_remote, restore_token) = portal.into_parts();
         if restore_token != startup.config.restore_token
             && !settings.persist_restore_token_for_session(
                 session_generation,
@@ -3826,26 +3942,20 @@ fn run_capture_worker(
         // worker immediately rewrites, silently reconnecting the old source.
         flags.portal_pending.store(false, Ordering::SeqCst);
 
-        let PortalCaptureSession {
-            session,
-            stream,
-            fd,
-        } = portal;
         let loop_outcome = run_pipewire_loop(
             &startup.config,
             startup.demand,
             Arc::clone(&settings),
-            Arc::clone(&latest_snapshot),
-            stream,
-            fd,
+            portal_remote,
             &mut command_rx,
+            command_tx.clone(),
             Arc::clone(&flags.cancel),
             session_generation,
             status_writer.clone(),
             native_extent_override,
         );
-        settings.invalidate_session(&latest_snapshot, session_generation);
-        if let Err(error) = runtime.block_on(session.close()) {
+        settings.invalidate_session(session_generation);
+        if let Err(error) = runtime.block_on(portal_guard.close()) {
             warn!(%error, "Wayland screencast session close reported an error");
         }
         if !settings.session_is_current(session_generation, &flags.cancel) {
@@ -3997,9 +4107,12 @@ fn wait_for_retry(flags: &WorkerFlags) -> bool {
 async fn open_portal_session_while_demanded(
     config: &CaptureConfig,
     flags: &WorkerFlags,
-) -> Option<anyhow::Result<(PortalCaptureSession, Option<String>)>> {
+) -> Option<Result<PortalSession, hypercolor_pipewire_interop::PortalError>> {
+    let request = PortalRequest {
+        restore_token: config.restore_token.clone(),
+    };
     tokio::select! {
-        result = open_portal_session(config) => Some(result),
+        result = open_portal_session(&request) => Some(result),
         () = wait_until_worker_inactive(flags) => None,
     }
 }
@@ -4008,66 +4121,6 @@ async fn wait_until_worker_inactive(flags: &WorkerFlags) {
     while !flags.cancel.load(Ordering::Acquire) && worker_demanded(&flags.demand_state) {
         tokio::time::sleep(WORKER_POLL_INTERVAL).await;
     }
-}
-
-async fn open_portal_session(
-    config: &CaptureConfig,
-) -> anyhow::Result<(PortalCaptureSession, Option<String>)> {
-    let proxy = Screencast::new()
-        .await
-        .context("failed to connect to xdg-desktop-portal screencast interface")?;
-    let session = proxy
-        .create_session(CreateSessionOptions::default())
-        .await
-        .context("failed to create screencast portal session")?;
-
-    // An invalid or revoked restore token is ignored by the portal, which
-    // falls back to showing the picker — no retry path needed.
-    proxy
-        .select_sources(
-            &session,
-            SelectSourcesOptions::default()
-                .set_cursor_mode(CursorMode::Hidden)
-                .set_sources(Some(SourceType::Monitor.into()))
-                .set_multiple(false)
-                .set_restore_token(config.restore_token.as_deref())
-                .set_persist_mode(PersistMode::ExplicitlyRevoked),
-        )
-        .await
-        .context("failed to open screencast source picker")?;
-
-    let response = proxy
-        .start(&session, None, StartCastOptions::default())
-        .await
-        .context("failed to start screencast portal session")?
-        .response()
-        .context("screen capture request was denied or cancelled")?;
-    let restore_token = response.restore_token().map(ToOwned::to_owned);
-    let stream = response
-        .streams()
-        .first()
-        .cloned()
-        .context("portal did not return a monitor stream")?;
-    let fd = proxy
-        .open_pipe_wire_remote(&session, OpenPipeWireRemoteOptions::default())
-        .await
-        .context("failed to open PipeWire remote for screencast session")?;
-
-    info!(
-        pipewire_node = stream.pipe_wire_node_id(),
-        stream = ?stream,
-        restored = config.restore_token.is_some(),
-        "Wayland screencast session established"
-    );
-
-    Ok((
-        PortalCaptureSession {
-            session,
-            stream,
-            fd,
-        },
-        restore_token,
-    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4090,7 +4143,7 @@ enum PipeWireLoopExit {
 /// path so a mid-stream change cannot silently rewrite committed geometry.
 fn initial_native_extent_correction(
     format_state: &Mutex<PipeWireFormatState>,
-    negotiated: NegotiatedPipeWireFormat,
+    negotiated: NegotiatedVideoFormat,
 ) -> Option<PixelExtent> {
     let state = format_state
         .lock()
@@ -4098,7 +4151,7 @@ fn initial_native_extent_correction(
     if state.current_acknowledged || state.pending.is_some() || state.restoring.is_some() {
         return None;
     }
-    let fixated = PixelExtent::new(negotiated.frame.width, negotiated.frame.height).ok()?;
+    let fixated = PixelExtent::new(negotiated.width, negotiated.height).ok()?;
     (fixated != state.current.extent).then_some(fixated)
 }
 
@@ -4114,7 +4167,7 @@ fn unavailable_format_outcome(current_acknowledged: bool, reason: String) -> Pip
 }
 
 fn request_pipewire_restoration(
-    stream: &pw::stream::Stream,
+    stream: &StreamControl<'_>,
     format_state: &Mutex<PipeWireFormatState>,
     pending: PendingPipeWireAdoption,
     reason: String,
@@ -4126,12 +4179,13 @@ fn request_pipewire_restoration(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .begin_restoring(pending, reason);
-    update_pipewire_format(stream, &restore)
+    stream
+        .update_format(&restore)
         .map_err(|error| format!("failed to request prior PipeWire format: {error}"))
 }
 
 fn reject_pipewire_format(
-    stream: &pw::stream::Stream,
+    stream: &StreamControl<'_>,
     user_data: &mut WaylandCaptureUserData,
     format_state: &Mutex<PipeWireFormatState>,
     reason: String,
@@ -4177,29 +4231,24 @@ fn settle_pipewire_restoration(
     Ok(())
 }
 
-fn fence_previous_publication(latest_snapshot: &mut Option<CapturedScreenSnapshot>) {
-    *latest_snapshot = None;
-}
-
 fn terminate_pipewire_loop(
-    mainloop: &pw::main_loop::MainLoopRc,
     loop_exit: &Mutex<Option<PipeWireLoopExit>>,
     outcome: PipeWireLoopExit,
-) {
+) -> CallbackAction {
     let mut exit = loop_exit
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if exit.is_none() {
         *exit = Some(outcome);
-        mainloop.quit();
     }
+    CallbackAction::Quit
 }
 
 fn commit_pending_pipewire_adoption(
-    stream: &pw::stream::Stream,
+    stream: &StreamControl<'_>,
     user_data: &mut WaylandCaptureUserData,
     format_state: &Mutex<PipeWireFormatState>,
-    negotiated: NegotiatedPipeWireFormat,
+    negotiated: NegotiatedVideoFormat,
 ) -> Result<(), String> {
     let Some(pending) = format_state
         .lock()
@@ -4218,7 +4267,8 @@ fn commit_pending_pipewire_adoption(
             "PipeWire format adoption timed out".to_owned(),
         );
     }
-    let Some(required_capacity) = negotiated.frame.byte_len() else {
+    let frame = NegotiatedFormat::from_native(negotiated);
+    let Some(required_capacity) = frame.byte_len() else {
         user_data.fence_decoding();
         return request_pipewire_restoration(
             stream,
@@ -4237,20 +4287,16 @@ fn commit_pending_pipewire_adoption(
         );
     }
 
-    let analysis_committed = if pending
-        .analysis_decision
-        .send(SettingsDecision::Commit)
-        .is_err()
-    {
-        pending.authority.cancel();
-        false
-    } else {
-        match pending.analysis_done.recv_timeout(WORKER_STOP_TIMEOUT) {
+    let analysis_committed = if pending.analysis.commit() {
+        match pending.analysis.done().recv_timeout(WORKER_STOP_TIMEOUT) {
             Ok(committed) => committed,
             Err(_) => {
                 pending.authority.cancel_or_wait_for_analysis() == AdoptionSettlement::Committed
             }
         }
+    } else {
+        pending.authority.cancel();
+        false
     };
     if !analysis_committed {
         user_data.fence_decoding();
@@ -4264,26 +4310,26 @@ fn commit_pending_pipewire_adoption(
 
     let PendingPipeWireAdoption {
         request,
-        format_bytes,
+        offer,
         callback_buffers,
         done,
         authority,
         ..
     } = pending;
     if !commit_claimed(&authority, true, || {
-        user_data.install_prepared_format(negotiated.frame, callback_buffers);
+        user_data.install_prepared_format(frame, callback_buffers);
         let mut state = format_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.current = request;
-        state.current_format_bytes = format_bytes;
+        state.current_offer = offer;
         state.current_acknowledged = true;
     }) {
         return Err("PipeWire format install lost its claimed commit authority".to_owned());
     }
     info!(
-        width = negotiated.frame.width,
-        height = negotiated.frame.height,
+        width = negotiated.width,
+        height = negotiated.height,
         target_fps = request.target_fps,
         "Adopted acknowledged Wayland screen capture format"
     );
@@ -4296,17 +4342,16 @@ fn run_pipewire_loop(
     config: &CaptureConfig,
     demand: ScreenCaptureDemand,
     settings: Arc<SharedSettings>,
-    latest_snapshot: Arc<Mutex<Option<CapturedScreenSnapshot>>>,
-    portal_stream: Stream,
-    portal_fd: OwnedFd,
-    command_rx: &mut Option<pw::channel::Receiver<WorkerCommand>>,
+    portal_remote: PortalRemote,
+    command_rx: &mut Option<LoopReceiver<WorkerCommand>>,
+    command_tx: LoopSender<WorkerCommand>,
     cancel: Arc<AtomicBool>,
     session_generation: u64,
     status_writer: Option<SourceSessionWriter>,
     native_extent_override: Option<PixelExtent>,
 ) -> anyhow::Result<PipeWireLoopExit> {
-    pw::init();
-    let source = WaylandSourceMetadata::from_stream(&portal_stream, session_generation)?;
+    let source =
+        WaylandSourceMetadata::from_stream(portal_remote.descriptor(), session_generation)?;
     let exchange = Arc::new(AnalysisExchange::default());
     let callback_metrics = Arc::new(CaptureCallbackMetrics::default());
     let loop_exit = Arc::new(Mutex::new(None::<PipeWireLoopExit>));
@@ -4314,36 +4359,13 @@ fn run_pipewire_loop(
     // logical size: scaled outputs stream physical pixels.
     let requested_extent = native_extent_override
         .or(source.signature.logical_extent)
-        .map_or_else(
-            || {
-                demand
-                    .requested_extent()
-                    .context("active Wayland capture demand must carry an extent")
-            },
-            Ok,
-        )?;
-    let requested_output_extent = demand
-        .requested_extent()
-        .context("active Wayland capture demand must carry an extent")?;
-    // Admission rejections here are typed capacity outcomes, not stream
-    // faults: park the demand as unavailable instead of feeding the generic
-    // reconnect loop, which would churn portal sessions every retry interval
-    // against an extent that can never be admitted.
-    let initial_request = match PipeWireFormatRequest::new_with_compute_policy(
-        requested_extent,
-        requested_output_extent,
-        config,
-        settings.compute_capacity_policy,
-    ) {
-        Ok(request) => request,
-        Err(error) => {
-            return Ok(unavailable_format_outcome(
-                false,
-                format!("capture admission rejected extent {requested_extent:?}: {error}"),
-            ));
-        }
-    };
-    let format_bytes = build_format_params(config.target_fps, requested_extent)?;
+        .unwrap_or_else(default_acquisition_extent);
+    let initial_request = PipeWireFormatRequest::new(requested_extent, config);
+    let offer = FormatOffer::new(CaptureFormatRequest {
+        width: requested_extent.width(),
+        height: requested_extent.height(),
+        target_fps: config.target_fps,
+    })?;
     let callback_capacity = NegotiatedFormat {
         width: requested_extent.width(),
         height: requested_extent.height(),
@@ -4366,649 +4388,309 @@ fn run_pipewire_loop(
     let decoding_enabled = Arc::new(AtomicBool::new(false));
     let format_state = Arc::new(Mutex::new(PipeWireFormatState {
         current: initial_request,
-        current_format_bytes: format_bytes.clone(),
+        current_offer: offer,
         current_acknowledged: false,
         pending: None,
         restoring: None,
     }));
 
-    let mainloop =
-        pw::main_loop::MainLoopRc::new(None).context("failed to create PipeWire main loop")?;
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .context("failed to create PipeWire context")?;
-    let core = context
-        .connect_fd_rc(portal_fd, None)
-        .context("failed to connect to screencast PipeWire remote")?;
-
-    let stream = pw::stream::StreamRc::new(
-        core,
-        "hypercolor-screen-capture",
-        properties! {
-            *pw::keys::MEDIA_TYPE => "Video",
-            *pw::keys::MEDIA_CATEGORY => "Capture",
-            *pw::keys::MEDIA_ROLE => "Screen",
-        },
-    )
-    .context("failed to create PipeWire capture stream")?;
-
-    let _listener = stream
-        .add_local_listener_with_user_data(WaylandCaptureUserData::with_buffers(
+    let handler = WaylandStreamEvents {
+        callback: WaylandCaptureUserData::with_buffers(
             Arc::clone(&exchange),
             Arc::clone(&callback_metrics),
             callback_buffers,
             Arc::clone(&decoding_enabled),
             settings.admission_coordinator.clone(),
-        ))
-        .param_changed({
-            let format_state = Arc::clone(&format_state);
-            let mainloop = mainloop.clone();
-            let loop_exit = Arc::clone(&loop_exit);
-            move |stream, user_data, id, param| {
-                if id != spa::param::ParamType::Format.as_raw() {
-                    return;
+        ),
+        format_state: Arc::clone(&format_state),
+        loop_exit: Arc::clone(&loop_exit),
+    };
+    let receiver = command_rx
+        .take()
+        .context("PipeWire command receiver was not returned by the previous stream")?;
+    let command_handler = {
+        let loop_exit = Arc::clone(&loop_exit);
+        let command_exchange = Arc::clone(&exchange);
+        let command_format_state = Arc::clone(&format_state);
+        let command_decoding_enabled = Arc::clone(&decoding_enabled);
+        move |control: &StreamControl<'_>, command| {
+            match command {
+                WorkerCommand::Backend(BackendWorkerCommand::SetDemand(demand)) => {
+                    let active = demand.is_active();
+                    if let Err(error) = control.set_active(active) {
+                        warn!(active, %error, "Failed to update PipeWire stream active state");
+                    }
                 }
-                let Some(param) = param else {
-                    if let Some(outcome) = reject_pipewire_format(
-                        stream,
-                        user_data,
-                        &format_state,
-                        "PipeWire removed the negotiated video format".to_owned(),
-                    ) {
-                        terminate_pipewire_loop(&mainloop, &loop_exit, outcome);
-                    }
-                    return;
-                };
-                let Ok((media_type, media_subtype)) =
-                    spa::param::format_utils::parse_format(param)
-                else {
-                    if let Some(outcome) = reject_pipewire_format(
-                        stream,
-                        user_data,
-                        &format_state,
-                        "PipeWire returned an unreadable video format".to_owned(),
-                    ) {
-                        terminate_pipewire_loop(&mainloop, &loop_exit, outcome);
-                    }
-                    return;
-                };
-                if media_type != spa::param::format::MediaType::Video
-                    || media_subtype != spa::param::format::MediaSubtype::Raw
-                {
-                    if let Some(outcome) = reject_pipewire_format(
-                        stream,
-                        user_data,
-                        &format_state,
-                        "PipeWire returned a non-raw video format".to_owned(),
-                    ) {
-                        terminate_pipewire_loop(&mainloop, &loop_exit, outcome);
-                    }
-                    return;
+                WorkerCommand::Backend(BackendWorkerCommand::Reselect) => {
+                    return terminate_pipewire_loop(&loop_exit, PipeWireLoopExit::Reselect);
                 }
-                if user_data.format.parse(param).is_err() {
-                    if let Some(outcome) = reject_pipewire_format(
-                        stream,
-                        user_data,
-                        &format_state,
-                        "PipeWire returned an invalid raw video format".to_owned(),
-                    ) {
-                        terminate_pipewire_loop(&mainloop, &loop_exit, outcome);
+                WorkerCommand::Exact(command) => {
+                    if let Err(command) = command_exchange.send_exact(command) {
+                        match *command {
+                            CaptureExactCommand::Prepare { completion, .. } => {
+                                let _ = completion.send(Err(anyhow!(
+                                    "Wayland analysis worker rejected exact publication preparation"
+                                )));
+                            }
+                            CaptureExactCommand::Reap { completion, .. } => {
+                                let Some(completion) = completion else {
+                                    return CallbackAction::Continue;
+                                };
+                                let _ = completion.send(Err(anyhow!(
+                                    "Wayland analysis worker rejected exact publication retirement"
+                                )));
+                            }
+                        }
                     }
-                    return;
                 }
+                WorkerCommand::Backend(BackendWorkerCommand::AdoptSettings {
+                    adoption_id,
+                    adoption,
+                    authority,
+                }) => {
+                    let Some(committed_adoption) = adoption.rendezvous(Some(WORKER_READY_TIMEOUT))
+                    else {
+                        authority.cancel();
+                        return CallbackAction::Continue;
+                    };
+                    if authority.is_cancelled() {
+                        return CallbackAction::Continue;
+                    }
+                    let (prepared, done) = committed_adoption.into_parts();
+                    let PreparedWaylandSettings {
+                        config,
+                        cadence,
+                        demand,
+                        pipewire_format,
+                    } = prepared;
+                    let (analysis_adoption, analysis) =
+                        begin_capture_settings_adoption(PreparedAnalysisSettings {
+                            config,
+                            cadence,
+                            demand,
+                        });
+                    let finalize_authority = pipewire_format.is_none();
+                    let adoption = AnalysisAdoption {
+                        adoption: analysis_adoption,
+                        authority: Arc::clone(&authority),
+                        finalize_authority,
+                    };
+                    if let Err(error) = command_exchange.prepare_adoption(adoption) {
+                        authority.cancel();
+                        let _ = done.send(Err(error));
+                        return CallbackAction::Continue;
+                    }
+                    if analysis.wait_ready(WORKER_READY_TIMEOUT).is_err() {
+                        authority.cancel();
+                        let _ = done.send(Err(
+                            "Wayland analysis worker exited before adoption".to_owned()
+                        ));
+                        return CallbackAction::Continue;
+                    }
 
-                let format = user_data.format.format();
-                let size = user_data.format.size();
-                let Some(frame) = spa_video_format(format).map(|format| NegotiatedFormat {
-                    width: size.width,
-                    height: size.height,
-                    format,
-                }) else {
-                    if let Some(outcome) = reject_pipewire_format(
-                        stream,
-                        user_data,
-                        &format_state,
-                        format!("PipeWire negotiated unsupported video format {format:?}"),
-                    ) {
-                        terminate_pipewire_loop(&mainloop, &loop_exit, outcome);
-                    }
-                    return;
-                };
-                let negotiated = NegotiatedPipeWireFormat {
-                    frame,
-                    framerate: user_data.format.framerate(),
-                };
-                let acknowledgment = format_state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .acknowledgment(negotiated);
-                match acknowledgment {
-                    PipeWireFormatAcknowledgment::Current => {
-                        if let Err(error) = user_data.activate_negotiated_format(frame) {
-                            terminate_pipewire_loop(
-                                &mainloop,
-                                &loop_exit,
-                                PipeWireLoopExit::Unavailable(format!(
-                                    "failed to activate authoritative PipeWire format: {error}"
-                                )),
-                            );
-                            return;
-                        }
-                        format_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .current_acknowledged = true;
-                        debug!(
-                            ?format,
-                            width = size.width,
-                            height = size.height,
-                            "Accepted authoritative Wayland screen capture format"
-                        );
-                    }
-                    PipeWireFormatAcknowledgment::Pending => {
-                        if let Err(reason) = commit_pending_pipewire_adoption(
-                            stream,
-                            user_data,
-                            &format_state,
-                            negotiated,
-                        ) {
-                            terminate_pipewire_loop(
-                                &mainloop,
-                                &loop_exit,
-                                PipeWireLoopExit::Terminal(reason),
-                            );
-                        }
-                    }
-                    PipeWireFormatAcknowledgment::Restored => {
-                        if let Err(reason) =
-                            settle_pipewire_restoration(user_data, &format_state, frame)
-                        {
-                            terminate_pipewire_loop(
-                                &mainloop,
-                                &loop_exit,
-                                PipeWireLoopExit::Terminal(reason),
-                            );
-                        }
-                    }
-                    PipeWireFormatAcknowledgment::Restoring => {
-                        user_data.fence_decoding();
-                        debug!(
-                            ?format,
-                            width = size.width,
-                            height = size.height,
-                            "Ignored stale PipeWire format while awaiting restoration"
-                        );
-                    }
-                    PipeWireFormatAcknowledgment::CancelledCurrent => {
-                        user_data.fence_decoding();
-                        let pending = format_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pending
-                            .take();
-                        let Some(pending) = pending else {
-                            terminate_pipewire_loop(
-                                &mainloop,
-                                &loop_exit,
-                                PipeWireLoopExit::Terminal(
-                                    "cancelled PipeWire adoption had no owner".to_owned(),
-                                ),
-                            );
-                            return;
-                        };
-                        let _ = format_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .begin_restoring(
-                                pending,
-                                "PipeWire format adoption timed out".to_owned(),
-                            );
-                        if let Err(reason) =
-                            settle_pipewire_restoration(user_data, &format_state, frame)
-                        {
-                            terminate_pipewire_loop(
-                                &mainloop,
-                                &loop_exit,
-                                PipeWireLoopExit::Terminal(reason),
-                            );
-                        }
-                    }
-                    PipeWireFormatAcknowledgment::Cancelled
-                    | PipeWireFormatAcknowledgment::Rejected => {
-                        if acknowledgment == PipeWireFormatAcknowledgment::Rejected
-                            && let Some(extent) =
-                                initial_native_extent_correction(&format_state, negotiated)
-                        {
-                            user_data.fence_decoding();
-                            terminate_pipewire_loop(
-                                &mainloop,
-                                &loop_exit,
-                                PipeWireLoopExit::RequiresNativeExtent(extent),
-                            );
-                            return;
-                        }
-                        let reason = format!(
-                            "PipeWire negotiated {size:?} at {:?} instead of the exact requested format",
-                            user_data.format.framerate()
-                        );
-                        if let Some(outcome) = reject_pipewire_format(
-                            stream,
-                            user_data,
-                            &format_state,
-                            reason,
-                        ) {
-                            terminate_pipewire_loop(&mainloop, &loop_exit, outcome);
-                        }
-                    }
-                }
-            }
-        })
-        .state_changed({
-            let mainloop = mainloop.clone();
-            let loop_exit = Arc::clone(&loop_exit);
-            move |_, _, old, new| {
-                debug!(?old, ?new, "Wayland screen capture stream state changed");
-                let terminal = match new {
-                    pw::stream::StreamState::Error(error) => {
-                        Some(format!("PipeWire stream entered error state: {error}"))
-                    }
-                    pw::stream::StreamState::Unconnected
-                        if old != pw::stream::StreamState::Unconnected =>
+                    if let Some(PreparedPipeWireFormat {
+                        callback_buffers,
+                        offer,
+                        request,
+                    }) = pipewire_format
                     {
-                        Some("PipeWire stream disconnected".to_owned())
+                        let cancellation_done = done.clone();
+                        let pending = PendingPipeWireAdoption {
+                            id: adoption_id,
+                            request,
+                            offer,
+                            callback_buffers,
+                            analysis,
+                            done,
+                            authority: Arc::clone(&authority),
+                        };
+                        let update_offer = pending.offer;
+                        {
+                            let state = command_format_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if !state.current_acknowledged {
+                                pending.authority.cancel();
+                                let _ = pending.done.send(Err(
+                                    "PipeWire has not acknowledged the initial exact format"
+                                        .to_owned(),
+                                ));
+                                return CallbackAction::Continue;
+                            }
+                            if !state.can_begin_adoption() {
+                                pending.authority.cancel();
+                                let _ = pending
+                                    .done
+                                    .send(Err("PipeWire already has an unsettled format adoption"
+                                        .to_owned()));
+                                return CallbackAction::Continue;
+                            }
+                        }
+                        let armed = authority.prepare_if_open(|| {
+                            command_decoding_enabled.store(false, Ordering::Release);
+                            command_exchange.discard_latest_frame();
+                            command_format_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .pending = Some(pending);
+                        });
+                        if armed.is_none() {
+                            let _ = cancellation_done.send(Err(
+                                "Wayland format adoption was cancelled before negotiation"
+                                    .to_owned(),
+                            ));
+                            return CallbackAction::Continue;
+                        }
+                        if let Err(error) = control.update_format(&update_offer) {
+                            let pending = command_format_state
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .cancel(adoption_id)
+                                .expect("failed PipeWire update retains pending adoption");
+                            command_decoding_enabled.store(false, Ordering::Release);
+                            command_exchange.discard_latest_frame();
+                            if let Err(restore_error) = request_pipewire_restoration(
+                                control,
+                                &command_format_state,
+                                pending,
+                                error.to_string(),
+                            ) {
+                                return terminate_pipewire_loop(
+                                    &loop_exit,
+                                    PipeWireLoopExit::Terminal(restore_error),
+                                );
+                            }
+                        }
+                        return CallbackAction::Continue;
                     }
-                    _ => None,
-                };
-                if let Some(reason) = terminal {
-                    let mut exit = loop_exit
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if exit.is_none() {
-                        *exit = Some(PipeWireLoopExit::Terminal(reason));
-                        mainloop.quit();
+
+                    if !analysis.commit() {
+                        authority.cancel();
+                        let _ = done.send(Err(
+                            "Wayland analysis worker exited during adoption".to_owned()
+                        ));
+                        return CallbackAction::Continue;
+                    }
+                    let committed = match analysis.done().recv_timeout(WORKER_STOP_TIMEOUT) {
+                        Ok(committed) => committed,
+                        Err(_) => {
+                            authority.cancel_or_wait_for_commit() == AdoptionSettlement::Committed
+                        }
+                    };
+                    if committed {
+                        let _ = done.send(Ok(()));
+                    } else {
+                        let _ = done.send(Err(
+                            "Wayland analysis adoption lost commit authority".to_owned()
+                        ));
                     }
                 }
+                WorkerCommand::Backend(BackendWorkerCommand::CancelAdoption { adoption_id }) => {
+                    let (pending, already_restoring) = {
+                        let mut state = command_format_state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let pending = state.cancel(adoption_id);
+                        (pending, state.restoring_id() == Some(adoption_id))
+                    };
+                    if let Some(pending) = pending {
+                        command_decoding_enabled.store(false, Ordering::Release);
+                        command_exchange.discard_latest_frame();
+                        if let Err(reason) = request_pipewire_restoration(
+                            control,
+                            &command_format_state,
+                            pending,
+                            "PipeWire format adoption timed out".to_owned(),
+                        ) {
+                            return terminate_pipewire_loop(
+                                &loop_exit,
+                                PipeWireLoopExit::Terminal(reason),
+                            );
+                        }
+                    } else if !already_restoring {
+                        debug!(
+                            adoption_id,
+                            "Ignored stale Wayland format-adoption cancellation"
+                        );
+                    }
+                }
+                WorkerCommand::Backend(BackendWorkerCommand::AnalysisExited) => {
+                    return terminate_pipewire_loop(
+                        &loop_exit,
+                        PipeWireLoopExit::Terminal("Wayland analysis worker panicked".to_owned()),
+                    );
+                }
+                WorkerCommand::Stop => {
+                    return terminate_pipewire_loop(&loop_exit, PipeWireLoopExit::Stopped);
+                }
             }
-        })
-        .process(|stream, user_data| {
-            let Some(mut buffer) = stream.dequeue_buffer() else {
-                user_data.record_drop(ChunkDropReason::MissingBuffer);
-                return;
-            };
-            let Some(data) = buffer.datas_mut().first_mut() else {
-                user_data.record_drop(ChunkDropReason::MissingPlane);
-                return;
-            };
-
-            if !user_data.decoding_enabled.load(Ordering::Acquire) {
-                user_data.record_drop(ChunkDropReason::MissingFormat);
-                return;
+            CallbackAction::Continue
+        }
+    };
+    let mut session =
+        match connect_stream(portal_remote, &offer, receiver, handler, command_handler) {
+            Ok(session) => session,
+            Err(error) => {
+                let (error, receiver) = error.into_parts();
+                *command_rx = Some(receiver);
+                return Err(error.into());
             }
-            let Some(negotiated) = user_data.negotiated else {
-                user_data.record_drop(ChunkDropReason::MissingFormat);
-                return;
-            };
-            let (offset, size, stride) = {
-                let chunk = data.chunk();
-                (
-                    usize::try_from(chunk.offset()).ok(),
-                    usize::try_from(chunk.size()).ok(),
-                    chunk.stride(),
-                )
-            };
-            let (Some(offset), Some(size)) = (offset, size) else {
-                user_data.record_drop(ChunkDropReason::InvalidChunkBounds);
-                return;
-            };
-            let Some(mapped) = data.data() else {
-                user_data.record_drop(ChunkDropReason::UnmappedPlane);
-                return;
-            };
-            // pipewire-rs 0.9 does not expose SPA buffer metas safely; the
-            // pure seam still carries crop/transform until an audited adapter does.
-            let view = SpaChunkView::new(
-                mapped,
-                offset,
-                size,
-                stride,
-                negotiated.width,
-                negotiated.height,
-                negotiated.format,
-                None,
-                CaptureRotation::Identity,
-            );
-            let stats = decode_chunk(&view, &mut user_data.buffers);
-            let completed = if stats.drop_reason().is_none() {
-                user_data.buffers.take_completed()
-            } else {
-                None
-            };
-            drop(buffer);
-            user_data.metrics.record(stats);
-            if let Some(frame) = completed {
-                user_data.exchange.publish(frame);
-            }
-        })
-        .register()
-        .context("failed to register PipeWire screen capture listener")?;
+        };
 
-    let mut params = [spa::pod::Pod::from_bytes(&format_bytes)
-        .context("failed to deserialize PipeWire format pod")?];
-
-    stream
-        .connect(
-            spa::utils::Direction::Input,
-            Some(portal_stream.pipe_wire_node_id()),
-            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
-            &mut params,
-        )
-        .context("failed to connect PipeWire screen capture stream")?;
-
-    let (analysis_exit_tx, analysis_exit_rx) = pw::channel::channel();
     let analysis_exchange = Arc::clone(&exchange);
+    let analysis_metrics = Arc::clone(&callback_metrics);
     let analysis_cancel = Arc::clone(&cancel);
     let analysis_config = config.clone();
     let analysis_demand = demand;
-    let analysis_handle = spawn_input_worker(
+    let analysis_spawn = spawn_worker(
         thread::Builder::new().name("hypercolor-screen-analysis".to_owned()),
         move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_analysis_worker(
                     &analysis_exchange,
                     settings,
-                    latest_snapshot,
                     source,
                     analysis_config,
                     analysis_demand,
                     &analysis_cancel,
                     status_writer,
+                    &analysis_metrics,
                 );
             }));
             if result.is_err() {
-                let _ = analysis_exit_tx.send(());
+                let _ =
+                    command_tx.send(WorkerCommand::Backend(BackendWorkerCommand::AnalysisExited));
             }
         },
-    )
-    .context("failed to spawn Wayland screen analysis worker")?;
-    let _analysis_exit_rx = analysis_exit_rx.attach(mainloop.loop_(), {
-        let mainloop = mainloop.clone();
-        let loop_exit = Arc::clone(&loop_exit);
-        move |()| {
-            *loop_exit
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(
-                PipeWireLoopExit::Terminal("Wayland analysis worker panicked".to_owned()),
-            );
-            mainloop.quit();
+    );
+    let analysis_handle = match analysis_spawn {
+        Ok(handle) => handle,
+        Err(error) => {
+            exchange.stop();
+            let (receiver, disconnect_result) = session.disconnect();
+            *command_rx = Some(receiver);
+            let spawn_error =
+                anyhow::Error::new(error).context("failed to spawn Wayland screen analysis worker");
+            return match disconnect_result {
+                Ok(()) => Err(spawn_error),
+                Err(disconnect_error) => Err(spawn_error.context(format!(
+                    "PipeWire stream disconnect after analysis spawn failure also failed: \
+                     {disconnect_error}"
+                ))),
+            };
         }
-    });
+    };
 
-    let receiver = command_rx
-        .take()
-        .context("PipeWire command receiver was not returned by the previous stream")?;
-    let attached_command_rx = receiver.attach(mainloop.loop_(), {
-        let mainloop = mainloop.clone();
-        let stream = stream.clone();
-        let loop_exit = Arc::clone(&loop_exit);
-        let command_exchange = Arc::clone(&exchange);
-        let command_format_state = Arc::clone(&format_state);
-        let command_decoding_enabled = Arc::clone(&decoding_enabled);
-        move |command| match command {
-            WorkerCommand::SetDemand(demand) => {
-                let active = demand.is_active();
-                if let Err(error) = stream.set_active(active) {
-                    warn!(active, %error, "Failed to update PipeWire stream active state");
-                }
-            }
-            WorkerCommand::Reselect => {
-                *loop_exit
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(PipeWireLoopExit::Reselect);
-                mainloop.quit();
-            }
-            WorkerCommand::PrepareExact {
-                ticket,
-                cancelled,
-                completion,
-            } => {
-                if let Err(command) = command_exchange.send_exact(AnalysisExactCommand::Prepare {
-                    ticket,
-                    cancelled,
-                    completion,
-                }) {
-                    let AnalysisExactCommand::Prepare { completion, .. } = *command else {
-                        unreachable!("the rejected exact command preserves its variant")
-                    };
-                    let _ = completion.send(Err(anyhow!(
-                        "Wayland analysis worker rejected exact publication preparation"
-                    )));
-                }
-            }
-            WorkerCommand::ReapExact { completion } => {
-                if let Err(command) =
-                    command_exchange.send_exact(AnalysisExactCommand::Reap { completion })
-                {
-                    let AnalysisExactCommand::Reap { completion } = *command else {
-                        unreachable!("the rejected exact command preserves its variant")
-                    };
-                    if let Some(completion) = completion {
-                        let _ = completion.send(Err(anyhow!(
-                            "Wayland analysis worker rejected exact publication retirement"
-                        )));
-                    }
-                }
-            }
-            WorkerCommand::AdoptSettings {
-                adoption_id,
-                prepared,
-                ready,
-                decision,
-                done,
-                authority,
-            } => {
-                if ready.send(()).is_err() {
-                    authority.cancel();
-                    return;
-                }
-                if !matches!(
-                    decision.recv_timeout(WORKER_READY_TIMEOUT),
-                    Ok(SettingsDecision::Commit)
-                ) {
-                    authority.cancel();
-                    return;
-                }
-                if authority.is_cancelled() {
-                    return;
-                }
-                let PreparedWaylandSettings {
-                    config,
-                    cadence,
-                    demand,
-                    analyzer,
-                    pipewire_format,
-                } = prepared;
-                let (analysis_ready_tx, analysis_ready_rx) = mpsc::sync_channel(1);
-                let (analysis_decision_tx, analysis_decision_rx) = mpsc::sync_channel(1);
-                let (analysis_done_tx, analysis_done_rx) = mpsc::sync_channel(1);
-                let finalize_authority = pipewire_format.is_none();
-                let adoption = AnalysisAdoption {
-                    prepared: PreparedAnalysisSettings {
-                        config,
-                        cadence,
-                        demand,
-                        analyzer,
-                    },
-                    ready: analysis_ready_tx,
-                    decision: analysis_decision_rx,
-                    done: analysis_done_tx,
-                    authority: Arc::clone(&authority),
-                    finalize_authority,
-                };
-                if let Err(error) = command_exchange.prepare_adoption(adoption) {
-                    authority.cancel();
-                    let _ = done.send(Err(error));
-                    return;
-                }
-                if analysis_ready_rx
-                    .recv_timeout(WORKER_READY_TIMEOUT)
-                    .is_err()
-                {
-                    authority.cancel();
-                    let _ = done.send(Err(
-                        "Wayland analysis worker exited before adoption".to_owned()
-                    ));
-                    return;
-                }
-
-                if let Some(PreparedPipeWireFormat {
-                    callback_buffers,
-                    format_bytes,
-                    request,
-                }) = pipewire_format
-                {
-                    let cancellation_done = done.clone();
-                    let pending = PendingPipeWireAdoption {
-                        id: adoption_id,
-                        request,
-                        format_bytes,
-                        callback_buffers,
-                        analysis_decision: analysis_decision_tx,
-                        analysis_done: analysis_done_rx,
-                        done,
-                        authority: Arc::clone(&authority),
-                    };
-                    let update_bytes = pending.format_bytes.clone();
-                    {
-                        let state = command_format_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if !state.current_acknowledged {
-                            pending.authority.cancel();
-                            let _ = pending.done.send(Err(
-                                "PipeWire has not acknowledged the initial exact format".to_owned(),
-                            ));
-                            return;
-                        }
-                        if !state.can_begin_adoption() {
-                            pending.authority.cancel();
-                            let _ =
-                                pending
-                                    .done
-                                    .send(Err("PipeWire already has an unsettled format adoption"
-                                        .to_owned()));
-                            return;
-                        }
-                    }
-                    let armed = authority.prepare_if_open(|| {
-                        command_decoding_enabled.store(false, Ordering::Release);
-                        command_exchange.discard_latest_frame();
-                        command_format_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .pending = Some(pending);
-                    });
-                    if armed.is_none() {
-                        let _ = cancellation_done.send(Err(
-                            "Wayland format adoption was cancelled before negotiation".to_owned(),
-                        ));
-                        return;
-                    }
-                    if let Err(error) = update_pipewire_format(&stream, &update_bytes) {
-                        let pending = command_format_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .cancel(adoption_id)
-                            .expect("failed PipeWire update retains pending adoption");
-                        command_decoding_enabled.store(false, Ordering::Release);
-                        command_exchange.discard_latest_frame();
-                        if let Err(restore_error) = request_pipewire_restoration(
-                            &stream,
-                            &command_format_state,
-                            pending,
-                            error.to_string(),
-                        ) {
-                            terminate_pipewire_loop(
-                                &mainloop,
-                                &loop_exit,
-                                PipeWireLoopExit::Terminal(restore_error),
-                            );
-                        }
-                    }
-                    return;
-                }
-
-                if analysis_decision_tx.send(SettingsDecision::Commit).is_err() {
-                    authority.cancel();
-                    let _ = done.send(Err(
-                        "Wayland analysis worker exited during adoption".to_owned()
-                    ));
-                    return;
-                }
-                let committed = match analysis_done_rx.recv_timeout(WORKER_STOP_TIMEOUT) {
-                    Ok(committed) => committed,
-                    Err(_) => {
-                        authority.cancel_or_wait_for_commit() == AdoptionSettlement::Committed
-                    }
-                };
-                if committed {
-                    let _ = done.send(Ok(()));
-                } else {
-                    let _ = done.send(Err(
-                        "Wayland analysis adoption lost commit authority".to_owned()
-                    ));
-                }
-            }
-            WorkerCommand::CancelAdoption { adoption_id } => {
-                let (pending, already_restoring) = {
-                    let mut state = command_format_state
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let pending = state.cancel(adoption_id);
-                    (pending, state.restoring_id() == Some(adoption_id))
-                };
-                if let Some(pending) = pending {
-                    command_decoding_enabled.store(false, Ordering::Release);
-                    command_exchange.discard_latest_frame();
-                    if let Err(reason) = request_pipewire_restoration(
-                        &stream,
-                        &command_format_state,
-                        pending,
-                        "PipeWire format adoption timed out".to_owned(),
-                    ) {
-                        terminate_pipewire_loop(
-                            &mainloop,
-                            &loop_exit,
-                            PipeWireLoopExit::Terminal(reason),
-                        );
-                    }
-                } else if !already_restoring {
-                    debug!(
-                        adoption_id,
-                        "Ignored stale Wayland format-adoption cancellation"
-                    );
-                }
-            }
-            WorkerCommand::Stop => {
-                *loop_exit
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(PipeWireLoopExit::Stopped);
-                mainloop.quit();
-            }
-        }
-    });
-
-    mainloop.run();
-    *command_rx = Some(attached_command_rx.deattach());
+    let run_result = session.run();
     exchange.stop();
-
-    if let Err(error) = stream.disconnect() {
-        debug!(%error, "PipeWire screen capture stream disconnect reported an error");
-    }
-
+    let (receiver, disconnect_result) = session.disconnect();
+    *command_rx = Some(receiver);
     analysis_handle
         .join()
         .map_err(|panic| anyhow!("Wayland analysis worker join failed: {panic:?}"))?;
+    run_result
+        .and(disconnect_result)
+        .context("PipeWire stream session failed")?;
     let metrics = callback_metrics.snapshot();
     debug!(
         copied_frames = metrics.copied_frames,
@@ -5023,114 +4705,6 @@ fn run_pipewire_loop(
         .unwrap_or_else(|| {
             PipeWireLoopExit::Terminal("PipeWire main loop exited unexpectedly".to_owned())
         }))
-}
-
-fn update_pipewire_format(stream: &pw::stream::Stream, format_bytes: &[u8]) -> anyhow::Result<()> {
-    let pod = spa::pod::Pod::from_bytes(format_bytes)
-        .context("failed to deserialize PipeWire format pod")?;
-    stream
-        .update_params(&mut [pod])
-        .context("failed to update PipeWire format")
-}
-
-fn build_format_params(target_fps: u32, requested_extent: PixelExtent) -> anyhow::Result<Vec<u8>> {
-    CaptureCadence::new(target_fps)?;
-    let object = spa::pod::object!(
-        spa::utils::SpaTypes::ObjectParamFormat,
-        spa::param::ParamType::EnumFormat,
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaType,
-            Id,
-            spa::param::format::MediaType::Video
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaSubtype,
-            Id,
-            spa::param::format::MediaSubtype::Raw
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFormat,
-            Choice,
-            Enum,
-            Id,
-            spa::param::video::VideoFormat::RGBA,
-            spa::param::video::VideoFormat::RGBA,
-            spa::param::video::VideoFormat::BGRA,
-            spa::param::video::VideoFormat::RGBx,
-            spa::param::video::VideoFormat::BGRx,
-            spa::param::video::VideoFormat::ARGB,
-            spa::param::video::VideoFormat::ABGR,
-            spa::param::video::VideoFormat::xRGB,
-            spa::param::video::VideoFormat::xBGR,
-        ),
-        // The portal reports the LOGICAL output size, but compositors stream
-        // PHYSICAL pixels: a 4K output at 150% scale reports 2560x1440 while
-        // its node offers only 3840x2160, and a fixed logical rectangle makes
-        // the intersection empty ("no more output formats"). Offer a range so
-        // the node fixates its native extent; the acknowledgment path owns
-        // deciding what to do with a fixated extent that differs.
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoSize,
-            Choice,
-            Range,
-            Rectangle,
-            spa::utils::Rectangle {
-                width: requested_extent.width(),
-                height: requested_extent.height(),
-            },
-            spa::utils::Rectangle {
-                width: 1,
-                height: 1,
-            },
-            spa::utils::Rectangle {
-                width: 16_384,
-                height: 16_384,
-            }
-        ),
-        // Screencast nodes commonly pin framerate to 0/1 (variable) or the
-        // display rate, so a fixed fraction yields an empty intersection and
-        // the server kills the link with "no more output formats". Offer the
-        // full transport range with the target as preference; CapturePacer
-        // enforces the actual capture cadence downstream.
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFramerate,
-            Choice,
-            Range,
-            Fraction,
-            spa::utils::Fraction {
-                num: target_fps,
-                denom: 1,
-            },
-            spa::utils::Fraction { num: 0, denom: 1 },
-            spa::utils::Fraction {
-                num: 1000,
-                denom: 1,
-            }
-        ),
-    );
-
-    Ok(spa::pod::serialize::PodSerializer::serialize(
-        Cursor::new(Vec::new()),
-        &spa::pod::Value::Object(object),
-    )?
-    .0
-    .into_inner())
-}
-
-fn spa_video_format(format: spa::param::video::VideoFormat) -> Option<SpaVideoFormat> {
-    match format {
-        spa::param::video::VideoFormat::RGBA => Some(SpaVideoFormat::Rgba),
-        spa::param::video::VideoFormat::BGRA => Some(SpaVideoFormat::Bgra),
-        spa::param::video::VideoFormat::RGBx => Some(SpaVideoFormat::Rgbx),
-        spa::param::video::VideoFormat::BGRx => Some(SpaVideoFormat::Bgrx),
-        spa::param::video::VideoFormat::ARGB => Some(SpaVideoFormat::Argb),
-        spa::param::video::VideoFormat::ABGR => Some(SpaVideoFormat::Abgr),
-        spa::param::video::VideoFormat::xRGB => Some(SpaVideoFormat::Xrgb),
-        spa::param::video::VideoFormat::xBGR => Some(SpaVideoFormat::Xbgr),
-        spa::param::video::VideoFormat::RGB => Some(SpaVideoFormat::Rgb),
-        spa::param::video::VideoFormat::BGR => Some(SpaVideoFormat::Bgr),
-        _ => None,
-    }
 }
 
 fn convert_packed_to_rgba(decoded: &DecodedChunk, rgba: &mut [u8]) {
