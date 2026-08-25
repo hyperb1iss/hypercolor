@@ -30,6 +30,7 @@ const HARDWARE_MD = join(REPO_ROOT, 'docs', 'content', 'hardware', 'compatibilit
 const COMPAT_JSON = join(COMPAT_DIR, 'compatibility.json')
 const COMPAT_README = join(COMPAT_DIR, 'README-hardware.md')
 const README_PATH = join(REPO_ROOT, 'README.md')
+const SOURCE_BROWSE_BASE = 'https://github.com/hyperb1iss/hypercolor/blob/main'
 const BEGIN_MARKER = '<!-- BEGIN COMPAT -->'
 const END_MARKER = '<!-- END COMPAT -->'
 
@@ -805,8 +806,12 @@ function prettyHost(url: string): string {
 }
 
 function relativeLink(pathFromRepo: string): string {
-    // docs/content/hardware/compatibility.md → ../../../<path>
-    return join('..', '..', '..', pathFromRepo).split('\\').join('/')
+    // This link lands in docs/content/hardware/compatibility.md, which Zola
+    // renders as a site page. `docs/` is the Zola root and `data/` is never
+    // copied into the build output, so a repo-relative `../../../data/...`
+    // href resolves on a GitHub blob view and 404s for every site visitor.
+    // Point at the canonical source on GitHub instead, which works in both.
+    return `${SOURCE_BROWSE_BASE}/${pathFromRepo.split('\\').join('/')}`
 }
 
 // ─── Write / check ──────────────────────────────────────────────────────

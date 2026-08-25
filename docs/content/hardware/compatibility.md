@@ -513,7 +513,7 @@ Devices present in the database but not yet researched. These are opportunities 
 |---|---|---|---|---|---|
 | Push 2 | 0x1967 | Other | `push2` | USB MIDI | Composite MIDI + bulk display. MIDI for pad control, bulk OUT for sideband display. |
 
-_Source: [`data/drivers/vendors/ableton.toml`](../../../data/drivers/vendors/ableton.toml)_
+_Source: [`data/drivers/vendors/ableton.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/ableton.toml)_
 
 ### Alienware {#alienware}
 
@@ -529,7 +529,7 @@ VID 0x187C, 0x04CA, 0x0424
 | Alienware Monitor (Gen 1-3) | — | Monitor | — | — |
 | AW558 Mouse | 0x00A5 | Mouse | — | VID 0x04CA |
 
-_Source: [`data/drivers/vendors/alienware.toml`](../../../data/drivers/vendors/alienware.toml)_
+_Source: [`data/drivers/vendors/alienware.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/alienware.toml)_
 
 ### Aqua Computer {#aquacomputer}
 
@@ -546,7 +546,7 @@ _Source: [`data/drivers/vendors/alienware.toml`](../../../data/drivers/vendors/a
 | Farbwerk Nano | 0xF00F | ARGB controller | — | — |
 | HighFlow Next | 0xF012 | Other | — | — |
 
-_Source: [`data/drivers/vendors/aquacomputer.toml`](../../../data/drivers/vendors/aquacomputer.toml)_
+_Source: [`data/drivers/vendors/aquacomputer.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/aquacomputer.toml)_
 
 ### ASRock {#asrock}
 
@@ -563,7 +563,7 @@ _Source: [`data/drivers/vendors/aquacomputer.toml`](../../../data/drivers/vendor
 | Monitor Controller | 0x01C4 | Monitor | — | — |
 | Polychrome Motherboard | 0x01A2 | Motherboard | — | — |
 
-_Source: [`data/drivers/vendors/asrock.toml`](../../../data/drivers/vendors/asrock.toml)_
+_Source: [`data/drivers/vendors/asrock.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/asrock.toml)_
 
 ### ASUS {#asus}
 
@@ -606,7 +606,7 @@ _Source: [`data/drivers/vendors/asrock.toml`](../../../data/drivers/vendors/asro
 | Ryujin AIO | — | AIO cooler | — | — |
 | TUF K1 | — | Keyboard | — | — |
 
-_Source: [`data/drivers/vendors/asus.toml`](../../../data/drivers/vendors/asus.toml)_
+_Source: [`data/drivers/vendors/asus.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/asus.toml)_
 
 ### Cooler Master {#coolermaster}
 
@@ -644,7 +644,7 @@ _Source: [`data/drivers/vendors/asus.toml`](../../../data/drivers/vendors/asus.t
 | SK652 | 0x015D | Keyboard | — | — |
 | SK653 | 0x01AB | Keyboard | — | — |
 
-_Source: [`data/drivers/vendors/coolermaster.toml`](../../../data/drivers/vendors/coolermaster.toml)_
+_Source: [`data/drivers/vendors/coolermaster.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/coolermaster.toml)_
 
 ### Corsair {#corsair}
 
@@ -745,7 +745,7 @@ VID 0x1B1C · Driver `corsair`
 | Void Elite Wireless (White) | 0x0A55 | Headset | — | — |
 | Void Pro Wireless | 0x0A58 | Headset | — | — |
 
-_Source: [`data/drivers/vendors/corsair.toml`](../../../data/drivers/vendors/corsair.toml)_
+_Source: [`data/drivers/vendors/corsair.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/corsair.toml)_
 
 ### Dygma {#dygma}
 
@@ -760,7 +760,7 @@ _Source: [`data/drivers/vendors/corsair.toml`](../../../data/drivers/vendors/cor
 | Defy (Wired) | 0x0010 | Keyboard | `dygma` | USB serial | Driver implemented but not functional. Needs firmware-side work to support external RGB control. Focus protocol works for config but lighting requires additional capability in Defy firmware. |
 | Defy (Wireless) | 0x0012 | Keyboard | `dygma` | USB serial | Same firmware limitation as wired variant. RGBW color support ready on our side. |
 
-_Source: [`data/drivers/vendors/dygma.toml`](../../../data/drivers/vendors/dygma.toml)_
+_Source: [`data/drivers/vendors/dygma.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/dygma.toml)_
 
 ### EVGA {#evga}
 
@@ -780,7 +780,7 @@ _Source: [`data/drivers/vendors/dygma.toml`](../../../data/drivers/vendors/dygma
 | Z20 Keyboard | 0x260A | Keyboard | — | — |
 | Z20 Keyboard (ISO) | 0x2610 | Keyboard | — | — |
 
-_Source: [`data/drivers/vendors/evga.toml`](../../../data/drivers/vendors/evga.toml)_
+_Source: [`data/drivers/vendors/evga.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/evga.toml)_
 
 ### Fnatic {#fnatic}
 
@@ -796,7 +796,7 @@ _Source: [`data/drivers/vendors/evga.toml`](../../../data/drivers/vendors/evga.t
 | STREAK | 0x0101 | Keyboard | — | — |
 | STREAK65 | 0x0105 | Keyboard | — | — |
 
-_Source: [`data/drivers/vendors/fnatic.toml`](../../../data/drivers/vendors/fnatic.toml)_
+_Source: [`data/drivers/vendors/fnatic.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/fnatic.toml)_
 
 ### Gigabyte {#gigabyte}
 
@@ -822,7 +822,7 @@ VID 0x048D, 0x1044, 0x0414
 | Aorus Waterforce X I | 0x7A4D | AIO cooler | — | VID 0x1044 |
 | Aorus Waterforce X II | 0x7A5E | AIO cooler | — | VID 0x0414 |
 
-_Source: [`data/drivers/vendors/gigabyte.toml`](../../../data/drivers/vendors/gigabyte.toml)_
+_Source: [`data/drivers/vendors/gigabyte.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/gigabyte.toml)_
 
 ### Glorious {#glorious}
 
@@ -845,7 +845,7 @@ _Source: [`data/drivers/vendors/gigabyte.toml`](../../../data/drivers/vendors/gi
 | Model O Wireless | 0x2022 | Mouse | — | VID 0x258A, multiple PIDs |
 | Model O Wireless (Wired) | 0x2011 | Mouse | — | VID 0x258A |
 
-_Source: [`data/drivers/vendors/glorious.toml`](../../../data/drivers/vendors/glorious.toml)_
+_Source: [`data/drivers/vendors/glorious.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/glorious.toml)_
 
 ### Govee {#govee}
 
@@ -864,7 +864,7 @@ _Source: [`data/drivers/vendors/glorious.toml`](../../../data/drivers/vendors/gl
 | Govee RGBIC Light Bars | Lightbar | `govee` | UDP | Govee Flow and Flow Pro desktop light bars and similar segmented RGBIC bars. |
 | Govee RGBIC TV Backlight | LED strip | `govee` | UDP | Immersion and Envisual TV backlight kits. The backlight strip streams over the Govee LAN protocol; the bundled camera module is not used. |
 
-_Source: [`data/drivers/vendors/govee.toml`](../../../data/drivers/vendors/govee.toml)_
+_Source: [`data/drivers/vendors/govee.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/govee.toml)_
 
 ### HyperX {#hyperx}
 
@@ -895,7 +895,7 @@ _Source: [`data/drivers/vendors/govee.toml`](../../../data/drivers/vendors/govee
 | Quadcast 2 S | 0x02B5 | Microphone | — | VID 0x03F0 |
 | Quadcast S | 0x171D | Microphone | — | VID 0x0951, multiple PIDs |
 
-_Source: [`data/drivers/vendors/hyperx.toml`](../../../data/drivers/vendors/hyperx.toml)_
+_Source: [`data/drivers/vendors/hyperx.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/hyperx.toml)_
 
 ### HYTE {#hyte}
 
@@ -910,7 +910,7 @@ _Source: [`data/drivers/vendors/hyperx.toml`](../../../data/drivers/vendors/hype
 | CNVS | 0x0B00 | Mousepad | — | — |
 | CNVS (Alt PID) | 0x0B01 | Mousepad | — | — |
 
-_Source: [`data/drivers/vendors/hyte.toml`](../../../data/drivers/vendors/hyte.toml)_
+_Source: [`data/drivers/vendors/hyte.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/hyte.toml)_
 
 ### Lian Li {#lianli}
 
@@ -939,7 +939,7 @@ _Source: [`data/drivers/vendors/hyte.toml`](../../../data/drivers/vendors/hyte.t
 | Galahad II LCD | 0x7395 | AIO cooler | — | VID 0x0416, 480x480 JPEG streaming via 1024-byte packets with sequence numbering |
 | Strimer Controller | 0xA200 | LED strip | — | 24-pin ATX: 120 LEDs, Dual 8-pin GPU: 108, Triple 8-pin: 162. Zone addresses 0x30-0x3B. BGR byte order. |
 
-_Source: [`data/drivers/vendors/lianli.toml`](../../../data/drivers/vendors/lianli.toml)_
+_Source: [`data/drivers/vendors/lianli.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/lianli.toml)_
 
 ### Logitech {#logitech}
 
@@ -963,7 +963,7 @@ _Source: [`data/drivers/vendors/lianli.toml`](../../../data/drivers/vendors/lian
 | Logitech Modern Device (multi-PID) | Keyboard | — | Dynamic PID library. Covers G Pro, G915, G815, etc. |
 | Wireless Dongle | Other | — | Unified receiver for wireless peripherals |
 
-_Source: [`data/drivers/vendors/logitech.toml`](../../../data/drivers/vendors/logitech.toml)_
+_Source: [`data/drivers/vendors/logitech.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/logitech.toml)_
 
 ### Mountain {#mountain}
 
@@ -980,7 +980,7 @@ _Source: [`data/drivers/vendors/logitech.toml`](../../../data/drivers/vendors/lo
 | Macropad | 0x0008 | Keyboard | — | — |
 | Makalu 67 | 0x0003 | Mouse | — | — |
 
-_Source: [`data/drivers/vendors/mountain.toml`](../../../data/drivers/vendors/mountain.toml)_
+_Source: [`data/drivers/vendors/mountain.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/mountain.toml)_
 
 ### MSI {#msi}
 
@@ -1009,7 +1009,7 @@ VID 0x1462, 0x0DB0, 0x1770
 | MSI Keyboard (Modern) | — | Keyboard | — | VID 0x0DB0, dynamic PID library |
 | MSI Monitor Controller | 0x3FA4 | Monitor | — | — |
 
-_Source: [`data/drivers/vendors/msi.toml`](../../../data/drivers/vendors/msi.toml)_
+_Source: [`data/drivers/vendors/msi.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/msi.toml)_
 
 ### Nanoleaf {#nanoleaf}
 
@@ -1023,7 +1023,7 @@ _Source: [`data/drivers/vendors/msi.toml`](../../../data/drivers/vendors/msi.tom
 |---|---|---|---|---|
 | Nanoleaf Panels (any) | LED strip | `nanoleaf` | HTTP | mDNS discovery + power button pairing. Supports all panel shapes and light strips. |
 
-_Source: [`data/drivers/vendors/nanoleaf.toml`](../../../data/drivers/vendors/nanoleaf.toml)_
+_Source: [`data/drivers/vendors/nanoleaf.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/nanoleaf.toml)_
 
 ### Nollie {#nollie}
 
@@ -1055,7 +1055,7 @@ _Source: [`data/drivers/vendors/nanoleaf.toml`](../../../data/drivers/vendors/na
 | Nollie Matrix | 0x0001 | ARGB controller | `nollie` | USB HID | VID 0x16D3, 1 channel x 256 LEDs |
 | Nollie TT | 0x1620 | ARGB controller | `nollie` | USB HID | VID 0x16D1, 2 channels x 512 LEDs, legacy 20-LED packet header |
 
-_Source: [`data/drivers/vendors/nollie.toml`](../../../data/drivers/vendors/nollie.toml)_
+_Source: [`data/drivers/vendors/nollie.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/nollie.toml)_
 
 ### NZXT {#nzxt}
 
@@ -1090,7 +1090,7 @@ _Source: [`data/drivers/vendors/nollie.toml`](../../../data/drivers/vendors/noll
 | N7 Z790 | 0x201D | Motherboard | — | — |
 | Smart Device V1 | 0x1714 | ARGB controller | — | — |
 
-_Source: [`data/drivers/vendors/nzxt.toml`](../../../data/drivers/vendors/nzxt.toml)_
+_Source: [`data/drivers/vendors/nzxt.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/nzxt.toml)_
 
 ### Philips {#philips}
 
@@ -1104,7 +1104,7 @@ _Source: [`data/drivers/vendors/nzxt.toml`](../../../data/drivers/vendors/nzxt.t
 |---|---|---|---|---|
 | Hue Bridge (any) | ARGB controller | `hue` | HTTP | mDNS discovery + link button pairing. Controls all lights connected to bridge. |
 
-_Source: [`data/drivers/vendors/philips.toml`](../../../data/drivers/vendors/philips.toml)_
+_Source: [`data/drivers/vendors/philips.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/philips.toml)_
 
 ### PrismRGB {#prismrgb}
 
@@ -1120,7 +1120,7 @@ _Source: [`data/drivers/vendors/philips.toml`](../../../data/drivers/vendors/phi
 | Prism Mini | 0x1407 | ARGB controller | `prismrgb` | USB HID | VID 0x16D0, 128 LEDs max, color pair compression |
 | Prism S | 0x1294 | ARGB controller | `prismrgb` | USB HID | VID 0x16D0, RGB byte order, ATX + GPU cable variants |
 
-_Source: [`data/drivers/vendors/prismrgb.toml`](../../../data/drivers/vendors/prismrgb.toml)_
+_Source: [`data/drivers/vendors/prismrgb.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/prismrgb.toml)_
 
 ### QMK {#qmk}
 
@@ -1143,7 +1143,7 @@ _Source: [`data/drivers/vendors/prismrgb.toml`](../../../data/drivers/vendors/pr
 | ZSA Moonlander | 0x1969 | Keyboard | `qmk` | USB HID | VID 0x3297 |
 | ZSA Voyager | 0x0791 | Keyboard | `qmk` | USB HID | VID 0x3297 |
 
-_Source: [`data/drivers/vendors/qmk.toml`](../../../data/drivers/vendors/qmk.toml)_
+_Source: [`data/drivers/vendors/qmk.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/qmk.toml)_
 
 ### Razer {#razer}
 
@@ -1269,7 +1269,7 @@ _Source: [`data/drivers/vendors/qmk.toml`](../../../data/drivers/vendors/qmk.tom
 | Thunderbolt Dock | 0x0F21 | Other | — | — |
 | Tomahawk ATX Case | 0x0F05 | Case | — | — |
 
-_Source: [`data/drivers/vendors/razer.toml`](../../../data/drivers/vendors/razer.toml)_
+_Source: [`data/drivers/vendors/razer.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/razer.toml)_
 
 ### Roccat {#roccat}
 
@@ -1298,7 +1298,7 @@ _Source: [`data/drivers/vendors/razer.toml`](../../../data/drivers/vendors/razer
 | Vulcan Pro | 0x30F7 | Keyboard | — | — |
 | Vulcan TKL | 0x2FEE | Keyboard | — | — |
 
-_Source: [`data/drivers/vendors/roccat.toml`](../../../data/drivers/vendors/roccat.toml)_
+_Source: [`data/drivers/vendors/roccat.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/roccat.toml)_
 
 ### Sony {#sony}
 
@@ -1314,7 +1314,7 @@ _Source: [`data/drivers/vendors/roccat.toml`](../../../data/drivers/vendors/rocc
 | DualShock 4 | 0x05C4 | Lightbar | — | — |
 | DualShock 4 V2 | 0x09CC | Lightbar | — | — |
 
-_Source: [`data/drivers/vendors/sony.toml`](../../../data/drivers/vendors/sony.toml)_
+_Source: [`data/drivers/vendors/sony.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/sony.toml)_
 
 ### SteelSeries {#steelseries}
 
@@ -1335,7 +1335,7 @@ _Source: [`data/drivers/vendors/sony.toml`](../../../data/drivers/vendors/sony.t
 | QcK Prism XL | Mousepad | — | — |
 | Rival 600 | Mouse | — | — |
 
-_Source: [`data/drivers/vendors/steelseries.toml`](../../../data/drivers/vendors/steelseries.toml)_
+_Source: [`data/drivers/vendors/steelseries.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/steelseries.toml)_
 
 ### Thermaltake {#thermaltake}
 
@@ -1360,7 +1360,7 @@ VID 0x264A
 | Level 20 Desk | 0x07D1 | Desk accessory | — | — |
 | Riing Controller | 0x2135 | Fan controller | — | Multiple PIDs: 0x2135-0x2137, 0x2143-0x2144 |
 
-_Source: [`data/drivers/vendors/thermaltake.toml`](../../../data/drivers/vendors/thermaltake.toml)_
+_Source: [`data/drivers/vendors/thermaltake.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/thermaltake.toml)_
 
 ### WLED {#wled}
 
@@ -1374,7 +1374,7 @@ _Source: [`data/drivers/vendors/thermaltake.toml`](../../../data/drivers/vendors
 |---|---|---|---|---|
 | WLED Controller (any) | ARGB controller | `wled` | UDP | DDP and E1.31 protocols. mDNS discovery. No auth required. ESP8266/ESP32 controllers. |
 
-_Source: [`data/drivers/vendors/wled.toml`](../../../data/drivers/vendors/wled.toml)_
+_Source: [`data/drivers/vendors/wled.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/wled.toml)_
 
 ### Wooting {#wooting}
 
@@ -1391,4 +1391,4 @@ _Source: [`data/drivers/vendors/wled.toml`](../../../data/drivers/vendors/wled.t
 | Wooting One | 0xFF01 | Keyboard | — | VID 0x03EB, original analog keyboard |
 | Wooting Two HE | 0x1220 | Keyboard | — | VID 0x31E3, multiple PIDs: 0x1220-0x1222, 0x1230-0x1232 |
 
-_Source: [`data/drivers/vendors/wooting.toml`](../../../data/drivers/vendors/wooting.toml)_
+_Source: [`data/drivers/vendors/wooting.toml`](https://github.com/hyperb1iss/hypercolor/blob/main/data/drivers/vendors/wooting.toml)_
