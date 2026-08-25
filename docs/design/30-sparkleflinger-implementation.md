@@ -5,13 +5,27 @@
 > captures the historical intent; this document describes the shipped state
 > and invariants.
 
-**Status:** Living document
+**Status:** Living document that has stopped tracking the tree. §2's module map
+is wrong and must be re-derived before use; the frame-lifecycle narrative in §3
+onward has not been re-verified since the 2026-04-10 update.
 **Last updated:** 2026-04-10
 **Scope:** `hypercolor-daemon::render_thread`, `hypercolor-daemon::performance`,
 `hypercolor-daemon::preview_runtime`, `hypercolor-daemon::scene_transactions`,
 `hypercolor-daemon::api::{system, ws}`, `hypercolor-cli::commands::status`
 **Related:** `docs/archive/2026-03-sparkleflinger-60fps-evolution.md` (archived intent),
 `docs/specs/27-render-groups.md`, `docs/specs/36-render-surface-queue.md`
+
+**Drift, checked 2026-08-25 at `7620eae44`:** §2 names five modules that do not
+exist. `frame_scheduler.rs`, `frame_state.rs`, `frame_sources.rs`, and
+`frame_pacing.rs` are all absent from
+`crates/hypercolor-daemon/src/render_thread/`, and `sparkleflinger.rs` is no
+longer a file: SparkleFlinger is a directory of 61 Rust sources with a GPU
+compositor under `sparkleflinger/gpu/` and its own WGSL shaders. The map also
+omits everything added since, including `binding_eval.rs`, `capture_demand.rs`,
+`display_lane.rs`, `frame_metrics.rs`, `frame_policy.rs`, `frame_reporting.rs`,
+`frame_sampling.rs`, `gpu_device.rs`, `lighting_feed.rs`, `scene_dependency.rs`,
+`screen_canvas.rs`, and `unassigned_output.rs`. Run `ls` on the directory before
+citing this section.
 
 ---
 

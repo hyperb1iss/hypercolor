@@ -2,6 +2,21 @@
 
 > Who uses RGB lighting orchestration on Linux, what do they actually do with it, and how do we make them never look back?
 
+**Status:** Design intent. The personas and their pain points are still the
+product's north star. Every command line in the workflow walkthroughs is fiction.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** the walkthroughs invoke
+`hypercolor set`, `hypercolor dev`, `hypercolor effect new`, `hypercolor effect
+export`, `hypercolor capture audio`, `hypercolor layout edit`, `hypercolor
+profile edit`, `hypercolor profile apply`, and `hypercolor profile cycle`. None
+of those verbs exist. The shipped top-level commands are `access`, `audio`,
+`brightness`, `completions`, `config`, `controls`, `devices`, `diagnose`,
+`drivers`, `effects`, `install-release`, `layouts`, `library`, `scenes`,
+`server`, `servers`, `service`, `status`, and `tui`
+(`crates/hypercolor-cli/src/lib.rs:136`). Profiles as a separate concept were
+folded into scenes in `e005ec782`, so the persona sections that switch,
+save, and cycle "profiles" describe scenes today.
+
 ---
 
 ## Table of Contents

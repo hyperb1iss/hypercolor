@@ -2192,4 +2192,4 @@ hypercolor-core/src/
 
 ---
 
-_This specification is part of the Hypercolor technical spec series. See also: [ARCHITECTURE.md](../../ARCHITECTURE.md) for system overview._
+_This specification is part of the Hypercolor technical spec series. See also: [ARCHITECTURE.md](../ARCHITECTURE.md) for system overview._

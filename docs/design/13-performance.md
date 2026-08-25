@@ -2,6 +2,19 @@
 
 > Hypercolor runs 24/7 at 60fps alongside games. Performance is not optional — it is the product.
 
+**Status:** Design intent. The instrumentation philosophy still governs; §6's
+tier ladder is not the shipped one and two of its rungs violate the FPS floor.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** §6 lists five tiers named Full,
+Gaming, Economy, Standby, and Suspended at 60/30/15/5/0 fps. The shipped
+`FpsTier` has five different rungs: `Minimal` 10, `Low` 20, `Medium` 30, `High`
+45, and `Full` 60 (`crates/hypercolor-core/src/engine/fps.rs:27-51`). The
+document's 15 fps, 5 fps, and 0 fps rungs sit below the shipped 10 fps floor and
+must never be reintroduced; performance baselines are product contracts. §6's
+`SystemLoadDetector` and its `recommended_tier` policy are illustrative and do
+not exist under those names. Read `fps.rs` for the real ladder and the
+downshift and upshift hysteresis.
+
 ---
 
 ## Design Principles

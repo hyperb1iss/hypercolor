@@ -2,7 +2,8 @@
 
 > From a single LED strip to an entire house -- Hypercolor's spatial intelligence system.
 
-**Status: unshipped design, retained for its coordinate model.** The multi-room
+**Status:** Unshipped design, retained for its coordinate model. Re-verified
+2026-08-25 at `7620eae44`. The multi-room
 layout types this document proposes (`SpaceDefinition`, `RoomDimensions`,
 `RoomAdjacency`, `Wall`, and `SpatialLayout.spaces`) were added to
 `hypercolor-types` but never read by anything, and have since been deleted.
@@ -10,6 +11,10 @@ Nothing here describes shipped behavior.
 
 What is still load-bearing is the coordinate model, the `Path` topology, and the
 projections, which spec 06 (§§2-5, 7) and spec 66 consume. Read it for those.
+`Path` is a proposed `LedTopology` variant that spec 66 owns, not a shipped one:
+the shipped variants are `Strip`, `Matrix`, `Ring`, `ConcentricRings`,
+`PerimeterLoop`, `Point`, and `Custom`
+(`crates/hypercolor-types/src/spatial.rs:156`).
 
 The vocabulary authority (`docs/content/studio/vocabulary-and-naming.md`) bans
 "room" on every shipped surface: the hierarchy is Scene -> Zone -> {Layer,

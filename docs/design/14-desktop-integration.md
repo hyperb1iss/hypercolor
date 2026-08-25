@@ -4,12 +4,22 @@
 
 ---
 
-> **Roadmap document — not yet implemented.**
-> The D-Bus service (`tech.hyperbliss.hypercolor1`), Unix socket IPC, and tray-over-D-Bus
-> architecture described here are the **planned** desktop integration design.
-> What ships today: the daemon exposes REST + WebSocket + MCP on `:9420`, and the
-> system tray owned by `hypercolor-app` communicates with the daemon over REST HTTP.
-> The design below is preserved as the specification for the future DE integration layer.
+> **Status:** Partly shipped, mostly roadmap.
+> Still planned, not implemented: the daemon's own D-Bus service
+> (`tech.hyperbliss.hypercolor1`, which appears in the tree only inside a legacy
+> config-compatibility fixture), Unix socket IPC, tray-over-D-Bus, and every
+> per-desktop integration package (GNOME Shell extension, Plasma widget, Waybar
+> module, i3blocks script, COSMIC applet).
+> Already shipped, so read §1 as description rather than proposal: the systemd
+> user service is real and installed by `scripts/install.sh` from
+> `packaging/systemd/user/hypercolor.service`, and it runs `Type=notify` with
+> readiness notification in `hypercolor-linux-session`.
+> D-Bus is also live on the client side: `hypercolor-linux-session` proxies
+> logind and the screensaver interfaces, and `hypercolor-core` proxies MPRIS for
+> now-playing media.
+> The daemon exposes REST, WebSocket, and MCP on `:9420`, and the system tray
+> owned by `hypercolor-app` talks to it over REST HTTP.
+> Checked 2026-08-25 at `7620eae44`.
 
 ---
 

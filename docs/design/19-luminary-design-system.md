@@ -1,5 +1,8 @@
 # Luminary Design System (moved)
 
+**Status:** Redirect only. Content lives in `docs/DESIGN-SYSTEM.md`, which is
+current. Verified 2026-08-25 at `7620eae44`.
+
 The Luminary design system has been elevated to a top-level style guide:
 
 **[`docs/DESIGN-SYSTEM.md`](../DESIGN-SYSTEM.md)**

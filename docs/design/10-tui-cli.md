@@ -2,6 +2,22 @@
 
 > The terminal is sacred ground. Treat it accordingly.
 
+**Status:** Design intent. The TUI shipped in `hypercolor-tui` and the CLI in
+`hypercolor-cli`; §5's command tree is not the surface either one exposes.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** of the fifteen top-level verbs §5
+specifies, three survive verbatim (`tui`, `status`, `config`) and a fourth ships
+under a different name (`completion` is `completions`). The other eleven
+(`daemon`, `set`, `off`, `list`, `device`, `profile`, `capture`, `plugin`,
+`export`, `import`, `watch`) do not exist. The shipped set is `access`, `audio`,
+`brightness`, `completions`, `config`, `controls`, `devices`, `diagnose`,
+`drivers`, `effects`, `install-release`, `layouts`, `library`, `scenes`,
+`server`, `servers`, `service`, `status`, and `tui`
+(`crates/hypercolor-cli/src/lib.rs:136`). Daemon lifecycle lives under `server`
+and `service`, not `daemon`; devices are plural; profiles became scenes in
+`e005ec782`. Run `hypercolor --help` before citing any command from this
+document.
+
 ---
 
 ## Table of Contents

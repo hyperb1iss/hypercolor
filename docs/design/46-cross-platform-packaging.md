@@ -5,7 +5,15 @@
 > with a real installer on Windows, a DMG on macOS, and the existing tarball/AUR/Homebrew
 > story on Linux.
 
-**Status:** Proposed
+**Status:** v1 shipped. Verified 2026-08-25 at `7620eae44`: `hypercolor-app` is
+the single front door on every platform, built on Tauri 2 with
+`tauri-plugin-autostart` and `tauri-plugin-single-instance`. The v1 installer
+formats named in §1 are live in `crates/hypercolor-app/tauri.conf.json`, whose
+bundle targets are `nsis`, `dmg`, and `app`, driven by
+`scripts/build-windows-installer.ps1` and `scripts/build-mac-installer.sh`. The
+Linux tarball, AUR, and Homebrew paths are in `packaging/`. The v1.1+ non-goals
+(MSI, AppImage, deb/rpm, Cask, store distribution, auto-updater) were not
+re-audited and should be treated as still open.
 **Author:** Nova
 **Date:** 2026-05-03
 

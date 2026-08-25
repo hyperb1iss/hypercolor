@@ -4,7 +4,19 @@
 
 > **Status:** Historical design snapshot. The canonical resource model in
 > [Spec 78](../specs/78-api-resource-model.md) supersedes the REST and
-> WebSocket examples in this document.
+> WebSocket examples in this document, and PR #218 supersedes §4's MCP surface.
+>
+> **§4 drift, checked 2026-08-25 at `7620eae44`:** §4.2 specifies fourteen MCP
+> tools. Three of those names survive on the shipped server (`list_effects`,
+> `create_scene`, `set_brightness`), and `create_scene` now saves a named scene
+> rather than registering an automation trigger. The other eleven
+> (`apply_effect`, `set_controls`, `list_effect_controls`, `list_devices`,
+> `configure_device`, `discover_devices`, `apply_profile`, `create_profile`,
+> `get_state`, `pause_resume`, `suggest_effect`) do not exist. The canonical
+> surface is the seventeen tools, five resources, and three prompts in
+> `crates/hypercolor-daemon/src/mcp/`. §4.4 is the exception that still holds:
+> `mood_lighting`, `troubleshoot`, and `setup_automation` are the three shipped
+> prompt templates (`crates/hypercolor-daemon/src/mcp/prompts.rs:35-67`).
 
 ---
 

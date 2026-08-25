@@ -29,7 +29,7 @@
 > `FpsSnapshot` have no definitions anywhere. The broadcast-versus-watch design the spec
 > describes is still exactly right; only these names and layouts are stale.
 
-_Synthesized from: [ARCHITECTURE.md](../../ARCHITECTURE.md) (Event Bus, Render Loop), [05-api-design.md](../design/05-api-design.md) (Sections 3, 6, 8), [10-tui-cli.md](../design/10-tui-cli.md) (IPC Appendix B, TUI Performance)._
+_Synthesized from: [ARCHITECTURE.md](../ARCHITECTURE.md) (Event Bus, Render Loop), [05-api-design.md](../design/05-api-design.md) (Sections 3, 6, 8), [10-tui-cli.md](../design/10-tui-cli.md) (IPC Appendix B, TUI Performance)._
 
 ---
 

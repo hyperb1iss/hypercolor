@@ -1,7 +1,10 @@
 # Servo subprocess isolation
 
-Status: proposed architecture. The in-process hard-stall state and bounded command
-ingress are short-term containment, not crash isolation.
+**Status:** Proposed architecture, unstarted. Re-verified 2026-08-25 at
+`7620eae44`: Servo still runs on a dedicated thread inside the daemon process,
+and nothing resembling a supervised worker process exists. The in-process
+hard-stall state and bounded command ingress are short-term containment, not
+crash isolation.
 
 ## Goal
 

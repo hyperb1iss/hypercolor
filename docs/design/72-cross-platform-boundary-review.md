@@ -6,23 +6,30 @@ merge commit `60463f6d` and origin main `5be1bf4f`.
 GPU interop, audio/media/sensor sources, process supervision and
 privilege, driver/HAL, desktop scaffolding), hardened by one cross-model
 review round, then revalidated after the macOS merge and the recent spec 76
-internal-API work. Companion to
-`docs/design/71-macos-capture-input-pr158-review.md`, the bug-level review
-of PR #158; this document is the abstraction-level review of every
-platform boundary.
+internal-API work. This document is the abstraction-level review of every
+platform boundary. Its companion, the bug-level review of PR #158 that lived at
+`docs/design/71-macos-capture-input-pr158-review.md`, was deleted in `b233da5d9`
+once its findings were absorbed; nothing in this document depends on it.
 
-**Verdict: the boundaries are half-built, and the same half everywhere.**
-The platform-neutral edges of each pipeline (vocabulary types, delivery
-machinery, trait seams facing the engine) are genuinely shared, mostly
-excellent, and platform-free. The middle layer between "OS API fires" and
-"neutral type published" is hand-mirrored per platform: written once per
-OS, kept in sync by convention, doc comments, and review rather than by
-the compiler. macOS is the third mirror, and the merged PR #158 shows
-exactly what that costs: adding a platform required edits to the other
-platforms' files and added sibling copies of code that already existed
+**Status:** Built. PR #220 (`ecbc8bf0d`, "refactor(platform)!: establish neutral
+capability boundaries") landed the platform layer this document specifies, and
+`AGENTS.md` now routes every agent here for the rules that resulted. Read §5's
+goal state and the completion audit as a record of what shipped, and the residue
+list at the end of that audit for what is genuinely still open.
+
+**Verdict as written on 2026-08-18: the boundaries were half-built, and the same
+half everywhere.** That diagnosis is what motivated the work; it is history, not
+a description of the current tree. The platform-neutral edges of each pipeline
+(vocabulary types, delivery machinery, trait seams facing the engine) were
+already genuinely shared, mostly excellent, and platform-free. The middle layer
+between "OS API fires" and "neutral type published" was hand-mirrored per
+platform: written once per OS, kept in sync by convention, doc comments, and
+review rather than by the compiler. macOS was the third mirror, and the merged
+PR #158 showed exactly what that cost: adding a platform required edits to the
+other platforms' files and added sibling copies of code that already existed
 twice.
 
-The fix is the platform layer this document specifies: one engine per
+The fix was the platform layer this document specifies: one engine per
 capability owned once in neutral code, one capability seam per domain
 that platform crates implement, one shared vocabulary that platform code
 produces rather than mirrors.
@@ -609,8 +616,10 @@ mechanically:
    crate depends unconditionally on a platform crate; fixture-only
    dependencies are dev-dependencies or explicit fixture features.
 2. **The cfg budget.** `rg -l 'cfg\(target_os' crates/hypercolor-core/src
-   crates/hypercolor-daemon/src` returns composition roots and their
-   tests only: at most ten files, down from 32 on 2026-08-18.
+   crates/hypercolor-daemon/src | rg -v '/tests?(\.rs|/)'` returns composition
+   roots only: at most ten files, down from 32 on 2026-08-18. The unfiltered
+   command also matches two test modules, so it returns twelve; both numbers
+   describe the same budget and `AGENTS.md` states the pair.
 3. **No platform nouns in shared contracts.** `rg -n
    'Macos|Windows|Linux'` over `hypercolor-types/src`,
    `core/src/input/status.rs`, and `core/src/input/traits.rs` finds only
@@ -1405,7 +1414,9 @@ landed. Each goal-state item is checked with the command it names.
    residue above).
 2. **cfg budget: met.** `rg -l 'cfg\(target_os' crates/hypercolor-core/src
    crates/hypercolor-daemon/src` returns 12 files (from 50 on 2026-08-22 and
-   32 on 2026-08-18):
+   32 on 2026-08-18), which is 10 once the two test modules are filtered out,
+   matching the goal-state budget above. Re-measured 2026-08-25 at `7620eae44`:
+   still 12 unfiltered, 10 filtered.
 
    - The daemon composition roots and their tests are `api/config/live/capture.rs`,
      `api/config/tests.rs`, `api/system/audio.rs`, `process.rs`, `session.rs`,
