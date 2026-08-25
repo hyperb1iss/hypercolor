@@ -38,7 +38,8 @@ class EffectMetadata:
             name (str): Human-readable display name.
             source (EffectSource): Identifies the rendering path and source location for an effect.
 
-                Determines which renderer handles the effect (wgpu vs. Servo).
+                Determines which renderer handles the effect: a compiled-in CPU builtin
+                or Servo.
             audio_reactive (bool | Unset): Indicates whether the effect expects audio payload injection.
             category (EffectCategory | Unset): Primary classification categories for the effect taxonomy.
 

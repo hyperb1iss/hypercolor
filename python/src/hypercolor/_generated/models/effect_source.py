@@ -13,7 +13,8 @@ T = TypeVar("T", bound="EffectSource")
 class EffectSource:
     """Identifies the rendering path and source location for an effect.
 
-    Determines which renderer handles the effect (wgpu vs. Servo).
+    Determines which renderer handles the effect: a compiled-in CPU builtin
+    or Servo.
 
     """
 
