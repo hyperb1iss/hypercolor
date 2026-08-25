@@ -413,6 +413,7 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
         platform_record: &PlatformTransactionRecord,
     ) -> Result<(), InstallPlatformError> {
         let record = self.validated_record(platform_record)?;
+        let record_has_prior_launcher = !matches!(record.prior_launcher, LinuxExactEntry::Absent);
         if usize::from(layout_operation_count) != record.layout.len()
             || transitions.prior_unloaded.loaded
             || transitions.candidate_manager.loaded
@@ -425,8 +426,7 @@ impl<E: LinuxInstallExecutor> InstallPlatform for LinuxInstallPlatform<E> {
                     .clone()
                     .ok_or_else(|| error("Linux target lacks candidate layout unit"))?
             || target.launcher_unit.is_some() != record.candidate_launcher.is_some()
-            || prior.launcher_unit.is_some()
-                != !matches!(record.prior_launcher, LinuxExactEntry::Absent)
+            || prior.launcher_unit.is_some() != record_has_prior_launcher
         {
             return Err(error(
                 "Linux transaction plan hides compound platform effects",
