@@ -120,12 +120,14 @@ impl EffectCategory {
 
 /// Identifies the rendering path and source location for an effect.
 ///
-/// Determines which renderer handles the effect (wgpu vs. Servo).
+/// Determines which renderer handles the effect: a compiled-in CPU builtin
+/// or Servo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EffectSource {
-    /// Native WGSL/GLSL shader rendered by `WgpuRenderer`.
+    /// Compiled-in native Rust renderer, resolved by name from
+    /// `effect::builtin`. The path identifies the builtin, not a shader.
     Native {
         /// Path to the shader file, relative to the effects root.
         #[cfg_attr(feature = "schema", schema(value_type = String))]
@@ -174,7 +176,7 @@ pub enum EffectState {
     /// Source files discovered, metadata being parsed and validated.
     #[default]
     Loading,
-    /// Renderer being initialized: shader compiling (wgpu) or HTML loading (Servo).
+    /// Renderer being initialized: builtin resource setup or HTML loading (Servo).
     Initializing,
     /// Actively rendering frames to the canvas.
     Running,
