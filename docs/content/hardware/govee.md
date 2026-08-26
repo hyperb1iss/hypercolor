@@ -26,7 +26,7 @@ Open the Govee Home app on your phone and follow these steps for each device you
 4. The device should confirm the change. Repeat for every Govee device.
 
 {% <callout type="info"> %}
-Not every Govee SKU supports LAN control. If you do not see the LAN Control toggle for a device, check the [compatibility matrix](@/hardware/compatibility.md) to verify your model. Cloud-only models can still be used if you configure a cloud API key.
+Not every Govee SKU supports LAN control. The absence of the LAN Control toggle is itself the answer: that model is cloud-only, and it can still be used if you configure a cloud API key. The [compatibility matrix](@/hardware/compatibility.md) lists Govee at the product-category level rather than per SKU, so it will not confirm an individual model number. The driver's own SKU tables in `crates/hypercolor-driver-govee/src/capabilities.rs` carry the per-model detail.
 {% </callout> %}
 
 ## Step 2: Discover Govee devices

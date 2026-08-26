@@ -45,7 +45,7 @@ in your Hypercolor configuration:
 
 ```toml
 [drivers.hue]
-known_ips = ["192.168.1.42"]
+bridge_ips = ["192.168.1.42"]
 ```
 
 ## Pairing
@@ -127,7 +127,7 @@ If your bridge has multiple entertainment areas, Hypercolor picks one automatica
 
 ```toml
 [drivers.hue]
-preferred_entertainment_config = "Living room"  # name or UUID both work
+entertainment_config = "Living room"  # name or UUID both work
 ```
 
 The config name is matched case-insensitively. You can also pass a UUID if you have
@@ -157,7 +157,7 @@ across your rig.
 Check that your machine and bridge are on the same subnet and that mDNS (port 5353
 UDP multicast) is not blocked. Try the N-UPnP path by visiting
 `https://discovery.meethue.com` in a browser. If it returns no results your bridge's
-internet registration may have expired. Use `known_ips` in config as the reliable
+internet registration may have expired. Use `bridge_ips` in config as the reliable
 fallback.
 
 ### Error 101 on pairing
@@ -169,9 +169,9 @@ This is not a hard failure.
 ### Streaming starts but lights don't change
 
 Verify an entertainment area is active in the Hue app and that the correct
-`preferred_entertainment_config` is set. Check `hypercolor devices list` to confirm
-the bridge connected with `AutoConnect` behavior. If it shows `Deferred`, credentials
-may be missing and a re-pair is needed.
+`entertainment_config` is set. Check `hypercolor devices list`: an `active` status
+means frames are flowing. A bridge sitting at `known` is missing credentials and
+needs a re-pair.
 
 ### Wrong colors
 

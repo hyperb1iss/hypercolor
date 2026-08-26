@@ -2,6 +2,18 @@
 
 > The effect system is the soul of Hypercolor. Everything else -- the daemon, the drivers, the spatial engine -- exists to serve the effects. This document defines how effects are categorized, authored, discovered, composed, shared, and performed.
 
+**Status:** Design intent. Useful for authoring guidance and effect-pattern ideas.
+Do not use it as the source of truth for the shipped taxonomy or canvas size.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** §1 defines eight categories (Ambient,
+Reactive, Interactive, Informational, Screen-Reactive, Generative, Artistic,
+Utility). The shipped `EffectCategory` has ten and does not match that set:
+`Ambient`, `Audio`, `Generative`, `Particle`, `Scenic`, `Interactive`, `Fun`,
+`Source`, `Utility`, `Display`
+(`crates/hypercolor-types/src/effect.rs:76-98`). §1 also calls the canvas
+"legacy 320 by 200"; the canvas defaults to 640x480 and is configurable through
+`daemon.canvas_width` and `daemon.canvas_height`.
+
 ---
 
 ## Table of Contents

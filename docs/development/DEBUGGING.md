@@ -38,12 +38,18 @@ hypercolor diagnose [OPTIONS]
 
 ### Flags
 
-| Flag              | Type       | Description                                                                                         |
-| ----------------- | ---------- | --------------------------------------------------------------------------------------------------- |
-| `--check <CHECK>` | repeatable | Run specific check(s) only. Values: `daemon`, `devices`, `audio`, `render`, `config`, `permissions` |
-| `--report <PATH>` | path       | Write full diagnostic JSON to a file (for bug reports)                                              |
-| `--system`        | bool       | Include verbose system info (GPU, kernel, audio version)                                            |
-| `--format <FMT>`  | enum       | Output format: `table` (default), `plain`, `json`                                                   |
+| Flag              | Type       | Description                                                                                    |
+| ----------------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `--check <CHECK>` | repeatable | Run specific check(s) only. Values: `daemon`, `render`, `devices`, `config`, `input`, `memory` |
+| `--report <PATH>` | path       | Write full diagnostic JSON to a file (for bug reports)                                         |
+| `--system`        | bool       | Include verbose system info (GPU, kernel, audio version)                                       |
+| `--format <FMT>`  | enum       | Output format: `table` (default), `plain`, `json`                                              |
+
+Those six names are the safe default set
+(`crates/hypercolor-daemon/src/domain/diagnostics.rs`). The protected
+`macos_screen_parity` check runs only when asked for by name. Anything else is
+not an error: the daemon answers with a `warning` row whose detail reads
+`unknown check`, so a typo produces a misleading pass rather than a failure.
 
 ### Examples
 
@@ -108,12 +114,15 @@ Continuously scans for devices and reacts to USB hotplug events.
 
 | Flag                  | Type            | Default     | Description                                          |
 | --------------------- | --------------- | ----------- | ---------------------------------------------------- |
-| `--backends <LIST>`   | comma-separated | `usb,smbus` | Backends to scan: `usb`, `smbus`, `wled`             |
+| `--targets <LIST>`    | comma-separated | `usb,smbus` | Targets to scan: `usb`, `smbus`, `wled`              |
 | `--interval-secs <N>` | u64             | `5`         | Periodic scan interval                               |
 | `--duration-secs <N>` | u64             | ∞           | Auto-stop after N seconds                            |
 | `--no-hotplug`        | bool            | `false`     | Disable USB hotplug-triggered rescans                |
 | `--timeout-ms <N>`    | u64             | `10000`     | Network scanner timeout (WLED)                       |
 | `--log-level <LVL>`   | string          | `info`      | Log level: `trace`, `debug`, `info`, `warn`, `error` |
+
+A target is any driver-module id that supports discovery. Passing one that does
+not exist, or one whose driver has no discovery, aborts with the supported list.
 
 ### Examples
 
@@ -124,11 +133,11 @@ cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
 
 # Scan only USB, stop after 30 seconds
 cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  detect --backends usb --duration-secs 30
+  detect --targets usb --duration-secs 30
 
 # Include WLED network discovery with 5s timeout
 cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  detect --backends usb,smbus,wled --timeout-ms 5000
+  detect --targets usb,smbus,wled --timeout-ms 5000
 
 # Disable hotplug, periodic scans only
 cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
@@ -138,23 +147,23 @@ cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
 ### Output
 
 ```
-[14:32:05.123] starting debug detection loop backends=[Usb, SmBus] interval_secs=5 timeout_ms=10000 hotplug=true
+[14:32:05.123] starting debug detection loop targets=[DebugTarget("usb"), DebugTarget("smbus")] interval_secs=5 timeout_ms=10000 hotplug=true
 [14:32:05.456] scan trigger=initial new=3 reappeared=0 vanished=0 total=3 duration_ms=332
-  scanner=UsbScanner status=ok discovered=2 duration_ms=120
-  scanner=SmBusScanner status=ok discovered=1 duration_ms=331
-  + Razer BlackWidow V4 Pro [a1b2c3d4] backend_hint=usb
-  + Razer DeathAdder V3 Pro [e5f6a7b8] backend_hint=usb
-  + ASUS Aura Motherboard [c9d0e1f2] backend_hint=smbus
+  scanner=USB Transport status=ok discovered=2 duration_ms=120
+  scanner=SMBus Transport status=ok discovered=1 duration_ms=331
+  + Razer BlackWidow V4 Pro [a1b2c3d4] driver=razer route=usb transport=usb
+  + Razer DeathAdder V3 Pro [e5f6a7b8] driver=razer route=usb transport=usb
+  + ASUS Aura Motherboard [c9d0e1f2] driver=asus route=smbus transport=smbus
 [14:32:10.789] hotplug arrived 1532:0272 Razer Huntsman V3 Pro
 [14:32:11.012] scan trigger=usb-hotplug new=1 reappeared=0 vanished=0 total=4 duration_ms=223
-  + Razer Huntsman V3 Pro [3a4b5c6d] backend_hint=usb
+  + Razer Huntsman V3 Pro [3a4b5c6d] driver=razer route=usb transport=usb
 [14:32:15.456] hotplug removed 1532:0272
 ```
 
 ### What It Reports
 
 - **Per-scanner status:** ok/error, discovered count, scan duration
-- **New devices:** `+` prefix with name, ID, backend hint
+- **New devices:** `+` prefix with name, ID, owning driver, output route, transport
 - **Reappeared devices:** `~` prefix (previously vanished, now back)
 - **Vanished devices:** `-` prefix (previously seen, now gone)
 - **Hotplug events:** Real-time USB arrival/removal with VID:PID
@@ -313,14 +322,14 @@ performance metrics, and REST-equivalent command execution.
 
 A few of the fifteen; the full list lives in `protocol/websocket-v1.json`.
 
-| Topic             | Key       | Default      | Description                     | Config Options                        |
-| ----------------- | --------- | ------------ | ------------------------------- | ------------------------------------- |
-| `events`          | —         | subscribed   | System events and state changes | none                                  |
-| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `zones`                 |
-| `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128) |
+| Topic             | Key       | Default      | Description                     | Config Options                         |
+| ----------------- | --------- | ------------ | ------------------------------- | -------------------------------------- |
+| `events`          | —         | subscribed   | System events and state changes | none                                   |
+| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `zones`                  |
+| `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)  |
 | `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba/jpeg) |
-| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `fps` (0.1-10)                        |
-| `display_preview` | device id | unsubscribed | One display's JPEG output       | `fps` (1-30)                          |
+| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `fps` (0.1-10)                         |
+| `display_preview` | device id | unsubscribed | One display's JPEG output       | `fps` (1-30)                           |
 
 ### Client → Server Messages
 
@@ -370,7 +379,7 @@ that subscription's config patch.
     "running": true,
     "paused": false,
     "brightness": 80,
-    "fps": { "target": 60, "actual": 59.8 },
+    "fps": { "target": 60, "capacity": 59.8, "delivered": 59.8 },
     "scene": { "id": "scene-01", "name": "Main", "snapshot_locked": false },
     "layout": { "id": "main", "name": "Main Setup" },
     "device_count": 5,
@@ -387,6 +396,10 @@ that subscription's config patch.
   "subscriptions": ["events"]
 }
 ```
+
+`capabilities` is abridged here. The daemon advertises every topic name plus
+`commands`, `canvas_format_jpeg`, `interactive_previews`, `wide_preview_frames`,
+and `preview_chunking`; `protocol/websocket-v1.json` carries the current list.
 
 **Event:**
 
@@ -406,7 +419,13 @@ that subscription's config patch.
   "type": "metrics",
   "timestamp": "2026-03-08T10:30:45.123Z",
   "data": {
-    "fps": { "target": 60, "actual": 59.8, "dropped": 0 },
+    "fps": {
+      "target": 60,
+      "ceiling": 60,
+      "capacity": 59.8,
+      "delivered": 59.8,
+      "dropped": 0
+    },
     "frame_time": {
       "avg_ms": 16.8,
       "p95_ms": 18.2,
@@ -430,6 +449,12 @@ that subscription's config patch.
   }
 }
 ```
+
+The sample above is abridged. A live `metrics` payload also carries
+`input_latency`, `pacing`, `effect_health`, `timeline`, `render_surfaces`,
+`preview`, `display_output`, and `copies`, and both `stages` and `websocket`
+have more fields than shown. The full shape lives in
+`crates/hypercolor-daemon/src/api/ws/protocol.rs`.
 
 **Backpressure:**
 
@@ -797,22 +822,33 @@ discovery, connection, and frame writing with full call tracking.
 
 ```rust
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
-use hypercolor_types::spatial::LedTopology;
+use hypercolor_types::spatial::{Corner, LedTopology, StripDirection};
 
 let backend = MockDeviceBackend::new()
     .with_device(&MockDeviceConfig {
         name: "Test Keyboard".into(),
         led_count: 150,
-        topology: LedTopology::Matrix { rows: 6, cols: 25 },
+        topology: LedTopology::Matrix {
+            width: 25,
+            height: 6,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
         id: None, // auto-generated
     })
     .with_device(&MockDeviceConfig {
         name: "Test Strip".into(),
         led_count: 60,
-        topology: LedTopology::Strip { count: 60 },
+        topology: LedTopology::Strip {
+            count: 60,
+            direction: StripDirection::LeftToRight,
+        },
         id: None,
     });
 ```
+
+Working reference: `crates/hypercolor-core/tests/mock_integration_tests.rs`
+builds strip, matrix, and ring configs the same way.
 
 ### Call Tracking
 
@@ -821,23 +857,27 @@ Every method call is recorded for test assertions:
 ```rust
 pub enum MockCall {
     Info,
-    Discover,
+    Adopt(DeviceId),
     Connect(DeviceId),
     Disconnect(DeviceId),
     WriteColors { device_id: DeviceId, led_count: usize },
 }
 
 // After operations:
-assert_eq!(backend.calls().len(), 3);
-assert!(matches!(backend.calls()[0], MockCall::Discover));
+let calls = backend.calls();
+assert_eq!(calls[0], MockCall::Adopt(device_id));
+assert_eq!(calls[1], MockCall::Connect(device_id));
 ```
+
+Discovery is not a backend call. A device reaches the backend through
+`adopt_device`, which is what `MockCall::Adopt` records.
 
 ### Inspection API
 
 ```rust
-backend.calls()             // &[MockCall]: ordered call log
+backend.calls()             // Vec<MockCall>: ordered call log
 backend.write_count()       // u64: total write_colors calls
-backend.last_colors(&id)    // Option<&Vec<[u8; 3]>>: last frame data
+backend.last_colors(&id)    // Option<Vec<[u8; 3]>>: last frame data
 backend.is_connected(&id)   // bool: connection state
 backend.device_infos()      // &[DeviceInfo]: configured devices
 ```
@@ -857,28 +897,42 @@ backend.fail_write = true;
 assert!(backend.write_colors(&id, &colors).await.is_err());
 ```
 
-### Mock Transport Scanner
+### Mock Discovery Source
 
-For testing the discovery layer:
+For testing the discovery layer. The source is named at construction and takes
+the same `MockDeviceConfig` the backend does, minting a `DiscoveredDevice` per
+entry:
 
 ```rust
-use hypercolor_core::device::mock::MockTransportScanner;
+use hypercolor_core::device::mock::{MockDeviceConfig, MockDiscoverySource};
 
-let scanner = MockTransportScanner::new(vec![
-    // pre-built DiscoveredDevice instances
-]);
+let source = MockDiscoverySource::new("mock-usb")
+    .with_device(&config);
+
+// `should_fail` makes scan() return an error, for failure-path tests.
+let mut failing = MockDiscoverySource::new("mock-usb");
+failing.should_fail = true;
 ```
+
+Register it with the orchestrator through `source.name()` and `source.scan()`;
+`crates/hypercolor-core/tests/mock_integration_tests.rs` has the wiring.
 
 ### Mock Effect Renderer
 
-For testing the effect → color pipeline:
+For testing the effect → color pipeline. `new` takes the render mode, and the
+three convenience constructors cover the common cases:
 
 ```rust
-use hypercolor_core::device::mock::MockEffectRenderer;
+use hypercolor_core::device::mock::{MockEffectRenderer, MockRenderMode};
 
-let renderer = MockEffectRenderer::new();
-// Renders canvas to RGB colors for testing
+let renderer = MockEffectRenderer::new(MockRenderMode::Solid([255, 0, 0, 255]));
+let renderer = MockEffectRenderer::solid(255, 0, 0);
+let renderer = MockEffectRenderer::rainbow();
+let renderer = MockEffectRenderer::audio_reactive(0, 128, 255);
 ```
+
+`MockEffectRenderer::sample_metadata(name)` returns an `EffectMetadata` suitable
+for `init`.
 
 ---
 
@@ -910,8 +964,9 @@ just test
 # Test a specific crate
 just test-crate hypercolor-hal
 
-# Run a specific test by name
-just test-one razer_protocol
+# Run a specific test by name. The filter matches test FUNCTION names, not
+# file names, so a file-name guess matches nothing and still exits 0.
+just test-one razer_report_crc
 
 # Run clippy
 just lint
@@ -993,13 +1048,13 @@ lsusb | grep -i "razer\|corsair\|asus"
 # 2. Run the debug discovery tool with trace logging
 RUST_LOG=hypercolor_hal=trace,hypercolor_core::device=debug \
   cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  --log-level trace detect --backends usb,smbus
+  --log-level trace detect --targets usb,smbus
 
 # 3. Check udev permissions
 ls -la /dev/hidraw*
 
 # 4. Check the device database knows this VID:PID
-just test-one database_tests
+just test-one lookup_returns
 ```
 
 ### "Device detected but not responding"
@@ -1050,7 +1105,7 @@ RUST_LOG=hypercolor_daemon::display_output=trace just daemon
 # 1. Start with device discovery to confirm detection
 RUST_LOG=hypercolor_core::device=debug \
   cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  --log-level debug detect --backends usb
+  --log-level debug detect --targets usb
 
 # 2. Capture packets from the transport layer at trace level
 RUST_LOG=hypercolor_hal::transport=trace just daemon
@@ -1059,8 +1114,8 @@ RUST_LOG=hypercolor_hal::transport=trace just daemon
 just test-crate hypercolor-hal
 
 # 4. Use mock backend for pipeline integration testing
-just test-one mock_integration
+just test-one full_pipeline
 
 # 5. Verify device database entries
-just test-one database_tests
+just test-one lookup_returns
 ```

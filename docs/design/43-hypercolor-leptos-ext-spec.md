@@ -1,7 +1,12 @@
 # 43. Spec: `hypercolor-leptos-ext`
 
 **Status:** Partially superseded. The browser helpers (events, canvas, RAF,
-prelude, Leptos adapters) and the Hypercolor frame codecs shipped and are live.
+prelude) and the Hypercolor frame codecs shipped and are live. The Leptos
+adapters did not: despite the crate's name, `hypercolor-leptos-ext` has no
+`leptos` dependency in its `Cargo.toml` and no `leptos` reference anywhere in
+its sources (checked 2026-08-25 at `7620eae44`). Its modules are `axum`,
+`canvas`, `events`, `prelude`, `raf`, and `ws`, and `ws` under the `ws-core`
+feature is deliberately pure, with no leptos and no wasm.
 The generic stream layer specified in 4.2 through 4.8 never acquired a
 production consumer and was deleted under spec 76's lockstep doctrine:
 `CinderTransport` and its transports, `BinaryChannel` with its backpressure

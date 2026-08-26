@@ -67,12 +67,22 @@ while IFS= read -r -d '' document; do
     failed=1
   fi
 done < <(
-  find \
-    "$repo_root/AGENTS.md" \
-    "$repo_root/.agents" \
-    "$repo_root/crates" \
-    "$repo_root/docs" \
-    -type f -name '*.md' -print0
+  # Tracked files only. `find` also walks ignored paths, and `docs/review/`
+  # is gitignored scratch space whose whole purpose is quoting retired routes
+  # in historical analyses — scanning it failed the gate locally for anyone
+  # holding local review notes while CI, on a clean checkout, stayed green.
+  if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$repo_root" ls-files -z -- \
+      'AGENTS.md' '.agents/**/*.md' 'crates/**/*.md' 'docs/**/*.md' \
+      | sed -z "s|^|$repo_root/|"
+  else
+    find \
+      "$repo_root/AGENTS.md" \
+      "$repo_root/.agents" \
+      "$repo_root/crates" \
+      "$repo_root/docs" \
+      -type f -name '*.md' -print0
+  fi
 )
 
 if ((failed)); then

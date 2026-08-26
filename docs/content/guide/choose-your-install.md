@@ -8,10 +8,10 @@ Not every install path is right for every person. This page routes you to the co
 
 {% <callout type="info"> %}
 Linux, Windows, and macOS are all supported install platforms. Linux
-additionally gets udev, systemd, and session integration (idle dim, lock and
-suspend behavior). macOS supports screen capture and native host input, but it
-has no SMBus motherboard/DRAM RGB path. Session integration is Linux-only
-today.
+additionally gets udev rules and a systemd user service. macOS supports screen
+capture and native host input, but it has no SMBus motherboard/DRAM RGB path.
+Screen-lock and suspend behavior works on all three platforms; the idle-dimming
+and laptop-lid settings are accepted but nothing emits those events yet.
 {% </callout> %}
 
 ## Decide in 30 seconds
@@ -31,9 +31,9 @@ If you are not sure whether you are a developer, you are not a developer. Start 
 ## Prebuilt one-liner (Linux) {% raw %}{#prebuilt-linux}{% endraw %}
 
 The fastest path on Linux. Downloads the latest release binaries from GitHub,
-installs them to `~/.local/bin`, sets up the systemd user service, and prompts
-before installing udev rules for USB device access or persisting the `i2c-dev`
-kernel module for SMBus RGB hardware.
+verifies them, installs them to `~/.local/bin`, and sets up the systemd user
+service. It never asks for `sudo`, so the udev rules and the `i2c-dev` kernel
+module are left to you.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 
 No Rust toolchain required. The script is idempotent, so it is safe to re-run to upgrade.
 
-**Supported platforms:** Linux x86_64, Linux aarch64, and macOS Apple Silicon (arm64). Intel Macs use the [DMG](#macos-dmg) instead.
+**Supported platforms:** Linux x86_64 and aarch64, and macOS on both Apple Silicon (arm64) and Intel (x86_64). The [DMG](#macos-dmg) is the friendlier macOS path if you would rather not use a shell one-liner.
 
 ### Installer options
 
@@ -49,28 +49,28 @@ Pass flags after `--` to control the install:
 
 ```bash
 # Pin any tagged release
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.2.1
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.3.2
 
 # Skip service setup (useful for custom init systems)
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --no-service
 
-# Apply the sudo-backed system hooks without prompting
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --yes
+# Skip the uninstall confirmation prompt
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --uninstall --yes
 
 # Remove Hypercolor
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --uninstall
 ```
 
-You can also set `HYPERCOLOR_INSTALL_PREFIX` to override the install root (default: `~/.local`).
+On macOS you can set `HYPERCOLOR_INSTALL_PREFIX` and `HYPERCOLOR_INSTALL_DIR` to move the install root. On Linux the prefix is fixed at `~/.local` and the binary directory at `~/.local/bin`; the script refuses anything else so the systemd unit's `%h/.local/bin/hypercolor-daemon` path always resolves.
 
 ### What the installer does
 
 1. Detects your architecture and downloads the matching release tarball from GitHub.
 2. Verifies the SHA256 checksum before extracting.
-3. Installs `hypercolor-daemon` and `hypercolor` to `~/.local/bin`.
+3. Installs `hypercolor`, `hypercolor-daemon`, `hypercolor-app`, `hypercolor-tui`, and `hypercolor-open` to `~/.local/bin`.
 4. Installs the systemd **user** service to `~/.config/systemd/user/hypercolor.service` and enables it.
-5. Prompts to copy the udev rules (`99-hypercolor.rules` for USB access, `70-hypercolor-input.rules` for input capture) to `/etc/udev/rules.d/` (requires `sudo`) and reloads udev if approved.
-6. When system hooks are approved, loads `i2c-dev` immediately and persists it via `/etc/modules-load.d/i2c-dev.conf` (requires `sudo`).
+
+The release tarball carries the udev rules and the `i2c-dev` modules-load config, but the one-liner never applies them, because it never asks for `sudo`. To get USB device access and SMBus RGB working, run `just udev-install` from a checkout, or install the `.deb` or the AUR package, which place both for you.
 
 After the installer finishes, see [First launch](@/guide/first-launch.md) to open the UI for the first time.
 

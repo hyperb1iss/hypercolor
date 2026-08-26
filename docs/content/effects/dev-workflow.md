@@ -31,7 +31,7 @@ This is the **authoring** CLI: `bunx hypercolor`, run inside a workspace, resolv
 
 ## The real iteration loop
 
-The old synthetic `hypercolor dev` preview server is gone. Run it now and it prints an error and exits non-zero, pointing you at `build` + `ship:daemon`. The source of truth is the daemon and the desktop app runtime, so the recommended loop is:
+There is no synthetic preview server. The authoring CLI has four commands (`build`, `validate`, `install`, `add`), and `hypercolor dev` just takes the unknown-command path: `Unknown command "dev".`, the usage banner, exit `1`. The source of truth is the daemon and the desktop app runtime, so the recommended loop is:
 
 1. Edit the effect source.
 2. `bun run build`.
@@ -147,7 +147,7 @@ Display faces (full-screen HTML for LCD pump caps, Push 2 strips, and similar) g
 just face-dev system-pulse
 ```
 
-This builds the named face, installs it into the running daemon, ensures the two canonical simulator displays exist (a 480×480 round panel and a 960×160 strip), assigns the face to both, opens the Displays page, then rebuilds and reinstalls on every save. The target is save-to-preview in under five seconds, with no physical display attached. It expects a daemon on `http://127.0.0.1:9420` (override with `HYPERCOLOR_URL`); start one with `just daemon` if nothing is reachable.
+This builds the named face, installs it into the running daemon, ensures the two canonical simulator displays exist (a 480×480 round panel and a 960×160 strip), assigns the face to both, opens the Devices page (where display management lives; override the URL with `HYPERCOLOR_UI_URL`), then rebuilds and reinstalls on every save. The target is save-to-preview in under five seconds, with no physical display attached. It expects a daemon on `http://127.0.0.1:9420` (override with `HYPERCOLOR_URL`); start one with `just daemon` if nothing is reachable.
 
 Because a face ships only when it is intentional on both a round panel and a wide strip, the dual-simulator setup is the quality gate, not just a convenience. See the display-faces authoring guide in this section for the `face()` contract, the Servo CSS matrix, and the data sources a face can read.
 
@@ -180,7 +180,7 @@ hypercolor effects patch --param speed=7
 ```
 
 {% <callout type="warning"> %}
-Live control values use the `--param name=value` form (for example `--param speed=7`), not bare `--speed` flags. The control name is the lowercased label you declared in the effect. Check the [CLI reference](@/api/cli.md) for the authoritative flag set.
+Live control values use the `--param name=value` form (for example `--param speed=7`), not bare `--speed` flags. The control name is the control's declaration key (`speed`, `trailLength`), not its display label. Check the [CLI reference](@/api/cli.md) for the authoritative flag set.
 {% </callout> %}
 
 The system CLI also splits three distinct top-level commands that are easy to confuse: `server` configures and talks to the daemon as an HTTP server, `servers` manages multiple known daemon connections, and `service` controls the OS-level background service (install, start, stop). They are not interchangeable. The [CLI reference](@/api/cli.md) covers the full surface, and the daemon's REST contract is enumerated in the [REST API reference](@/api/rest.md).
@@ -194,7 +194,7 @@ If you are building effects with an AI agent, the same loop composes over the da
 If you are working inside a `hypercolor/` clone rather than a standalone workspace, the top-level `just` recipes wrap the same authoring core against the in-repo effect sources under `sdk/src/`:
 
 ```bash
-just sdk-dev                 # live-rebuild the SDK package itself (HMR)
+just sdk-dev                 # watch-rebuild the SDK packages on change
 just effects-build           # build every SDK effect → effects/hypercolor/*.html
 just effect-build borealis   # build one effect by id
 just faces-build             # build every SDK face → effects/hypercolor/*.html

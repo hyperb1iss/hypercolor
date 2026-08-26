@@ -2,13 +2,19 @@
 
 > Natural language meets photons. The Model Context Protocol surface for AI-driven RGB control.
 
-**Status:** Superseded by [Spec 78](78-api-resource-model.md)
+**Status:** Superseded and archived on 2026-08-25. Do not implement from this document.
 **Crate:** `hypercolor-daemon`
 **Module path:** `hypercolor_daemon::mcp`
+**Superseded by:** the [current MCP reference](../content/api/mcp.md) for the shipping
+tool contract, and [Spec 78](../specs/78-api-resource-model.md) for resource vocabulary.
 
-> **Historical note:** This document records the original MCP design. Spec 78
-> replaced its tool and resource vocabulary with the canonical 17-tool surface.
-> Use the [current MCP reference](../content/api/mcp.md) for the shipping contract.
+> **Why this was archived (2026-08-25):** the table further down labelled "the following
+> 16 tools are shipped in v0.1" is wrong in both directions. The shipped surface is 17
+> tools, 5 resources, and 3 prompt templates, and two of the tools listed here,
+> `stop_effect` and `set_profile`, do not exist anywhere in `crates/hypercolor-daemon/src/mcp/`.
+> `set_profile` in particular died when profiles folded into scenes. The three shipped
+> tools this document never mentions are `set_output_power`, `clear_zone`, and
+> `adjust_controls`.
 
 ---
 

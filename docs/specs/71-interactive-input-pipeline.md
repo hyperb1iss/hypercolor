@@ -1,10 +1,22 @@
 # Spec 71: Interactive Input Pipeline
 
-Status: PROPOSED (cross-model reviewed: Codex gpt-5.6-sol adversarial pass, 2 blockers
-+ 13 majors folded in)
+Status: Shipped, but not as designed here. The "Verified current state" section below
+is describing a tree that no longer exists.
 Depends on: none. Related: spec 69 (faces share the payload/adapter machinery).
-Spec 76 is the macOS authority for native host input, TCC ownership, and the
-final `device_query` retirement.
+Spec 79 is the macOS authority for native host input and TCC ownership; spec 72 is the
+Windows authority.
+
+> **Note (2026-08-25):** this file is still marked PROPOSED, which is doubly misleading,
+> because the pipeline shipped and the baseline it argues from is fiction. There is no
+> `InteractionInput` type anywhere in `crates/`, no
+> `crates/hypercolor-core/src/input/interaction/` directory, and `device_query` is not a
+> dependency of any crate, so the 100 Hz X11 polling problem the spec opens on has
+> already been solved and removed. What shipped is `InteractionBatch`
+> (`crates/hypercolor-core/src/input/traits.rs`) with a shared fold
+> (`crates/hypercolor-core/src/input/host_fold.rs`) and per-platform producer crates
+> `hypercolor-linux-input`, `hypercolor-windows-input`, and `hypercolor-macos-input`.
+> The `HostInputBackend` seam the spec names was not the seam that shipped; it has no
+> definition in the tree. Read the platform crates, not this section.
 
 ## Problem
 

@@ -422,14 +422,19 @@ and `dedup_threshold`. Per-device overrides (for example, an individual WLED con
 E1.31 while others use DDP) are exposed separately through
 `DriverControlProvider::device_surface`.
 
-`ApplyImpact` tells the host what needs to happen when a field changes:
+`ApplyImpact` (in `hypercolor_types::controls`) tells the host what needs to happen when a
+field changes. All eight variants:
 
 | Variant | Meaning |
 |---|---|
+| `ApplyImpact::None` | No operational impact |
 | `ApplyImpact::Live` | Takes effect immediately, no reconnect |
-| `ApplyImpact::BackendRebind` | Backend must be torn down and rebuilt |
-| `ApplyImpact::DeviceReconnect` | Only the affected device reconnects |
 | `ApplyImpact::DiscoveryRescan` | A fresh discovery scan should run |
+| `ApplyImpact::DeviceReconnect` | Only the affected device reconnects |
+| `ApplyImpact::BackendRebind` | Backend must be torn down and rebuilt |
+| `ApplyImpact::TopologyRebuild` | Topology is rebuilt for the affected devices |
+| `ApplyImpact::HardwarePersist` | State is written into the physical hardware |
+| `ApplyImpact::Custom(String)` | A driver-defined dynamic impact |
 
 ---
 

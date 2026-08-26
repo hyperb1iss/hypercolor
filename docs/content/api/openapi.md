@@ -87,8 +87,8 @@ typed success payload, real success statuses, and shared error responses. Schema
 components are discovered from those operation types at registration time, so
 there is no second route table or component inventory to keep synchronized.
 
-The parity tests lock the runtime document to the Spec 78 inventory of 82 paths
-and 117 operations. They also verify unique operation ids, required string path
+The parity tests lock the runtime document to the Spec 78 inventory of 83 paths
+and 118 operations. They also verify unique operation ids, required string path
 parameters, resolvable schema references, real success bodies and media types,
 and the shared error contract on every operation. A new REST route therefore
 cannot silently expand the public surface or disappear from OpenAPI.
@@ -149,7 +149,7 @@ curl -s http://localhost:9420/api/v1/openapi.json \
   | jq '[.paths[] | keys[]] | length'
 ```
 
-The count is `117`. A matching result means the daemon is serving the locked
+The count is `118`. A matching result means the daemon is serving the locked
 OpenAPI surface and you are ready to browse it at
 [`/api/v1/docs`](http://localhost:9420/api/v1/docs) or wire it into a client
 generator.

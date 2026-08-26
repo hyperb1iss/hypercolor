@@ -47,4 +47,5 @@ None.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor), open-source RGB
-lighting orchestration for Linux. Licensed under Apache-2.0.
+lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.

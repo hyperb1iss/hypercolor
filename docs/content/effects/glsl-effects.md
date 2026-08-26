@@ -61,7 +61,14 @@ The SDK registers these uniforms automatically. You don't declare them in contro
 ```glsl
 uniform float iTime;       // elapsed seconds
 uniform vec2  iResolution; // canvas size in pixels
-uniform vec2  iMouse;      // unused on LED hardware, kept for compatibility
+uniform vec2  iMouse;      // normalized pointer position, live when input: true
+```
+
+Declare `input: true` in the options and the SDK registers two more and drives all three from the host pointer every frame:
+
+```glsl
+uniform float iMouseDown;  // 1 while any button is held, 0 otherwise
+uniform float iWheel;      // accumulated line scroll
 ```
 
 Always UV-normalize against `iResolution` so the shader is resolution-independent:
@@ -111,9 +118,9 @@ The build step validates this binding. `bun run build` parses your shader for `u
 Two control keys carry special behavior in shaders:
 
 - **`speed`.** A control named `speed` triggers automatic normalization: the SDK maps the raw slider value out of its declared range into a usable scalar before writing the uniform. You still declare `uniform float iSpeed;` and multiply it into time.
-- **`palette`.** The shorthand `palette: ['A', 'B', 'C']` becomes an integer uniform whose value is the selected index. Branch on `iPalette` inside a `palette()` function to pick the color math. This is the combobox-as-index path; it is distinct from `combo('Palette', ...)`.
+- **`palette`.** Every combobox control uploads as an integer uniform carrying the selected index, so a control named `palette` arrives as `uniform int iPalette` whichever way you declared it: `combo()`, `paletteControl()`, `font()`, or a bare string-array shorthand. Branch on `iPalette` inside a `palette()` function to pick the color math.
 
-If you want the palette as a named string inside TypeScript instead of an index in the shader, use `combo('Palette', ...)` and sample the palette registry yourself. See [Palettes](@/effects/palettes.md) for that pattern.
+What `paletteControl()` changes is not the uniform but the value your `setup` and `frame` hooks read from `ctx.controls`. If you want to sample the registry in TypeScript rather than branch on an index in GLSL, do it there. See [Palettes](@/effects/palettes.md) for that pattern.
 
 ## Audio uniforms
 
@@ -303,4 +310,4 @@ Shaders are the right tool for noise fields, warped coordinate systems, kaleidos
 - effects that depend on the chromagram, mel bands, or dominant pitch
 - logic that reads more cleanly as imperative code than as math
 
-For anything on that list, [TypeScript canvas effects](@/effects/typescript-effects.md) are cleaner, faster to iterate on, and expose the full SDK audio surface. And if you want a renderer compiled into the engine itself rather than shipped as an HTML artifact, that's the native Rust path: a hand-written `EffectRenderer` registered in `core/src/effect/builtin/mod.rs`. Eleven of those built-in renderers ship today (solid color, gradient, rainbow, breathing, audio pulse, color wave, color zones, screen cast, media player, calibration, and the Servo-gated web viewport). They are pure-Rust CPU renderers, the only true "native" effects, and a sibling page covers authoring one once it lands.
+For anything on that list, [TypeScript canvas effects](@/effects/typescript-effects.md) are cleaner, faster to iterate on, and expose the full SDK audio surface. And if you want a renderer compiled into the engine itself rather than shipped as an HTML artifact, that's the native Rust path: a hand-written `EffectRenderer` registered in `core/src/effect/builtin/mod.rs`. Eleven of those built-in renderers ship today (solid color, gradient, rainbow, breathing, audio pulse, color wave, color zones, screen cast, media player, calibration, and the Servo-gated web viewport). They are pure-Rust CPU renderers, the only true "native" effects, and [Native Rust effects](@/effects/native-rust-effects.md) covers authoring one.

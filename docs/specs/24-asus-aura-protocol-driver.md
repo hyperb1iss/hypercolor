@@ -2,7 +2,9 @@
 
 > Native USB HID and ENE SMBus driver for the ASUS Aura RGB ecosystem. Three transport families, five protocol variants, a 200+ device catalog, and clean-room integration with the HAL via interior-mutability runtime discovery.
 
-**Status:** Draft (Rev 2 — post cross-model review)
+**Status:** Implemented (status corrected 2026-08-25). `AuraUsbProtocol` is exported
+from `crates/hypercolor-hal/src/drivers/asus/`, with SMBus transport in `smbus.rs` and
+`smbus_probe.rs`.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::asus`
 **Author:** Nova

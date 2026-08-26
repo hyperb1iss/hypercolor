@@ -2,7 +2,10 @@
 
 > Complete protocol specification for the Lian Li fan hub family. Covers the ENE 6K77 HID protocol (SL, AL, SL V2, AL V2, SL Infinity), the TL Fan protocol, fan speed PWM, RPM telemetry, and white LED protection. Sufficient detail for clean-room Rust implementation.
 
-**Status:** Draft (v2 -- research expansion)
+**Status:** Implemented (status corrected 2026-08-25). `TlFanProtocol` ships in
+`crates/hypercolor-hal/src/drivers/lianli/tl.rs`, the ENE 6K77 protocol in `ene.rs`, and
+the legacy libusb path in `legacy.rs`. The v2 research expansion below remains the
+reference for the wire formats.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::lianli`
 **Author:** Nova

@@ -73,18 +73,16 @@ These are raw named primitives. Interactive and status components consume them t
 
 ### Motion
 
-Easings and durations from `primitives.css`. The docs `_variables.scss` also defines `--ease-smooth` (`cubic-bezier(0.25, 0.1, 0.25, 1)`) and `--duration-medium` (`300ms`) as SCSS-only local additions; these have no counterpart in the canonical app tokens.
+Easings and durations from `primitives.css`. The docs `_variables.scss` re-declares the same six as SCSS variables and mirrors them into CSS custom properties, so the two sides stay in step. There is no `--ease-smooth` and no `--duration-medium`; three easings and three durations are the whole ladder.
 
-| Token | Value | Source |
-|-------|-------|--------|
-| `--ease-silk` | `cubic-bezier(0.4, 0, 0.2, 1)` | canonical |
-| `--ease-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | canonical |
-| `--ease-out` | `cubic-bezier(0, 0, 0.2, 1)` | canonical |
-| `--ease-smooth` | `cubic-bezier(0.25, 0.1, 0.25, 1)` | docs only |
-| `--duration-fast` | `120ms` | canonical |
-| `--duration-normal` | `200ms` | canonical |
-| `--duration-medium` | `300ms` | docs only |
-| `--duration-slow` | `400ms` | canonical |
+| Token | Value |
+|-------|-------|
+| `--ease-silk` | `cubic-bezier(0.4, 0, 0.2, 1)` |
+| `--ease-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` |
+| `--ease-out` | `cubic-bezier(0, 0, 0.2, 1)` |
+| `--duration-fast` | `120ms` |
+| `--duration-normal` | `200ms` |
+| `--duration-slow` | `400ms` |
 
 ### Radii
 
@@ -99,6 +97,8 @@ Luminary is **sharp**. 8px is the largest corner in the product. Pills use `999p
 | `--radius-pill` | `999px` |
 
 ### Spacing
+
+App only. These live in `crates/hypercolor-ui/tokens/primitives.css` and are not ported to the docs Sass, so a docs component cannot reference them; use literal pixels on the same 4/8/16/24/32 ladder there.
 
 | Token | Value |
 |-------|-------|

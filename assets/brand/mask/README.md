@@ -15,6 +15,13 @@ at runtime, so the brand can breathe with the active scene's actual lighting.
 | `petal-{top,left,right}-segmented-mask.png` | One petal each, from angular wedge segmentation | per-petal CSS layering with independent colors |
 | `petal-mask-tri.png` | All three petals packed into R/G/B channels | shader sampling — one texture lookup, three masks |
 
+The CSS below uses the paths the web UI actually serves.
+`crates/hypercolor-ui/assets/brand/` is published flat at `/assets/brand/`, and
+it carries a subset of this directory: `mark-mask.png` and the three segmented
+petal masks, alongside `mark-color.png` from `../master/`. The wordmark, the
+lockups, `petal-top-mask.png`, and `petal-mask-tri.png` stay authoring sources,
+so copy one into the UI assets directory before a page references it.
+
 ## The three flavors of dynamic tint
 
 ### Flavor 1 — single color wash (simplest)
@@ -31,11 +38,11 @@ underneath with a solid color sampled from the current effect.
   width: 256px;
   height: 256px;
   background-color: var(--scene-color, #e135ff); /* dynamic */
-  mask-image: url("/brand/mask/mark-mask.png");
+  mask-image: url("/assets/brand/mark-mask.png");
   mask-size: contain;
   mask-position: center;
   mask-repeat: no-repeat;
-  -webkit-mask-image: url("/brand/mask/mark-mask.png"); /* Safari */
+  -webkit-mask-image: url("/assets/brand/mark-mask.png"); /* Safari */
 }
 ```
 
@@ -68,11 +75,11 @@ Layer three masked divs, one per petal. Each gets its own dynamic color.
 }
 
 .hypercolor-mark-tri .petal-top    { background: var(--petal-top, #e135ff);
-  mask-image: url("/brand/mask/petal-top-segmented-mask.png"); }
+  mask-image: url("/assets/brand/petal-top-segmented-mask.png"); }
 .hypercolor-mark-tri .petal-left   { background: var(--petal-left, #80ffea);
-  mask-image: url("/brand/mask/petal-left-segmented-mask.png"); }
+  mask-image: url("/assets/brand/petal-left-segmented-mask.png"); }
 .hypercolor-mark-tri .petal-right  { background: var(--petal-right, #ff6ac1);
-  mask-image: url("/brand/mask/petal-right-segmented-mask.png"); }
+  mask-image: url("/assets/brand/petal-right-segmented-mask.png"); }
 ```
 
 ```html
@@ -104,14 +111,14 @@ Use the full-color master logo as the base; layer a tinted version on top with
 .hypercolor-mark-tinted .base {
   position: absolute;
   inset: 0;
-  background: url("/brand/master/mark-color.png") no-repeat center / contain;
+  background: url("/assets/brand/mark-color.png") no-repeat center / contain;
 }
 
 .hypercolor-mark-tinted .tint {
   position: absolute;
   inset: 0;
   background: var(--scene-color, #e135ff);
-  mask-image: url("/brand/mask/mark-mask.png");
+  mask-image: url("/assets/brand/mark-mask.png");
   mask-size: contain;
   mask-position: center;
   mask-repeat: no-repeat;
@@ -130,7 +137,7 @@ For `crates/hypercolor-ui`, here's a reusable component covering all three
 flavors:
 
 ```rust
-use leptos::*;
+use leptos::prelude::*;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum HypercolorMarkVariant {
@@ -172,20 +179,20 @@ pub fn HypercolorMark(
     match variant {
         HypercolorMarkVariant::Wash => view! {
             <div class="hypercolor-mark" style=style />
-        }.into_view(),
+        }.into_any(),
         HypercolorMarkVariant::Tri => view! {
             <div class="hypercolor-mark-tri" style=style>
                 <div class="petal-top" />
                 <div class="petal-left" />
                 <div class="petal-right" />
             </div>
-        }.into_view(),
+        }.into_any(),
         HypercolorMarkVariant::ChromeTint => view! {
             <div class="hypercolor-mark-tinted" style=style>
                 <div class="base" />
                 <div class="tint" />
             </div>
-        }.into_view(),
+        }.into_any(),
     }
 }
 ```
@@ -269,8 +276,10 @@ which is exactly what the brand metaphor promises.
 - `petal-mask-tri.png` is 8-bit RGB. R = top, G = left, B = right.
 - The segmented per-petal masks are derived from isolated petal clips when
   those source files are present, then wedge-clipped only at the shared center.
-- Per-petal masks use the same `1145x1032` canvas as `mark-mask.png`, so
-  layered CSS masks align without compensating offsets.
+- The three segmented masks and `petal-mask-tri.png` use the same `1145x1032`
+  canvas as `mark-mask.png`, so layered CSS masks align without compensating
+  offsets. `petal-top-mask.png` is the exception at `874x1122`: it is a
+  standalone isolated petal, not a layer in that stack.
 - The three segmented masks do not overlap and are clamped to `mark-mask.png`.
   They intentionally do not include the full shared outer glow.
 - All masks are regenerated from `mark-color.png` by `../build.py`. Don't

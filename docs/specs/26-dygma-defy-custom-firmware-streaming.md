@@ -2,7 +2,10 @@
 
 > Custom firmware extension for Dygma Defy that adds a non-persistent live RGB streaming path for Hypercolor. Uses a lightweight Focus handshake for capability discovery and a separate binary serial protocol for frame transport, with banked neuron-to-keyscanner forwarding.
 
-**Status:** Draft
+**Status:** Host side implemented (status corrected 2026-08-25). `HYPERCOLOR_MAGIC`,
+`build_hypercolor_packet`, and `TOTAL_LEDS = 176` all ship in
+`crates/hypercolor-hal/src/drivers/dygma/protocol.rs`. The custom firmware itself lives
+outside this repo and is not covered by that receipt.
 **Crate:** `hypercolor-hal`
 **Firmware repo:** `~/dev/NeuronWireless_defy`
 **Module path:** `hypercolor_hal::drivers::dygma`

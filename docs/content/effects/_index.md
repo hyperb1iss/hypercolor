@@ -42,7 +42,7 @@ A fragment shader runs per canvas pixel. Controls become uniforms automatically 
 These run as WebGL2 inside Servo, shipped as a self-contained HTML artifact. They are not a native GPU path.
 
 {% <callout type="warning"> %}
-There is no runnable wgpu or SPIR-V shader lane today. `EffectSource::Shader` bails with a "not runnable yet" error, and the effect-renderer lane downgrades `RenderAccelerationMode::Gpu` to CPU (the compositor's GPU lane is separate and does ship). Treat a native GPU shader-effect path as future work. Every shader effect you ship runs as WebGL2 in Servo.
+There is no runnable wgpu or SPIR-V shader lane today. `EffectSource::Shader` bails with a "not runnable yet" error, and requesting `gpu` effect-renderer acceleration errors outright while `auto` falls back to CPU (the compositor's GPU lane is separate and does ship). Treat a native GPU shader-effect path as future work. Every shader effect you ship runs as WebGL2 in Servo.
 {% </callout> %}
 
 Read [GLSL effects](@/effects/glsl-effects.md) for the uniform contract and LED-specific shader patterns.

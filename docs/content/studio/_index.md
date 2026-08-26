@@ -42,7 +42,7 @@ New to Studio? Walk these pages in order.
 - [Overview](@/studio/overview.md): the Scene to Zone to Layers-plus-Layout model in full, and how it composes.
 - [Workspace tour](@/studio/workspace-tour.md): a guided pass over the page header, zone tree, Stage, and the composition slide-over.
 - [Scenes](@/studio/scenes.md): switch, create, rename, and delete scenes; the ephemeral default scene; the apply-target relationship.
-- [Zones](@/studio/zones.md): create, color, enable, make-default, and delete zones; single- versus multi-zone behavior; the Unassigned entry.
+- [Zones](@/studio/zones.md): create, color, enable, and delete zones; single- versus multi-zone behavior; the Unassigned entry.
 
 ## Compose your rig
 

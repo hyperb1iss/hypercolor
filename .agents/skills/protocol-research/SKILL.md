@@ -28,6 +28,23 @@ A completed research phase produces a **spec document** in `docs/specs/` contain
 8. Topology (LED counts, zones, addressing)
 9. Variant matrix (which models use which protocol version)
 10. Known quirks and platform-specific behavior
+11. Which integration surface the device needs (see below)
+
+## HAL Descriptor or Driver Module?
+
+Decide this during research, not after the encoder is written. A device registered through a `hypercolor-hal` `DeviceDescriptor` lands in a driver module whose capability set is `protocol_catalog: true` and everything else `false`. That buys wire-format encoding on the shared USB output backend and nothing more.
+
+If the research turns up any of the following, the device needs a real `DriverModule` in `hypercolor-driver-api` rather than a HAL descriptor, and the spec should say so:
+
+- Driver-scoped configuration the user has to set (a bridge address, an API host)
+- A pairing, authorization, or button-press handshake
+- Active discovery (mDNS, SSDP, a vendor broadcast) rather than VID/PID enumeration
+- Stored credentials or tokens
+- Presentation metadata or dynamic control surfaces
+
+See `docs/specs/51-unified-driver-module-api.md` and `docs/specs/52-dynamic-driver-control-surfaces.md`. The network drivers (`hypercolor-driver-hue`, `-nanoleaf`, `-wled`, `-govee`) are the worked examples; every USB/HID/SMBus family in `hypercolor-hal` is the other case.
+
+Separately, note that a supported device also needs an entry in `data/drivers/vendors/<vendor>.toml` (VID, PID, type, status, driver, transport) so `just compat` can regenerate the public compatibility matrix. That file is hand-maintained, not derived from the HAL database.
 
 ## Research Sources
 
@@ -86,18 +103,20 @@ windows and ruin automated click sequences.
 
 When studying any protocol implementation, note that a single transport call maps to TWO things in Hypercolor:
 
-- **`TransportType`** (registry.rs) — device-level transport binding, set once in `DeviceDescriptor`. Determines how the backend opens and talks to the device (e.g., `UsbControl`, `UsbHidApi`, `UsbHidRaw`, `UsbBulk`, `I2cSmBus`).
+- **`TransportType`** (registry.rs) — device-level transport binding, resolved once per `DeviceDescriptor`. Determines how the backend opens and talks to the device (e.g., `UsbControl`, `UsbHidApi`, `UsbHidRaw`, `UsbBulk`, `I2cSmBus`). HID descriptors do not name one directly: they declare a platform-free `TransportIntent` and let `resolve_current_transport` pick per target OS.
 - **`TransferType`** (protocol.rs) — per-command path hint on `ProtocolCommand`. Allows a single protocol to mix transfer paths within one device session (e.g., HID feature reports for init, bulk for frame data). Variants: `Primary`, `Bulk`, `HidReport`.
 
-| Protocol Pattern                           | Hypercolor Equivalent                                                 |
-| ------------------------------------------ | --------------------------------------------------------------------- |
-| Fixed-size byte buffer with manual offsets | Zerocopy struct with `report_id: u8` field                            |
-| HID feature report send                    | `TransportType::UsbHidApi` or `UsbHidRaw` + `TransferType::HidReport` |
-| USB control transfer                       | `TransportType::UsbControl` + `TransferType::Primary`                 |
-| HID interrupt write                        | `TransportType::UsbHid` + `TransferType::Primary`                     |
-| Per-LED color loop with count mismatch     | `normalize_colors() -> Cow<'a, [[u8; 3]]>`                            |
-| Sleep/delay between commands               | `post_delay: Duration::from_millis(N)`                                |
-| Read response after command                | `expects_response: true` + `parse_response()`                         |
+| Protocol Pattern                           | Hypercolor Equivalent                                                            |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| Fixed-size byte buffer with manual offsets | Zerocopy struct; whether it carries a `report_id` field depends on the transport (see below) |
+| HID feature report send                    | `TransportIntent::Hid(HidTransportIntent { report_mode: FeatureReport, .. })` + `TransferType::HidReport` |
+| USB control transfer                       | `TransportType::UsbControl` + `TransferType::Primary`                            |
+| HID interrupt write                        | `HidAccessMode::Direct` (resolves to `UsbHid` on Linux) + `TransferType::Primary` |
+| Per-LED color loop with count mismatch     | a private per-driver `normalize_colors(&self, ..) -> Cow<'a, [[u8; 3]]>` method  |
+| Sleep/delay between commands               | `post_delay: Duration::from_millis(N)`                                           |
+| Read response after command                | `expects_response: true` + `parse_response()`                                    |
+
+Note the report ID row. "The capture shows a leading report ID byte" never by itself decides whether the packet struct carries one; the transport the descriptor resolves to decides it. Only `UsbHidApi` and `UsbHidRaw` have a `report_mode` field, and only those two prepend `report_id` (in `encode_hidapi_packet` and `encode_hidraw_packet` respectively), and only when the mode is not `FeatureReportWithReportId` or `OutputReportWithReportId`. Every other transport sends the payload verbatim. `UsbControl` and `UsbBulk` pass the report ID in the control-transfer `wValue` instead, so their structs stay clean; `UsbHid`, `UsbMidi`, `UsbSerial`, `I2cSmBus`, and `UsbVendor` add nothing, so there the struct must carry the byte itself. Lian Li ENE is the case to check yourself against: `UsbHid` descriptors, and every ENE packet struct starts with `report_id`.
 
 ## Spec Document Format
 
@@ -116,9 +135,11 @@ Some devices share a PID but use different protocols based on firmware version. 
 **Methodology** (see spec 19 section 11 for a worked example):
 
 1. **Query firmware** — send a firmware-read command during init. Parse the version from the response.
-2. **Define predicate** — set `firmware_predicate: Some(|fw| ...)` on the `DeviceDescriptor`. The registry tries each descriptor for a given VID/PID; the first whose predicate matches (or has no predicate) wins.
+2. **Define predicate** — set `firmware_predicate: Some(named_predicate)` on the `DeviceDescriptor`, where `named_predicate` is a local `fn(&str) -> bool`.
 3. **Register multiple descriptors per PID** — one per firmware range, each binding a different `ProtocolFactory`.
-4. **Document the matrix** — the spec must include a variant table showing PID + firmware range + protocol mapping.
+4. **Leave one descriptor predicate-free** — this is the part that is easy to miss. `ProtocolDatabase::lookup_with_firmware_for_driver_ids` only consults predicates when a firmware string is already known. With no firmware in hand it picks the first candidate that has **no** predicate, and only falls back to the first candidate overall if every one carries a predicate. A PID whose descriptors all have predicates will bind arbitrarily on first discovery.
+5. **Expect the enabled-driver filter** — when the caller passes `enabled_driver_ids`, descriptors whose `driver_id()` is absent from that set are skipped at every stage. A device can therefore go unmatched purely because its driver module is disabled in config.
+6. **Document the matrix** — the spec must include a variant table showing PID + firmware range + protocol mapping.
 
 ## Topology Documentation
 

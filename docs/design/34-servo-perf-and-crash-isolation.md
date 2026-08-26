@@ -1,5 +1,22 @@
 # Servo perf & crash isolation plan
 
+**Status:** Plan, partly executed. The substance holds: `DEFAULT_EFFECT_FPS_CAP`
+is still 30, the resolution contract still stands, and Servo still runs in
+process. Several line and symbol citations have drifted, and Tier 2 item 3
+shipped.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** `DEFAULT_EFFECT_FPS_CAP` moved from
+`renderer.rs:30-31` to `renderer.rs:35`, and `renderer.rs` now has a module
+directory beside it holding `frame_poll.rs`, `frame_queue.rs`, `load.rs`, and
+`tests.rs`. The soft
+stall threshold proposed in Tier 2 item 3 landed as
+`SOFT_STALL_FRAME_INTERVALS` (`renderer.rs:38`). Two cited symbols are gone:
+`EffectPool::render_group_into` returns zero hits, and there is no `fn spawn` in
+`worker.rs`, so the `ServoWorker::spawn()` at `worker.rs:1396` citation is stale
+(the file is 1366 lines). `SCRIPT_TIMEOUT` at 250ms and `HARD_STALL_TIMEOUT` at
+500ms are unchanged (`worker.rs:91-92`), and there is still no `catch_unwind`
+anywhere under `effect/`, so the crash-isolation assessment stands as written.
+
 Comprehensive audit and plan for Servo HTML-effect rendering. Covers what "30fps cap"
 actually means, which optimizations are still on the table ranked by payoff-to-effort,
 and the honest crash-isolation story with a path to robustness.

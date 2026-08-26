@@ -18,8 +18,8 @@ InputManager::sample_all()       - collect audio, screen, sensor data
 render active scene groups       - Servo / native / media producers
 SparkleFlinger::compose()        - canonical scene canvas
 sample LED output                - spatial sampler → ZoneColors
-publish scene/display canvases   - watch streams on HypercolorBus
 BackendManager::write_frame()    - staged hardware output
+publish scene/display canvases   - watch streams on HypercolorBus
 RenderLoop::frame_complete()     - pressure metrics + tier adaptation
 sleep_until(next_deadline)       - pace to target FPS
 ```
@@ -42,7 +42,7 @@ Stage timing targets (at 60 fps, 16.6 ms total budget):
 - `frame_number`: monotonically increasing `u64` starting at 0.
 - `audio: &AudioData`: always present; `AudioData::silence()` when no source is active.
 - `interaction: &InteractionData`: keyboard and mouse state for interactive HTML effects.
-- `screen: Option<&ScreenData>`: latest screen-capture snapshot (absent when capture is off).
+- `screen: Option<&Arc<ScreenBranchPublication>>`: latest screen publication, shared by reference count so queueing renderers retain it without copying pixels. GPU-resident publications carry no CPU pixels and read as absent to CPU renderers.
 - `sensors: &SystemSnapshot`: CPU, temperature, and network telemetry.
 - `sources: FrameDataSources`: media (MPRIS), network stats refreshed at 1 Hz, and lighting state for display faces.
 - `canvas_width` and `canvas_height`: current canvas dimensions (default **640×480**, configurable via `daemon.canvas_width` / `daemon.canvas_height`).
@@ -53,7 +53,7 @@ One broken source never crashes the render loop; `InputSource` implementations a
 
 Each active zone holds a `Box<dyn EffectRenderer>` behind the engine's `Mutex` (the trait is `Send` but not `Sync`: Servo's renderer is inherently single-threaded). The render thread calls each producer's `render_into` method, which writes pixels into a caller-owned `Canvas`.
 
-`SparkleFlinger::compose()` takes the per-producer canvases and blends them into a single canonical scene canvas. The compositor uses a **latch-per-producer** model: it latches the newest completed surface from each producer and blends them in layer order. Producers run at their own cadences; the compositor never blocks waiting for a slow producer; it uses whatever the last committed frame was. Blend modes (`Normal`, `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, `Difference`) are applied in premultiplied linear-light sRGB.
+`SparkleFlinger::compose()` takes the per-producer canvases and blends them into a single canonical scene canvas. The compositor uses a **latch-per-producer** model: it latches the newest completed surface from each producer and blends them in layer order. Producers run at their own cadences; the compositor never blocks waiting for a slow producer; it uses whatever the last committed frame was. Layer blend modes are defined by `BlendMode` in `hypercolor-types/src/layer.rs`: `Replace`, `Alpha` (the default), `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, `Difference`, `Tint`, and `LumaReveal`. The eight alpha-composable ones map into the per-pixel kernel `PixelBlendMode` in `hypercolor-color/src/blend.rs` and are applied in premultiplied linear-light sRGB; `Replace`, `Tint`, and `LumaReveal` are handled by the compositor rather than the pixel kernel.
 
 ### The Canvas
 

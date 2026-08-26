@@ -4,6 +4,14 @@
 > management (systemd on Linux, launchd on macOS), and a lightweight status bar applet
 > that provides quick-access controls and opens the web UI in the user's browser.
 
+**Status:** Shipped. Verified 2026-08-25 at `7620eae44`: the release installer is
+`scripts/install-release.sh` with a `hypercolor install-release` CLI verb, the
+Homebrew formula lives in `packaging/homebrew`, the launchd agent in
+`packaging/launchd/tech.hyperbliss.hypercolor.plist`, the systemd user unit in
+`packaging/systemd/user/hypercolor.service`, and the status bar presence is the
+tray owned by `hypercolor-app`. Design 46 supersedes the applet architecture:
+the tray is part of the unified Tauri app rather than a separate binary.
+
 ## Overview
 
 Hypercolor runs as a background daemon serving a web UI on `localhost:9420`. Users need:
@@ -266,7 +274,8 @@ hypercolor service disable     # systemctl --user disable / launchctl unload
 hypercolor service logs        # journalctl --user -u hypercolor / tail -f ~/Library/Logs/...
 ```
 
-This is already specced in [15-cli-commands.md](../specs/15-cli-commands.md). The
+This was specced in [15-cli-commands.md](../archive/15-cli-commands.md), archived on
+2026-08-25 because none of its commands shipped under those names. The
 implementation must detect the platform at runtime and dispatch to the correct backend.
 
 ---

@@ -2,7 +2,11 @@
 
 > Audit findings and concrete fixes for Hypercolor's packaging, install, and CI/CD surface. Wave 1 release-blockers (§2.1-2.4) are resolved. Wave 2 hygiene items are in progress. Waves 3-4 are planned post-v0.1.0. See per-item RESOLVED/OPEN notes throughout.
 
-**Status:** Partially resolved — Wave 1 release-blockers fixed; Wave 2 hygiene items in progress; Waves 3-4 post-v0.1.0
+**Status:** Partially resolved. Wave 1 release-blockers fixed; Wave 2 hygiene items in
+progress; Waves 3-4 post-v0.1.0. Section 1's key-context claim that no git tags exist is
+dead as of 2026-08-25: `v0.2.1`, `v0.3.1`, and `v0.3.2` are all tagged and the workspace
+version is 0.3.2, so the "never actually run end-to-end" framing for the CI release path
+no longer holds either.
 **Scope:** `scripts/`, `packaging/`, `.github/workflows/`, `Cargo.toml`, `rust-toolchain.toml`, `deny.toml`, `udev/`, `.gitignore`
 **Author:** Nova
 **Date:** 2026-04-26

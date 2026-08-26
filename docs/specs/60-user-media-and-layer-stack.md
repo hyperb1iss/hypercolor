@@ -9,7 +9,10 @@
 > Wave 1 display-face overlay fix so LED and display-face groups can use
 > one composition contract.
 
-**Status:** Layer substrate, file-backed tier-1/2/3/4 media, rolling stream URL producer, media admission caps, and GPU media hardening implemented; legacy purge pending
+**Status:** Layer substrate, file-backed tier-1/2/3/4 media, rolling stream URL
+producer, media admission caps, and GPU media hardening implemented; legacy purge
+pending. The route examples in this document are not implemented as written; treat every
+endpoint below as historical.
 **API status:** Historical scene-route snapshot. The canonical resource model in
 [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova

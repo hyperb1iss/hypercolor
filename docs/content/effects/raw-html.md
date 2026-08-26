@@ -91,6 +91,7 @@ The parser reads these from anywhere in the document, though `<head>` is the con
 | `<meta publisher="..." />` | Author or publisher. Also accepts `<meta name="author" content="...">`. |
 | `<meta audio-reactive="true" />` | Marks the effect audio-reactive so the daemon wires up the audio pipeline. |
 | `<meta screen-reactive="true" />` | Marks the effect screen-capture reactive. |
+| `<meta input-reactive="true" />` | Marks the effect keyboard and mouse reactive so the daemon routes host input. |
 | `<meta category="Ambient" />` | Optional catalog category. Overrides the heuristic categorizer. |
 | `<meta renderer="webgl" />` | Hint that the effect renders with WebGL (`webgl` / `webgl2`) rather than Canvas2D (`2d` / `canvas` / `canvas2d`). |
 | `<meta data-sources="media,net,lighting" />` | Declares the structured data sources the effect opts into. |

@@ -2,7 +2,9 @@
 
 > USB MIDI + bulk display driver for the Ableton Push 2. Palette-indexed RGB pads, animated buttons, a 960×160 pixel display, and the first MIDI transport in the HAL.
 
-**Status:** Draft
+**Status:** Implemented (status corrected 2026-08-25). The 960-pixel display path,
+palette-indexed pads, and MIDI transport ship in
+`crates/hypercolor-hal/src/drivers/push2/`.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::push2`
 **Author:** Nova

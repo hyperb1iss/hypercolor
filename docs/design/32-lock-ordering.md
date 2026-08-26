@@ -1,9 +1,71 @@
 # 32 · Lock Ordering
 
+**Status:** Not current. Do not use the ordering below to reason about deadlock
+safety until it is rebuilt against the tree. A deadlock document that names locks
+which no longer exist is worse than no document, and this one does.
+
 Defines every `Mutex` and `RwLock` in `AppState` and core subsystems, establishes
 a canonical acquisition order to prevent deadlocks, and flags code that violates it.
 
-## Lock Inventory
+## Why this document is quarantined
+
+Checked 2026-08-25 at `7620eae44`. Three independent problems, each on its own
+enough to invalidate the tables:
+
+1. **Locks in the inventory no longer exist.** `effect_engine` (level 3),
+   `profiles` (level 10), and `effect_layout_links` (level 14) return zero hits
+   as `AppState` fields. Profiles were folded into scenes in `e005ec782`.
+2. **Locks that survive are no longer `AppState` fields.** `effect_registry`,
+   `layouts`, `layout_auto_exclusions`, `lifecycle_manager`, `reconnect_tasks`,
+   and `scene_transactions` moved into `DomainContexts` and `DiscoveryRuntime`
+   during the Spec 76 and Spec 78 convergence (`31e0d5d51`, PR #219). An
+   acquisition order over `AppState` fields cannot describe locks that are now
+   owned by domain services with their own commit ordering.
+3. **Every file citation is wrong.** `AppState` moved to
+   `crates/hypercolor-daemon/src/app_state.rs`. The twenty `api/mod.rs:NNN`
+   citations in the inventory table point at a 464-line module that no longer
+   defines the struct, so each one resolves to unrelated code.
+
+The per-handler sequences in "API Handler Multi-Lock Sequences" inherit all three
+problems: they trace `effect_engine`, `profiles`, `layouts`, and
+`effect_layout_links` through handlers that were rewritten around domain
+services. "Known Violations: None currently" is an assertion about a lock graph
+that no longer exists, not a clean bill of health.
+
+Two things below are still worth reading, because they are statements about
+design rather than about specific fields: the "Design Notes" reasoning for why
+`EffectRenderer` forces `Mutex` over `RwLock`, and the `std::Mutex` discipline
+rule that a blocking guard is never held across an `.await`.
+
+## What `AppState` actually holds today
+
+Inventory only, read directly from
+`crates/hypercolor-daemon/src/app_state.rs:100-250` on 2026-08-25. This is **not**
+an acquisition order: no ordering has been re-derived, and assigning levels to
+this list without tracing the call graph would recreate exactly the failure this
+section documents.
+
+| Field                        | Type                                   | Line |
+| ---------------------------- | -------------------------------------- | ---- |
+| `asset_library`              | `Arc<RwLock<AssetLibrary>>`            | 117  |
+| `render_loop`                | `Arc<RwLock<RenderLoop>>`              | 126  |
+| `backend_manager`            | `Arc<Mutex<BackendManager>>`           | 135  |
+| `performance`                | `Arc<RwLock<PerformanceTracker>>`      | 141  |
+| `attachment_registry`        | `Arc<RwLock<ComponentRegistry>>`       | 189  |
+| `attachment_profiles`        | `Arc<RwLock<ComponentProfileStore>>`   | 192  |
+| `simulated_displays`         | `Arc<RwLock<SimulatedDisplayStore>>`   | 198  |
+| `simulated_display_runtime`  | `Arc<RwLock<SimulatedDisplayRuntime>>` | 201  |
+| `logical_devices`            | `Arc<RwLock<HashMap<..>>>`             | 210  |
+| `playlist_runtime`           | `Arc<Mutex<PlaylistRuntimeState>>`     | 228  |
+
+`Mutex` and `RwLock` there are `tokio::sync`; `std::sync::Mutex` is imported as
+`StdMutex`. Scene, spatial, layout, effect, and device state is not reached
+through raw `AppState` locks at all. It lives behind the domain services in
+`AppState::domains` (`crates/hypercolor-daemon/src/domain/context.rs`), which own
+their own commit ordering and event publication. Rebuilding this document means
+starting there and in `domain/commit.rs`, not from the table below.
+
+## Lock Inventory (stale, retained for the rebuild)
 
 ### AppState Locks (Daemon)
 

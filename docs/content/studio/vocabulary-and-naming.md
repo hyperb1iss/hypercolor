@@ -78,14 +78,14 @@ Three small functions in `crates/hypercolor-ui/src/zones/surface.rs` are where t
 A fresh scene's default zone is seeded with the name `"Default zone"` already, but `surface_name` also defends against an unnamed zone or a legacy scene that still carries the old `"Primary"` seed, substituting the friendly label so the internal role string never leaks:
 
 ```rust
-fn surface_name(group: &Zone, kind: SurfaceKind) -> String {
-    if kind != SurfaceKind::Light || group.role != ZoneRole::Primary {
-        return group.name.clone();
+fn surface_name(zone: &ZoneResource, kind: SurfaceKind) -> String {
+    if kind != SurfaceKind::Light || zone.role != ZoneRole::Primary {
+        return zone.name.clone();
     }
-    if is_blank_default_name(&group.name) {
+    if is_blank_default_name(&zone.name) {
         "Default zone".to_owned()
     } else {
-        group.name.clone()
+        zone.name.clone()
     }
 }
 

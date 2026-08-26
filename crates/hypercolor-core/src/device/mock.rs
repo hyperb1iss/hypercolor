@@ -73,8 +73,16 @@ pub struct MockDeviceConfig {
 ///
 /// ```rust,ignore
 /// let mut backend = MockDeviceBackend::new()
-///     .with_device("LED Strip", 60, LedTopology::Strip)
-///     .with_device("Matrix", 100, LedTopology::Matrix { rows: 10, cols: 10 });
+///     .with_device("LED Strip", 60, LedTopology::Strip {
+///         count: 60,
+///         direction: StripDirection::LeftToRight,
+///     })
+///     .with_device("Matrix", 100, LedTopology::Matrix {
+///         width: 10,
+///         height: 10,
+///         serpentine: false,
+///         start_corner: Corner::TopLeft,
+///     });
 /// ```
 pub struct MockDeviceBackend {
     /// Pre-configured devices this backend will "discover".

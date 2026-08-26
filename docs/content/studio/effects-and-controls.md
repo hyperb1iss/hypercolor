@@ -34,7 +34,7 @@ The zone you have selected in Studio is also the app-wide *apply target*. That m
 - A named **zone**: the LED zone currently focused in Studio.
 - **All zones**: applies the effect to every LED zone in the active scene at once.
 
-Selecting a screen or the Unassigned entry is not a valid apply target, so the target falls back to Primary. For the whole picture of how zones and scenes compose, read [Zones](@/studio/zones.md) and [Scenes](@/studio/scenes.md).
+Selecting a screen or the Unassigned entry is not a valid apply target, so the target falls back to the Default zone. For the whole picture of how zones and scenes compose, read [Zones](@/studio/zones.md) and [Scenes](@/studio/scenes.md).
 
 ## The live control panel
 

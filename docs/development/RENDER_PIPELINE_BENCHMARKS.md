@@ -16,8 +16,18 @@ just bench-gate
 For before/after work:
 
 ```bash
-just bench-daemon -- --save-baseline pre-change
-just bench-daemon -- --baseline pre-change
+just bench-baseline pre-change
+just bench-compare pre-change
+```
+
+Both take the baseline name as a plain argument, with no `--` separator. Each
+runs all three suites (`bench-core`, `bench-hal`, `bench-daemon`) under the same
+baseline name. To save or compare one suite only, pass the Criterion flag
+straight to that suite's recipe, again with no separator:
+
+```bash
+just bench-daemon --save-baseline pre-change
+just bench-daemon --baseline pre-change
 ```
 
 Criterion reports land under `${CARGO_TARGET_DIR:-target}/criterion/`.
@@ -26,6 +36,12 @@ Criterion reports land under `${CARGO_TARGET_DIR:-target}/criterion/`.
 warning budgets for the render-pipeline hot paths. By default the gate is
 informational so local hardware can establish baselines without blocking work.
 Use `just bench-gate --strict` when a branch should fail on over-budget samples.
+
+The gate covers six benchmark ids. Five come from `bench-daemon`
+(`daemon_sparkleflinger` and `daemon_publish_handoff`), and the sixth,
+`core_canvas_handoff/canvas_frame_from_owned_shared`, comes from `bench-core`.
+Run both suites, or `just bench`, before reading the gate as complete; the gate
+silently skips ids with no Criterion output.
 
 ## SparkleFlinger Scenarios
 

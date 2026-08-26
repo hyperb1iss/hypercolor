@@ -2,6 +2,18 @@
 
 > How Hypercolor grows beyond what the core team can build.
 
+**Status:** Design intent, unbuilt. §3's claim that Phase 1 ships "day one" was
+never true and reads today as a description of the shipped system. It is not one.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** neither `HypercolorPlugin` nor
+`HypercolorApp` exists; both return zero hits across `crates/`. Compile-time
+driver composition happens through `build_driver_module_registry` in
+`hypercolor-driver-builtin`, which assembles HAL and network drivers into a
+`DriverModuleRegistry` behind Cargo features. The daemon's in-process extension
+seam is `ApiExtension` and `ExtensionRegistry`
+(`crates/hypercolor-daemon/src/extensions.rs`). Phases 2 and 3 are entirely
+unbuilt: no Wasm runtime, no WIT interfaces, and no gRPC bridge exist.
+
 ---
 
 ## Table of Contents

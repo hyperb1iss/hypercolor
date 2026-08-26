@@ -5,10 +5,17 @@
 > scenes, devices, brightness, color — as a curated subset of the desktop
 > web UI, without making the existing desktop pages responsive.
 
-**Status:** Proposed — implementation-ready after 3 Codex review passes
-(2026-05-16)
-**API status:** Historical control-route snapshot. The canonical resource model
-in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
+**Status:** Superseded and archived on 2026-08-25. Never implemented. Do not build
+the second router described here.
+**Superseded by:** [Spec 75](../specs/75-mobile-responsive-ui.md), which shipped the
+responsive approach instead.
+
+> **Why this was archived (2026-08-25):** the viewport-gated shell designed here was
+> not the approach that shipped. `MobileShell`, `MobileApp`, and `use_is_mobile` have
+> no definitions anywhere in `crates/hypercolor-ui/`. Mobile shipped as one responsive
+> tree with `MobileNav` (`crates/hypercolor-ui/src/components/mobile_nav.rs`) plus
+> Tailwind `max-md:` breakpoints, per Spec 75. Endpoint examples below are also a
+> historical snapshot superseded by [Spec 78](../specs/78-api-resource-model.md).
 **Author:** Nova
 **Date:** 2026-05-16
 **Crates:** `hypercolor-ui` (the mobile shell is entirely UI-side; no

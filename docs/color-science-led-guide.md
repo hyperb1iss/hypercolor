@@ -30,7 +30,7 @@ RGB LEDs contain three discrete light-emitting diodes — red, green, and blue. 
 
 - **More channels active = brighter and less saturated.** Mixing all three at full power produces white, not a richer color.
 - **You cannot make dark colors.** LEDs emit light — there is no "brown" or "black" in emissive space. Brown would require subtractive mixing or context (surrounding brighter LEDs providing relative darkness).
-- **Each channel has different perceived brightness.** The human eye's luminous efficiency function peaks at ~555nm (green). Green appears roughly 6x brighter than blue at the same electrical power.
+- **Each channel has different perceived brightness.** The human eye's luminous efficiency function peaks at ~555nm (green). Under sRGB weighting green carries roughly 10x blue's luminance at the same electrical power, about 5x under the older Rec. 601 weights.
 
 ### Channel Luminance Weights
 
@@ -42,7 +42,7 @@ The standard relative luminance coefficients quantify how the eye weights each c
 | Green   | 58.7%           | 71.5%            |
 | Blue    | 11.4%           | 7.2%             |
 
-This means a "pure green" LED (0, 255, 0) appears nearly **6x brighter** than a "pure blue" (0, 0, 255) to the human eye, even though both run at the same PWM duty cycle. This asymmetry is the root cause of most LED color design problems.
+Divide the rows and the asymmetry falls out: pure green (0, 255, 0) reads **about 10x brighter** than pure blue (0, 0, 255) under sRGB weighting, and about 5x under Rec. 601. Hypercolor uses the sRGB reading, since `hypercolor-color` computes luma from the BT.709 constants 0.2126 / 0.7152 / 0.0722. Quote one weighting or the other, never both as if they agreed. This asymmetry is the root cause of most LED color design problems.
 
 ### Power Consumption Asymmetry
 
@@ -165,6 +165,8 @@ Not all hues are created equal on RGB LED hardware. Some are physically produced
 | **Warm White**      | n/a    | 255, 200, 100 | Requires all three channels. Looks better with RGBW hardware.                                                 |
 | **Pastel anything** | varies | varies        | Desaturated colors lose definition without a W channel.                                                       |
 
+> **RGBW in Hypercolor today.** The advice above is about the hardware, not about what the engine can drive. The only four-channel layout the color kernel ships is `DevicePixelLayout::RgbwZeroWhite`, and its own doc comment says the white byte is always written as zero. Real white extraction is future work. Until it lands, an RGBW strip driven by Hypercolor behaves as an RGB strip with a dark fourth channel, so plan pastels and warm whites on three channels.
+
 #### Tier 4: Effectively Impossible on RGB
 
 | Color     | Why                                                                                                                  |
@@ -208,9 +210,9 @@ Brown is perceptually "dark orange." But LEDs cannot make dark colors in isolati
 
 1. **Shift yellow toward amber/gold.** Instead of (255, 255, 0), use (255, 140, 0) to (255, 180, 0). Reducing green and keeping red at max produces a warmer, more convincing "yellow" that reads as gold or amber.
 
-2. **Never use equal R and G for yellow.** Pure (255, 255, 0) often reads greenish on hardware. Pull green down to ~180-200 for a warmer result: (255, 190, 0).
+2. **Never use equal R and G for yellow.** Pure (255, 255, 0) often reads greenish on hardware. Pull green down to roughly **55-78% of red**, about 140 to 200, and let the target decide where in that band you land: the low end is amber (255, 140, 0), the high end is gold and tuned yellow (255, 190, 0 and 255, 200, 10). Those are the same figures as the warm palette below. The public effects guide quotes 60-70% for the narrower case of a yellow that must still read as yellow, which sits inside this band.
 
-3. **Gamma-correct the green channel.** After gamma correction, the effective green output is reduced relative to red, which naturally warms up yellow.
+3. **Let gamma do some of the work.** A single gamma applied to all three channels pulls a partially-lit green further down than a full-scale red, which warms the result on its own. This is the ordinary transfer, not a per-channel exponent; see §9.
 
 4. **Use orange instead of yellow.** Orange (255, 80-120, 0) is a two-channel color that looks vivid and warm on LEDs. It's a better design choice than yellow in most cases.
 
@@ -232,14 +234,14 @@ Brown is perceptually "dark orange." But LEDs cannot make dark colors in isolati
 
 ### Key Differences
 
-| Property               | Monitor/Screen                                                      | Physical LED                                                    |
-| ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------- |
-| **Viewing**            | Reflected/filtered light through LCD, or OLED emissive behind glass | Direct point-source emission, often viewed from multiple angles |
-| **Brightness context** | Surrounded by other lit pixels; relative perception matters         | Often in dark/dim environments; absolute brightness dominates   |
-| **Color gamut**        | sRGB, DCI-P3 defined by panel spectral response                     | Defined by specific LED die wavelengths; varies by manufacturer |
-| **Gamma**              | Display applies gamma curve (typically 2.2)                         | No built-in gamma correction; PWM is linear                     |
-| **Diffusion**          | Sub-pixel blending behind diffuser panel                            | Point sources that may or may not have diffuser caps            |
-| **Black level**        | Backlight bleed (LCD) or true black (OLED)                          | Off = black, but ambient light washes it out                    |
+| Property               | Monitor/Screen                                              | Physical LED                                                    |
+| ---------------------- | ----------------------------------------------------------- | --------------------------------------------------------------- |
+| **Viewing**            | Backlit transmissive LCD, or OLED emissive behind glass     | Direct point-source emission, often viewed from multiple angles |
+| **Brightness context** | Surrounded by other lit pixels; relative perception matters | Often in dark/dim environments; absolute brightness dominates   |
+| **Color gamut**        | sRGB, DCI-P3 defined by panel spectral response             | Defined by specific LED die wavelengths; varies by manufacturer |
+| **Gamma**              | Display applies gamma curve (typically 2.2)                 | No built-in gamma correction; PWM is linear                     |
+| **Diffusion**          | Sub-pixel blending behind diffuser panel                    | Point sources that may or may not have diffuser caps            |
+| **Black level**        | Backlight bleed (LCD) or true black (OLED)                  | Off = black, but ambient light washes it out                    |
 
 ### Critical Corrections When Designing for LEDs
 
@@ -249,7 +251,7 @@ Brown is perceptually "dark orange." But LEDs cannot make dark colors in isolati
 
 3. **Saturation looks lower on LEDs at the same numerical values.** A monitor pixel blends R, G, B through a diffuser at sub-pixel scale. An LED housing blends three separate dies at a larger scale, and the mixing is less complete — you may see individual color halos.
 
-4. **ALWAYS apply gamma correction** when converting screen-designed colors to LED output. This is the single most impactful correction you can make. (See section 9.)
+4. **Gamma correction must happen exactly once** between a screen-designed color and LED output. It is the single most impactful correction in the chain, and applying it twice is as visible as skipping it. Inside Hypercolor the engine already owns that step, so effect code should not add its own curve. Read section 9's ownership note before you write one.
 
 ---
 
@@ -308,14 +310,14 @@ For OKLCH, interpolate L, C, and H (taking the shorter angular path for H).
 
 ### Head-to-Head Comparison for LED Work
 
-| Feature                   | HSL                                                          | HSV                                                                  | OKLCH/OKLAB                                                              |
-| ------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| **Perceptual uniformity** | No. Yellow at L=50% appears far brighter than blue at L=50%. | No. Same problem — V=100% blue looks ~10% as bright as V=100% white. | Yes (mostly). Equal L steps produce visually equal brightness changes.   |
-| **Vivid color access**    | S=100%, L=50%                                                | S=100%, V=100%                                                       | C=max for gamut, L=varies by hue                                         |
-| **Gradient quality**      | Brightness spikes at yellow                                  | Brightness fluctuations across hue sweep                             | Consistent perceived brightness                                          |
-| **Ease of use**           | Intuitive for web designers                                  | Intuitive for LED programmers                                        | Slightly more complex; requires RGB conversion                           |
-| **Hardware output**       | Convert to RGB                                               | Convert to RGB                                                       | Convert to RGB                                                           |
-| **Best use case**         | Quick prototyping, simple single-color effects               | Hue cycling, rainbow effects, FastLED-style animations               | Perceptually correct gradients, palette generation, professional effects |
+| Feature                   | HSL                                                          | HSV                                                                              | OKLCH/OKLAB                                                              |
+| ------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Perceptual uniformity** | No. Yellow at L=50% appears far brighter than blue at L=50%. | No. Same problem: V=100% blue carries only ~7% of the luminance of V=100% white. | Yes (mostly). Equal L steps produce visually equal brightness changes.   |
+| **Vivid color access**    | S=100%, L=50%                                                | S=100%, V=100%                                                                   | C=max for gamut, L=varies by hue                                         |
+| **Gradient quality**      | Brightness spikes at yellow                                  | Brightness fluctuations across hue sweep                                         | Consistent perceived brightness                                          |
+| **Ease of use**           | Intuitive for web designers                                  | Intuitive for LED programmers                                                    | Slightly more complex; requires RGB conversion                           |
+| **Hardware output**       | Convert to RGB                                               | Convert to RGB                                                                   | Convert to RGB                                                           |
+| **Best use case**         | Quick prototyping, simple single-color effects               | Hue cycling, rainbow effects, FastLED-style animations                           | Perceptually correct gradients, palette generation, professional effects |
 
 ### HSV: The LED Workhorse
 
@@ -359,12 +361,26 @@ Use a **dual-space approach:**
 - **Author/design** colors in OKLCH for perceptual correctness
 - **Interpolate** gradients and transitions in OKLAB for smooth results
 - **Convert to RGB** as the final step before sending to LED hardware
-- **Apply gamma correction** after RGB conversion
+- **Let one layer own gamma.** In Hypercolor that layer is the engine (§9); outside it, apply the transfer once after RGB conversion
 - Support HSV as a simpler API for effect authors who want the familiar model
 
 ---
 
 ## 9. Gamma Correction: The Non-Negotiable
+
+### Who Owns Gamma in Hypercolor
+
+**Read this before you apply a curve to anything.** The rest of section 9 describes a bare LED pipeline that has no transfer function of its own. Hypercolor is not that pipeline, and an effect author who applies `^2.2` on top of a Hypercolor canvas corrects twice and crushes their own midtones.
+
+What the engine actually does:
+
+- `crates/hypercolor-color/src/transfer.rs` implements the IEC 61966-2-1 sRGB transfer, `srgb_to_linear` and `linear_to_srgb`, an exponent of 2.4 with a linear toe below 0.04045 whose effective curve is close to 2.2. Hot paths read a 256-entry byte-to-linear table and a 4096-bin linear-to-byte table, sized so every byte round-trips exactly.
+- The compositor decodes each pixel to linear light, blends in `LinearRgba` through `PixelBlendMode`, and re-encodes. Overlapping layers brighten the way real light does.
+- The device path applies **no** additional LED gamma. `Rgb::scale` in `encode.rs` is the one brightness scaler and it is a plain per-channel multiply, round, and clamp. `Rgb::encode` only reorders channels into `Rgb`, `Grb`, `Rbg`, or `RgbwZeroWhite`. Colors leave the daemon as sRGB-encoded bytes.
+
+So the canvas an effect writes is sRGB-encoded `Rgba`, and the encode-decode round trip around blending and sampling is the engine's job, not yours. Author in the perceptual space you like, hand the engine ordinary sRGB values, and let it own the transfer.
+
+The math below is still worth understanding: it is why the transfer exists, it is what you need when you drive raw PWM on a microcontroller outside Hypercolor, and it explains what the daemon is doing on your behalf. `docs/content/effects/color-science.md` covers the same boundary for effect authors.
 
 ### Why Gamma Correction Is Mandatory
 
@@ -407,24 +423,24 @@ For each input value i (0-255):
 
 Example values (gamma 2.2):
 
-| Input (linear) | Output (corrected) | Perceived brightness |
-| -------------- | ------------------ | -------------------- |
-| 0              | 0                  | Off                  |
-| 32             | 2                  | Barely visible       |
-| 64             | 10                 | Very dim             |
-| 128            | 55                 | Perceptual midpoint  |
-| 192            | 137                | Moderately bright    |
-| 255            | 255                | Full brightness      |
+| Requested level (perceptual) | PWM duty (linear) | Perceived brightness |
+| ---------------------------- | ----------------- | -------------------- |
+| 0                            | 0                 | Off                  |
+| 32                           | 3                 | Barely visible       |
+| 64                           | 12                | Very dim             |
+| 128                          | 56                | Perceptual midpoint  |
+| 192                          | 137               | Moderately bright    |
+| 255                          | 255               | Full brightness      |
 
-Notice: **perceptual "half brightness" requires only a PWM value of ~55/255 (21.6%), not 128/255 (50%)**. This is why uncorrected fades look wrong.
+Read the columns in that direction. The input is the perceptual level the author asked for; the output is the linear PWM duty the driver actually programs, because an LED responds linearly to duty cycle. Labelling the input "linear" inverts the domains and is the most common way to end up applying the curve twice.
+
+Notice: **perceptual "half brightness" requires only a PWM duty of ~56/255 (22%), not 128/255 (50%)**. This is why uncorrected fades look wrong.
 
 ### Per-Channel Gamma
 
-Different LED dies may have slightly different brightness curves. For maximum accuracy, calibrate gamma per channel:
+Different LED dies have slightly different electro-optical curves, so a calibrated rig may want a per-channel exponent, commonly somewhere in 2.0 to 2.4. Measure the die, do not guess from a hue.
 
-- Red die: gamma ~2.0-2.2
-- Green die: gamma ~2.2-2.4 (green is perceived as brighter, may need more correction)
-- Blue die: gamma ~2.2-2.6 (blue is perceived as dimmer, may need more correction)
+Do **not** reach for per-channel gamma to correct the eye's green/blue sensitivity asymmetry. Raising an exponent lowers output at every input below full scale, so a bigger gamma always darkens a channel; it cannot simultaneously tame a too-bright green and lift a too-dim blue. Bending blue's curve upward makes blue dimmer still. Channel imbalance is a scaling job, handled by a per-channel multiplier, not by the transfer curve.
 
 In practice, a single gamma of 2.2 for all channels is a solid default.
 
@@ -444,13 +460,13 @@ In practice, a single gamma of 2.2 for all channels is a solid default.
 
 5. **Using HSL lightness above 60%.** On LEDs, L>60% washes out to white quickly. Stay at L=40-55% for vivid colors.
 
-6. **Ignoring the brightness asymmetry between hues.** A rainbow sweep at constant V has huge brightness fluctuations. Green/yellow hues appear 5-6x brighter than blue. Use OKLCH or apply per-hue brightness compensation.
+6. **Ignoring the brightness asymmetry between hues.** A rainbow sweep at constant V has huge brightness fluctuations. Green and yellow hues appear roughly 10x brighter than blue under sRGB weighting. Use OKLCH or apply per-hue brightness compensation.
 
 ### Hardware Mistakes
 
 7. **Voltage drop on long strips.** Blue and green channels drop out first on undervoltage, causing a warm color shift at the far end. Inject power every 30-60 LEDs.
 
-8. **Exceeding LED current limits.** Most ARGB motherboard headers supply 3A max (~120 LEDs at full white). Plan for your maximum current draw.
+8. **Exceeding LED current limits.** Most ARGB motherboard headers supply 5V at 3A. At the ~60mA-per-LED full-white figure from §1 that is about **50 LEDs**, not 120. The 120 number only holds if you never drive full white and stay near a single primary at ~25mA. Budget from the color you actually intend to run, and plan for your maximum current draw.
 
 9. **GRB vs RGB color order.** WS2812B NeoPixels use GRB order by default. If red shows as green, check your color order config.
 
@@ -544,7 +560,7 @@ The most visually effective LED application is often the simplest: a single-colo
 | ------------ | --- | ----------- | ----------- | -------------------- |
 | Red          | 0   | 255, 0, 0   | Low         | Medium               |
 | Orange       | 25  | 255, 106, 0 | Medium      | Medium-High          |
-| Amber/Gold   | 35  | 255, 150, 0 | Medium      | High                 |
+| Amber/Gold   | 35  | 255, 149, 0 | Medium      | High                 |
 | Yellow\*     | 50  | 255, 213, 0 | Medium-High | Very High            |
 | Green        | 120 | 0, 255, 0   | Low         | Very High            |
 | Spring Green | 150 | 0, 255, 128 | Medium      | High                 |
@@ -559,14 +575,16 @@ The most visually effective LED application is often the simplest: a single-colo
 
 ### Gamma Correction LUT (gamma=2.2, selected values)
 
+Every entry is `255 * (i / 255) ^ 2.2` rounded to the nearest integer. No row lands near a tie, so the rounding mode does not matter. These agree with the §9 table at every row the two share.
+
 | Input | Output | Input | Output | Input | Output |
 | ----- | ------ | ----- | ------ | ----- | ------ |
-| 0     | 0      | 96    | 18     | 192   | 137    |
-| 16    | 0      | 112   | 27     | 208   | 163    |
-| 32    | 2      | 128   | 38     | 224   | 192    |
-| 48    | 4      | 144   | 51     | 240   | 223    |
-| 64    | 10     | 160   | 67     | 255   | 255    |
-| 80    | 13     | 176   | 86     |       |        |
+| 0     | 0      | 96    | 30     | 192   | 137    |
+| 16    | 1      | 112   | 42     | 208   | 163    |
+| 32    | 3      | 128   | 56     | 224   | 192    |
+| 48    | 6      | 144   | 73     | 240   | 223    |
+| 64    | 12     | 160   | 91     | 255   | 255    |
+| 80    | 20     | 176   | 113    |       |        |
 
 ### Color Scheme Quick Picks
 

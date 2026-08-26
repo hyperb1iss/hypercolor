@@ -1,6 +1,9 @@
 # Spec 29: Razer Scroll Wheel Control
 
-**Status:** Planned
+**Status:** Implemented (status corrected 2026-08-25).
+`COMMAND_SET_SCROLL_MODE = 0x14` ships in
+`crates/hypercolor-hal/src/drivers/razer/types.rs` and is wired through
+`razer/protocol.rs`; the `Protocol` trait carries the whole `encode_scroll_*` family.
 **Scope:** HAL + Types (daemon API wiring deferred to follow-up)
 
 ## Overview

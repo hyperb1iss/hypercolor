@@ -4,7 +4,7 @@ description = "Scenes are whole-rig configurations. Switch, create, rename, and 
 weight = 30
 +++
 
-A scene is your whole rig captured as one configuration: every zone, every layer, every layout, every effect and control. Exactly one scene is active at a time, and switching scenes rewrites the entire rig in one move. The Studio scene selector lives in the page header toolbar and is the headline control of the workspace.
+A scene is your whole rig captured as one configuration: every zone, every layer, every layout, every effect and control. Exactly one scene is active at a time, and switching scenes rewrites the entire rig in one move. The Studio scene selector lives at the trailing edge of the page header and is the headline control of the workspace.
 
 {{< img path="img/ui/studio.webp" alt="The Studio workspace with the scene selector in the header" />}}
 
@@ -26,7 +26,7 @@ Scenes are whole-rig configurations and zones are flexible partitions of the ren
 
 ## The scene selector
 
-The selector sits at the left of the Studio header and has three parts:
+The selector sits at the right of the Studio header and has three parts:
 
 1. A **scene picker** dropdown naming the scene currently on screen.
 2. A **New** button for creating a scene.
@@ -42,10 +42,10 @@ When you first run Hypercolor, you are in the **ephemeral default scene**. It is
 
 You leave the default scene the moment you create your first scene. Creating a scene captures the current rig as a saved, named configuration and switches to it.
 
-To return to the default scene later, deactivate the active scene from the app-wide scene switcher in the sidebar or dashboard header. Deactivation rebuilds the ephemeral working state, and the picker only flips once the daemon confirms the switch.
+To return to the default scene later, deactivate the active scene from the scene pill in the dashboard header. Deactivation rebuilds the ephemeral working state, and the picker only flips once the daemon confirms the switch.
 
 {% <callout type="tip"> %}
-Switching back to the default scene is itself a real switch. The scene switcher in the sidebar and dashboard appears whenever there is somewhere to switch to: two or more saved scenes, or one saved scene while the ephemeral default is the one running, so you can always move between your saved scene and the live default.
+Switching back to the default scene is itself a real switch. The scene switcher on the dashboard's scene pill appears whenever there is somewhere to switch to: two or more saved scenes, or one saved scene while the ephemeral default is the one running, so you can always move between your saved scene and the live default.
 {% </callout> %}
 
 ## Create a scene
@@ -76,7 +76,7 @@ Renaming uses the same whole-document replacement contract as every stored-scene
 
 ## Delete a scene
 
-Open the actions menu and choose **Delete**. Like rename, delete acts on the active scene and is only offered for a real, saved scene, never the default. You get a toast confirming what was deleted.
+Open the actions menu and choose **Delete**. Like rename, delete acts on the active scene and is only offered for a real, saved scene, never the default. The row then arms itself and reads **"Delete scene? Click again"**; a second click removes the scene, and a toast confirms what was deleted.
 
 ## Scenes and the apply-target
 

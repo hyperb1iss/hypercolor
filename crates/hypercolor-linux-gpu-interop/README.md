@@ -25,8 +25,9 @@ and GL FFI are unavoidable here. `undocumented_unsafe_blocks = "deny"` and
 
 ## Workspace position
 
-**Depends on:** `ash`, `glow`, `libc`, `thiserror`, `wgpu`, `wgpu-hal` — no
-workspace crates.
+**Depends on:** `hypercolor-gpu-frame`, the neutral imported-frame vocabulary
+every interop crate shares; plus `ash`, `glow`, `libc`, `thiserror`, `wgpu`,
+and `wgpu-hal`.
 
 **Depended on by:** `hypercolor-core` (optional; activated by the
 `servo-gpu-import` feature).
@@ -43,19 +44,23 @@ workspace crates.
   - `import_framebuffer_pipelined()` — non-blocking: queues a blit and returns
     the most recently completed slot, overlapping GPU work with CPU rendering.
 
-**Output types**
+**Output types** (defined in `hypercolor-gpu-frame`, re-exported here)
 
 - `ImportedEffectFrame`: imported texture/view, allocation identity, content
   generation, origin, lease, and uniform timing phases.
 - `ImportedFrameTimings`: optional `blit_us`, `wrap_us`, and `sync_us` phases
   plus `total_us`.
+- `ImportedFrameAllocationId`, `ImportedFrameLease`, `FrameOrigin`,
+  `GpuFrameImportError`, and `GpuFrameImportFallbackReason` come from the same
+  crate.
 
 **Descriptors and formats**
 
 - `LinuxGlFramebufferImportDescriptor` — validated frame description (width,
-  height, `ImportedFrameFormat`).
-- `ImportedFrameFormat` — currently only `Rgba8Unorm`; maps to wgpu, GL, and
-  Vulkan format constants.
+  height, `ImportedFrameFormat`). Crate-owned.
+- `ImportedFrameFormat` — re-exported from `hypercolor-gpu-frame`; currently
+  only `Rgba8Unorm`. This crate adds `LinuxImportedFrameFormatExt`, which
+  projects it onto GL internal formats and Vulkan formats.
 
 **Extension loading**
 
@@ -80,10 +85,12 @@ workspace crates.
 
 | Feature | What it gates |
 |---|---|
+| `servo-context` | Servo GL context plumbing for the import path; also activates `hypercolor-gpu-frame/servo-context`. |
 | `raw-gl-fixture` | Test infrastructure for raw GL framebuffer fixture tests. Not for production builds. |
 | `default` | Empty. |
 
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source
-RGB lighting orchestration for Linux. Licensed under Apache-2.0.
+RGB lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.

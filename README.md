@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Servo-Web_Engine-80ffea?style=for-the-badge&logo=servo&logoColor=black" alt="Servo">
   <img src="https://img.shields.io/badge/Leptos-WASM_UI-ff6ac1?style=for-the-badge&logo=webassembly&logoColor=white" alt="Leptos">
   <img src="https://img.shields.io/badge/TypeScript-Effect_SDK-f1fa8c?style=for-the-badge&logo=typescript&logoColor=black" alt="SDK">
-  <img src="https://img.shields.io/badge/wgpu-GPU_Shaders-50fa7b?style=for-the-badge&logo=vulkan&logoColor=white" alt="wgpu">
+  <img src="https://img.shields.io/badge/wgpu-GPU_Compositor-50fa7b?style=for-the-badge&logo=vulkan&logoColor=white" alt="wgpu">
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
   <a href="#️-the-tui">The TUI</a> •
   <a href="#-get-started">Get Started</a> •
   <a href="#-the-effect-sdk">Effect SDK</a> •
-  <a href="#-architecture">Architecture</a> •
+  <a href="#️-architecture">Architecture</a> •
   <a href="#-status">Status</a> •
   <a href="#security-and-conduct">Security</a> •
   <a href="#-contributing">Contributing</a>
@@ -65,7 +65,7 @@ graph LR
     end
 
     subgraph Engine
-        D[Effect Renderer<br><i>Servo · wgpu · Canvas</i>]
+        D[Effect Renderer<br><i>Servo · Native Rust</i>]
         E[Canvas<br><i>640 × 480 default</i>]
         SF[SparkleFlinger<br><i>compositor</i>]
         F[Spatial Sampler]
@@ -141,13 +141,17 @@ New drivers land often. Full matrix: [docs/content/hardware/compatibility.md](do
 
 - **Servo:** an embedded browser rendering HTML Canvas, WebGL, and GLSL shaders headless at
   60fps. Existing community effects work unmodified.
-- **wgpu:** native GPU shaders compiled to Vulkan, OpenGL, or Metal for maximum performance.
+- **Native Rust:** compiled-in CPU renderers for the built-in effects, with no browser in the
+  frame path.
+
+Composition is GPU-accelerated separately: the SparkleFlinger compositor uses wgpu to blend
+producer surfaces and to import Servo frames.
 
 ### 🎨 57 Built-In Effects
 
-Hypercolor ships 57 built-in effects (46 authored with the SDK, 11 native Rust) spanning
-ambient, audio-reactive, shader, generative, and interactive styles, plus 7 display faces
-for devices with LCD panels. Ambient backgrounds, shader-heavy showpieces, beat-synced
+Hypercolor ships 57 built-in effects (46 authored with the SDK, 11 native Rust, 10 of them
+in builds without the Servo renderer) spanning ambient, audio-reactive, shader, generative,
+and interactive styles, plus 7 display faces for devices with LCD panels. Ambient backgrounds, shader-heavy showpieces, beat-synced
 visualizers, and Keystrike, an interactive effect that lights up under your keystrokes.
 Every one is open source and built to be forked, and the catalog ships with curated cover
 art and tuned presets.
@@ -193,7 +197,9 @@ Core Graphics event tap on macOS.
 - **MCP server** for AI assistant integration (Claude Code, Cursor, and friends)
 - **CLI tool** (`hypercolor`) with table/JSON output and shell completions
 - **Hot-reload** on effect changes, no restart required
-- **Session and power awareness** on Linux (logind, screensaver) via D-Bus
+- **Session and power awareness** on all three platforms: logind and screensaver over D-Bus
+  on Linux, `WM_POWERBROADCAST` plus WTS session lock/unlock on Windows, and NSWorkspace
+  plus IOKit system-power notifications on macOS
 
 ## 💎 The UI
 
@@ -276,12 +282,16 @@ use one of the paths below.
 
 ### Install on Linux
 
-The release installer downloads the right tarball, verifies its checksum, sets up the
-systemd user service, and offers to install udev rules and `i2c-dev` persistence:
+The release installer downloads the right tarball, verifies its checksum, and sets up the
+systemd user service:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
 ```
+
+Device-node permissions are a separate step: run `just udev-install` from a source
+checkout, or install the `.deb` or AUR package, both of which ship the udev rules
+themselves.
 
 Debian and Ubuntu users can install the `.deb` from the releases page. Arch users have
 [`hypercolor-bin`](https://aur.archlinux.org/packages/hypercolor-bin) on the AUR, and the
@@ -299,8 +309,9 @@ just install
 
 Setup installs the Rust toolchain, system packages, Bun, Trunk, cargo-deny, and frontend
 dependencies. The installer then builds the daemon, CLI, TUI, web UI, and bundled effects,
-installs a systemd user service, sets up udev rules for USB and input device access, and
-persists `i2c-dev` so SMBus RGB devices survive reboot.
+installs a systemd user service, sets up udev rules for USB device access, and persists
+`i2c-dev` so SMBus RGB devices survive reboot. Interactive effects also need the input
+rules, which `just udev-install` adds (the `.deb` and AUR packages ship both files).
 
 ### Install on Windows
 
@@ -352,7 +363,7 @@ Input Monitoring.
 | Screen capture | Wayland portal, opt-in | Desktop Duplication, default on | ScreenCaptureKit system picker |
 | Keyboard/mouse input | evdev | Raw Input² | Core Graphics event tap³ |
 | Motherboard / DRAM RGB (SMBus) | `i2c-dev` | PawnIO helper | not available |
-| Session and power integration | logind + screensaver | not yet | not yet |
+| Session and power integration | logind + screensaver | power + session lock | NSWorkspace + IOKit |
 | Background service | systemd user service | Windows service⁴ | launchd agent |
 
 ¹ System-audio reactivity needs a loopback input the OS exposes: Stereo Mix or a virtual
@@ -433,8 +444,10 @@ See the [Effect SDK Guide](docs/content/effects/_index.md) for the full API refe
 
 ```mermaid
 graph TD
-    subgraph types [hypercolor-types]
-        T[Shared vocabulary<br><i>zero deps</i>]
+    subgraph vocab [Shared Vocabulary]
+        CK[hypercolor-color<br><i>pixel types · conversions · blending</i>]
+        T[hypercolor-types<br><i>devices · scenes · effects · API contracts</i>]
+        GF[hypercolor-gpu-frame<br><i>imported GPU frame vocabulary</i>]
     end
 
     subgraph hal [hypercolor-hal]
@@ -448,6 +461,7 @@ graph TD
         WCA[windows-capture<br><i>Desktop Duplication</i>]
         WIN[windows-input<br><i>Raw Input</i>]
         WPI[windows-pawnio<br><i>SMBus via PawnIO</i>]
+        WT[windows-telemetry<br><i>WMI sensors · board identity</i>]
     end
 
     subgraph core [hypercolor-core]
@@ -477,15 +491,26 @@ graph TD
         APP[app<br><i>unified shell</i>]
     end
 
-    T --> H & C & LGI & MGI & WGI & WCA & WIN & WPI
-    H --> C
-    LGI & MGI & WGI & WCA & WIN & WPI --> C
-    C --> API
-    H --> DB
-    C & H & DB --> D
-    D --> CLI & TUI & UI
-    APP --> DT & TR & D
+    CK --> T
+    CK & T --> H & C & D & CLI & TUI & UI
+    T --> API & DB & APP & WIN & WT
+    GF --> C & D & LGI & MGI & WGI
+    WPI --> H & WT
+    H --> C & DB
+    LGI & MGI & WGI & WCA & WIN & WT --> C
+    MGI & WGI & WCA --> D
+    API --> C & DB & D
+    C --> D & CLI & TUI & APP
+    DB --> D
+    D -. serves .-> CLI & TUI & UI
+    APP -. owns .-> DT & TR
+    APP -. supervises .-> D
 ```
+
+Solid arrows are Cargo dependencies, pointing from the dependency to the crate that
+consumes it; dashed arrows are runtime relationships, not build edges. `hypercolor-color`
+and `hypercolor-types` reach nearly every crate in the workspace, so only the structural
+edges are drawn here. The full graph is in [AGENTS.md](AGENTS.md).
 
 It's Rust all the way down. The daemon, CLI, TUI, unified app, and HAL drivers are
 all Rust. The web UI is Rust compiled to WASM via Leptos. Even the embedded browser
@@ -501,9 +526,11 @@ at zero allocation cost per frame. The spatial engine caches LED positions and s
 composed frame with configurable interpolation (nearest, bilinear, area average, Gaussian).
 
 Workspace lints forbid `unsafe` in application, driver, and domain crates. The explicit
-exceptions are the audited platform interop crates (GPU surface import on all three
-platforms, Windows capture, host input, the PawnIO SMBus broker, and platform filesystem
-glue) plus the desktop app shell; each opts out explicitly and denies undocumented unsafe
+exceptions are the audited platform crates (GPU surface import on all three platforms,
+screen capture via PipeWire, ScreenCaptureKit, and Desktop Duplication, host input on
+macOS and Windows, session and power monitors on all three platforms, macOS now-playing
+media, the PawnIO SMBus broker, the signed Windows helper, and platform filesystem glue)
+plus the desktop app shell; each opts out explicitly and denies undocumented unsafe
 blocks. Edition 2024. Rust 1.94+.
 
 ## 📡 Status
@@ -518,7 +545,9 @@ Worth knowing before you install:
 
 - SMBus (motherboard/DRAM RGB) is Linux and Windows only. The "What works where" table
   above has the full picture.
-- Session and power integration (idle dim, sleep/resume device rescan) is Linux-only today.
+- Session and power integration covers sleep/resume on all three platforms, plus screen
+  lock/unlock on Linux and Windows and session active/inactive on macOS. Idle-based dimming
+  is implemented in the policy layer but no platform monitor reports idle transitions yet.
 - Windows binaries are not yet code-signed, so expect a SmartScreen warning on
   first launch. Published macOS artifacts are signed and notarized after manual
   acceptance.

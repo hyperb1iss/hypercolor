@@ -26,7 +26,7 @@ layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
 curl -X PATCH \
   "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
   -H 'Content-Type: application/json' \
-  -d '{"values":{"speed":{"float":45.0},"palette":{"enum":"Aurora"}}}'
+  -d '{"values":{"speed":{"kind":"float","value":45.0},"palette":{"kind":"enum","value":"Aurora"}}}'
 ```
 
 The control patch never uses `If-Match`. Values commit in arrival order, while
@@ -42,7 +42,7 @@ shared patch shape:
 
 ```json
 {
-  "values": { "speed": { "float": 45.0 } },
+  "values": { "speed": { "kind": "float", "value": 45.0 } },
   "clear_bindings": ["speed"]
 }
 ```

@@ -5,6 +5,14 @@
 > [Spec 78](../specs/78-api-resource-model.md) supersede the endpoint examples
 > in this document.
 
+**Status:** Shipped. Verified 2026-08-25 at `7620eae44`: mDNS advertisement lives
+in `crates/hypercolor-daemon/src/mdns.rs`, the `[network]` config section is
+`NetworkConfig` on the root config, API key authentication is in the daemon's
+security middleware, server identity rides `/api/v1/system` and the WebSocket
+hello, and client-side discovery is the `hypercolor servers` CLI command. The
+`GET /api/v1/server` endpoint this document specifies was retired by the Spec 78
+resource model, which is what the API status banner above covers.
+
 ## Overview
 
 Enable Hypercolor daemons to advertise themselves on the local network via

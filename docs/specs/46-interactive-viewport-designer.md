@@ -8,13 +8,15 @@
 > inline `ViewportPicker` remains for quick adjustments; the modal is
 > where precise work happens.
 
-**Status:** Implemented — `ViewportDesigner` Leptos component shipped in `hypercolor-ui`
+**Status:** Implemented. `ViewportDesigner` shipped in `hypercolor-ui`. The route
+examples in this document are not; treat every endpoint below as historical.
 **API status:** Historical control-route snapshot. The canonical resource model
 in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-04-17
 **Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`
-**Depends on:** Web Viewport Effect (Spec 44), REST/WebSocket API (Spec 10), Preview Stream plumbing (Spec 36)
+**Depends on:** Web Viewport Effect (Spec 44), the API resource model (Spec 78; Spec 10 was archived on 2026-08-25),
+Preview Stream plumbing (Spec 36)
 **Related:** Screen Capture (Spec 14), Servo HTML Effects, Render Pipeline optimizations (commits `53e8eb50`, `c8fac890`, `da97db2f`)
 
 ---

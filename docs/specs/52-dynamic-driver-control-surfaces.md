@@ -4,11 +4,16 @@
 > be consumed generically by the daemon API, UI, CLI, TUI, and future Wasm
 > driver modules.
 
-**Status:** Draft
+**Status:** Implemented (status corrected 2026-08-25). The routes shipped:
+`GET /api/v1/control-surfaces`, `GET /api/v1/control-surfaces/{id}`,
+`PATCH /api/v1/control-surfaces/{id}/values`, and
+`POST /api/v1/control-surfaces/{id}/actions/{action}`. Note that section 4's asides about
+values participating in "profiles" are stale; profiles folded into scenes.
 **Author:** Nova
 **Date:** 2026-04-26
 **Crates:** `hypercolor-types`, `hypercolor-driver-api`, `hypercolor-network`, `hypercolor-core`, `hypercolor-daemon`, `hypercolor-ui`, `hypercolor-tui`, `hypercolor-cli`
-**Related:** `docs/specs/50-extensible-config-registry.md`, `docs/specs/51-unified-driver-module-api.md`, `docs/specs/40-device-pairing-ui.md`, `docs/specs/47-device-metrics.md`
+**Related:** `docs/specs/50-extensible-config-registry.md`, `docs/specs/51-unified-driver-module-api.md`, `docs/specs/40-device-pairing-ui.md`, `docs/archive/47-device-metrics.md` (archived
+2026-08-25)
 
 ---
 

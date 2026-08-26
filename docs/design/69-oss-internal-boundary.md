@@ -1,5 +1,12 @@
 # OSS/Internal Boundary
 
+**Status:** Extraction complete. Verified 2026-08-25 at `7620eae44`: all five
+steps in "Extraction Order" are done. No `cloud` or `official-cloud` feature
+flag remains in any OSS crate manifest, and strict enforcement is wired into
+`just verify` as the `oss-boundary-check-strict` recipe, which runs
+`scripts/check-oss-boundary.sh --strict`. The boundary policy below is the
+standing contract, not a migration plan.
+
 Hypercolor ships as two layers:
 
 - **OSS Hypercolor** is the public engine, driver ecosystem, local daemon,

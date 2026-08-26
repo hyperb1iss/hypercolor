@@ -2,13 +2,16 @@
 
 > Native USB HID driver for PrismRGB-exclusive controllers. The Gen-1 Prism 8 and Nollie 8 v2 protocol moved to Spec 49.
 
-**Status:** Implemented for Prism S / Prism Mini; Gen-1 sections superseded by Spec 49
+**Status:** Implemented for Prism S / Prism Mini. The Gen-1 sections are obsolete and
+Spec 49 covers that device generation instead.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::prismrgb`
 **Author:** Nova
 **Date:** 2026-03-04
 **Supersedes:** Spec 04 (USB HID Backend — now deprecated)
-**Companion:** `45-nollie-protocol-driver.md` (Nollie Protocol Driver; note: file is numbered 45 but its header reads "Spec 49" — a known numbering collision)
+**Companion:** `45-nollie-protocol-driver.md` (Nollie Protocol Driver). A note here used
+to warn that the file's header read "Spec 49"; that was fixed, and the header now reads
+"45 -- Nollie Protocol Driver".
 
 ---
 

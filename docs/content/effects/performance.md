@@ -65,9 +65,14 @@ Drive every animation from `delta_secs` (the wall-clock time since the previous 
 // Wrong: speed is tied to the tier.
 position += 2;
 
-// Right: speed is the same at 10, 30, or 60 FPS.
-position += pixelsPerSecond * ctx.delta;
+// Right: derive the delta from `time` (seconds), or read window.engine.deltaTime.
+// A stateful factory holds lastTime across frames.
+const dt = time - lastTime;
+lastTime = time;
+position += pixelsPerSecond * dt;
 ```
+
+The canvas draw signature is `(ctx, time, controls)`; `ctx` is a plain Canvas2D context with no delta on it.
 
 In a GLSL effect the same rule applies to the `iTime` uniform, and in a native Rust renderer you read `input.time_secs` / `input.delta_secs`. `frame_number` is fine for "do this once on frame 0" or deterministic seeding, never for motion.
 

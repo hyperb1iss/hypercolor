@@ -32,7 +32,7 @@ The fix is to make sure the top level of your module unconditionally calls `canv
 ```ts
 import { canvas } from 'hypercolor'
 
-canvas('Aurora', { hue: [0, 360, 200] }, (ctx, controls) => {
+canvas('Aurora', { hue: [0, 360, 200] }, (ctx, time, controls) => {
   // draw
 })
 ```
@@ -53,15 +53,15 @@ The check scans your source for any of these patterns and fails if it finds one 
 audio(        ctx.audio        getAudioData(        engine.audio
 ```
 
-The fix is to set the flag in the options object:
+The fix is to set the flag in the options object, which is the **fourth** argument to `canvas()`, after the draw function:
 
 ```ts
 import { canvas, audio } from 'hypercolor'
 
-canvas('Pulse', { sensitivity: [0, 1, 0.6] }, { audio: true }, (ctx, controls) => {
+canvas('Pulse', { sensitivity: [0, 1, 0.6] }, (ctx, time, controls) => {
   const a = audio()
-  // react to a.level, a.beatPulse, etc.
-})
+  // react to a.levelLinear, a.beatPulse, etc.
+}, { audio: true })
 ```
 
 {% <callout type="warning"> %}
@@ -90,37 +90,44 @@ Two fixes, depending on intent:
 
 - You renamed the uniform on purpose. Pass the `uniform` option on the control factory so the build expects your name instead of the derived one.
 
-The mirror case, an `i*` uniform in the shader with **no** matching control, only warns. The build lists it so you can spot typos, but it does not stop. Built-in uniforms (`iTime`, `iResolution`, `iMouse`) and the audio uniforms (anything starting `iAudio`) are exempt from both checks.
+The mirror case, an `i*` uniform in the shader with **no** matching control, only warns. The build lists it so you can spot typos, but it does not stop. Built-in uniforms (`iTime`, `iResolution`, `iMouse`, `iMouseDown`, `iWheel`) and the audio uniforms (anything starting `iAudio`) are exempt from both checks.
 
 See [GLSL shader effects](@/effects/glsl-effects.md) for the full uniform map and the `speed`/`palette` magic-name behavior.
 
-## Palette magic not firing
+## Palette function not appearing
 
-There is no error for this one, which is exactly why it is confusing. The palette shorthand only auto-converts under one specific shape, and any deviation silently leaves you with a plain string instead of a sampleable palette.
+There is no error for this one, which is exactly why it is confusing. If `controls.palette(0.5)` throws `controls.palette is not a function`, the control was never tagged as a palette control in the first place.
 
-The magic triggers only when the **shorthand** declaration uses the **exact key** `palette` with an array of color stops:
+Only the `paletteControl()` factory tags a control. It stamps `meta.palette = true` on the spec, and the canvas runtime swaps the selected string for a `PaletteFn` only when that flag is set. A bare string-array shorthand and an explicit `combo()` both produce a plain combobox with no flag, so both leave you holding the selected string:
 
 ```ts
-canvas('Flow', { palette: ['#e135ff', '#80ffea', '#ff6ac1'] }, (ctx, controls) => {
-  const color = controls.palette(0.5) // works: palette is a PaletteFn
+import { canvas, combo, paletteControl } from 'hypercolor'
+
+// Palette-aware: controls.palette is a PaletteFn.
+canvas('Flow', { palette: paletteControl('Palette', ['SilkCircuit', 'Aurora', 'Fire']) }, (ctx, time, controls) => {
+  const pal = controls.palette as (t: number, alpha?: number) => string
+  const color = pal(0.5)
 })
+
+// Plain dropdowns: controls.palette is the selected string, not a function.
+canvas('Flow', { palette: ['SilkCircuit', 'Aurora', 'Fire'] }, /* ... */)
+canvas('Flow', { palette: combo('Palette', ['SilkCircuit', 'Aurora', 'Fire']) }, /* ... */)
 ```
 
-It does **not** fire if you:
+The key name `palette` is not magic. Naming a control `palette` does nothing on its own; only the factory flips the flag.
 
-- Use a different key (`colors: [...]` stays a string array, never a function).
-- Declare it explicitly with `combo('Palette', [...])` instead of the shorthand.
+The values are **registry palette names**, not hex stops. The registry is keyed by the `name` field in `sdk/shared/palettes.json`, so `['#e135ff', '#80ffea']` is a dropdown of two unknown palettes, and every sample resolves to the missing-palette magenta.
 
-When the magic does not fire, the value reaches your draw function as a raw string. The recovery is to rebuild the sampler yourself inside the draw:
+When you have a plain combobox and want the sampler anyway, rebuild it yourself:
 
 ```ts
 import { createPaletteFn } from 'hypercolor'
 
-const palette = createPaletteFn(controls.colors) // controls.colors is a palette name string
+const palette = createPaletteFn(controls.colors as string) // controls.colors is a palette name
 const color = palette(0.5)
 ```
 
-In shaders, the same `palette` shorthand becomes an integer index uniform (`uniform int iPalette`) rather than a function. The full registry and the Oklab sampling internals are in [Palettes](@/effects/palettes.md).
+In shaders none of this changes the uniform: every combobox control, tagged or not, uploads as `uniform int i<Key>` carrying the selected index. What the tag changes is what your `setup` and `frame` hooks read from `ctx.controls`. The full registry and the Oklab sampling internals are in [Palettes](@/effects/palettes.md).
 
 ## Artifact validation errors
 
@@ -137,21 +144,25 @@ In shaders, the same `palette` shorthand becomes an integer index uniform (`unif
 | `MISSING_COMBOBOX_VALUES` | A combobox declares no options | Give the dropdown a non-empty `string[]` of values. |
 | `INVALID_MEDIA_KIND` | An `asset` control names an unknown media kind | Use `any`, `image`, `video`, or `lottie`. |
 | `INVALID_PRESET_JSON` | A preset's `preset-controls` is not valid JSON | Fix the preset definition in source and rebuild. |
+| `DUPLICATE_PRESET_ID` | Two presets normalize to the same preset id | Preset ids fall back to the name, so two presets called the same thing collide. Rename one, or give each an explicit `id`. |
+| `INVALID_CANVAS_WIDTH` / `INVALID_CANVAS_HEIGHT` | A declared canvas dimension is not a positive 32-bit integer | The dimension must be a whole number from `1` to `4294967295`. Better still, drop the hardcoded size and read `ctx.canvas.width`/`ctx.canvas.height` per frame, since the daemon canvas defaults to 640x480 but is configurable. |
 
 The validator also emits **warnings** that do not fail the build unless you pass `--strict`. The most useful ones to know:
 
 - `MISSING_VERSION`: the `hypercolor-version` meta tag is absent. The build normally writes it; its absence means a hand-built or stale artifact.
 - `DEFAULT_OUT_OF_RANGE`: a control's default sits outside its own declared `[min, max]`.
 - `EXTERNAL_ASSET_REFERENCE`: the artifact references an external script or link tag, so it is not self-contained. Effects must inline everything; a CDN reference will not load on a daemon without network access.
-- `UNUSUAL_CANVAS_WIDTH` / `UNUSUAL_CANVAS_HEIGHT`: a declared canvas dimension falls outside the sane `100-1920` band. Usually a sign you hardcoded a size; effects should read `ctx.canvas.width`/`ctx.canvas.height` per frame instead, since the daemon canvas defaults to 640×480 but is configurable.
+- `INVALID_AUDIO_META`: the `audio-reactive` meta tag holds something other than `true` or `false`.
 
-## "hypercolor dev has been removed"
+## Unknown command "dev"
 
 ```text
-hypercolor dev has been removed. Use build, validate, and install against the real daemon/app preview instead.
+Unknown command "dev".
 ```
 
-The old `bunx hypercolor dev` preview server is gone. It exits `1` with this message. There is no standalone browser preview anymore; the iteration loop is build, install, and preview inside the actual daemon or desktop app. Any tutorial that tells you to run `hypercolor dev` is stale. The current loop is documented in [Dev workflow](@/effects/dev-workflow.md).
+There is no `dev` command. The CLI has exactly four: `build`, `validate`, `install`, and `add`. Anything else prints the line above on stderr, follows it with the usage banner, and exits `1`.
+
+There is no standalone browser preview; the iteration loop is build, install, and preview inside the actual daemon or desktop app. Any tutorial that tells you to run `hypercolor dev` is stale. The current loop is documented in [Dev workflow](@/effects/dev-workflow.md).
 
 ## The build runs but the effect does not appear
 

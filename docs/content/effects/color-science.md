@@ -110,18 +110,18 @@ corrected = 255 * (input / 255) ^ gamma
 
 **Gamma 2.2** is the standard starting point. Use 2.8 for high-brightness environments, 1.8 for dim rooms.
 
-Key values at gamma 2.2:
+Key values at gamma 2.2, rounded to the nearest integer:
 
 | Input | Output | Perception          |
 | ----- | ------ | ------------------- |
 | 0     | 0      | Off                 |
-| 32    | 2      | Barely visible      |
-| 64    | 10     | Very dim            |
-| 128   | 55     | Perceptual midpoint |
+| 32    | 3      | Barely visible      |
+| 64    | 12     | Very dim            |
+| 128   | 56     | Perceptual midpoint |
 | 192   | 137    | Moderately bright   |
 | 255   | 255    | Full brightness     |
 
-Perceptual 50% brightness is PWM 55/255, not 128/255. This is why uncorrected fades look wrong.
+Perceptual 50% brightness lands near PWM 56/255, not 128/255: `0.5 ^ 2.2` is `0.2176`, about 21.8 percent of full scale. This is why uncorrected fades look wrong.
 
 TypeScript implementation:
 
@@ -132,6 +132,10 @@ function gammaCorrect(value: number, gamma = 2.2): number {
 ```
 
 Or use OKLCH, which has perceptually uniform lightness built in. Changes in the L component produce visually proportional brightness changes on hardware.
+
+{% <callout type="warning"> %}
+**The engine owns the transfer, not your effect.** Hypercolor applies the IEC 61966-2-1 sRGB transfer in `crates/hypercolor-color/src/transfer.rs`, the compositor blends in `LinearRgba`, and device encoding (`crates/hypercolor-color/src/encode.rs`) adds no further LED gamma on top. So the formula above is background for reasoning about perception, not a step to run over your canvas output: an effect that gamma-corrects its own pixels before writing them double-encodes and the result reads crushed and dim. Write ordinary sRGB colors to the canvas and let the pipeline do the conversion.
+{% </callout> %}
 
 ## Color space hierarchy
 
@@ -233,10 +237,19 @@ That blend is not a naive sRGB lerp. The compositor decodes each pixel from sRGB
 
 | Layer blend mode | Behavior                                                  |
 | ---------------- | --------------------------------------------------------- |
-| Normal           | Standard alpha-over with layer opacity                    |
-| Add              | Additive in linear light (the layer equivalent of `lighter`) |
-| Screen           | Soft additive that never exceeds full white               |
-| Multiply         | Darken overlaps                                            |
+| `alpha`          | Standard alpha-over with layer opacity. The default.       |
+| `replace`        | Overwrite the scene beneath instead of compositing over it |
+| `add`            | Additive in linear light (the layer equivalent of `lighter`) |
+| `screen`         | Soft additive that never exceeds full white               |
+| `multiply`       | Darken overlaps                                            |
+| `overlay`        | Multiply the dark half, screen the bright half             |
+| `soft_light`     | Gentler contrast shaping than `overlay`                    |
+| `color_dodge`    | Brighten the layer beneath toward its highlights           |
+| `difference`     | Absolute channel difference; inverts against bright bases  |
+| `tint`           | Treat the layer as a colored filter the scene shows through |
+| `luma_reveal`    | Layer luminance decides where the tinted scene shows through |
+
+Those eleven are the whole set, serialized in snake_case on the wire. Note that the alpha-over mode is spelled `alpha` for layers; `Normal` is the pixel-kernel spelling of the same math, not a layer mode name.
 
 {% <callout type="tip"> %}
 Author each layer as a self-contained image. If you want glow where two layers overlap, set the upper layer to **Add** or **Screen** rather than baking the combination into a single effect. The compositor does the linear-light math for you, and the result stays correct as zone opacity changes.

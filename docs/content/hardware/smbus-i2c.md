@@ -199,13 +199,13 @@ ls /dev/i2c-*
 If nothing appears, load the module (`sudo modprobe i2c-dev`) and restart the daemon. If nodes exist but discovery finds nothing, enable debug logging:
 
 ```bash
-RUST_LOG=hypercolor_hal=debug hypercolor daemon
+RUST_LOG=hypercolor_hal=debug just daemon
 ```
 
 Look for `discovered ASUS Aura SMBus controller` (success) or `skipping ASUS Aura … probe on incompatible i2c adapter` (PCI ID not matched). To see the per-bus skip lines, use `trace` level:
 
 ```bash
-RUST_LOG=hypercolor_hal=trace hypercolor daemon
+RUST_LOG=hypercolor_hal=trace just daemon
 ```
 
 **Permission denied**
@@ -248,7 +248,7 @@ If discovery logs `ASUS Aura SMBus firmware probe rejected candidate` and shows 
 | Reload udev | `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=i2c-dev` |
 | Discover devices | `hypercolor devices discover --target smbus` |
 | List all devices | `hypercolor devices list` |
-| Debug logging | `RUST_LOG=hypercolor_hal=debug hypercolor daemon` |
+| Debug logging | `RUST_LOG=hypercolor_hal=debug just daemon` |
 
 ---
 

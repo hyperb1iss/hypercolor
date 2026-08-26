@@ -84,8 +84,10 @@ your system browser rather than opening additional in-app tabs.
 
 ## The first-run wizard
 
-On a fresh install the web UI detects that the first-run marker file does not exist and
-shows the **Welcome to Hypercolor** overlay before you reach the dashboard.
+On a fresh install the desktop app asks the Tauri backend whether the first-run marker
+file exists, and shows the **Welcome to Hypercolor** overlay before you reach the
+dashboard when it does not. The check is a Tauri command, so the wizard appears only
+inside the desktop app, never in a plain browser pointed at `:9420`.
 
 The wizard is a single centered card. It covers three orientation topics and one
 preference toggle.

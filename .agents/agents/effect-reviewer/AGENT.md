@@ -62,9 +62,9 @@ You review RGB lighting effects for quality on physical LED hardware. Your job i
 ### Technical (Native Effects)
 
 - [ ] **Color space**: Math done in linear RGB or Oklab, output in sRGB (Canvas pixels)
-- [ ] **Control dispatch**: `set_control` handles all defined control IDs
-- [ ] **Canvas creation**: Uses `Canvas::new(input.canvas_width, input.canvas_height)`, not hardcoded sizes
-- [ ] **Error handling**: `tick()` returns `anyhow::Result`, no unwrap
+- [ ] **Control dispatch**: `initialize_controls` seeds derived state from the authoritative `ControlSet`, and `apply_controls` handles every defined control ID in the `ControlDeltaBatch`
+- [ ] **Canvas sizing**: reads `input.canvas_width`/`input.canvas_height` every frame through `prepare_target_canvas(target, ...)`, never hardcodes a size and never allocates a fresh `Canvas` per frame. Nothing enforces this automatically: `just alloc-contracts` covers the input, media, screen-fanout, and spatial paths, and none of its targets exercise `render_into`. Read the code.
+- [ ] **Error handling**: `render_into()` returns `anyhow::Result<()>`, no unwrap
 
 ## Companion Skills
 

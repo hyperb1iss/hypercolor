@@ -51,8 +51,8 @@ ss -tlnp | grep 6742
 ```
 
 The server binds to `127.0.0.1:6742` by default. Hypercolor connects on demand during
-discovery and reconnects automatically with exponential backoff (250 ms initial, 5 s cap)
-if the connection drops.
+discovery and reconnects automatically with exponential backoff (1 s initial, doubling to a
+60 s cap with 10% jitter, up to 6 attempts) if the connection drops.
 
 ---
 

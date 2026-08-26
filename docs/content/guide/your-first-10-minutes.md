@@ -128,9 +128,10 @@ hypercolor effects stop
 ```
 
 {% <callout type="tip"> %}
-Effect switches are immediate today. The `--transition` flag is reserved for
-future crossfades, and nonzero values are rejected until that renderer path
-lands.
+Effect switches are immediate. The apply request's only transition type is
+`cut`, and crossfades are not implemented, so `effects activate` has no
+transition flag at all. (`hypercolor scenes activate` does take
+`--transition <ms>`, which overrides that scene's stored transition duration.)
 {% </callout> %}
 
 ---
@@ -213,7 +214,7 @@ To remove the simulator:
 curl -X DELETE http://localhost:9420/api/v1/simulators/displays/<id>
 ```
 
-Simulated display configs persist across daemon restarts. Width and height must each be between 1 and 4096.
+Simulated display configs persist across daemon restarts. Width and height must each be non-zero; there is no upper bound beyond the point where the resulting RGBA buffer length overflows.
 
 ---
 

@@ -1,6 +1,6 @@
 +++
 title = "Zones"
-description = "Zones are flexible canvas partitions: create, rename, color, enable, make-default, and delete them, plus the Default zone and the Unassigned entry."
+description = "Zones are flexible canvas partitions: create, rename, color, enable, and delete them, plus the Default zone and the Unassigned entry."
 weight = 40
 +++
 
@@ -11,9 +11,9 @@ zones that each drive a different slice of your hardware with a different effect
 
 Zones live in the left column of Studio, the **zone tree**. Every zone shows up
 as a card there with its devices nested beneath it. This page covers the full
-zone lifecycle (create, rename, recolor, enable, make-default, delete), the
-permanent **Default zone**, and the **Unassigned** entry that catches hardware
-no zone has claimed.
+zone lifecycle (create, rename, recolor, enable, delete), the permanent
+**Default zone**, and the **Unassigned** entry that catches hardware no zone
+has claimed.
 
 {{< img path="img/ui/studio.webp" alt="The Studio workspace with the zone tree on the left" />}}
 
@@ -104,16 +104,12 @@ layers, layout, and color so you can bring it back exactly as it was.
 
 {{< img path="img/ui/ui-studio-zones.webp" alt="Zones in the Hypercolor Studio workspace" />}}
 
-## Make a zone the default
-
-On any non-Default zone, the **make-default** control (the check icon in the
-settings cluster) promotes that zone to be the scene's Default zone. The
-previous Default zone becomes an ordinary deletable zone. Use this when the zone
-you actually treat as your baseline is not the one the scene started with.
-
-The make-default and delete controls only appear on **Custom** zones. The
-current Default zone shows neither, because it is permanent and cannot promote
-itself.
+**Per-zone brightness.** A zone carries its own `brightness` multiplier,
+clamped to `0.0`-`1.0`, on top of global output brightness. Studio has no
+control for it today; set it over the API with
+`PATCH /api/v1/scene/zones/{zone}` and a `brightness` field. See
+[zone API and concurrency](@/studio/zone-api-and-concurrency.md) for the route
+and its revision guard.
 
 ## Deleting a zone
 
@@ -162,9 +158,10 @@ the current policy in plain words as a read-only value rather than a picker.
 
 {{< img path="img/ui/studio.webp" alt="The Hypercolor Studio workspace" />}}
 
-The cleanest fix for unclaimed hardware is usually to assign it. Use the
-zone-assignment panel beneath the canvas to move those outputs into a real zone.
-See [device assignment](@/studio/device-assignment.md) for the assignment flow.
+The cleanest fix for unclaimed hardware is usually to assign it. Use the green
+`+` on the device's card under the Unassigned entry, which opens a picker
+listing every LED zone in the scene. See
+[device assignment](@/studio/device-assignment.md) for the assignment flow.
 
 ## How zone edits stay safe under concurrent changes
 
@@ -177,8 +174,8 @@ If the scene changed somewhere else between when you loaded it and when you
 saved, your edit does not silently overwrite the newer state. Studio reloads the
 scene, shows a "Scene changed elsewhere — reloaded, try again" toast, and lets
 you reapply your change against the fresh state. This applies to every zone
-action on this page: create, rename, color, enable, make-default, delete, and
-the unassigned-lights policy.
+action on this page: create, rename, color, enable, delete, and the
+unassigned-lights policy.
 
 The full revision model, REST routes, and stale-retry semantics live in
 [zone API and concurrency](@/studio/zone-api-and-concurrency.md).

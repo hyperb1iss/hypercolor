@@ -23,8 +23,14 @@ Create a live scene when you want an editable workspace:
 hypercolor scenes create "Gaming Night" --description "Desk and displays"
 ```
 
-Create seeds a Primary zone. You can then activate the scene and build its
+Create seeds a Default zone. You can then activate the scene and build its
 zones and layers through Studio, the REST API, or the normal effect commands.
+
+Two more flags shape what you get. `--mutation-mode <live|snapshot>` sets the
+mode described above, defaulting to `live`, so `--mutation-mode snapshot`
+creates a scene that rejects runtime rewrites from the moment it exists.
+`--enabled <true|false>` decides whether the scene starts enabled, defaulting to
+`true`.
 
 Capture the current runtime state when you already have the rig tuned:
 

@@ -269,9 +269,12 @@ Effects expose user controls via HTML meta tags:
 />
 ```
 
-Available types: `number`, `color`, `boolean`, `combobox`, `string`.
+Available types: `number`, `boolean`, `color`, `combobox` (alias `dropdown`), `sensor`, `hue`, `area`, `textfield` (aliases `text`, `input`), `asset`, and `rect`. There is no `string` type; use `textfield`. Anything else parses as an unknown kind and gets no control panel widget.
 
-Callbacks: `on[PropertyName]Changed()` for immediate response.
+Callbacks: the engine builds the callback name by concatenating, so the
+property name is used **verbatim** with no capitalization. `property="speed"`
+calls `window.onspeedChanged()`, not `onSpeedChanged`. Name properties in the
+casing you want to see in the callback.
 
 **Best practice:** 3-5 meaningful controls with sensible defaults. The effect should look great at zero configuration.
 
@@ -316,28 +319,48 @@ Rgba       // u8 sRGB — input/output format
 Rgb        // u8 sRGB — no alpha
 LinearRgba // linear f32 — internal math
 Oklab      // perceptually uniform — gradients, blending
-Oklch      // polar perceptual — palette generation, chroma boost
+Oklch      // polar perceptual: palette generation, hue cycling
 ```
 
 ### Sampling Pipeline
 
 ```
-Canvas (sRGB u8) -> zone_local_to_canvas -> sample -> polish_sampled_color -> fade_to_black -> [u8;3]
+Canvas (sRGB u8)
+  -> zone_local_to_canvas (scale, rotate, translate, then edge behavior)
+  -> decode sRGB to linear u16
+  -> resample in linear light (nearest, bilinear, area, or gaussian)
+  -> FadeToBlack attenuation when the edge behavior asks for it, still linear
+  -> encode linear back to sRGB u8
+  -> ZoneColors
 ```
 
-**`polish_sampled_color()`** (Matrix topology zones only):
+The sampler applies no color styling. Every stage above is decode, resample,
+attenuate, encode, so a sampled pixel reaches `ZoneColors` with its color
+intact. There is no chroma boost and no Oklch anywhere in
+`core/src/spatial/`; `polish_sampled_color()` does not exist in the tree. An
+LED-safe palette is the effect's job.
 
-1. sRGB -> linear -> Oklch
-2. Boost chroma and adjust lightness
-3. Oklch -> linear -> sRGB
+### Output Pipeline
 
-This compensates for the inherent dullness of sampled canvas colors on physical LEDs.
+`BackendManager::write_frame(zone_colors, layout)` routes each zone's colors to
+its mapped device and runs the only color adjustment left in the engine:
 
-### Known Pipeline Issues
+1. Zone brightness scaling
+2. Decode sRGB to linear
+3. LED perceptual compensation: a bounded lift for low-luma chromatic colors,
+   which point-source LEDs under-represent (blue, cyan, magenta most of all),
+   weighted down toward neutrals and never exceeding channel headroom
+4. Output brightness in linear
+5. Write linear-light bytes straight to LED PWM, with no sRGB re-encode
 
-1. Bilinear sampling blends in sRGB space (should linearize first)
-2. `fade_to_black` attenuation in sRGB space (should be linear)
-3. `TemporalSmoother` EMA in sRGB space (should be linear)
-4. `parse_hex_color()` skips sRGB -> linear decode for control colors
+Step 5 is why an effect must never apply its own gamma: the engine's decode
+already is the transfer.
 
-These affect mid-tone accuracy but the overall pipeline is solid.
+### Linear-Light Discipline
+
+Everything downstream of the canvas works in linear light. Bilinear and area
+sampling decode before they blend, `FadeToBlack` attenuates in linear, the
+screen-capture `TemporalSmoother` keeps its EMA state in linear-light units to
+avoid gamma-space smearing, and `<meta type="color">` defaults parse through
+`LinearRgba::from_hex_srgb`, so a control color is linear by the time a
+renderer sees it.

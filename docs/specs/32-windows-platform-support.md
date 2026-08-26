@@ -2,9 +2,22 @@
 
 > Full Windows support for Hypercolor: USB peripherals, SMBus motherboard/GPU/DRAM RGB, audio-reactive input, session awareness, and native service lifecycle, shipping through the unified desktop app or an optional Windows Service.
 
-**Status:** Active implementation
+**Status:** Shipped, but the module layout below predates the platform-crate split.
+Do not create the files it names.
 **Author:** Nova
 **Date:** 2026-03-13
+
+> **Note (2026-08-25):** this spec prescribes a new file
+> `hypercolor-core/src/input/windows_input.rs` plus `core/src/input/audio/windows.rs`,
+> both backed by the `device_query` crate. None of that is how Windows shipped.
+> `device_query` is not a dependency of any crate, `core/src/input/audio/` contains only
+> `linux.rs`, and Windows host input lives in `crates/hypercolor-windows-input/` (Raw
+> Input) behind the neutral adapter `crates/hypercolor-core/src/input/windows.rs`. The
+> 2026-05-03 snapshot below also predates five of the seven `hypercolor-windows-*`
+> crates: capture, gpu-interop, helper, session, and telemetry all landed later. Platform
+> code belongs in a platform crate; see the boundary rule in CLAUDE.md and
+> `docs/design/72-cross-platform-boundary-review.md`. Spec 72 is the live authority for
+> Windows host input.
 
 **Implementation snapshot (2026-05-03):** Windows now has a native development path,
 cross-platform HID routing for supported USB devices, PawnIO-backed SMBus transport,

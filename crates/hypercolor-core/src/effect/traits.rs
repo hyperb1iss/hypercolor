@@ -1,8 +1,11 @@
 //! Renderer trait and per-frame input data.
 //!
-//! [`EffectRenderer`] is the shared interface that both the wgpu and Servo
-//! rendering backends implement. [`FrameInput`] carries all per-frame data
-//! needed to produce a single canvas frame.
+//! [`EffectRenderer`] is the shared interface implemented by [`ServoRenderer`]
+//! and the compiled-in CPU builtins in [`crate::effect::builtin`]. There is no
+//! GPU shader renderer. [`FrameInput`] carries all per-frame data needed to
+//! produce a single canvas frame.
+//!
+//! [`ServoRenderer`]: crate::effect::servo::ServoRenderer
 
 use std::sync::Arc;
 
@@ -150,9 +153,14 @@ impl EffectRenderOutput {
 
 /// Shared rendering interface for all effect backends.
 ///
-/// Both `WgpuRenderer` (native shaders) and `ServoRenderer` (HTML/Canvas)
-/// implement this trait. `EffectPool` stores `Box<dyn EffectRenderer>`
-/// instances per active zone and delegates frame production through them.
+/// The implementors are `ServoRenderer` (HTML/Canvas/WebGL) and the
+/// compiled-in CPU builtins in `effect::builtin`. `EffectPool` stores
+/// `Box<dyn EffectRenderer>` instances per active zone and delegates frame
+/// production through them.
+///
+/// There is no native GPU shader renderer: `EffectSource::Shader` is
+/// rejected by the renderer factory, and wgpu drives the SparkleFlinger
+/// compositor rather than any effect.
 ///
 /// # Lifecycle
 ///

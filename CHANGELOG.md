@@ -30,6 +30,18 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sending now fails the decode instead of silently arriving as `None`.
 
 ### Removed
+- Remove singleton live-effect routes, `/scenes/active`,
+  `/scenes/deactivate`, the nested `/scenes/{id}/zones/*` mutation tree, and
+  `/library/presets/{id}/apply`; live state and fine-grained writes now have one
+  owner under `/api/v1/scene`, while preset apply remains effect-scoped
+- Remove effect layout association routes and the `effect-layouts.json` store;
+  scene `layout_id` is the deliberate successor
+- Remove `GET`/`PUT /api/v1/output/power`, `PUT /api/v1/settings/brightness`,
+  `POST /api/v1/effects/pause`, and `POST /api/v1/effects/resume`, and move
+  `GET /api/v1/audio/devices` to `GET /api/v1/system/audio-devices`; all five
+  retired paths answer 404 (79f08cb5b)
+- Remove the MCP `stop_effect` tool; clear a zone with `clear_zone` and patch
+  live layer controls with `adjust_controls` (#218)
 
 - Remove logical-device, binding, rebind, device metrics/debug, sensor-item,
   memory-diagnostics, screenshot-mount, attachment catalog-item, category, and
@@ -50,6 +62,26 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `SpatialLayout`. Nothing ever read the hierarchy; layouts stay flat.
 
 ### Breaking Changes
+- **Live render state is now the `/api/v1/scene` tree.** Read real zone and
+  layer ids from `GET /api/v1/scene`, patch controls through
+  `/scene/zones/{zone}/layers/{layer}/controls`, stop through
+  `POST /scene/clear`, and return to the default scene through
+  `POST /scene/deactivate`. Structural mutations may use the one scene
+  `revision` as `If-Match`; control patches never use it.
+- **Preset apply is effect-scoped only.** Use
+  `POST /api/v1/effects/{effect}/presets/{preset}/apply`; library preset routes
+  now provide storage and CRUD only.
+- **Power and brightness are one resource.** `GET`/`PATCH /api/v1/output`
+  carries `{power, brightness}`, replacing `/output/power`,
+  `/settings/brightness`, and the `/effects/pause`|`resume` pair. Pause is no
+  longer a stop: `{"power":"paused"}` preserves the live tree and holds outputs
+  at the off frame. Use `POST /api/v1/scene/clear` to empty the scene.
+- **Platform-mirrored contracts are retired.** `InputSourcePlatformStatus`,
+  `MacosInputTelemetry`, `MacosArchitecture`, `MacosAuthorizationState`, and
+  `MacosProtectedSourceState` are gone from `hypercolor-types::api::system` and
+  from the generated Python client; read the neutral `InputSourceStatus` and the
+  typed `DriverTransportDescriptor` instead. Tray supervision moved into
+  `hypercolor-app`; the `hypercolor-tray` crate no longer exists (#220)
 
 - Replace `GET /api/v1/server` and `GET /api/v1/status` with
   `GET /api/v1/system`. Read runtime fields under `data.status`; public daemon
@@ -114,14 +146,28 @@ and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`get_audio_spectrum()` is typed `NoReturn`.** It always raised; spectrum
   snapshots only exist on the WebSocket stream.
 
+Upgrade notes:
+
+- Replace singleton effect and stored-scene subtree calls with the live scene
+  routes above. Never synthesize a layer id from a zone id; use the id returned
+  by `GET /scene` or an effect-apply response.
+- Existing `effect-layouts.json` files are deliberately left orphaned and are
+  not migrated. Set `scene.layout_id` explicitly for scenes that should select
+  a named layout.
+- Point pause/resume integrations at `PATCH /api/v1/output` with
+  `{"power":"paused"}` or `{"power":"running"}`, and read status from
+  `GET /api/v1/output`.
+- Regenerate OpenAPI-derived clients after the canonical schema wave so they
+  consume `SceneDocument`, `ZoneResource`, real layer ids, and `OutputState`.
+
 ## [0.3.2] - 2026-08-15
 
 Global output power becomes a first-class daemon concept, bundled and saved presets merge into a single effect-scoped stack, and a trusted in-process API bridge lands for local callers. Persistence now reports durability explicitly, and the build system gains a cache-aware wrapper plus a pressure-triggered target GC.
 
 ### Added
 
-- ✨ Add the global output resource at `GET /api/v1/output` and `PATCH /api/v1/output`, backed by `OutputPowerMode` (`running`, `paused`) and `OutputPowerStatus` (`running`, `paused`, `stopped`); pausing holds outputs at their off frame while **preserving live scene state** (978096e)
-- ✨ Add a unified per-effect preset stack: `GET /api/v1/effects/{id}/presets` returns bundled and saved presets as `EffectPresetSummary` with `EffectPresetOrigin` and an `editable` flag, and `POST /api/v1/effects/{id}/presets/{preset}/apply` applies one to an optional zone (3c52120, ac2a201)
+- ✨ Add the global output power resource at `GET /api/v1/output/power` and `PUT /api/v1/output/power`, backed by `OutputPowerMode` (`running`, `paused`) and `OutputPowerStatus` (`running`, `paused`, `stopped`); pausing holds outputs at their off frame while **preserving live scene state** (978096e)
+- ✨ Add a unified per-effect preset stack: `GET /api/v1/effects/{id}/presets` returns bundled and saved presets as `EffectPresetSummary` with `EffectPresetOrigin` and an `editable` flag, and `POST /api/v1/effects/{id}/presets/{preset_id}/apply` applies one to an optional zone (3c52120, ac2a201)
 - ✨ Add `TrustedLocalApi` and `TrustedLocalWebSocket` in `crates/hypercolor-daemon/src/api/local.rs`, letting in-process callers run daemon requests at `AccessTier::Control` without a network hop or API key; paths are validated against `/api/v1/*` and absolute URLs, authority headers, and traversal are rejected (e057ce3)
 - ✨ Add stable identifiers for bundled presets via `PresetId::stable(name)` so effect-scoped preset selections remain durable across reloads (ea42c20)
 - ✨ Add Python client methods `get_output()`, `set_output(...)`, `get_effect_presets(effect_id)`, and `apply_effect_preset(...)` on async and sync clients, backed by the canonical `OutputState` model (ac2a201, d642543, f471fa1)
@@ -158,27 +204,9 @@ Global output power becomes a first-class daemon concept, bundled and saved pres
 ### Removed
 
 - 🔥 Remove client-side preset matching (`crates/hypercolor-ui/src/components/preset_matching.rs` and its tests); preset identity now comes from the daemon (7e2d927)
-- Remove singleton live-effect routes, `/scenes/active`,
-  `/scenes/deactivate`, the nested `/scenes/{id}/zones/*` mutation tree, and
-  `/library/presets/{id}/apply`; live state and fine-grained writes now have one
-  owner under `/api/v1/scene`, while preset apply remains effect-scoped
-- Remove effect layout association routes and the `effect-layouts.json` store;
-  scene `layout_id` is the deliberate successor
 
 ### Breaking Changes
 
-- **Live render state is now the `/api/v1/scene` tree.** Read real zone and
-  layer ids from `GET /api/v1/scene`, patch controls through
-  `/scene/zones/{zone}/layers/{layer}/controls`, stop through
-  `POST /scene/clear`, and return to the default scene through
-  `POST /scene/deactivate`. Structural mutations may use the one scene
-  `revision` as `If-Match`; control patches never use it.
-- **Preset apply is effect-scoped only.** Use
-  `POST /api/v1/effects/{effect}/presets/{preset}/apply`; library preset routes
-  now provide storage and CRUD only.
-- **Pause is no longer a stop.** `PATCH /api/v1/output` with
-  `{"power":"paused"}` preserves the live tree and holds outputs at the off
-  frame. Use `POST /api/v1/scene/clear` when the scene should be emptied.
 - **Python `pause_rendering()` and `resume_rendering()` return `OutputState`** instead of `MutationResult`
 - **Tray menu ids split**: `PAUSE_RESUME` became `PAUSE_OUTPUT` and `RESUME_OUTPUT`, and the command changed from `TogglePause` to `SetPaused(bool)`
 - **`PresetTemplate` gains a required `id` field.** Rust consumers must supply an id (`hypercolor_types::library::PresetId::stable(name)`); the generated Python `preset_template` model changed shape
@@ -186,17 +214,6 @@ Global output power becomes a first-class daemon concept, bundled and saved pres
 
 Upgrade notes:
 
-- Replace singleton effect and stored-scene subtree calls with the live scene
-  routes above. Never synthesize a layer id from a zone id; use the id returned
-  by `GET /scene` or an effect-apply response.
-- Existing `effect-layouts.json` files are deliberately left orphaned and are
-  not migrated. Set `scene.layout_id` explicitly for scenes that should select
-  a named layout.
-- Point pause/resume integrations at `PATCH /api/v1/output` with
-  `{"power":"paused"}` or `{"power":"running"}`, and read status from
-  `GET /api/v1/output`.
-- Regenerate OpenAPI-derived clients after the canonical schema wave so they
-  consume `SceneDocument`, `ZoneResource`, real layer ids, and `OutputState`.
 - Migrate stored `bundled:*` preset references to the stable identifiers returned by `GET /api/v1/effects/{id}/presets`
 - Give each HTML effect `preset` a `preset-id` and verify ids stay unique after whitespace normalization; `validate` flags collisions before upload
 - Handle `ReplacementVisibleButNotDurable` separately from `DurableWritten` when inspecting atomic write results

@@ -136,6 +136,7 @@ pub(super) fn metadata() -> EffectMetadata {
         presets: vec![],
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/your_effect"),
         },
@@ -175,7 +176,7 @@ your_effect::metadata(),
 Tests go in a `tests/` directory, not inline `#[cfg(test)]` blocks. The whole workspace follows this rule. Name the file `your_effect_tests.rs` and cover at minimum:
 
 - Canvas is non-empty after `render_into()`.
-- Every declared control ID is handled in `set_control()` without panicking.
+- Every declared control ID is handled in `apply_controls()` without panicking.
 - `render_into()` returns `Ok` for a zero `delta_secs` frame.
 
 ---
@@ -219,7 +220,7 @@ Display faces (`face()` declarations for HUDs, clocks, and sensor readouts) live
 
 A `cover.webp` sitting beside `main.ts` becomes the effect's card artwork in the browser grid. The build embeds it as a `data:image/webp;base64,` URI in the artifact's `<meta cover>` tag, so a built effect is self-contained: share the `.html` and the artwork goes with it.
 
-The image ships inside every copy of the effect and the daemon parses it on each registry scan, so keep it small. The convention is 640px wide WebP at quality 80, which lands between 2KB and 60KB; the build warns above 128KB and the daemon ignores anything over 1MB. Only `data:` URIs are accepted; a remote URL would let an effect track everyone whose card grid renders it.
+The image ships inside every copy of the effect and the daemon parses it on each registry scan, so keep it small. The `sync-covers` tool re-encodes to at most 960px wide WebP at quality 88, and daemon captures cap at the 640px compositor width, so covers land between 2KB and 60KB in practice. The build warns above 256KB and the daemon ignores anything over 1MB. Only `data:` URIs are accepted; a remote URL would let an effect track everyone whose card grid renders it.
 
 The easiest way to produce one is to let the capture tool do it. With the daemon running:
 
@@ -342,7 +343,7 @@ The effect-reviewer agent (`.agents/agents/effect-reviewer/`) runs this checklis
 ### Technical: native Rust effects
 
 - **Linear color math.** Math in linear RGB or Oklab; output converted to sRGB for the canvas.
-- **Control dispatch.** `set_control()` must handle every control ID declared in `metadata()`.
+- **Control dispatch.** `apply_controls()` must handle every control ID declared in `metadata()`.
 - **Canvas sizing.** Use `Canvas::new(input.canvas_width, input.canvas_height)` for any scratch canvas; never hardcode dimensions. Call `prepare_target_canvas` at the top of `render_into`.
 - **Error handling.** `render_into` returns `anyhow::Result`. No `unwrap()` anywhere.
 

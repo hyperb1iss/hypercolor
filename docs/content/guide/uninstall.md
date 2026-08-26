@@ -102,12 +102,15 @@ sets up), run:
 Optional flags:
 
 ```
---system    Also remove udev rules (/etc/udev/rules.d/99-hypercolor.rules)
-            and i2c-dev module persistence (/etc/modules-load.d/i2c-dev.conf).
+--system    Also remove both udev rules files (99-hypercolor.rules and
+            70-hypercolor-input.rules in /etc/udev/rules.d/) and i2c-dev
+            module persistence (/etc/modules-load.d/i2c-dev.conf).
             Both require sudo.
 
 --purge     Implies --system; also deletes ~/.config/hypercolor and
-            ~/.cache/hypercolor.
+            ~/.cache/hypercolor. It leaves ~/.local/share/hypercolor and
+            ~/.local/state/hypercolor in place; remove those by hand if
+            you want a full wipe (see "Remove configuration and cache").
 ```
 
 Full purge example:

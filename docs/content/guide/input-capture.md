@@ -61,7 +61,7 @@ Input never leaves your machine unless you explicitly enable a remote surface, a
 
 ## Linux
 
-Hypercolor reads input events directly from `/dev/input/event*`. That needs read access to those device nodes, which the `70-hypercolor-input.rules` udev rules grant. Release installs from 0.3.0 onward ship the input rules in the payload: the installer prompts to apply them alongside the USB rules, and the `.deb` and AUR packages install them automatically. On a source checkout:
+Hypercolor reads input events directly from `/dev/input/event*`. That needs read access to those device nodes, which the `70-hypercolor-input.rules` udev rules grant. The `.deb` and AUR packages install them automatically. The `scripts/install-release.sh` one-liner ships the rules in its payload from 0.3.0 onward but never applies them, because it never asks for `sudo`. On a source checkout, or after the one-liner:
 
 ```bash
 just udev-install

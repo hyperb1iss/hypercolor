@@ -58,7 +58,7 @@ Only one discovery scan can run at a time. A second `POST /api/v1/devices/discov
 
 Network devices are fingerprinted on stable hardware identity rather than their current IP address:
 
-- WLED: MAC address (`net:<mac>`)
+- WLED: MAC address (`net:wled:<mac>`)
 - Govee: MAC address (`net:govee:<mac>`)
 - Hue: Bridge ID
 - Nanoleaf: device serial key
@@ -84,7 +84,7 @@ To pair a device that was discovered but is not yet streaming:
 hypercolor devices pair "<device name or ID>"
 ```
 
-`hypercolor devices list` shows each device's state. A device stuck in `discovered` is waiting for credentials. A `connected` device is actively streaming.
+`hypercolor devices list` shows each device's state. A device stuck in `known` is waiting for credentials. A `connected` device has opened its transport; `active` means frames are flowing.
 
 {% <callout type="info"> %}
 Credentials survive daemon restarts. Re-pairing is only needed if you factory-reset the device or regenerate its API keys.

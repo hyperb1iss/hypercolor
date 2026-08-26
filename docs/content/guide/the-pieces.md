@@ -12,7 +12,7 @@ Every interface in Hypercolor talks to one thing: the daemon, which runs on port
 
 The daemon binds to `127.0.0.1:9420` by default. A clean install exposes the web UI from that same port because `web.enabled` is true by default; no separate process is needed for the browser interface. The only time you see `:9430` is when developing the web UI itself (`just ui-dev`), where Trunk runs a hot-reload dev server that proxies API calls back to `:9420`.
 
-The daemon enforces a single-instance lock. If you try to start a second one, it exits immediately with "hypercolor-daemon is already running; exiting."
+The daemon enforces a single-instance lock. If you try to start a second one, it exits immediately with "hypercolor-daemon is already running; exiting".
 
 You can run the daemon directly:
 

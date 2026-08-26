@@ -5,6 +5,31 @@ common workflow (`just verify`, per-area gates, PR expectations) lives in
 [CONTRIBUTING.md](../../CONTRIBUTING.md); this document covers what each
 operating system needs before those commands work.
 
+## The one-command path
+
+```bash
+just setup
+```
+
+`scripts/setup.sh` (and `scripts/setup.ps1` on Windows) is the supported
+bootstrap. It installs system packages through apt, dnf, pacman, or Homebrew
+depending on the host, installs rustup and the pinned toolchain, adds the
+`wasm32-unknown-unknown` target to every installed toolchain, installs `just`,
+`trunk`, `cargo-deny`, `tauri-cli`, and optionally `sccache` (preferring
+`cargo-binstall` when present), installs Bun, and runs `bun install` in both
+`crates/hypercolor-ui` and `sdk/`. It is idempotent, so re-running is safe.
+
+Useful flags, all passed straight through:
+
+- `-y` skips the confirmation prompts.
+- `--no-system` skips system packages, so no sudo is needed.
+- `--minimal` stops after the Rust toolchain and wasm target.
+- `--with-servo` adds the extra dependencies the Servo HTML renderer needs.
+
+The rest of this document is the manual fallback: what each operating system
+needs when you would rather install it yourself, plus the platform-specific
+setup the script deliberately leaves alone.
+
 ## All platforms
 
 - **Rust** via [rustup](https://rustup.rs). `rust-toolchain.toml` pins the
@@ -29,24 +54,39 @@ link against. On Debian/Ubuntu:
 
 ```bash
 sudo apt install \
-  libudev-dev libdbus-1-dev libasound2-dev libpulse0 \
-  libpipewire-0.3-dev \
-  ccache clang cmake jq nasm pkg-config lld \
-  libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev \
-  libxdo-dev libfontconfig1-dev libegl1 libssl-dev \
-  libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
-  librsvg2-dev
+  build-essential pkg-config cmake nasm clang lld \
+  libudev-dev libusb-1.0-0-dev libhidapi-dev \
+  libasound2-dev libpulse-dev libpipewire-0.3-dev libssl-dev \
+  libxdo-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev librsvg2-dev
 ```
 
-The last line (GTK, WebKitGTK, appindicator, rsvg) is only needed for the
-desktop app shell and tray; daemon-only work can skip it. `clang` and
-`lld` are load-bearing: the build wrapper selects them for linking.
+That set matches what `scripts/setup.sh` installs, so `just setup` covers it.
+The last two lines (GTK, WebKitGTK, appindicator, rsvg) are only needed for the
+desktop app shell and tray; daemon-only work can skip them. `clang` and `lld`
+are load-bearing: the build wrapper selects them for linking.
+
+Two more worth having: `jq`, which `just verify` needs for the
+`api-doc-route-check` gate, and `ccache`, which the build wrapper picks up
+automatically when installed. Neither is installed by `just setup`.
+
+Building the Servo HTML renderer needs more on top. Passing `--with-servo` to
+the setup script installs the same set:
+
+```bash
+sudo apt install \
+  gperf libegl1 libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+```
 
 USB and HID device access needs the udev rules:
 
 ```bash
-sudo just udev-install
+just udev-install
 ```
+
+The recipe runs `sudo` on each line itself, so do not prefix it with `sudo`.
+Doing so also breaks a `just` installed through cargo or proto, because root's
+PATH will not find it.
 
 Screen capture uses the Wayland XDG portal and prompts per session; no
 extra setup.
@@ -125,7 +165,10 @@ page offers that restart when it applies.
   full Visual Studio install.
 - **WebView2 runtime** for the app shell. Preinstalled on Windows 11;
   the packaged installer bootstraps it on Windows 10.
-- All `just` recipes have Windows variants and run through PowerShell.
+- The build, test, and run recipes carry `[windows]` variants that route
+  through `scripts/cargo-cache-build.ps1`; 41 of the 128 recipes have one. The
+  rest either run unchanged on both platforms or are Unix-only, so check
+  `just --list` before assuming a recipe exists here.
 
 Optional hardware support:
 

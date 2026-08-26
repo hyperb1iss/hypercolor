@@ -2,6 +2,22 @@
 
 > From "I want to make an effect" to "my effect is running on thousands of setups."
 
+**Status:** Design intent, unbuilt. The document reads as a description of a
+working toolchain. No part of that toolchain exists.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** every authoring verb the walkthroughs
+use is absent from the CLI. `hypercolor new`, `dev`, `validate`, `package`,
+`publish`, `unpublish`, `deprecate`, `simulate`, `bench`, `screenshot-golden`,
+`test-compat`, `test-screenshots`, `verify-color`, `auth login`, `install`,
+`list`, and `update` return zero matches against the shipped command enum
+(`crates/hypercolor-cli/src/lib.rs:136`; the only `install`-shaped verb is
+`install-release`, which installs Hypercolor itself, not an effect). There is no
+publishing account system,
+no registry, and no golden-screenshot harness. Effect authoring today goes
+through the Bun SDK in `sdk/`: author under `sdk/src/effects/`, build with
+`just effect-build NAME`, and install the built HTML through
+`POST /api/v1/effects/install`.
+
 ---
 
 ## Overview

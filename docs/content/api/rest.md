@@ -339,8 +339,8 @@ fresh layer id, then wakes paused output.
 {
   "zone": "84b20af9-0700-4b82-8488-88314b87fb5c",
   "controls": {
-    "speed": { "float": 7.0 },
-    "palette": { "enum": "SilkCircuit" }
+    "speed": { "kind": "float", "value": 7.0 },
+    "palette": { "kind": "enum", "value": "SilkCircuit" }
   },
   "transition": { "type": "cut" }
 }
@@ -591,15 +591,18 @@ Get one control surface with its current field values.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PATCH" path="/api/v1/control-surfaces/{id}/values"> %}
-Apply typed field values to a control surface.
+Apply typed field values to a control surface. The body is the same
+control-patch shape the layer-control route takes, keyed by field id. Control
+surfaces have no input bindings, so a non-empty `clear_bindings` is rejected
+here.
 
 **Request body:**
 
 ```json
 {
-  "fields": {
-    "protocol": { "type": "enum", "value": "ddp" },
-    "ip_address": { "type": "ip", "value": "10.0.0.50" }
+  "values": {
+    "protocol": { "kind": "enum", "value": "ddp" },
+    "ip": { "kind": "ip", "value": "10.0.0.50" }
   }
 }
 ```
@@ -831,7 +834,7 @@ result, so a UI can render it visually.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="GET" path="/api/v1/layouts/{id}"> %}
-One layout's configuration: device zones, positions, LED mappings.
+One layout's configuration: device outputs, positions, LED mappings.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PUT" path="/api/v1/layouts/{id}"> %}

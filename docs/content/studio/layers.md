@@ -28,7 +28,7 @@ Each layer is a card. From top to bottom a card carries:
 - The source icon, the layer title, and the runtime health pill.
 - The source kind in small caps: **Effect**, **Media**, **Screen capture**, **Web page**, or **Color**.
 - Reorder arrows (only in a multi-layer stack) and a delete button.
-- An **On / Off** enable toggle and the **blend mode** dropdown.
+- The **blend mode** dropdown.
 - An **Opacity** slider.
 - The source's own controls: an effect's live parameters, or a media clip's playback.
 - A collapsed **Transform & Color** disclosure.
@@ -100,11 +100,9 @@ The remaining sliders fine-tune the layer:
 
 Every adjustment saves the moment you release the slider, guarded so a write never clobbers a change made elsewhere (see [optimistic concurrency](#how-edits-are-saved) below).
 
-## Reordering, enabling, and removing
+## Reordering and removing
 
 In a stack of more than one layer, each card shows **up** and **down** arrows. The up arrow moves a layer toward the top of the visual stack (later in compositing); the down arrow moves it toward the bottom. The arrow disables itself at the ends of the stack. A single-layer stack hides the arrows entirely, since there is nowhere to move.
-
-The **On / Off** toggle disables a layer without deleting it. A disabled layer keeps all its settings but contributes nothing to the composite, so you can audition the stack with and without it.
 
 The **trash** button removes a layer for good and pops a confirmation toast.
 

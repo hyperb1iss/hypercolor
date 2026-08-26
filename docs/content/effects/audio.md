@@ -127,7 +127,7 @@ const radius = base + punch * minDim * 0.2;
 
 ### For structure
 
-`levelShort` is the short-window RMS envelope. Good for "overall loudness right now" without the jitter of `level`. Multiply it into line widths, glow radii, or alpha.
+`levelShort` is the short-window RMS envelope. Good for "overall loudness right now" without the jitter of `levelLinear`. Multiply it into line widths, glow radii, or alpha.
 
 `levelLong` is the long-window version. Use it for drift, breathing, or slow trend adaptation.
 
@@ -260,7 +260,7 @@ For native Rust effects, the daemon hands a `&AudioData` directly inside `FrameI
 | `beat_phase` | `beatPhase` | |
 | `beat_pulse` | `beatPulse` | Decaying envelope on both sides |
 | `bpm` | `tempo` | Different name for the BPM estimate |
-| `rms_level` | `level` | Overall loudness |
+| `rms_level` | `levelLinear` | Overall loudness, normalized 0-1 (`levelDb` carries the dB form) |
 | `peak_level` | _(none)_ | Native-only; no TS field |
 | `spectral_centroid` | `brightness` | Renamed |
 | `spectral_flux` | `spectralFlux` | |

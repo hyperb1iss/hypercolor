@@ -2,7 +2,11 @@
 
 > From zero to a running RGB effect in under a minute.
 
-**Status:** Draft
+**Status:** Implemented (status corrected 2026-08-25). `POST /api/v1/effects/install`
+and `POST /api/v1/effects/rescan` are both live routes, and the SDK packages shipped.
+Endpoint examples elsewhere in this document are a historical snapshot, and the
+`hypercolor profiles` command tree in the CLI usage block no longer exists; profiles
+folded into scenes.
 **API status:** Historical control-route snapshot. The canonical resource model
 in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Scope:** SDK (npm packages), Daemon (install endpoint), CLI (install command), UI (upload)

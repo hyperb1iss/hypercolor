@@ -1,5 +1,11 @@
 # Spec 75: Mobile-Responsive Web UI
 
+Status: In progress (status line added 2026-08-25; this file previously carried none).
+Wave 0 shipped: `MobileNav` (`crates/hypercolor-ui/src/components/mobile_nav.rs`) and
+the responsive breakpoint pass are live. Wave 1's pointer-event migration is genuinely
+incomplete, so the open-wave framing below is accurate. This spec supersedes the
+archived Spec 63, which designed a separate mobile shell that was never built.
+
 Make `hypercolor-ui` fully usable on phones and tablets as a pure
 Leptos + Tailwind effort. No new frameworks, no daemon changes beyond
 possible preview-cap tuning. The daemon already serves the built UI as a

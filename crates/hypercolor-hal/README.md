@@ -16,8 +16,9 @@ equivalent uses the kernel's `/dev/i2c-*` device tree via `i2cdev`).
 
 ## Workspace position
 
-**Depends on:** `hypercolor-types`; `hypercolor-windows-pawnio` (Windows
-only, via `[target.cfg]` — not a feature flag).
+**Depends on:** `hypercolor-color`, `hypercolor-types`;
+`hypercolor-windows-pawnio` (Windows only, via `[target.cfg]` — not a feature
+flag).
 
 **Depended on by:** `hypercolor-core`, `hypercolor-driver-builtin`.
 
@@ -75,4 +76,5 @@ None. The Windows/Linux transport split is handled by
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source
-RGB lighting orchestration for Linux. Licensed under Apache-2.0.
+RGB lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.

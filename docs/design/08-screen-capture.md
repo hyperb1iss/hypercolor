@@ -2,6 +2,22 @@
 
 > Ambilight for everything. Capture screen content, extract colors, drive LEDs.
 
+**Status:** Design intent. The pipeline reasoning and the color-processing
+strategies still hold; the configuration schema is wrong end to end.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** the "Configuration Schema" section
+documents a `[screen_capture]` table with `[screen_capture.black_level]`,
+`.white_balance`, `.letterbox`, `.subtitles`, and `.adaptive` subtables. The real
+table is `[capture]` (`crates/hypercolor-types/src/config/root.rs:43`) and it has
+no subtables. Not one documented key parses: `CaptureConfig` carries `enabled`,
+`source`, `capture_fps`, `cadence`, `grid_cols`, `grid_rows`,
+`publication_memory_bytes`, `smoothing`, `scene_cut_threshold`, `letterbox`,
+`letterbox_threshold`, `brightness`, `gamma`, `saturation`, `exposure_ev`,
+`restore_token`, and the four `target_led_*` keys
+(`crates/hypercolor-types/src/config/capture.rs:25`). That struct sets
+`deny_unknown_fields`, so pasting any block from this document into
+`hypercolor.toml` is a hard config parse failure, not a partial load.
+
 ---
 
 ## Overview

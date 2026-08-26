@@ -13,19 +13,29 @@ corrupting the alternate screen.
 ## Role in the Workspace
 
 Library consumed by hypercolor-cli (behind the `tui` feature flag). Depends on
-hypercolor-types and third-party UI crates: ratatui, crossterm, tachyonfx, ratatui-image,
-tokio-tungstenite. No workspace crate depends on it other than hypercolor-cli.
+hypercolor-types, hypercolor-color, and hypercolor-core for shared vocabulary;
+hypercolor-leptos-ext (feature `ws-core`) for the canonical binary WebSocket frame codecs,
+so the TUI never hand-rolls a frame layout; and third-party UI crates: ratatui, crossterm,
+tachyonfx, ratatui-image, tokio-tungstenite. No workspace crate depends on it other than
+hypercolor-cli.
 
 ## Public Entry Point
 
-The sole public entry point is:
+`launch` is the intended entry point:
 
 ```rust
-hypercolor_tui::launch(host, port, theme, log_level) -> anyhow::Result<()>
+pub async fn launch(
+    host: String,
+    port: u16,
+    api_key: Option<String>,
+    theme: Option<String>,
+    log_level: &str,
+) -> anyhow::Result<()>
 ```
 
 This is called by hypercolor-cli when the `tui` subcommand is dispatched. The function takes
-over the terminal, runs the event loop, and returns when the user quits.
+over the terminal, runs the event loop, and returns when the user quits. The crate's other
+modules are public for testing and internal composition and carry no stability guarantee.
 
 ## Cargo Features
 
@@ -43,4 +53,4 @@ just tui          # Via the justfile (auto-starts daemon if needed)
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB lighting
-orchestration for Linux. Apache-2.0 licensed.
+orchestration for Linux, Windows, and macOS. Apache-2.0 licensed.

@@ -8,15 +8,25 @@
 > backend contract), and the engine hardening (unassigned-device behavior)
 > needed to ship it.
 
-**Status:** Implemented
+**Status:** Implemented. This spec owns the shipped zone model, but two things in it
+have gone stale: the route examples, and the `RenderGroup` vocabulary it inherits from
+Spec 27.
 **API status:** Historical scene API snapshot. The canonical live scene tree in
 [Spec 78](78-api-resource-model.md) supersedes its route and status examples.
 **Author:** Nova
 **Date:** 2026-05-17
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
-**Evolves:** Render Groups (27)
+**Evolves:** Render Groups (27, historical)
 **Depends on:** Spatial Layout Engine (06), Effect System (07),
-Scenes & Automation (13), Render Groups (27), Canonical Render Pipeline (48)
+Scenes & Automation (13), Canonical Render Pipeline (48)
+
+> **Note (2026-08-25):** section 1 says "the `RenderGroup` type already exists and ships
+> in the tree". It does not, and the name is now rejected by a workspace guard test; the
+> shipped noun is `Zone` (`crates/hypercolor-types/src/scene.rs`). Every bare `RenderGroup`
+> or "render group" below should be read as `Zone`. Section 6's references to
+> `profiles::apply_profile_snapshot` and `crates/hypercolor-daemon/src/api/profiles.rs`
+> are also dead: profiles folded into scenes, and snapshot semantics now live on scenes
+> at `POST /api/v1/scenes/snapshot`.
 **Related:** User Media & Layer Stack (60), Studio Composition UI (65),
 SparkleFlinger (design/30), brainstorm decision `decision_626e122a924d`
 

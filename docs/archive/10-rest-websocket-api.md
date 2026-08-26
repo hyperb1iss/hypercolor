@@ -2,9 +2,20 @@
 
 > The HTTP surface of Hypercolor: every endpoint, every schema, every byte on the wire.
 
-**Status:** Implemented (spec partially predates display faces and device metrics)
-**API status:** Historical wire snapshot. The canonical resource model in
-[Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
+**Status:** Superseded and archived on 2026-08-25. Historical wire snapshot only.
+Do not implement from this document.
+**Superseded by:** [Spec 78](../specs/78-api-resource-model.md), whose Appendix A is the
+normative route inventory (83 paths, 118 operations) and matches the daemon exactly.
+
+> **Why this was archived (2026-08-25):** 33 of the 50 endpoints documented below no
+> longer exist. Section 8 (Profiles) went away when profiles folded into scenes, and
+> snapshot semantics now live on scenes at `POST /api/v1/scenes/snapshot`. Section 11
+> (Inputs), section 12 (State), and section 13 (`/bulk`) were removed wholesale, along
+> with `/effects/active`, `/effects/next`, `/effects/previous`, `/effects/shuffle`,
+> `/effects/{id}/thumbnail`, `/devices/{id}/test`, `/devices/{id}/zones`,
+> `/layouts/current`, and `/scenes/{id}/enabled`. Section 14's WebSocket frame layouts
+> are also hand-rolled; `hypercolor-leptos-ext::ws` is the single definition of the
+> binary wire format.
 
 ---
 

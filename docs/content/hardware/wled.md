@@ -22,7 +22,7 @@ Both RGB and RGBW strip configurations are detected automatically from the devic
 
 Hypercolor browses for `_wled._tcp.local.` services using a 5-second scan window. Each candidate is enriched via `GET http://<ip>/json/info`, which provides the display name, LED count, reported max FPS, firmware version, and RGBW flag. Devices that respond to HTTP enrichment connect automatically; devices found only via mDNS where HTTP enrichment fails are held in a deferred state until the next scan.
 
-Fingerprinting uses the MAC address from `/json/info` (`net:<mac>`) so a DHCP lease change does not break the device identity.
+Fingerprinting uses the MAC address from `/json/info` (`net:wled:<mac>`) so a DHCP lease change does not break the device identity. When the device reports no MAC, the hostname is used as the key instead.
 
 Trigger a scan from the CLI:
 
@@ -112,7 +112,7 @@ Adjust the tolerance in **Settings → Discovery → WLED → Frame Dedup Tolera
 - Run with debug logging to see probe attempts:
 
 ```bash
-RUST_LOG=hypercolor_driver_wled=debug hypercolor daemon
+RUST_LOG=hypercolor_driver_wled=debug just daemon
 ```
 
 ### LEDs don't respond after discovery

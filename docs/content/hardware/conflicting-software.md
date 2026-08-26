@@ -26,8 +26,9 @@ Hypercolor controls USB devices through two transport paths:
 
 In both cases the error surfaces in Hypercolor's logs as `TransportError::PermissionDenied`
 or `TransportError::IoError`, and the device stays in a disconnected state. The transport
-layer maps any underlying error message containing "permission" to `PermissionDenied`;
-everything else becomes `IoError`.
+layer maps the OS error kind, not the message text: permission-denied becomes
+`TransportError::PermissionDenied`, a missing node becomes `NotFound`, a dropped
+connection becomes `Disconnected`, and anything else becomes `IoError`.
 
 {% <callout type="warning"> %}
 The udev rules in `99-hypercolor.rules` grant your user *permission* to open the device
@@ -222,8 +223,8 @@ hypercolor diagnose
 curl -s -X POST http://localhost:9420/api/v1/diagnose | jq
 ```
 
-The `devices` checks report the tracked device-registry count, output-queue health, and
-USB actor display-lane timing.
+The `devices` checks report the tracked device-registry count, output-queue health, USB
+actor display-lane timing, and display-output encoder health.
 
 ### Diagnosing on Windows
 

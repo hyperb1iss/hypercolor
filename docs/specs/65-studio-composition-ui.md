@@ -9,8 +9,10 @@
 > in parallel with the existing pages behind a runtime feature flag,
 > reusing the already-polished layer manager.
 
-**Status:** Ready to build (revised after Codex cross-model review and a
-pre-build foundation audit, 2026-05-17)
+**Status:** Built (status corrected 2026-08-25). Studio is a first-class unflagged
+route in `crates/hypercolor-ui/src/app.rs`, with ten modules under
+`crates/hypercolor-ui/src/pages/studio/`. The runtime feature flag and the legacy pages
+this spec builds "in parallel with" are both gone.
 **API status:** Historical scene API snapshot. The canonical live scene tree in
 [Spec 78](78-api-resource-model.md) supersedes its route and status examples.
 **Author:** Nova
@@ -202,7 +204,7 @@ with different device outputs assigned to each — with no second redesign.
   and building those is spec 64's job.
 - **Engine or render-pipeline changes.** UI crate only.
 - **Mobile-specific layout.** Studio collapses responsively (§13) but the
-  dedicated mobile treatment is spec 63's scope.
+  dedicated mobile treatment is spec 75's scope (spec 63 was archived on 2026-08-25).
 - **Effects-page redesign.** The Effects gallery stays as the effect
   browser; §5.3 records how it relates to Studio.
 - **A node-graph editor or graph data model.** The runtime is a DAG —
@@ -848,7 +850,7 @@ unbuilt; §7's panel omits reference information until it exists.
 The three-rail layout collapses responsively: on narrow viewports the
 Surface rail and Layers rail become slide-over drawers and the Stage takes
 the full width. Spec 65 ships this responsive collapse so Studio is usable
-on a phone-width viewport; spec 63 owns any deeper mobile-specific
+on a phone-width viewport; spec 75 owns any deeper mobile-specific
 treatment and navigation.
 
 ---

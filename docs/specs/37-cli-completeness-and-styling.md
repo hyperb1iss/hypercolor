@@ -6,13 +6,28 @@
 > operation from a flag-heavy chore into a first-class experience with named
 > connection profiles and WebSocket streaming subscriptions.
 
-**Status:** Draft
+**Status:** Implemented. The deliverables shipped; the route inventory below did not
+survive with them, so treat every endpoint in this document as historical.
 **API status:** Historical command and route snapshot. The resource model in
 [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
+
+> **Note (2026-08-25):** "Draft" understated this spec and its route table overstated
+> the daemon, in the same header. The deliverables are live: `Painter`
+> (`crates/hypercolor-cli/src/output/painter.rs`), named connection profiles
+> (`crates/hypercolor-cli/src/config/mod.rs`), and the WebSocket client
+> (`crates/hypercolor-cli/src/client.rs`). Two documented commands target deleted
+> routes and cannot be built: `hypercolor devices identify <id> zone <zone-id>` against
+> `POST /devices/{id}/zones/{zone_id}/identify`, which is now
+> `/devices/{id}/segments/{segment}/identify`, and `hypercolor devices logical list <id>`
+> against `GET /devices/{id}/logical-devices`, which was removed outright along with the
+> `logical.rs` subcommand tree it implies. The `hypercolor profile` surface referenced
+> here is also gone; profiles folded into scenes.
 **Author:** Nova
 **Date:** 2026-04-09
 **Crates:** `hypercolor-cli`, `hypercolor-daemon` (minor)
-**Related:** `docs/specs/10-rest-websocket-api.md`, `docs/specs/15-cli-commands.md`
+**Related:** `docs/specs/78-api-resource-model.md` for the live route surface;
+`docs/archive/10-rest-websocket-api.md` and `docs/archive/15-cli-commands.md` (both
+archived 2026-08-25) for history
 
 ---
 
@@ -1187,7 +1202,8 @@ Verification:
 
 Files:
 
-- `docs/specs/15-cli-commands.md` — append a "Spec 37 delta" section
+- `docs/archive/15-cli-commands.md`, archived 2026-08-25, so no delta section is
+  possible against it any more
   listing the new commands
 - `crates/hypercolor-cli/src/commands/completions.rs` — verify generation
   picks up new subcommands without source changes
