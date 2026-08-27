@@ -244,6 +244,9 @@ fn load_scenes(path: &Path) -> anyhow::Result<(HashMap<SceneId, Scene>, bool)> {
         .with_context(|| format!("failed to read scenes at {}", path.display()))?;
     let original = serde_json::from_str::<serde_json::Value>(&raw)
         .with_context(|| format!("failed to parse scenes at {}", path.display()))?;
+    if original.as_object().is_some_and(serde_json::Map::is_empty) {
+        return Ok((HashMap::new(), true));
+    }
     let Some(schema_version) = original
         .as_object()
         .and_then(|document| document.get("schema_version"))
@@ -445,6 +448,39 @@ mod tests {
         let persisted = std::fs::read_to_string(path).expect("normalized document should read");
         assert!(!persisted.contains("  Focus  "));
         assert!(!persisted.contains("  Quiet work  "));
+    }
+
+    #[test]
+    fn startup_persists_empty_unversioned_store_as_v2() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("scenes.json");
+        std::fs::write(&path, "{}").expect("legacy scene store should write");
+
+        let mut store = SceneStore::load(&path).expect("empty legacy scene store should load");
+
+        assert!(store.scenes.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("legacy payload should remain readable"),
+            "{}",
+            "read admission must never acquire write authority"
+        );
+        assert!(
+            store
+                .persist_normalization()
+                .expect("startup should persist the v2 envelope")
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(&path).expect("v2 payload should remain readable")
+            )
+            .expect("v2 payload should parse"),
+            serde_json::json!({"schema_version": 2, "scenes": {}})
+        );
+        assert!(
+            !store
+                .persist_normalization()
+                .expect("persisted store should no longer need normalization")
+        );
     }
 
     #[test]

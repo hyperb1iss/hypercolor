@@ -89,6 +89,23 @@ fn scene_store_round_trips_named_scenes() {
 }
 
 #[test]
+fn scene_store_loads_empty_unversioned_store_without_rewriting_the_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let payload = "{}";
+    std::fs::write(&path, payload).expect("legacy scene store should write");
+
+    let loaded = scene_store::load(&path).expect("empty legacy scene store should load");
+
+    assert!(loaded.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("legacy payload should remain readable"),
+        payload,
+        "read admission must never acquire write authority"
+    );
+}
+
+#[test]
 fn scene_store_rejects_invalid_scenes_without_rewriting_the_file() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
