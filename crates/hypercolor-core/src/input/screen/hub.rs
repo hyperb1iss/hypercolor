@@ -1846,6 +1846,33 @@ impl ScreenPublicationHub {
         (generation, lease)
     }
 
+    /// Observe the first preferred branch, or the first fallback branch, from
+    /// one committed authority snapshot.
+    #[must_use]
+    pub fn observe_preferred_matching_lease(
+        &self,
+        mut preferred: impl FnMut(&ResolvedScreenPublicationDescriptor) -> bool,
+        mut fallback: impl FnMut(&ResolvedScreenPublicationDescriptor) -> bool,
+    ) -> (ScreenPlanGeneration, Option<ScreenBranchLease>) {
+        let state = self.state.load_full();
+        let generation = state.plan.generation();
+        let branch = state
+            .branches
+            .iter()
+            .find(|branch| preferred(&branch.entry.descriptor))
+            .or_else(|| {
+                state
+                    .branches
+                    .iter()
+                    .find(|branch| fallback(&branch.entry.descriptor))
+            });
+        let lease = branch.map(|branch| ScreenBranchLease {
+            branch: Arc::clone(&branch.entry),
+            authority: Arc::clone(&self.state),
+        });
+        (generation, lease)
+    }
+
     /// Bind a registration-owned observer to its exact committed route.
     #[must_use]
     pub fn branch_observer(

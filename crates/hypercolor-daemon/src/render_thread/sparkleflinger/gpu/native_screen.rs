@@ -49,6 +49,10 @@ pub(crate) enum NativeScreenCopyOutcome {
     /// The last frame's contents are uncertain and must be dropped.
     Invalidated(anyhow::Error),
     /// Native execution is gone until a rebuild succeeds; drop the frame.
+    #[cfg_attr(
+        target_os = "windows",
+        allow(dead_code, reason = "only the macOS bridge has a rebuild state")
+    )]
     Unavailable(anyhow::Error),
 }
 
@@ -91,17 +95,7 @@ pub(super) trait NativeScreenBridge: Send {
         Vec::new()
     }
 
-    #[cfg(test)]
-    #[cfg_attr(
-        not(any(
-            target_os = "windows",
-            all(target_os = "macos", feature = "screen-capture")
-        )),
-        allow(
-            dead_code,
-            reason = "bridge fixtures downcast only where a bridge exists"
-        )
-    )]
+    #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
@@ -130,11 +124,11 @@ impl InstalledNativeScreen {
     reason = "each platform arm consumes the subset of device handles it needs"
 )]
 #[cfg_attr(
-    not(any(
-        target_os = "windows",
-        all(target_os = "macos", feature = "screen-capture")
-    )),
-    allow(clippy::unnecessary_wraps, reason = "the bridge arms are fallible")
+    not(all(target_os = "macos", feature = "screen-capture")),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "macOS bridge installation is fallible"
+    )
 )]
 pub(super) fn install(
     device: &wgpu::Device,
@@ -224,17 +218,7 @@ impl GpuSparkleFlinger {
         }
     }
 
-    #[cfg(test)]
-    #[cfg_attr(
-        not(any(
-            target_os = "windows",
-            all(target_os = "macos", feature = "screen-capture")
-        )),
-        allow(
-            dead_code,
-            reason = "bridge fixtures downcast only where a bridge exists"
-        )
-    )]
+    #[cfg(all(test, target_os = "macos", feature = "screen-capture"))]
     pub(super) fn screen_bridge_mut<B: NativeScreenBridge + 'static>(&mut self) -> Option<&mut B> {
         self.screen_bridge
             .as_mut()

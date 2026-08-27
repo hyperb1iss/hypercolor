@@ -439,11 +439,6 @@ impl NativeScreenBridge for WindowsScreenHost {
     fn release_caches(&mut self) {
         self.storage_id = None;
     }
-
-    #[cfg(test)]
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 fn create_screen_target(

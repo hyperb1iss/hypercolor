@@ -983,8 +983,8 @@ impl InputPublicationReader {
         target: Option<&ScreenNativeExecutionTarget>,
         extent: PixelExtent,
     ) -> (ScreenPlanGeneration, Option<ScreenBranchLease>) {
-        self.screen_publications
-            .observe_matching_lease(|descriptor| {
+        self.screen_publications.observe_preferred_matching_lease(
+            |descriptor| {
                 descriptor.kind() == ScreenPublicationKind::Surface
                     && descriptor.geometry().output_extent() == extent
                     && screen_executor_matches_render_target(
@@ -992,7 +992,17 @@ impl InputPublicationReader {
                         descriptor.requested_executor(),
                         self.native_execution_policy,
                     )
-            })
+            },
+            |descriptor| {
+                descriptor.kind() == ScreenPublicationKind::Surface
+                    && descriptor.geometry().output_extent() == extent
+                    && screen_executor_matches_render_target(
+                        None,
+                        descriptor.requested_executor(),
+                        self.native_execution_policy,
+                    )
+            },
+        )
     }
 
     /// Lease the first committed CPU zones branch, whatever grid and extent

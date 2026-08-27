@@ -134,6 +134,26 @@ fn handle_service_control(
     }
 }
 
+fn report_status(
+    status_handle: &ServiceStatusHandle,
+    state: ServiceState,
+    controls_accepted: ServiceControlAccept,
+    exit_code: u32,
+    wait_hint: Duration,
+) -> Result<()> {
+    status_handle
+        .set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: state,
+            controls_accepted,
+            exit_code: ServiceExitCode::Win32(exit_code),
+            checkpoint: 0,
+            wait_hint,
+            process_id: None,
+        })
+        .context("failed to update Hypercolor service status")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,24 +195,4 @@ mod tests {
             ERROR_CALL_NOT_IMPLEMENTED
         );
     }
-}
-
-fn report_status(
-    status_handle: &ServiceStatusHandle,
-    state: ServiceState,
-    controls_accepted: ServiceControlAccept,
-    exit_code: u32,
-    wait_hint: Duration,
-) -> Result<()> {
-    status_handle
-        .set_service_status(ServiceStatus {
-            service_type: SERVICE_TYPE,
-            current_state: state,
-            controls_accepted,
-            exit_code: ServiceExitCode::Win32(exit_code),
-            checkpoint: 0,
-            wait_hint,
-            process_id: None,
-        })
-        .context("failed to update Hypercolor service status")
 }

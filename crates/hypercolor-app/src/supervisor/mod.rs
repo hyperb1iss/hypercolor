@@ -2227,6 +2227,10 @@ fn record_failure(count: &mut u32, anchor: &mut Option<Instant>) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "state-machine fixtures stay adjacent while platform spawn helpers remain last"
+)]
 mod tests {
     use super::{
         DaemonStartupObservation, MacosDaemonOwnerOfflineStatus, macos_external_owner_offline,
@@ -2953,7 +2957,6 @@ async fn wait_for_exit(daemon: SharedManagedDaemon) -> Result<std::process::Exit
     }
 }
 
-#[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 fn detect_systemd_user_service() -> SystemdUserServiceProbe {
     if systemctl_user_output(&["is-active", SYSTEMD_USER_SERVICE])
