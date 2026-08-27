@@ -809,6 +809,7 @@ fn health_verified_daemon_connection(base: &Url) -> VerifiedDaemonConnection {
     }
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn sidecar_verified_daemon_connection(
     base: &Url,
     protected_control_credential: ProtectedControlCredential,
