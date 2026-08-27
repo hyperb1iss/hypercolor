@@ -5,9 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 
 use hypercolor_macos_owner::{
     MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION, MAX_MACOS_OWNER_ARTIFACT_BYTES,
-    MacosDaemonOwner, MacosOwnerIdentity, MacosOwnerStore, MacosProtectedControlCredential,
-    MacosServerSessionId, try_acquire_macos_daemon_guard,
+    MacosDaemonOwner, MacosOwnerIdentity, MacosOwnerStore, MacosServerSessionId,
+    try_acquire_macos_daemon_guard,
 };
+use hypercolor_types::service::ProtectedControlCredential;
 use serde_json::{Value, json};
 
 fn identity(label: &str, pid: u32) -> MacosOwnerIdentity {
@@ -307,7 +308,7 @@ fn schema_v1_shape_is_separate_and_credential_has_256_random_bits() {
     );
     assert_ne!(
         attestation.protected_control_credential,
-        MacosProtectedControlCredential::from_bytes([0; 32])
+        ProtectedControlCredential::from_bytes([0; 32])
     );
 }
 

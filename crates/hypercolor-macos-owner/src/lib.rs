@@ -70,7 +70,7 @@ pub use model::{
     MacosConflictUpdate, MacosDaemonOwner, MacosDaemonSessionAttestation, MacosExternalOwnerMode,
     MacosHandoverOperation, MacosHandoverPhase, MacosOwnerConflict, MacosOwnerConflictRecord,
     MacosOwnerIdentity, MacosOwnerIncarnation, MacosOwnerRecord, MacosOwnerRecoveryRequired,
-    MacosOwnerSnapshot, MacosProtectedControlCredential, MacosServerSessionId,
+    MacosOwnerSnapshot, MacosServerSessionId,
 };
 #[cfg(target_os = "macos")]
 pub use process_identity::{request_macos_child_termination, request_macos_pid_termination};

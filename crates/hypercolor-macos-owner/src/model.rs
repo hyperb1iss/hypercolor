@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use hypercolor_types::service::ProtectedControlCredential;
 use serde::{Deserialize, Serialize};
 
 pub const MACOS_OWNER_RECORD_SCHEMA_VERSION: u32 = 1;
@@ -43,9 +44,7 @@ pub const MACOS_MANAGED_HANDOVER_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum wait for user-directed standalone-owner termination.
 pub const MACOS_STANDALONE_HANDOVER_TIMEOUT: Duration = Duration::from_mins(1);
 pub(crate) const MACOS_SERVER_SESSION_ID_PREFIX: &str = "hc_session_";
-pub(crate) const MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX: &str = "hc_pc_";
 pub(crate) const MACOS_SERVER_SESSION_ID_BYTES: usize = 16;
-pub(crate) const MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES: usize = 32;
 
 /// A daemon topology that can own protected macOS capabilities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,34 +274,6 @@ impl fmt::Debug for MacosServerSessionId {
     }
 }
 
-/// Private 256-bit bearer credential for one daemon process session.
-#[derive(Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct MacosProtectedControlCredential(pub(crate) String);
-
-impl MacosProtectedControlCredential {
-    /// Construct a canonical protected-control credential from 256 bits.
-    #[must_use]
-    pub fn from_bytes(bytes: [u8; MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES]) -> Self {
-        Self(format_hex_token(
-            MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX,
-            &bytes,
-        ))
-    }
-
-    /// Explicitly expose the bearer value for authenticated local transport.
-    #[must_use]
-    pub fn expose_secret(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for MacosProtectedControlCredential {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("MacosProtectedControlCredential([REDACTED])")
-    }
-}
-
 /// Private process-session proof derived from canonical daemon ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -318,7 +289,7 @@ pub struct MacosDaemonSessionAttestation {
     /// Per-process identifier safe to expose from `GET /system`.
     pub server_session_id: MacosServerSessionId,
     /// Private bearer credential accepted only from a loopback peer.
-    pub protected_control_credential: MacosProtectedControlCredential,
+    pub protected_control_credential: ProtectedControlCredential,
 }
 
 impl MacosDaemonSessionAttestation {

@@ -53,7 +53,8 @@ function Start-HypercolorChild {
     param(
         [string] $FilePath,
         [string[]] $Arguments,
-        [string] $WorkingDirectory
+        [string] $WorkingDirectory,
+        [hashtable] $Environment = @{}
     )
 
     $command = Get-Command $FilePath -ErrorAction Stop
@@ -62,6 +63,9 @@ function Start-HypercolorChild {
     $startInfo.WorkingDirectory = $WorkingDirectory
     $startInfo.UseShellExecute = $false
     $startInfo.Arguments = Join-HypercolorWindowsArguments $Arguments
+    foreach ($entry in $Environment.GetEnumerator()) {
+        $startInfo.EnvironmentVariables[$entry.Key] = $entry.Value
+    }
 
     $process = [System.Diagnostics.Process]::Start($startInfo)
     if ($null -eq $process) {
@@ -116,6 +120,18 @@ function ConvertTo-HypercolorWindowsArgument {
     $quoted += '"'
 
     return $quoted
+}
+
+function New-HypercolorProtectedControlCredential {
+    $bytes = [byte[]]::new(32)
+    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($bytes)
+    } finally {
+        $generator.Dispose()
+    }
+    $hex = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+    return "hc_pc_$hex"
 }
 
 function Stop-HypercolorChild {
@@ -276,6 +292,16 @@ if (Test-Path $nasmExe) {
 
 Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue
 
+if ([string]::IsNullOrWhiteSpace($env:HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL)) {
+    $protectedControlCredential = New-HypercolorProtectedControlCredential
+} elseif ($env:HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL -cnotmatch '^hc_pc_[0-9a-f]{64}\z') {
+    throw 'HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL must be a canonical hc_pc_ token.'
+} else {
+    $protectedControlCredential = $env:HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL
+}
+Remove-Item Env:HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL -ErrorAction SilentlyContinue
+Remove-Item Env:HYPERCOLOR_UI_DEV_CONTROL_CREDENTIAL -ErrorAction SilentlyContinue
+
 Write-Host '[dev] building bundled effects'
 Push-Location (Join-Path $RepoRoot 'sdk')
 try {
@@ -353,7 +379,13 @@ try {
     Test-HypercolorSmbusBroker
 
     Write-Host '[dev] starting daemon on 127.0.0.1:9420'
-    $daemon = Start-HypercolorChild -FilePath $daemonExe -Arguments $daemonArguments -WorkingDirectory $RepoRoot
+    $daemon = Start-HypercolorChild `
+        -FilePath $daemonExe `
+        -Arguments $daemonArguments `
+        -WorkingDirectory $RepoRoot `
+        -Environment @{
+            HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL = $protectedControlCredential
+        }
 
     Start-Sleep -Seconds 2
 
@@ -362,6 +394,7 @@ try {
         -FilePath 'trunk.exe' `
         -Arguments @('serve', '--dist', '.dist-dev') `
         -WorkingDirectory (Join-Path $RepoRoot 'crates\hypercolor-ui')
+    Write-Host "[dev] protected controls: http://127.0.0.1:9430/#$protectedControlCredential"
 
     while ($true) {
         if ($daemon.HasExited) {

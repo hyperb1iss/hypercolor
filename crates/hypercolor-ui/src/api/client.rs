@@ -9,6 +9,8 @@ use std::{cell::RefCell, fmt};
 
 use gloo_net::http::{Method, RequestBuilder, Response};
 use hypercolor_types::api::{ApiErrorBody, ApiResponse, ListResponse};
+#[cfg(any(test, all(debug_assertions, target_arch = "wasm32")))]
+use hypercolor_types::service::ProtectedControlCredential;
 use serde::{Serialize, de::DeserializeOwned};
 
 #[cfg(target_arch = "wasm32")]
@@ -18,11 +20,50 @@ thread_local! {
     static DAEMON_TRANSPORT: RefCell<DaemonTransport> = RefCell::new(DaemonTransport::default());
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct DaemonTransport {
     native_app: bool,
     base_url: Option<String>,
     protected_control_credential: Option<String>,
+}
+
+impl Default for DaemonTransport {
+    fn default() -> Self {
+        Self {
+            native_app: false,
+            base_url: None,
+            protected_control_credential: fragment_dev_control_credential(),
+        }
+    }
+}
+
+#[cfg(any(test, all(debug_assertions, target_arch = "wasm32")))]
+fn parse_dev_control_credential_fragment(fragment: &str) -> Option<String> {
+    let credential = fragment.strip_prefix('#')?;
+    ProtectedControlCredential::parse(credential)
+        .ok()
+        .map(|credential| credential.expose_secret().to_owned())
+}
+
+fn fragment_dev_control_credential() -> Option<String> {
+    #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+    {
+        let window = web_sys::window()?;
+        let location = window.location();
+        let credential = parse_dev_control_credential_fragment(&location.hash().ok()?)?;
+        let clean_url = format!("{}{}", location.pathname().ok()?, location.search().ok()?);
+        window
+            .history()
+            .ok()?
+            .replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&clean_url))
+            .ok()?;
+        Some(credential)
+    }
+
+    #[cfg(not(all(debug_assertions, target_arch = "wasm32")))]
+    {
+        None
+    }
 }
 
 impl DaemonTransport {
@@ -627,9 +668,11 @@ mod tests {
     use super::{
         ApiError, DaemonTransport, MutationOutcome, authorization_token,
         begin_native_daemon_verification, clear_verified_daemon_connection, daemon_url,
-        extract_error_message, install_verified_daemon_connection, reset_daemon_transport_for_test,
+        extract_error_message, install_verified_daemon_connection,
+        parse_dev_control_credential_fragment, reset_daemon_transport_for_test,
         stale_current_version,
     };
+    use hypercolor_types::service::ProtectedControlCredential;
 
     #[test]
     fn native_transport_routes_relative_urls_and_preserves_absolute_urls() {
@@ -646,6 +689,30 @@ mod tests {
             transport.resolve_url("https://example.test/image.png"),
             Some("https://example.test/image.png".to_owned())
         );
+    }
+
+    #[test]
+    fn dev_control_fragment_accepts_only_a_canonical_credential() {
+        let expected = ProtectedControlCredential::from_bytes([0x42; 32]);
+
+        assert_eq!(
+            parse_dev_control_credential_fragment(&format!("#{}", expected.expose_secret())),
+            Some(expected.expose_secret().to_owned())
+        );
+        assert_eq!(
+            parse_dev_control_credential_fragment("#hc_pc_not-a-token"),
+            None
+        );
+        assert_eq!(parse_dev_control_credential_fragment("hc_pc_0123"), None);
+    }
+
+    #[test]
+    fn native_test_transport_has_no_ambient_dev_credential() {
+        let transport = DaemonTransport::default();
+
+        assert!(!transport.native_app);
+        assert_eq!(transport.base_url, None);
+        assert_eq!(transport.protected_control_credential, None);
     }
 
     #[test]

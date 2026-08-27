@@ -9,8 +9,7 @@ use crate::api::security::RequestAuthContext;
 use crate::app_state::AppState;
 use crate::macos_owner::{
     MacosDaemonOwner, MacosDaemonSessionAttestation, MacosHandoverPhase, MacosOwnerConflict,
-    MacosOwnerIdentity, MacosOwnerRecoveryRequired, MacosOwnerSnapshot,
-    MacosProtectedControlCredential, MacosServerSessionId,
+    MacosOwnerIdentity, MacosOwnerRecoveryRequired, MacosOwnerSnapshot, MacosServerSessionId,
 };
 use crate::performance::{
     CompositorBackendKind, FrameTimeline, FullFrameCopyMetrics, LatestFrameMetrics,
@@ -24,6 +23,7 @@ use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{SourceFreshness, SourceKind, SourceState, SourceStatus};
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::sensor::{SensorReading, SensorUnit, SystemSnapshot};
+use hypercolor_types::service::ProtectedControlCredential;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Instant;
@@ -32,7 +32,7 @@ use std::time::Instant;
 async fn public_system_identity_exposes_only_the_attested_session_id() {
     let tempdir = tempfile::tempdir().expect("server test data dir should be created");
     let session_id = MacosServerSessionId::from_bytes([0x33; 16]);
-    let credential = MacosProtectedControlCredential::from_bytes([0x77; 32]);
+    let credential = ProtectedControlCredential::from_bytes([0x77; 32]);
     let attestation = MacosDaemonSessionAttestation {
         schema_version: crate::macos_owner::MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION,
         owner: MacosDaemonOwner::AppSidecar,
