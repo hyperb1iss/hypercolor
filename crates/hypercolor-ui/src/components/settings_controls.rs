@@ -469,7 +469,7 @@ pub fn SettingPathList(
                     type="text"
                     class="flex-1 bg-surface-overlay/40 border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary
                            font-mono placeholder-fg-tertiary/30 focus:outline-none focus:border-accent-muted"
-                    placeholder="/path/to/effects/directory"
+                    placeholder="Path to effects directory"
                     prop:value=move || new_path.get()
                     on:input=move |ev| {
                         let event = Input::from_event(ev);

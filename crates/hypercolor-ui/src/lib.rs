@@ -77,7 +77,7 @@ pub use api::client;
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
     let msg = format!(
-        "%c✦ Hypercolor %cv{version}%c\n🔮 RGB Lighting Engine for Linux\ngithub.com/hyperb1iss/hypercolor"
+        "%c✦ Hypercolor %cv{version}%c\n🔮 Cross-platform RGB Lighting Engine\ngithub.com/hyperb1iss/hypercolor"
     );
     console_log_styled(
         &msg,
