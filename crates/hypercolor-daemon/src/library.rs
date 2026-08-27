@@ -10,19 +10,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 use tracing::warn;
 
-use hypercolor_types::effect::EffectId;
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectId, GradientStop};
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItemTarget, PresetId,
 };
+use hypercolor_types::viewport::ViewportRect;
 
 use crate::domain::effect::{EffectIdMigrations, remap_effect_id};
 use crate::persistence::{
     AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteOutcome,
     AtomicWriteReservation, PersistenceError, serialize_json_pretty,
 };
+
+const LIBRARY_SCHEMA_VERSION: u32 = 2;
+const LEGACY_LIBRARY_SCHEMA_VERSION: u32 = 1;
 
 /// Storage-layer errors for library entities.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -74,6 +80,16 @@ pub enum JsonLibraryStoreOpenError {
         #[source]
         source: serde_json::Error,
     },
+    #[error(
+        "library snapshot at {path} uses schema version {found}; this release accepts versions 1 through {current}"
+    )]
+    UnsupportedSchemaVersion {
+        path: PathBuf,
+        found: u32,
+        current: u32,
+    },
+    #[error("failed to migrate legacy library snapshot at {path}: {reason}")]
+    MigrateLegacy { path: PathBuf, reason: String },
     #[error("failed to prepare library persistence at {path}: {source}")]
     PreparePersistence {
         path: PathBuf,
@@ -288,7 +304,7 @@ struct FavoriteRevisionRecord {
 impl Default for LibrarySnapshot {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: LIBRARY_SCHEMA_VERSION,
             favorites: Vec::new(),
             favorite_revisions: Vec::new(),
             presets: Vec::new(),
@@ -333,7 +349,7 @@ impl LibrarySnapshot {
         });
 
         Self {
-            version: 1,
+            version: LIBRARY_SCHEMA_VERSION,
             favorites,
             favorite_revisions,
             presets,
@@ -370,6 +386,126 @@ impl LibrarySnapshot {
                 .collect(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct LibraryVersionProbe {
+    #[serde(default = "legacy_library_schema_version")]
+    version: u32,
+}
+
+const fn legacy_library_schema_version() -> u32 {
+    LEGACY_LIBRARY_SCHEMA_VERSION
+}
+
+fn migrate_v1_library_control(value: Value) -> Result<ControlValue, String> {
+    fn parse<T: serde::de::DeserializeOwned>(tag: &str, payload: Value) -> Result<T, String> {
+        serde_json::from_value(payload).map_err(|error| format!("invalid {tag} value: {error}"))
+    }
+
+    let object = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "legacy control value must be an object".to_owned())?;
+    if object.len() != 1 {
+        return Err("legacy control value must contain exactly one tag".to_owned());
+    }
+    let Some((tag, payload)) = object.into_iter().next() else {
+        return Err("legacy control value must contain one tag".to_owned());
+    };
+    let canonical = match tag.as_str() {
+        "float" => ControlValue::Float(f64::from(parse::<f32>(&tag, payload)?)),
+        "integer" => ControlValue::Int(i64::from(parse::<i32>(&tag, payload)?)),
+        "boolean" => ControlValue::Bool(parse(&tag, payload)?),
+        "color" => ControlValue::linear_color(parse(&tag, payload)?),
+        "gradient" => ControlValue::Gradient(parse::<Vec<GradientStop>>(&tag, payload)?),
+        "enum" => ControlValue::Enum(parse(&tag, payload)?),
+        "text" => ControlValue::Text(parse(&tag, payload)?),
+        "rect" => ControlValue::rect(parse::<ViewportRect>(&tag, payload)?),
+        _ => return Err(format!("unknown legacy control tag '{tag}'")),
+    };
+    canonical
+        .validate()
+        .map_err(|error| format!("cannot be canonicalized: {error}"))?;
+    Ok(canonical)
+}
+
+fn migrate_v1_library_controls(document: &mut Value) -> Result<(), String> {
+    let Some(presets) = document.get_mut("presets").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+
+    for (preset_index, preset) in presets.iter_mut().enumerate() {
+        let Some(controls) = preset.get_mut("controls").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        for (control_name, value) in controls {
+            if ControlValue::is_canonical_wire_candidate(value) {
+                continue;
+            }
+            let canonical = migrate_v1_library_control(value.clone()).map_err(|error| {
+                    format!(
+                        "preset {preset_index} control '{control_name}' has an invalid v1 value: {error}"
+                    )
+                })?;
+            *value = serde_json::to_value(canonical).map_err(|error| {
+                format!(
+                    "preset {preset_index} control '{control_name}' could not be serialized: {error}"
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn decode_library_snapshot(
+    raw: &str,
+    path: &std::path::Path,
+) -> Result<(LibrarySnapshot, bool), JsonLibraryStoreOpenError> {
+    let mut document =
+        serde_json::from_str::<Value>(raw).map_err(|source| JsonLibraryStoreOpenError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let probe =
+        serde_json::from_value::<LibraryVersionProbe>(document.clone()).map_err(|source| {
+            JsonLibraryStoreOpenError::Parse {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+    if !(LEGACY_LIBRARY_SCHEMA_VERSION..=LIBRARY_SCHEMA_VERSION).contains(&probe.version) {
+        return Err(JsonLibraryStoreOpenError::UnsupportedSchemaVersion {
+            path: path.to_path_buf(),
+            found: probe.version,
+            current: LIBRARY_SCHEMA_VERSION,
+        });
+    }
+
+    let migrated = probe.version == LEGACY_LIBRARY_SCHEMA_VERSION;
+    if migrated {
+        migrate_v1_library_controls(&mut document).map_err(|reason| {
+            JsonLibraryStoreOpenError::MigrateLegacy {
+                path: path.to_path_buf(),
+                reason,
+            }
+        })?;
+        let object =
+            document
+                .as_object_mut()
+                .ok_or_else(|| JsonLibraryStoreOpenError::MigrateLegacy {
+                    path: path.to_path_buf(),
+                    reason: "library snapshot must be a JSON object".to_owned(),
+                })?;
+        object.insert("version".to_owned(), Value::from(LIBRARY_SCHEMA_VERSION));
+    }
+
+    serde_json::from_value::<LibrarySnapshot>(document)
+        .map(|snapshot| (snapshot, migrated))
+        .map_err(|source| JsonLibraryStoreOpenError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 /// In-memory storage backend for library entities.
@@ -533,21 +669,17 @@ impl JsonLibraryStore {
                     path: path.clone(),
                     source,
                 })?;
-        let mut data = if snapshot_exists {
+        let (mut data, mut snapshot_needs_rewrite) = if snapshot_exists {
             let raw = std::fs::read_to_string(&path).map_err(|source| {
                 JsonLibraryStoreOpenError::Read {
                     path: path.clone(),
                     source,
                 }
             })?;
-            let snapshot: LibrarySnapshot =
-                serde_json::from_str(&raw).map_err(|source| JsonLibraryStoreOpenError::Parse {
-                    path: path.clone(),
-                    source,
-                })?;
-            snapshot.into_data()
+            let (snapshot, migrated) = decode_library_snapshot(&raw, &path)?;
+            (snapshot.into_data(), migrated)
         } else {
-            InMemoryLibraryData::default()
+            (InMemoryLibraryData::default(), false)
         };
         let writer = AtomicFileWriter::new(&path).map_err(|source| {
             JsonLibraryStoreOpenError::PreparePersistence {
@@ -556,9 +688,10 @@ impl JsonLibraryStore {
             }
         })?;
 
-        if let Some(migrations) = migrations
-            && data.migrate_effect_ids(migrations) > 0
-        {
+        if let Some(migrations) = migrations {
+            snapshot_needs_rewrite |= data.migrate_effect_ids(migrations) > 0;
+        }
+        if snapshot_needs_rewrite {
             let payload =
                 serialize_json_pretty(&LibrarySnapshot::from_data(&data)).map_err(|source| {
                     JsonLibraryStoreOpenError::SerializeMigration {
@@ -1402,6 +1535,7 @@ mod tests {
         InMemoryLibraryStore, JsonLibraryStore, JsonLibraryStoreOpenError,
         LibraryIdentityMigration, LibrarySnapshot, LibraryStore, ProjectedFavoriteState,
     };
+    use hypercolor_types::control::ControlValue;
     use hypercolor_types::effect::EffectId;
     use hypercolor_types::library::{
         EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItem, PlaylistItemId,
@@ -1409,6 +1543,10 @@ mod tests {
     };
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    fn legacy_control(tag: &str, payload: serde_json::Value) -> serde_json::Value {
+        serde_json::Value::Object([(tag.to_owned(), payload)].into_iter().collect())
+    }
 
     async fn projected_favorite(
         store: &impl LibraryStore,
@@ -1452,6 +1590,157 @@ mod tests {
                 .remove_favorite(effect_id)
                 .await
                 .expect("remove missing favorite")
+        );
+    }
+
+    #[tokio::test]
+    async fn opening_a_v1_library_migrates_legacy_and_canonical_controls_to_v2() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("library.json");
+        let effect_id = EffectId::new(Uuid::now_v7());
+        let preset_id = PresetId::new();
+        let raw = serde_json::to_string_pretty(&serde_json::json!({
+            "version": 1,
+            "favorites": [],
+            "presets": [{
+                "id": preset_id,
+                "name": "Legacy controls",
+                "description": null,
+                "effect_id": effect_id,
+                "controls": {
+                    "intensity": legacy_control("float", serde_json::json!(50.0)),
+                    "count": legacy_control("integer", serde_json::json!(4)),
+                    "enabled": legacy_control("boolean", serde_json::json!(true)),
+                    "color": legacy_control(
+                        "color",
+                        serde_json::json!([0.1, 0.2, 0.3, 1.0])
+                    ),
+                    "gradient": legacy_control("gradient", serde_json::json!([
+                        { "position": 0.0, "color": [0.0, 0.0, 0.0, 1.0] },
+                        { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                    ])),
+                    "palette": legacy_control("enum", serde_json::json!("Toxic")),
+                    "label": legacy_control("text", serde_json::json!("night")),
+                    "region": legacy_control("rect", serde_json::json!({
+                        "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4
+                    })),
+                    "current": { "kind": "list", "value": [
+                        { "kind": "float", "value": 0.5 }
+                    ] }
+                },
+                "tags": [],
+                "created_at_ms": 1,
+                "updated_at_ms": 2
+            }],
+            "playlists": []
+        }))
+        .expect("legacy snapshot should serialize");
+        std::fs::write(&path, raw).expect("legacy snapshot should write");
+
+        let store = JsonLibraryStore::open(path.clone()).expect("v1 library should migrate");
+        let preset = store
+            .get_preset(preset_id)
+            .await
+            .expect("migrated preset should load");
+        assert_eq!(preset.controls["intensity"], ControlValue::Float(50.0));
+        assert_eq!(preset.controls["count"], ControlValue::Int(4));
+        assert_eq!(
+            preset.controls["palette"],
+            ControlValue::Enum("Toxic".to_owned())
+        );
+        assert_eq!(
+            preset.controls["current"],
+            ControlValue::List(vec![ControlValue::Float(0.5)])
+        );
+        drop(store);
+
+        let durable = std::fs::read_to_string(path).expect("migrated snapshot should read");
+        let durable: serde_json::Value =
+            serde_json::from_str(&durable).expect("migrated snapshot should parse");
+        assert_eq!(durable["version"], 2);
+        assert_eq!(
+            durable["presets"][0]["controls"]["intensity"],
+            serde_json::json!({ "kind": "float", "value": 50.0 })
+        );
+        assert_eq!(
+            durable["presets"][0]["controls"]["count"],
+            serde_json::json!({ "kind": "int", "value": 4 })
+        );
+        assert_eq!(
+            durable["presets"][0]["controls"]["enabled"],
+            serde_json::json!({ "kind": "bool", "value": true })
+        );
+        assert_eq!(
+            durable["presets"][0]["controls"]["color"],
+            serde_json::json!({
+                "kind": "color_linear",
+                "value": { "r": 0.1, "g": 0.2, "b": 0.3, "a": 1.0 }
+            })
+        );
+        assert_eq!(
+            durable["presets"][0]["controls"]["gradient"]["kind"],
+            "gradient"
+        );
+        assert_eq!(
+            durable["presets"][0]["controls"]["palette"],
+            serde_json::json!({ "kind": "enum", "value": "Toxic" })
+        );
+        assert_eq!(
+            durable["presets"][0]["controls"]["label"],
+            serde_json::json!({ "kind": "text", "value": "night" })
+        );
+        assert_eq!(durable["presets"][0]["controls"]["region"]["kind"], "rect");
+    }
+
+    #[test]
+    fn opening_a_malformed_v1_library_preserves_the_original_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("library.json");
+        let raw = serde_json::to_string_pretty(&serde_json::json!({
+            "version": 1,
+            "presets": [{
+                "id": PresetId::new(),
+                "name": "Broken",
+                "description": null,
+                "effect_id": EffectId::new(Uuid::now_v7()),
+                "controls": {
+                    "intensity": legacy_control("float", serde_json::json!("loud"))
+                }
+            }]
+        }))
+        .expect("malformed snapshot fixture should serialize");
+        std::fs::write(&path, &raw).expect("malformed snapshot should write");
+
+        let error = JsonLibraryStore::open(path.clone()).expect_err("migration should fail");
+        assert!(matches!(
+            error,
+            JsonLibraryStoreOpenError::MigrateLegacy { .. }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(path).expect("original snapshot should read"),
+            raw
+        );
+    }
+
+    #[test]
+    fn opening_a_future_library_version_preserves_the_original_file() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("library.json");
+        let raw = r#"{"version":3,"favorites":[],"presets":[],"playlists":[]}"#;
+        std::fs::write(&path, raw).expect("future snapshot should write");
+
+        let error = JsonLibraryStore::open(path.clone()).expect_err("future version should fail");
+        assert!(matches!(
+            error,
+            JsonLibraryStoreOpenError::UnsupportedSchemaVersion {
+                found: 3,
+                current: 2,
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(path).expect("future snapshot should read"),
+            raw
         );
     }
 
