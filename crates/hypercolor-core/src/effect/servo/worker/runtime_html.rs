@@ -165,7 +165,10 @@ mod tests {
         controls.insert("color".to_owned(), ControlValue::Text("#00ffaa".to_owned()));
         controls.insert(
             "overlay".to_owned(),
-            ControlValue::linear_color([0.25, 0.5, 0.75, 1.0]),
+            ControlValue::ColorLinear(
+                hypercolor_color::LinearRgba::from_hex_srgb("#4080bf")
+                    .expect("test color should parse"),
+            ),
         );
 
         let script = build_control_preamble_script(&controls, false, None)
@@ -174,7 +177,7 @@ mod tests {
         assert!(script.contains("globalThis[\"speed\"] = 42"));
         assert!(script.contains("globalThis[\"enabled\"] = true"));
         assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
-        assert!(script.contains("globalThis[\"overlay\"] = [0.25,0.5,0.75,1.0]"));
+        assert!(script.contains("globalThis[\"overlay\"] = \"#4080bf\""));
         assert!(script.contains("window.__hypercolorCaptureMode = true"));
         assert!(script.contains("window.__hypercolorPreserveDrawingBuffer = false"));
         assert!(script.contains("globalThis.__hypercolorCaptureMode = true"));

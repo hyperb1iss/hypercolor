@@ -146,6 +146,28 @@ fn frame_payload_emits_control_deltas_only() {
 }
 
 #[test]
+fn frame_payload_preserves_hex_color_contract_for_js_effects() {
+    let mut runtime = LightscriptRuntime::new(320, 200);
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
+    let sensors = SystemSnapshot::empty();
+    let input = quiet_frame(&audio, &interaction, &sensors);
+    let controls = HashMap::from([(
+        "color".to_owned(),
+        ControlValue::ColorLinear(
+            hypercolor_color::LinearRgba::from_hex_srgb("#08f7fe")
+                .expect("test color should parse"),
+        ),
+    )]);
+
+    let payload = runtime
+        .frame_payload(&input, &controls, default_options())
+        .expect("changed color should emit");
+
+    assert_eq!(payload.controls["color"], serde_json::json!("#08f7fe"));
+}
+
+#[test]
 #[should_panic(expected = "effect pool admits only renderer-compatible controls")]
 fn frame_payload_treats_non_projectable_controls_as_a_broken_pool_invariant() {
     let mut runtime = LightscriptRuntime::new(320, 200);
