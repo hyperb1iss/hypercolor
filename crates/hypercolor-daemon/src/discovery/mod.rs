@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::DeviceSettingsAccess;
+use crate::domain::device_binding::DeviceBindingMigrationContext;
 use crate::domain::layout::LayoutContext;
 use crate::logical_devices::LogicalDevice;
 
@@ -69,6 +70,10 @@ pub struct DiscoveryRuntime {
 
     /// Narrow layout authority used for identity and discovery convergence.
     pub layout: LayoutContext,
+
+    /// Durable cross-host binding reconciliation transaction.
+    #[doc(hidden)]
+    pub binding_migration: Arc<DeviceBindingMigrationContext>,
 
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,

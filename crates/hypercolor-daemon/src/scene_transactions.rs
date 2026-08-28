@@ -87,6 +87,7 @@ pub(crate) struct PrepareLayoutTransaction {
     source_resolved_zones_revision: u64,
     resolved_zones_revision: u64,
     unassigned_behavior: UnassignedBehavior,
+    publication_mode: LayoutPublicationMode,
     activation: LayoutActivationControl,
     acknowledgment: oneshot::Sender<Result<(), LayoutTransactionRejection>>,
 }
@@ -127,6 +128,11 @@ impl PrepareLayoutTransaction {
         &self.unassigned_behavior
     }
 
+    #[must_use]
+    pub(crate) const fn publication_mode(&self) -> LayoutPublicationMode {
+        self.publication_mode
+    }
+
     pub(crate) fn activation(&self) -> LayoutActivationControl {
         self.activation.clone()
     }
@@ -155,6 +161,7 @@ impl PrepareLayoutTransaction {
         let expected_layout = self.expected_layout.clone();
         let expected_active_scene_id = self.active_scene_id;
         let expected_resolved_zones_revision = self.source_resolved_zones_revision;
+        let publication_mode = self.publication_mode;
         self.accept();
         while activation.decision() == LayoutActivationDecision::Pending {
             tokio::task::yield_now().await;
@@ -165,16 +172,32 @@ impl PrepareLayoutTransaction {
         }
 
         before_publication().await;
-        let result = scene_manager
-            .publish_layout_activation(
-                spatial_engine,
-                candidate_spatial_engine,
-                &expected_layout,
-                expected_active_scene_id,
-                expected_resolved_zones_revision,
-                |_| Ok(()),
-            )
-            .await;
+        let result = match publication_mode {
+            LayoutPublicationMode::AuthorityAndRenderer => {
+                scene_manager
+                    .publish_layout_activation(
+                        spatial_engine,
+                        candidate_spatial_engine,
+                        &expected_layout,
+                        expected_active_scene_id,
+                        expected_resolved_zones_revision,
+                        |_| Ok(()),
+                    )
+                    .await
+            }
+            LayoutPublicationMode::RendererOnly => {
+                scene_manager
+                    .publish_renderer_only_layout_activation(
+                        spatial_engine,
+                        candidate_spatial_engine,
+                        &expected_layout,
+                        expected_active_scene_id,
+                        expected_resolved_zones_revision,
+                        |_| Ok(()),
+                    )
+                    .await
+            }
+        };
         activation.complete(result.clone());
         result
     }
@@ -189,6 +212,12 @@ pub(crate) enum LayoutActivationDecision {
     Pending,
     Commit,
     Abort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayoutPublicationMode {
+    AuthorityAndRenderer,
+    RendererOnly,
 }
 
 const ACTIVATION_PENDING: u8 = 0;
@@ -354,9 +383,26 @@ impl LayoutTransactionAuthority {
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
     ) -> Result<(), LayoutUpdateError> {
-        self.apply_under_guard_with_persistence(guard, layout, |_| async {
-            LayoutPersistenceOutcome::Written
-        })
+        self.apply_under_guard_with_mode(
+            guard,
+            layout,
+            LayoutPublicationMode::AuthorityAndRenderer,
+            |_| async { LayoutPersistenceOutcome::Written },
+        )
+        .await
+    }
+
+    pub(crate) async fn apply_renderer_only_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+    ) -> Result<(), LayoutUpdateError> {
+        self.apply_under_guard_with_mode(
+            guard,
+            layout,
+            LayoutPublicationMode::RendererOnly,
+            |_| async { LayoutPersistenceOutcome::Written },
+        )
         .await
     }
 
@@ -364,6 +410,26 @@ impl LayoutTransactionAuthority {
         &self,
         guard: &LayoutUpdateGuard,
         layout: SpatialLayout,
+        persist: F,
+    ) -> Result<(), LayoutUpdateError>
+    where
+        F: FnMut(LayoutPersistencePhase) -> Fut + Send + 'static,
+        Fut: Future<Output = LayoutPersistenceOutcome> + Send + 'static,
+    {
+        self.apply_under_guard_with_mode(
+            guard,
+            layout,
+            LayoutPublicationMode::AuthorityAndRenderer,
+            persist,
+        )
+        .await
+    }
+
+    async fn apply_under_guard_with_mode<F, Fut>(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+        publication_mode: LayoutPublicationMode,
         mut persist: F,
     ) -> Result<(), LayoutUpdateError>
     where
@@ -410,6 +476,7 @@ impl LayoutTransactionAuthority {
                 source_resolved_zones_revision,
                 resolved_zones_revision,
                 unassigned_behavior,
+                publication_mode,
             )?;
             submission.preparation.wait().await?;
             let commit_state = LayoutPersistenceState {
@@ -504,6 +571,7 @@ impl SceneTransactionQueue {
         source_resolved_zones_revision: u64,
         resolved_zones_revision: u64,
         unassigned_behavior: UnassignedBehavior,
+        publication_mode: LayoutPublicationMode,
     ) -> Result<PreparedLayoutSubmission, LayoutTransactionRejection> {
         let (acknowledgment, receipt) = oneshot::channel();
         let (activation, completion) = LayoutActivationControl::new();
@@ -515,6 +583,7 @@ impl SceneTransactionQueue {
             source_resolved_zones_revision,
             resolved_zones_revision,
             unassigned_behavior,
+            publication_mode,
             activation: activation.clone(),
             acknowledgment,
         }))?;

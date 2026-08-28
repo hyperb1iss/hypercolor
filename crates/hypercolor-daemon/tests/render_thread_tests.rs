@@ -58,6 +58,8 @@ use hypercolor_core::scene::{SceneManager, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::ComponentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_daemon::display_preferences::DisplayPreferencesStore;
+use hypercolor_daemon::domain::DeviceBindingMigrationContext;
 use hypercolor_daemon::domain::layout::LayoutContext;
 use hypercolor_daemon::domain::scene::{SceneMutation, SceneService};
 use hypercolor_daemon::domain::spatial::SpatialService;
@@ -136,22 +138,37 @@ fn test_discovery_runtime(
         scene_transactions,
         state_dir.join("runtime-state.json"),
     );
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let attachment_profiles = Arc::new(RwLock::new(ComponentProfileStore::new(
+        state_dir.join("attachment-profiles.json"),
+    )));
+    let device_settings = OutputPower::new(DeviceSettingsStore::new(
+        state_dir.join("device-settings.json"),
+    ))
+    .device_settings();
     DiscoveryRuntime {
         device_registry,
         backend_manager,
         lifecycle_manager,
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus,
-        layout,
-        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
+        layout: layout.clone(),
+        binding_migration: Arc::new(DeviceBindingMigrationContext::new(
+            layout,
+            Arc::clone(&logical_devices),
+            state_dir.join("logical-devices.json"),
+            Arc::clone(&attachment_profiles),
+            device_settings.clone(),
+            Arc::new(RwLock::new(
+                DisplayPreferencesStore::new(state_dir.join("display-preferences.json"))
+                    .expect("display preference store"),
+            )),
+            state_dir.join("device-binding-migration.json"),
+        )),
+        logical_devices,
         attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(ComponentProfileStore::new(
-            state_dir.join("attachment-profiles.json"),
-        ))),
-        device_settings: OutputPower::new(DeviceSettingsStore::new(
-            state_dir.join("device-settings.json"),
-        ))
-        .device_settings(),
+        attachment_profiles,
+        device_settings,
         runtime_state_path: state_dir.join("runtime-state.json"),
         device_aliases_path: state_dir.join("device-aliases.json"),
         usb_protocol_configs: UsbProtocolConfigStore::new(),

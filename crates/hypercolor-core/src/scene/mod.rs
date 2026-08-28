@@ -440,6 +440,43 @@ impl SceneManager {
         migrated
     }
 
+    /// Replace persisted layout and physical device identities throughout
+    /// authored and runtime-only scene state.
+    ///
+    /// The render-zone revision advances even when only an inactive scene
+    /// changed, fencing prepared layout publications captured before the
+    /// identity rewrite.
+    pub fn remap_device_bindings(
+        &mut self,
+        layout_device_ids: &HashMap<String, String>,
+        physical_device_ids: &HashMap<DeviceId, DeviceId>,
+    ) -> usize {
+        let mut migrated = 0;
+        for scene in self.scenes.values_mut() {
+            let scene_migrated = scene
+                .zones
+                .iter_mut()
+                .map(|zone| {
+                    remap_zone_device_bindings(zone, layout_device_ids, physical_device_ids)
+                })
+                .sum::<usize>();
+            if scene_migrated > 0 {
+                bump_zones_revision(scene);
+                migrated += scene_migrated;
+            }
+        }
+        migrated += self
+            .default_display_zones
+            .iter_mut()
+            .map(|zone| remap_zone_device_bindings(zone, layout_device_ids, physical_device_ids))
+            .sum::<usize>();
+        if migrated > 0 {
+            self.refresh_resolved_zones();
+            self.invalidate_resolved_zones();
+        }
+        migrated
+    }
+
     // ── Transition ──────────────────────────────────────────────────
 
     /// Get the latest immutable transition plan, if activation requested one.
@@ -1643,6 +1680,27 @@ fn remap_zone_effect_ids(zone: &mut Zone, migrations: &HashMap<EffectId, EffectI
             | LayerSource::ColorFill { .. } => 0,
         })
         .sum()
+}
+
+fn remap_zone_device_bindings(
+    zone: &mut Zone,
+    layout_device_ids: &HashMap<String, String>,
+    physical_device_ids: &HashMap<DeviceId, DeviceId>,
+) -> usize {
+    let mut migrated = 0;
+    for output in &mut zone.layout.zones {
+        if let Some(canonical) = layout_device_ids.get(&output.device_id) {
+            output.device_id.clone_from(canonical);
+            migrated += 1;
+        }
+    }
+    if let Some(target) = zone.display_target.as_mut()
+        && let Some(canonical) = physical_device_ids.get(&target.device_id)
+    {
+        target.device_id = *canonical;
+        migrated += 1;
+    }
+    migrated
 }
 
 fn display_zone_has_face(zone: &Zone) -> bool {

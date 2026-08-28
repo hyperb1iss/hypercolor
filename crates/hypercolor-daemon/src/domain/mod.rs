@@ -30,6 +30,9 @@
 
 pub mod commit;
 pub mod context;
+pub(crate) mod device_binding;
+#[doc(hidden)]
+pub use device_binding::DeviceBindingMigrationContext;
 pub mod diagnostics;
 pub mod display;
 pub mod effect;

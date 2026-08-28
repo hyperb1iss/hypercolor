@@ -25,6 +25,7 @@ use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::DomainError;
 use crate::domain::commit::SceneCommit;
+use crate::domain::device_binding::MigrationPersistence;
 use crate::domain::diagnostics::DiagnosticsContext;
 use crate::domain::display::DisplayContext;
 use crate::domain::effect::{EffectContext, EffectIdentityResources};
@@ -231,6 +232,26 @@ pub(crate) struct PersistedRuntimeSessionEffectIdMigration {
     _publication_guard: OwnedRwLockWriteGuard<()>,
 }
 
+pub(crate) struct RuntimeSessionDeviceBindingMigrationAdmission {
+    projection: RuntimeSessionProjection,
+    path: PathBuf,
+    publication_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct RuntimeSessionDeviceBindingMigration {
+    pending: runtime_state::PreparedRuntimeSnapshotSave,
+    publication_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct AdmittedRuntimeSessionDeviceBindingMigration {
+    pending: runtime_state::AdmittedRuntimeSnapshotSave,
+    publication_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct PersistedRuntimeSessionDeviceBindingMigration {
+    _publication_guard: OwnedRwLockWriteGuard<()>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RuntimeSessionPersistenceError {
     #[error("{0}")]
@@ -280,6 +301,20 @@ impl RuntimeSessionProjection {
             .write_owned()
             .await;
         RuntimeSessionEffectIdMigrationAdmission {
+            projection: self.clone(),
+            path,
+            publication_guard,
+        }
+    }
+
+    pub(crate) async fn begin_device_binding_migration(
+        &self,
+        path: PathBuf,
+    ) -> RuntimeSessionDeviceBindingMigrationAdmission {
+        let publication_guard = Arc::clone(&self.identity_publication_gate)
+            .write_owned()
+            .await;
+        RuntimeSessionDeviceBindingMigrationAdmission {
             projection: self.clone(),
             path,
             publication_guard,
@@ -502,6 +537,15 @@ impl RuntimeSessionEffectIdMigration {
     }
 }
 
+impl RuntimeSessionDeviceBindingMigration {
+    pub(crate) fn admit(self) -> AdmittedRuntimeSessionDeviceBindingMigration {
+        AdmittedRuntimeSessionDeviceBindingMigration {
+            pending: self.pending.admit(),
+            publication_guard: self.publication_guard,
+        }
+    }
+}
+
 impl AdmittedRuntimeSessionEffectIdMigration {
     pub(crate) fn persist(
         self,
@@ -534,6 +578,23 @@ impl AdmittedRuntimeSessionEffectIdMigration {
     }
 }
 
+impl AdmittedRuntimeSessionDeviceBindingMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedRuntimeSessionDeviceBindingMigration,
+        MigrationPersistence,
+    ) {
+        let persistence = MigrationPersistence::from_commit(self.pending.commit_stage_aware());
+        (
+            PersistedRuntimeSessionDeviceBindingMigration {
+                _publication_guard: self.publication_guard,
+            },
+            persistence,
+        )
+    }
+}
+
 impl RuntimeSessionEffectIdMigrationAdmission {
     pub(crate) fn prepare(
         self,
@@ -554,6 +615,25 @@ impl RuntimeSessionEffectIdMigrationAdmission {
         Ok(RuntimeSessionEffectIdMigration {
             pending,
             publication_guard,
+        })
+    }
+}
+
+impl RuntimeSessionDeviceBindingMigrationAdmission {
+    pub(crate) fn prepare(
+        self,
+        manager: &SceneManager,
+    ) -> Result<RuntimeSessionDeviceBindingMigration, DomainError> {
+        let mut snapshot = runtime_state::snapshot_from_scene_manager(manager);
+        snapshot.active_layout_id = Some(self.projection.spatial.layout().id.clone());
+        snapshot.manual_paused = self.projection.output_power.snapshot().manually_paused();
+        let pending = runtime_state::reserve_save(&self.path)
+            .map_err(|error| DomainError::Internal(error.into()))?;
+        let pending = runtime_state::prepare_reserved(pending, &snapshot)
+            .map_err(|error| DomainError::Internal(error.into()))?;
+        Ok(RuntimeSessionDeviceBindingMigration {
+            pending,
+            publication_guard: self.publication_guard,
         })
     }
 }

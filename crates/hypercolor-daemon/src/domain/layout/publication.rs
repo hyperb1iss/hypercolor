@@ -20,6 +20,8 @@ use crate::scene_transactions::{
 };
 
 use super::LayoutPersistenceStatus;
+use crate::domain::context::RuntimeSessionDeviceBindingMigrationAdmission;
+use crate::domain::device_binding::DeviceBindingRemaps;
 
 const LAYOUT_DURABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -30,6 +32,17 @@ pub(super) struct LayoutPublication {
     transactions: LayoutTransactionAuthority,
     runtime_state_path: PathBuf,
     runtime_projection: RuntimeSessionProjection,
+}
+
+pub(super) struct ActiveLayoutBindingMigration {
+    source: SpatialLayout,
+    candidate: SpatialEngine,
+}
+
+impl ActiveLayoutBindingMigration {
+    pub(super) fn candidate_layout(&self) -> SpatialLayout {
+        self.candidate.layout().as_ref().clone()
+    }
 }
 
 impl LayoutPublication {
@@ -59,6 +72,44 @@ impl LayoutPublication {
 
     pub(super) fn scenes(&self) -> &SceneService {
         &self.scenes
+    }
+
+    pub(super) async fn begin_runtime_device_binding_migration(
+        &self,
+    ) -> RuntimeSessionDeviceBindingMigrationAdmission {
+        self.runtime_projection
+            .begin_device_binding_migration(self.runtime_state_path.clone())
+            .await
+    }
+
+    pub(super) fn prepare_active_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> Result<Option<ActiveLayoutBindingMigration>, DomainError> {
+        let source = self.current();
+        let mut candidate = source.clone();
+        if remaps.remap_layout(&mut candidate) == 0 {
+            return Ok(None);
+        }
+        let candidate = SpatialEngine::try_new(candidate)
+            .map_err(|error| DomainError::Internal(error.into()))?;
+        Ok(Some(ActiveLayoutBindingMigration { source, candidate }))
+    }
+
+    pub(super) fn active_binding_migration_is_current(
+        &self,
+        migration: &ActiveLayoutBindingMigration,
+    ) -> bool {
+        self.spatial.has_layout(&migration.source)
+    }
+
+    pub(super) fn publish_active_binding_migration(
+        &self,
+        migration: ActiveLayoutBindingMigration,
+    ) -> SpatialLayout {
+        let layout = migration.candidate.layout().as_ref().clone();
+        self.spatial.replace(migration.candidate);
+        layout
     }
 
     #[cfg(feature = "persistence-test-hooks")]
@@ -112,6 +163,16 @@ impl LayoutPublication {
         layout: SpatialLayout,
     ) -> Result<(), LayoutUpdateError> {
         self.transactions.apply_under_guard(guard, layout).await
+    }
+
+    pub(super) async fn apply_renderer_only_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+    ) -> Result<(), LayoutUpdateError> {
+        self.transactions
+            .apply_renderer_only_under_guard(guard, layout)
+            .await
     }
 
     pub(super) async fn admit_persisted_under_guard(

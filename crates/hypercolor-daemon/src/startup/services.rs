@@ -729,6 +729,19 @@ impl DaemonState {
                     reconnect_tasks: Arc::clone(&reconnect_tasks),
                     event_bus: Arc::clone(&event_bus),
                     layout: layout.clone(),
+                    binding_migration: Arc::new(
+                        crate::domain::device_binding::DeviceBindingMigrationContext::new(
+                            layout.clone(),
+                            Arc::clone(&logical_devices),
+                            logical_devices_path.clone(),
+                            Arc::clone(&attachment_profiles),
+                            device_settings.clone(),
+                            Arc::clone(&display_preferences),
+                            state_dir.join(
+                                crate::domain::device_binding::DEVICE_BINDING_MIGRATION_JOURNAL_FILE,
+                            ),
+                        ),
+                    ),
                     logical_devices: Arc::clone(&logical_devices),
                     attachment_registry: Arc::clone(&attachment_registry),
                     attachment_profiles: Arc::clone(&attachment_profiles),

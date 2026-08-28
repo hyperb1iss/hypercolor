@@ -12,15 +12,17 @@ use hypercolor_core::device::DeviceRegistry;
 use hypercolor_types::controls::ControlValueMap;
 use hypercolor_types::device::DeviceId;
 use serde::{Deserialize, Serialize};
+use tokio::sync::OwnedRwLockWriteGuard;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
 };
 use crate::persistence::{
-    AtomicFileWriter, AtomicWriteCommitResult, PersistenceError, serialize_json_pretty,
-    write_atomic,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteCommitResult, AtomicWriteReservation,
+    PersistenceError, serialize_json_pretty, write_atomic,
 };
 
 const STORE_SUBJECT: &str = "device settings";
@@ -78,7 +80,7 @@ impl StoredDeviceSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 #[serde(deny_unknown_fields)]
 struct PersistedSettingsSnapshot {
@@ -162,6 +164,33 @@ pub struct DeviceSettingsAccess {
     store: Arc<RwLock<DeviceSettingsStore>>,
 }
 
+pub(crate) struct DeviceSettingsBindingMigration {
+    source: PersistedSettingsSnapshot,
+    candidate: PersistedSettingsSnapshot,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+    migrated: usize,
+}
+
+pub(crate) struct AdmittedDeviceSettingsBindingMigration {
+    source: PersistedSettingsSnapshot,
+    candidate: PersistedSettingsSnapshot,
+    write: AdmittedAtomicWrite,
+    migrated: usize,
+}
+
+pub(crate) struct PersistedDeviceSettingsBindingMigration {
+    source: PersistedSettingsSnapshot,
+    candidate: PersistedSettingsSnapshot,
+    migrated: usize,
+}
+
+pub(crate) struct DeviceSettingsBindingPublication {
+    store: OwnedRwLockWriteGuard<DeviceSettingsStore>,
+    candidate: Option<PersistedSettingsSnapshot>,
+    migrated: usize,
+}
+
 #[derive(Debug)]
 pub(crate) enum BrightnessPersistence {
     Durable,
@@ -202,6 +231,40 @@ impl DeviceSettingsAccess {
         let mut store = self.store.write().await;
         store.set_driver_control_values(key, values)?;
         store.save()
+    }
+
+    pub(crate) async fn prepare_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<Option<DeviceSettingsBindingMigration>> {
+        self.store.read().await.prepare_binding_migration(remaps)
+    }
+
+    pub(crate) async fn persisted_binding_keys(&self) -> std::collections::HashSet<String> {
+        let store = self.store.read().await;
+        store
+            .snapshot
+            .devices
+            .keys()
+            .chain(store.snapshot.driver_controls.keys())
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) async fn prepare_binding_publication(
+        &self,
+        migration: PersistedDeviceSettingsBindingMigration,
+    ) -> anyhow::Result<DeviceSettingsBindingPublication> {
+        let store = Arc::clone(&self.store).write_owned().await;
+        anyhow::ensure!(
+            store.snapshot == migration.source,
+            "device binding migration was superseded by newer device settings"
+        );
+        Ok(DeviceSettingsBindingPublication {
+            store,
+            candidate: Some(migration.candidate),
+            migrated: migration.migrated,
+        })
     }
 }
 
@@ -472,6 +535,34 @@ impl DeviceSettingsStore {
         Ok(())
     }
 
+    fn prepare_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<Option<DeviceSettingsBindingMigration>> {
+        if let Some(reason) = &self.refuse_writes {
+            anyhow::bail!("device settings were not migrated: {reason}");
+        }
+        let source = self.snapshot.clone();
+        let mut candidate = source.clone();
+        let migrated = remap_settings_keys(&mut candidate.devices, &remaps.persisted_setting_keys)
+            + remap_settings_keys(
+                &mut candidate.driver_controls,
+                &remaps.persisted_setting_keys,
+            );
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let payload = serialize_settings_snapshot(&candidate)?;
+        let writer = AtomicFileWriter::new(&self.path)?;
+        Ok(Some(DeviceSettingsBindingMigration {
+            source,
+            candidate,
+            write: writer.reserve(),
+            payload,
+            migrated,
+        }))
+    }
+
     fn normalize(&mut self) -> anyhow::Result<()> {
         self.snapshot.global_brightness = self.snapshot.global_brightness.clamp(0.0, 1.0);
         self.snapshot.devices.retain(|_, settings| {
@@ -486,6 +577,61 @@ impl DeviceSettingsStore {
         }
         Ok(())
     }
+}
+
+impl DeviceSettingsBindingMigration {
+    pub(crate) fn admit(self) -> AdmittedDeviceSettingsBindingMigration {
+        AdmittedDeviceSettingsBindingMigration {
+            source: self.source,
+            candidate: self.candidate,
+            write: self.write.admit(self.payload),
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl AdmittedDeviceSettingsBindingMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedDeviceSettingsBindingMigration,
+        MigrationPersistence,
+    ) {
+        let persistence = MigrationPersistence::from_commit(self.write.commit_stage_aware());
+        (
+            PersistedDeviceSettingsBindingMigration {
+                source: self.source,
+                candidate: self.candidate,
+                migrated: self.migrated,
+            },
+            persistence,
+        )
+    }
+}
+
+impl DeviceSettingsBindingPublication {
+    pub(crate) fn publish(&mut self) -> usize {
+        self.store.snapshot = self
+            .candidate
+            .take()
+            .expect("device settings binding migration must publish exactly once");
+        self.migrated
+    }
+}
+
+fn remap_settings_keys<T>(
+    values: &mut HashMap<String, T>,
+    remaps: &HashMap<String, String>,
+) -> usize {
+    let mut migrated = 0;
+    for (legacy, canonical) in remaps {
+        let Some(value) = values.remove(legacy) else {
+            continue;
+        };
+        values.entry(canonical.clone()).or_insert(value);
+        migrated += 1;
+    }
+    migrated
 }
 
 fn empty_settings_document() -> DeviceSettingsDocument {

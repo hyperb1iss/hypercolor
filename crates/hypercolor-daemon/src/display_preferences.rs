@@ -17,6 +17,7 @@ use hypercolor_types::layer::BlendMode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
+use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::domain::effect::{EffectIdMigrations, remap_effect_id};
 use crate::path_migration::{
     MigratedStore, MigrationOutcome, PathMigrationEntry, VersionedDocument, migrate,
@@ -77,6 +78,33 @@ pub(crate) struct PersistedDisplayPreferencesEffectIdMigration {
 }
 
 pub(crate) struct DisplayPreferencesEffectIdMigrationPublication {
+    store: OwnedRwLockWriteGuard<DisplayPreferencesStore>,
+    candidate: Option<HashMap<DeviceId, DisplayPreference>>,
+    migrated: usize,
+}
+
+pub(crate) struct DisplayPreferencesDeviceBindingMigration {
+    source: HashMap<DeviceId, DisplayPreference>,
+    candidate: HashMap<DeviceId, DisplayPreference>,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+    migrated: usize,
+}
+
+pub(crate) struct AdmittedDisplayPreferencesDeviceBindingMigration {
+    source: HashMap<DeviceId, DisplayPreference>,
+    candidate: HashMap<DeviceId, DisplayPreference>,
+    write: AdmittedAtomicWrite,
+    migrated: usize,
+}
+
+pub(crate) struct PersistedDisplayPreferencesDeviceBindingMigration {
+    source: HashMap<DeviceId, DisplayPreference>,
+    candidate: HashMap<DeviceId, DisplayPreference>,
+    migrated: usize,
+}
+
+pub(crate) struct DisplayPreferencesDeviceBindingPublication {
     store: OwnedRwLockWriteGuard<DisplayPreferencesStore>,
     candidate: Option<HashMap<DeviceId, DisplayPreference>>,
     migrated: usize,
@@ -306,6 +334,34 @@ impl DisplayPreferencesStore {
         }))
     }
 
+    pub(crate) fn prepare_device_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<Option<DisplayPreferencesDeviceBindingMigration>> {
+        let source = self.preferences.clone();
+        let mut candidate = source.clone();
+        let mut migrated = 0;
+        for (legacy, canonical) in &remaps.physical_device_ids {
+            let Some(preference) = candidate.remove(legacy) else {
+                continue;
+            };
+            candidate.entry(*canonical).or_insert(preference);
+            migrated += 1;
+        }
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let payload = serialize_json_pretty(&candidate)
+            .context("failed to serialize migrated display preferences")?;
+        Ok(Some(DisplayPreferencesDeviceBindingMigration {
+            source,
+            candidate,
+            write: self.writer.reserve(),
+            payload,
+            migrated,
+        }))
+    }
+
     fn effect_id_migration_is_current(
         &self,
         migration: &PersistedDisplayPreferencesEffectIdMigration,
@@ -335,6 +391,17 @@ impl DisplayPreferencesStore {
 impl DisplayPreferencesEffectIdMigration {
     pub(crate) fn admit(self) -> AdmittedDisplayPreferencesEffectIdMigration {
         AdmittedDisplayPreferencesEffectIdMigration {
+            source: self.source,
+            candidate: self.candidate,
+            write: self.write.admit(self.payload),
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl DisplayPreferencesDeviceBindingMigration {
+    pub(crate) fn admit(self) -> AdmittedDisplayPreferencesDeviceBindingMigration {
+        AdmittedDisplayPreferencesDeviceBindingMigration {
             source: self.source,
             candidate: self.candidate,
             write: self.write.admit(self.payload),
@@ -373,6 +440,25 @@ impl AdmittedDisplayPreferencesEffectIdMigration {
     }
 }
 
+impl AdmittedDisplayPreferencesDeviceBindingMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedDisplayPreferencesDeviceBindingMigration,
+        MigrationPersistence,
+    ) {
+        let persistence = MigrationPersistence::from_commit(self.write.commit_stage_aware());
+        (
+            PersistedDisplayPreferencesDeviceBindingMigration {
+                source: self.source,
+                candidate: self.candidate,
+                migrated: self.migrated,
+            },
+            persistence,
+        )
+    }
+}
+
 impl DisplayPreferencesEffectIdMigrationPublication {
     pub(crate) async fn prepare(
         store: std::sync::Arc<RwLock<DisplayPreferencesStore>>,
@@ -394,6 +480,32 @@ impl DisplayPreferencesEffectIdMigrationPublication {
             .candidate
             .take()
             .expect("display migration publication must publish exactly once");
+        self.migrated
+    }
+}
+
+impl DisplayPreferencesDeviceBindingPublication {
+    pub(crate) async fn prepare(
+        store: std::sync::Arc<RwLock<DisplayPreferencesStore>>,
+        migration: PersistedDisplayPreferencesDeviceBindingMigration,
+    ) -> anyhow::Result<Self> {
+        let store = store.write_owned().await;
+        anyhow::ensure!(
+            store.preferences == migration.source,
+            "device binding migration was superseded by newer display preferences"
+        );
+        Ok(Self {
+            store,
+            candidate: Some(migration.candidate),
+            migrated: migration.migrated,
+        })
+    }
+
+    pub(crate) fn publish(&mut self) -> usize {
+        self.store.preferences = self
+            .candidate
+            .take()
+            .expect("display binding migration must publish exactly once");
         self.migrated
     }
 }

@@ -734,7 +734,7 @@ dev *args='': ui-deps
     wait_for_first_exit
 
 [windows]
-dev *args='':
+dev *args='': ui-deps
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-windows.ps1 {{ args }}
 
 # Start the UI dev server (Trunk + hot reload, :9430 by default). Pass a
