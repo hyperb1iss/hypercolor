@@ -7,9 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use hypercolor_color::{Hsl, Rgb};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
-use hypercolor_types::control::ControlValue;
-#[cfg(feature = "servo")]
-use hypercolor_types::control::EffectJsonValueError;
+use hypercolor_types::control::{ControlValue, EffectJsonValueError};
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -55,8 +53,19 @@ const SPECTRUM_MID_END: usize = 130;
 pub(in crate::effect) fn control_js_literal(
     value: &ControlValue,
 ) -> Result<String, EffectJsonValueError> {
-    let value = value.try_to_effect_json()?;
+    let value = control_runtime_json(value)?;
     Ok(serde_json::to_string(&value).expect("serde_json::Value must serialize"))
+}
+
+/// JavaScript effects consume CSS hex colors; canonical storage stays linear.
+fn control_runtime_json(value: &ControlValue) -> Result<serde_json::Value, EffectJsonValueError> {
+    if let ControlValue::ColorLinear(color) = value {
+        return Ok(serde_json::Value::String(
+            color.to_encoded().to_rgb().to_hex(),
+        ));
+    }
+
+    value.try_to_effect_json()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -937,8 +946,7 @@ impl LightscriptRuntime {
                 continue;
             }
 
-            let projected = value
-                .try_to_effect_json()
+            let projected = control_runtime_json(value)
                 .expect("effect pool admits only renderer-compatible controls");
             changed_controls.insert(name.clone(), projected);
             accepted.push((name.clone(), value.clone()));
