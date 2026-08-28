@@ -7,6 +7,7 @@ pub mod attachment_profiles;
 pub mod daemon;
 pub(crate) mod deadline;
 pub mod device_aliases;
+pub(crate) mod device_binding_journal;
 pub mod device_metrics;
 pub mod device_settings;
 pub mod discovery;

@@ -21,11 +21,12 @@ use hypercolor_types::spatial::{
 use tokio::sync::RwLock;
 
 use super::{
-    BindingClass, CurrentBinding, DeviceBindingMigrationContext, DeviceBindingMigrationJournal,
-    DeviceBindingRemaps, MigrationPersistence, PersistedBindingEvidence, SegmentShape,
-    build_binding_remaps, plan_layout_device_id_remaps,
+    BindingClass, CurrentBinding, DeviceBindingMigrationContext, DeviceBindingRemaps,
+    MigrationPersistence, PersistedBindingEvidence, SegmentShape, build_binding_remaps,
+    plan_layout_device_id_remaps,
 };
 use crate::attachment_profiles::ComponentProfileStore;
+use crate::device_binding_journal::DeviceBindingMigrationJournal;
 use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
 use crate::display_preferences::{DisplayPreference, DisplayPreferencesStore};
 use crate::domain::layout::LayoutContext;

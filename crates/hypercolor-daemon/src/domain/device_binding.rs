@@ -1,15 +1,12 @@
 //! Conservative reconciliation for persisted, machine-local device bindings.
 
 use std::collections::{HashMap, HashSet};
-use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Context as _;
 use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DriverTransportKind};
 use hypercolor_types::spatial::{Output, SpatialLayout};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
@@ -17,6 +14,7 @@ use crate::attachment_profiles::{
     ComponentProfileBindingMigration, ComponentProfileBindingPublication, ComponentProfileStore,
     PersistedComponentProfileBindingMigration,
 };
+use crate::device_binding_journal::DeviceBindingMigrationJournal;
 use crate::device_settings::{
     DeviceSettingsAccess, DeviceSettingsBindingMigration, DeviceSettingsBindingPublication,
     PersistedDeviceSettingsBindingMigration,
@@ -33,10 +31,9 @@ use crate::logical_devices::{
     LogicalDevice, LogicalDeviceBindingMigration, LogicalDeviceBindingPublication,
     LogicalDeviceStoreAuthority, PersistedLogicalDeviceBindingMigration,
 };
-use crate::persistence::{AtomicFileWriter, AtomicWriteCommitResult, serialize_json_pretty};
+use crate::persistence::AtomicWriteCommitResult;
 
 const MAX_BINDING_MIGRATION_ATTEMPTS: usize = 3;
-const DEVICE_BINDING_JOURNAL_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEVICE_BINDING_MIGRATION_JOURNAL_FILE: &str = "device-binding-migration.json";
 
 #[derive(Clone)]
@@ -80,24 +77,11 @@ pub(crate) struct DeviceBindingMigrationReport {
     pub(crate) references: usize,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DeviceBindingRemaps {
     pub(crate) layout_device_ids: HashMap<String, String>,
     pub(crate) physical_device_ids: HashMap<DeviceId, DeviceId>,
     pub(crate) persisted_setting_keys: HashMap<String, String>,
-}
-
-#[derive(Clone)]
-struct DeviceBindingMigrationJournal {
-    path: PathBuf,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeviceBindingMigrationJournalDocument {
-    schema_version: u32,
-    remaps: Option<DeviceBindingRemaps>,
 }
 
 #[derive(Debug)]
@@ -116,76 +100,6 @@ impl MigrationPersistence {
             | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
                 Self::Failed(error.to_string())
             }
-        }
-    }
-}
-
-impl DeviceBindingMigrationJournal {
-    const fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-
-    fn load(&self) -> anyhow::Result<Option<DeviceBindingRemaps>> {
-        let payload = match std::fs::read(&self.path) {
-            Ok(payload) => payload,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to read device binding migration journal at {}",
-                        self.path.display()
-                    )
-                });
-            }
-        };
-        let document: DeviceBindingMigrationJournalDocument = serde_json::from_slice(&payload)
-            .with_context(|| {
-                format!(
-                    "failed to parse device binding migration journal at {}",
-                    self.path.display()
-                )
-            })?;
-        anyhow::ensure!(
-            document.schema_version == DEVICE_BINDING_JOURNAL_SCHEMA_VERSION,
-            "device binding migration journal at {} uses unsupported schema version {}; expected {}",
-            self.path.display(),
-            document.schema_version,
-            DEVICE_BINDING_JOURNAL_SCHEMA_VERSION
-        );
-        Ok(document.remaps)
-    }
-
-    fn persist_active(&self, remaps: &DeviceBindingRemaps) -> anyhow::Result<()> {
-        self.persist(Some(remaps.clone()))
-    }
-
-    fn clear(&self) -> anyhow::Result<()> {
-        self.persist(None)
-    }
-
-    fn persist(&self, remaps: Option<DeviceBindingRemaps>) -> anyhow::Result<()> {
-        let payload = serialize_json_pretty(&DeviceBindingMigrationJournalDocument {
-            schema_version: DEVICE_BINDING_JOURNAL_SCHEMA_VERSION,
-            remaps,
-        })
-        .context("failed to serialize device binding migration journal")?;
-        let outcome = AtomicFileWriter::new(&self.path)?
-            .reserve()
-            .admit(payload)
-            .commit_stage_aware();
-        match outcome {
-            AtomicWriteCommitResult::DurableWritten => Ok(()),
-            AtomicWriteCommitResult::Superseded => {
-                anyhow::bail!("device binding migration journal write was superseded")
-            }
-            AtomicWriteCommitResult::FailedBeforeReplacement(error)
-            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => Err(error)
-                .with_context(|| {
-                    format!(
-                        "failed to persist device binding migration journal at {}",
-                        self.path.display()
-                    )
-                }),
         }
     }
 }
