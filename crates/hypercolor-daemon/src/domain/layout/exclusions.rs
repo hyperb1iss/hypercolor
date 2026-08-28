@@ -5,17 +5,47 @@ use std::sync::Arc;
 use anyhow::Context;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{Output, SpatialLayout};
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
+use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::domain::scene::SceneService;
 use crate::layout_auto_exclusions::{self, LayoutAutoExclusionKey, LayoutAutoExclusionStore};
-use crate::persistence::{AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome};
+use crate::persistence::{
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation,
+};
 
 #[derive(Clone)]
 pub(super) struct LayoutExclusions {
     entries: Arc<RwLock<LayoutAutoExclusionStore>>,
     persistence: ExclusionPersistence,
     scenes: SceneService,
+}
+
+pub(super) struct LayoutExclusionsBindingMigration {
+    source: LayoutAutoExclusionStore,
+    candidate: LayoutAutoExclusionStore,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+    migrated: usize,
+}
+
+pub(super) struct AdmittedLayoutExclusionsBindingMigration {
+    source: LayoutAutoExclusionStore,
+    candidate: LayoutAutoExclusionStore,
+    write: AdmittedAtomicWrite,
+    migrated: usize,
+}
+
+pub(super) struct PersistedLayoutExclusionsBindingMigration {
+    source: LayoutAutoExclusionStore,
+    candidate: LayoutAutoExclusionStore,
+    migrated: usize,
+}
+
+pub(super) struct LayoutExclusionsBindingPublication {
+    entries: OwnedRwLockWriteGuard<LayoutAutoExclusionStore>,
+    candidate: Option<LayoutAutoExclusionStore>,
+    migrated: usize,
 }
 
 impl LayoutExclusions {
@@ -152,6 +182,86 @@ impl LayoutExclusions {
                 "Failed to persist layout auto-exclusion store"
             );
         }
+    }
+
+    pub(super) async fn prepare_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<Option<LayoutExclusionsBindingMigration>> {
+        let source = self.entries.read().await.clone();
+        let mut candidate = source.clone();
+        let migrated = candidate
+            .values_mut()
+            .map(|device_ids| remaps.remap_layout_device_id_set(device_ids))
+            .sum();
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let payload = layout_auto_exclusions::serialize(&candidate)?;
+        let writer = AtomicFileWriter::new(&self.persistence.path)?;
+        Ok(Some(LayoutExclusionsBindingMigration {
+            source,
+            candidate,
+            write: writer.reserve(),
+            payload,
+            migrated,
+        }))
+    }
+
+    pub(super) async fn prepare_binding_publication(
+        &self,
+        migration: PersistedLayoutExclusionsBindingMigration,
+    ) -> anyhow::Result<LayoutExclusionsBindingPublication> {
+        let entries = Arc::clone(&self.entries).write_owned().await;
+        anyhow::ensure!(
+            *entries == migration.source,
+            "device binding migration was superseded by newer layout exclusions"
+        );
+        Ok(LayoutExclusionsBindingPublication {
+            entries,
+            candidate: Some(migration.candidate),
+            migrated: migration.migrated,
+        })
+    }
+}
+
+impl LayoutExclusionsBindingMigration {
+    pub(super) fn admit(self) -> AdmittedLayoutExclusionsBindingMigration {
+        AdmittedLayoutExclusionsBindingMigration {
+            source: self.source,
+            candidate: self.candidate,
+            write: self.write.admit(self.payload),
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl AdmittedLayoutExclusionsBindingMigration {
+    pub(super) fn persist(
+        self,
+    ) -> (
+        PersistedLayoutExclusionsBindingMigration,
+        MigrationPersistence,
+    ) {
+        let persistence = MigrationPersistence::from_commit(self.write.commit_stage_aware());
+        (
+            PersistedLayoutExclusionsBindingMigration {
+                source: self.source,
+                candidate: self.candidate,
+                migrated: self.migrated,
+            },
+            persistence,
+        )
+    }
+}
+
+impl LayoutExclusionsBindingPublication {
+    pub(super) fn publish(&mut self) -> usize {
+        *self.entries = self
+            .candidate
+            .take()
+            .expect("exclusion binding migration must publish exactly once");
+        self.migrated
     }
 }
 

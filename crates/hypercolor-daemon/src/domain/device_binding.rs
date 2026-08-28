@@ -1,0 +1,921 @@
+//! Conservative reconciliation for persisted, machine-local device bindings.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
+use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DriverTransportKind};
+use hypercolor_types::spatial::{Output, SpatialLayout};
+use tokio::sync::{Mutex, RwLock};
+
+use crate::attachment_profiles::{
+    AdmittedComponentProfileBindingMigration, ComponentProfileBindingMigration,
+    ComponentProfileBindingPublication, ComponentProfileStore,
+    PersistedComponentProfileBindingMigration,
+};
+use crate::device_settings::{
+    AdmittedDeviceSettingsBindingMigration, DeviceSettingsAccess, DeviceSettingsBindingMigration,
+    DeviceSettingsBindingPublication, PersistedDeviceSettingsBindingMigration,
+};
+use crate::display_preferences::{
+    AdmittedDisplayPreferencesDeviceBindingMigration, DisplayPreferencesDeviceBindingMigration,
+    DisplayPreferencesDeviceBindingPublication, DisplayPreferencesStore,
+    PersistedDisplayPreferencesDeviceBindingMigration,
+};
+use crate::domain::layout::{
+    AdmittedLayoutDeviceBindingMigration, LayoutContext, LayoutDeviceBindingMigration,
+    LayoutDeviceBindingPublication, PersistedLayoutDeviceBindingMigration,
+};
+use crate::logical_devices::{
+    AdmittedLogicalDeviceBindingMigration, LogicalDevice, LogicalDeviceBindingMigration,
+    LogicalDeviceBindingPublication, LogicalDeviceStoreAuthority,
+    PersistedLogicalDeviceBindingMigration,
+};
+use crate::persistence::AtomicWriteCommitResult;
+
+#[derive(Clone)]
+#[doc(hidden)]
+pub struct DeviceBindingMigrationContext {
+    layout: LayoutContext,
+    logical_devices: LogicalDeviceStoreAuthority,
+    attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
+    device_settings: DeviceSettingsAccess,
+    display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+}
+
+struct PreparedDeviceBindingMigration {
+    layout: LayoutDeviceBindingMigration,
+    logical_devices: Option<LogicalDeviceBindingMigration>,
+    attachment_profiles: Option<ComponentProfileBindingMigration>,
+    device_settings: Option<DeviceSettingsBindingMigration>,
+    display_preferences: Option<DisplayPreferencesDeviceBindingMigration>,
+}
+
+struct AdmittedDeviceBindingMigration {
+    layout: AdmittedLayoutDeviceBindingMigration,
+    logical_devices: Option<AdmittedLogicalDeviceBindingMigration>,
+    attachment_profiles: Option<AdmittedComponentProfileBindingMigration>,
+    device_settings: Option<AdmittedDeviceSettingsBindingMigration>,
+    display_preferences: Option<AdmittedDisplayPreferencesDeviceBindingMigration>,
+}
+
+struct PersistedDeviceBindingMigration {
+    layout: PersistedLayoutDeviceBindingMigration,
+    logical_devices: Option<PersistedLogicalDeviceBindingMigration>,
+    attachment_profiles: Option<PersistedComponentProfileBindingMigration>,
+    device_settings: Option<PersistedDeviceSettingsBindingMigration>,
+    display_preferences: Option<PersistedDisplayPreferencesDeviceBindingMigration>,
+}
+
+struct DeviceBindingPublication {
+    layout: LayoutDeviceBindingPublication,
+    logical_devices: Option<LogicalDeviceBindingPublication>,
+    attachment_profiles: Option<ComponentProfileBindingPublication>,
+    device_settings: Option<DeviceSettingsBindingPublication>,
+    display_preferences: Option<DisplayPreferencesDeviceBindingPublication>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DeviceBindingMigrationReport {
+    pub(crate) mappings: usize,
+    pub(crate) references: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DeviceBindingRemaps {
+    pub(crate) layout_device_ids: HashMap<String, String>,
+    pub(crate) physical_device_ids: HashMap<DeviceId, DeviceId>,
+    pub(crate) persisted_setting_keys: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum MigrationPersistence {
+    Durable,
+    Superseded,
+    Failed(String),
+}
+
+impl MigrationPersistence {
+    pub(crate) fn from_commit(outcome: AtomicWriteCommitResult) -> Self {
+        match outcome {
+            AtomicWriteCommitResult::DurableWritten => Self::Durable,
+            AtomicWriteCommitResult::Superseded => Self::Superseded,
+            AtomicWriteCommitResult::FailedBeforeReplacement(error)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
+                Self::Failed(error.to_string())
+            }
+        }
+    }
+}
+
+impl DeviceBindingRemaps {
+    pub(crate) fn remap_layout(&self, layout: &mut SpatialLayout) -> usize {
+        layout
+            .zones
+            .iter_mut()
+            .map(|output| {
+                self.layout_device_ids
+                    .get(&output.device_id)
+                    .map_or(0, |canonical| {
+                        output.device_id.clone_from(canonical);
+                        1
+                    })
+            })
+            .sum()
+    }
+
+    pub(crate) fn remap_layout_device_id_set(&self, ids: &mut HashSet<String>) -> usize {
+        let replacements = ids
+            .iter()
+            .filter_map(|legacy| {
+                self.layout_device_ids
+                    .get(legacy)
+                    .map(|canonical| (legacy.clone(), canonical.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (legacy, canonical) in &replacements {
+            ids.remove(legacy);
+            ids.insert(canonical.clone());
+        }
+        replacements.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum BindingClass {
+    ClaimlessUsb {
+        owner: String,
+        vendor_id: u16,
+        product_id: u16,
+    },
+    SmBus {
+        owner: String,
+        protocol_or_model: String,
+        address: u16,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct SegmentShape {
+    name: String,
+    led_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CurrentBinding {
+    pub layout_device_id: String,
+    pub physical_device_id: DeviceId,
+    fingerprint: DeviceFingerprint,
+    class: BindingClass,
+    segment_shape: Vec<SegmentShape>,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PersistedBindingEvidence {
+    shapes: HashMap<String, Vec<Vec<SegmentShape>>>,
+}
+
+impl PersistedBindingEvidence {
+    pub(super) fn observe_layout(&mut self, layout: &SpatialLayout) {
+        let mut outputs_by_device = HashMap::<&str, Vec<&Output>>::new();
+        for output in &layout.zones {
+            outputs_by_device
+                .entry(output.device_id.as_str())
+                .or_default()
+                .push(output);
+        }
+        for (layout_device_id, outputs) in outputs_by_device {
+            let shape = output_shape(outputs);
+            if shape.is_empty() {
+                continue;
+            }
+            let observed = self.shapes.entry(layout_device_id.to_owned()).or_default();
+            if !observed.contains(&shape) {
+                observed.push(shape);
+            }
+        }
+    }
+
+    pub(super) fn layout_device_ids(&self) -> impl Iterator<Item = &str> {
+        self.shapes.keys().map(String::as_str)
+    }
+}
+
+impl CurrentBinding {
+    pub(super) fn from_discovery(
+        info: &DeviceInfo,
+        fingerprint: &DeviceFingerprint,
+        layout_device_id: String,
+        has_portable_claim: bool,
+    ) -> Option<Self> {
+        let encoded = fingerprint.as_str();
+        let class = match &info.origin.transport {
+            DriverTransportKind::Usb if !has_portable_claim => {
+                let (owner, vendor_id, product_id) = parse_usb_fingerprint(encoded)?;
+                BindingClass::ClaimlessUsb {
+                    owner,
+                    vendor_id,
+                    product_id,
+                }
+            }
+            DriverTransportKind::Smbus => {
+                let (owner, address) = parse_smbus_fingerprint(encoded)?;
+                let protocol_or_model = info
+                    .model
+                    .as_deref()
+                    .or(info.origin.protocol_id.as_deref())?
+                    .trim()
+                    .to_ascii_lowercase();
+                if protocol_or_model.is_empty() {
+                    return None;
+                }
+                BindingClass::SmBus {
+                    owner,
+                    protocol_or_model,
+                    address,
+                }
+            }
+            DriverTransportKind::Network
+            | DriverTransportKind::Midi
+            | DriverTransportKind::Serial
+            | DriverTransportKind::Virtual
+            | DriverTransportKind::Bridge
+            | DriverTransportKind::Custom(_)
+            | DriverTransportKind::Usb => return None,
+        };
+        let segment_shape = device_shape(info);
+        if segment_shape.is_empty() {
+            return None;
+        }
+        Some(Self {
+            layout_device_id,
+            physical_device_id: info.id,
+            fingerprint: fingerprint.clone(),
+            class,
+            segment_shape,
+        })
+    }
+}
+
+impl DeviceBindingMigrationContext {
+    #[doc(hidden)]
+    pub fn new(
+        layout: LayoutContext,
+        logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
+        logical_devices_path: PathBuf,
+        attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
+        device_settings: DeviceSettingsAccess,
+        display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+    ) -> Self {
+        Self {
+            layout,
+            logical_devices: LogicalDeviceStoreAuthority::new(
+                logical_devices,
+                logical_devices_path,
+            ),
+            attachment_profiles,
+            device_settings,
+            display_preferences,
+        }
+    }
+
+    pub(crate) async fn reconcile_complete_sweep(
+        &self,
+        registry: &DeviceRegistry,
+        lifecycle: &Arc<Mutex<DeviceLifecycleManager>>,
+        seen_ids: &HashSet<DeviceId>,
+    ) -> anyhow::Result<DeviceBindingMigrationReport> {
+        let evidence = self.layout.collect_binding_evidence().await;
+        let current = collect_current_bindings(registry, lifecycle, seen_ids).await;
+        let remaps = build_binding_remaps(&evidence, &current);
+        if remaps.layout_device_ids.is_empty() {
+            return Ok(DeviceBindingMigrationReport::default());
+        }
+
+        loop {
+            let prepared = self.prepare(&remaps).await?;
+            let (persisted, persistence) = prepared.admit().persist();
+            if migration_was_superseded(&persistence) {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let failures = persistence
+                .into_iter()
+                .filter_map(|outcome| match outcome {
+                    MigrationPersistence::Failed(error) => Some(error),
+                    MigrationPersistence::Durable | MigrationPersistence::Superseded => None,
+                })
+                .collect::<Vec<_>>();
+            if !failures.is_empty() {
+                anyhow::bail!(
+                    "device binding migration was not published because durable persistence \
+                     failed: {}",
+                    failures.join("; ")
+                );
+            }
+
+            let Ok(mut publication) = self.prepare_publication(persisted).await else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+            let references = publication.publish(self);
+            let renderer_convergence = publication.finish();
+            if let Some((guard, layout)) = renderer_convergence {
+                self.layout
+                    .converge_published_device_binding(guard, layout)
+                    .await?;
+            }
+            return Ok(DeviceBindingMigrationReport {
+                mappings: remaps.layout_device_ids.len(),
+                references,
+            });
+        }
+    }
+
+    async fn prepare(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<PreparedDeviceBindingMigration> {
+        let layout = self.layout.prepare_device_binding_migration(remaps).await?;
+        let logical_devices = self
+            .logical_devices
+            .prepare_binding_migration(remaps)
+            .await?;
+        let attachment_profiles = self
+            .attachment_profiles
+            .read()
+            .await
+            .prepare_binding_migration(remaps)?;
+        let device_settings = self
+            .device_settings
+            .prepare_binding_migration(remaps)
+            .await?;
+        let display_preferences = self
+            .display_preferences
+            .read()
+            .await
+            .prepare_device_binding_migration(remaps)?;
+        Ok(PreparedDeviceBindingMigration {
+            layout,
+            logical_devices,
+            attachment_profiles,
+            device_settings,
+            display_preferences,
+        })
+    }
+
+    async fn prepare_publication(
+        &self,
+        migration: PersistedDeviceBindingMigration,
+    ) -> anyhow::Result<DeviceBindingPublication> {
+        let layout = self
+            .layout
+            .prepare_device_binding_publication(migration.layout)
+            .await?;
+        let logical_devices = match migration.logical_devices {
+            Some(migration) => Some(
+                self.logical_devices
+                    .prepare_binding_publication(migration)
+                    .await?,
+            ),
+            None => None,
+        };
+        let attachment_profiles = match migration.attachment_profiles {
+            Some(migration) => Some(
+                ComponentProfileBindingPublication::prepare(
+                    Arc::clone(&self.attachment_profiles),
+                    migration,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        let device_settings = match migration.device_settings {
+            Some(migration) => Some(
+                self.device_settings
+                    .prepare_binding_publication(migration)
+                    .await?,
+            ),
+            None => None,
+        };
+        let display_preferences = match migration.display_preferences {
+            Some(migration) => Some(
+                DisplayPreferencesDeviceBindingPublication::prepare(
+                    Arc::clone(&self.display_preferences),
+                    migration,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        Ok(DeviceBindingPublication {
+            layout,
+            logical_devices,
+            attachment_profiles,
+            device_settings,
+            display_preferences,
+        })
+    }
+}
+
+fn migration_was_superseded(persistence: &[MigrationPersistence]) -> bool {
+    persistence
+        .iter()
+        .any(|outcome| matches!(outcome, MigrationPersistence::Superseded))
+}
+
+impl PreparedDeviceBindingMigration {
+    fn admit(self) -> AdmittedDeviceBindingMigration {
+        AdmittedDeviceBindingMigration {
+            layout: self.layout.admit(),
+            logical_devices: self
+                .logical_devices
+                .map(LogicalDeviceBindingMigration::admit),
+            attachment_profiles: self
+                .attachment_profiles
+                .map(ComponentProfileBindingMigration::admit),
+            device_settings: self
+                .device_settings
+                .map(DeviceSettingsBindingMigration::admit),
+            display_preferences: self
+                .display_preferences
+                .map(DisplayPreferencesDeviceBindingMigration::admit),
+        }
+    }
+}
+
+impl AdmittedDeviceBindingMigration {
+    fn persist(self) -> (PersistedDeviceBindingMigration, Vec<MigrationPersistence>) {
+        let (layout, mut persistence) = self.layout.persist();
+        let (logical_devices, logical_persistence) = self.logical_devices.map_or_else(
+            || (None, MigrationPersistence::Durable),
+            |migration| {
+                let (persisted, outcome) = migration.persist();
+                (Some(persisted), outcome)
+            },
+        );
+        persistence.push(logical_persistence);
+        let (attachment_profiles, profile_persistence) = self.attachment_profiles.map_or_else(
+            || (None, MigrationPersistence::Durable),
+            |migration| {
+                let (persisted, outcome) = migration.persist();
+                (Some(persisted), outcome)
+            },
+        );
+        persistence.push(profile_persistence);
+        let (device_settings, settings_persistence) = self.device_settings.map_or_else(
+            || (None, MigrationPersistence::Durable),
+            |migration| {
+                let (persisted, outcome) = migration.persist();
+                (Some(persisted), outcome)
+            },
+        );
+        persistence.push(settings_persistence);
+        let (display_preferences, display_persistence) = self.display_preferences.map_or_else(
+            || (None, MigrationPersistence::Durable),
+            |migration| {
+                let (persisted, outcome) = migration.persist();
+                (Some(persisted), outcome)
+            },
+        );
+        persistence.push(display_persistence);
+        (
+            PersistedDeviceBindingMigration {
+                layout,
+                logical_devices,
+                attachment_profiles,
+                device_settings,
+                display_preferences,
+            },
+            persistence,
+        )
+    }
+}
+
+impl DeviceBindingPublication {
+    fn publish(&mut self, context: &DeviceBindingMigrationContext) -> usize {
+        let mut migrated = self.layout.publish(&context.layout);
+        if let Some(logical_devices) = self.logical_devices.as_mut() {
+            migrated += logical_devices.publish();
+        }
+        if let Some(attachment_profiles) = self.attachment_profiles.as_mut() {
+            migrated += attachment_profiles.publish();
+        }
+        if let Some(device_settings) = self.device_settings.as_mut() {
+            migrated += device_settings.publish();
+        }
+        if let Some(display_preferences) = self.display_preferences.as_mut() {
+            migrated += display_preferences.publish();
+        }
+        migrated
+    }
+
+    fn finish(self) -> Option<(crate::scene_transactions::LayoutUpdateGuard, SpatialLayout)> {
+        self.layout.finish()
+    }
+}
+
+async fn collect_current_bindings(
+    registry: &DeviceRegistry,
+    lifecycle: &Arc<Mutex<DeviceLifecycleManager>>,
+    seen_ids: &HashSet<DeviceId>,
+) -> Vec<CurrentBinding> {
+    let tracked = registry.list().await;
+    let lifecycle_ids = {
+        let lifecycle = lifecycle.lock().await;
+        tracked
+            .iter()
+            .map(|tracked| {
+                (
+                    tracked.info.id,
+                    lifecycle
+                        .layout_device_id_for(tracked.info.id)
+                        .map(ToOwned::to_owned),
+                )
+            })
+            .collect::<HashMap<_, _>>()
+    };
+    let mut current = Vec::new();
+    for tracked in tracked {
+        if !seen_ids.contains(&tracked.info.id) {
+            continue;
+        }
+        let Some(fingerprint) = registry.fingerprint_for_id(&tracked.info.id).await else {
+            continue;
+        };
+        let layout_device_id = lifecycle_ids
+            .get(&tracked.info.id)
+            .and_then(Clone::clone)
+            .unwrap_or_else(|| {
+                DeviceLifecycleManager::canonical_layout_device_id(
+                    &tracked.info,
+                    Some(&fingerprint),
+                )
+            });
+        let has_portable_claim = registry.claim_for_id(&tracked.info.id).await.is_some();
+        if let Some(binding) = CurrentBinding::from_discovery(
+            &tracked.info,
+            &fingerprint,
+            layout_device_id,
+            has_portable_claim,
+        ) {
+            current.push(binding);
+        }
+    }
+    current
+}
+
+fn build_binding_remaps(
+    evidence: &PersistedBindingEvidence,
+    current: &[CurrentBinding],
+) -> DeviceBindingRemaps {
+    let layout_device_ids = plan_layout_device_id_remaps(evidence, current);
+    let current_by_layout_id = current
+        .iter()
+        .map(|binding| (binding.layout_device_id.as_str(), binding))
+        .collect::<HashMap<_, _>>();
+    let mut physical_device_ids = HashMap::new();
+    let mut persisted_setting_keys = HashMap::new();
+    for (legacy_layout_id, canonical_layout_id) in &layout_device_ids {
+        let Some(binding) = current_by_layout_id.get(canonical_layout_id.as_str()) else {
+            continue;
+        };
+        let namespace = match binding.class {
+            BindingClass::ClaimlessUsb { .. } => "usb",
+            BindingClass::SmBus { .. } => "smbus",
+        };
+        let legacy_fingerprint = format!("{namespace}:{legacy_layout_id}");
+        let legacy_physical_id =
+            DeviceFingerprint::from_persisted(legacy_fingerprint.clone()).stable_device_id();
+        physical_device_ids.insert(legacy_physical_id, binding.physical_device_id);
+        persisted_setting_keys.insert(legacy_fingerprint, binding.fingerprint.as_str().to_owned());
+        persisted_setting_keys.insert(
+            legacy_physical_id.to_string(),
+            binding.physical_device_id.to_string(),
+        );
+    }
+    DeviceBindingRemaps {
+        layout_device_ids,
+        physical_device_ids,
+        persisted_setting_keys,
+    }
+}
+
+pub(super) fn plan_layout_device_id_remaps(
+    evidence: &PersistedBindingEvidence,
+    current: &[CurrentBinding],
+) -> HashMap<String, String> {
+    let exact = current
+        .iter()
+        .map(|binding| binding.layout_device_id.as_str())
+        .collect::<HashSet<_>>();
+    let mut claimant_count = current
+        .iter()
+        .map(|binding| usize::from(evidence.shapes.contains_key(&binding.layout_device_id)))
+        .collect::<Vec<_>>();
+    let mut candidates = HashMap::<String, Vec<usize>>::new();
+    for legacy_id in evidence.layout_device_ids() {
+        if exact.contains(legacy_id) {
+            continue;
+        }
+        let Some(shapes) = evidence.shapes.get(legacy_id) else {
+            continue;
+        };
+        let matches = current
+            .iter()
+            .enumerate()
+            .filter(|(_, binding)| {
+                legacy_id_matches_class(legacy_id, &binding.class)
+                    && shapes.iter().all(|shape| shape == &binding.segment_shape)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !matches.is_empty() {
+            candidates.insert(legacy_id.to_owned(), matches);
+        }
+    }
+
+    for matches in candidates.values() {
+        if let [index] = matches.as_slice() {
+            claimant_count[*index] = claimant_count[*index].saturating_add(1);
+        }
+    }
+
+    candidates
+        .into_iter()
+        .filter_map(|(legacy_id, matches)| {
+            let [index] = matches.as_slice() else {
+                return None;
+            };
+            (claimant_count[*index] == 1)
+                .then(|| (legacy_id, current[*index].layout_device_id.clone()))
+        })
+        .collect()
+}
+
+fn legacy_id_matches_class(layout_device_id: &str, class: &BindingClass) -> bool {
+    match class {
+        BindingClass::ClaimlessUsb {
+            owner,
+            vendor_id,
+            product_id,
+        } => parse_usb_layout_id(layout_device_id).is_some_and(
+            |(legacy_owner, legacy_vendor, legacy_product)| {
+                legacy_owner == *owner
+                    && legacy_vendor == *vendor_id
+                    && legacy_product == *product_id
+            },
+        ),
+        BindingClass::SmBus { owner, address, .. } => parse_smbus_layout_id(layout_device_id)
+            .is_some_and(|(legacy_owner, legacy_address)| {
+                legacy_owner == *owner && legacy_address == *address
+            }),
+    }
+}
+
+fn parse_usb_fingerprint(value: &str) -> Option<(String, u16, u16)> {
+    let rest = value.strip_prefix("usb:")?;
+    let mut parts = rest.split(':');
+    let owner = normalized_component(parts.next()?);
+    let vendor_id = parse_four_digit_hex(parts.next()?)?;
+    let product_id = parse_four_digit_hex(parts.next()?)?;
+    parts.next()?;
+    Some((owner, vendor_id, product_id))
+}
+
+fn parse_usb_layout_id(value: &str) -> Option<(String, u16, u16)> {
+    let mut parts = value.split(':');
+    let owner = normalized_component(parts.next()?);
+    let vendor_id = parse_four_digit_hex(parts.next()?)?;
+    let product_id = parse_four_digit_hex(parts.next()?)?;
+    parts.next()?;
+    Some((owner, vendor_id, product_id))
+}
+
+fn parse_smbus_fingerprint(value: &str) -> Option<(String, u16)> {
+    let rest = value.strip_prefix("smbus:")?;
+    let (owner, remainder) = rest.split_once(':')?;
+    let (_, address) = remainder.rsplit_once(':')?;
+    Some((normalized_component(owner), parse_hex(address)?))
+}
+
+fn parse_smbus_layout_id(value: &str) -> Option<(String, u16)> {
+    let (owner, remainder) = value.split_once(':')?;
+    let (_, address) = remainder.rsplit_once(':')?;
+    Some((normalized_component(owner), parse_hex(address)?))
+}
+
+fn parse_four_digit_hex(value: &str) -> Option<u16> {
+    (value.len() == 4).then_some(())?;
+    parse_hex(value)
+}
+
+fn parse_hex(value: &str) -> Option<u16> {
+    u16::from_str_radix(value, 16).ok()
+}
+
+fn device_shape(info: &DeviceInfo) -> Vec<SegmentShape> {
+    let mut shape = info
+        .segments
+        .iter()
+        .filter(|segment| {
+            segment.led_count > 0
+                && !matches!(
+                    segment.topology,
+                    hypercolor_types::device::DeviceTopologyHint::Display { .. }
+                )
+        })
+        .map(|segment| SegmentShape {
+            name: normalized_component(&segment.name),
+            led_count: segment.led_count,
+        })
+        .collect::<Vec<_>>();
+    shape.sort_unstable();
+    shape
+}
+
+fn output_shape(outputs: Vec<&Output>) -> Vec<SegmentShape> {
+    let mut shape = outputs
+        .into_iter()
+        .filter_map(|output| {
+            let name = normalized_component(output.zone_name.as_deref()?);
+            (!name.is_empty()).then(|| SegmentShape {
+                name,
+                led_count: output.topology.led_count(),
+            })
+        })
+        .collect::<Vec<_>>();
+    shape.sort_unstable();
+    shape
+}
+
+fn normalized_component(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use hypercolor_types::device::DeviceId;
+
+    use super::{
+        BindingClass, CurrentBinding, MigrationPersistence, PersistedBindingEvidence, SegmentShape,
+        migration_was_superseded, plan_layout_device_id_remaps,
+    };
+
+    fn usb(layout_device_id: &str, product_id: u16, led_count: u32) -> CurrentBinding {
+        CurrentBinding {
+            layout_device_id: layout_device_id.to_owned(),
+            physical_device_id: DeviceId::new(),
+            fingerprint: hypercolor_types::device::DeviceFingerprint::from_persisted(format!(
+                "usb:{layout_device_id}"
+            )),
+            class: BindingClass::ClaimlessUsb {
+                owner: "razer".to_owned(),
+                vendor_id: 0x1532,
+                product_id,
+            },
+            segment_shape: vec![SegmentShape {
+                name: "main".to_owned(),
+                led_count,
+            }],
+        }
+    }
+
+    fn evidence(entries: &[(&str, u32)]) -> PersistedBindingEvidence {
+        PersistedBindingEvidence {
+            shapes: entries
+                .iter()
+                .map(|(id, led_count)| {
+                    (
+                        (*id).to_owned(),
+                        vec![vec![SegmentShape {
+                            name: "main".to_owned(),
+                            led_count: *led_count,
+                        }]],
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    #[test]
+    fn exact_layout_ids_win_without_a_rewrite() {
+        let current = vec![usb("razer:1532:0099:pci-root", 0x0099, 16)];
+        let evidence = evidence(&[("razer:1532:0099:pci-root", 16)]);
+
+        assert!(plan_layout_device_id_remaps(&evidence, &current).is_empty());
+    }
+
+    #[test]
+    fn exact_layout_id_prevents_a_fuzzy_duplicate_claim() {
+        let current = vec![usb("razer:1532:0099:pci-root", 0x0099, 16)];
+        let evidence = evidence(&[
+            ("razer:1532:0099:pci-root", 16),
+            ("razer:1532:0099:001-6-4-4", 16),
+        ]);
+
+        assert!(plan_layout_device_id_remaps(&evidence, &current).is_empty());
+    }
+
+    #[test]
+    fn unique_claimless_usb_class_reconciles_across_host_paths() {
+        let current = vec![usb("razer:1532:0099:pci-root", 0x0099, 16)];
+        let evidence = evidence(&[("razer:1532:0099:001-6-4-4", 16)]);
+
+        assert_eq!(
+            plan_layout_device_id_remaps(&evidence, &current),
+            HashMap::from([(
+                "razer:1532:0099:001-6-4-4".to_owned(),
+                "razer:1532:0099:pci-root".to_owned(),
+            )])
+        );
+    }
+
+    #[test]
+    fn ambiguous_usb_class_is_left_untouched() {
+        let current = vec![
+            usb("razer:1532:0099:pci-left", 0x0099, 16),
+            usb("razer:1532:0099:pci-right", 0x0099, 16),
+        ];
+        let evidence = evidence(&[("razer:1532:0099:001-6-4-4", 16)]);
+
+        assert!(plan_layout_device_id_remaps(&evidence, &current).is_empty());
+    }
+
+    #[test]
+    fn incompatible_segment_shape_is_left_untouched() {
+        let current = vec![usb("razer:1532:0099:pci-root", 0x0099, 24)];
+        let evidence = evidence(&[("razer:1532:0099:001-6-4-4", 16)]);
+
+        assert!(plan_layout_device_id_remaps(&evidence, &current).is_empty());
+    }
+
+    #[test]
+    fn absent_device_is_left_untouched() {
+        let evidence = evidence(&[("razer:1532:0099:001-6-4-4", 16)]);
+
+        assert!(plan_layout_device_id_remaps(&evidence, &[]).is_empty());
+    }
+
+    #[test]
+    fn superseded_participant_restarts_the_transaction() {
+        assert!(migration_was_superseded(&[
+            MigrationPersistence::Durable,
+            MigrationPersistence::Superseded,
+        ]));
+        assert!(!migration_was_superseded(&[
+            MigrationPersistence::Durable,
+            MigrationPersistence::Durable,
+        ]));
+    }
+
+    #[test]
+    fn one_current_device_cannot_claim_two_legacy_bindings() {
+        let current = vec![usb("razer:1532:0099:pci-root", 0x0099, 16)];
+        let evidence = evidence(&[
+            ("razer:1532:0099:001-6-4-4", 16),
+            ("razer:1532:0099:001-6-4-5", 16),
+        ]);
+
+        assert!(plan_layout_device_id_remaps(&evidence, &current).is_empty());
+    }
+
+    #[test]
+    fn unique_smbus_address_and_descriptor_reconcile() {
+        let current = vec![CurrentBinding {
+            layout_device_id: "asus:pawnio:i801:71".to_owned(),
+            physical_device_id: DeviceId::new(),
+            fingerprint: hypercolor_types::device::DeviceFingerprint::from_persisted(
+                "smbus:asus:pawnio:i801:71",
+            ),
+            class: BindingClass::SmBus {
+                owner: "asus".to_owned(),
+                protocol_or_model: "asus_aura_smbus_motherboard".to_owned(),
+                address: 0x71,
+            },
+            segment_shape: vec![SegmentShape {
+                name: "main".to_owned(),
+                led_count: 16,
+            }],
+        }];
+        let evidence = evidence(&[("asus:dev-i2c-9:71", 16)]);
+
+        assert_eq!(
+            plan_layout_device_id_remaps(&evidence, &current),
+            HashMap::from([(
+                "asus:dev-i2c-9:71".to_owned(),
+                "asus:pawnio:i801:71".to_owned(),
+            )])
+        );
+    }
+}
+
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+mod persistence_tests;

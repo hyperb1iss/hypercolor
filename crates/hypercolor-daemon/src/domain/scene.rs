@@ -56,6 +56,7 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 use crate::domain::commit::SceneCommitSequencer;
 use crate::domain::commit::{CommitDurability, SceneCommit, SceneRevision};
 use crate::domain::context::SceneContext;
+use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::domain::effect::IdentityMigrationPersistence;
 use crate::domain::layout::LayoutContext;
 use crate::domain::output::OutputContext;
@@ -95,6 +96,36 @@ pub(crate) struct PersistedSceneEffectIdMigration {
 }
 
 pub(crate) struct SceneEffectIdMigrationPublication {
+    manager: OwnedRwLockWriteGuard<SceneManager>,
+    store: Option<OwnedRwLockWriteGuard<SceneStore>>,
+    candidate: Option<SceneManager>,
+    stored_scenes: Option<HashMap<SceneId, Scene>>,
+    _snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct SceneDeviceBindingMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    store: Option<SceneStoreSave>,
+    migrated: usize,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct AdmittedSceneDeviceBindingMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    store: Option<AdmittedSceneStoreSave>,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct PersistedSceneDeviceBindingMigration {
+    base_revision: SceneRevision,
+    candidate: SceneManager,
+    stored_scenes: Option<HashMap<SceneId, Scene>>,
+    snapshot_save_guard: OwnedRwLockWriteGuard<()>,
+}
+
+pub(crate) struct SceneDeviceBindingMigrationPublication {
     manager: OwnedRwLockWriteGuard<SceneManager>,
     store: Option<OwnedRwLockWriteGuard<SceneStore>>,
     candidate: Option<SceneManager>,
@@ -298,6 +329,83 @@ impl SceneService {
             migrated,
             snapshot_save_guard,
         })
+    }
+
+    pub(crate) async fn prepare_device_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<SceneDeviceBindingMigration> {
+        let snapshot_save_guard = Arc::clone(&self.0.snapshot_save_gate).write_owned().await;
+        let manager = self.0.manager.read().await;
+        let mut candidate = manager.clone();
+        let migrated =
+            candidate.remap_device_bindings(&remaps.layout_device_ids, &remaps.physical_device_ids);
+        let store = match self.0.store.as_ref() {
+            Some(store) => Some(
+                store
+                    .read()
+                    .await
+                    .reserve_save(candidate.list().into_iter().cloned())?,
+            ),
+            None => None,
+        };
+        Ok(SceneDeviceBindingMigration {
+            base_revision: self.0.commits.revision(),
+            candidate,
+            store,
+            migrated,
+            snapshot_save_guard,
+        })
+    }
+
+    pub(crate) async fn prepare_device_binding_migration_publication(
+        &self,
+        migration: PersistedSceneDeviceBindingMigration,
+    ) -> anyhow::Result<SceneDeviceBindingMigrationPublication> {
+        let manager = Arc::clone(&self.0.manager).write_owned().await;
+        anyhow::ensure!(
+            self.0.commits.revision() == migration.base_revision,
+            "device binding migration was superseded by newer scene state"
+        );
+        let store = if migration.stored_scenes.is_some() {
+            let store = self
+                .0
+                .store
+                .as_ref()
+                .expect("persisted scene migration must retain its owning store");
+            Some(Arc::clone(store).write_owned().await)
+        } else {
+            None
+        };
+        Ok(SceneDeviceBindingMigrationPublication {
+            manager,
+            store,
+            candidate: Some(migration.candidate),
+            stored_scenes: migration.stored_scenes,
+            _snapshot_save_guard: migration.snapshot_save_guard,
+        })
+    }
+
+    pub(crate) fn publish_device_binding_migration(
+        &self,
+        publication: &mut SceneDeviceBindingMigrationPublication,
+    ) -> SceneCommit {
+        if let (Some(store), Some(stored_scenes)) =
+            (publication.store.as_mut(), publication.stored_scenes.take())
+        {
+            store.replace_named_scenes(stored_scenes.into_values());
+        }
+        *publication.manager = publication
+            .candidate
+            .take()
+            .expect("scene binding migration must publish exactly once");
+        let ticket = self.0.commits.admit(Arc::clone(&self.0.event_bus));
+        self.0.plan.store(Arc::new(
+            publication.manager.plan_snapshot(ticket.generation()),
+        ));
+        let generation = ticket.generation();
+        ticket.release(Vec::new());
+        SceneCommit::new(generation, generation, CommitDurability::Written, None)
     }
 
     pub(crate) async fn prepare_effect_id_migration_publication(
@@ -628,6 +736,46 @@ impl SceneEffectIdMigration {
             store: self.store.map(SceneStoreSave::admit),
             snapshot_save_guard: self.snapshot_save_guard,
         }
+    }
+}
+
+impl SceneDeviceBindingMigration {
+    pub(crate) fn candidate(&self) -> &SceneManager {
+        &self.candidate
+    }
+
+    pub(crate) fn migrated(&self) -> usize {
+        self.migrated
+    }
+
+    pub(crate) fn admit(self) -> AdmittedSceneDeviceBindingMigration {
+        AdmittedSceneDeviceBindingMigration {
+            base_revision: self.base_revision,
+            candidate: self.candidate,
+            store: self.store.map(SceneStoreSave::admit),
+            snapshot_save_guard: self.snapshot_save_guard,
+        }
+    }
+}
+
+impl AdmittedSceneDeviceBindingMigration {
+    pub(crate) fn persist(self) -> (PersistedSceneDeviceBindingMigration, MigrationPersistence) {
+        let (stored_scenes, persistence) = self.store.map_or_else(
+            || (None, MigrationPersistence::Durable),
+            |store| {
+                let (scenes, outcome) = store.commit_stage_aware();
+                (Some(scenes), MigrationPersistence::from_commit(outcome))
+            },
+        );
+        (
+            PersistedSceneDeviceBindingMigration {
+                base_revision: self.base_revision,
+                candidate: self.candidate,
+                stored_scenes,
+                snapshot_save_guard: self.snapshot_save_guard,
+            },
+            persistence,
+        )
     }
 }
 

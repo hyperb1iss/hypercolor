@@ -5,16 +5,19 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use hypercolor_types::device::DeviceId;
 
+use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::persistence::{
-    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, PersistenceError,
-    serialize_json_pretty,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation,
+    PersistenceError, serialize_json_pretty,
 };
 
 /// Logical-device snapshot reserved at its owning mutation boundary.
@@ -23,8 +26,41 @@ pub struct LogicalDeviceSave {
     write: AdmittedAtomicWrite,
 }
 
+#[derive(Clone)]
+pub(crate) struct LogicalDeviceStoreAuthority {
+    entries: Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    path: PathBuf,
+}
+
+pub(crate) struct LogicalDeviceBindingMigration {
+    source: HashMap<String, LogicalDevice>,
+    candidate: HashMap<String, LogicalDevice>,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+    migrated: usize,
+}
+
+pub(crate) struct AdmittedLogicalDeviceBindingMigration {
+    source: HashMap<String, LogicalDevice>,
+    candidate: HashMap<String, LogicalDevice>,
+    write: AdmittedAtomicWrite,
+    migrated: usize,
+}
+
+pub(crate) struct PersistedLogicalDeviceBindingMigration {
+    source: HashMap<String, LogicalDevice>,
+    candidate: HashMap<String, LogicalDevice>,
+    migrated: usize,
+}
+
+pub(crate) struct LogicalDeviceBindingPublication {
+    entries: OwnedRwLockWriteGuard<HashMap<String, LogicalDevice>>,
+    candidate: Option<HashMap<String, LogicalDevice>>,
+    migrated: usize,
+}
+
 /// One logical device mapped onto a physical device LED range.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogicalDevice {
     /// Stable logical device ID used by layout zones (`Output.device_id`).
     pub id: String,
@@ -46,6 +82,98 @@ pub struct LogicalDevice {
 
     /// Whether this is the built-in full-device mapping or a user segment.
     pub kind: LogicalDeviceKind,
+}
+
+impl LogicalDeviceStoreAuthority {
+    pub(crate) fn new(entries: Arc<RwLock<HashMap<String, LogicalDevice>>>, path: PathBuf) -> Self {
+        Self { entries, path }
+    }
+
+    pub(crate) async fn prepare_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<Option<LogicalDeviceBindingMigration>> {
+        let source = self.entries.read().await.clone();
+        let mut candidate = source.clone();
+        let mut migrated = 0;
+        for entry in candidate.values_mut() {
+            if let Some(canonical) = remaps.physical_device_ids.get(&entry.physical_device_id) {
+                entry.physical_device_id = *canonical;
+                migrated += 1;
+            }
+        }
+        for (legacy, canonical) in &remaps.layout_device_ids {
+            let Some(mut entry) = candidate.remove(legacy) else {
+                continue;
+            };
+            entry.id.clone_from(canonical);
+            candidate.entry(canonical.clone()).or_insert(entry);
+            migrated += 1;
+        }
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let payload = serialize_segments(&candidate)?;
+        let writer = AtomicFileWriter::new(&self.path)?;
+        Ok(Some(LogicalDeviceBindingMigration {
+            source,
+            candidate,
+            write: writer.reserve(),
+            payload,
+            migrated,
+        }))
+    }
+
+    pub(crate) async fn prepare_binding_publication(
+        &self,
+        migration: PersistedLogicalDeviceBindingMigration,
+    ) -> anyhow::Result<LogicalDeviceBindingPublication> {
+        let entries = Arc::clone(&self.entries).write_owned().await;
+        anyhow::ensure!(
+            *entries == migration.source,
+            "device binding migration was superseded by newer logical devices"
+        );
+        Ok(LogicalDeviceBindingPublication {
+            entries,
+            candidate: Some(migration.candidate),
+            migrated: migration.migrated,
+        })
+    }
+}
+
+impl LogicalDeviceBindingMigration {
+    pub(crate) fn admit(self) -> AdmittedLogicalDeviceBindingMigration {
+        AdmittedLogicalDeviceBindingMigration {
+            source: self.source,
+            candidate: self.candidate,
+            write: self.write.admit(self.payload),
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl AdmittedLogicalDeviceBindingMigration {
+    pub(crate) fn persist(self) -> (PersistedLogicalDeviceBindingMigration, MigrationPersistence) {
+        let persistence = MigrationPersistence::from_commit(self.write.commit_stage_aware());
+        (
+            PersistedLogicalDeviceBindingMigration {
+                source: self.source,
+                candidate: self.candidate,
+                migrated: self.migrated,
+            },
+            persistence,
+        )
+    }
+}
+
+impl LogicalDeviceBindingPublication {
+    pub(crate) fn publish(&mut self) -> usize {
+        *self.entries = self
+            .candidate
+            .take()
+            .expect("logical binding migration must publish exactly once");
+        self.migrated
+    }
 }
 
 impl LogicalDevice {
@@ -184,6 +312,13 @@ pub fn reserve_save_segments(
     store: &HashMap<String, LogicalDevice>,
 ) -> anyhow::Result<LogicalDeviceSave> {
     let writer = AtomicFileWriter::new(path)?;
+    let payload = serialize_segments(store)?;
+    Ok(LogicalDeviceSave {
+        write: writer.reserve().admit(payload),
+    })
+}
+
+fn serialize_segments(store: &HashMap<String, LogicalDevice>) -> anyhow::Result<Vec<u8>> {
     let mut entries: Vec<LogicalDevice> = store
         .values()
         .filter(|entry| entry.kind == LogicalDeviceKind::Segment)
@@ -192,9 +327,7 @@ pub fn reserve_save_segments(
     entries.sort_by(|left, right| left.id.cmp(&right.id));
     let payload =
         serialize_json_pretty(&entries).context("failed to serialize logical device store")?;
-    Ok(LogicalDeviceSave {
-        write: writer.reserve().admit(payload),
-    })
+    Ok(payload)
 }
 
 /// Commit a previously reserved logical-device snapshot.

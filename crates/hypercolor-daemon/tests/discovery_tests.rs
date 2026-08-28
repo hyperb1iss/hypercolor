@@ -21,6 +21,8 @@ use hypercolor_daemon::discovery::{
     DiscoveryRuntime, DiscoveryTarget, execute_discovery_scan, execute_discovery_scan_if_idle,
     schedule_discovery_scan,
 };
+use hypercolor_daemon::display_preferences::DisplayPreferencesStore;
+use hypercolor_daemon::domain::DeviceBindingMigrationContext;
 use hypercolor_daemon::domain::layout::LayoutContext;
 use hypercolor_daemon::domain::scene::SceneService;
 use hypercolor_daemon::domain::spatial::SpatialService;
@@ -568,6 +570,7 @@ fn make_runtime_with_registry_and_layout(
     let spatial_engine = SpatialService::new(SpatialEngine::new(active_layout.clone()));
     let layouts = HashMap::new();
     let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let logical_devices_path = runtime_state_path.with_file_name("logical-devices.json");
     let attachment_registry = Arc::new(RwLock::new(ComponentRegistry::new()));
     let attachment_profiles = Arc::new(RwLock::new(ComponentProfileStore::new(
         std::path::PathBuf::from("attachment-profiles.json"),
@@ -576,6 +579,10 @@ fn make_runtime_with_registry_and_layout(
         "device-settings.json",
     )))
     .device_settings();
+    let display_preferences = Arc::new(RwLock::new(
+        DisplayPreferencesStore::new(runtime_state_path.with_file_name("display-preferences.json"))
+            .expect("display preference store"),
+    ));
     let usb_protocol_configs = UsbProtocolConfigStore::new();
     let credential_store = Arc::new(
         CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
@@ -630,6 +637,14 @@ fn make_runtime_with_registry_and_layout(
         reconnect_tasks: Arc::clone(&reconnect_tasks),
         event_bus: Arc::clone(&event_bus),
         layout: layout.clone(),
+        binding_migration: Arc::new(DeviceBindingMigrationContext::new(
+            layout.clone(),
+            Arc::clone(&logical_devices),
+            logical_devices_path,
+            Arc::clone(&attachment_profiles),
+            device_settings.clone(),
+            display_preferences,
+        )),
         logical_devices: Arc::clone(&logical_devices),
         attachment_registry: Arc::clone(&attachment_registry),
         attachment_profiles: Arc::clone(&attachment_profiles),
@@ -675,6 +690,17 @@ fn install_active_layout(
         SceneTransactionQueue::default(),
         state_dir.join("runtime-state.json"),
     );
+    runtime.runtime.binding_migration = Arc::new(DeviceBindingMigrationContext::new(
+        runtime.runtime.layout.clone(),
+        Arc::clone(&runtime.runtime.logical_devices),
+        state_dir.join("logical-devices.json"),
+        Arc::clone(&runtime.runtime.attachment_profiles),
+        runtime.runtime.device_settings.clone(),
+        Arc::new(RwLock::new(
+            DisplayPreferencesStore::new(state_dir.join("display-preferences.json"))
+                .expect("display preference store"),
+        )),
+    ));
 }
 
 fn discovery_config(generation: u64, mdns_enabled: bool) -> HypercolorConfig {

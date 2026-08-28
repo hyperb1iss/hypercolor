@@ -1,0 +1,319 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::scene::{SceneManager, default_primary_zone, make_scene};
+use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::attachment::DeviceComponentProfile;
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::device::{DeviceFingerprint, DeviceId};
+use hypercolor_types::effect::EffectId;
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::{DisplayFaceTarget, ZoneRole};
+use hypercolor_types::spatial::{
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
+};
+use tokio::sync::RwLock;
+
+use super::{
+    BindingClass, CurrentBinding, DeviceBindingMigrationContext, DeviceBindingRemaps,
+    MigrationPersistence, PersistedBindingEvidence, SegmentShape, build_binding_remaps,
+};
+use crate::attachment_profiles::ComponentProfileStore;
+use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
+use crate::display_preferences::{DisplayPreference, DisplayPreferencesStore};
+use crate::domain::layout::LayoutContext;
+use crate::domain::scene::SceneService;
+use crate::domain::spatial::SpatialService;
+use crate::layout_auto_exclusions::LayoutAutoExclusionKey;
+use crate::logical_devices::{LogicalDevice, LogicalDeviceKind};
+use crate::output_power::OutputPower;
+use crate::scene_store::SceneStore;
+use crate::scene_transactions::SceneTransactionQueue;
+use crate::zone_layout_preview::ZoneLayoutPreviewStore;
+
+const LEGACY_LAYOUT_ID: &str = "razer:1532:0099:001-6-4-4";
+const CANONICAL_LAYOUT_ID: &str = "razer:1532:0099:pci-root";
+const LEGACY_FINGERPRINT: &str = "usb:razer:1532:0099:001-6-4-4";
+const CANONICAL_FINGERPRINT: &str = "usb:razer:1532:0099:pci-root";
+
+fn layout(id: &str, device_id: Option<&str>) -> SpatialLayout {
+    let zones = device_id.into_iter().map(output).collect();
+    SpatialLayout {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones,
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    }
+}
+
+fn output(device_id: &str) -> Output {
+    Output {
+        id: "main".to_owned(),
+        name: "Main".to_owned(),
+        device_id: device_id.to_owned(),
+        zone_name: Some("Main".to_owned()),
+        position: NormalizedPosition::new(0.5, 0.5),
+        size: NormalizedPosition::new(1.0, 1.0),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 16,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    }
+}
+
+fn current_binding(canonical_physical_id: DeviceId) -> CurrentBinding {
+    CurrentBinding {
+        layout_device_id: CANONICAL_LAYOUT_ID.to_owned(),
+        physical_device_id: canonical_physical_id,
+        fingerprint: DeviceFingerprint::from_persisted(CANONICAL_FINGERPRINT),
+        class: BindingClass::ClaimlessUsb {
+            owner: "razer".to_owned(),
+            vendor_id: 0x1532,
+            product_id: 0x0099,
+        },
+        segment_shape: vec![SegmentShape {
+            name: "main".to_owned(),
+            led_count: 16,
+        }],
+    }
+}
+
+#[tokio::test]
+async fn transaction_persists_every_binding_and_is_restart_idempotent() {
+    let temp = tempfile::tempdir().expect("device binding state directory");
+    let layouts_path = temp.path().join("layouts.json");
+    let exclusions_path = temp.path().join("layout-auto-exclusions.json");
+    let scenes_path = temp.path().join("scenes.json");
+    let runtime_path = temp.path().join("runtime-state.json");
+    let logical_path = temp.path().join("logical-devices.json");
+    let profiles_path = temp.path().join("attachment-profiles.json");
+    let settings_path = temp.path().join("device-settings.json");
+    let preferences_path = temp.path().join("display-preferences.json");
+
+    let legacy_physical_id =
+        DeviceFingerprint::from_persisted(LEGACY_FINGERPRINT).stable_device_id();
+    let canonical_physical_id =
+        DeviceFingerprint::from_persisted(CANONICAL_FINGERPRINT).stable_device_id();
+    let legacy_layout = layout("saved", Some(LEGACY_LAYOUT_ID));
+
+    let mut manager = SceneManager::with_default_layout(legacy_layout.clone());
+    let mut named = make_scene("Imported Linux scene");
+    let mut named_zone = default_primary_zone(legacy_layout.clone());
+    named_zone.display_target = Some(DisplayFaceTarget::new(legacy_physical_id));
+    named_zone.role = ZoneRole::Display;
+    named.zones.push(named_zone);
+    manager.create(named).expect("named scene should be valid");
+
+    let event_bus = Arc::new(HypercolorBus::new());
+    let scenes = SceneService::new(
+        manager,
+        Arc::clone(&event_bus),
+        SceneStore::load(&scenes_path).expect("scene store"),
+        Arc::new(ZoneLayoutPreviewStore::default()),
+    );
+    let spatial = SpatialService::new(SpatialEngine::new(layout("active", None)));
+    let layout_context = LayoutContext::new_test_context(
+        HashMap::from([("saved".to_owned(), legacy_layout)]),
+        layouts_path.clone(),
+        HashMap::from([(
+            LayoutAutoExclusionKey::layout("saved"),
+            HashSet::from([LEGACY_LAYOUT_ID.to_owned()]),
+        )]),
+        exclusions_path.clone(),
+        spatial,
+        scenes.clone(),
+        SceneTransactionQueue::default(),
+        runtime_path.clone(),
+    );
+
+    let logical_devices = Arc::new(RwLock::new(HashMap::from([(
+        LEGACY_LAYOUT_ID.to_owned(),
+        LogicalDevice {
+            id: LEGACY_LAYOUT_ID.to_owned(),
+            physical_device_id: legacy_physical_id,
+            name: "Imported segment".to_owned(),
+            led_start: 0,
+            led_count: 16,
+            enabled: true,
+            kind: LogicalDeviceKind::Segment,
+        },
+    )])));
+    let mut profiles = ComponentProfileStore::new(profiles_path.clone());
+    profiles.update(
+        &legacy_physical_id.to_string(),
+        DeviceComponentProfile::default(),
+    );
+    let profiles = Arc::new(RwLock::new(profiles));
+
+    let output_power = OutputPower::new(DeviceSettingsStore::new(settings_path.clone()));
+    let settings = output_power.device_settings();
+    settings
+        .persist_device_settings(
+            LEGACY_FINGERPRINT,
+            StoredDeviceSettings {
+                name: Some("Imported keyboard".to_owned()),
+                disabled: false,
+                brightness: 0.5,
+            },
+        )
+        .await
+        .expect("legacy device settings");
+    settings
+        .persist_driver_control_values(
+            &legacy_physical_id.to_string(),
+            hypercolor_types::controls::ControlValueMap::from([(
+                "enabled".into(),
+                ControlValue::Bool(true),
+            )]),
+        )
+        .await
+        .expect("legacy driver controls");
+
+    let mut preferences =
+        DisplayPreferencesStore::new(preferences_path.clone()).expect("display preferences");
+    preferences
+        .set(
+            legacy_physical_id,
+            DisplayPreference {
+                effect_id: EffectId::new(uuid::Uuid::nil()),
+                controls: HashMap::new(),
+                blend_mode: BlendMode::Alpha,
+                opacity: 1.0,
+            },
+        )
+        .expect("legacy display preference");
+    let preferences = Arc::new(RwLock::new(preferences));
+
+    let context = DeviceBindingMigrationContext::new(
+        layout_context.clone(),
+        Arc::clone(&logical_devices),
+        logical_path.clone(),
+        Arc::clone(&profiles),
+        settings.clone(),
+        Arc::clone(&preferences),
+    );
+    let remaps = DeviceBindingRemaps {
+        layout_device_ids: HashMap::from([(
+            LEGACY_LAYOUT_ID.to_owned(),
+            CANONICAL_LAYOUT_ID.to_owned(),
+        )]),
+        physical_device_ids: HashMap::from([(legacy_physical_id, canonical_physical_id)]),
+        persisted_setting_keys: HashMap::from([
+            (
+                LEGACY_FINGERPRINT.to_owned(),
+                CANONICAL_FINGERPRINT.to_owned(),
+            ),
+            (
+                legacy_physical_id.to_string(),
+                canonical_physical_id.to_string(),
+            ),
+        ]),
+    };
+
+    let prepared = context.prepare(&remaps).await.expect("prepare migration");
+    let (persisted, persistence) = prepared.admit().persist();
+    assert!(
+        persistence
+            .iter()
+            .all(|outcome| matches!(outcome, MigrationPersistence::Durable))
+    );
+    let mut publication = context
+        .prepare_publication(persisted)
+        .await
+        .expect("prepare publication");
+    assert_eq!(publication.publish(&context), 11);
+    assert!(publication.finish().is_none());
+
+    let layouts = crate::layout_store::load(&layouts_path).expect("reload layouts");
+    assert_eq!(layouts["saved"].zones[0].device_id, CANONICAL_LAYOUT_ID);
+    let exclusions =
+        crate::layout_auto_exclusions::load(&exclusions_path).expect("reload layout exclusions");
+    assert!(exclusions[&LayoutAutoExclusionKey::layout("saved")].contains(CANONICAL_LAYOUT_ID));
+    assert!(!exclusions[&LayoutAutoExclusionKey::layout("saved")].contains(LEGACY_LAYOUT_ID));
+
+    let stored_scenes = crate::scene_store::load(&scenes_path).expect("reload scenes");
+    let stored_zone = &stored_scenes
+        .list()
+        .next()
+        .expect("stored named scene")
+        .zones[0];
+    assert_eq!(stored_zone.layout.zones[0].device_id, CANONICAL_LAYOUT_ID);
+    assert_eq!(
+        stored_zone
+            .display_target
+            .as_ref()
+            .expect("stored display target")
+            .device_id,
+        canonical_physical_id
+    );
+    let runtime = crate::runtime_state::load(&runtime_path)
+        .expect("reload runtime state")
+        .expect("runtime snapshot");
+    assert_eq!(
+        runtime.default_scene_zones[0].layout.zones[0].device_id,
+        CANONICAL_LAYOUT_ID
+    );
+    let logical =
+        crate::logical_devices::load_segments(&logical_path).expect("reload logical devices");
+    assert_eq!(
+        logical[CANONICAL_LAYOUT_ID].physical_device_id,
+        canonical_physical_id
+    );
+    assert!(!logical.contains_key(LEGACY_LAYOUT_ID));
+    let profiles = ComponentProfileStore::load(&profiles_path).expect("reload profiles");
+    assert!(profiles.get(&canonical_physical_id.to_string()).is_some());
+    assert!(profiles.get(&legacy_physical_id.to_string()).is_none());
+    let settings = DeviceSettingsStore::load(&settings_path).expect("reload settings");
+    assert!(
+        settings
+            .device_settings_for_key(CANONICAL_FINGERPRINT)
+            .is_some()
+    );
+    assert!(
+        settings
+            .device_settings_for_key(LEGACY_FINGERPRINT)
+            .is_none()
+    );
+    assert_eq!(
+        settings
+            .driver_control_values_for_key(&canonical_physical_id.to_string())
+            .expect("canonical driver controls")
+            .get("enabled"),
+        Some(&ControlValue::Bool(true))
+    );
+    let preferences = DisplayPreferencesStore::load(&preferences_path).expect("reload preferences");
+    assert!(preferences.get(canonical_physical_id).is_some());
+    assert!(preferences.get(legacy_physical_id).is_none());
+
+    let mut restart_evidence = PersistedBindingEvidence::default();
+    restart_evidence.observe_layout(&layouts["saved"]);
+    for scene in stored_scenes.list() {
+        for zone in &scene.zones {
+            restart_evidence.observe_layout(&zone.layout);
+        }
+    }
+    assert!(
+        build_binding_remaps(&restart_evidence, &[current_binding(canonical_physical_id)])
+            .layout_device_ids
+            .is_empty()
+    );
+}

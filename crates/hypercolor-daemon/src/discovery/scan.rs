@@ -484,6 +484,29 @@ pub async fn execute_discovery_scan(
         "Discovery sweep finished"
     );
 
+    let complete_sweep = super::resolve_targets(None, &config, &driver_registry)
+        .is_ok_and(|expected| complete_target_set(&targets, &expected));
+    if complete_sweep && !scan_had_errors {
+        match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
+            &runtime.device_registry,
+            &runtime.lifecycle_manager,
+            &seen_ids,
+        ))
+        .await
+        {
+            Ok(report) if report.mappings > 0 => info!(
+                mappings = report.mappings,
+                references = report.references,
+                "Reconciled persisted cross-host device bindings"
+            ),
+            Ok(_) => {}
+            Err(error) => warn!(
+                %error,
+                "Failed to reconcile persisted cross-host device bindings"
+            ),
+        }
+    }
+
     runtime
         .layout
         .sync_active_layout_for_renderable_devices(runtime.clone(), None)
@@ -516,6 +539,10 @@ pub async fn execute_discovery_scan(
         duration_ms,
         scanners: map_scanner_reports(&report.scanner_reports),
     }
+}
+
+fn complete_target_set(requested: &[DiscoveryTarget], expected: &[DiscoveryTarget]) -> bool {
+    requested.len() == expected.len() && requested.iter().all(|target| expected.contains(target))
 }
 
 async fn retain_transient_target_devices(
@@ -773,4 +800,20 @@ fn map_scanner_reports(reports: &[ScannerScanReport]) -> Vec<DiscoveryScannerRes
             error: report.error.clone(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DiscoveryTarget, complete_target_set};
+
+    #[test]
+    fn binding_migration_refuses_partial_discovery_target_sets() {
+        let expected = vec![DiscoveryTarget::usb(), DiscoveryTarget::smbus()];
+
+        assert!(!complete_target_set(&[DiscoveryTarget::usb()], &expected));
+        assert!(complete_target_set(
+            &[DiscoveryTarget::smbus(), DiscoveryTarget::usb()],
+            &expected
+        ));
+    }
 }

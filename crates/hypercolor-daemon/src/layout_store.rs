@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::Context;
 use hypercolor_types::spatial::SpatialLayout;
 
-use crate::persistence::write_atomic;
+use crate::persistence::{serialize_json_pretty, write_atomic};
 
 /// Load persisted spatial layouts from disk.
 ///
@@ -59,15 +59,16 @@ pub(crate) fn save(path: &Path, store: &HashMap<String, SpatialLayout>) -> anyho
         })?;
     }
 
-    let mut entries: Vec<&SpatialLayout> = store.values().collect();
-    entries.sort_by(|left, right| left.id.cmp(&right.id));
-
-    let payload =
-        serde_json::to_string_pretty(&entries).context("failed to serialize layout store")?;
-
-    write_atomic(path, payload.as_bytes()).context("failed to persist layout store")?;
+    let payload = serialize(store)?;
+    write_atomic(path, &payload).context("failed to persist layout store")?;
 
     Ok(())
+}
+
+pub(crate) fn serialize(store: &HashMap<String, SpatialLayout>) -> anyhow::Result<Vec<u8>> {
+    let mut entries: Vec<&SpatialLayout> = store.values().collect();
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    serialize_json_pretty(&entries).context("failed to serialize layout store")
 }
 
 #[cfg(test)]

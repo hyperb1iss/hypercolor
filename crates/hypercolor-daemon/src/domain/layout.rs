@@ -25,7 +25,17 @@ use tokio::sync::{Notify, RwLock, Semaphore};
 
 use crate::discovery::DiscoveryRuntime;
 use crate::domain::context::RuntimeSessionProjection;
-use crate::domain::scene::SceneService;
+use crate::domain::context::{
+    AdmittedRuntimeSessionDeviceBindingMigration, PersistedRuntimeSessionDeviceBindingMigration,
+    RuntimeSessionDeviceBindingMigration,
+};
+use crate::domain::device_binding::{
+    DeviceBindingRemaps, MigrationPersistence, PersistedBindingEvidence,
+};
+use crate::domain::scene::{
+    AdmittedSceneDeviceBindingMigration, PersistedSceneDeviceBindingMigration,
+    SceneDeviceBindingMigration, SceneDeviceBindingMigrationPublication, SceneService,
+};
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
 use crate::layout_auto_exclusions;
@@ -37,10 +47,56 @@ use crate::scene_transactions::{
     SceneTransactionQueue,
 };
 
-use self::catalog::LayoutCatalog;
+use self::catalog::{
+    AdmittedLayoutCatalogBindingMigration, LayoutCatalog, LayoutCatalogBindingMigration,
+    LayoutCatalogBindingPublication, PersistedLayoutCatalogBindingMigration,
+};
 use self::convergence::LayoutConvergence;
-use self::exclusions::LayoutExclusions;
-use self::publication::LayoutPublication;
+use self::exclusions::{
+    AdmittedLayoutExclusionsBindingMigration, LayoutExclusions, LayoutExclusionsBindingMigration,
+    LayoutExclusionsBindingPublication, PersistedLayoutExclusionsBindingMigration,
+};
+use self::publication::{ActiveLayoutBindingMigration, LayoutPublication};
+
+pub(crate) struct LayoutDeviceBindingMigration {
+    update_guard: LayoutUpdateGuard,
+    catalog: Option<LayoutCatalogBindingMigration>,
+    exclusions: Option<LayoutExclusionsBindingMigration>,
+    scene: SceneDeviceBindingMigration,
+    runtime: RuntimeSessionDeviceBindingMigration,
+    active: Option<ActiveLayoutBindingMigration>,
+    migrated: usize,
+}
+
+pub(crate) struct AdmittedLayoutDeviceBindingMigration {
+    update_guard: LayoutUpdateGuard,
+    catalog: Option<AdmittedLayoutCatalogBindingMigration>,
+    exclusions: Option<AdmittedLayoutExclusionsBindingMigration>,
+    scene: AdmittedSceneDeviceBindingMigration,
+    runtime: AdmittedRuntimeSessionDeviceBindingMigration,
+    active: Option<ActiveLayoutBindingMigration>,
+    migrated: usize,
+}
+
+pub(crate) struct PersistedLayoutDeviceBindingMigration {
+    update_guard: LayoutUpdateGuard,
+    catalog: Option<PersistedLayoutCatalogBindingMigration>,
+    exclusions: Option<PersistedLayoutExclusionsBindingMigration>,
+    scene: PersistedSceneDeviceBindingMigration,
+    _runtime: PersistedRuntimeSessionDeviceBindingMigration,
+    active: Option<ActiveLayoutBindingMigration>,
+    migrated: usize,
+}
+
+pub(crate) struct LayoutDeviceBindingPublication {
+    update_guard: LayoutUpdateGuard,
+    catalog: Option<LayoutCatalogBindingPublication>,
+    exclusions: Option<LayoutExclusionsBindingPublication>,
+    scene: SceneDeviceBindingMigrationPublication,
+    active: Option<ActiveLayoutBindingMigration>,
+    published_active_layout: Option<SpatialLayout>,
+    migrated: usize,
+}
 
 #[derive(Clone)]
 pub(crate) struct LayoutRuntime {
@@ -398,6 +454,107 @@ impl LayoutContext {
         }
     }
 
+    pub(crate) async fn collect_binding_evidence(&self) -> PersistedBindingEvidence {
+        let mut evidence = PersistedBindingEvidence::default();
+        for layout in self.catalog.entries().read().await.values() {
+            evidence.observe_layout(layout);
+        }
+        let scenes = self.publication.scenes().snapshot().await;
+        for scene in scenes.list() {
+            for zone in &scene.zones {
+                evidence.observe_layout(&zone.layout);
+            }
+        }
+        for zone in scenes.default_display_zones() {
+            evidence.observe_layout(&zone.layout);
+        }
+        evidence
+    }
+
+    pub(crate) async fn prepare_device_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<LayoutDeviceBindingMigration> {
+        let update_guard = self.acquire_update_guard().await;
+        let runtime = self
+            .publication
+            .begin_runtime_device_binding_migration()
+            .await;
+        let scene = self
+            .publication
+            .scenes()
+            .prepare_device_binding_migration(remaps)
+            .await?;
+        let migrated = scene.migrated();
+        let runtime = runtime
+            .prepare(scene.candidate())
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let catalog = self.catalog.prepare_binding_migration(remaps).await?;
+        let exclusions = self.exclusions.prepare_binding_migration(remaps).await?;
+        let active = self
+            .publication
+            .prepare_active_binding_migration(remaps)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok(LayoutDeviceBindingMigration {
+            update_guard,
+            catalog,
+            exclusions,
+            scene,
+            runtime,
+            active,
+            migrated,
+        })
+    }
+
+    pub(crate) async fn prepare_device_binding_publication(
+        &self,
+        migration: PersistedLayoutDeviceBindingMigration,
+    ) -> anyhow::Result<LayoutDeviceBindingPublication> {
+        if let Some(active) = migration.active.as_ref() {
+            anyhow::ensure!(
+                self.publication.active_binding_migration_is_current(active),
+                "device binding migration was superseded by a newer active layout"
+            );
+        }
+        let catalog = match migration.catalog {
+            Some(catalog) => Some(self.catalog.prepare_binding_publication(catalog).await?),
+            None => None,
+        };
+        let exclusions = match migration.exclusions {
+            Some(exclusions) => Some(
+                self.exclusions
+                    .prepare_binding_publication(exclusions)
+                    .await?,
+            ),
+            None => None,
+        };
+        let scene = self
+            .publication
+            .scenes()
+            .prepare_device_binding_migration_publication(migration.scene)
+            .await?;
+        Ok(LayoutDeviceBindingPublication {
+            update_guard: migration.update_guard,
+            catalog,
+            exclusions,
+            scene,
+            active: migration.active,
+            published_active_layout: None,
+            migrated: migration.migrated,
+        })
+    }
+
+    pub(crate) async fn converge_published_device_binding(
+        &self,
+        guard: LayoutUpdateGuard,
+        layout: SpatialLayout,
+    ) -> anyhow::Result<()> {
+        self.publication
+            .apply_prepared_under_guard(&guard, layout)
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))
+    }
+
     #[cfg(feature = "persistence-test-hooks")]
     #[allow(
         clippy::too_many_arguments,
@@ -621,6 +778,89 @@ impl LayoutContext {
         _reference: &str,
     ) -> std::future::Ready<()> {
         std::future::ready(())
+    }
+}
+
+impl LayoutDeviceBindingMigration {
+    pub(crate) fn admit(self) -> AdmittedLayoutDeviceBindingMigration {
+        AdmittedLayoutDeviceBindingMigration {
+            update_guard: self.update_guard,
+            catalog: self.catalog.map(LayoutCatalogBindingMigration::admit),
+            exclusions: self.exclusions.map(LayoutExclusionsBindingMigration::admit),
+            scene: self.scene.admit(),
+            runtime: self.runtime.admit(),
+            active: self.active,
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl AdmittedLayoutDeviceBindingMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedLayoutDeviceBindingMigration,
+        Vec<MigrationPersistence>,
+    ) {
+        let (catalog, catalog_persistence) = self.catalog.map_or_else(
+            || (None, MigrationPersistence::Durable),
+            |migration| {
+                let (persisted, persistence) = migration.persist();
+                (Some(persisted), persistence)
+            },
+        );
+        let (exclusions, exclusion_persistence) = self.exclusions.map_or_else(
+            || (None, MigrationPersistence::Durable),
+            |migration| {
+                let (persisted, persistence) = migration.persist();
+                (Some(persisted), persistence)
+            },
+        );
+        let (scene, scene_persistence) = self.scene.persist();
+        let (runtime, runtime_persistence) = self.runtime.persist();
+        (
+            PersistedLayoutDeviceBindingMigration {
+                update_guard: self.update_guard,
+                catalog,
+                exclusions,
+                scene,
+                _runtime: runtime,
+                active: self.active,
+                migrated: self.migrated,
+            },
+            vec![
+                catalog_persistence,
+                exclusion_persistence,
+                scene_persistence,
+                runtime_persistence,
+            ],
+        )
+    }
+}
+
+impl LayoutDeviceBindingPublication {
+    pub(crate) fn publish(&mut self, context: &LayoutContext) -> usize {
+        let mut migrated = self.migrated;
+        if let Some(catalog) = self.catalog.as_mut() {
+            migrated += catalog.publish();
+        }
+        if let Some(exclusions) = self.exclusions.as_mut() {
+            migrated += exclusions.publish();
+        }
+        let _ = context
+            .publication
+            .scenes()
+            .publish_device_binding_migration(&mut self.scene);
+        if let Some(active) = self.active.take() {
+            self.published_active_layout =
+                Some(context.publication.publish_active_binding_migration(active));
+        }
+        migrated
+    }
+
+    pub(crate) fn finish(self) -> Option<(LayoutUpdateGuard, SpatialLayout)> {
+        self.published_active_layout
+            .map(|layout| (self.update_guard, layout))
     }
 }
 

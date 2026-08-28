@@ -3,19 +3,52 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 
 use hypercolor_types::attachment::{ComponentSlot, DeviceComponentProfile};
 use hypercolor_types::device::DeviceInfo;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
-use crate::persistence::write_atomic;
+use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
+use crate::persistence::{
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteReservation, serialize_json_pretty,
+    write_atomic,
+};
 
 /// Persistent attachment profile store keyed by physical device ID.
 #[derive(Debug, Clone)]
 pub struct ComponentProfileStore {
     profiles: HashMap<String, DeviceComponentProfile>,
     path: PathBuf,
+}
+
+pub(crate) struct ComponentProfileBindingMigration {
+    source: HashMap<String, DeviceComponentProfile>,
+    candidate: HashMap<String, DeviceComponentProfile>,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+    migrated: usize,
+}
+
+pub(crate) struct AdmittedComponentProfileBindingMigration {
+    source: HashMap<String, DeviceComponentProfile>,
+    candidate: HashMap<String, DeviceComponentProfile>,
+    write: AdmittedAtomicWrite,
+    migrated: usize,
+}
+
+pub(crate) struct PersistedComponentProfileBindingMigration {
+    source: HashMap<String, DeviceComponentProfile>,
+    candidate: HashMap<String, DeviceComponentProfile>,
+    migrated: usize,
+}
+
+pub(crate) struct ComponentProfileBindingPublication {
+    store: OwnedRwLockWriteGuard<ComponentProfileStore>,
+    candidate: Option<HashMap<String, DeviceComponentProfile>>,
+    migrated: usize,
 }
 
 impl ComponentProfileStore {
@@ -65,17 +98,9 @@ impl ComponentProfileStore {
             })?;
         }
 
-        let payload = serde_json::to_string_pretty(
-            &self
-                .profiles
-                .iter()
-                .map(|(device_id, profile)| (device_id.clone(), profile.clone()))
-                .collect::<BTreeMap<_, _>>(),
-        )
-        .context("failed to serialize attachment profile store")?;
+        let payload = serialize_profiles(&self.profiles)?;
 
-        write_atomic(&self.path, payload.as_bytes())
-            .context("failed to persist attachment profile store")?;
+        write_atomic(&self.path, &payload).context("failed to persist attachment profile store")?;
 
         Ok(())
     }
@@ -121,6 +146,114 @@ impl ComponentProfileStore {
                 .any(|binding| binding.template_id == template_id)
         })
     }
+
+    pub(crate) fn prepare_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<Option<ComponentProfileBindingMigration>> {
+        let source = self.profiles.clone();
+        let mut candidate = source.clone();
+        let migrated = remap_string_keys(
+            &mut candidate,
+            remaps
+                .physical_device_ids
+                .iter()
+                .map(|(legacy, canonical)| (legacy.to_string(), canonical.to_string())),
+        );
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let payload = serialize_profiles(&candidate)?;
+        let writer = AtomicFileWriter::new(&self.path)?;
+        Ok(Some(ComponentProfileBindingMigration {
+            source,
+            candidate,
+            write: writer.reserve(),
+            payload,
+            migrated,
+        }))
+    }
+}
+
+impl ComponentProfileBindingMigration {
+    pub(crate) fn admit(self) -> AdmittedComponentProfileBindingMigration {
+        AdmittedComponentProfileBindingMigration {
+            source: self.source,
+            candidate: self.candidate,
+            write: self.write.admit(self.payload),
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl AdmittedComponentProfileBindingMigration {
+    pub(crate) fn persist(
+        self,
+    ) -> (
+        PersistedComponentProfileBindingMigration,
+        MigrationPersistence,
+    ) {
+        let persistence = MigrationPersistence::from_commit(self.write.commit_stage_aware());
+        (
+            PersistedComponentProfileBindingMigration {
+                source: self.source,
+                candidate: self.candidate,
+                migrated: self.migrated,
+            },
+            persistence,
+        )
+    }
+}
+
+impl ComponentProfileBindingPublication {
+    pub(crate) async fn prepare(
+        store: Arc<RwLock<ComponentProfileStore>>,
+        migration: PersistedComponentProfileBindingMigration,
+    ) -> anyhow::Result<Self> {
+        let store = store.write_owned().await;
+        anyhow::ensure!(
+            store.profiles == migration.source,
+            "device binding migration was superseded by newer attachment profiles"
+        );
+        Ok(Self {
+            store,
+            candidate: Some(migration.candidate),
+            migrated: migration.migrated,
+        })
+    }
+
+    pub(crate) fn publish(&mut self) -> usize {
+        self.store.profiles = self
+            .candidate
+            .take()
+            .expect("attachment binding migration must publish exactly once");
+        self.migrated
+    }
+}
+
+fn serialize_profiles(
+    profiles: &HashMap<String, DeviceComponentProfile>,
+) -> anyhow::Result<Vec<u8>> {
+    let ordered = profiles
+        .iter()
+        .map(|(device_id, profile)| (device_id.clone(), profile.clone()))
+        .collect::<BTreeMap<_, _>>();
+    serialize_json_pretty(&ordered).context("failed to serialize attachment profile store")
+}
+
+fn remap_string_keys<T>(
+    values: &mut HashMap<String, T>,
+    remaps: impl IntoIterator<Item = (String, String)>,
+) -> usize {
+    let mut migrated = 0;
+    for (legacy, canonical) in remaps {
+        let Some(value) = values.remove(&legacy) else {
+            continue;
+        };
+        values.entry(canonical).or_insert(value);
+        migrated += 1;
+    }
+    migrated
 }
 
 fn merge_slots_preserving_ids(
