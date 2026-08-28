@@ -834,6 +834,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
       - name: Verify compatibility matrix is current
         run: bun scripts/gen-compat.ts --check
 
@@ -1952,6 +1954,8 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
 
       - uses: actions/setup-node@v5
         with:

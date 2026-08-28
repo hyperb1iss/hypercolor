@@ -90,7 +90,7 @@ Full docs live at [the Hypercolor documentation site](https://github.com/hyperb1
 
 ## Prerequisites
 
-- Bun 1.2 or newer
+- Bun 1.4 or newer
 - Node 24 or newer if invoking the scaffolder's `create-hypercolor-effect` bin from a Node shell
 
 ## Status

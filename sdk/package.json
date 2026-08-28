@@ -1,6 +1,7 @@
 {
     "name": "hypercolor-sdk",
     "private": true,
+    "packageManager": "bun@1.4.0",
     "workspaces": ["packages/*"],
     "scripts": {
         "build": "bun run --filter '*' build",

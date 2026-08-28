@@ -24,7 +24,7 @@ The SDK, the authoring CLI, and the build tooling all run on Bun. Install it onc
 curl -fsSL https://bun.sh/install | bash
 ```
 
-Confirm you have Bun 1.2 or newer (the workspace `engines` field requires it):
+Confirm you have Bun 1.4 or newer (the workspace `engines` field requires it):
 
 ```bash
 bun --version
