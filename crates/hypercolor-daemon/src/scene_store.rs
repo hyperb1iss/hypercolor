@@ -235,6 +235,11 @@ pub fn load(path: &Path) -> anyhow::Result<SceneStoreSnapshot> {
     load_scenes(path).map(|(scenes, _)| SceneStoreSnapshot { scenes })
 }
 
+#[cfg(all(test, feature = "persistence-test-hooks"))]
+pub(crate) fn load_for_test(path: &Path) -> anyhow::Result<SceneStore> {
+    SceneStore::load(path)
+}
+
 fn load_scenes(path: &Path) -> anyhow::Result<(HashMap<SceneId, Scene>, bool)> {
     if !path.exists() {
         return Ok((HashMap::new(), false));

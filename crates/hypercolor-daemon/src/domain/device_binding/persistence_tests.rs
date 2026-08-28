@@ -35,7 +35,6 @@ use crate::domain::spatial::SpatialService;
 use crate::layout_auto_exclusions::LayoutAutoExclusionKey;
 use crate::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use crate::output_power::OutputPower;
-use crate::scene_store::SceneStore;
 use crate::scene_transactions::{LayoutTransactionRejection, SceneTransactionQueue};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
@@ -161,7 +160,7 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
     let scenes = SceneService::new(
         manager,
         Arc::clone(&event_bus),
-        SceneStore::load(&scenes_path).expect("scene store"),
+        crate::scene_store::load_for_test(&scenes_path).expect("scene store"),
         Arc::new(ZoneLayoutPreviewStore::default()),
     );
     let spatial = SpatialService::new(SpatialEngine::new(legacy_layout.clone()));
