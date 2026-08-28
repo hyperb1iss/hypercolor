@@ -1067,6 +1067,17 @@ mod tests {
             Some(&current[0].fingerprint.as_str().to_owned())
         );
 
+        let without_settings = build_binding_remaps(&evidence, &current, &HashSet::new());
+        assert_eq!(
+            without_settings.layout_device_ids,
+            HashMap::from([(
+                "razer:1532:0099:001-6-4-4".to_owned(),
+                "razer:1532:0099:pci-root".to_owned(),
+            )])
+        );
+        assert!(without_settings.physical_device_ids.is_empty());
+        assert!(without_settings.persisted_setting_keys.is_empty());
+
         let ambiguous = build_binding_remaps(
             &evidence,
             &current,
@@ -1074,6 +1085,10 @@ mod tests {
                 legacy_fingerprint.to_owned(),
                 "usb:razer:1532:0099:001/6/4/4".to_owned(),
             ]),
+        );
+        assert_eq!(
+            ambiguous.layout_device_ids,
+            without_settings.layout_device_ids
         );
         assert!(ambiguous.physical_device_ids.is_empty());
         assert!(ambiguous.persisted_setting_keys.is_empty());

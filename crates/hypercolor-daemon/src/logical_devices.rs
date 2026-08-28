@@ -103,6 +103,14 @@ impl LogicalDeviceStoreAuthority {
             }
         }
         for (legacy, canonical) in &remaps.layout_device_ids {
+            let has_exact_physical_remap = source.get(legacy).is_some_and(|entry| {
+                remaps
+                    .physical_device_ids
+                    .contains_key(&entry.physical_device_id)
+            });
+            if !has_exact_physical_remap {
+                continue;
+            }
             let Some(mut entry) = candidate.remove(legacy) else {
                 continue;
             };
@@ -347,13 +355,16 @@ pub fn kick_pending(path: &Path) -> Result<(), PersistenceError> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use tempfile::TempDir;
+    use tokio::sync::RwLock;
 
     use super::{
-        LogicalDevice, LogicalDeviceKind, load_segments, reserve_save_segments,
-        save_reserved_segments,
+        LogicalDevice, LogicalDeviceKind, LogicalDeviceStoreAuthority, load_segments,
+        reserve_save_segments, save_reserved_segments,
     };
+    use crate::domain::device_binding::DeviceBindingRemaps;
     use crate::logical_devices::ensure_default_logical_device;
     use hypercolor_types::device::DeviceId;
 
@@ -385,6 +396,47 @@ mod tests {
         assert_eq!(canonical.id, "driver:new-id");
         assert_eq!(canonical.kind, LogicalDeviceKind::Default);
         assert!(!store.contains_key("driver:old-id"));
+    }
+
+    #[tokio::test]
+    async fn layout_only_remap_leaves_physical_logical_entry_untouched() {
+        let dir = TempDir::new().expect("tempdir");
+        let physical_device_id = DeviceId::new();
+        let legacy_id = "razer:1532:0099:001-6-4-4";
+        let entries = Arc::new(RwLock::new(HashMap::from([(
+            legacy_id.to_owned(),
+            LogicalDevice {
+                id: legacy_id.to_owned(),
+                physical_device_id,
+                name: "Imported Razer segment".to_owned(),
+                led_start: 0,
+                led_count: 16,
+                enabled: true,
+                kind: LogicalDeviceKind::Segment,
+            },
+        )])));
+        let authority = LogicalDeviceStoreAuthority::new(
+            Arc::clone(&entries),
+            dir.path().join("logical-devices.json"),
+        );
+        let remaps = DeviceBindingRemaps {
+            layout_device_ids: HashMap::from([(
+                legacy_id.to_owned(),
+                "razer:1532:0099:pci-root".to_owned(),
+            )]),
+            ..DeviceBindingRemaps::default()
+        };
+
+        assert!(
+            authority
+                .prepare_binding_migration(&remaps)
+                .await
+                .expect("prepare logical device migration")
+                .is_none()
+        );
+        let entries = entries.read().await;
+        assert_eq!(entries[legacy_id].physical_device_id, physical_device_id);
+        assert!(!entries.contains_key("razer:1532:0099:pci-root"));
     }
 
     #[test]
