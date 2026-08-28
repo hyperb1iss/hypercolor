@@ -82,7 +82,7 @@ fn observation_target(id: u64) -> ScreenNativeExecutionTarget {
 }
 
 #[test]
-fn renderer_observation_rejects_missing_and_stale_native_targets() {
+fn renderer_observation_matches_resolved_executor_contract() {
     let selected = observation_target(1);
     let current = observation_target(2);
     let required = ScreenPublicationExecutorRequest::SourceNativeRequired(selected.clone());
@@ -112,6 +112,85 @@ fn renderer_observation_rejects_missing_and_stale_native_targets() {
         &ScreenPublicationExecutorRequest::Cpu,
         ScreenNativeExecutionPolicy::Preferred
     ));
+    assert!(!screen_executor_matches_render_target(
+        Some(&current),
+        &ScreenPublicationExecutorRequest::Cpu,
+        ScreenNativeExecutionPolicy::Preferred
+    ));
+    assert!(!screen_executor_matches_render_target(
+        Some(&current),
+        &ScreenPublicationExecutorRequest::Cpu,
+        ScreenNativeExecutionPolicy::Required
+    ));
+}
+
+#[tokio::test]
+async fn renderer_observation_prefers_native_over_same_extent_cpu_fallback() {
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+    let manager = InputManager::new();
+    manager
+        .add_source(ManagedSourceRole::screen(Box::new(
+            ScreenDemandSource::new(transitions),
+        )))
+        .expect("screen demand source should register");
+    manager.start_all().expect("screen source starts");
+    let demands = InputPublicationDemandHandle::new(ScreenNativeExecutionPolicy::Preferred);
+    let mut pump = InputPublicationPump::start(manager, demands.clone())
+        .await
+        .expect("publication pump starts");
+    let reader = pump.reader();
+    let publications = reader.screen_publications();
+    let output_extent = extent(16, 9);
+    let target = observation_target(71);
+    let registration = demands.register(
+        InputPublicationConsumer::Authoritative,
+        InputPublicationDemand::default().with_fixture_screen_branches([
+            InputScreenBranchDemand::surface(
+                60,
+                output_extent,
+                ScreenPublicationExecutorRequest::Cpu,
+            )
+            .expect("CPU screen demand is active"),
+            InputScreenBranchDemand::surface(
+                60,
+                output_extent,
+                ScreenPublicationExecutorRequest::SourceNative(target.clone()),
+            )
+            .expect("native screen demand is active"),
+        ]),
+    );
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            let committed = publications.committed_state();
+            if committed.branch_count() == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("CPU and native screen branches should commit");
+    let committed = publications.committed_state();
+    assert!(matches!(
+        committed.plan().branches()[0]
+            .descriptor()
+            .requested_executor(),
+        ScreenPublicationExecutorRequest::Cpu
+    ));
+
+    let (generation, lease) = reader.screen_observation(Some(&target), output_extent);
+    assert_eq!(generation, committed.plan().generation());
+    assert!(matches!(
+        lease
+            .expect("native screen branch is selected")
+            .descriptor()
+            .requested_executor(),
+        ScreenPublicationExecutorRequest::SourceNative(selected) if selected.id() == target.id()
+    ));
+
+    drop(registration);
+    pump.shutdown().await.expect("publication pump stops");
 }
 
 struct CountingSource {

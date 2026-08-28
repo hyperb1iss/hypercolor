@@ -7,7 +7,7 @@
 //! the status API and on the event bus. These types are data only: the
 //! corroboration rules live in the platform adapters.
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,15 @@ pub const SERVICE_IDENTITY_ENV: &str = "HYPERCOLOR_SERVICE_IDENTITY";
 /// parent) and keeps it as a diagnostic beside the kernel lifetime guard.
 pub const SUPERVISED_PARENT_PID_ENV: &str = "HYPERCOLOR_SUPERVISED_PARENT_PID";
 
+/// Environment variable carrying the private protected-control credential
+/// from a trusted launcher into its supervised daemon child.
+pub const PROTECTED_CONTROL_CREDENTIAL_ENV: &str = "HYPERCOLOR_PROTECTED_CONTROL_CREDENTIAL";
+
+/// Entropy bytes encoded in one protected-control credential.
+pub const PROTECTED_CONTROL_CREDENTIAL_BYTES: usize = 32;
+
+const PROTECTED_CONTROL_CREDENTIAL_PREFIX: &str = "hc_pc_";
+
 /// Upper bound on the opaque unit label carried by a declaration.
 pub const MAX_SERVICE_UNIT_BYTES: usize = 128;
 
@@ -35,6 +44,93 @@ pub const HOMEBREW_UNIT: &str = "homebrew.mxcl.hypercolor";
 pub const SYSTEMD_UNIT: &str = "hypercolor.service";
 /// The Windows Service Control Manager registration name.
 pub const WINDOWS_SCM_UNIT: &str = "Hypercolor";
+
+/// Private bearer credential for one trusted daemon session.
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ProtectedControlCredential(String);
+
+impl ProtectedControlCredential {
+    /// Construct a canonical protected-control credential from 256 bits.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; PROTECTED_CONTROL_CREDENTIAL_BYTES]) -> Self {
+        let mut value = String::with_capacity(
+            PROTECTED_CONTROL_CREDENTIAL_PREFIX.len() + PROTECTED_CONTROL_CREDENTIAL_BYTES * 2,
+        );
+        value.push_str(PROTECTED_CONTROL_CREDENTIAL_PREFIX);
+        for byte in bytes {
+            write!(&mut value, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        Self(value)
+    }
+
+    /// Generate a fresh process-session credential from operating-system
+    /// randomness through UUID v4.
+    #[must_use]
+    pub fn generate() -> Self {
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        let replacement = uuid::Uuid::new_v4();
+        let mut bytes = [0_u8; PROTECTED_CONTROL_CREDENTIAL_BYTES];
+        bytes[..16].copy_from_slice(first.as_bytes());
+        bytes[16..].copy_from_slice(second.as_bytes());
+        for (index, value) in [6, 8, 22, 24]
+            .into_iter()
+            .zip(replacement.as_bytes().iter().copied())
+        {
+            bytes[index] = value;
+        }
+        Self::from_bytes(bytes)
+    }
+
+    /// Parse and validate a canonical protected-control credential.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without echoing the secret when the prefix, length,
+    /// or lowercase hexadecimal payload is invalid.
+    pub fn parse(value: &str) -> Result<Self, ProtectedControlCredentialParseError> {
+        let valid = value
+            .strip_prefix(PROTECTED_CONTROL_CREDENTIAL_PREFIX)
+            .filter(|hex| hex.len() == PROTECTED_CONTROL_CREDENTIAL_BYTES * 2)
+            .is_some_and(|hex| {
+                hex.bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            });
+        if valid {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(ProtectedControlCredentialParseError)
+        }
+    }
+
+    /// Explicitly expose the bearer value for authenticated local transport.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ProtectedControlCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ProtectedControlCredential([REDACTED])")
+    }
+}
+
+impl<'de> Deserialize<'de> for ProtectedControlCredential {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A protected-control credential failed canonical validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("protected-control credential is not a canonical 256-bit token")]
+pub struct ProtectedControlCredentialParseError;
 
 /// Who launched and supervises the daemon process. Neutral across platforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

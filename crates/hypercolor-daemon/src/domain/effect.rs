@@ -745,6 +745,10 @@ fn sync_parent_directory(path: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the Unix implementation can fail while callers stay platform-neutral"
+)]
 fn sync_parent_directory(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }

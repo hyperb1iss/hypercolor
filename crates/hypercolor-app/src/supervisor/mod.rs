@@ -10,10 +10,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use hypercolor_core::config::paths::data_dir;
-use hypercolor_macos_owner::{
-    MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy, MacosProtectedControlCredential,
-    MacosServerSessionId,
-};
+use hypercolor_macos_owner::{MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy};
 #[cfg(target_os = "macos")]
 use hypercolor_macos_owner::{
     MacosDaemonSessionAttestation, MacosOwnerExecutionError, MacosOwnerIncarnation,
@@ -26,7 +23,10 @@ use hypercolor_types::api::system::{
     MacosCapabilityOwner, MacosDaemonOwnershipStatus, SystemResource,
 };
 use hypercolor_types::event::MACOS_DAEMON_OWNER_CONFLICT_EXIT_CODE;
-use hypercolor_types::service::{SERVICE_IDENTITY_ENV, SUPERVISED_PARENT_PID_ENV, ServiceIdentity};
+use hypercolor_types::service::{
+    PROTECTED_CONTROL_CREDENTIAL_ENV, ProtectedControlCredential, SERVICE_IDENTITY_ENV,
+    SUPERVISED_PARENT_PID_ENV, ServiceIdentity,
+};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
 
@@ -46,8 +46,8 @@ pub const VERIFIED_DAEMON_CONNECTION_CHANGED_EVENT: &str = "verified-daemon-conn
 #[serde(rename_all = "camelCase")]
 pub struct VerifiedDaemonConnection {
     pub base_url: String,
-    pub server_session_id: Option<MacosServerSessionId>,
-    pub protected_control_credential: Option<MacosProtectedControlCredential>,
+    pub server_session_id: Option<String>,
+    pub protected_control_credential: Option<ProtectedControlCredential>,
 }
 
 /// Monotonic supervisor snapshot used to reject invoke/event reordering.
@@ -94,6 +94,16 @@ pub struct DaemonCommand {
     pub args: Vec<String>,
     /// Explicit launcher metadata inherited by the daemon process.
     pub environment: Vec<(String, String)>,
+    /// Private authority shared only with this supervised daemon child.
+    pub protected_control_credential: ProtectedControlCredential,
+}
+
+#[derive(Debug)]
+struct SupervisedDaemonConfig {
+    daemon_path: PathBuf,
+    bind: String,
+    ui_dir: Option<PathBuf>,
+    effects_dir: Option<PathBuf>,
 }
 
 /// Current state of the Linux systemd user service from the app supervisor's perspective.
@@ -717,6 +727,7 @@ pub fn build_daemon_command(
     effects_dir: Option<&Path>,
 ) -> DaemonCommand {
     let mut args = vec!["--bind".to_owned(), bind.to_owned()];
+    let protected_control_credential = ProtectedControlCredential::generate();
     let environment = vec![
         // The daemon corroborates its supervised-child identity against this
         // pid (it must equal the live parent) and, where the kernel guard is
@@ -760,6 +771,7 @@ pub fn build_daemon_command(
         program: program.into(),
         args,
         environment,
+        protected_control_credential,
     }
 }
 
@@ -794,6 +806,18 @@ fn health_verified_daemon_connection(base: &Url) -> VerifiedDaemonConnection {
         base_url: base.as_str().trim_end_matches('/').to_owned(),
         server_session_id: None,
         protected_control_credential: None,
+    }
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn sidecar_verified_daemon_connection(
+    base: &Url,
+    protected_control_credential: ProtectedControlCredential,
+) -> VerifiedDaemonConnection {
+    VerifiedDaemonConnection {
+        base_url: base.as_str().trim_end_matches('/').to_owned(),
+        server_session_id: None,
+        protected_control_credential: Some(protected_control_credential),
     }
 }
 
@@ -940,7 +964,7 @@ async fn verify_macos_daemon_connection(
 
     Some(VerifiedDaemonConnection {
         base_url: base.as_str().trim_end_matches('/').to_owned(),
-        server_session_id: Some(attestation.server_session_id),
+        server_session_id: Some(attestation.server_session_id.as_str().to_owned()),
         protected_control_credential: Some(attestation.protected_control_credential),
     })
 }
@@ -1627,22 +1651,28 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
             spawn_supervised_child(
                 client,
                 daemon_url,
-                daemon_path,
-                bind,
-                ui_dir,
-                effects_dir,
+                SupervisedDaemonConfig {
+                    daemon_path,
+                    bind,
+                    ui_dir,
+                    effects_dir,
+                },
+                None,
                 state,
             )
             .await;
         }
-        LauncherPlan::SpawnChild { .. } => {
+        LauncherPlan::SpawnChild { command } => {
             spawn_supervised_child(
                 client,
                 daemon_url,
-                daemon_path,
-                bind,
-                ui_dir,
-                effects_dir,
+                SupervisedDaemonConfig {
+                    daemon_path,
+                    bind,
+                    ui_dir,
+                    effects_dir,
+                },
+                Some(command),
                 state,
             )
             .await;
@@ -1653,30 +1683,19 @@ async fn execute_launcher_plan<R: Runtime>(plan: LauncherPlan, context: Launcher
 async fn spawn_supervised_child(
     client: reqwest::Client,
     daemon_url: Url,
-    daemon_path: PathBuf,
-    bind: String,
-    ui_dir: Option<PathBuf>,
-    effects_dir: Option<PathBuf>,
+    config: SupervisedDaemonConfig,
+    initial_command: Option<DaemonCommand>,
     state: SupervisorState,
 ) {
-    if !daemon_path.is_file() {
+    if !config.daemon_path.is_file() {
         tracing::warn!(
-            path = %daemon_path.display(),
+            path = %config.daemon_path.display(),
             "daemon executable not found; skipping app-owned daemon spawn"
         );
         return;
     }
 
-    run_watchdog_loop(
-        client,
-        daemon_url,
-        daemon_path,
-        bind,
-        ui_dir,
-        effects_dir,
-        state,
-    )
-    .await;
+    run_watchdog_loop(client, daemon_url, config, initial_command, state).await;
 }
 
 #[cfg(target_os = "linux")]
@@ -1816,10 +1835,8 @@ async fn wait_for_daemon_startup(
 async fn run_watchdog_loop(
     client: reqwest::Client,
     daemon_url: Url,
-    daemon_path: PathBuf,
-    bind: String,
-    ui_dir: Option<PathBuf>,
-    effects_dir: Option<PathBuf>,
+    config: SupervisedDaemonConfig,
+    mut initial_command: Option<DaemonCommand>,
     state: SupervisorState,
 ) {
     let mut restart_count: u32 = 0;
@@ -1849,12 +1866,14 @@ async fn run_watchdog_loop(
             return;
         }
 
-        let command = build_daemon_command(
-            &daemon_path,
-            &bind,
-            ui_dir.as_deref(),
-            effects_dir.as_deref(),
-        );
+        let command = initial_command.take().unwrap_or_else(|| {
+            build_daemon_command(
+                &config.daemon_path,
+                &config.bind,
+                config.ui_dir.as_deref(),
+                config.effects_dir.as_deref(),
+            )
+        });
         let mut daemon = match spawn_daemon(&command) {
             Ok(daemon) => daemon,
             Err(error) => {
@@ -1991,7 +2010,10 @@ async fn run_watchdog_loop(
             state.replace_verified_connection(Some(verified));
         }
         #[cfg(not(target_os = "macos"))]
-        state.replace_verified_connection(Some(health_verified_daemon_connection(&daemon_url)));
+        state.replace_verified_connection(Some(sidecar_verified_daemon_connection(
+            &daemon_url,
+            command.protected_control_credential.clone(),
+        )));
         let exit = wait_for_exit(daemon).await;
         let uptime = spawned_at.elapsed();
         state.clear_child();
@@ -2227,12 +2249,17 @@ fn record_failure(count: &mut u32, anchor: &mut Option<Instant>) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "state-machine fixtures stay adjacent while platform spawn helpers remain last"
+)]
 mod tests {
     use super::{
         DaemonStartupObservation, MacosDaemonOwnerOfflineStatus, macos_external_owner_offline,
         select_daemon_startup_observation,
     };
     use hypercolor_macos_owner::{MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy};
+    use hypercolor_types::service::ProtectedControlCredential;
 
     #[cfg(target_os = "macos")]
     use hypercolor_types::api::system::{
@@ -2449,7 +2476,7 @@ mod tests {
         let verified = verified.expect("matching live session should verify");
         assert_eq!(
             verified.server_session_id,
-            Some(attestation.server_session_id)
+            Some(attestation.server_session_id.as_str().to_owned())
         );
         assert_eq!(
             verified.protected_control_credential,
@@ -2642,12 +2669,12 @@ mod tests {
         }));
         state.replace_verified_connection(Some(super::VerifiedDaemonConnection {
             base_url: "http://127.0.0.1:9420".to_owned(),
-            server_session_id: Some(hypercolor_macos_owner::MacosServerSessionId::from_bytes(
-                [0x11; 16],
-            )),
-            protected_control_credential: Some(
-                hypercolor_macos_owner::MacosProtectedControlCredential::from_bytes([0x22; 32]),
+            server_session_id: Some(
+                hypercolor_macos_owner::MacosServerSessionId::from_bytes([0x11; 16])
+                    .as_str()
+                    .to_owned(),
             ),
+            protected_control_credential: Some(ProtectedControlCredential::from_bytes([0x22; 32])),
         }));
         state.clear_verified_connection();
 
@@ -2674,6 +2701,17 @@ mod tests {
         assert_eq!(connection.base_url, "https://daemon.lan:19420");
         assert!(connection.server_session_id.is_none());
         assert!(connection.protected_control_credential.is_none());
+    }
+
+    #[test]
+    fn supervised_sidecar_proof_carries_protected_control_authority() {
+        let base = url::Url::parse("http://127.0.0.1:9420/").expect("URL should parse");
+        let credential = ProtectedControlCredential::from_bytes([0x44; 32]);
+        let connection = super::sidecar_verified_daemon_connection(&base, credential.clone());
+
+        assert_eq!(connection.base_url, "http://127.0.0.1:9420");
+        assert_eq!(connection.server_session_id, None);
+        assert_eq!(connection.protected_control_credential, Some(credential));
     }
 
     #[cfg(target_os = "macos")]
@@ -2954,7 +2992,6 @@ async fn wait_for_exit(daemon: SharedManagedDaemon) -> Result<std::process::Exit
 }
 
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
 fn detect_systemd_user_service() -> SystemdUserServiceProbe {
     if systemctl_user_output(&["is-active", SYSTEMD_USER_SERVICE])
         .as_deref()
@@ -3029,6 +3066,10 @@ pub fn spawn_daemon(command: &DaemonCommand) -> Result<ManagedDaemon> {
     process
         .args(&command.args)
         .envs(command.environment.iter().map(|(key, value)| (key, value)))
+        .env(
+            PROTECTED_CONTROL_CREDENTIAL_ENV,
+            command.protected_control_credential.expose_secret(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::from(daemon_log_file()?.try_clone()?))
         .stderr(Stdio::from(daemon_log_file()?));

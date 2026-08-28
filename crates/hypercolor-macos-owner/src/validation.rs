@@ -5,16 +5,17 @@ use std::fs::File;
 #[cfg(target_os = "macos")]
 use std::io::Read as _;
 
+#[cfg(target_os = "macos")]
+use hypercolor_types::service::{PROTECTED_CONTROL_CREDENTIAL_BYTES, ProtectedControlCredential};
 use serde::Deserialize;
 
 use crate::error::MacosOwnerStoreError;
 use crate::model::{
     MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION, MACOS_OWNER_RECORD_SCHEMA_VERSION,
-    MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES, MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX,
     MACOS_SERVER_SESSION_ID_BYTES, MACOS_SERVER_SESSION_ID_PREFIX,
     MAX_MACOS_AUDIT_TOKEN_IDENTITY_BYTES, MAX_MACOS_DESIGNATED_REQUIREMENT_HASH_BYTES,
     MAX_MACOS_EXECUTABLE_PATH_BYTES, MacosDaemonSessionAttestation, MacosOwnerIdentity,
-    MacosOwnerRecord, MacosProtectedControlCredential, MacosServerSessionId,
+    MacosOwnerRecord, MacosServerSessionId,
 };
 
 impl MacosOwnerIdentity {
@@ -78,28 +79,11 @@ impl<'de> Deserialize<'de> for MacosServerSessionId {
     }
 }
 
-impl<'de> Deserialize<'de> for MacosProtectedControlCredential {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        validate_hex_token(
-            &value,
-            MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX,
-            MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES,
-            "protected_control_credential must be a canonical 256-bit token",
-        )
-        .map_err(serde::de::Error::custom)?;
-        Ok(Self(value))
-    }
-}
-
 impl MacosDaemonSessionAttestation {
     #[cfg(target_os = "macos")]
     pub(crate) fn generate(record: &MacosOwnerRecord) -> Result<Self, MacosOwnerStoreError> {
         let mut entropy =
-            [0_u8; MACOS_SERVER_SESSION_ID_BYTES + MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES];
+            [0_u8; MACOS_SERVER_SESSION_ID_BYTES + PROTECTED_CONTROL_CREDENTIAL_BYTES];
         File::open("/dev/urandom")
             .and_then(|mut source| source.read_exact(&mut entropy))
             .map_err(|source| MacosOwnerStoreError::Read {
@@ -120,9 +104,7 @@ impl MacosDaemonSessionAttestation {
             owner_epoch: record.owner_epoch,
             owner_identity: record.active_identity.clone(),
             server_session_id: MacosServerSessionId::from_bytes(session_bytes),
-            protected_control_credential: MacosProtectedControlCredential::from_bytes(
-                credential_bytes,
-            ),
+            protected_control_credential: ProtectedControlCredential::from_bytes(credential_bytes),
         })
     }
 }
@@ -176,12 +158,7 @@ pub(crate) fn validate_daemon_session_attestation(
         MACOS_SERVER_SESSION_ID_BYTES,
         "server_session_id must be a canonical 128-bit token",
     )?;
-    validate_hex_token(
-        attestation.protected_control_credential.expose_secret(),
-        MACOS_PROTECTED_CONTROL_CREDENTIAL_PREFIX,
-        MACOS_PROTECTED_CONTROL_CREDENTIAL_BYTES,
-        "protected_control_credential must be a canonical 256-bit token",
-    )
+    Ok(())
 }
 
 fn validate_hex_token(

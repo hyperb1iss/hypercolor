@@ -741,12 +741,22 @@ dev *args='':
 # port and optionally a bind address to run beside another stack:
 # `just ui-dev 9431`, or `just ui-dev 9431 0.0.0.0` to reach it from a
 # phone on the LAN. The API proxy target (:9420) is unaffected.
+[unix]
 ui-dev port='9430' host='127.0.0.1': ui-deps
     cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
 
+[windows]
+ui-dev port='9430' host='127.0.0.1': ui-deps
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/ui-windows.ps1 -Mode Serve -Port {{ port }} -BindAddress {{ host }}
+
 # Build the UI for production
+[unix]
 ui-build: ui-deps
     cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build --release --locked
+
+[windows]
+ui-build: ui-deps
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/ui-windows.ps1 -Mode Build
 
 # Build UI and copy dist for daemon embedding
 ui-dist: ui-build
@@ -761,8 +771,15 @@ e2e-browsers:
     cd e2e && npx playwright install chromium
 
 # Build the normal Servo daemon, CLI, generated effects, and production web UI for e2e
+[unix]
 e2e-build:
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor-cli
+    just effects-build
+    just ui-build
+
+[windows]
+e2e-build:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor-cli
     just effects-build
     just ui-build
 
@@ -771,9 +788,17 @@ e2e-build:
 # differently from the daily builds, and letting it share target/ churns and
 # strands artifacts for the whole dependency graph on every alternation.
 # CI pins CARGO_TARGET_DIR per lane, so an ambient value wins.
+[unix]
 e2e-build-cpu:
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli
+    just effects-build
+    just ui-build
+
+[windows]
+e2e-build-cpu:
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-cli
     just effects-build
     just ui-build
 

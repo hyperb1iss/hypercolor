@@ -5284,6 +5284,7 @@ version = "0.3.2"
 dependencies = [
  "core-foundation 0.10.1",
  "hypercolor-platform-fs",
+ "hypercolor-types",
  "nix 0.30.1",
  "notify",
  "security-framework",
@@ -16842,9 +16843,9 @@ dependencies = [
 
 [[package]]
 name = "zbus"
-version = "5.13.0"
+version = "5.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7515214ab069b46f614dee52c1256015cdc1a0b441ed612118e2871014956741"
+checksum = "ca82f95dbd3943a40a53cfded6c2d0a2ca26192011846a1810c4256ef92c60bc"
 dependencies = [
  "async-broadcast",
  "async-executor",

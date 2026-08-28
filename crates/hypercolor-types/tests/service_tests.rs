@@ -1,8 +1,9 @@
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::service::{
-    DaemonRunMode, HOMEBREW_UNIT, LAUNCHD_DIRECT_UNIT, MAX_SERVICE_UNIT_BYTES, SYSTEMD_UNIT,
-    ServiceConflict, ServiceIdentity, ServiceIdentityParseError, ServiceManager,
-    ServiceRecoveryRequired, ServiceStatus, StopAuthority, WINDOWS_SCM_UNIT,
+    DaemonRunMode, HOMEBREW_UNIT, LAUNCHD_DIRECT_UNIT, MAX_SERVICE_UNIT_BYTES,
+    ProtectedControlCredential, SYSTEMD_UNIT, ServiceConflict, ServiceIdentity,
+    ServiceIdentityParseError, ServiceManager, ServiceRecoveryRequired, ServiceStatus,
+    StopAuthority, WINDOWS_SCM_UNIT,
 };
 
 fn every_identity() -> Vec<ServiceIdentity> {
@@ -15,6 +16,36 @@ fn every_identity() -> Vec<ServiceIdentity> {
         ServiceIdentity::windows_scm(),
         ServiceIdentity::STANDALONE,
     ]
+}
+
+#[test]
+fn protected_control_credentials_are_canonical_and_redacted() {
+    let credential = ProtectedControlCredential::from_bytes([0xab; 32]);
+    let expected = format!("hc_pc_{}", "ab".repeat(32));
+
+    assert_eq!(credential.expose_secret(), expected);
+    assert_eq!(
+        format!("{credential:?}"),
+        "ProtectedControlCredential([REDACTED])"
+    );
+    assert_eq!(
+        ProtectedControlCredential::parse(&expected).expect("credential parses"),
+        credential
+    );
+    assert!(ProtectedControlCredential::parse("hc_pc_AB").is_err());
+    assert!(ProtectedControlCredential::parse("hc_ak_invalid").is_err());
+}
+
+#[test]
+fn generated_protected_control_credentials_are_fresh_and_round_trip() {
+    let first = ProtectedControlCredential::generate();
+    let second = ProtectedControlCredential::generate();
+
+    assert_ne!(first, second);
+    let json = serde_json::to_string(&first).expect("credential serializes");
+    let decoded: ProtectedControlCredential =
+        serde_json::from_str(&json).expect("credential deserializes");
+    assert_eq!(decoded, first);
 }
 
 #[test]

@@ -24,9 +24,13 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::domain::DomainError;
-use crate::macos_owner::{MacosDaemonSessionAttestation, MacosProtectedControlCredential};
+use crate::macos_owner::MacosDaemonSessionAttestation;
 use hypercolor_types::config::{
     HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+};
+use hypercolor_types::service::{
+    PROTECTED_CONTROL_CREDENTIAL_ENV, ProtectedControlCredential,
+    ProtectedControlCredentialParseError,
 };
 
 const RATE_WINDOW: Duration = Duration::from_mins(1);
@@ -57,7 +61,8 @@ const HEADER_RETRY_AFTER: HeaderName = HeaderName::from_static("retry-after");
 #[derive(Clone)]
 pub struct SecurityState {
     auth: AuthConfig,
-    macos_session_credential: Option<MacosProtectedControlCredential>,
+    launcher_session_credential: Option<ProtectedControlCredential>,
+    attested_session_credential: Option<ProtectedControlCredential>,
     network: NetworkAccessPolicy,
     rate_limiter: Arc<Mutex<RateLimiter>>,
     static_assets: StaticAssetSurface,
@@ -160,7 +165,7 @@ impl RequestAuthContext {
     }
 
     #[must_use]
-    const fn macos_daemon_session(security_enabled: bool) -> Self {
+    const fn daemon_session(security_enabled: bool) -> Self {
         Self {
             security_enabled,
             granted_tier: Some(AccessTier::Control),
@@ -217,7 +222,8 @@ impl SecurityState {
     pub(crate) fn unserved() -> Self {
         Self {
             auth: AuthConfig::default(),
-            macos_session_credential: None,
+            launcher_session_credential: None,
+            attested_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
@@ -237,7 +243,8 @@ impl SecurityState {
                 control_key,
                 read_key,
             },
-            macos_session_credential: None,
+            launcher_session_credential: protected_control_credential_from_env(),
+            attested_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
@@ -269,20 +276,22 @@ impl SecurityState {
         &mut self,
         attestation: &MacosDaemonSessionAttestation,
     ) {
-        self.macos_session_credential = Some(attestation.protected_control_credential.clone());
+        self.attested_session_credential = Some(attestation.protected_control_credential.clone());
     }
 
-    fn is_macos_session_credential(&self, token: &str) -> bool {
-        self.macos_session_credential
-            .as_ref()
-            .is_some_and(|credential| secret_matches(Some(credential.expose_secret()), token))
+    fn is_session_credential(&self, token: &str) -> bool {
+        [
+            self.launcher_session_credential.as_ref(),
+            self.attested_session_credential.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|credential| secret_matches(Some(credential.expose_secret()), token))
     }
 
     fn resolve_loopback_token(&self, token: &str) -> Option<RequestAuthContext> {
-        if self.is_macos_session_credential(token) {
-            Some(RequestAuthContext::macos_daemon_session(
-                self.security_enabled(),
-            ))
+        if self.is_session_credential(token) {
+            Some(RequestAuthContext::daemon_session(self.security_enabled()))
         } else {
             resolve_token_tier(token, &self.auth).map(RequestAuthContext::authenticated)
         }
@@ -309,6 +318,28 @@ fn normalize_api_key(value: Option<String>) -> Option<String> {
     value.filter(|key| !key.trim().is_empty())
 }
 
+fn protected_control_credential_from_env() -> Option<ProtectedControlCredential> {
+    if let Ok(credential) =
+        parse_protected_control_credential(std::env::var(PROTECTED_CONTROL_CREDENTIAL_ENV).ok())
+    {
+        credential
+    } else {
+        warn!(
+            environment = PROTECTED_CONTROL_CREDENTIAL_ENV,
+            "Ignoring invalid protected-control credential"
+        );
+        None
+    }
+}
+
+fn parse_protected_control_credential(
+    value: Option<String>,
+) -> Result<Option<ProtectedControlCredential>, ProtectedControlCredentialParseError> {
+    value
+        .map(|credential| ProtectedControlCredential::parse(&credential))
+        .transpose()
+}
+
 #[cfg(test)]
 impl SecurityState {
     pub(crate) fn with_keys(control_key: Option<&str>, read_key: Option<&str>) -> Self {
@@ -317,7 +348,8 @@ impl SecurityState {
                 control_key: control_key.map(ToOwned::to_owned),
                 read_key: read_key.map(ToOwned::to_owned),
             },
-            macos_session_credential: None,
+            launcher_session_credential: None,
+            attested_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
@@ -327,23 +359,25 @@ impl SecurityState {
     pub(crate) fn with_network_config(network: NetworkConfig) -> Self {
         Self {
             auth: AuthConfig::default(),
-            macos_session_credential: None,
+            launcher_session_credential: None,
+            attested_session_credential: None,
             network: NetworkAccessPolicy::from_config(&network),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
         }
     }
 
-    fn with_macos_session_credential(credential: MacosProtectedControlCredential) -> Self {
+    fn with_session_credential(credential: ProtectedControlCredential) -> Self {
         let mut state = Self::with_keys(None, None);
-        state.macos_session_credential = Some(credential);
+        state.launcher_session_credential = Some(credential);
         state
     }
 
     fn with_network_policy(network: NetworkAccessPolicy) -> Self {
         Self {
             auth: AuthConfig::default(),
-            macos_session_credential: None,
+            launcher_session_credential: None,
+            attested_session_credential: None,
             network,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
             static_assets: StaticAssetSurface::default(),
@@ -705,7 +739,7 @@ pub async fn enforce_security(
     }
 
     if !request_is_loopback(&request)
-        && extract_token(&request).is_some_and(|token| state.is_macos_session_credential(&token))
+        && extract_token(&request).is_some_and(|token| state.is_session_credential(&token))
     {
         return DomainError::unauthorized("Invalid API key").into_response();
     }
@@ -920,7 +954,7 @@ fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> 
         .headers()
         .get(header::ORIGIN)
         .is_some_and(is_trusted_tauri_origin)
-        && extract_token(request).is_some_and(|token| state.is_macos_session_credential(&token))
+        && extract_token(request).is_some_and(|token| state.is_session_credential(&token))
 }
 
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
@@ -1170,14 +1204,17 @@ mod tests {
     use tower::ServiceExt;
 
     use hypercolor_types::config::{NetworkAccessMode, NetworkClientScope, NetworkConfig};
+    use hypercolor_types::service::ProtectedControlCredential;
 
     use super::{
         AccessTier, AuthConfig, ClientAddressRule, NetworkAccessPolicy, RequestAuthContext,
-        SecurityState, StaticAssetSurface, enforce_security, normalize_api_key, path_within,
-        resolve_token_tier,
+        SecurityState, StaticAssetSurface, enforce_security, normalize_api_key,
+        parse_protected_control_credential, path_within, resolve_token_tier,
     };
-    use crate::macos_owner::MacosProtectedControlCredential;
-
+    use crate::macos_owner::{
+        MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION, MacosDaemonOwner,
+        MacosDaemonSessionAttestation, MacosOwnerIdentity, MacosServerSessionId,
+    };
     const CONTROL_KEY: &str = "hc_ak_control_test";
     const READ_KEY: &str = "hc_ak_r_read_test";
 
@@ -1318,6 +1355,46 @@ mod tests {
             normalize_api_key(Some(CONTROL_KEY.to_owned())),
             Some(CONTROL_KEY.to_owned())
         );
+    }
+
+    #[test]
+    fn protected_control_environment_value_requires_a_canonical_token() {
+        assert_eq!(
+            parse_protected_control_credential(None).expect("missing credential is valid"),
+            None
+        );
+        assert!(parse_protected_control_credential(Some("not-a-token".to_owned())).is_err());
+
+        let expected = ProtectedControlCredential::from_bytes([0x52; 32]);
+        let parsed = parse_protected_control_credential(Some(expected.expose_secret().to_owned()))
+            .expect("canonical credential parses");
+        assert_eq!(parsed, Some(expected));
+    }
+
+    #[test]
+    fn attested_session_preserves_launcher_session_authority() {
+        let launcher = ProtectedControlCredential::from_bytes([0x41; 32]);
+        let attested = ProtectedControlCredential::from_bytes([0x42; 32]);
+        let attestation = MacosDaemonSessionAttestation {
+            schema_version: MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION,
+            owner: MacosDaemonOwner::AppSidecar,
+            owner_epoch: 1,
+            owner_identity: MacosOwnerIdentity::new(
+                "audit-test",
+                "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                "requirement-test",
+                4242,
+            )
+            .expect("fixture identity should be valid"),
+            server_session_id: MacosServerSessionId::from_bytes([0x43; 16]),
+            protected_control_credential: attested.clone(),
+        };
+        let mut state = SecurityState::with_session_credential(launcher.clone());
+
+        state.install_macos_daemon_session(&attestation);
+
+        assert!(state.is_session_credential(launcher.expose_secret()));
+        assert!(state.is_session_credential(attested.expose_secret()));
     }
 
     #[tokio::test]
@@ -1678,8 +1755,8 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_session_credential_grants_control_without_enabling_public_auth() {
-        let credential = MacosProtectedControlCredential::from_bytes([0x42; 32]);
-        let state = SecurityState::with_macos_session_credential(credential.clone());
+        let credential = ProtectedControlCredential::from_bytes([0x42; 32]);
+        let state = SecurityState::with_session_credential(credential.clone());
         assert!(!state.security_enabled());
         let context = state
             .resolve_loopback_token(credential.expose_secret())
@@ -1707,8 +1784,8 @@ mod tests {
 
     #[tokio::test]
     async fn nonloopback_session_credential_is_rejected_when_public_auth_is_disabled() {
-        let credential = MacosProtectedControlCredential::from_bytes([0x24; 32]);
-        let state = SecurityState::with_macos_session_credential(credential.clone());
+        let credential = ProtectedControlCredential::from_bytes([0x24; 32]);
+        let state = SecurityState::with_session_credential(credential.clone());
         let response = router_with_security_state(state)
             .oneshot(with_connect_info(
                 with_bearer(
@@ -1811,9 +1888,9 @@ mod tests {
 
     #[tokio::test]
     async fn tauri_cross_site_bypass_requires_exact_origin_and_current_session() {
-        let credential = MacosProtectedControlCredential::from_bytes([0x63; 32]);
+        let credential = ProtectedControlCredential::from_bytes([0x63; 32]);
         let session = credential.expose_secret();
-        let session_state = || SecurityState::with_macos_session_credential(credential.clone());
+        let session_state = || SecurityState::with_session_credential(credential.clone());
 
         assert_eq!(
             loopback_cross_site_mutation(
@@ -1863,7 +1940,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CREATED);
 
         let mut public_key_state = SecurityState::with_keys(Some(CONTROL_KEY), None);
-        public_key_state.macos_session_credential = Some(credential);
+        public_key_state.launcher_session_credential = Some(credential);
         assert_eq!(
             loopback_cross_site_mutation(
                 public_key_state,
@@ -2025,21 +2102,20 @@ mod tests {
 
     #[tokio::test]
     async fn loopback_websocket_session_query_grants_protected_control() {
-        let credential = MacosProtectedControlCredential::from_bytes([0x81; 32]);
-        let response = router_with_security_state(SecurityState::with_macos_session_credential(
-            credential.clone(),
-        ))
-        .oneshot(with_connect_info(
-            Request::builder()
-                .uri(format!("/api/v1/ws?token={}", credential.expose_secret()))
-                .header("upgrade", "websocket")
-                .body(Body::empty())
-                .expect("failed to build request"),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            1042,
-        ))
-        .await
-        .expect("request failed");
+        let credential = ProtectedControlCredential::from_bytes([0x81; 32]);
+        let response =
+            router_with_security_state(SecurityState::with_session_credential(credential.clone()))
+                .oneshot(with_connect_info(
+                    Request::builder()
+                        .uri(format!("/api/v1/ws?token={}", credential.expose_secret()))
+                        .header("upgrade", "websocket")
+                        .body(Body::empty())
+                        .expect("failed to build request"),
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    1042,
+                ))
+                .await
+                .expect("request failed");
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().get("x-ratelimit-limit").is_none());

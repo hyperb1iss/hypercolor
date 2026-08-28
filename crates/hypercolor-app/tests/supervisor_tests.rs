@@ -221,6 +221,12 @@ fn build_daemon_command_includes_bind_ui_dir_and_effects_dir() {
             ),
         ]
     );
+    assert!(
+        command
+            .protected_control_credential
+            .expose_secret()
+            .starts_with("hc_pc_")
+    );
 }
 
 #[test]
@@ -261,6 +267,10 @@ fn build_daemon_command_allows_missing_asset_dirs() {
                 "app-sidecar".to_owned(),
             ),
         ]
+    );
+    assert_eq!(
+        command.protected_control_credential.expose_secret().len(),
+        "hc_pc_".len() + 64
     );
 }
 
@@ -448,14 +458,14 @@ fn flexible_plan_reuses_starts_then_spawns_on_every_platform() {
             },
             "{identity}"
         );
-        assert_eq!(
-            plan(
-                LauncherProbe::offline(identity.clone()),
-                OwnerPreference::Flexible
+        assert!(
+            matches!(
+                plan(
+                    LauncherProbe::offline(identity.clone()),
+                    OwnerPreference::Flexible
+                ),
+                LauncherPlan::SpawnChild { .. }
             ),
-            LauncherPlan::SpawnChild {
-                command: spawn_command()
-            },
             "{identity}"
         );
     }
@@ -470,26 +480,22 @@ fn flexible_plan_reuses_starts_then_spawns_on_every_platform() {
             endpoint: endpoint(),
         }
     );
-    assert_eq!(
+    assert!(matches!(
         plan(LauncherProbe::NOTHING, OwnerPreference::Flexible),
-        LauncherPlan::SpawnChild {
-            command: spawn_command()
-        }
-    );
+        LauncherPlan::SpawnChild { .. }
+    ));
     // A startable launcher without a unit label cannot be addressed.
     let unit_less = ServiceIdentity {
         unit: None,
         ..ServiceIdentity::systemd_user()
     };
-    assert_eq!(
+    assert!(matches!(
         plan(
             LauncherProbe::startable(unit_less),
             OwnerPreference::Flexible
         ),
-        LauncherPlan::SpawnChild {
-            command: spawn_command()
-        }
-    );
+        LauncherPlan::SpawnChild { .. }
+    ));
 }
 
 #[test]

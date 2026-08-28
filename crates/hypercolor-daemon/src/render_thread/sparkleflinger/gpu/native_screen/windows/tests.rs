@@ -8,7 +8,7 @@ use crate::render_thread::sparkleflinger::gpu::tests::gpu_test_compositor;
 
 #[test]
 fn dx12_compositor_exposes_one_renderer_bound_screen_target() {
-    let Some(compositor) = gpu_test_compositor() else {
+    let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
     if compositor.probe.backend == "dx12" {

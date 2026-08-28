@@ -193,7 +193,7 @@ mach2 = "0.5"
 tonic = "0.12"
 prost = "0.13"
 nusb = { version = "0.2.2", features = ["tokio"] }
-zbus = { version = "=5.13.0", default-features = false, features = ["tokio"] }
+zbus = { version = "=5.14.0", default-features = false, features = ["tokio"] }
 
 # Screen capture
 ash = "0.38"
