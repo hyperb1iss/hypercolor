@@ -1669,6 +1669,12 @@ fn ui_cargo_builds_use_the_shared_cache_policy() {
     assert!(CARGO_CACHE_BUILD_SH.contains("HYPERCOLOR_NESTED_CARGO_TARGET_DIR"));
     assert!(JUSTFILE.contains("scripts/ui-windows.ps1 -Mode Serve"));
     assert!(JUSTFILE.contains("scripts/ui-windows.ps1 -Mode Build"));
+    assert!(JUSTFILE.contains(
+        "scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor-cli"
+    ));
+    assert!(JUSTFILE.contains(
+        "scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --no-default-features"
+    ));
     assert!(UI_WINDOWS_PS1.contains("cargo-cache-build.ps1"));
     assert!(UI_WINDOWS_PS1.contains("HYPERCOLOR_NO_SCCACHE"));
     assert!(UI_WINDOWS_PS1.contains("HYPERCOLOR_ITERATE"));

@@ -771,8 +771,15 @@ e2e-browsers:
     cd e2e && npx playwright install chromium
 
 # Build the normal Servo daemon, CLI, generated effects, and production web UI for e2e
+[unix]
 e2e-build:
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor-cli
+    just effects-build
+    just ui-build
+
+[windows]
+e2e-build:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor-cli
     just effects-build
     just ui-build
 
@@ -781,9 +788,17 @@ e2e-build:
 # differently from the daily builds, and letting it share target/ churns and
 # strands artifacts for the whole dependency graph on every alternation.
 # CI pins CARGO_TARGET_DIR per lane, so an ambient value wins.
+[unix]
 e2e-build-cpu:
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli
+    just effects-build
+    just ui-build
+
+[windows]
+e2e-build-cpu:
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-cli
     just effects-build
     just ui-build
 
