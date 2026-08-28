@@ -163,6 +163,7 @@ fn test_discovery_runtime(
                 DisplayPreferencesStore::new(state_dir.join("display-preferences.json"))
                     .expect("display preference store"),
             )),
+            state_dir.join("device-binding-migration.json"),
         )),
         logical_devices,
         attachment_registry: Arc::new(RwLock::new(ComponentRegistry::new())),

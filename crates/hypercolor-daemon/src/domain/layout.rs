@@ -26,15 +26,14 @@ use tokio::sync::{Notify, RwLock, Semaphore};
 use crate::discovery::DiscoveryRuntime;
 use crate::domain::context::RuntimeSessionProjection;
 use crate::domain::context::{
-    AdmittedRuntimeSessionDeviceBindingMigration, PersistedRuntimeSessionDeviceBindingMigration,
-    RuntimeSessionDeviceBindingMigration,
+    PersistedRuntimeSessionDeviceBindingMigration, RuntimeSessionDeviceBindingMigration,
 };
 use crate::domain::device_binding::{
     DeviceBindingRemaps, MigrationPersistence, PersistedBindingEvidence,
 };
 use crate::domain::scene::{
-    AdmittedSceneDeviceBindingMigration, PersistedSceneDeviceBindingMigration,
-    SceneDeviceBindingMigration, SceneDeviceBindingMigrationPublication, SceneService,
+    PersistedSceneDeviceBindingMigration, SceneDeviceBindingMigration,
+    SceneDeviceBindingMigrationPublication, SceneService,
 };
 use crate::domain::spatial::SpatialService;
 use crate::domain::{DomainError, ResourceKind};
@@ -48,13 +47,13 @@ use crate::scene_transactions::{
 };
 
 use self::catalog::{
-    AdmittedLayoutCatalogBindingMigration, LayoutCatalog, LayoutCatalogBindingMigration,
-    LayoutCatalogBindingPublication, PersistedLayoutCatalogBindingMigration,
+    LayoutCatalog, LayoutCatalogBindingMigration, LayoutCatalogBindingPublication,
+    PersistedLayoutCatalogBindingMigration,
 };
 use self::convergence::LayoutConvergence;
 use self::exclusions::{
-    AdmittedLayoutExclusionsBindingMigration, LayoutExclusions, LayoutExclusionsBindingMigration,
-    LayoutExclusionsBindingPublication, PersistedLayoutExclusionsBindingMigration,
+    LayoutExclusions, LayoutExclusionsBindingMigration, LayoutExclusionsBindingPublication,
+    PersistedLayoutExclusionsBindingMigration,
 };
 use self::publication::{ActiveLayoutBindingMigration, LayoutPublication};
 
@@ -64,16 +63,6 @@ pub(crate) struct LayoutDeviceBindingMigration {
     exclusions: Option<LayoutExclusionsBindingMigration>,
     scene: SceneDeviceBindingMigration,
     runtime: RuntimeSessionDeviceBindingMigration,
-    active: Option<ActiveLayoutBindingMigration>,
-    migrated: usize,
-}
-
-pub(crate) struct AdmittedLayoutDeviceBindingMigration {
-    update_guard: LayoutUpdateGuard,
-    catalog: Option<AdmittedLayoutCatalogBindingMigration>,
-    exclusions: Option<AdmittedLayoutExclusionsBindingMigration>,
-    scene: AdmittedSceneDeviceBindingMigration,
-    runtime: AdmittedRuntimeSessionDeviceBindingMigration,
     active: Option<ActiveLayoutBindingMigration>,
     migrated: usize,
 }
@@ -782,20 +771,6 @@ impl LayoutContext {
 }
 
 impl LayoutDeviceBindingMigration {
-    pub(crate) fn admit(self) -> AdmittedLayoutDeviceBindingMigration {
-        AdmittedLayoutDeviceBindingMigration {
-            update_guard: self.update_guard,
-            catalog: self.catalog.map(LayoutCatalogBindingMigration::admit),
-            exclusions: self.exclusions.map(LayoutExclusionsBindingMigration::admit),
-            scene: self.scene.admit(),
-            runtime: self.runtime.admit(),
-            active: self.active,
-            migrated: self.migrated,
-        }
-    }
-}
-
-impl AdmittedLayoutDeviceBindingMigration {
     pub(crate) fn persist(
         self,
     ) -> (
@@ -812,13 +787,13 @@ impl AdmittedLayoutDeviceBindingMigration {
             migrated,
         } = self;
         let mut persistence = Vec::new();
-        let (scene, scene_persistence) = scene.persist();
+        let (scene, scene_persistence) = scene.admit().persist();
         let stop = !matches!(scene_persistence, MigrationPersistence::Durable);
         persistence.push(scene_persistence);
         if stop {
             return (None, persistence);
         }
-        let (runtime, runtime_persistence) = runtime.persist();
+        let (runtime, runtime_persistence) = runtime.admit().persist();
         let stop = !matches!(runtime_persistence, MigrationPersistence::Durable);
         persistence.push(runtime_persistence);
         if stop {
@@ -827,7 +802,7 @@ impl AdmittedLayoutDeviceBindingMigration {
         let (exclusions, exclusion_persistence) = exclusions.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
-                let (persisted, persistence) = migration.persist();
+                let (persisted, persistence) = migration.admit().persist();
                 (Some(persisted), persistence)
             },
         );
@@ -839,7 +814,7 @@ impl AdmittedLayoutDeviceBindingMigration {
         let (catalog, catalog_persistence) = catalog.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
-                let (persisted, persistence) = migration.persist();
+                let (persisted, persistence) = migration.admit().persist();
                 (Some(persisted), persistence)
             },
         );

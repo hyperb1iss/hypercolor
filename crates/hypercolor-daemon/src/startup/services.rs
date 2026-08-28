@@ -737,6 +737,9 @@ impl DaemonState {
                             Arc::clone(&attachment_profiles),
                             device_settings.clone(),
                             Arc::clone(&display_preferences),
+                            state_dir.join(
+                                crate::domain::device_binding::DEVICE_BINDING_MIGRATION_JOURNAL_FILE,
+                            ),
                         ),
                     ),
                     logical_devices: Arc::clone(&logical_devices),

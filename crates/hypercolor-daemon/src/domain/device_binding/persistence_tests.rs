@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::scene::{SceneManager, default_primary_zone, make_scene};
@@ -20,8 +21,9 @@ use hypercolor_types::spatial::{
 use tokio::sync::RwLock;
 
 use super::{
-    BindingClass, CurrentBinding, DeviceBindingMigrationContext, DeviceBindingRemaps,
-    MigrationPersistence, PersistedBindingEvidence, SegmentShape, build_binding_remaps,
+    BindingClass, CurrentBinding, DeviceBindingMigrationContext, DeviceBindingMigrationJournal,
+    DeviceBindingRemaps, MigrationPersistence, PersistedBindingEvidence, SegmentShape,
+    build_binding_remaps, plan_layout_device_id_remaps,
 };
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
@@ -133,6 +135,7 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
     let profiles_path = temp.path().join("attachment-profiles.json");
     let settings_path = temp.path().join("device-settings.json");
     let preferences_path = temp.path().join("display-preferences.json");
+    let journal_path = temp.path().join("device-binding-migration.json");
 
     let legacy_physical_id =
         DeviceFingerprint::from_persisted(LEGACY_FINGERPRINT).stable_device_id();
@@ -240,6 +243,7 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
         Arc::clone(&profiles),
         settings.clone(),
         Arc::clone(&preferences),
+        journal_path.clone(),
     );
     let renderer = layout_context.layout_publication_test_executor();
     let remaps = DeviceBindingRemaps {
@@ -259,26 +263,75 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
             ),
         ]),
     };
+    context
+        .journal
+        .persist_active(&remaps)
+        .expect("persist migration journal");
 
     let prepared = context.prepare(&remaps).await.expect("prepare migration");
     let profile_writer = crate::persistence::AtomicFileWriter::new(&profiles_path)
         .expect("attachment profile writer");
     profile_writer.set_injected_replace_failures(1);
-    let (persisted, persistence) = prepared.admit().persist();
+    let (persisted, persistence) = prepared.persist();
     assert!(persisted.is_none());
     assert!(
         persistence
             .iter()
             .any(|outcome| matches!(outcome, MigrationPersistence::Failed(_)))
     );
+    profile_writer
+        .flush(Duration::from_secs(5))
+        .expect("failed participant retry should converge");
     let layouts = crate::layout_store::load(&layouts_path).expect("reload legacy layouts");
     assert_eq!(layouts["saved"].zones[0].device_id, LEGACY_LAYOUT_ID);
+    assert_eq!(
+        DeviceBindingMigrationJournal::new(journal_path.clone())
+            .load()
+            .expect("reload active migration journal"),
+        Some(remaps.clone())
+    );
 
     let prepared = context
         .prepare(&remaps)
         .await
-        .expect("prepare retry migration");
-    let (persisted, persistence) = prepared.admit().persist();
+        .expect("prepare partial migration");
+    let exclusions_writer = crate::persistence::AtomicFileWriter::new(&exclusions_path)
+        .expect("layout exclusions writer");
+    exclusions_writer.set_injected_replace_failures(1);
+    let (persisted, persistence) = prepared.persist();
+    assert!(persisted.is_none());
+    assert!(
+        persistence
+            .iter()
+            .any(|outcome| matches!(outcome, MigrationPersistence::Failed(_)))
+    );
+
+    let layouts = crate::layout_store::load(&layouts_path).expect("reload mixed layouts");
+    assert_eq!(layouts["saved"].zones[0].device_id, LEGACY_LAYOUT_ID);
+    let stored_scenes = crate::scene_store::load(&scenes_path).expect("reload migrated scenes");
+    let mut mixed_evidence = PersistedBindingEvidence::default();
+    mixed_evidence.observe_layout(&layouts["saved"]);
+    for scene in stored_scenes.list() {
+        for zone in &scene.zones {
+            mixed_evidence.observe_layout(&zone.layout);
+        }
+    }
+    assert!(
+        plan_layout_device_id_remaps(&mixed_evidence, &[current_binding(canonical_physical_id)])
+            .is_empty(),
+        "mixed canonical and legacy evidence cannot reconstruct the remap"
+    );
+    let replayed_remaps = DeviceBindingMigrationJournal::new(journal_path.clone())
+        .load()
+        .expect("reload restart migration journal")
+        .expect("restart must retain active remaps");
+    assert_eq!(replayed_remaps, remaps);
+
+    let prepared = context
+        .prepare(&replayed_remaps)
+        .await
+        .expect("prepare journal replay");
+    let (persisted, persistence) = prepared.persist();
     assert!(
         persistence
             .iter()
@@ -299,6 +352,13 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
     assert!(rejected);
     assert!(convergence.is_err());
     drop(persisted);
+    assert_eq!(
+        context
+            .journal
+            .load()
+            .expect("reload journal after renderer rejection"),
+        Some(remaps.clone())
+    );
     assert!(
         logical_devices.read().await.contains_key(LEGACY_LAYOUT_ID),
         "memory must remain unpublished after renderer rejection"
@@ -308,7 +368,7 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
         .prepare(&remaps)
         .await
         .expect("prepare renderer retry");
-    let (persisted, persistence) = prepared.admit().persist();
+    let (persisted, persistence) = prepared.persist();
     assert!(
         persistence
             .iter()
@@ -341,6 +401,14 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
         .await
         .expect("prepare renderer retry publication");
     assert_eq!(publication.publish(&context), 11);
+    context.journal.clear().expect("clear migration journal");
+    assert!(
+        context
+            .journal
+            .load()
+            .expect("reload cleared migration journal")
+            .is_none()
+    );
 
     let layouts = crate::layout_store::load(&layouts_path).expect("reload layouts");
     assert_eq!(layouts["saved"].zones[0].device_id, CANONICAL_LAYOUT_ID);

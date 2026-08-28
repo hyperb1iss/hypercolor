@@ -644,6 +644,7 @@ fn make_runtime_with_registry_and_layout(
             Arc::clone(&attachment_profiles),
             device_settings.clone(),
             display_preferences,
+            runtime_state_path.with_file_name("device-binding-migration.json"),
         )),
         logical_devices: Arc::clone(&logical_devices),
         attachment_registry: Arc::clone(&attachment_registry),
@@ -700,6 +701,7 @@ fn install_active_layout(
             DisplayPreferencesStore::new(state_dir.join("display-preferences.json"))
                 .expect("display preference store"),
         )),
+        state_dir.join("device-binding-migration.json"),
     ));
 }
 

@@ -1,40 +1,43 @@
 //! Conservative reconciliation for persisted, machine-local device bindings.
 
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use hypercolor_core::device::{DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DriverTransportKind};
 use hypercolor_types::spatial::{Output, SpatialLayout};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use tracing::info;
 
 use crate::attachment_profiles::{
-    AdmittedComponentProfileBindingMigration, ComponentProfileBindingMigration,
-    ComponentProfileBindingPublication, ComponentProfileStore,
+    ComponentProfileBindingMigration, ComponentProfileBindingPublication, ComponentProfileStore,
     PersistedComponentProfileBindingMigration,
 };
 use crate::device_settings::{
-    AdmittedDeviceSettingsBindingMigration, DeviceSettingsAccess, DeviceSettingsBindingMigration,
-    DeviceSettingsBindingPublication, PersistedDeviceSettingsBindingMigration,
+    DeviceSettingsAccess, DeviceSettingsBindingMigration, DeviceSettingsBindingPublication,
+    PersistedDeviceSettingsBindingMigration,
 };
 use crate::display_preferences::{
-    AdmittedDisplayPreferencesDeviceBindingMigration, DisplayPreferencesDeviceBindingMigration,
-    DisplayPreferencesDeviceBindingPublication, DisplayPreferencesStore,
-    PersistedDisplayPreferencesDeviceBindingMigration,
+    DisplayPreferencesDeviceBindingMigration, DisplayPreferencesDeviceBindingPublication,
+    DisplayPreferencesStore, PersistedDisplayPreferencesDeviceBindingMigration,
 };
 use crate::domain::layout::{
-    AdmittedLayoutDeviceBindingMigration, LayoutContext, LayoutDeviceBindingMigration,
-    LayoutDeviceBindingPublication, PersistedLayoutDeviceBindingMigration,
+    LayoutContext, LayoutDeviceBindingMigration, LayoutDeviceBindingPublication,
+    PersistedLayoutDeviceBindingMigration,
 };
 use crate::logical_devices::{
-    AdmittedLogicalDeviceBindingMigration, LogicalDevice, LogicalDeviceBindingMigration,
-    LogicalDeviceBindingPublication, LogicalDeviceStoreAuthority,
-    PersistedLogicalDeviceBindingMigration,
+    LogicalDevice, LogicalDeviceBindingMigration, LogicalDeviceBindingPublication,
+    LogicalDeviceStoreAuthority, PersistedLogicalDeviceBindingMigration,
 };
-use crate::persistence::AtomicWriteCommitResult;
+use crate::persistence::{AtomicFileWriter, AtomicWriteCommitResult, serialize_json_pretty};
 
 const MAX_BINDING_MIGRATION_ATTEMPTS: usize = 3;
+const DEVICE_BINDING_JOURNAL_SCHEMA_VERSION: u32 = 1;
+pub(crate) const DEVICE_BINDING_MIGRATION_JOURNAL_FILE: &str = "device-binding-migration.json";
 
 #[derive(Clone)]
 #[doc(hidden)]
@@ -44,6 +47,7 @@ pub struct DeviceBindingMigrationContext {
     attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
     device_settings: DeviceSettingsAccess,
     display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+    journal: DeviceBindingMigrationJournal,
 }
 
 struct PreparedDeviceBindingMigration {
@@ -52,14 +56,6 @@ struct PreparedDeviceBindingMigration {
     attachment_profiles: Option<ComponentProfileBindingMigration>,
     device_settings: Option<DeviceSettingsBindingMigration>,
     display_preferences: Option<DisplayPreferencesDeviceBindingMigration>,
-}
-
-struct AdmittedDeviceBindingMigration {
-    layout: AdmittedLayoutDeviceBindingMigration,
-    logical_devices: Option<AdmittedLogicalDeviceBindingMigration>,
-    attachment_profiles: Option<AdmittedComponentProfileBindingMigration>,
-    device_settings: Option<AdmittedDeviceSettingsBindingMigration>,
-    display_preferences: Option<AdmittedDisplayPreferencesDeviceBindingMigration>,
 }
 
 struct PersistedDeviceBindingMigration {
@@ -84,11 +80,24 @@ pub(crate) struct DeviceBindingMigrationReport {
     pub(crate) references: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeviceBindingRemaps {
     pub(crate) layout_device_ids: HashMap<String, String>,
     pub(crate) physical_device_ids: HashMap<DeviceId, DeviceId>,
     pub(crate) persisted_setting_keys: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+struct DeviceBindingMigrationJournal {
+    path: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceBindingMigrationJournalDocument {
+    schema_version: u32,
+    remaps: Option<DeviceBindingRemaps>,
 }
 
 #[derive(Debug)]
@@ -107,6 +116,76 @@ impl MigrationPersistence {
             | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => {
                 Self::Failed(error.to_string())
             }
+        }
+    }
+}
+
+impl DeviceBindingMigrationJournal {
+    const fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn load(&self) -> anyhow::Result<Option<DeviceBindingRemaps>> {
+        let payload = match std::fs::read(&self.path) {
+            Ok(payload) => payload,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to read device binding migration journal at {}",
+                        self.path.display()
+                    )
+                });
+            }
+        };
+        let document: DeviceBindingMigrationJournalDocument = serde_json::from_slice(&payload)
+            .with_context(|| {
+                format!(
+                    "failed to parse device binding migration journal at {}",
+                    self.path.display()
+                )
+            })?;
+        anyhow::ensure!(
+            document.schema_version == DEVICE_BINDING_JOURNAL_SCHEMA_VERSION,
+            "device binding migration journal at {} uses unsupported schema version {}; expected {}",
+            self.path.display(),
+            document.schema_version,
+            DEVICE_BINDING_JOURNAL_SCHEMA_VERSION
+        );
+        Ok(document.remaps)
+    }
+
+    fn persist_active(&self, remaps: &DeviceBindingRemaps) -> anyhow::Result<()> {
+        self.persist(Some(remaps.clone()))
+    }
+
+    fn clear(&self) -> anyhow::Result<()> {
+        self.persist(None)
+    }
+
+    fn persist(&self, remaps: Option<DeviceBindingRemaps>) -> anyhow::Result<()> {
+        let payload = serialize_json_pretty(&DeviceBindingMigrationJournalDocument {
+            schema_version: DEVICE_BINDING_JOURNAL_SCHEMA_VERSION,
+            remaps,
+        })
+        .context("failed to serialize device binding migration journal")?;
+        let outcome = AtomicFileWriter::new(&self.path)?
+            .reserve()
+            .admit(payload)
+            .commit_stage_aware();
+        match outcome {
+            AtomicWriteCommitResult::DurableWritten => Ok(()),
+            AtomicWriteCommitResult::Superseded => {
+                anyhow::bail!("device binding migration journal write was superseded")
+            }
+            AtomicWriteCommitResult::FailedBeforeReplacement(error)
+            | AtomicWriteCommitResult::ReplacementVisibleButNotDurable(error) => Err(error)
+                .with_context(|| {
+                    format!(
+                        "failed to persist device binding migration journal at {}",
+                        self.path.display()
+                    )
+                }),
         }
     }
 }
@@ -284,6 +363,7 @@ impl DeviceBindingMigrationContext {
         attachment_profiles: Arc<RwLock<ComponentProfileStore>>,
         device_settings: DeviceSettingsAccess,
         display_preferences: Arc<RwLock<DisplayPreferencesStore>>,
+        journal_path: PathBuf,
     ) -> Self {
         Self {
             layout,
@@ -294,6 +374,7 @@ impl DeviceBindingMigrationContext {
             attachment_profiles,
             device_settings,
             display_preferences,
+            journal: DeviceBindingMigrationJournal::new(journal_path),
         }
     }
 
@@ -303,17 +384,32 @@ impl DeviceBindingMigrationContext {
         lifecycle: &Arc<Mutex<DeviceLifecycleManager>>,
         seen_ids: &HashSet<DeviceId>,
     ) -> anyhow::Result<DeviceBindingMigrationReport> {
-        let evidence = self.layout.collect_binding_evidence().await;
-        let current = collect_current_bindings(registry, lifecycle, seen_ids).await;
-        let persisted_binding_keys = self.device_settings.persisted_binding_keys().await;
-        let remaps = build_binding_remaps(&evidence, &current, &persisted_binding_keys);
-        if remaps.layout_device_ids.is_empty() {
-            return Ok(DeviceBindingMigrationReport::default());
-        }
+        let remaps = if let Some(remaps) = self.journal.load()? {
+            anyhow::ensure!(
+                !remaps.layout_device_ids.is_empty(),
+                "active device binding migration journal contains no layout remaps"
+            );
+            info!(
+                path = %self.journal.path.display(),
+                mappings = remaps.layout_device_ids.len(),
+                "Replaying durable device binding migration intent"
+            );
+            remaps
+        } else {
+            let evidence = self.layout.collect_binding_evidence().await;
+            let current = collect_current_bindings(registry, lifecycle, seen_ids).await;
+            let persisted_binding_keys = self.device_settings.persisted_binding_keys().await;
+            let remaps = build_binding_remaps(&evidence, &current, &persisted_binding_keys);
+            if remaps.layout_device_ids.is_empty() {
+                return Ok(DeviceBindingMigrationReport::default());
+            }
+            self.journal.persist_active(&remaps)?;
+            remaps
+        };
 
         for attempt in 1..=MAX_BINDING_MIGRATION_ATTEMPTS {
             let prepared = self.prepare(&remaps).await?;
-            let (persisted, persistence) = prepared.admit().persist();
+            let (persisted, persistence) = prepared.persist();
             if migration_was_superseded(&persistence) {
                 anyhow::ensure!(
                     attempt < MAX_BINDING_MIGRATION_ATTEMPTS,
@@ -355,6 +451,7 @@ impl DeviceBindingMigrationContext {
                 continue;
             };
             let references = publication.publish(self);
+            self.journal.clear()?;
             return Ok(DeviceBindingMigrationReport {
                 mappings: remaps.layout_device_ids.len(),
                 references,
@@ -456,26 +553,6 @@ fn migration_was_superseded(persistence: &[MigrationPersistence]) -> bool {
 }
 
 impl PreparedDeviceBindingMigration {
-    fn admit(self) -> AdmittedDeviceBindingMigration {
-        AdmittedDeviceBindingMigration {
-            layout: self.layout.admit(),
-            logical_devices: self
-                .logical_devices
-                .map(LogicalDeviceBindingMigration::admit),
-            attachment_profiles: self
-                .attachment_profiles
-                .map(ComponentProfileBindingMigration::admit),
-            device_settings: self
-                .device_settings
-                .map(DeviceSettingsBindingMigration::admit),
-            display_preferences: self
-                .display_preferences
-                .map(DisplayPreferencesDeviceBindingMigration::admit),
-        }
-    }
-}
-
-impl AdmittedDeviceBindingMigration {
     fn persist(
         self,
     ) -> (
@@ -493,7 +570,7 @@ impl AdmittedDeviceBindingMigration {
         let (logical_devices, logical_persistence) = logical_devices.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
-                let (persisted, outcome) = migration.persist();
+                let (persisted, outcome) = migration.admit().persist();
                 (Some(persisted), outcome)
             },
         );
@@ -505,7 +582,7 @@ impl AdmittedDeviceBindingMigration {
         let (attachment_profiles, profile_persistence) = attachment_profiles.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
-                let (persisted, outcome) = migration.persist();
+                let (persisted, outcome) = migration.admit().persist();
                 (Some(persisted), outcome)
             },
         );
@@ -517,7 +594,7 @@ impl AdmittedDeviceBindingMigration {
         let (device_settings, settings_persistence) = device_settings.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
-                let (persisted, outcome) = migration.persist();
+                let (persisted, outcome) = migration.admit().persist();
                 (Some(persisted), outcome)
             },
         );
@@ -529,7 +606,7 @@ impl AdmittedDeviceBindingMigration {
         let (display_preferences, display_persistence) = display_preferences.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
-                let (persisted, outcome) = migration.persist();
+                let (persisted, outcome) = migration.admit().persist();
                 (Some(persisted), outcome)
             },
         );
