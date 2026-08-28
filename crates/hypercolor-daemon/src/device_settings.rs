@@ -240,6 +240,17 @@ impl DeviceSettingsAccess {
         self.store.read().await.prepare_binding_migration(remaps)
     }
 
+    pub(crate) async fn persisted_binding_keys(&self) -> std::collections::HashSet<String> {
+        let store = self.store.read().await;
+        store
+            .snapshot
+            .devices
+            .keys()
+            .chain(store.snapshot.driver_controls.keys())
+            .cloned()
+            .collect()
+    }
+
     pub(crate) async fn prepare_binding_publication(
         &self,
         migration: PersistedDeviceSettingsBindingMigration,

@@ -1344,6 +1344,7 @@ pub(crate) struct PreparedLayoutActivation {
     pub(crate) expected_layout: SpatialLayout,
     pub(crate) active_scene_id: Option<SceneId>,
     pub(crate) source_resolved_zones_revision: u64,
+    pub(crate) publication_mode: crate::scene_transactions::LayoutPublicationMode,
     pub(crate) prepared_resize: Option<PreparedCanvasResize>,
     pub(crate) sampling_preparation: Option<SparkleFlingerSamplingPreparation>,
     pub(crate) prepared_zones: PreparedZoneReconcile,

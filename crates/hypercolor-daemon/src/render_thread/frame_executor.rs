@@ -34,7 +34,7 @@ use super::{RenderThreadState, micros_between, micros_u32, u64_to_u32};
 use crate::discovery::handle_async_write_failures;
 use crate::performance::OutputFrameSourceKind;
 use crate::scene_transactions::{
-    LayoutActivationDecision, LayoutTransactionRejection, SceneTransaction,
+    LayoutActivationDecision, LayoutPublicationMode, LayoutTransactionRejection, SceneTransaction,
 };
 
 #[expect(
@@ -68,6 +68,7 @@ pub(crate) async fn service_scene_transactions(
                     expected_layout,
                     active_scene_id,
                     source_resolved_zones_revision,
+                    publication_mode,
                     prepared_resize,
                     sampling_preparation,
                     prepared_zones,
@@ -77,37 +78,55 @@ pub(crate) async fn service_scene_transactions(
                     height,
                 } = prepared;
                 let completion = activation.clone();
-                let publication = state
-                    .scene_manager
-                    .publish_layout_activation(
-                        &state.spatial_engine,
-                        spatial_engine,
-                        &expected_layout,
-                        active_scene_id,
-                        source_resolved_zones_revision,
-                        |spatial_engine| {
-                            render
-                                .render_zone_runtime
-                                .commit_reconcile(prepared_zones)
-                                .map_err(|error| LayoutTransactionRejection::PreparationFailed {
-                                    message: error.to_string(),
-                                })?;
-                            if let Some(prepared_resize) = prepared_resize {
-                                render.commit_canvas_resize(prepared_resize);
-                                state.canvas_dims.set(width, height);
-                                frame_loop.throttle.reset_for_canvas_resize();
-                                info!(width, height, "Applied live canvas resize");
-                            } else if let Some(sampling_preparation) = sampling_preparation {
-                                render.commit_spatial_sampling_plan(sampling_preparation);
-                            }
-                            render
-                                .sparkleflinger
-                                .apply_projected_scene_resources(prepared_projected_scene);
-                            scene.render_state.replace_spatial_engine(spatial_engine);
-                            Ok(())
-                        },
-                    )
-                    .await;
+                let publish_renderer_state = |spatial_engine| {
+                    render
+                        .render_zone_runtime
+                        .commit_reconcile(prepared_zones)
+                        .map_err(|error| LayoutTransactionRejection::PreparationFailed {
+                            message: error.to_string(),
+                        })?;
+                    if let Some(prepared_resize) = prepared_resize {
+                        render.commit_canvas_resize(prepared_resize);
+                        state.canvas_dims.set(width, height);
+                        frame_loop.throttle.reset_for_canvas_resize();
+                        info!(width, height, "Applied live canvas resize");
+                    } else if let Some(sampling_preparation) = sampling_preparation {
+                        render.commit_spatial_sampling_plan(sampling_preparation);
+                    }
+                    render
+                        .sparkleflinger
+                        .apply_projected_scene_resources(prepared_projected_scene);
+                    scene.render_state.replace_spatial_engine(spatial_engine);
+                    Ok(())
+                };
+                let publication = match publication_mode {
+                    LayoutPublicationMode::AuthorityAndRenderer => {
+                        state
+                            .scene_manager
+                            .publish_layout_activation(
+                                &state.spatial_engine,
+                                spatial_engine,
+                                &expected_layout,
+                                active_scene_id,
+                                source_resolved_zones_revision,
+                                publish_renderer_state,
+                            )
+                            .await
+                    }
+                    LayoutPublicationMode::RendererOnly => {
+                        state
+                            .scene_manager
+                            .publish_renderer_only_layout_activation(
+                                &state.spatial_engine,
+                                spatial_engine,
+                                &expected_layout,
+                                active_scene_id,
+                                source_resolved_zones_revision,
+                                publish_renderer_state,
+                            )
+                            .await
+                    }
+                };
                 completion.complete(publication);
             }
         }
@@ -266,6 +285,7 @@ pub(crate) async fn service_scene_transactions(
                     expected_layout,
                     active_scene_id,
                     source_resolved_zones_revision,
+                    publication_mode: transaction.publication_mode(),
                     prepared_resize,
                     sampling_preparation,
                     prepared_zones,

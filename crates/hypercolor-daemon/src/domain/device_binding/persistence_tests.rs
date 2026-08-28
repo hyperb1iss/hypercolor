@@ -6,7 +6,10 @@ use hypercolor_core::scene::{SceneManager, default_primary_zone, make_scene};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::attachment::DeviceComponentProfile;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::device::{DeviceFingerprint, DeviceId};
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
+    DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+};
 use hypercolor_types::effect::EffectId;
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneRole};
@@ -30,7 +33,7 @@ use crate::layout_auto_exclusions::LayoutAutoExclusionKey;
 use crate::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use crate::output_power::OutputPower;
 use crate::scene_store::SceneStore;
-use crate::scene_transactions::SceneTransactionQueue;
+use crate::scene_transactions::{LayoutTransactionRejection, SceneTransactionQueue};
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 
 const LEGACY_LAYOUT_ID: &str = "razer:1532:0099:001-6-4-4";
@@ -81,10 +84,32 @@ fn output(device_id: &str) -> Output {
 }
 
 fn current_binding(canonical_physical_id: DeviceId) -> CurrentBinding {
+    let device_info = DeviceInfo {
+        id: canonical_physical_id,
+        name: "Razer Device".to_owned(),
+        vendor: "Razer".to_owned(),
+        family: DeviceFamily::new("razer", "Razer"),
+        model: Some("razer_test_device".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("razer", "usb", ConnectionType::Usb),
+        segments: vec![SegmentInfo {
+            name: "Main".to_owned(),
+            led_count: 16,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 16,
+            ..DeviceCapabilities::default()
+        },
+    };
     CurrentBinding {
         layout_device_id: CANONICAL_LAYOUT_ID.to_owned(),
         physical_device_id: canonical_physical_id,
         fingerprint: DeviceFingerprint::from_persisted(CANONICAL_FINGERPRINT),
+        device_info,
         class: BindingClass::ClaimlessUsb {
             owner: "razer".to_owned(),
             vendor_id: 0x1532,
@@ -98,7 +123,7 @@ fn current_binding(canonical_physical_id: DeviceId) -> CurrentBinding {
 }
 
 #[tokio::test]
-async fn transaction_persists_every_binding_and_is_restart_idempotent() {
+async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
     let temp = tempfile::tempdir().expect("device binding state directory");
     let layouts_path = temp.path().join("layouts.json");
     let exclusions_path = temp.path().join("layout-auto-exclusions.json");
@@ -114,6 +139,11 @@ async fn transaction_persists_every_binding_and_is_restart_idempotent() {
     let canonical_physical_id =
         DeviceFingerprint::from_persisted(CANONICAL_FINGERPRINT).stable_device_id();
     let legacy_layout = layout("saved", Some(LEGACY_LAYOUT_ID));
+    crate::layout_store::save(
+        &layouts_path,
+        &HashMap::from([("saved".to_owned(), legacy_layout.clone())]),
+    )
+    .expect("initial legacy layout");
 
     let mut manager = SceneManager::with_default_layout(legacy_layout.clone());
     let mut named = make_scene("Imported Linux scene");
@@ -130,7 +160,7 @@ async fn transaction_persists_every_binding_and_is_restart_idempotent() {
         SceneStore::load(&scenes_path).expect("scene store"),
         Arc::new(ZoneLayoutPreviewStore::default()),
     );
-    let spatial = SpatialService::new(SpatialEngine::new(layout("active", None)));
+    let spatial = SpatialService::new(SpatialEngine::new(legacy_layout.clone()));
     let layout_context = LayoutContext::new_test_context(
         HashMap::from([("saved".to_owned(), legacy_layout)]),
         layouts_path.clone(),
@@ -139,7 +169,7 @@ async fn transaction_persists_every_binding_and_is_restart_idempotent() {
             HashSet::from([LEGACY_LAYOUT_ID.to_owned()]),
         )]),
         exclusions_path.clone(),
-        spatial,
+        spatial.clone(),
         scenes.clone(),
         SceneTransactionQueue::default(),
         runtime_path.clone(),
@@ -211,6 +241,7 @@ async fn transaction_persists_every_binding_and_is_restart_idempotent() {
         settings.clone(),
         Arc::clone(&preferences),
     );
+    let renderer = layout_context.layout_publication_test_executor();
     let remaps = DeviceBindingRemaps {
         layout_device_ids: HashMap::from([(
             LEGACY_LAYOUT_ID.to_owned(),
@@ -230,18 +261,86 @@ async fn transaction_persists_every_binding_and_is_restart_idempotent() {
     };
 
     let prepared = context.prepare(&remaps).await.expect("prepare migration");
+    let profile_writer = crate::persistence::AtomicFileWriter::new(&profiles_path)
+        .expect("attachment profile writer");
+    profile_writer.set_injected_replace_failures(1);
+    let (persisted, persistence) = prepared.admit().persist();
+    assert!(persisted.is_none());
+    assert!(
+        persistence
+            .iter()
+            .any(|outcome| matches!(outcome, MigrationPersistence::Failed(_)))
+    );
+    let layouts = crate::layout_store::load(&layouts_path).expect("reload legacy layouts");
+    assert_eq!(layouts["saved"].zones[0].device_id, LEGACY_LAYOUT_ID);
+
+    let prepared = context
+        .prepare(&remaps)
+        .await
+        .expect("prepare retry migration");
     let (persisted, persistence) = prepared.admit().persist();
     assert!(
         persistence
             .iter()
             .all(|outcome| matches!(outcome, MigrationPersistence::Durable))
     );
+    let persisted = persisted.expect("all participants should persist");
+    let (convergence, rejected) = tokio::join!(
+        context
+            .layout
+            .converge_persisted_device_binding(&persisted.layout),
+        async {
+            while renderer.pending_layout_publications() == 0 {
+                tokio::task::yield_now().await;
+            }
+            renderer.reject_next_layout_publication(LayoutTransactionRejection::RendererStopped)
+        }
+    );
+    assert!(rejected);
+    assert!(convergence.is_err());
+    drop(persisted);
+    assert!(
+        logical_devices.read().await.contains_key(LEGACY_LAYOUT_ID),
+        "memory must remain unpublished after renderer rejection"
+    );
+
+    let prepared = context
+        .prepare(&remaps)
+        .await
+        .expect("prepare renderer retry");
+    let (persisted, persistence) = prepared.admit().persist();
+    assert!(
+        persistence
+            .iter()
+            .all(|outcome| matches!(outcome, MigrationPersistence::Durable))
+    );
+    let persisted = persisted.expect("renderer retry should persist");
+    let (convergence, rendered) = tokio::join!(
+        context
+            .layout
+            .converge_persisted_device_binding(&persisted.layout),
+        async {
+            while renderer.pending_layout_publications() == 0 {
+                tokio::task::yield_now().await;
+            }
+            renderer.execute_next_layout_publication().await
+        }
+    );
+    convergence.expect("renderer convergence");
+    let rendered = rendered
+        .expect("renderer publication")
+        .expect("renderer should apply the active layout");
+    assert_eq!(rendered.zones[0].device_id, CANONICAL_LAYOUT_ID);
+    assert_eq!(
+        spatial.layout().zones[0].device_id,
+        LEGACY_LAYOUT_ID,
+        "renderer-only admission must not publish domain memory"
+    );
     let mut publication = context
         .prepare_publication(persisted)
         .await
-        .expect("prepare publication");
+        .expect("prepare renderer retry publication");
     assert_eq!(publication.publish(&context), 11);
-    assert!(publication.finish().is_none());
 
     let layouts = crate::layout_store::load(&layouts_path).expect("reload layouts");
     assert_eq!(layouts["saved"].zones[0].device_id, CANONICAL_LAYOUT_ID);
@@ -312,8 +411,12 @@ async fn transaction_persists_every_binding_and_is_restart_idempotent() {
         }
     }
     assert!(
-        build_binding_remaps(&restart_evidence, &[current_binding(canonical_physical_id)])
-            .layout_device_ids
-            .is_empty()
+        build_binding_remaps(
+            &restart_evidence,
+            &[current_binding(canonical_physical_id)],
+            &HashSet::from([CANONICAL_FINGERPRINT.to_owned()]),
+        )
+        .layout_device_ids
+        .is_empty()
     );
 }

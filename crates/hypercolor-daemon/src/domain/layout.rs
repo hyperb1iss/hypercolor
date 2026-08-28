@@ -89,12 +89,11 @@ pub(crate) struct PersistedLayoutDeviceBindingMigration {
 }
 
 pub(crate) struct LayoutDeviceBindingPublication {
-    update_guard: LayoutUpdateGuard,
+    _update_guard: LayoutUpdateGuard,
     catalog: Option<LayoutCatalogBindingPublication>,
     exclusions: Option<LayoutExclusionsBindingPublication>,
     scene: SceneDeviceBindingMigrationPublication,
     active: Option<ActiveLayoutBindingMigration>,
-    published_active_layout: Option<SpatialLayout>,
     migrated: usize,
 }
 
@@ -534,23 +533,24 @@ impl LayoutContext {
             .prepare_device_binding_migration_publication(migration.scene)
             .await?;
         Ok(LayoutDeviceBindingPublication {
-            update_guard: migration.update_guard,
+            _update_guard: migration.update_guard,
             catalog,
             exclusions,
             scene,
             active: migration.active,
-            published_active_layout: None,
             migrated: migration.migrated,
         })
     }
 
-    pub(crate) async fn converge_published_device_binding(
+    pub(crate) async fn converge_persisted_device_binding(
         &self,
-        guard: LayoutUpdateGuard,
-        layout: SpatialLayout,
+        migration: &PersistedLayoutDeviceBindingMigration,
     ) -> anyhow::Result<()> {
+        let Some(active) = migration.active.as_ref() else {
+            return Ok(());
+        };
         self.publication
-            .apply_prepared_under_guard(&guard, layout)
+            .apply_renderer_only_under_guard(&migration.update_guard, active.candidate_layout())
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))
     }
@@ -799,41 +799,66 @@ impl AdmittedLayoutDeviceBindingMigration {
     pub(crate) fn persist(
         self,
     ) -> (
-        PersistedLayoutDeviceBindingMigration,
+        Option<PersistedLayoutDeviceBindingMigration>,
         Vec<MigrationPersistence>,
     ) {
-        let (catalog, catalog_persistence) = self.catalog.map_or_else(
+        let Self {
+            update_guard,
+            catalog,
+            exclusions,
+            scene,
+            runtime,
+            active,
+            migrated,
+        } = self;
+        let mut persistence = Vec::new();
+        let (scene, scene_persistence) = scene.persist();
+        let stop = !matches!(scene_persistence, MigrationPersistence::Durable);
+        persistence.push(scene_persistence);
+        if stop {
+            return (None, persistence);
+        }
+        let (runtime, runtime_persistence) = runtime.persist();
+        let stop = !matches!(runtime_persistence, MigrationPersistence::Durable);
+        persistence.push(runtime_persistence);
+        if stop {
+            return (None, persistence);
+        }
+        let (exclusions, exclusion_persistence) = exclusions.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
                 let (persisted, persistence) = migration.persist();
                 (Some(persisted), persistence)
             },
         );
-        let (exclusions, exclusion_persistence) = self.exclusions.map_or_else(
+        let stop = !matches!(exclusion_persistence, MigrationPersistence::Durable);
+        persistence.push(exclusion_persistence);
+        if stop {
+            return (None, persistence);
+        }
+        let (catalog, catalog_persistence) = catalog.map_or_else(
             || (None, MigrationPersistence::Durable),
             |migration| {
                 let (persisted, persistence) = migration.persist();
                 (Some(persisted), persistence)
             },
         );
-        let (scene, scene_persistence) = self.scene.persist();
-        let (runtime, runtime_persistence) = self.runtime.persist();
+        let stop = !matches!(catalog_persistence, MigrationPersistence::Durable);
+        persistence.push(catalog_persistence);
+        if stop {
+            return (None, persistence);
+        }
         (
-            PersistedLayoutDeviceBindingMigration {
-                update_guard: self.update_guard,
+            Some(PersistedLayoutDeviceBindingMigration {
+                update_guard,
                 catalog,
                 exclusions,
                 scene,
                 _runtime: runtime,
-                active: self.active,
-                migrated: self.migrated,
-            },
-            vec![
-                catalog_persistence,
-                exclusion_persistence,
-                scene_persistence,
-                runtime_persistence,
-            ],
+                active,
+                migrated,
+            }),
+            persistence,
         )
     }
 }
@@ -852,15 +877,9 @@ impl LayoutDeviceBindingPublication {
             .scenes()
             .publish_device_binding_migration(&mut self.scene);
         if let Some(active) = self.active.take() {
-            self.published_active_layout =
-                Some(context.publication.publish_active_binding_migration(active));
+            context.publication.publish_active_binding_migration(active);
         }
         migrated
-    }
-
-    pub(crate) fn finish(self) -> Option<(LayoutUpdateGuard, SpatialLayout)> {
-        self.published_active_layout
-            .map(|layout| (self.update_guard, layout))
     }
 }
 

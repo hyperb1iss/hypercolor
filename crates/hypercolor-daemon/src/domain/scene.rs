@@ -707,6 +707,29 @@ impl SceneService {
         ticket.release(Vec::new());
         Ok(())
     }
+
+    pub(crate) async fn publish_renderer_only_layout_activation<F>(
+        &self,
+        spatial_engine: &SpatialService,
+        candidate_spatial_engine: SpatialEngine,
+        expected_layout: &SpatialLayout,
+        expected_active_scene_id: Option<SceneId>,
+        expected_resolved_zones_revision: u64,
+        publish_renderer_state: F,
+    ) -> Result<(), LayoutTransactionRejection>
+    where
+        F: FnOnce(SpatialEngine) -> Result<(), LayoutTransactionRejection>,
+    {
+        let manager = self.0.manager.read().await;
+        let source_is_current = manager.active_scene_id().copied() == expected_active_scene_id
+            && manager.resolved_zones_revision() == expected_resolved_zones_revision
+            && spatial_engine.has_layout(expected_layout);
+        if !source_is_current {
+            return Err(LayoutTransactionRejection::Superseded);
+        }
+
+        publish_renderer_state(candidate_spatial_engine)
+    }
 }
 
 #[cfg(all(test, feature = "persistence-test-hooks"))]

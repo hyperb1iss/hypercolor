@@ -39,6 +39,12 @@ pub(super) struct ActiveLayoutBindingMigration {
     candidate: SpatialEngine,
 }
 
+impl ActiveLayoutBindingMigration {
+    pub(super) fn candidate_layout(&self) -> SpatialLayout {
+        self.candidate.layout().as_ref().clone()
+    }
+}
+
 impl LayoutPublication {
     pub(super) fn new(
         spatial: SpatialService,
@@ -157,6 +163,16 @@ impl LayoutPublication {
         layout: SpatialLayout,
     ) -> Result<(), LayoutUpdateError> {
         self.transactions.apply_under_guard(guard, layout).await
+    }
+
+    pub(super) async fn apply_renderer_only_under_guard(
+        &self,
+        guard: &LayoutUpdateGuard,
+        layout: SpatialLayout,
+    ) -> Result<(), LayoutUpdateError> {
+        self.transactions
+            .apply_renderer_only_under_guard(guard, layout)
+            .await
     }
 
     pub(super) async fn admit_persisted_under_guard(
