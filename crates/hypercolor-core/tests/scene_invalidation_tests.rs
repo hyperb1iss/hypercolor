@@ -105,3 +105,66 @@ fn effect_id_migration_rewrites_scene_and_overlay_and_fences_stale_layouts() {
             .all(|effect_id| effect_id == canonical_id)
     );
 }
+
+#[test]
+fn device_binding_migration_rewrites_layouts_and_display_targets() {
+    let legacy_physical_id = DeviceId::new();
+    let canonical_physical_id = DeviceId::new();
+    let mut layout = sample_layout();
+    layout.zones.push(hypercolor_types::spatial::Output {
+        id: "main".to_owned(),
+        name: "Main".to_owned(),
+        device_id: "razer:1532:0099:linux-path".to_owned(),
+        zone_name: Some("Main".to_owned()),
+        position: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5),
+        size: hypercolor_types::spatial::NormalizedPosition::new(1.0, 1.0),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: hypercolor_types::spatial::LedTopology::Point,
+        led_positions: vec![hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5)],
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        brightness: None,
+    });
+    let mut manager = SceneManager::with_default();
+    manager
+        .upsert_primary_zone(&sample_effect("legacy"), HashMap::new(), None, layout)
+        .expect("primary zone should be created");
+    let mut overlay = manager.resolved_zones()[0].clone();
+    overlay.display_target = Some(DisplayFaceTarget::new(legacy_physical_id));
+    manager.set_default_display_zone(overlay);
+    let revision_before = manager.resolved_zones_revision();
+
+    let migrated = manager.remap_device_bindings(
+        &HashMap::from([(
+            "razer:1532:0099:linux-path".to_owned(),
+            "razer:1532:0099:windows-path".to_owned(),
+        )]),
+        &HashMap::from([(legacy_physical_id, canonical_physical_id)]),
+    );
+
+    assert_eq!(migrated, 3);
+    assert!(manager.resolved_zones_revision() > revision_before);
+    assert!(
+        manager
+            .list()
+            .into_iter()
+            .flat_map(|scene| &scene.zones)
+            .all(|zone| zone
+                .layout
+                .zones
+                .iter()
+                .all(|output| output.device_id == "razer:1532:0099:windows-path"))
+    );
+    assert!(manager.default_display_zones().iter().all(|zone| {
+        zone.display_target
+            .as_ref()
+            .is_none_or(|target| target.device_id == canonical_physical_id)
+    }));
+}
