@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $CommandArgs = @($args | ForEach-Object { [string] $_ })
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+$CallerDir = Get-Location
 Set-Location $RepoRoot
 
 function Add-PathPrefix {
@@ -221,4 +222,5 @@ Enter-HypercolorVsDevShell
 Assert-HypercolorRustToolchain
 Initialize-HypercolorNativeTools
 Initialize-HypercolorCargoCache
+Set-Location $CallerDir
 Invoke-HypercolorCargoCommand

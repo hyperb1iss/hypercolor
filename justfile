@@ -741,12 +741,22 @@ dev *args='':
 # port and optionally a bind address to run beside another stack:
 # `just ui-dev 9431`, or `just ui-dev 9431 0.0.0.0` to reach it from a
 # phone on the LAN. The API proxy target (:9420) is unaffected.
+[unix]
 ui-dev port='9430' host='127.0.0.1': ui-deps
     cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
 
+[windows]
+ui-dev port='9430' host='127.0.0.1': ui-deps
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/ui-windows.ps1 -Mode Serve -Port {{ port }} -BindAddress {{ host }}
+
 # Build the UI for production
+[unix]
 ui-build: ui-deps
     cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build --release --locked
+
+[windows]
+ui-build: ui-deps
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/ui-windows.ps1 -Mode Build
 
 # Build UI and copy dist for daemon embedding
 ui-dist: ui-build

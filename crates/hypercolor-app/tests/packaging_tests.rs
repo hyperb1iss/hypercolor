@@ -13,6 +13,7 @@ const INSTALL_SH: &str = include_str!("../../../scripts/install.sh");
 const BUILD_MAC_INSTALLER_SH: &str = include_str!("../../../scripts/build-mac-installer.sh");
 const CARGO_CACHE_BUILD_SH: &str = include_str!("../../../scripts/cargo-cache-build.sh");
 const CARGO_CACHE_BUILD_PS1: &str = include_str!("../../../scripts/cargo-cache-build.ps1");
+const UI_WINDOWS_PS1: &str = include_str!("../../../scripts/ui-windows.ps1");
 const CARGO_TARGET_GC_SH: &str = include_str!("../../../scripts/cargo-target-gc.sh");
 const CARGO_TARGET_GC_SERVICE: &str =
     include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.service");
@@ -1666,6 +1667,13 @@ fn ui_cargo_builds_use_the_shared_cache_policy() {
         r#"HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build"#
     ));
     assert!(CARGO_CACHE_BUILD_SH.contains("HYPERCOLOR_NESTED_CARGO_TARGET_DIR"));
+    assert!(JUSTFILE.contains("scripts/ui-windows.ps1 -Mode Serve"));
+    assert!(JUSTFILE.contains("scripts/ui-windows.ps1 -Mode Build"));
+    assert!(UI_WINDOWS_PS1.contains("cargo-cache-build.ps1"));
+    assert!(UI_WINDOWS_PS1.contains("HYPERCOLOR_NO_SCCACHE"));
+    assert!(UI_WINDOWS_PS1.contains("HYPERCOLOR_ITERATE"));
+    assert!(CARGO_CACHE_BUILD_PS1.contains("$CallerDir = Get-Location"));
+    assert!(CARGO_CACHE_BUILD_PS1.contains("Set-Location $CallerDir"));
 }
 
 #[test]
