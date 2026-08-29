@@ -187,7 +187,9 @@ fn wait_for_screen(source: &mut impl InputSource) -> hypercolor_core::input::Scr
     loop {
         match source.sample().expect("fixture sample succeeds") {
             InputData::Screen(data) => return data,
-            InputData::None if Instant::now() < deadline => thread::yield_now(),
+            InputData::None if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(1));
+            }
             InputData::None => panic!("fixture worker did not publish before the deadline"),
             _ => panic!("macOS fixture published the wrong input kind"),
         }
@@ -203,7 +205,7 @@ fn wait_for_grid_width(
         match source.sample().expect("fixture sample succeeds") {
             InputData::Screen(data) if data.grid_width == grid_width => return data,
             InputData::Screen(_) | InputData::None if Instant::now() < deadline => {
-                thread::yield_now();
+                thread::sleep(Duration::from_millis(1));
             }
             InputData::Screen(_) | InputData::None => {
                 panic!("fixture worker did not publish the expected grid before the deadline");
@@ -230,7 +232,7 @@ fn wait_for_canvas_change(
         match source.sample().expect("fixture sample succeeds") {
             InputData::Screen(data) if canvas_bytes(&data) != previous => return data,
             InputData::Screen(_) | InputData::None if Instant::now() < deadline => {
-                thread::yield_now();
+                thread::sleep(Duration::from_millis(1));
             }
             InputData::Screen(_) | InputData::None => {
                 panic!("fixture worker did not publish changed compatibility bytes");
@@ -576,7 +578,7 @@ fn asynchronous_demand_request_failure_preserves_the_committed_worker_and_demand
                 Instant::now() < deadline,
                 "stream request never reached pending"
             );
-            thread::yield_now();
+            thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(fixture.stream_request(), request);
         fixture.fail_pending_stream_request();
@@ -622,7 +624,7 @@ fn asynchronous_reconfiguration_commits_after_native_activation() {
                 Instant::now() < deadline,
                 "stream request never reached pending"
             );
-            thread::yield_now();
+            thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(fixture.stream_request(), request);
         fixture.commit_pending_stream_request();
@@ -702,7 +704,7 @@ fn stale_native_frame_never_enters_the_legacy_cpu_publication() {
             break;
         }
         assert!(Instant::now() < deadline, "stale frame was not observed");
-        thread::yield_now();
+        thread::sleep(Duration::from_millis(1));
     }
 }
 

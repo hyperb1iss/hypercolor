@@ -1270,6 +1270,22 @@ fn mailbox_wake_releases_a_stopped_waiter_without_a_delivery() {
 }
 
 #[test]
+fn mailbox_cancelled_waiter_leaves_pending_delivery_for_successor() {
+    let mailbox = MacosFrameMailbox::new();
+    mailbox.publish(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)));
+
+    assert!(
+        mailbox
+            .wait_latest_while(Duration::from_secs(1), || false)
+            .is_none()
+    );
+    assert!(matches!(
+        mailbox.take_latest(),
+        Some(Ok(MacosFrameEvent::Lifecycle(MacosFrameStatus::Started)))
+    ));
+}
+
+#[test]
 fn callback_diagnostics_start_with_every_drop_reason_at_zero() {
     let diagnostics = MacosCaptureCallbackDiagnostics::default();
     assert_eq!(diagnostics.frames_received, 0);
