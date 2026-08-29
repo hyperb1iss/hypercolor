@@ -15,7 +15,10 @@
 
 use std::collections::HashMap;
 
+use hypercolor_color::LinearRgba;
 use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::GradientStop;
+use hypercolor_types::spatial::NormalizedRect;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -48,9 +51,10 @@ pub struct PreferencesStore {
 impl PreferencesStore {
     /// Creates a new store seeded from `localStorage`.
     ///
-    /// Missing state starts empty. Malformed state remains untouched and
-    /// blocks later writes so a valid subset never replaces data that failed
-    /// canonical admission.
+    /// Missing state starts empty. Preferences from before the canonical
+    /// control wire are migrated in place. Malformed state remains untouched
+    /// and blocks later writes so a valid subset never replaces data that
+    /// failed canonical admission.
     pub fn new() -> Self {
         let (initial, load_error) = match load_from_storage() {
             Ok(initial) => (initial, None),
@@ -121,53 +125,166 @@ struct RawEffectPreferences {
     control_values: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyEffectControlValue {
+    Float(f32),
+    Integer(i32),
+    Boolean(bool),
+    Color([f32; 4]),
+    Gradient(Vec<LegacyGradientStop>),
+    Enum(String),
+    Text(String),
+    Rect(LegacyNormalizedRect),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyGradientStop {
+    position: f32,
+    color: [f32; 4],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyNormalizedRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl From<LegacyEffectControlValue> for ControlValue {
+    fn from(value: LegacyEffectControlValue) -> Self {
+        match value {
+            LegacyEffectControlValue::Float(value) => Self::Float(f64::from(value)),
+            LegacyEffectControlValue::Integer(value) => Self::Int(i64::from(value)),
+            LegacyEffectControlValue::Boolean(value) => Self::Bool(value),
+            LegacyEffectControlValue::Color([r, g, b, a]) => {
+                Self::ColorLinear(LinearRgba::new(r, g, b, a))
+            }
+            LegacyEffectControlValue::Gradient(value) => Self::Gradient(
+                value
+                    .into_iter()
+                    .map(|stop| GradientStop {
+                        position: stop.position,
+                        color: stop.color,
+                    })
+                    .collect(),
+            ),
+            LegacyEffectControlValue::Enum(value) => Self::Enum(value),
+            LegacyEffectControlValue::Text(value) => Self::Text(value),
+            LegacyEffectControlValue::Rect(value) => Self::Rect(NormalizedRect {
+                x: value.x,
+                y: value.y,
+                width: value.width,
+                height: value.height,
+            }),
+        }
+    }
+}
+
+struct DecodedPreferences {
+    entries: HashMap<String, EffectPreferences>,
+    migrated: bool,
+}
+
 fn load_from_storage() -> Result<HashMap<String, EffectPreferences>, String> {
     let Some(raw) = storage::get(STORAGE_KEY) else {
         return Ok(HashMap::new());
     };
-    decode_preferences(&raw)
+    let decoded = decode_preferences_document(&raw)?;
+    if decoded.migrated {
+        let json = serde_json::to_string(&decoded.entries)
+            .map_err(|error| format!("preferences migration serialization failed: {error}"))?;
+        storage::try_set(STORAGE_KEY, &json)
+            .map_err(|error| format!("preferences migration write failed: {error:?}"))?;
+    }
+    Ok(decoded.entries)
 }
 
+#[cfg(test)]
 fn decode_preferences(raw: &str) -> Result<HashMap<String, EffectPreferences>, String> {
+    decode_preferences_document(raw).map(|decoded| decoded.entries)
+}
+
+fn decode_preferences_document(raw: &str) -> Result<DecodedPreferences, String> {
     let document: serde_json::Value =
         serde_json::from_str(raw).map_err(|error| format!("preferences document: {error}"))?;
     let entries = document
         .as_object()
         .ok_or_else(|| "preferences document: expected an object".to_owned())?;
 
-    entries
-        .iter()
-        .map(|(effect_id, value)| {
-            let raw: RawEffectPreferences = serde_json::from_value(value.clone())
-                .map_err(|error| format!("effect '{effect_id}': {error}"))?;
-            let control_values = raw
-                .control_values
-                .into_iter()
-                .map(|(control_id, value)| {
-                    serde_json::from_value(value)
-                        .map_err(|error| {
-                            format!("effect '{effect_id}' control '{control_id}': {error}")
-                        })
-                        .map(|value| (control_id, value))
-                })
-                .collect::<Result<_, _>>()?;
-            Ok((
-                effect_id.clone(),
-                EffectPreferences {
-                    preset_id: raw.preset_id,
-                    control_values,
-                },
-            ))
+    let mut decoded_entries = HashMap::with_capacity(entries.len());
+    let mut migrated = false;
+    for (effect_id, value) in entries {
+        let raw: RawEffectPreferences = serde_json::from_value(value.clone())
+            .map_err(|error| format!("effect '{effect_id}': {error}"))?;
+        let mut control_values = HashMap::with_capacity(raw.control_values.len());
+        for (control_id, value) in raw.control_values {
+            let (value, value_migrated) = decode_control_value(value)
+                .map_err(|error| format!("effect '{effect_id}' control '{control_id}': {error}"))?;
+            migrated |= value_migrated;
+            control_values.insert(control_id, value);
+        }
+        decoded_entries.insert(
+            effect_id.clone(),
+            EffectPreferences {
+                preset_id: raw.preset_id,
+                control_values,
+            },
+        );
+    }
+
+    Ok(DecodedPreferences {
+        entries: decoded_entries,
+        migrated,
+    })
+}
+
+fn decode_control_value(value: serde_json::Value) -> Result<(ControlValue, bool), String> {
+    match serde_json::from_value(value.clone()) {
+        Ok(value) => Ok((value, false)),
+        Err(canonical_error) => {
+            if !is_legacy_effect_value_candidate(&value) {
+                return Err(canonical_error.to_string());
+            }
+            let legacy = serde_json::from_value::<LegacyEffectControlValue>(value)
+                .map_err(|error| format!("invalid legacy value: {error}"))?;
+            let value = ControlValue::from(legacy);
+            value
+                .validate()
+                .map_err(|error| format!("invalid legacy value: {error}"))?;
+            Ok((value, true))
+        }
+    }
+}
+
+fn is_legacy_effect_value_candidate(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.len() == 1
+        && object.keys().any(|key| {
+            matches!(
+                key.as_str(),
+                "float" | "integer" | "boolean" | "color" | "gradient" | "enum" | "text" | "rect"
+            )
         })
-        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use hypercolor_color::LinearRgba;
     use hypercolor_types::control::ControlValue;
+    use hypercolor_types::effect::GradientStop;
+    use hypercolor_types::spatial::NormalizedRect;
     use leptos::prelude::Owner;
+    use serde_json::json;
 
-    use super::{EffectPreferences, PreferencesStore, STORAGE_KEY, decode_preferences};
+    use super::{
+        EffectPreferences, PreferencesStore, STORAGE_KEY, decode_control_value, decode_preferences,
+    };
     use crate::storage;
 
     #[test]
@@ -206,6 +323,163 @@ mod tests {
             preferences["rain"].control_values["speed"],
             ControlValue::Float(0.75)
         );
+    }
+
+    #[test]
+    fn persisted_preferences_restore_every_legacy_effect_value() {
+        let preferences = decode_preferences(
+            r#"{
+                "rain": {
+                    "control_values": {
+                        "speed": {"float": 0.75},
+                        "count": {"integer": 7},
+                        "enabled": {"boolean": true},
+                        "bgColor": {"color": [0.1, 0.2, 0.3, 1.0]},
+                        "gradient": {"gradient": [
+                            {"position": 0.0, "color": [0.0, 0.0, 0.0, 1.0]},
+                            {"position": 1.0, "color": [1.0, 1.0, 1.0, 1.0]}
+                        ]},
+                        "mode": {"enum": "soft"},
+                        "label": {"text": "Rain"},
+                        "region": {"rect": {
+                            "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4
+                        }}
+                    }
+                }
+            }"#,
+        )
+        .expect("legacy preferences should migrate");
+
+        let values = &preferences["rain"].control_values;
+        assert_eq!(values["speed"], ControlValue::Float(0.75));
+        assert_eq!(values["count"], ControlValue::Int(7));
+        assert_eq!(values["enabled"], ControlValue::Bool(true));
+        assert_eq!(
+            values["bgColor"],
+            ControlValue::ColorLinear(LinearRgba::new(0.1, 0.2, 0.3, 1.0))
+        );
+        assert_eq!(
+            values["gradient"],
+            ControlValue::Gradient(vec![
+                GradientStop {
+                    position: 0.0,
+                    color: [0.0, 0.0, 0.0, 1.0],
+                },
+                GradientStop {
+                    position: 1.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                },
+            ])
+        );
+        assert_eq!(values["mode"], ControlValue::Enum("soft".to_owned()));
+        assert_eq!(values["label"], ControlValue::Text("Rain".to_owned()));
+        assert_eq!(
+            values["region"],
+            ControlValue::Rect(NormalizedRect {
+                x: 0.1,
+                y: 0.2,
+                width: 0.3,
+                height: 0.4,
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_preferences_rewrite_storage_to_the_canonical_wire() {
+        let raw = r#"{
+            "0351e268-515b-4859-91a6-1fe70c1a0089": {
+                "control_values": {
+                    "bgColor": {"color": [0.1, 0.2, 0.3, 1.0]}
+                }
+            }
+        }"#;
+        assert!(storage::set(STORAGE_KEY, raw));
+
+        Owner::new().with(|| {
+            let store = PreferencesStore::new();
+            assert!(store.load_error().is_none());
+            assert!(store.get("0351e268-515b-4859-91a6-1fe70c1a0089").is_some());
+
+            let rewritten = storage::get(STORAGE_KEY).expect("preferences should remain stored");
+            let rewritten: serde_json::Value =
+                serde_json::from_str(&rewritten).expect("rewritten preferences should be JSON");
+            assert_eq!(
+                rewritten["0351e268-515b-4859-91a6-1fe70c1a0089"]["control_values"]["bgColor"],
+                json!({
+                    "kind": "color_linear",
+                    "value": {"r": 0.1, "g": 0.2, "b": 0.3, "a": 1.0}
+                })
+            );
+        });
+
+        assert!(storage::remove(STORAGE_KEY));
+    }
+
+    #[test]
+    fn unknown_nested_legacy_fields_block_writes_without_erasing_storage() {
+        let raw = r#"{
+            "rain": {
+                "control_values": {
+                    "speed": {"kind": "float", "value": 0.75},
+                    "region": {"rect": {
+                        "x": 0.1,
+                        "y": 0.2,
+                        "width": 0.3,
+                        "height": 0.4,
+                        "future": 42
+                    }}
+                }
+            }
+        }"#;
+        assert!(storage::set(STORAGE_KEY, raw));
+
+        Owner::new().with(|| {
+            let store = PreferencesStore::new();
+            let error = store
+                .load_error()
+                .expect("unknown nested fields must refuse migration");
+            assert!(error.contains("effect 'rain' control 'region'"));
+            assert!(error.contains("unknown field `future`"));
+            assert!(
+                store
+                    .save("rain".to_owned(), EffectPreferences::default())
+                    .is_err()
+            );
+            assert_eq!(storage::get(STORAGE_KEY).as_deref(), Some(raw));
+        });
+
+        assert!(storage::remove(STORAGE_KEY));
+    }
+
+    #[test]
+    fn legacy_nested_values_reject_unknown_fields() {
+        for (value, field) in [
+            (
+                json!({"rect": {
+                    "x": 0.1,
+                    "y": 0.2,
+                    "width": 0.3,
+                    "height": 0.4,
+                    "future_rect": 42
+                }}),
+                "future_rect",
+            ),
+            (
+                json!({"gradient": [
+                    {
+                        "position": 0.0,
+                        "color": [0.0, 0.0, 0.0, 1.0],
+                        "future_stop": 42
+                    },
+                    {"position": 1.0, "color": [1.0, 1.0, 1.0, 1.0]}
+                ]}),
+                "future_stop",
+            ),
+        ] {
+            let error = decode_control_value(value)
+                .expect_err("unknown nested fields must refuse legacy values");
+            assert!(error.contains(field));
+        }
     }
 
     #[test]
