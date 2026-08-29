@@ -15,10 +15,7 @@
 
 use std::collections::HashMap;
 
-use hypercolor_color::LinearRgba;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::effect::GradientStop;
-use hypercolor_types::spatial::NormalizedRect;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -125,65 +122,6 @@ struct RawEffectPreferences {
     control_values: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LegacyEffectControlValue {
-    Float(f32),
-    Integer(i32),
-    Boolean(bool),
-    Color([f32; 4]),
-    Gradient(Vec<LegacyGradientStop>),
-    Enum(String),
-    Text(String),
-    Rect(LegacyNormalizedRect),
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyGradientStop {
-    position: f32,
-    color: [f32; 4],
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyNormalizedRect {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-}
-
-impl From<LegacyEffectControlValue> for ControlValue {
-    fn from(value: LegacyEffectControlValue) -> Self {
-        match value {
-            LegacyEffectControlValue::Float(value) => Self::Float(f64::from(value)),
-            LegacyEffectControlValue::Integer(value) => Self::Int(i64::from(value)),
-            LegacyEffectControlValue::Boolean(value) => Self::Bool(value),
-            LegacyEffectControlValue::Color([r, g, b, a]) => {
-                Self::ColorLinear(LinearRgba::new(r, g, b, a))
-            }
-            LegacyEffectControlValue::Gradient(value) => Self::Gradient(
-                value
-                    .into_iter()
-                    .map(|stop| GradientStop {
-                        position: stop.position,
-                        color: stop.color,
-                    })
-                    .collect(),
-            ),
-            LegacyEffectControlValue::Enum(value) => Self::Enum(value),
-            LegacyEffectControlValue::Text(value) => Self::Text(value),
-            LegacyEffectControlValue::Rect(value) => Self::Rect(NormalizedRect {
-                x: value.x,
-                y: value.y,
-                width: value.width,
-                height: value.height,
-            }),
-        }
-    }
-}
-
 struct DecodedPreferences {
     entries: HashMap<String, EffectPreferences>,
     migrated: bool,
@@ -249,15 +187,51 @@ fn decode_control_value(value: serde_json::Value) -> Result<(ControlValue, bool)
             if !is_legacy_effect_value_candidate(&value) {
                 return Err(canonical_error.to_string());
             }
-            let legacy = serde_json::from_value::<LegacyEffectControlValue>(value)
-                .map_err(|error| format!("invalid legacy value: {error}"))?;
-            let value = ControlValue::from(legacy);
+            let value = decode_legacy_control_value(value)?;
             value
                 .validate()
                 .map_err(|error| format!("invalid legacy value: {error}"))?;
             Ok((value, true))
         }
     }
+}
+
+fn decode_legacy_control_value(value: serde_json::Value) -> Result<ControlValue, String> {
+    let serde_json::Value::Object(object) = value else {
+        return Err("invalid legacy value: expected an object".to_owned());
+    };
+    if object.len() != 1 {
+        return Err("invalid legacy value: expected one tagged value".to_owned());
+    }
+    let (kind, payload) = object
+        .into_iter()
+        .next()
+        .ok_or_else(|| "invalid legacy value: expected one tagged value".to_owned())?;
+
+    if kind == "color" {
+        return ControlValue::try_from_effect_color_json(&payload)
+            .map_err(|error| format!("invalid legacy value: {error}"));
+    }
+
+    let canonical_kind = match kind.as_str() {
+        "float" => "float",
+        "integer" => "int",
+        "boolean" => "bool",
+        "gradient" => "gradient",
+        "enum" => "enum",
+        "text" => "text",
+        "rect" => "rect",
+        _ => return Err(format!("invalid legacy value: unknown tag '{kind}'")),
+    };
+    let decoded = serde_json::from_value::<ControlValue>(serde_json::json!({
+        "kind": canonical_kind,
+        "value": payload,
+    }))
+    .map_err(|error| format!("invalid legacy value: {error}"))?;
+    decoded
+        .try_to_effect_json()
+        .map_err(|error| format!("invalid legacy value: {error}"))?;
+    Ok(decoded)
 }
 
 fn is_legacy_effect_value_candidate(value: &serde_json::Value) -> bool {
@@ -286,6 +260,12 @@ mod tests {
         EffectPreferences, PreferencesStore, STORAGE_KEY, decode_control_value, decode_preferences,
     };
     use crate::storage;
+
+    fn legacy_tag(kind: &str, payload: serde_json::Value) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        object.insert(kind.to_owned(), payload);
+        serde_json::Value::Object(object)
+    }
 
     #[test]
     fn persisted_preferences_name_the_invalid_effect_and_control() {
@@ -327,28 +307,27 @@ mod tests {
 
     #[test]
     fn persisted_preferences_restore_every_legacy_effect_value() {
-        let preferences = decode_preferences(
-            r#"{
-                "rain": {
-                    "control_values": {
-                        "speed": {"float": 0.75},
-                        "count": {"integer": 7},
-                        "enabled": {"boolean": true},
-                        "bgColor": {"color": [0.1, 0.2, 0.3, 1.0]},
-                        "gradient": {"gradient": [
-                            {"position": 0.0, "color": [0.0, 0.0, 0.0, 1.0]},
-                            {"position": 1.0, "color": [1.0, 1.0, 1.0, 1.0]}
-                        ]},
-                        "mode": {"enum": "soft"},
-                        "label": {"text": "Rain"},
-                        "region": {"rect": {
-                            "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4
-                        }}
-                    }
+        let raw = json!({
+            "rain": {
+                "control_values": {
+                    "speed": legacy_tag("float", json!(0.75)),
+                    "count": legacy_tag("integer", json!(7)),
+                    "enabled": legacy_tag("boolean", json!(true)),
+                    "bgColor": legacy_tag("color", json!([0.1, 0.2, 0.3, 1.0])),
+                    "gradient": legacy_tag("gradient", json!([
+                        {"position": 0.0, "color": [0.0, 0.0, 0.0, 1.0]},
+                        {"position": 1.0, "color": [1.0, 1.0, 1.0, 1.0]}
+                    ])),
+                    "mode": legacy_tag("enum", json!("soft")),
+                    "label": legacy_tag("text", json!("Rain")),
+                    "region": legacy_tag("rect", json!({
+                        "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4
+                    }))
                 }
-            }"#,
-        )
-        .expect("legacy preferences should migrate");
+            }
+        })
+        .to_string();
+        let preferences = decode_preferences(&raw).expect("legacy preferences should migrate");
 
         let values = &preferences["rain"].control_values;
         assert_eq!(values["speed"], ControlValue::Float(0.75));
@@ -386,14 +365,15 @@ mod tests {
 
     #[test]
     fn legacy_preferences_rewrite_storage_to_the_canonical_wire() {
-        let raw = r#"{
+        let raw = json!({
             "0351e268-515b-4859-91a6-1fe70c1a0089": {
                 "control_values": {
-                    "bgColor": {"color": [0.1, 0.2, 0.3, 1.0]}
+                    "bgColor": legacy_tag("color", json!([0.1, 0.2, 0.3, 1.0]))
                 }
             }
-        }"#;
-        assert!(storage::set(STORAGE_KEY, raw));
+        })
+        .to_string();
+        assert!(storage::set(STORAGE_KEY, &raw));
 
         Owner::new().with(|| {
             let store = PreferencesStore::new();
@@ -417,21 +397,22 @@ mod tests {
 
     #[test]
     fn unknown_nested_legacy_fields_block_writes_without_erasing_storage() {
-        let raw = r#"{
+        let raw = json!({
             "rain": {
                 "control_values": {
                     "speed": {"kind": "float", "value": 0.75},
-                    "region": {"rect": {
+                    "region": legacy_tag("rect", json!({
                         "x": 0.1,
                         "y": 0.2,
                         "width": 0.3,
                         "height": 0.4,
                         "future": 42
-                    }}
+                    }))
                 }
             }
-        }"#;
-        assert!(storage::set(STORAGE_KEY, raw));
+        })
+        .to_string();
+        assert!(storage::set(STORAGE_KEY, &raw));
 
         Owner::new().with(|| {
             let store = PreferencesStore::new();
@@ -445,7 +426,7 @@ mod tests {
                     .save("rain".to_owned(), EffectPreferences::default())
                     .is_err()
             );
-            assert_eq!(storage::get(STORAGE_KEY).as_deref(), Some(raw));
+            assert_eq!(storage::get(STORAGE_KEY).as_deref(), Some(raw.as_str()));
         });
 
         assert!(storage::remove(STORAGE_KEY));
@@ -455,24 +436,30 @@ mod tests {
     fn legacy_nested_values_reject_unknown_fields() {
         for (value, field) in [
             (
-                json!({"rect": {
-                    "x": 0.1,
-                    "y": 0.2,
-                    "width": 0.3,
-                    "height": 0.4,
-                    "future_rect": 42
-                }}),
+                legacy_tag(
+                    "rect",
+                    json!({
+                        "x": 0.1,
+                        "y": 0.2,
+                        "width": 0.3,
+                        "height": 0.4,
+                        "future_rect": 42
+                    }),
+                ),
                 "future_rect",
             ),
             (
-                json!({"gradient": [
-                    {
-                        "position": 0.0,
-                        "color": [0.0, 0.0, 0.0, 1.0],
-                        "future_stop": 42
-                    },
-                    {"position": 1.0, "color": [1.0, 1.0, 1.0, 1.0]}
-                ]}),
+                legacy_tag(
+                    "gradient",
+                    json!([
+                        {
+                            "position": 0.0,
+                            "color": [0.0, 0.0, 0.0, 1.0],
+                            "future_stop": 42
+                        },
+                        {"position": 1.0, "color": [1.0, 1.0, 1.0, 1.0]}
+                    ]),
+                ),
                 "future_stop",
             ),
         ] {
