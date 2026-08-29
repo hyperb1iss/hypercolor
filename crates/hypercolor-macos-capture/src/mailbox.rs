@@ -143,6 +143,9 @@ impl MacosFrameMailbox {
                 break;
             }
         }
+        if !keep_waiting() {
+            return None;
+        }
         Self::take_next(&mut state)
     }
 
