@@ -1,5 +1,6 @@
 //! Toast notification helpers — thin wrappers around leptoaster.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use hypercolor_leptos_ext::prelude::spawn_timeout;
@@ -8,6 +9,18 @@ use leptos::prelude::{GetUntracked, Set, use_context};
 
 const TOAST_EXPIRY_MS: u32 = 2_500;
 const TOAST_EXIT_MS: u64 = 200;
+
+thread_local! {
+    static ROOT_TOASTER: RefCell<Option<ToasterContext>> = const { RefCell::new(None) };
+}
+
+pub fn install_root_context() {
+    let Some(toaster) = use_context::<ToasterContext>() else {
+        log::warn!("cannot install root toaster without ToasterContext");
+        return;
+    };
+    ROOT_TOASTER.with(|root| root.replace(Some(toaster)));
+}
 
 pub fn toast_success(msg: &str) {
     toast(msg, ToastLevel::Success);
@@ -22,7 +35,9 @@ pub fn toast_info(msg: &str) {
 }
 
 fn toast(msg: &str, level: ToastLevel) {
-    let Some(toaster) = use_context::<ToasterContext>() else {
+    let Some(toaster) =
+        use_context::<ToasterContext>().or_else(|| ROOT_TOASTER.with(|root| root.borrow().clone()))
+    else {
         log::warn!("toast without ToasterContext: {msg}");
         return;
     };

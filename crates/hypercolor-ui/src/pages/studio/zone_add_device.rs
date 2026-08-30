@@ -226,11 +226,17 @@ fn mint_device_zones(
     let physical_id = device.id.as_str();
     let name = device.name.as_str();
     let total_leds = device.total_leds as usize;
+    let light_segments = device
+        .segments
+        .iter()
+        .filter(|segment| is_light_segment(segment))
+        .cloned()
+        .collect::<Vec<_>>();
 
     if let Some(seed) = layout_geometry::seeded_device_layout(
         layout_id,
         name,
-        &device.segments,
+        &light_segments,
         canvas_width,
         canvas_height,
         0,
@@ -273,8 +279,7 @@ fn mint_device_zones(
         };
     }
     MintedOutputs {
-        assignments: device
-            .segments
+        assignments: light_segments
             .iter()
             .enumerate()
             .map(|(order, channel)| {
@@ -292,6 +297,14 @@ fn mint_device_zones(
             .collect(),
         preserve_placement: false,
     }
+}
+
+fn is_light_segment(segment: &api::SegmentSummary) -> bool {
+    segment.led_count > 0
+        && !matches!(
+            segment.topology_hint,
+            Some(api::SegmentTopologySummary::Display { .. })
+        )
 }
 
 /// The non-target zone that currently owns a device's outputs, or
@@ -327,5 +340,53 @@ pub(super) fn zone_display_name(zone: &api::ZoneResource) -> String {
         "Default zone".to_owned()
     } else {
         zone.name.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push_segment(
+        name: &str,
+        led_count: u32,
+        topology_hint: api::SegmentTopologySummary,
+    ) -> api::SegmentSummary {
+        api::SegmentSummary {
+            id: name.to_ascii_lowercase().replace(' ', "_"),
+            name: name.to_owned(),
+            led_count,
+            topology: "fixture".to_owned(),
+            topology_hint: Some(topology_hint),
+        }
+    }
+
+    #[test]
+    fn light_segment_filter_excludes_the_push_display_surface() {
+        let segments = [
+            push_segment("Buttons Above", 40, api::SegmentTopologySummary::Strip),
+            push_segment("Buttons Below", 40, api::SegmentTopologySummary::Strip),
+            push_segment(
+                "Pads",
+                64,
+                api::SegmentTopologySummary::Matrix { rows: 8, cols: 8 },
+            ),
+            push_segment(
+                "Display",
+                0,
+                api::SegmentTopologySummary::Display {
+                    width: 960,
+                    height: 160,
+                    circular: false,
+                },
+            ),
+        ];
+        let names = segments
+            .iter()
+            .filter(|segment| is_light_segment(segment))
+            .map(|segment| segment.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, ["Buttons Above", "Buttons Below", "Pads"]);
     }
 }

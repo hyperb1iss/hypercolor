@@ -477,6 +477,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     } = ext;
     provide_meta_context();
     leptoaster::provide_toaster();
+    crate::toasts::install_root_context();
     provide_context(NavExtensionItems(extension_nav));
     provide_context(crate::extensions::SettingsExtensionSections(
         std::sync::Arc::new(extension_settings),
