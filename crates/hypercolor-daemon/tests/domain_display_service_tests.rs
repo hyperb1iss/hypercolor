@@ -432,8 +432,8 @@ async fn patch_display_face_controls_merges_onto_the_zone() {
 
 // ── Surface sync and pruning ─────────────────────────────────────────────
 
-/// Surface sync runs on every scene activation and display listing, so a
-/// snapshot scene must make it a no-op rather than an error.
+/// Surface sync runs on startup, device connection, and scene activation,
+/// so a snapshot scene must make it a no-op rather than an error.
 #[tokio::test]
 async fn sync_display_surfaces_skips_a_snapshot_locked_scene() {
     let (state, _tempdir) = isolated_state();
@@ -471,6 +471,7 @@ async fn sync_display_surfaces_reports_whether_anything_moved() {
     let (state, _tempdir) = isolated_state();
     let device_id = DeviceId::new();
     let displays = vec![(device_id, "Kraken".to_owned(), face_layout(device_id))];
+    let mut events = state.event_bus.subscribe_all();
 
     assert!(
         sync_display_surfaces(&state.domains.scene, displays.clone())
@@ -483,6 +484,18 @@ async fn sync_display_surfaces_reports_whether_anything_moved() {
             .await
             .expect("the second sync is idempotent"),
         "an unchanged surface must not commit"
+    );
+    let kinds = drain_events(&mut events)
+        .into_iter()
+        .filter_map(|event| match event {
+            HypercolorEvent::ZoneChanged { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![ZoneChangeKind::Created],
+        "surface materialization is created once, then idempotent"
     );
 }
 

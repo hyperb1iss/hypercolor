@@ -1575,6 +1575,10 @@ impl SceneMutation {
         layout: SpatialLayout,
     ) -> Result<bool, DomainError> {
         let scene_id = self.candidate.active_scene_id().copied();
+        let existed = self
+            .candidate
+            .active_scene()
+            .is_some_and(|scene| scene.display_zone_for(device_id).is_some());
         let before = self.active_zones_revision();
         self.candidate
             .ensure_display_zone_surface(device_id, device_name, layout)
@@ -1593,10 +1597,41 @@ impl SceneMutation {
                     .and_then(|scene| scene.display_zone_for(device_id))
                     .cloned(),
             ) {
-                self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);
+                let kind = if existed {
+                    ZoneChangeKind::Updated
+                } else {
+                    ZoneChangeKind::Created
+                };
+                self.record_zone_change(scene_id, &zone, kind);
             }
         }
         Ok(changed)
+    }
+
+    /// Ensure every connected display has an editable surface in the active
+    /// live scene, while leaving snapshot scenes untouched.
+    pub fn sync_active_display_surfaces(
+        &mut self,
+        displays: &[(DeviceId, String, SpatialLayout)],
+    ) -> bool {
+        if self
+            .candidate
+            .active_scene()
+            .is_none_or(Scene::blocks_runtime_mutation)
+        {
+            return false;
+        }
+
+        let mut changed = false;
+        for (device_id, device_name, layout) in displays {
+            match self.ensure_display_surface(*device_id, device_name, layout.clone()) {
+                Ok(moved) => changed |= moved,
+                Err(error) => {
+                    tracing::warn!(%error, %device_id, "Failed to sync display screen surface");
+                }
+            }
+        }
+        changed
     }
 
     /// Refresh geometry for display zones that already belong to one scene.
@@ -2139,6 +2174,7 @@ pub async fn activate_scene(
         transition,
         SceneChangeReason::UserActivate,
     )?;
+    mutation.sync_active_display_surfaces(&display_surfaces);
 
     let commit = ctx.scene.commit(mutation).await?;
 
@@ -2739,12 +2775,17 @@ pub async fn delete_scene(
 /// [`DomainError::Conflict`] when a concurrent scene mutation
 /// lands first.
 pub async fn deactivate_scene(ctx: &SceneLibraryContext) -> Result<SceneDeactivated, DomainError> {
+    let display_surfaces = ctx
+        .layout
+        .connected_display_surface_layouts(ctx.scene.layout_runtime())
+        .await;
     let _activation_guard = ctx.layout.acquire_scene_activation_guard().await;
     let layout_guard = ctx.layout.acquire_update_guard().await;
 
     let mut mutation = ctx.scene.begin_mutation().await;
     let previous_scene = mutation.scenes().active_scene().cloned();
     mutation.deactivate_current(SceneChangeReason::UserDeactivate);
+    mutation.sync_active_display_surfaces(&display_surfaces);
     let current_scene = mutation.scenes().active_scene().cloned();
 
     let commit = ctx.scene.commit(mutation).await?;
