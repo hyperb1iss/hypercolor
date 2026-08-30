@@ -61,7 +61,7 @@ pub async fn insert_layer(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("creating a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
-    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.insert_layer(scene_id, zone_id, layer, index, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
@@ -90,7 +90,7 @@ pub async fn remove_layer(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("deleting a layer")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
-    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.remove_layer(scene_id, zone_id, layer_id, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
@@ -112,7 +112,7 @@ pub async fn reorder_layers(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("reordering layers")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
-    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.reorder_layers(scene_id, zone_id, layer_ids, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
@@ -147,7 +147,7 @@ pub async fn patch_layer_controls(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
     crate::domain::scene_tree::check_scene_revision(&mutation, expected_revision)?;
-    crate::domain::scene_tree::ensure_live_zone_mutable(&mutation, zone_id)?;
+    crate::domain::scene_tree::ensure_live_layer_stack_mutable(&mutation, zone_id)?;
     let zone = match mutation.patch_layer_controls(scene_id, zone_id, layer_id, controls, None) {
         Ok(zone) => zone,
         Err(refusal) => return Ok(Err(refusal)),
