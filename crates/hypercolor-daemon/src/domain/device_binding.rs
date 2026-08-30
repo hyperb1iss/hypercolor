@@ -165,6 +165,7 @@ pub(super) struct CurrentBinding {
     device_info: DeviceInfo,
     class: BindingClass,
     segment_shape: Vec<SegmentShape>,
+    display_surface_shapes: HashSet<SegmentShape>,
 }
 
 #[derive(Debug, Default)]
@@ -257,6 +258,7 @@ impl CurrentBinding {
         if segment_shape.is_empty() {
             return None;
         }
+        let display_surface_shapes = display_surface_shapes(info);
         Some(Self {
             layout_device_id,
             physical_device_id: info.id,
@@ -264,6 +266,7 @@ impl CurrentBinding {
             device_info: info.clone(),
             class,
             segment_shape,
+            display_surface_shapes,
         })
     }
 }
@@ -696,7 +699,9 @@ pub(super) fn plan_layout_device_id_remaps(
             .enumerate()
             .filter(|(_, binding)| {
                 legacy_id_matches_class(legacy_id, &binding.class, evidence)
-                    && shapes.iter().all(|shape| shape == &binding.segment_shape)
+                    && shapes
+                        .iter()
+                        .all(|shape| persisted_shape_matches_binding(shape, binding))
             })
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
@@ -870,6 +875,31 @@ fn device_shape(info: &DeviceInfo) -> Vec<SegmentShape> {
     shape
 }
 
+fn display_surface_shapes(info: &DeviceInfo) -> HashSet<SegmentShape> {
+    info.segments
+        .iter()
+        .filter_map(|segment| {
+            let hypercolor_types::device::DeviceTopologyHint::Display { width, height, .. } =
+                segment.topology
+            else {
+                return None;
+            };
+            let name = normalized_component(&segment.name);
+            (!name.is_empty()).then(|| SegmentShape {
+                name,
+                led_count: width.saturating_mul(height),
+            })
+        })
+        .collect()
+}
+
+fn persisted_shape_matches_binding(persisted: &[SegmentShape], binding: &CurrentBinding) -> bool {
+    persisted
+        .iter()
+        .filter(|segment| !binding.display_surface_shapes.contains(*segment))
+        .eq(binding.segment_shape.iter())
+}
+
 fn output_shape(outputs: Vec<&Output>) -> Vec<SegmentShape> {
     let mut shape = outputs
         .into_iter()
@@ -979,6 +1009,7 @@ mod tests {
                 name: "main".to_owned(),
                 led_count,
             }],
+            display_surface_shapes: HashSet::new(),
         }
     }
 
@@ -1148,6 +1179,41 @@ mod tests {
     }
 
     #[test]
+    fn display_surface_pixels_do_not_block_device_binding_reconciliation() {
+        let canonical = "console:1209:0001:pci-root";
+        let legacy = "console:1209:0001:001-12";
+        let mut binding = usb(canonical, 0x0001, 16);
+        binding.class = BindingClass::ClaimlessUsb {
+            owner: "console".to_owned(),
+            vendor_id: 0x1209,
+            product_id: 0x0001,
+        };
+        binding.display_surface_shapes = HashSet::from([SegmentShape {
+            name: "screen".to_owned(),
+            led_count: 960 * 160,
+        }]);
+        let mut evidence = PersistedBindingEvidence::default();
+        evidence.shapes.insert(
+            legacy.to_owned(),
+            vec![vec![
+                SegmentShape {
+                    name: "main".to_owned(),
+                    led_count: 16,
+                },
+                SegmentShape {
+                    name: "screen".to_owned(),
+                    led_count: 960 * 160,
+                },
+            ]],
+        );
+
+        assert_eq!(
+            plan_layout_device_id_remaps(&evidence, &[binding]),
+            HashMap::from([(legacy.to_owned(), canonical.to_owned())])
+        );
+    }
+
+    #[test]
     fn absent_device_is_left_untouched() {
         let evidence = evidence(&[("razer:1532:0099:001-6-4-4", 16)]);
 
@@ -1203,6 +1269,7 @@ mod tests {
                 name: "main".to_owned(),
                 led_count: 16,
             }],
+            display_surface_shapes: HashSet::new(),
         }];
         let mut evidence = evidence(&[("asus:dev-i2c-9:71", 16)]);
         evidence.descriptor_tokens.insert(

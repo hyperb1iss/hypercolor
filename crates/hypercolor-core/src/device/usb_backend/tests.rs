@@ -7,6 +7,7 @@ use hypercolor_driver_api::DeviceDeliveryStatus;
 use hypercolor_hal::protocol::{
     ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
+use hypercolor_hal::registry::{TransportLifecycleHints, UsbTransportFuture, UsbTransportKind};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
@@ -18,6 +19,29 @@ use crate::device::BackendManager;
 
 static USB_ACTOR_METRICS_TEST_LOCK: LazyLock<AsyncMutex<()>> =
     LazyLock::new(|| AsyncMutex::new(()));
+
+fn unreachable_test_transport(_request: UsbTransportOpenRequest) -> UsbTransportFuture {
+    Box::pin(async {
+        Err(TransportError::IoError {
+            detail: "test transport factory should not run".to_owned(),
+        })
+    })
+}
+
+fn background_driver_transport() -> TransportType {
+    TransportType::DriverUsb {
+        binding: UsbTransportBinding {
+            id: "test/background-native",
+            kind: UsbTransportKind::Midi,
+            lifecycle: TransportLifecycleHints {
+                connect_timeout: Some(Duration::from_secs(30)),
+                connect_execution: TransportConnectExecution::Background,
+                retry_on_connect_timeout: false,
+            },
+            open: unreachable_test_transport,
+        },
+    }
+}
 
 fn temporary_control_test_device(supports_direct: bool, led_count: u32) -> DeviceInfo {
     DeviceInfo {
@@ -64,12 +88,8 @@ fn usb_backend_supports_temporary_direct_control_for_led_devices() {
 }
 
 #[test]
-fn usb_midi_lifecycle_policy_runs_connect_in_background_without_timeout_retry() {
-    let policy = lifecycle_policy_for_transport(TransportType::UsbMidi {
-        midi_interface: 2,
-        display_interface: 0,
-        display_endpoint: 0x01,
-    });
+fn driver_transport_lifecycle_policy_uses_binding_hints() {
+    let policy = lifecycle_policy_for_transport(background_driver_transport());
 
     assert!(policy.connect_execution().is_background());
     assert_eq!(policy.connect_timeout(), Duration::from_secs(30));
@@ -77,7 +97,7 @@ fn usb_midi_lifecycle_policy_runs_connect_in_background_without_timeout_retry() 
 }
 
 #[tokio::test]
-async fn usb_midi_policy_rejects_timeout_retry_from_production_transport_path() {
+async fn driver_transport_policy_rejects_timeout_retry_when_declared() {
     let device_id = DeviceId::new();
     let transport = RecordingTransport::default()
         .with_failed_primary_send_attempt(1, InjectedPrimaryFailure::Timeout);
@@ -90,11 +110,7 @@ async fn usb_midi_policy_rejects_timeout_retry_from_production_transport_path() 
         DeviceTransportOperation::Connect,
         &error,
     );
-    let policy = lifecycle_policy_for_transport(TransportType::UsbMidi {
-        midi_interface: 2,
-        display_interface: 0,
-        display_endpoint: 0x01,
-    });
+    let policy = lifecycle_policy_for_transport(background_driver_transport());
 
     assert!(matches!(
         &error,
@@ -148,7 +164,35 @@ fn transport_not_found_recoverability_depends_on_operation() {
 }
 
 #[test]
-fn usb_non_midi_lifecycle_policy_uses_default_connect_behavior() {
+fn transport_not_ready_is_retryable_during_connect() {
+    use hypercolor_types::device::ErrorRecoverability;
+
+    let device_id = DeviceId::new();
+    let error = anyhow!(TransportError::NotReady {
+        detail: "Windows MIDI endpoint is still enumerating".to_owned(),
+    });
+
+    let connect_error = map_hal_transport_error(
+        device_id,
+        USB_OUTPUT_BACKEND_ID,
+        DeviceTransportOperation::Connect,
+        &error,
+    );
+
+    assert!(matches!(
+        connect_error,
+        DeviceError::ConnectionFailed { .. }
+    ));
+    assert_eq!(
+        connect_error.recoverability(),
+        ErrorRecoverability::Reconnect
+    );
+    let policy = lifecycle_policy_for_transport(background_driver_transport());
+    assert!(policy.should_retry_connect_failure(&connect_error));
+}
+
+#[test]
+fn standard_usb_lifecycle_policy_uses_default_connect_behavior() {
     let policy = lifecycle_policy_for_transport(TransportType::UsbHid { interface: 0 });
 
     assert_eq!(policy, DeviceLifecyclePolicy::default());

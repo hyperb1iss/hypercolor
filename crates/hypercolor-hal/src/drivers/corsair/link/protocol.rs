@@ -335,11 +335,16 @@ impl Protocol for CorsairLinkProtocol {
     }
 
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
-        self.state
+        let last_frame_commands = self
+            .state
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .last_frame_commands
-            .clone()
+            .clone();
+        let mut commands = Vec::with_capacity(last_frame_commands.len() + 1);
+        commands.push(Self::command(LinkCommand::SoftwareMode, &[], true));
+        commands.extend(last_frame_commands);
+        commands
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

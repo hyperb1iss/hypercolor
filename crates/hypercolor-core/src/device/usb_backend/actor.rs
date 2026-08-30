@@ -710,9 +710,11 @@ impl UsbBackend {
             .chain()
             .find_map(|cause| cause.downcast_ref::<TransportError>())
         {
-            Some(TransportError::Timeout { .. } | TransportError::IoError { .. }) => {
-                FrameWriteDisposition::Transient
-            }
+            Some(
+                TransportError::Timeout { .. }
+                | TransportError::NotReady { .. }
+                | TransportError::IoError { .. },
+            ) => FrameWriteDisposition::Transient,
             Some(
                 TransportError::NotFound { .. }
                 | TransportError::Disconnected { .. }

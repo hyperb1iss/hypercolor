@@ -1,163 +1,108 @@
-use hypercolor_hal::transport::midi::{
-    classify_push2_port_for_testing, midi_packet_spacing_for_testing,
-    midi_usb_paths_match_for_testing, select_push2_port_identity_for_testing,
-};
-
+use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
+use hypercolor_hal::transport::TransportError;
 use hypercolor_hal::transport::midi::{
-    midi_usb_path_from_sound_card_sysfs_for_testing,
-    rawmidi_name_from_sound_card_and_seq_port_for_testing, rawmidi_open_retry_for_testing,
-    rawmidi_write_deadline_for_testing,
+    MidiResponseIngress, MidiResponseToken, NativeMidiSession, OpenedMidiSession,
+    close_input_before_output, open_native_midi_worker,
 };
 
-#[test]
-fn classify_push2_port_recognizes_linux_and_macos_names() {
-    assert_eq!(
-        classify_push2_port_for_testing("Ableton Push 2 24:0"),
-        Some("live")
-    );
-    assert_eq!(
-        classify_push2_port_for_testing("Ableton Push 2 24:1"),
-        Some("user")
-    );
-    assert_eq!(
-        classify_push2_port_for_testing("Ableton Push 2 User Port"),
-        Some("user")
-    );
-    assert_eq!(
-        classify_push2_port_for_testing("Ableton Push 2 Live Port"),
-        Some("live")
-    );
-    assert_eq!(
-        classify_push2_port_for_testing("Ableton Push 2"),
-        Some("live")
-    );
-    assert_eq!(
-        classify_push2_port_for_testing("MIDIIN2 (Ableton Push 2)"),
-        Some("user")
-    );
-    assert_eq!(
-        classify_push2_port_for_testing("MIDIOUT2 (Ableton Push 2)"),
-        Some("user")
-    );
-    assert_eq!(
-        classify_push2_port_for_testing("Unrelated Controller"),
-        None
-    );
+struct CallbackSession {
+    ingress: MidiResponseIngress,
+    closed: Arc<AtomicBool>,
 }
 
-#[test]
-fn push2_port_selection_prefers_requested_usb_path_when_multiple_match() {
-    let selected = select_push2_port_identity_for_testing(
-        &[
-            ("Ableton Push 2 24:1", "24:1", Some("1-2")),
-            ("Ableton Push 2 28:1", "28:1", Some("1-6.3")),
-        ],
-        "user",
-        Some("01-6.3"),
+impl NativeMidiSession for CallbackSession {
+    fn send(&mut self, packet: &[u8]) -> Result<(), TransportError> {
+        self.ingress.forward(packet);
+        Ok(())
+    }
+
+    fn close(&mut self) {
+        self.closed.store(true, Ordering::Release);
+    }
+}
+
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn first_byte_matches(token: MidiResponseToken, message: &[u8]) -> bool {
+    message
+        .first()
+        .is_some_and(|byte| u32::from(*byte) == token.get())
+}
+
+#[tokio::test]
+async fn retained_worker_supports_delayed_receive_and_releases_native_state() {
+    let closed = Arc::new(AtomicBool::new(false));
+    let guard_dropped = Arc::new(AtomicBool::new(false));
+    let session_closed = Arc::clone(&closed);
+    let client = open_native_midi_worker(
+        "hypercolor-test-midi".to_owned(),
+        "test MIDI worker".to_owned(),
+        DropFlag(Arc::clone(&guard_dropped)),
+        2,
+        first_byte_matches,
+        move |ingress| {
+            Ok(OpenedMidiSession::new(
+                CallbackSession {
+                    ingress,
+                    closed: session_closed,
+                },
+                "test input".to_owned(),
+                "test output".to_owned(),
+            ))
+        },
     )
-    .expect("USB path filtering should disambiguate the user port");
+    .await
+    .expect("native MIDI worker should open");
 
-    assert_eq!(selected, "28:1");
+    let token = MidiResponseToken::new(0x2A).expect("test token is nonzero");
+    client
+        .send(vec![0x2A, 0x01], Some(token))
+        .await
+        .expect("send should arm the response");
+    let response = client
+        .receive(Duration::from_secs(1), token)
+        .await
+        .expect("delayed receive should consume the armed response");
+
+    assert_eq!(response, vec![0x2A, 0x01]);
+    assert_eq!(client.input_name(), "test input");
+    assert_eq!(client.output_name(), "test output");
+    client.close().await.expect("worker should close cleanly");
+    assert!(closed.load(Ordering::Acquire));
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !guard_dropped.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("worker should release its lifetime guard");
 }
 
 #[test]
-fn usb_path_matching_normalizes_bus_numbers() {
-    assert!(midi_usb_paths_match_for_testing("01-6.3", "1-6.3"));
-    assert!(midi_usb_paths_match_for_testing("1-6.3", "01-6.3"));
-    assert!(!midi_usb_paths_match_for_testing("1-6.3", "1-6.4"));
-}
+fn native_midi_close_orders_input_before_output() {
+    let order = RefCell::new(Vec::new());
+    let mut input = Some("input");
+    let mut output = Some("output");
 
-#[test]
-fn midi_packet_spacing_paces_sysex_more_than_short_led_updates() {
-    assert_eq!(
-        midi_packet_spacing_for_testing(3),
-        Duration::from_micros(500)
-    );
-    assert_eq!(midi_packet_spacing_for_testing(9), Duration::from_millis(1));
-    assert_eq!(
-        midi_packet_spacing_for_testing(17),
-        Duration::from_millis(1)
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn rawmidi_write_deadline_times_out_when_device_stops_draining() {
-    let result = rawmidi_write_deadline_for_testing(
-        &[Err(std::io::ErrorKind::WouldBlock)],
-        false,
-        Duration::from_secs(1),
-        6,
+    close_input_before_output(
+        &mut input,
+        &mut output,
+        |name| order.borrow_mut().push(name),
+        |name| order.borrow_mut().push(name),
     );
 
-    assert_eq!(result, Err("timeout".to_owned()));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn rawmidi_write_deadline_times_out_after_repeated_spurious_polls() {
-    let result = rawmidi_write_deadline_for_testing(
-        &[Err(std::io::ErrorKind::WouldBlock)],
-        true,
-        Duration::from_millis(500),
-        6,
-    );
-
-    assert_eq!(result, Err("timeout".to_owned()));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn rawmidi_write_deadline_completes_across_partial_writes() {
-    let result = rawmidi_write_deadline_for_testing(
-        &[
-            Ok(2),
-            Err(std::io::ErrorKind::WouldBlock),
-            Ok(1),
-            Err(std::io::ErrorKind::Interrupted),
-            Ok(usize::MAX),
-        ],
-        true,
-        Duration::from_secs(1),
-        6,
-    );
-
-    assert_eq!(result, Ok(()));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn sound_card_sysfs_path_extracts_usb_path() {
-    let usb_path = midi_usb_path_from_sound_card_sysfs_for_testing(
-        "/devices/pci0000:00/0000:00:14.0/usb1/1-12/1-12:1.1/sound/card4",
-    );
-
-    assert_eq!(usb_path.as_deref(), Some("1-12"));
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn rawmidi_name_maps_alsa_seq_port_to_user_subdevice() {
-    assert_eq!(
-        rawmidi_name_from_sound_card_and_seq_port_for_testing(3, 1).as_deref(),
-        Some("hw:3,0,1")
-    );
-    assert_eq!(
-        rawmidi_name_from_sound_card_and_seq_port_for_testing(3, -1),
-        None
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn rawmidi_open_retry_waits_for_hotplug_device_node() {
-    let (attempts, elapsed) =
-        rawmidi_open_retry_for_testing(2, Duration::from_secs(1), Duration::from_millis(50))
-            .expect("rawmidi retry should eventually succeed");
-
-    assert_eq!(attempts, 3);
-    assert_eq!(elapsed, Duration::from_millis(100));
+    assert_eq!(order.into_inner(), vec!["input", "output"]);
+    assert!(input.is_none());
+    assert!(output.is_none());
 }

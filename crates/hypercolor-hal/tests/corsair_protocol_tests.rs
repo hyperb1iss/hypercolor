@@ -5,7 +5,7 @@ use hypercolor_hal::drivers::corsair::framing::{
 };
 use hypercolor_hal::drivers::corsair::{
     CORSAIR_KEEPALIVE_INTERVAL, CorsairLcdProtocol, CorsairLightingNodeProtocol,
-    CorsairLinkProtocol, EP_GET_DEVICES, build_icue_link_lcd_protocol,
+    CorsairLinkProtocol, EP_GET_DEVICES, LinkCommand, build_icue_link_lcd_protocol,
     build_xd6_elite_lcd_protocol,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
@@ -151,9 +151,10 @@ fn link_encode_frame_chunks_payload_and_reuses_it_for_keepalive() {
     assert_eq!(keepalive.interval, CORSAIR_KEEPALIVE_INTERVAL);
 
     let replay = protocol.keepalive_commands();
-    assert_eq!(replay.len(), commands.len());
-    assert_eq!(replay[0].data, commands[0].data);
-    assert_eq!(replay[3].data, commands[3].data);
+    assert_eq!(replay.len(), commands.len() + 1);
+    assert_eq!(&replay[0].data[3..7], LinkCommand::SoftwareMode.bytes());
+    assert_eq!(replay[1].data, commands[0].data);
+    assert_eq!(replay[4].data, commands[3].data);
 }
 
 #[test]

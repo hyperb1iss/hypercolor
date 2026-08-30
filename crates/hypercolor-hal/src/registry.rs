@@ -2,13 +2,108 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
 
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
+use crate::transport::{Transport, TransportError};
 
 /// Function pointer used to construct a protocol instance.
 pub type ProtocolFactory = fn() -> Box<dyn Protocol>;
+
+/// Future returned by a driver-owned USB transport factory.
+pub type UsbTransportFuture =
+    Pin<Box<dyn Future<Output = Result<Box<dyn Transport>, TransportError>> + Send + 'static>>;
+
+/// Function pointer used to open a driver-owned USB transport.
+pub type UsbTransportFactory = fn(UsbTransportOpenRequest) -> UsbTransportFuture;
+
+/// Identity and native handle passed to a driver-owned USB transport factory.
+pub struct UsbTransportOpenRequest {
+    /// Open native USB device handle.
+    pub device: nusb::Device,
+    /// USB vendor identifier.
+    pub vendor_id: u16,
+    /// USB product identifier.
+    pub product_id: u16,
+    /// Optional stable device serial.
+    pub serial: Option<String>,
+    /// Optional host USB topology path.
+    pub usb_path: Option<String>,
+}
+
+/// Inventory classification for a driver-owned USB transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbTransportKind {
+    /// Generic USB transport.
+    Usb,
+    /// MIDI transport attached to a USB-discovered device.
+    Midi,
+}
+
+/// How core should execute a driver-owned transport open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportConnectExecution {
+    /// Run on the async executor.
+    Async,
+    /// Run through the lifecycle background-connect lane.
+    Background,
+}
+
+/// Neutral lifecycle requirements declared by a transport binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportLifecycleHints {
+    /// Optional connection timeout.
+    pub connect_timeout: Option<Duration>,
+    /// Executor lane required for connection.
+    pub connect_execution: TransportConnectExecution,
+    /// Whether a lifecycle timeout should be retried.
+    pub retry_on_connect_timeout: bool,
+}
+
+impl Default for TransportLifecycleHints {
+    fn default() -> Self {
+        Self {
+            connect_timeout: None,
+            connect_execution: TransportConnectExecution::Async,
+            retry_on_connect_timeout: true,
+        }
+    }
+}
+
+/// Driver-owned USB transport opener and lifecycle metadata.
+#[derive(Clone, Copy)]
+pub struct UsbTransportBinding {
+    /// Stable binding identifier.
+    pub id: &'static str,
+    /// Inventory classification exposed by the driver database.
+    pub kind: UsbTransportKind,
+    /// Connection lifecycle requirements.
+    pub lifecycle: TransportLifecycleHints,
+    /// Driver-owned transport factory.
+    pub open: UsbTransportFactory,
+}
+
+impl fmt::Debug for UsbTransportBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UsbTransportBinding")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .field("lifecycle", &self.lifecycle)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for UsbTransportBinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.kind == other.kind && self.lifecycle == other.lifecycle
+    }
+}
+
+impl Eq for UsbTransportBinding {}
 
 /// Generic protocol binding attached to a descriptor.
 #[derive(Clone, Copy)]
@@ -159,14 +254,10 @@ pub enum TransportType {
         report_id: u8,
     },
 
-    /// Composite transport with USB MIDI for control and USB bulk for display.
-    UsbMidi {
-        /// MIDI interface number associated with the device's user port.
-        midi_interface: u8,
-        /// Bulk display interface number to claim.
-        display_interface: u8,
-        /// Bulk OUT endpoint used for display frames.
-        display_endpoint: u8,
+    /// Driver-owned transport for a USB-discovered device.
+    DriverUsb {
+        /// Driver factory and neutral lifecycle metadata.
+        binding: UsbTransportBinding,
     },
 
     /// USB CDC-ACM serial transport.

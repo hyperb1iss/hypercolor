@@ -20,11 +20,13 @@ use hypercolor_hal::protocol::Protocol;
 use hypercolor_hal::protocol_config::{
     ProtocolRuntimeConfig, runtime_config_for_attachment_profile,
 };
+use hypercolor_hal::registry::{
+    TransportConnectExecution, UsbTransportBinding, UsbTransportOpenRequest,
+};
 use hypercolor_hal::transport::bulk::UsbBulkTransport;
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hid::UsbHidTransport;
 use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
-use hypercolor_hal::transport::midi::Push2Transport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{HidRawOpenRequest, Transport, TransportError};
@@ -41,7 +43,6 @@ use crate::attachment::ComponentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
-const USB_MIDI_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const USB_ACTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_STARTED: u8 = 1;
@@ -895,10 +896,6 @@ impl UsbBackend {
         (pending.descriptor.protocol.build)()
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "transport construction dispatches across multiple backend types"
-    )]
     async fn build_transport(
         pending: &PendingUsbDevice,
         usb: &nusb::DeviceInfo,
@@ -978,19 +975,8 @@ impl UsbBackend {
                 interface,
                 report_id,
             } => Self::open_bulk_transport(pending, usb, interface, report_id).await,
-            TransportType::UsbMidi {
-                midi_interface,
-                display_interface,
-                display_endpoint,
-            } => {
-                Self::open_midi_transport(
-                    pending,
-                    usb,
-                    midi_interface,
-                    display_interface,
-                    display_endpoint,
-                )
-                .await
+            TransportType::DriverUsb { binding } => {
+                Self::open_driver_usb_transport(pending, usb, binding).await
             }
             TransportType::UsbSerial { baud_rate } => {
                 Self::open_serial_transport(pending, baud_rate)
@@ -1053,32 +1039,26 @@ impl UsbBackend {
         Ok(Box::new(transport))
     }
 
-    async fn open_midi_transport(
+    async fn open_driver_usb_transport(
         pending: &PendingUsbDevice,
         usb: &nusb::DeviceInfo,
-        midi_interface: u8,
-        display_interface: u8,
-        display_endpoint: u8,
+        binding: UsbTransportBinding,
     ) -> Result<Box<dyn Transport>> {
         let device = Self::open_usb_device(pending, usb).await?;
-        let transport = Push2Transport::new(
+        (binding.open)(UsbTransportOpenRequest {
             device,
-            pending.vendor_id,
-            pending.product_id,
-            pending.serial.as_deref(),
-            pending.usb_path.as_deref(),
-            midi_interface,
-            display_interface,
-            display_endpoint,
-        )
+            vendor_id: pending.vendor_id,
+            product_id: pending.product_id,
+            serial: pending.serial.clone(),
+            usb_path: pending.usb_path.clone(),
+        })
         .await
         .with_context(|| {
             format!(
-                "failed to open USB MIDI transport for {:04X}:{:04X} (midi_interface={}, display_interface={}, display_endpoint=0x{display_endpoint:02X})",
-                pending.vendor_id, pending.product_id, midi_interface, display_interface
+                "driver transport {} failed to open for {:04X}:{:04X}",
+                binding.id, pending.vendor_id, pending.product_id
             )
-        })?;
-        Ok(Box::new(transport))
+        })
     }
 
     async fn open_vendor_transport(
@@ -1168,14 +1148,21 @@ fn format_error_chain(error: &anyhow::Error) -> String {
 }
 
 fn lifecycle_policy_for_transport(transport: TransportType) -> DeviceLifecyclePolicy {
-    if matches!(transport, TransportType::UsbMidi { .. }) {
-        return DeviceLifecyclePolicy::default()
-            .with_connect_timeout(USB_MIDI_CONNECT_TIMEOUT)
-            .with_connect_execution(ConnectExecution::Background)
-            .without_connect_timeout_retry();
+    let TransportType::DriverUsb { binding } = transport else {
+        return DeviceLifecyclePolicy::default();
+    };
+    let mut policy = DeviceLifecyclePolicy::default();
+    if let Some(connect_timeout) = binding.lifecycle.connect_timeout {
+        policy = policy.with_connect_timeout(connect_timeout);
+    }
+    if binding.lifecycle.connect_execution == TransportConnectExecution::Background {
+        policy = policy.with_connect_execution(ConnectExecution::Background);
+    }
+    if !binding.lifecycle.retry_on_connect_timeout {
+        policy = policy.without_connect_timeout_retry();
     }
 
-    DeviceLifecyclePolicy::default()
+    policy
 }
 
 #[async_trait::async_trait]

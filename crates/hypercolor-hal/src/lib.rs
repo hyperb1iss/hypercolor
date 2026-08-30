@@ -16,7 +16,11 @@ pub use attachment_profile::{effective_attachment_slots, normalize_attachment_pr
 pub use database::ProtocolDatabase;
 pub use protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};
 pub use protocol_config::{ProtocolRuntimeConfig, runtime_config_for_attachment_profile};
-pub use registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
+pub use registry::{
+    DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportConnectExecution,
+    TransportLifecycleHints, TransportType, UsbTransportBinding, UsbTransportFactory,
+    UsbTransportFuture, UsbTransportKind, UsbTransportOpenRequest,
+};
 pub use smbus_registry::{
     ASUS_AURA_SMBUS_PROTOCOL_ID, SmBusProbe, SmBusProbeError, build_smbus_protocol,
     probe_smbus_devices_in_root, probe_smbus_devices_system,
