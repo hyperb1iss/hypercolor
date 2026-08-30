@@ -220,7 +220,7 @@ fn invalid_effect_control_is_rejected_before_live_state_changes() {
     );
     let mut candidate_zone = live_zone.clone();
     set_effect_control(&mut candidate_zone, "color", ControlValue::Bool(true));
-    candidate_zone.controls_version += 1;
+    candidate_zone.layers_version += 1;
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&live_zone), &registry, &HashMap::new())
         .expect("live controls should reconcile");
@@ -328,7 +328,7 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
         "color",
         ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
     );
-    candidate_zone.controls_version += 1;
+    candidate_zone.layers_version += 1;
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&live_zone), &registry, &HashMap::new())
         .expect("live zone should reconcile");
@@ -398,8 +398,8 @@ fn stale_prepared_pool_is_rejected_before_any_live_control_update() {
         "color",
         ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
     );
-    candidate_a.controls_version += 1;
-    candidate_b.controls_version += 1;
+    candidate_a.layers_version += 1;
+    candidate_b.layers_version += 1;
 
     let mut pool = EffectPool::new();
     pool.reconcile(
@@ -451,7 +451,7 @@ fn stale_preparation_rejects_same_key_renderer_replacement() {
         "color",
         ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
     );
-    stale_candidate.controls_version += 1;
+    stale_candidate.layers_version += 1;
 
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&live_zone), &registry, &HashMap::new())
