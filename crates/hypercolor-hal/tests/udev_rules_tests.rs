@@ -98,7 +98,7 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
             TransportType::UsbControl { .. }
             | TransportType::UsbHid { .. }
             | TransportType::UsbBulk { .. }
-            | TransportType::UsbMidi { .. }
+            | TransportType::DriverUsb { .. }
             | TransportType::UsbVendor => {
                 required_rules.insert((
                     descriptor.vendor_id,

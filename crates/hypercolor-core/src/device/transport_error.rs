@@ -23,6 +23,7 @@ pub(super) fn map_hal_transport_error(
 
     match transport_error {
         Some(TransportError::NotFound { detail }) => operation.not_found(device_id, detail),
+        Some(TransportError::NotReady { .. }) => operation.fallback(device_id, error),
         Some(TransportError::Timeout { timeout_ms }) => DeviceError::Timeout {
             after: Duration::from_millis(*timeout_ms),
         },

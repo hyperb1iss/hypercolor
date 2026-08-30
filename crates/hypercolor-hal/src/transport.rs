@@ -420,6 +420,13 @@ pub enum TransportError {
         detail: String,
     },
 
+    /// A transport endpoint exists conceptually but is not ready yet.
+    #[error("transport endpoint not ready: {detail}")]
+    NotReady {
+        /// Human-readable detail.
+        detail: String,
+    },
+
     /// Generic I/O failure.
     #[error("USB I/O error: {detail}")]
     IoError {

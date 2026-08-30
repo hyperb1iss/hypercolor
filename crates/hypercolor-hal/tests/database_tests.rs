@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
 #[cfg(any(windows, target_os = "macos"))]
@@ -30,16 +31,15 @@ use hypercolor_hal::drivers::nollie::{
 use hypercolor_hal::drivers::prismrgb::{
     HID_REPORT_SIZE as PRISMRGB_REPORT_SIZE, PID_PRISM_MINI, PID_PRISM_S, PRISM_GCS_VENDOR_ID,
 };
-use hypercolor_hal::drivers::push2::{
-    ABLETON_VENDOR_ID, PID_PUSH_2, PUSH2_DISPLAY_ENDPOINT, PUSH2_DISPLAY_INTERFACE,
-    PUSH2_MIDI_INTERFACE,
-};
+use hypercolor_hal::drivers::push2::{ABLETON_VENDOR_ID, PID_PUSH_2};
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
     PID_BLADE_15_LATE_2021_ADVANCED, PID_BLADE_PRO_2016, PID_HUNTSMAN_V2, PID_MAMBA_ELITE,
     PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_REPORT_LEN, RAZER_VENDOR_ID,
 };
-use hypercolor_hal::registry::{HidRawReportMode, TransportType};
+use hypercolor_hal::registry::{
+    HidRawReportMode, TransportConnectExecution, TransportType, UsbTransportKind,
+};
 use hypercolor_hal::transport::TransportPlatform;
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DeviceFamily, DeviceTopologyHint, DriverModuleKind,
@@ -341,14 +341,20 @@ fn lookup_returns_push2_descriptor() {
     assert_eq!(descriptor.name, "Ableton Push 2");
     assert_eq!(descriptor.family, DeviceFamily::named("Ableton"));
     assert_eq!(descriptor.protocol.id, "push2/push-2");
+    let TransportType::DriverUsb { binding } = descriptor.transport else {
+        panic!("Push 2 should declare a driver-owned USB transport");
+    };
+    assert_eq!(binding.id, "push2/native-midi-display");
+    assert_eq!(binding.kind, UsbTransportKind::Midi);
     assert_eq!(
-        descriptor.transport,
-        TransportType::UsbMidi {
-            midi_interface: PUSH2_MIDI_INTERFACE,
-            display_interface: PUSH2_DISPLAY_INTERFACE,
-            display_endpoint: PUSH2_DISPLAY_ENDPOINT,
-        }
+        binding.lifecycle.connect_execution,
+        TransportConnectExecution::Background
     );
+    assert_eq!(
+        binding.lifecycle.connect_timeout,
+        Some(Duration::from_secs(30))
+    );
+    assert!(!binding.lifecycle.retry_on_connect_timeout);
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Ableton Push 2");

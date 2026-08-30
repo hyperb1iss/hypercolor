@@ -9,7 +9,9 @@ use hypercolor_types::device::{
     DriverTransportKind, SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
 };
 
-pub use crate::registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
+pub use crate::registry::{
+    DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType, UsbTransportKind,
+};
 
 use crate::drivers::{asus, corsair, dygma, lianli, nollie, prismrgb, push2, qmk, razer};
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
@@ -185,7 +187,10 @@ const fn transport_kind(transport: TransportType) -> DriverTransportKind {
         | TransportType::UsbHid { .. }
         | TransportType::UsbBulk { .. }
         | TransportType::UsbVendor => DriverTransportKind::Usb,
-        TransportType::UsbMidi { .. } => DriverTransportKind::Midi,
+        TransportType::DriverUsb { binding } => match binding.kind {
+            UsbTransportKind::Usb => DriverTransportKind::Usb,
+            UsbTransportKind::Midi => DriverTransportKind::Midi,
+        },
         TransportType::UsbSerial { .. } => DriverTransportKind::Serial,
         TransportType::I2cSmBus { .. } => DriverTransportKind::Smbus,
     }

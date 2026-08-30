@@ -1,13 +1,18 @@
 //! Ableton Push 2 descriptor registration.
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{
+    DeviceDescriptor, ProtocolBinding, TransportConnectExecution, TransportLifecycleHints,
+    TransportType, UsbTransportBinding, UsbTransportKind,
+};
 
 use super::protocol::Push2Protocol;
+use super::transport::open_push2_transport;
 
 /// Ableton AG USB vendor ID.
 pub const ABLETON_VENDOR_ID: u16 = 0x2982;
@@ -31,10 +36,17 @@ static PUSH2_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         product_id: PID_PUSH_2,
         name: "Ableton Push 2",
         family: DeviceFamily::named("Ableton"),
-        transport: TransportType::UsbMidi {
-            midi_interface: PUSH2_MIDI_INTERFACE,
-            display_interface: PUSH2_DISPLAY_INTERFACE,
-            display_endpoint: PUSH2_DISPLAY_ENDPOINT,
+        transport: TransportType::DriverUsb {
+            binding: UsbTransportBinding {
+                id: "push2/native-midi-display",
+                kind: UsbTransportKind::Midi,
+                lifecycle: TransportLifecycleHints {
+                    connect_timeout: Some(Duration::from_secs(30)),
+                    connect_execution: TransportConnectExecution::Background,
+                    retry_on_connect_timeout: false,
+                },
+                open: open_push2_transport,
+            },
         },
         protocol: ProtocolBinding {
             id: "push2/push-2",
