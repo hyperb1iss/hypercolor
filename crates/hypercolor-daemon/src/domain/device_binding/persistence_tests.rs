@@ -121,6 +121,7 @@ fn current_binding(canonical_physical_id: DeviceId) -> CurrentBinding {
             name: "main".to_owned(),
             led_count: 16,
         }],
+        display_surface_shapes: HashSet::new(),
     }
 }
 
