@@ -11189,6 +11189,17 @@ async fn list_displays_only_returns_display_capable_devices() {
     assert_eq!(items[0]["width"], 320);
     assert_eq!(items[0]["height"], 320);
     assert_eq!(items[0]["circular"], true);
+
+    assert!(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene()
+            .and_then(|scene| scene.display_zone_for(display_id))
+            .is_none(),
+        "display listing must not mutate the active scene"
+    );
 }
 
 #[tokio::test]

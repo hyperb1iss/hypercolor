@@ -368,8 +368,8 @@ pub async fn patch_display_face_controls(
 /// geometry, and report whether anything moved.
 ///
 /// A scene that forbids runtime rewriting is left alone rather than
-/// refused: surface sync runs on scene activation and on every display
-/// listing, so it must be a no-op on a snapshot scene rather than an
+/// refused: surface sync runs on startup, device connection, and scene
+/// activation, so it must be a no-op on a snapshot scene rather than an
 /// error the caller has to handle.
 ///
 /// # Errors
@@ -382,22 +382,7 @@ pub async fn sync_display_surfaces(
 ) -> Result<bool, DomainError> {
     let outcome = ctx
         .commit_retrying(|mutation| {
-            let Some(active) = mutation.scenes().active_scene() else {
-                return Ok(None);
-            };
-            if active.blocks_runtime_mutation() {
-                return Ok(None);
-            }
-
-            let mut changed = false;
-            for (device_id, device_name, layout) in &displays {
-                match mutation.ensure_display_surface(*device_id, device_name, layout.clone()) {
-                    Ok(moved) => changed |= moved,
-                    Err(error) => {
-                        tracing::warn!(%error, %device_id, "Failed to sync display screen surface");
-                    }
-                }
-            }
+            let changed = mutation.sync_active_display_surfaces(&displays);
             Ok(changed.then_some(()))
         })
         .await?;
@@ -1047,7 +1032,8 @@ impl DisplayContext {
         }
     }
 
-    /// Refresh native geometry for every connected display's scene zone.
+    /// Materialize every connected display's editable scene surface and keep
+    /// its native geometry current.
     pub async fn sync_connected_surfaces(&self) {
         let displays = self
             .authorities
@@ -1055,9 +1041,12 @@ impl DisplayContext {
             .connected_display_surface_layouts(&self.authorities.devices.layout_runtime())
             .await;
         if let Err(error) =
-            hydrate_existing_display_surfaces(&self.authorities.scene, displays).await
+            hydrate_existing_display_surfaces(&self.authorities.scene, displays.clone()).await
         {
             tracing::warn!(%error, "Failed to hydrate connected display surfaces");
+        }
+        if let Err(error) = sync_display_surfaces(&self.authorities.scene, displays).await {
+            tracing::warn!(%error, "Failed to sync connected display surfaces");
         }
     }
 }

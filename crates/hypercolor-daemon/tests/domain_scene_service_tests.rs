@@ -780,6 +780,124 @@ async fn activation_hydrates_only_existing_connected_display_zones() {
 }
 
 #[tokio::test]
+async fn reconnect_hydrates_an_active_snapshot_without_adding_surfaces() {
+    let (state, _tempdir) = isolated_state();
+    let assigned_device = DeviceId::new();
+    let unassigned_device = DeviceId::new();
+    for device_id in [assigned_device, unassigned_device] {
+        state
+            .device_registry
+            .add(display_device_info(device_id, 320, 200))
+            .await;
+        assert!(
+            state
+                .device_registry
+                .set_state(&device_id, DeviceState::Connected)
+                .await
+        );
+    }
+
+    let mut scene = named_scene("restored snapshot");
+    scene.mutation_mode = SceneMutationMode::Snapshot;
+    scene.zones.push(imported_display_zone(assigned_device));
+    seed_active_scene(&state, scene).await;
+
+    state.domains.display.sync_connected_surfaces().await;
+
+    let manager = state.scene_manager.snapshot().await;
+    let active = manager
+        .active_scene()
+        .expect("snapshot should remain active");
+    let assigned = active
+        .display_zone_for(assigned_device)
+        .expect("the authored display surface should remain");
+    assert_eq!(assigned.layout.canvas_width, 320);
+    assert_eq!(assigned.layout.canvas_height, 200);
+    assert!(
+        active.display_zone_for(unassigned_device).is_none(),
+        "reconnect must not add authored content to a snapshot"
+    );
+}
+
+#[tokio::test]
+async fn connected_displays_get_editable_surfaces_across_scene_switches() {
+    let (state, _tempdir) = isolated_state();
+    let connected_device = DeviceId::new();
+    let known_device = DeviceId::new();
+    for device_id in [connected_device, known_device] {
+        state
+            .device_registry
+            .add(display_device_info(device_id, 320, 200))
+            .await;
+    }
+    assert!(
+        state
+            .device_registry
+            .set_state(&connected_device, DeviceState::Connected)
+            .await
+    );
+
+    state.domains.display.sync_connected_surfaces().await;
+    {
+        let manager = state.scene_manager.snapshot().await;
+        let active = manager
+            .active_scene()
+            .expect("default scene should be active");
+        assert!(active.display_zone_for(connected_device).is_some());
+        assert!(active.display_zone_for(known_device).is_none());
+    }
+
+    let effect_id = EffectId::new(Uuid::now_v7());
+    let mut primary = hypercolor_core::scene::default_primary_zone(preview_layout());
+    primary.layers.push(SceneLayer::from_effect(
+        SceneLayerId::new(),
+        effect_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    ));
+    let primary_id = primary.id;
+    let mut scene = named_scene("display scene");
+    scene.zones.push(primary);
+    let scene_id = scene.id;
+    seed_scene(&state, scene).await;
+
+    activate_scene(
+        &state.domains.scene_library,
+        ActivateScene {
+            scene_id,
+            transition_ms: None,
+        },
+    )
+    .await
+    .expect("scene activation should install connected display surfaces");
+
+    let manager = state.scene_manager.snapshot().await;
+    let active = manager
+        .active_scene()
+        .expect("display scene should be active");
+    let screen = active
+        .display_zone_for(connected_device)
+        .expect("connected display should have an editable screen surface");
+    assert_eq!(screen.role, ZoneRole::Display);
+    assert_eq!(
+        screen
+            .display_target
+            .as_ref()
+            .map(|target| target.device_id),
+        Some(connected_device)
+    );
+    assert!(screen.layers.is_empty());
+    assert!(active.display_zone_for(known_device).is_none());
+    let primary = active
+        .zones
+        .iter()
+        .find(|zone| zone.id == primary_id)
+        .expect("the authored primary zone should remain");
+    assert!(primary.has_effect(effect_id));
+}
+
+#[tokio::test]
 async fn activation_commits_before_layout_failure_and_still_applies_brightness() {
     let (state, _tempdir) = isolated_state();
     let mut scene = named_scene("evening");
