@@ -105,6 +105,7 @@ jobs:
       full: ${{ startsWith(github.ref, 'refs/tags/') || (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.release_artifacts != 'smoke')) }}
       rust: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.rust }}
       python: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.python }}
+      python_generated: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.python_generated }}
       sdk: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.sdk }}
       ui: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.ui }}
       compat: ${{ (github.event_name == 'workflow_dispatch' && inputs.release_artifacts == 'smoke') && 'false' || (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_artifacts != 'smoke')) && 'true' || steps.filter.outputs.compat }}
@@ -151,6 +152,15 @@ jobs:
               - 'python/**'
               - 'protocol/**'
               - 'justfile'
+              - '.github/workflows/ci.yml'
+            python_generated:
+              - 'python/scripts/generate_openapi_client.py'
+              - 'python/scripts/generate_ws_protocol.py'
+              - 'python/src/hypercolor/_generated/**'
+              - 'python/src/hypercolor/ws_protocol.py'
+              - 'python/pyproject.toml'
+              - 'python/uv.lock'
+              - 'protocol/**'
               - '.github/workflows/ci.yml'
             sdk:
               - 'sdk/**'
@@ -888,7 +898,7 @@ jobs:
     if: >-
       always() &&
       (startsWith(github.ref, 'refs/tags/') ||
-      needs.changes.outputs.python == 'true' ||
+      needs.changes.outputs.python_generated == 'true' ||
       needs.changes.outputs.rust == 'true') &&
       (needs.rust-check-shared.result == 'success' ||
       needs.rust-check-shared.result == 'skipped')
