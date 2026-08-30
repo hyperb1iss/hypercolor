@@ -1363,6 +1363,7 @@ impl SceneManager {
             unreachable!("selected layer must be an effect layer");
         };
         controls.extend(updates);
+        zone.layers_version = zone.layers_version.saturating_add(1);
         zone.controls_version = zone.controls_version.saturating_add(1);
         self.refresh_resolved_zones();
         self.active_scene()

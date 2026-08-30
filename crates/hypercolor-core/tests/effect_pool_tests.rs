@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::input::InteractionData;
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::control::ControlValue;
@@ -367,6 +368,69 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
         &mut canvas,
     )
     .expect("committed control update should render");
+    assert_eq!(top_left(&canvas), Rgba::new(0, 0, 255, 255));
+}
+
+#[test]
+fn scene_manager_control_patch_updates_a_reused_slot() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let effect = &registry.get(&solid_id).expect("solid effect").metadata;
+    let mut manager = SceneManager::with_default();
+    let zone_id = manager
+        .upsert_primary_zone(
+            effect,
+            HashMap::from([(
+                "color".to_owned(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
+            None,
+            sample_layout(),
+        )
+        .expect("primary zone should be created")
+        .id;
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        &manager.active_scene().expect("active scene").zones,
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live zone should reconcile");
+
+    manager
+        .patch_zone_controls(
+            zone_id,
+            HashMap::from([(
+                "color".to_owned(),
+                ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+            )]),
+        )
+        .expect("control patch should update the effect layer");
+    let candidate_zone = manager
+        .active_scene()
+        .expect("active scene")
+        .zones
+        .iter()
+        .find(|zone| zone.id == zone_id)
+        .expect("patched zone");
+    pool.reconcile(
+        std::slice::from_ref(candidate_zone),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("scene control patch should reconcile");
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_zone_into(
+        &candidate_zone,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("scene control update should render");
     assert_eq!(top_left(&canvas), Rgba::new(0, 0, 255, 255));
 }
 
