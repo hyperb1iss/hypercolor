@@ -1,24 +1,24 @@
 //! Composite USB MIDI + bulk transport used by Ableton Push 2-class devices.
 
+use std::collections::HashSet;
 #[cfg(target_os = "linux")]
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-#[cfg(target_os = "linux")]
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, mpsc as std_mpsc};
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use alsa::poll::Descriptors as _;
 #[cfg(target_os = "linux")]
 use alsa::{Direction, Rawmidi, seq::Seq};
 use async_trait::async_trait;
+use hypercolor_worker_retention::{retain_worker, spawn_worker};
 use midir::{
     ConnectError, Ignore, InitError, MidiIO, MidiInput, MidiInputConnection, MidiOutput,
     MidiOutputConnection, SendError,
 };
 use nusb::transfer::{Buffer, Bulk, Out, TransferError};
-use tokio::sync::{Mutex as AsyncMutex, mpsc};
+use tokio::sync::{Mutex as AsyncMutex, oneshot};
 #[cfg(target_os = "linux")]
 use tracing::warn;
 use tracing::{debug, trace};
@@ -31,13 +31,20 @@ use crate::transport::{
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const PUSH2_MIDI_SHORT_PACKET_SPACING: Duration = Duration::from_micros(500);
 const PUSH2_MIDI_SYSEX_PACKET_SPACING: Duration = Duration::from_millis(1);
+const PUSH2_SYSEX_RESPONSE_QUEUE_DEPTH: usize = 2;
+const PUSH2_RESPONSE_NONE: u32 = 0;
+const PUSH2_RESPONSE_ANY_SYSEX: u32 = 1;
+const PUSH2_RESPONSE_IDENTITY: u32 = 2;
+const PUSH2_RESPONSE_MANUFACTURER: u32 = 1 << 31;
+const PUSH2_RESPONSE_HAS_ARG: u32 = 1 << 30;
+const PUSH2_GET_PALETTE_ENTRY_COMMAND: u8 = 0x04;
+const PUSH2_MANUFACTURER_PREFIX: [u8; 6] = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01];
 #[cfg(target_os = "linux")]
 const PUSH2_RAWMIDI_OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "linux")]
 const PUSH2_RAWMIDI_OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-const SYSEX_QUEUE_DEPTH: usize = 32;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum Push2MidiPortRole {
     Live,
     User,
@@ -70,8 +77,8 @@ struct Push2PortMatch<P> {
 struct Push2MidiConnections {
     input_name: String,
     output_name: String,
-    midi_out: Push2MidiOutput,
-    midi_in: MidiInputConnection<()>,
+    midi_out: Option<Push2MidiOutput>,
+    midi_in: Option<MidiInputConnection<()>>,
 }
 
 enum Push2MidiOutput {
@@ -88,6 +95,265 @@ impl Push2MidiOutput {
             Self::Raw(rawmidi) => write_rawmidi_with_deadline(rawmidi, data, DEFAULT_IO_TIMEOUT),
         }
     }
+
+    fn close(self) {
+        match self {
+            Self::Midir(midi_out) => {
+                let _ = midi_out.close();
+            }
+            #[cfg(target_os = "linux")]
+            Self::Raw(_rawmidi) => {}
+        }
+    }
+}
+
+impl Push2MidiConnections {
+    fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
+        self.midi_out
+            .as_mut()
+            .ok_or(TransportError::Closed)?
+            .send(data)
+    }
+
+    fn close(&mut self) {
+        close_midi_pair(
+            &mut self.midi_in,
+            &mut self.midi_out,
+            |midi_in| {
+                let _ = midi_in.close();
+            },
+            Push2MidiOutput::close,
+        );
+    }
+}
+
+fn close_midi_pair<I, O>(
+    midi_in: &mut Option<I>,
+    midi_out: &mut Option<O>,
+    close_input: impl FnOnce(I),
+    close_output: impl FnOnce(O),
+) {
+    if let Some(midi_in) = midi_in.take() {
+        close_input(midi_in);
+    }
+    if let Some(midi_out) = midi_out.take() {
+        close_output(midi_out);
+    }
+}
+
+impl Drop for Push2MidiConnections {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct Push2MidiIdentity {
+    role: Push2MidiPortRole,
+    vendor_id: u16,
+    product_id: u16,
+    serial: Option<String>,
+    usb_path: Option<String>,
+}
+
+impl Push2MidiIdentity {
+    fn describe(&self) -> String {
+        format!(
+            "{:04X}:{:04X} role={:?} serial={} usb_path={}",
+            self.vendor_id,
+            self.product_id,
+            self.role,
+            self.serial.as_deref().unwrap_or("<none>"),
+            self.usb_path.as_deref().unwrap_or("<unknown>")
+        )
+    }
+}
+
+struct Push2MidiLease {
+    identity: Push2MidiIdentity,
+}
+
+impl Push2MidiLease {
+    fn acquire(identity: Push2MidiIdentity) -> Result<Self, TransportError> {
+        let mut active = push2_midi_leases()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !active.insert(identity.clone()) {
+            return Err(TransportError::IoError {
+                detail: format!(
+                    "Push 2 MIDI lifecycle already active for {}",
+                    identity.describe()
+                ),
+            });
+        }
+        Ok(Self { identity })
+    }
+}
+
+impl Drop for Push2MidiLease {
+    fn drop(&mut self) {
+        push2_midi_leases()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.identity);
+    }
+}
+
+fn push2_midi_leases() -> &'static Mutex<HashSet<Push2MidiIdentity>> {
+    static ACTIVE: OnceLock<Mutex<HashSet<Push2MidiIdentity>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+struct Push2MidiOpened {
+    input_name: String,
+    output_name: String,
+}
+
+enum Push2MidiCommand {
+    Send {
+        packet: Vec<u8>,
+        completion: oneshot::Sender<Result<(), TransportError>>,
+    },
+    SendReceive {
+        packet: Vec<u8>,
+        timeout: Duration,
+        completion: oneshot::Sender<Result<Vec<u8>, TransportError>>,
+    },
+    Receive {
+        timeout: Duration,
+        completion: oneshot::Sender<Result<Vec<u8>, TransportError>>,
+    },
+    Close {
+        completion: oneshot::Sender<()>,
+    },
+}
+
+struct Push2SysexIngress {
+    expected: Arc<AtomicU32>,
+    responses: std_mpsc::SyncSender<Push2SysexResponse>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Push2SysexResponse {
+    selector: u32,
+    message: Vec<u8>,
+}
+
+impl Push2SysexIngress {
+    fn forward(&self, message: &[u8]) {
+        let selector = self.expected.load(Ordering::Acquire);
+        if !push2_sysex_matches(selector, message) {
+            return;
+        }
+        let response = Push2SysexResponse {
+            selector,
+            message: message.to_vec(),
+        };
+        if self.expected.load(Ordering::Acquire) == selector {
+            let _ = self.responses.try_send(response);
+        }
+    }
+}
+
+fn push2_response_selector(request: &[u8]) -> u32 {
+    if request == [0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7] {
+        return PUSH2_RESPONSE_IDENTITY;
+    }
+    if request.first() != Some(&0xF0) {
+        return PUSH2_RESPONSE_NONE;
+    }
+    if request.len() < 8 || request[..6] != PUSH2_MANUFACTURER_PREFIX {
+        return PUSH2_RESPONSE_ANY_SYSEX;
+    }
+
+    let mut selector = PUSH2_RESPONSE_MANUFACTURER | u32::from(request[6]);
+    if request[6] == PUSH2_GET_PALETTE_ENTRY_COMMAND && request.len() > 8 {
+        selector |= PUSH2_RESPONSE_HAS_ARG | (u32::from(request[7]) << 8);
+    }
+    selector
+}
+
+fn push2_sysex_matches(selector: u32, message: &[u8]) -> bool {
+    if selector == PUSH2_RESPONSE_NONE || message.first() != Some(&0xF0) {
+        return false;
+    }
+    if selector == PUSH2_RESPONSE_ANY_SYSEX {
+        return true;
+    }
+    if selector == PUSH2_RESPONSE_IDENTITY {
+        return message.len() >= 5 && message[1..5] == [0x7E, 0x01, 0x06, 0x02];
+    }
+    if selector & PUSH2_RESPONSE_MANUFACTURER == 0
+        || message.len() < 8
+        || message[..6] != PUSH2_MANUFACTURER_PREFIX
+        || u32::from(message[6]) != (selector & 0xFF)
+    {
+        return false;
+    }
+
+    selector & PUSH2_RESPONSE_HAS_ARG == 0
+        || message
+            .get(7)
+            .is_some_and(|arg| u32::from(*arg) == (selector >> 8) & 0xFF)
+}
+
+struct Push2MidiClient {
+    commands: std_mpsc::Sender<Push2MidiCommand>,
+    input_name: String,
+    output_name: String,
+}
+
+impl Push2MidiClient {
+    async fn send(&self, packet: Vec<u8>) -> Result<(), TransportError> {
+        let (completion, result) = oneshot::channel();
+        self.commands
+            .send(Push2MidiCommand::Send { packet, completion })
+            .map_err(|_| TransportError::Closed)?;
+        result.await.map_err(|_| TransportError::IoError {
+            detail: "Push 2 MIDI worker stopped before send completed".to_owned(),
+        })?
+    }
+
+    async fn send_receive(
+        &self,
+        packet: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, TransportError> {
+        let (completion, result) = oneshot::channel();
+        self.commands
+            .send(Push2MidiCommand::SendReceive {
+                packet,
+                timeout,
+                completion,
+            })
+            .map_err(|_| TransportError::Closed)?;
+        result.await.map_err(|_| TransportError::IoError {
+            detail: "Push 2 MIDI worker stopped before request completed".to_owned(),
+        })?
+    }
+
+    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
+        let (completion, result) = oneshot::channel();
+        self.commands
+            .send(Push2MidiCommand::Receive {
+                timeout,
+                completion,
+            })
+            .map_err(|_| TransportError::Closed)?;
+        result.await.map_err(|_| TransportError::IoError {
+            detail: "Push 2 MIDI worker stopped before receive completed".to_owned(),
+        })?
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        let (completion, result) = oneshot::channel();
+        self.commands
+            .send(Push2MidiCommand::Close { completion })
+            .map_err(|_| TransportError::Closed)?;
+        result.await.map_err(|_| TransportError::IoError {
+            detail: "Push 2 MIDI worker stopped before close completed".to_owned(),
+        })
+    }
 }
 
 /// Composite transport that routes `Primary` traffic over MIDI and `Bulk`
@@ -98,10 +364,8 @@ pub struct Push2Transport {
     bulk_endpoint_address: u8,
     bulk_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, Out>>>,
     bulk_buffer: Arc<Mutex<Option<Buffer>>>,
-    midi_out: Arc<Mutex<Push2MidiOutput>>,
+    midi: Push2MidiClient,
     midi_next_send_at: AsyncMutex<Option<tokio::time::Instant>>,
-    _midi_in: Mutex<Option<MidiInputConnection<()>>>,
-    sysex_rx: AsyncMutex<mpsc::Receiver<Vec<u8>>>,
     closed: AtomicBool,
 }
 
@@ -132,19 +396,15 @@ impl Push2Transport {
             _ => Push2MidiPortRole::User,
         };
 
-        let (tx, rx) = mpsc::channel(SYSEX_QUEUE_DEPTH);
         let serial_for_midi = serial.map(ToOwned::to_owned);
         let usb_path_for_midi = usb_path.map(ToOwned::to_owned);
-        let midi_connections = spawn_blocking_transport_io("push2 midi open", move || {
-            open_push2_midi_connections(
-                expected_role,
-                tx,
-                vendor_id,
-                product_id,
-                serial_for_midi.as_deref(),
-                usb_path_for_midi.as_deref(),
-            )
-        })
+        let midi = open_push2_midi_worker(
+            expected_role,
+            vendor_id,
+            product_id,
+            serial_for_midi,
+            usb_path_for_midi,
+        )
         .await?;
 
         #[cfg(target_os = "linux")]
@@ -190,8 +450,8 @@ impl Push2Transport {
             serial = serial.unwrap_or("<none>"),
             usb_path = usb_path.unwrap_or("<unknown>"),
             midi_role = ?expected_role,
-            midi_input = midi_connections.input_name,
-            midi_output = midi_connections.output_name,
+            midi_input = midi.input_name,
+            midi_output = midi.output_name,
             display_interface,
             display_endpoint = format_args!("0x{display_endpoint:02X}"),
             out_max_packet_size,
@@ -204,10 +464,8 @@ impl Push2Transport {
             bulk_endpoint_address: display_endpoint,
             bulk_endpoint: Arc::new(Mutex::new(bulk_endpoint)),
             bulk_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size)))),
-            midi_out: Arc::new(Mutex::new(midi_connections.midi_out)),
+            midi,
             midi_next_send_at: AsyncMutex::new(None),
-            _midi_in: Mutex::new(Some(midi_connections.midi_in)),
-            sysex_rx: AsyncMutex::new(rx),
             closed: AtomicBool::new(false),
         })
     }
@@ -231,12 +489,8 @@ impl Push2Transport {
         // so every output path gets inter-message spacing, raw MIDI included.
         self.pace_midi_send(data.len()).await;
 
-        let midi_out = Arc::clone(&self.midi_out);
         let packet = data.to_vec();
-        spawn_blocking_transport_io("push2 midi send", move || {
-            lock_mutex(midi_out.as_ref(), "MIDI output")?.send(packet.as_slice())
-        })
-        .await
+        self.midi.send(packet).await
     }
 
     async fn pace_midi_send(&self, packet_len: usize) {
@@ -251,16 +505,6 @@ impl Push2Transport {
         }
 
         *next_send_at = Some(tokio::time::Instant::now() + spacing);
-    }
-
-    async fn receive_sysex(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
-        let mut rx = self.sysex_rx.lock().await;
-        tokio::time::timeout(timeout, rx.recv())
-            .await
-            .map_err(|_| TransportError::Timeout {
-                timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
-            })?
-            .ok_or(TransportError::Closed)
     }
 }
 
@@ -321,7 +565,7 @@ impl Transport for Push2Transport {
         self.check_open()?;
 
         match transfer_type {
-            TransferType::Primary => self.receive_sysex(timeout).await,
+            TransferType::Primary => self.midi.receive(timeout).await,
             TransferType::Bulk | TransferType::HidReport => {
                 Err(TransportError::UnsupportedTransfer {
                     transport: self.name().to_owned(),
@@ -350,8 +594,13 @@ impl Transport for Push2Transport {
 
         match transfer_type {
             TransferType::Primary => {
-                self.send_midi(data).await?;
-                self.receive_sysex(timeout).await
+                trace!(
+                    packet_len = data.len(),
+                    packet_hex = %format_hex_preview(data, 32),
+                    "push2 midi send_receive"
+                );
+                self.pace_midi_send(data.len()).await;
+                self.midi.send_receive(data.to_vec(), timeout).await
             }
             TransferType::Bulk | TransferType::HidReport => {
                 Err(TransportError::UnsupportedTransfer {
@@ -363,8 +612,206 @@ impl Transport for Push2Transport {
     }
 
     async fn close(&self) -> Result<(), TransportError> {
-        self.closed.store(true, Ordering::Release);
-        Ok(())
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        self.midi.close().await
+    }
+}
+
+async fn open_push2_midi_worker(
+    expected_role: Push2MidiPortRole,
+    vendor_id: u16,
+    product_id: u16,
+    serial: Option<String>,
+    usb_path: Option<String>,
+) -> Result<Push2MidiClient, TransportError> {
+    let identity = Push2MidiIdentity {
+        role: expected_role,
+        vendor_id,
+        product_id,
+        serial,
+        usb_path,
+    };
+    let lease = Push2MidiLease::acquire(identity.clone())?;
+    let worker_context = format!("Push 2 MIDI worker for {}", identity.describe());
+    let (commands, command_rx) = std_mpsc::channel();
+    let expected_response = Arc::new(AtomicU32::new(PUSH2_RESPONSE_NONE));
+    let (response_tx, response_rx) = std_mpsc::sync_channel(PUSH2_SYSEX_RESPONSE_QUEUE_DEPTH);
+    let ingress = Push2SysexIngress {
+        expected: Arc::clone(&expected_response),
+        responses: response_tx,
+    };
+    let (opened_tx, opened_rx) = oneshot::channel();
+    let worker = spawn_worker(
+        std::thread::Builder::new().name("hypercolor-push2-midi".to_owned()),
+        move || {
+            run_push2_midi_worker(
+                lease,
+                identity,
+                ingress,
+                expected_response,
+                response_rx,
+                command_rx,
+                opened_tx,
+            );
+        },
+    )
+    .map_err(|error| TransportError::IoError {
+        detail: format!("failed to start Push 2 MIDI worker: {error}"),
+    })?;
+    retain_worker(worker, worker_context);
+
+    let opened = opened_rx.await.map_err(|_| TransportError::IoError {
+        detail: "Push 2 MIDI worker stopped during open".to_owned(),
+    })??;
+    Ok(Push2MidiClient {
+        commands,
+        input_name: opened.input_name,
+        output_name: opened.output_name,
+    })
+}
+
+fn run_push2_midi_worker(
+    _lease: Push2MidiLease,
+    identity: Push2MidiIdentity,
+    ingress: Push2SysexIngress,
+    expected_response: Arc<AtomicU32>,
+    responses: std_mpsc::Receiver<Push2SysexResponse>,
+    commands: std_mpsc::Receiver<Push2MidiCommand>,
+    opened: oneshot::Sender<Result<Push2MidiOpened, TransportError>>,
+) {
+    let mut connections = match open_push2_midi_connections(
+        identity.role,
+        ingress,
+        identity.vendor_id,
+        identity.product_id,
+        identity.serial.as_deref(),
+        identity.usb_path.as_deref(),
+    ) {
+        Ok(connections) => connections,
+        Err(error) => {
+            let _ = opened.send(Err(error));
+            return;
+        }
+    };
+
+    let metadata = Push2MidiOpened {
+        input_name: connections.input_name.clone(),
+        output_name: connections.output_name.clone(),
+    };
+    if opened.send(Ok(metadata)).is_err() {
+        return;
+    }
+
+    while let Ok(command) = commands.recv() {
+        match command {
+            Push2MidiCommand::Send { packet, completion } => {
+                let selector = push2_response_selector(&packet);
+                arm_push2_response(&expected_response, &responses, selector);
+                let result = connections.send(&packet);
+                if result.is_err() {
+                    expected_response.store(PUSH2_RESPONSE_NONE, Ordering::Release);
+                }
+                let _ = completion.send(result);
+            }
+            Push2MidiCommand::SendReceive {
+                packet,
+                timeout,
+                completion,
+            } => {
+                let selector = match push2_response_selector(&packet) {
+                    PUSH2_RESPONSE_NONE => PUSH2_RESPONSE_ANY_SYSEX,
+                    selector => selector,
+                };
+                let result = receive_expected_sysex(
+                    &expected_response,
+                    &responses,
+                    selector,
+                    timeout,
+                    || connections.send(&packet),
+                );
+                let _ = completion.send(result);
+            }
+            Push2MidiCommand::Receive {
+                timeout,
+                completion,
+            } => {
+                let result = receive_pending_sysex(&expected_response, &responses, timeout);
+                let _ = completion.send(result);
+            }
+            Push2MidiCommand::Close { completion } => {
+                connections.close();
+                let _ = completion.send(());
+                return;
+            }
+        }
+    }
+}
+
+fn receive_expected_sysex(
+    expected_response: &AtomicU32,
+    responses: &std_mpsc::Receiver<Push2SysexResponse>,
+    selector: u32,
+    timeout: Duration,
+    send: impl FnOnce() -> Result<(), TransportError>,
+) -> Result<Vec<u8>, TransportError> {
+    arm_push2_response(expected_response, responses, selector);
+    let send_result = send();
+    let result = match send_result {
+        Ok(()) => receive_matching_sysex(responses, selector, timeout),
+        Err(error) => Err(error),
+    };
+    expected_response.store(PUSH2_RESPONSE_NONE, Ordering::Release);
+    result
+}
+
+fn arm_push2_response(
+    expected_response: &AtomicU32,
+    responses: &std_mpsc::Receiver<Push2SysexResponse>,
+    selector: u32,
+) {
+    while responses.try_recv().is_ok() {}
+    expected_response.store(selector, Ordering::Release);
+}
+
+fn receive_pending_sysex(
+    expected_response: &AtomicU32,
+    responses: &std_mpsc::Receiver<Push2SysexResponse>,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    let selector = match expected_response.load(Ordering::Acquire) {
+        PUSH2_RESPONSE_NONE => {
+            arm_push2_response(expected_response, responses, PUSH2_RESPONSE_ANY_SYSEX);
+            PUSH2_RESPONSE_ANY_SYSEX
+        }
+        selector => selector,
+    };
+    let result = receive_matching_sysex(responses, selector, timeout);
+    expected_response.store(PUSH2_RESPONSE_NONE, Ordering::Release);
+    result
+}
+
+fn receive_matching_sysex(
+    responses: &std_mpsc::Receiver<Push2SysexResponse>,
+    selector: u32,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    let started = Instant::now();
+    loop {
+        let remaining = timeout.saturating_sub(started.elapsed());
+        match responses.recv_timeout(remaining) {
+            Ok(response) if response.selector == selector => return Ok(response.message),
+            Ok(_) => {}
+            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                return Err(TransportError::Timeout {
+                    timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                });
+            }
+            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(TransportError::Closed);
+            }
+        }
     }
 }
 
@@ -403,7 +850,7 @@ fn send_bulk_locked(
 
 fn open_push2_midi_connections(
     expected_role: Push2MidiPortRole,
-    tx: mpsc::Sender<Vec<u8>>,
+    ingress: Push2SysexIngress,
     vendor_id: u16,
     product_id: u16,
     serial: Option<&str>,
@@ -442,9 +889,7 @@ fn open_push2_midi_connections(
             &input_port,
             "hypercolor-push2-sysex",
             move |_timestamp, message, _state| {
-                if message.first() == Some(&0xF0) {
-                    let _ = tx.blocking_send(message.to_vec());
-                }
+                ingress.forward(message);
             },
             (),
         )
@@ -454,8 +899,8 @@ fn open_push2_midi_connections(
     Ok(Push2MidiConnections {
         input_name,
         output_name,
-        midi_out,
-        midi_in,
+        midi_out: Some(midi_out),
+        midi_in: Some(midi_in),
     })
 }
 
@@ -1044,5 +1489,192 @@ fn map_transfer_error(error: TransferError, timeout: Duration) -> TransportError
         | TransferError::Unknown(_) => TransportError::IoError {
             detail: error.to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    fn test_identity(serial: &str) -> Push2MidiIdentity {
+        Push2MidiIdentity {
+            role: Push2MidiPortRole::User,
+            vendor_id: 0x2982,
+            product_id: 0x1967,
+            serial: Some(serial.to_owned()),
+            usb_path: Some("test-path".to_owned()),
+        }
+    }
+
+    #[test]
+    fn sysex_callback_ingress_is_nonblocking_and_bounded() {
+        let expected = Arc::new(AtomicU32::new(PUSH2_RESPONSE_NONE));
+        let (responses, rx) = std_mpsc::sync_channel(PUSH2_SYSEX_RESPONSE_QUEUE_DEPTH);
+        let ingress = Push2SysexIngress {
+            expected: Arc::clone(&expected),
+            responses,
+        };
+
+        ingress.forward(&[0xF0, 0x01, 0xF7]);
+        assert_eq!(rx.try_recv(), Err(std_mpsc::TryRecvError::Empty));
+
+        expected.store(PUSH2_RESPONSE_ANY_SYSEX, Ordering::Release);
+        for value in 0..128_u8 {
+            ingress.forward(&[0xF0, value, 0xF7]);
+        }
+        assert_eq!(
+            rx.try_recv().map(|response| response.message),
+            Ok(vec![0xF0, 0x00, 0xF7])
+        );
+        assert_eq!(
+            rx.try_recv().map(|response| response.message),
+            Ok(vec![0xF0, 0x01, 0xF7])
+        );
+        assert_eq!(rx.try_recv(), Err(std_mpsc::TryRecvError::Empty));
+    }
+
+    #[test]
+    fn sysex_callback_discards_stale_reply_before_expected_reply() {
+        let request = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x02, 0xF7];
+        let stale_reply = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x01, 0xF7];
+        let expected_reply = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x02, 0xF7];
+        let selector = push2_response_selector(&request);
+        let expected = Arc::new(AtomicU32::new(selector));
+        let (responses, rx) = std_mpsc::sync_channel(PUSH2_SYSEX_RESPONSE_QUEUE_DEPTH);
+        let ingress = Push2SysexIngress {
+            expected,
+            responses,
+        };
+
+        ingress.forward(&stale_reply);
+        ingress.forward(&expected_reply);
+
+        let response = rx.try_recv().expect("matching response is forwarded");
+        assert_eq!(response.selector, selector);
+        assert_eq!(response.message, expected_reply);
+        assert_eq!(rx.try_recv(), Err(std_mpsc::TryRecvError::Empty));
+    }
+
+    #[test]
+    fn midi_mode_selector_accepts_command_only_acknowledgement() {
+        let selector =
+            push2_response_selector(&[0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x0A, 0x01, 0xF7]);
+        let command_only_reply = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x0A, 0xF7];
+
+        assert!(push2_sysex_matches(selector, &command_only_reply));
+    }
+
+    #[test]
+    fn delayed_receive_consumes_reply_armed_by_send() {
+        let request = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x1A, 0xF7];
+        let reply = [0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x1A, 0xF7];
+        let selector = push2_response_selector(&request);
+        let expected = Arc::new(AtomicU32::new(PUSH2_RESPONSE_NONE));
+        let (responses, rx) = std_mpsc::sync_channel(PUSH2_SYSEX_RESPONSE_QUEUE_DEPTH);
+        let ingress = Push2SysexIngress {
+            expected: Arc::clone(&expected),
+            responses,
+        };
+
+        arm_push2_response(expected.as_ref(), &rx, selector);
+        ingress.forward(&reply);
+        let response = receive_pending_sysex(expected.as_ref(), &rx, Duration::from_secs(1))
+            .expect("armed delayed response is retained");
+
+        assert_eq!(response, reply);
+        assert_eq!(expected.load(Ordering::Acquire), PUSH2_RESPONSE_NONE);
+    }
+
+    #[test]
+    fn sysex_receive_skips_racing_stale_reply_under_one_deadline() {
+        let expected_selector =
+            push2_response_selector(&[0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x02, 0xF7]);
+        let stale_selector =
+            push2_response_selector(&[0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, 0x01, 0xF7]);
+        let (responses, rx) = std_mpsc::sync_channel(PUSH2_SYSEX_RESPONSE_QUEUE_DEPTH);
+        let response = receive_expected_sysex(
+            &AtomicU32::new(PUSH2_RESPONSE_NONE),
+            &rx,
+            expected_selector,
+            Duration::from_secs(1),
+            || {
+                responses
+                    .try_send(Push2SysexResponse {
+                        selector: stale_selector,
+                        message: vec![0xF0, 0x01, 0xF7],
+                    })
+                    .expect("stale response enters during request transition");
+                responses
+                    .try_send(Push2SysexResponse {
+                        selector: expected_selector,
+                        message: vec![0xF0, 0x02, 0xF7],
+                    })
+                    .expect("matching response follows stale response");
+                Ok(())
+            },
+        )
+        .expect("matching response is returned");
+
+        assert_eq!(response, vec![0xF0, 0x02, 0xF7]);
+    }
+
+    #[test]
+    fn midi_lifecycle_lease_blocks_duplicate_native_opens_until_release() {
+        let identity = test_identity("lease-deduplication");
+        let lease = Push2MidiLease::acquire(identity.clone()).expect("first lease is available");
+        assert!(Push2MidiLease::acquire(identity.clone()).is_err());
+
+        drop(lease);
+        let reacquired = Push2MidiLease::acquire(identity).expect("released lease is reusable");
+        drop(reacquired);
+    }
+
+    #[test]
+    fn worker_owned_lease_survives_until_native_work_finishes() {
+        let identity = test_identity("worker-owned-lease");
+        let lease = Push2MidiLease::acquire(identity.clone()).expect("first lease is available");
+        let (started_tx, started_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let (finished_tx, finished_rx) = std_mpsc::channel();
+        let worker = spawn_worker(
+            std::thread::Builder::new().name("push2-lease-test".to_owned()),
+            move || {
+                started_tx.send(()).expect("test observes worker start");
+                release_rx.recv().expect("test releases native work");
+                drop(lease);
+                finished_tx.send(()).expect("test observes lease release");
+            },
+        )
+        .expect("test worker starts");
+        retain_worker(worker, "Push 2 lease cancellation test");
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker starts promptly");
+        assert!(Push2MidiLease::acquire(identity.clone()).is_err());
+        release_tx.send(()).expect("native work may finish");
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker releases its lease");
+        let reacquired = Push2MidiLease::acquire(identity).expect("finished worker releases lease");
+        drop(reacquired);
+    }
+
+    #[test]
+    fn native_midi_close_always_stops_input_before_output() {
+        let order = RefCell::new(Vec::new());
+        let mut input = Some(());
+        let mut output = Some(());
+        close_midi_pair(
+            &mut input,
+            &mut output,
+            |()| order.borrow_mut().push("input"),
+            |()| order.borrow_mut().push("output"),
+        );
+
+        assert_eq!(order.into_inner(), vec!["input", "output"]);
+        assert!(input.is_none());
+        assert!(output.is_none());
     }
 }

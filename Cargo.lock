@@ -5113,6 +5113,7 @@ dependencies = [
  "hypercolor-color",
  "hypercolor-types",
  "hypercolor-windows-pawnio",
+ "hypercolor-worker-retention",
  "i2cdev",
  "image",
  "midir",
