@@ -17,6 +17,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hypercolor_types::effect::ControlDefinition;
 use leptos::prelude::*;
@@ -156,8 +157,19 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
 
     let optimistic = OptimisticControlSession::new();
     let version = RwSignal::new(initial_version);
+    // An in-flight PATCH can resolve after its control panel owner is gone.
+    // Fence every post-await signal access so disposal is a clean cancel.
+    let active = Arc::new(AtomicBool::new(true));
+    on_cleanup({
+        let active = Arc::clone(&active);
+        move || active.store(false, Ordering::Release)
+    });
 
     let flush_core = move || {
+        if !active.load(Ordering::Acquire) {
+            optimistic.clear_pending();
+            return;
+        }
         if let Some(guard) = flush_guard
             && !guard.run(())
         {
@@ -178,9 +190,15 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
             }
         };
         let patch = Arc::clone(&patch);
+        let mutation_active = Arc::clone(&active);
+        let error_active = Arc::clone(&active);
         spawn_mutation(
             async move {
                 'batches: loop {
+                    if !mutation_active.load(Ordering::Acquire) {
+                        optimistic.fail_flush();
+                        return Ok(());
+                    }
                     if target.get_untracked().as_deref() != Some(batch.target.as_str()) {
                         let Some(next) = next_batch_after_target_change(
                             optimistic,
@@ -200,6 +218,10 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
                             version.get_untracked(),
                         )
                         .await;
+                        if !mutation_active.load(Ordering::Acquire) {
+                            optimistic.fail_flush();
+                            return Ok(());
+                        }
                         if target.get_untracked().as_deref() != Some(batch.target.as_str()) {
                             let Some(next) = next_batch_after_target_change(
                                 optimistic,
@@ -254,6 +276,9 @@ pub fn use_control_patch_session(config: ControlPatchConfig) -> ControlPatchSess
             |()| {},
             move |error| {
                 optimistic.fail_flush();
+                if !error_active.load(Ordering::Acquire) {
+                    return;
+                }
                 recover.run(());
                 on_error.run(error.to_string());
             },

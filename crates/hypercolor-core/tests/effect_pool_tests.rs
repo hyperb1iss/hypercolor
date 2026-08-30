@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime};
 
 use hypercolor_core::effect::{EffectPool, EffectRegistry, builtin::register_builtin_effects};
 use hypercolor_core::input::InteractionData;
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::control::ControlValue;
@@ -220,7 +221,7 @@ fn invalid_effect_control_is_rejected_before_live_state_changes() {
     );
     let mut candidate_zone = live_zone.clone();
     set_effect_control(&mut candidate_zone, "color", ControlValue::Bool(true));
-    candidate_zone.controls_version += 1;
+    candidate_zone.layers_version += 1;
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&live_zone), &registry, &HashMap::new())
         .expect("live controls should reconcile");
@@ -328,7 +329,7 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
         "color",
         ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
     );
-    candidate_zone.controls_version += 1;
+    candidate_zone.layers_version += 1;
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&live_zone), &registry, &HashMap::new())
         .expect("live zone should reconcile");
@@ -371,6 +372,69 @@ fn changed_controls_update_slot_only_when_prepared_pool_commits() {
 }
 
 #[test]
+fn scene_manager_control_patch_updates_a_reused_slot() {
+    let registry = registry_with_builtins();
+    let solid_id = builtin_effect_id(&registry, "solid_color");
+    let effect = &registry.get(&solid_id).expect("solid effect").metadata;
+    let mut manager = SceneManager::with_default();
+    let zone_id = manager
+        .upsert_primary_zone(
+            effect,
+            HashMap::from([(
+                "color".to_owned(),
+                ControlValue::linear_color([1.0, 0.0, 0.0, 1.0]),
+            )]),
+            None,
+            sample_layout(),
+        )
+        .expect("primary zone should be created")
+        .id;
+    let mut pool = EffectPool::new();
+    pool.reconcile(
+        &manager.active_scene().expect("active scene").zones,
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("live zone should reconcile");
+
+    manager
+        .patch_zone_controls(
+            zone_id,
+            HashMap::from([(
+                "color".to_owned(),
+                ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
+            )]),
+        )
+        .expect("control patch should update the effect layer");
+    let candidate_zone = manager
+        .active_scene()
+        .expect("active scene")
+        .zones
+        .iter()
+        .find(|zone| zone.id == zone_id)
+        .expect("patched zone");
+    pool.reconcile(
+        std::slice::from_ref(candidate_zone),
+        &registry,
+        &HashMap::new(),
+    )
+    .expect("scene control patch should reconcile");
+    let mut canvas = Canvas::new(1, 1);
+    pool.render_zone_into(
+        &candidate_zone,
+        0.016,
+        &AudioData::silence(),
+        &InteractionData::default(),
+        None,
+        &EMPTY_SENSORS,
+        hypercolor_core::effect::FrameDataSources::default(),
+        &mut canvas,
+    )
+    .expect("scene control update should render");
+    assert_eq!(top_left(&canvas), Rgba::new(0, 0, 255, 255));
+}
+
+#[test]
 fn stale_prepared_pool_is_rejected_before_any_live_control_update() {
     let registry = registry_with_builtins();
     let solid_id = builtin_effect_id(&registry, "solid_color");
@@ -398,8 +462,8 @@ fn stale_prepared_pool_is_rejected_before_any_live_control_update() {
         "color",
         ControlValue::linear_color([0.0, 1.0, 0.0, 1.0]),
     );
-    candidate_a.controls_version += 1;
-    candidate_b.controls_version += 1;
+    candidate_a.layers_version += 1;
+    candidate_b.layers_version += 1;
 
     let mut pool = EffectPool::new();
     pool.reconcile(
@@ -451,7 +515,7 @@ fn stale_preparation_rejects_same_key_renderer_replacement() {
         "color",
         ControlValue::linear_color([0.0, 0.0, 1.0, 1.0]),
     );
-    stale_candidate.controls_version += 1;
+    stale_candidate.layers_version += 1;
 
     let mut pool = EffectPool::new();
     pool.reconcile(std::slice::from_ref(&live_zone), &registry, &HashMap::new())

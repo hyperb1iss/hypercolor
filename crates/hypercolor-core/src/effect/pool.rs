@@ -165,7 +165,7 @@ impl EffectPool {
                     .slots
                     .get(&key)
                     .expect("replacement check requires an existing effect slot");
-                let revision = SetRevision::new(zone.controls_version);
+                let revision = SetRevision::new(zone.layers_version);
                 if slot.controls.set_revision() != revision
                     || slot.control_bindings != source.control_bindings
                 {
@@ -501,7 +501,7 @@ impl EffectSlot {
             canvas_width: zone.layout.canvas_width,
             canvas_height: zone.layout.canvas_height,
             renderer,
-            controls: ControlSet::new(SetRevision::new(zone.controls_version)),
+            controls: ControlSet::new(SetRevision::new(zone.layers_version)),
             control_bindings: HashMap::new(),
             controls_initialized: false,
             binding_state: HashMap::new(),
@@ -509,7 +509,7 @@ impl EffectSlot {
             elapsed: Duration::ZERO,
             frame_number: 0,
         };
-        slot.sync_layer_state(layer_source, SetRevision::new(zone.controls_version))?;
+        slot.sync_layer_state(layer_source, SetRevision::new(zone.layers_version))?;
         Ok(slot)
     }
 
@@ -1881,7 +1881,7 @@ mod tests {
             panic!("test layer should be an effect");
         };
         controls.insert("brightness".into(), ControlValue::Float(0.25));
-        zone.controls_version = 1;
+        zone.layers_version = 1;
         pool.reconcile(std::slice::from_ref(&zone), &registry, &HashMap::new())
             .expect("control delta reconcile");
 

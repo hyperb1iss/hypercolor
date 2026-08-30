@@ -882,6 +882,7 @@ fn output_shape(outputs: Vec<&Output>) -> Vec<SegmentShape> {
         })
         .collect::<Vec<_>>();
     shape.sort_unstable();
+    shape.dedup();
     shape
 }
 
@@ -919,11 +920,39 @@ mod tests {
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
         DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
     };
+    use hypercolor_types::spatial::{LedTopology, NormalizedPosition, Output, StripDirection};
 
     use super::{
         BindingClass, CurrentBinding, MigrationPersistence, PersistedBindingEvidence, SegmentShape,
-        build_binding_remaps, migration_was_superseded, plan_layout_device_id_remaps,
+        build_binding_remaps, migration_was_superseded, output_shape, plan_layout_device_id_remaps,
     };
+
+    fn persisted_output(id: &str) -> Output {
+        Output {
+            id: id.to_owned(),
+            name: "ASUS Aura DRAM (SMBus 0x73) · Lighting".to_owned(),
+            device_id: "asus:dev-i2c-9:73".to_owned(),
+            zone_name: Some("Lighting".to_owned()),
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 1.0),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 8,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+            brightness: None,
+        }
+    }
 
     fn usb(layout_device_id: &str, product_id: u16, led_count: u32) -> CurrentBinding {
         let physical_device_id = DeviceId::new();
@@ -1015,6 +1044,20 @@ mod tests {
         let evidence = evidence(&[("razer:1532:0099:pci-root", 16)]);
 
         assert!(plan_layout_device_id_remaps(&evidence, &current).is_empty());
+    }
+
+    #[test]
+    fn duplicate_persisted_outputs_count_as_one_segment() {
+        let first = persisted_output("zone_first");
+        let second = persisted_output("zone_second");
+
+        assert_eq!(
+            output_shape(vec![&first, &second]),
+            vec![SegmentShape {
+                name: "lighting".to_owned(),
+                led_count: 8,
+            }]
+        );
     }
 
     #[test]
