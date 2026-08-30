@@ -3,7 +3,9 @@
 Every wire model is generated from the daemon's OpenAPI document and
 re-exported here. :class:`EffectCoverImage` is the one exception: cover
 images arrive as raw bytes with a content type, so no schema describes
-them.
+them. :data:`UNSET` and :class:`Unset` are the sentinel every optional
+model field carries when the daemon omits it; consumers narrow against
+them here instead of reaching into the generated package.
 """
 
 from .._generated.models.activate_playlist_response import ActivatePlaylistResponse
@@ -27,6 +29,9 @@ from .._generated.models.control_action_status import ControlActionStatus
 from .._generated.models.control_definition import ControlDefinition
 from .._generated.models.control_surface_document import ControlSurfaceDocument
 from .._generated.models.control_surface_list_response import ControlSurfaceListResponse
+from .._generated.models.control_type import ControlType
+from .._generated.models.control_value import ControlValue
+from .._generated.models.control_value_kind import ControlValueKind
 from .._generated.models.delete_favorite_response import DeleteFavoriteResponse
 from .._generated.models.delete_preset_response import DeletePresetResponse
 from .._generated.models.device_components_response import DeviceComponentsResponse
@@ -82,9 +87,11 @@ from .._generated.models.system_status import SystemStatus
 from .._generated.models.template_summary import TemplateSummary
 from .._generated.models.zone_member import ZoneMember
 from .._generated.models.zone_resource import ZoneResource
+from .._generated.types import UNSET, Unset
 from .effect import EffectCoverImage
 
 __all__ = [
+    "UNSET",
     "ActivatePlaylistResponse",
     "ActivateSceneResponse",
     "AddFavoriteResponse",
@@ -106,6 +113,9 @@ __all__ = [
     "ControlDefinition",
     "ControlSurfaceDocument",
     "ControlSurfaceListResponse",
+    "ControlType",
+    "ControlValue",
+    "ControlValueKind",
     "DeleteFavoriteResponse",
     "DeletePresetResponse",
     "DeviceComponentsResponse",
@@ -160,6 +170,7 @@ __all__ = [
     "SystemResource",
     "SystemStatus",
     "TemplateSummary",
+    "Unset",
     "ZoneMember",
     "ZoneResource",
 ]
