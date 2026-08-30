@@ -30,6 +30,7 @@ use hypercolor_types::event::{
 };
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
+use hypercolor_types::scene::ZoneId;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -230,6 +231,32 @@ async fn seed_tree(state: &Arc<AppState>) -> EffectId {
         .await
         .expect("primary zone should commit");
     effect_id
+}
+
+async fn seed_display_zone(state: &Arc<AppState>, effect_id: EffectId) -> ZoneId {
+    let metadata = state
+        .domains
+        .effects
+        .metadata(effect_id)
+        .await
+        .expect("seeded effect");
+    let device_id = hypercolor_types::device::DeviceId::new();
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    let zone_id = mutation
+        .upsert_display_zone(
+            device_id,
+            "Panel",
+            &metadata,
+            HashMap::new(),
+            sample_layout(vec![sample_output("out-face", None)]),
+            hypercolor_types::scene::DisplayFaceTarget::new(device_id),
+        )
+        .expect("face assigns")
+        .id;
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("face should commit");
+    zone_id
 }
 
 async fn read_document(app: &axum::Router) -> serde_json::Value {
@@ -1379,35 +1406,11 @@ async fn clearing_the_tree_leaves_display_faces_alone() {
 }
 
 #[tokio::test]
-async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
+async fn generic_live_tree_structure_mutations_cannot_edit_display_owned_zones() {
     let (state, _tmp) = isolated_state();
     let app = api::build_router(Arc::clone(&state), None);
     let effect_id = seed_tree(&state).await;
-    let display_zone_id = {
-        let metadata = state
-            .domains
-            .effects
-            .metadata(effect_id)
-            .await
-            .expect("seeded effect");
-        let device_id = hypercolor_types::device::DeviceId::new();
-        let mut mutation = state.scene_manager.begin_mutation().await;
-        let zone_id = mutation
-            .upsert_display_zone(
-                device_id,
-                "Panel",
-                &metadata,
-                HashMap::new(),
-                sample_layout(vec![sample_output("out-face", None)]),
-                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
-            )
-            .expect("face assigns")
-            .id;
-        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
-            .await
-            .expect("face should commit");
-        zone_id
-    };
+    let display_zone_id = seed_display_zone(&state, effect_id).await;
     let before = read_document(&app).await;
     let face = before["data"]["zones"]
         .as_array()
@@ -1415,10 +1418,6 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
         .iter()
         .find(|zone| zone["id"] == display_zone_id.to_string())
         .expect("display zone");
-    let layer_id = face["layers"][0]["id"]
-        .as_str()
-        .expect("face layer")
-        .to_owned();
     let member_id = face["members"][0]["id"]
         .as_str()
         .expect("face member")
@@ -1446,34 +1445,6 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
             "DELETE",
             format!("/api/v1/scene/zones/{zone}/members/{member_id}"),
         ),
-        json_request(
-            "POST",
-            format!("/api/v1/scene/zones/{zone}/layers"),
-            json!({
-                "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
-            }),
-        ),
-        json_request(
-            "PATCH",
-            format!("/api/v1/scene/zones/{zone}/layers/order"),
-            json!({ "order": [layer_id.clone()] }),
-        ),
-        json_request(
-            "PUT",
-            format!("/api/v1/scene/zones/{zone}/layers/{layer_id}"),
-            json!({
-                "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
-            }),
-        ),
-        empty_request(
-            "DELETE",
-            format!("/api/v1/scene/zones/{zone}/layers/{layer_id}"),
-        ),
-        json_request(
-            "PATCH",
-            format!("/api/v1/scene/zones/{zone}/layers/{layer_id}/controls"),
-            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
-        ),
     ];
 
     for request in requests {
@@ -1481,12 +1452,114 @@ async fn generic_live_tree_mutations_cannot_edit_display_owned_zones() {
         assert_eq!(
             response.status(),
             StatusCode::UNPROCESSABLE_ENTITY,
-            "display face state belongs exclusively to the display API"
+            "display zone structure belongs exclusively to the display API"
         );
     }
 
     let after = read_document(&app).await;
     assert_eq!(after["data"], before["data"]);
+}
+
+#[tokio::test]
+async fn display_role_zones_accept_live_layer_stack_mutations() {
+    let (state, _tmp) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let effect_id = seed_tree(&state).await;
+    let zone_id = seed_display_zone(&state, effect_id).await;
+    let before = read_document(&app).await;
+    let original_layer = before["data"]["zones"]
+        .as_array()
+        .expect("zones")
+        .iter()
+        .find(|zone| zone["id"] == zone_id.to_string())
+        .expect("display zone")["layers"][0]["id"]
+        .as_str()
+        .expect("face layer")
+        .to_owned();
+
+    let created = send(
+        &app,
+        json_request(
+            "POST",
+            format!("/api/v1/scene/zones/{zone_id}/layers"),
+            json!({
+                "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = body_json(created).await;
+    let added_layer = created["data"]["layers"]
+        .as_array()
+        .expect("layers")
+        .iter()
+        .find(|layer| layer["id"] != original_layer)
+        .expect("added layer")["id"]
+        .as_str()
+        .expect("added layer id")
+        .to_owned();
+
+    let reordered = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone_id}/layers/order"),
+            json!({ "order": [added_layer.clone(), original_layer.clone()] }),
+        ),
+    )
+    .await;
+    assert_eq!(reordered.status(), StatusCode::OK);
+
+    let replaced = send(
+        &app,
+        json_request(
+            "PUT",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{original_layer}"),
+            json!({
+                "source": { "type": "effect", "effect_id": effect_id, "controls": {} }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(replaced.status(), StatusCode::OK);
+    let replaced = body_json(replaced).await;
+    let replacement = replaced["data"]["layers"]
+        .as_array()
+        .expect("layers")
+        .iter()
+        .find(|layer| layer["id"] != added_layer)
+        .expect("replacement layer")["id"]
+        .as_str()
+        .expect("replacement layer id")
+        .to_owned();
+    assert_ne!(replacement, original_layer);
+
+    let patched = send(
+        &app,
+        json_request(
+            "PATCH",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{replacement}/controls"),
+            json!({ "values": { "speed": { "kind": "float", "value": 0.75 } } }),
+        ),
+    )
+    .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+
+    let deleted = send(
+        &app,
+        empty_request(
+            "DELETE",
+            format!("/api/v1/scene/zones/{zone_id}/layers/{added_layer}"),
+        ),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let deleted = body_json(deleted).await;
+    assert_eq!(
+        deleted["data"]["layers"].as_array().expect("layers").len(),
+        1
+    );
 }
 
 #[tokio::test]

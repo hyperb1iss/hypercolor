@@ -456,7 +456,7 @@ pub async fn replace_layer(
     let mut mutation = ctx.scene.begin_mutation().await;
     check_scene_revision(&mutation, command.expected_revision)?;
     let scene_id = mutation.active_scene_for_runtime_mutation("replacing a layer")?;
-    ensure_live_zone_mutable(&mutation, command.zone_id)?;
+    ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
 
     let index = active_scene(&mutation)?
         .zones
@@ -511,7 +511,7 @@ pub async fn patch_layer_controls(
         let mut mutation = ctx.scene.begin_mutation().await;
         check_scene_revision(&mutation, command.expected_revision)?;
         let scene_id = mutation.active_scene_for_runtime_mutation("patching layer controls")?;
-        ensure_live_zone_mutable(&mutation, command.zone_id)?;
+        ensure_live_layer_stack_mutable(&mutation, command.zone_id)?;
         let normalized = normalize_against_layer(
             ctx,
             &mutation,
@@ -721,6 +721,22 @@ pub(crate) fn ensure_live_zone_mutable(
         ));
     }
     Ok(())
+}
+
+/// Ensure a live scene owns the addressed layer stack.
+///
+/// Display-zone structure stays exclusive to the display domain, but its
+/// authored layers use the same live-tree contract as every other surface.
+pub(crate) fn ensure_live_layer_stack_mutable(
+    mutation: &SceneMutation,
+    zone_id: ZoneId,
+) -> Result<(), DomainError> {
+    mutation
+        .scenes()
+        .active_scene()
+        .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+        .map(|_| ())
+        .ok_or_else(|| DomainError::not_found(ResourceKind::Zone, zone_id))
 }
 
 fn zone_in_candidate(mutation: &SceneMutation, zone_id: ZoneId) -> Result<Zone, DomainError> {
