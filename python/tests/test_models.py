@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from hypercolor import models
 from hypercolor._generated.api.devices import update_attachments
 from hypercolor._generated.models import (
     ComponentBinding,
@@ -245,3 +246,23 @@ def test_generated_device_model_rejects_a_dropped_required_field() -> None:
 
     with pytest.raises(KeyError):
         DeviceSummary.from_dict(payload)
+
+
+def test_public_models_export_the_types_control_definition_is_typed_with() -> None:
+    control = models.ControlDefinition.from_dict(
+        {
+            "id": "speed",
+            "name": "Speed",
+            "control_type": "slider",
+            "default_value": {"kind": "float", "value": 50.0},
+        }
+    )
+
+    assert control.control_type is models.ControlType.SLIDER
+    assert isinstance(control.default_value, models.ControlValue)
+    assert control.default_value.kind is models.ControlValueKind.FLOAT
+    assert control.min_ is models.UNSET
+    assert isinstance(control.min_, models.Unset)
+    assert {"ControlType", "ControlValue", "ControlValueKind", "UNSET", "Unset"} <= set(
+        models.__all__
+    )
