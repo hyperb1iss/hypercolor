@@ -486,7 +486,7 @@ pub async fn execute_discovery_scan(
 
     let complete_sweep = super::resolve_targets(None, &config, &driver_registry)
         .is_ok_and(|expected| complete_target_set(&targets, &expected));
-    if complete_sweep && !scan_had_errors {
+    let bindings_migrated = if complete_sweep && !scan_had_errors {
         match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
             &runtime.device_registry,
             &runtime.lifecycle_manager,
@@ -494,17 +494,28 @@ pub async fn execute_discovery_scan(
         ))
         .await
         {
-            Ok(report) if report.mappings > 0 => info!(
-                mappings = report.mappings,
-                references = report.references,
-                "Reconciled persisted cross-host device bindings"
-            ),
-            Ok(_) => {}
-            Err(error) => warn!(
-                %error,
-                "Failed to reconcile persisted cross-host device bindings"
-            ),
+            Ok(report) if report.mappings > 0 => {
+                info!(
+                    mappings = report.mappings,
+                    references = report.references,
+                    "Reconciled persisted cross-host device bindings"
+                );
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                warn!(
+                    %error,
+                    "Failed to reconcile persisted cross-host device bindings"
+                );
+                false
+            }
         }
+    } else {
+        false
+    };
+    if bindings_migrated {
+        reconcile_migrated_device_connections(&runtime, &seen_ids).await;
     }
 
     runtime
@@ -771,6 +782,54 @@ async fn should_run_lifecycle_actions_in_background(
     }
 
     false
+}
+
+async fn reconcile_migrated_device_connections(
+    runtime: &DiscoveryRuntime,
+    seen_ids: &HashSet<DeviceId>,
+) {
+    let mut device_ids = seen_ids.iter().copied().collect::<Vec<_>>();
+    device_ids.sort_by_key(DeviceId::as_uuid);
+
+    for device_id in device_ids {
+        let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+            continue;
+        };
+        let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+        let connect_behavior = desired_connect_behavior(
+            runtime,
+            device_id,
+            &tracked.info,
+            fingerprint.as_ref(),
+            tracked.connect_behavior,
+            tracked.user_settings.enabled,
+        )
+        .await;
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.on_discovered_with_behavior(
+                device_id,
+                &tracked.info,
+                fingerprint.as_ref(),
+                connect_behavior,
+            )
+        };
+        if actions.is_empty() {
+            continue;
+        }
+
+        debug!(
+            device = %tracked.info.name,
+            device_id = %device_id,
+            "reconciling device connectivity after binding migration"
+        );
+        if should_run_lifecycle_actions_in_background(runtime, &tracked.info, &actions).await {
+            spawn_lifecycle_actions_in_background(runtime, device_id, actions);
+        } else {
+            execute_lifecycle_actions(runtime.clone(), actions).await;
+            sync_registry_state(runtime, device_id).await;
+        }
+    }
 }
 
 fn spawn_lifecycle_actions_in_background(

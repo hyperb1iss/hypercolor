@@ -33,8 +33,8 @@ use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::output_power::OutputPower;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveredDevice};
 use hypercolor_driver_api::{
-    DiscoveryCapability, DiscoveryRequest, DriverConfigView, DriverDescriptor, DriverError,
-    DriverHost, DriverModule,
+    DiscoveryCapability, DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView,
+    DriverDescriptor, DriverError, DriverHost, DriverModule,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -115,6 +115,41 @@ struct BlockingConfigDiscoveryDriver {
     observations: Arc<StdMutex<Vec<DiscoveryConfigObservation>>>,
     started: Arc<Semaphore>,
     release_first: Arc<Semaphore>,
+}
+
+#[derive(Clone)]
+struct StaticAsusDiscoveryDriver {
+    device: DiscoveredDevice,
+}
+
+static STATIC_ASUS_DISCOVERY_DRIVER: DriverDescriptor = DriverDescriptor::new(
+    "asus",
+    "Static ASUS Discovery",
+    DriverTransportKind::Smbus,
+    true,
+    false,
+);
+
+impl DriverModule for StaticAsusDiscoveryDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &STATIC_ASUS_DISCOVERY_DRIVER
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl DiscoveryCapability for StaticAsusDiscoveryDriver {
+    async fn discover(
+        &self,
+        _host: &dyn DriverHost,
+        _request: &DiscoveryRequest,
+        _config: DriverConfigView<'_>,
+    ) -> Result<Vec<DiscoveredDevice>, DriverError> {
+        Ok(vec![self.device.clone()])
+    }
 }
 
 static BLOCKING_CONFIG_DISCOVERY_DRIVER: DriverDescriptor = DriverDescriptor::new(
@@ -495,6 +530,21 @@ fn layout_with_device(layout_device_id: &str) -> SpatialLayout {
         default_edge_behavior: EdgeBehavior::Clamp,
         version: 1,
     }
+}
+
+fn legacy_asus_dram_layout() -> SpatialLayout {
+    let mut layout = layout_with_device("asus:dev-i2c-9:73");
+    let output = layout
+        .zones
+        .first_mut()
+        .expect("test layout should contain one output");
+    output.name = "ASUS Aura DRAM (SMBus 0x73) · Lighting".to_owned();
+    output.zone_name = Some("Lighting".to_owned());
+    output.topology = LedTopology::Strip {
+        count: 8,
+        direction: StripDirection::LeftToRight,
+    };
+    layout
 }
 
 fn make_runtime(
@@ -1007,6 +1057,94 @@ async fn smbus_scan_does_not_timeout_connected_smbus_devices_on_transient_miss()
 
     let lifecycle_state = lifecycle_manager.lock().await.state(device_id);
     assert_eq!(lifecycle_state, Some(DeviceState::Connected));
+}
+
+#[tokio::test]
+async fn complete_sweep_connects_device_after_cross_host_binding_migration() {
+    let mut info = smbus_device_info("ASUS Aura DRAM (SMBus 0x73)");
+    info.segments[0].name = "Lighting".to_owned();
+    info.origin.backend_id = "mock".to_owned();
+    let fingerprint = DeviceFingerprint::from_persisted("smbus:asus:pawnio:i801:73".to_owned());
+    let current_layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+    assert_eq!(current_layout_device_id, "asus:pawnio:i801:73");
+
+    let discovered = DiscoveredDevice {
+        fingerprint,
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+        info,
+        metadata: HashMap::new(),
+        claim: None,
+    };
+    let device_id = discovered.info.id;
+    let mut driver_registry = DriverModuleRegistry::new();
+    driver_registry
+        .register(StaticAsusDiscoveryDriver { device: discovered })
+        .expect("static ASUS discovery driver should register");
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime_with_registry_and_layout(
+        DeviceRegistry::new(),
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+        Some(driver_registry),
+        None,
+        legacy_asus_dram_layout(),
+        HashSet::new(),
+    );
+    let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.register_backend(Arc::new(CountingBackend {
+            expected_device_id: device_id,
+            connect_count: Arc::clone(&connect_count),
+            disconnect_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }));
+    }
+
+    let scan = execute_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        vec![DiscoveryTarget::driver("asus")],
+        Duration::from_millis(50),
+    );
+    tokio::pin!(scan);
+    let renderer = runtime.layout.layout_publication_test_executor();
+    let result = timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = &mut scan => break result,
+                () = tokio::time::sleep(Duration::from_millis(1)) => {
+                    renderer
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("layout publication should succeed");
+                }
+            }
+        }
+    })
+    .await
+    .expect("discovery scan should not deadlock on layout publication");
+
+    assert_eq!(result.new_devices.len(), 1);
+    assert_eq!(
+        runtime.layout.current().zones[0].device_id,
+        current_layout_device_id,
+        "the complete sweep should migrate the active layout binding"
+    );
+    assert_eq!(
+        connect_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the migrated active layout should connect the device in the same sweep"
+    );
+    assert_eq!(
+        lifecycle_manager.lock().await.state(device_id),
+        Some(DeviceState::Connected)
+    );
 }
 
 #[tokio::test]
