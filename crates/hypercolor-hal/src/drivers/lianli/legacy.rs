@@ -242,6 +242,7 @@ impl LegacyUniHubProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: crate::protocol::TransferType::Primary,
+            ..Default::default()
         }
     }
 

@@ -330,6 +330,40 @@ fn tl_product_info_response_caches_firmware_string() {
     assert_eq!(protocol.firmware().as_deref(), Some("1.2.3"));
 }
 
+/// The hub answers `0xA6` twice: version, then build date. Reading one left
+/// the other queued, and taking the latest stored the date as the firmware
+/// version.
+#[test]
+fn tl_product_info_reads_two_reports_and_keeps_the_version() {
+    let protocol = TlFanProtocol::new();
+
+    let commands = protocol.init_sequence();
+    let product_info = &commands[1];
+    assert_eq!(product_info.data[1], 0xA6);
+    assert_eq!(
+        product_info.response_count, 2,
+        "0xA6 answers with a version report and a build-date report"
+    );
+
+    protocol
+        .parse_response(&[
+            0x01, 0xA6, 0x00, 0x00, 0x02, 0x05, b'1', b'.', b'2', b'.', b'3',
+        ])
+        .expect("version report should parse");
+    protocol
+        .parse_response(&[
+            0x01, 0xA6, 0x00, 0x00, 0x02, 0x0B, b'M', b'a', b'r', b' ', b'1', b'4', b' ', b'2',
+            b'0', b'2', b'6',
+        ])
+        .expect("build-date report should parse");
+
+    assert_eq!(
+        protocol.firmware().as_deref(),
+        Some("1.2.3"),
+        "the first report is the firmware version; the build date is discarded"
+    );
+}
+
 #[test]
 fn white_limit_and_firmware_helpers_match_spec_examples() {
     assert_eq!(apply_sum_white_limit([200, 200, 200]), [153, 153, 153]);

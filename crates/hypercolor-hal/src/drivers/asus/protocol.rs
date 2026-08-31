@@ -256,6 +256,7 @@ impl AuraUsbProtocol {
             response_delay: RESPONSE_DELAY,
             post_delay: RESPONSE_POST_DELAY,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 
@@ -266,6 +267,7 @@ impl AuraUsbProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 

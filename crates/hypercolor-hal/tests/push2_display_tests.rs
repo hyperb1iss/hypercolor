@@ -419,6 +419,7 @@ fn encode_display_frame_into_truncates_oversized_buffer() {
             response_delay: std::time::Duration::from_secs(5),
             post_delay: std::time::Duration::from_secs(5),
             transfer_type: TransferType::Primary,
+            ..Default::default()
         })
         .collect();
 

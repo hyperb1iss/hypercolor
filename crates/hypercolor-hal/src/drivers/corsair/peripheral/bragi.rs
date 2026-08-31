@@ -72,6 +72,7 @@ impl CorsairBragiProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 

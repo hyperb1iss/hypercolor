@@ -159,6 +159,7 @@ impl DygmaProtocol {
             response_delay: Duration::ZERO,
             post_delay,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 
@@ -169,6 +170,7 @@ impl DygmaProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 

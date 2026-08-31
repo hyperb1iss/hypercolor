@@ -61,6 +61,7 @@ pub(super) fn build_command(spec: CommandSpec<'_>) -> Option<ProtocolCommand> {
         response_delay: spec.timing.response_delay,
         post_delay: spec.timing.post_delay,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     })
 }
 

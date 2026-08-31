@@ -98,6 +98,7 @@ impl Ene6k77Protocol {
             response_delay: Duration::ZERO,
             post_delay: ENE_COMMAND_DELAY,
             transfer_type: TransferType::HidReport,
+            ..Default::default()
         })
     }
 
@@ -209,6 +210,7 @@ impl Ene6k77Protocol {
             response_delay: Duration::ZERO,
             post_delay: ENE_SYNC_DELAY,
             transfer_type: TransferType::HidReport,
+            ..Default::default()
         })
     }
 

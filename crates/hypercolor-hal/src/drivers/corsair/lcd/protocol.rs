@@ -180,6 +180,7 @@ impl CorsairLcdProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::HidReport,
+            ..Default::default()
         }
     }
 
