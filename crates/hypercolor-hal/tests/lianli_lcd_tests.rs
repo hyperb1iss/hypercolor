@@ -459,52 +459,6 @@ fn the_descriptor_is_registered_with_its_placeholder_serial_quirk() {
     assert!(!descriptor.is_placeholder_serial("A1B2C3D4"));
 }
 
-/// The stored-image path is the acknowledged one: every chunk reads a reply,
-/// and a mode switch latches the image once it is all delivered.
-#[test]
-fn a_static_image_acknowledges_every_chunk_and_latches_the_mode() {
-    let protocol = TlLcdProtocol::new();
-    let image = jpeg(TL_LCD_MAX_PAYLOAD * 2 + 5);
-
-    let commands = protocol
-        .encode_static_image(&image)
-        .expect("a static image should encode");
-
-    assert_eq!(commands.len(), 4, "three chunks plus the latch");
-    for (index, command) in commands.iter().take(3).enumerate() {
-        let header = header_of(&command.data);
-        assert_eq!(
-            header.command,
-            TlLcdCommand::WriteJpg as u8,
-            "chunk {index}"
-        );
-        assert!(command.expects_response, "chunk {index} is acknowledged");
-        assert_eq!(command.response_count, 1, "chunk {index} reads one ack");
-    }
-
-    let latch = &commands[3];
-    assert_eq!(
-        header_of(&latch.data).command,
-        TlLcdCommand::LcdControl as u8
-    );
-    assert_eq!(
-        latch.data[TL_LCD_HEADER_LEN],
-        TlLcdMode::ShowJpg as u8,
-        "the latch switches the panel to the stored image"
-    );
-}
-
-#[test]
-fn an_empty_static_image_emits_nothing_at_all() {
-    let protocol = TlLcdProtocol::new();
-
-    let commands = protocol
-        .encode_static_image(&[])
-        .expect("an empty image is not an error");
-
-    assert!(commands.is_empty(), "no chunks means no latch either");
-}
-
 #[test]
 fn a_frame_rate_request_is_clamped_to_what_the_panel_can_do() {
     let protocol = TlLcdProtocol::new();

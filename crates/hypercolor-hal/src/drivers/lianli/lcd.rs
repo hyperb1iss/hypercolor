@@ -18,8 +18,8 @@ use zerocopy::byteorder::{BigEndian, U16, U32};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::display::{
-    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, DisplayRotation,
-    DisplaySetting, encode_chunked_display_frame,
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayRotation, DisplaySetting,
+    encode_chunked_display_frame,
 };
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
@@ -79,7 +79,11 @@ pub enum TlLcdCommand {
     WriteSerial = 0x3F,
     /// Apply panel settings or switch display mode.
     LcdControl = 0x40,
-    /// Write a static image, acknowledged per chunk.
+    /// Write a static image, acknowledged per chunk. Documented vocabulary
+    /// only: driving it soundly means checking that each ack echoes this
+    /// command byte, and `parse_response` is never told which command it is
+    /// answering, so a stale or mismatched report would silently advance the
+    /// upload. v1 streams instead (spec 80 section 5.6).
     WriteJpg = 0x41,
     /// Stream a live frame, unacknowledged. The live path.
     WriteSyncJpg = 0x46,
@@ -244,20 +248,9 @@ impl DisplayChunkLayout for TlLcdDisplayLayout {
     }
 
     fn command_policy(&self, _ctx: &ChunkContext<'_>) -> ChunkCommandPolicy {
-        match self.command {
-            // The streamed path is unacknowledged: the panel displays frames
-            // as they arrive and an ack per chunk would halve the frame rate.
-            TlLcdCommand::WriteSyncJpg => {
-                ChunkCommandPolicy::fire_and_forget(TransferType::Primary)
-            }
-            // A stored image is acknowledged chunk by chunk.
-            _ => ChunkCommandPolicy {
-                transfer_type: TransferType::Primary,
-                expects_response: true,
-                response_delay: Duration::ZERO,
-                post_delay: None,
-            },
-        }
+        // Streamed frames are unacknowledged: the panel displays them as they
+        // arrive, and an ack per chunk would halve the frame rate.
+        ChunkCommandPolicy::fire_and_forget(TransferType::Primary)
     }
 
     fn max_chunks(&self) -> u32 {
@@ -269,7 +262,6 @@ impl DisplayChunkLayout for TlLcdDisplayLayout {
 pub struct TlLcdProtocol {
     state: RwLock<TlLcdState>,
     sync_layout: TlLcdDisplayLayout,
-    static_layout: TlLcdDisplayLayout,
 }
 
 impl TlLcdProtocol {
@@ -281,33 +273,7 @@ impl TlLcdProtocol {
             sync_layout: TlLcdDisplayLayout {
                 command: TlLcdCommand::WriteSyncJpg,
             },
-            static_layout: TlLcdDisplayLayout {
-                command: TlLcdCommand::WriteJpg,
-            },
         }
-    }
-
-    /// Encode a static image: acknowledged chunks, then the mode switch that
-    /// latches them onto the panel.
-    ///
-    /// The live path is [`Protocol::encode_display_payload_into`]; this is the
-    /// stored-image path, which the daemon does not drive today.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DisplayEncodeError`] when the image needs more chunks than
-    /// the packet counter can address.
-    pub fn encode_static_image(
-        &self,
-        jpeg_data: &[u8],
-    ) -> Result<Vec<ProtocolCommand>, DisplayEncodeError> {
-        let mut commands = Vec::new();
-        encode_chunked_display_frame(&self.static_layout, jpeg_data, &mut commands)?;
-        if !commands.is_empty() {
-            commands.push(self.control_command(TlLcdMode::ShowJpg));
-        }
-
-        Ok(commands)
     }
 
     /// Serial reported by the panel, which is a shared placeholder on stock
