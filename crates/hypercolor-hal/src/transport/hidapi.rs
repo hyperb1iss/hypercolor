@@ -835,9 +835,20 @@ fn select_hid_candidate(
     }
 
     if filter.require_unique_match && candidates.len() > 1 {
-        return Err(HidSelectionFailure::Ambiguous {
-            matched: candidates.len(),
-        });
+        // macOS enumerates one row per top-level usage collection, all
+        // sharing one hidapi path; rows that open the same node are one
+        // physical device, not an ambiguity.
+        let mut distinct_paths: Vec<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.path.as_str())
+            .collect();
+        distinct_paths.sort_unstable();
+        distinct_paths.dedup();
+        if distinct_paths.len() > 1 {
+            return Err(HidSelectionFailure::Ambiguous {
+                matched: distinct_paths.len(),
+            });
+        }
     }
 
     candidates
@@ -937,6 +948,21 @@ mod tests {
     fn ambiguity_is_only_refused_when_the_caller_asks_for_it() {
         let chosen = select_hid_candidate(panel_pair(None), &filter_for(Some("1-1.3"), false))
             .expect("the legacy path still takes the first match");
+
+        assert_eq!(chosen.path, "hid-node-a");
+    }
+
+    /// macOS reports one row per top-level usage collection, every row
+    /// sharing the physical device's hidapi path. One panel exposing two
+    /// collections is still one panel, not an ambiguity.
+    #[test]
+    fn same_path_collection_rows_count_as_one_device() {
+        let mut candidates = panel_pair(None);
+        candidates[1].path = "hid-node-a".to_owned();
+        candidates[1].usage = 0x0002;
+
+        let chosen = select_hid_candidate(candidates, &filter_for(None, true))
+            .expect("collection rows of one device must resolve");
 
         assert_eq!(chosen.path, "hid-node-a");
     }
