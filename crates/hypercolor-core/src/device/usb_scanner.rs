@@ -197,8 +197,17 @@ impl UsbScanner {
             let mut metadata = HashMap::new();
             metadata.insert("vendor_id".to_owned(), format!("0x{vendor_id:04X}"));
             metadata.insert("product_id".to_owned(), format!("0x{product_id:04X}"));
-            if let Some(serial) = usb.serial_number() {
-                metadata.insert("serial".to_owned(), serial.to_owned());
+            match (usb.serial_number(), identity_serial) {
+                // Kept out of the "serial" key so nothing downstream treats a
+                // model string as an identity: device labels fall back to the
+                // USB path, which is what actually tells two panels apart.
+                (Some(observed), None) => {
+                    metadata.insert("placeholder_serial".to_owned(), observed.to_owned());
+                }
+                (_, Some(serial)) => {
+                    metadata.insert("serial".to_owned(), serial.to_owned());
+                }
+                (None, None) => {}
             }
             if let Some(product_string) = usb.product_string() {
                 metadata.insert("product_string".to_owned(), product_string.to_owned());
@@ -325,6 +334,21 @@ mod tests {
         assert_eq!(
             first, second,
             "serial wins over path, so a shared serial is one fingerprint"
+        );
+    }
+
+    /// The claim layer is handed the same suppressed value as the
+    /// identifier, so a placeholder can never become a portable identity
+    /// even once serial normalizers are registered.
+    #[test]
+    fn a_placeholder_serial_is_withheld_from_the_portable_claim() {
+        let descriptor =
+            descriptor_with_quirk(Some(SerialQuirk::PlaceholderValues(&[PLACEHOLDER])));
+
+        assert_eq!(
+            identity_serial(&descriptor, Some(PLACEHOLDER)),
+            None,
+            "the claim input is the same suppressed serial the identifier uses"
         );
     }
 

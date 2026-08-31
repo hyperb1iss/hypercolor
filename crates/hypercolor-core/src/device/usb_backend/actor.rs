@@ -12,9 +12,10 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace, warn};
 
 use super::{
-    AbortTaskOnDrop, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF, UsbBackend,
-    UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload, describe_packet, format_error_chain,
-    format_hex_preview, map_hal_transport_error, map_transport_error, record_usb_display_lane,
+    AbortTaskOnDrop, DRAIN_REPORT_TIMEOUT, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF,
+    UsbBackend, UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload, describe_packet,
+    format_error_chain, format_hex_preview, map_hal_transport_error, map_transport_error,
+    record_usb_display_lane,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1107,11 +1108,47 @@ impl UsbBackend {
             )
             .await?
             {
+                // The retry resends the whole command, so any report this
+                // attempt left queued would be read as a reply to the
+                // resend and desync every read after it.
+                Self::discard_queued_reports(
+                    transport,
+                    command,
+                    report_count.saturating_sub(report_index).saturating_sub(1),
+                )
+                .await;
                 return Ok(true);
             }
         }
 
         Ok(false)
+    }
+
+    /// Drop reports still queued for an attempt that is about to be resent.
+    ///
+    /// Best effort and deliberately impatient: the device may have sent
+    /// nothing further, and a resend is what recovers the exchange either
+    /// way, so this must not spend the command's full response budget per
+    /// report. The reports are discarded rather than parsed because they
+    /// belong to an attempt whose result was rejected.
+    async fn discard_queued_reports(
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        remaining: u16,
+    ) {
+        for _ in 0..remaining {
+            if transport
+                .receive_logical(
+                    DRAIN_REPORT_TIMEOUT,
+                    command.transfer_type,
+                    command.response_len,
+                )
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
     }
 
     /// Parse one response report, answering whether the command should be
