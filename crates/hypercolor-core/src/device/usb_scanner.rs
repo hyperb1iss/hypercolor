@@ -181,18 +181,15 @@ impl UsbScanner {
             );
 
             // Claimed here, where serial-vs-path is still a known fact; the
-            // fingerprint string discards it. Refusal (no registered
-            // normalizer, placeholder serial, no serial at all) yields None
-            // and the device re-binds per machine.
-            let claim = identity_serial.and_then(|serial| {
-                PortableIdentityClaim::usb_serial(
-                    vendor_id,
-                    product_id,
-                    serial,
-                    path.clone(),
-                    &self.serial_normalizers,
-                )
-            });
+            // fingerprint string discards it.
+            let claim = portable_claim(
+                descriptor,
+                vendor_id,
+                product_id,
+                usb.serial_number(),
+                &path,
+                &self.serial_normalizers,
+            );
 
             let mut metadata = HashMap::new();
             metadata.insert("vendor_id".to_owned(), format!("0x{vendor_id:04X}"));
@@ -275,6 +272,32 @@ fn identity_serial<'a>(
     observed.filter(|serial| !descriptor.is_placeholder_serial(serial))
 }
 
+/// The portable identity claim for one observed device, or `None` when it
+/// has no claimable serial.
+///
+/// Refusal has three causes and they are all normal: the descriptor says the
+/// serial is a placeholder, the `(vendor, product)` pair has no reviewed
+/// normalizer, or the device reports no serial at all. A refused device
+/// re-binds per machine rather than claiming an identity it cannot back.
+fn portable_claim(
+    descriptor: &DeviceDescriptor,
+    vendor_id: u16,
+    product_id: u16,
+    observed_serial: Option<&str>,
+    usb_path: &str,
+    normalizers: &SerialNormalizerRegistry,
+) -> Option<PortableIdentityClaim> {
+    identity_serial(descriptor, observed_serial).and_then(|serial| {
+        PortableIdentityClaim::usb_serial(
+            vendor_id,
+            product_id,
+            serial,
+            usb_path.to_owned(),
+            normalizers,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use hypercolor_hal::registry::SerialQuirk;
@@ -337,18 +360,60 @@ mod tests {
         );
     }
 
-    /// The claim layer is handed the same suppressed value as the
-    /// identifier, so a placeholder can never become a portable identity
-    /// even once serial normalizers are registered.
+    /// A placeholder must not become a portable identity even when its pair
+    /// has a reviewed normalizer that would happily accept the string. The
+    /// registry cannot know the serial is a model name; the descriptor does.
     #[test]
     fn a_placeholder_serial_is_withheld_from_the_portable_claim() {
-        let descriptor =
-            descriptor_with_quirk(Some(SerialQuirk::PlaceholderValues(&[PLACEHOLDER])));
+        let mut normalizers = SerialNormalizerRegistry::new();
+        normalizers.register(
+            0x04FC,
+            0x7393,
+            hypercolor_types::portable::ReviewedSerial::new(
+                hypercolor_types::portable::SerialNormalization::TrimmedAscii,
+                "test fixture: a review that missed the placeholder",
+            ),
+        );
 
-        assert_eq!(
-            identity_serial(&descriptor, Some(PLACEHOLDER)),
-            None,
-            "the claim input is the same suppressed serial the identifier uses"
+        let quirked = descriptor_with_quirk(Some(SerialQuirk::PlaceholderValues(&[PLACEHOLDER])));
+        assert!(
+            portable_claim(
+                &quirked,
+                0x04FC,
+                0x7393,
+                Some(PLACEHOLDER),
+                "1-1.2",
+                &normalizers
+            )
+            .is_none(),
+            "a model string must never be claimed as a portable identity"
+        );
+
+        let unquirked = descriptor_with_quirk(None);
+        assert!(
+            portable_claim(
+                &unquirked,
+                0x04FC,
+                0x7393,
+                Some(PLACEHOLDER),
+                "1-1.2",
+                &normalizers
+            )
+            .is_some(),
+            "without the quirk the registry claims it, which is the bug"
+        );
+
+        assert!(
+            portable_claim(
+                &quirked,
+                0x04FC,
+                0x7393,
+                Some("A1B2C3D4"),
+                "1-1.2",
+                &normalizers
+            )
+            .is_some(),
+            "a real serial still claims an identity"
         );
     }
 
