@@ -2,6 +2,7 @@
 
 mod common;
 mod ene;
+mod lcd;
 mod tl;
 
 pub mod devices;
@@ -12,14 +13,18 @@ pub use common::{
     apply_sum_white_limit, firmware_version_from_fine_tune,
 };
 pub use devices::{
-    LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_USAGE_PAGE, LIANLI_TL_VENDOR_ID,
-    PID_TL_FAN_HUB, PID_UNI_HUB_AL, PID_UNI_HUB_AL_V2, PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL,
-    PID_UNI_HUB_SL_INFINITY, PID_UNI_HUB_SL_REDRAGON, PID_UNI_HUB_SL_V2, PID_UNI_HUB_SL_V2A,
-    build_tl_fan_protocol, build_uni_hub_al_protocol, build_uni_hub_al_v2_protocol,
-    build_uni_hub_al10_protocol, build_uni_hub_original_protocol,
-    build_uni_hub_sl_infinity_protocol, build_uni_hub_sl_protocol,
+    LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_LCD_VENDOR_ID, LIANLI_TL_USAGE_PAGE,
+    LIANLI_TL_VENDOR_ID, PID_TL_FAN_HUB, PID_TL_LCD, PID_UNI_HUB_AL, PID_UNI_HUB_AL_V2,
+    PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL, PID_UNI_HUB_SL_INFINITY, PID_UNI_HUB_SL_REDRAGON,
+    PID_UNI_HUB_SL_V2, PID_UNI_HUB_SL_V2A, build_tl_fan_protocol, build_tl_lcd_protocol,
+    build_uni_hub_al_protocol, build_uni_hub_al_v2_protocol, build_uni_hub_al10_protocol,
+    build_uni_hub_original_protocol, build_uni_hub_sl_infinity_protocol, build_uni_hub_sl_protocol,
     build_uni_hub_sl_redragon_protocol, build_uni_hub_sl_v2_protocol, descriptors,
 };
 pub use ene::Ene6k77Protocol;
+pub use lcd::{
+    TL_LCD_HEADER_LEN, TL_LCD_MAX_CHUNKS, TL_LCD_MAX_PAYLOAD, TL_LCD_PACKET_LEN, TL_LCD_REPORT_ID,
+    TL_LCD_RESOLUTION, TlLcdCommand, TlLcdMode, TlLcdProtocol,
+};
 pub use legacy::LegacyUniHubProtocol;
 pub use tl::{TL_PACKET_LEN, TlFanProtocol};

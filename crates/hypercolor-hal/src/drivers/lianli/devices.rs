@@ -1,12 +1,20 @@
 //! Lian Li device registry entries.
 
+use std::sync::LazyLock;
+
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
+use crate::registry::{
+    DeviceDescriptor, HidRawReportMode, ProtocolBinding, SerialQuirk, TransportType,
+};
+use crate::transport::{
+    HidAccessMode, HidTransportIntent, TransportIntent, resolve_current_transport,
+};
 
 use super::common::{LianLiHubVariant, TL_REPORT_ID};
 use super::ene::Ene6k77Protocol;
+use super::lcd::{TL_LCD_PACKET_LEN, TL_LCD_REPORT_ID, TlLcdProtocol};
 use super::legacy::LegacyUniHubProtocol;
 use super::tl::{TL_PACKET_LEN, TlFanProtocol};
 
@@ -37,6 +45,29 @@ pub const PID_UNI_HUB_SL_REDRAGON: u16 = 0xA106;
 pub const PID_UNI_HUB_ORIGINAL: u16 = 0x7750;
 /// TL Fan Hub PID.
 pub const PID_TL_FAN_HUB: u16 = 0x7372;
+/// Wired Uni Fan TL LCD panel PID.
+pub const PID_TL_LCD: u16 = 0x7393;
+
+/// Wired TL LCD vendor ID.
+///
+/// Not the Lian Li VIDs above: the panel enumerates under a borrowed
+/// vendor ID, which is why its udev rules stay scoped to this product.
+pub const LIANLI_TL_LCD_VENDOR_ID: u16 = 0x04FC;
+
+/// Serial every wired TL LCD panel reports from stock firmware, which makes
+/// it a model string rather than an identity (spec 80 section 5.7).
+const TL_LCD_PLACEHOLDER_SERIALS: &[&str] = &["TL_LCDV0.1"];
+
+/// The panel speaks HID output reports carrying its own report ID.
+const TL_LCD_TRANSPORT_INTENT: TransportIntent = TransportIntent::Hid(HidTransportIntent {
+    access: HidAccessMode::Direct,
+    interface: 0,
+    report_id: TL_LCD_REPORT_ID,
+    report_mode: HidRawReportMode::OutputReportWithReportId,
+    max_report_len: TL_LCD_PACKET_LEN,
+    usage_page: None,
+    usage: None,
+});
 
 fn firmware_matches(candidate: &str, expected: &str) -> bool {
     let trimmed = candidate.trim();
@@ -92,6 +123,12 @@ pub fn build_tl_fan_protocol() -> Box<dyn Protocol> {
     Box::new(TlFanProtocol::new())
 }
 
+/// Build a wired Uni Fan TL LCD protocol instance.
+#[must_use]
+pub fn build_tl_lcd_protocol() -> Box<dyn Protocol> {
+    Box::new(TlLcdProtocol::new())
+}
+
 /// Build an original UNI Hub protocol instance.
 pub fn build_uni_hub_original_protocol() -> Box<dyn Protocol> {
     Box::new(LegacyUniHubProtocol::original())
@@ -127,108 +164,124 @@ macro_rules! ene_descriptor {
     };
 }
 
-static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
-    ene_descriptor!(
-        pid: PID_UNI_HUB_SL,
-        name: "Lian Li Uni Hub - SL",
-        protocol_id: "lianli/sl",
-        builder: build_uni_hub_sl_protocol
-    ),
-    DeviceDescriptor {
-        vendor_id: LIANLI_ENE_VENDOR_ID,
-        product_id: PID_UNI_HUB_AL,
-        name: "Lian Li Uni Hub - AL",
-        family: DeviceFamily::new_static("lianli", "Lian Li"),
-        transport: TransportType::UsbHid {
-            interface: LIANLI_ENE_INTERFACE,
+static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
+    vec![
+        ene_descriptor!(
+            pid: PID_UNI_HUB_SL,
+            name: "Lian Li Uni Hub - SL",
+            protocol_id: "lianli/sl",
+            builder: build_uni_hub_sl_protocol
+        ),
+        DeviceDescriptor {
+            vendor_id: LIANLI_ENE_VENDOR_ID,
+            product_id: PID_UNI_HUB_AL,
+            name: "Lian Li Uni Hub - AL",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: TransportType::UsbHid {
+                interface: LIANLI_ENE_INTERFACE,
+            },
+            protocol: ProtocolBinding {
+                id: "lianli/al",
+                build: build_uni_hub_al_protocol,
+            },
+            firmware_predicate: Some(is_al_hid_firmware),
+            serial_quirk: None,
         },
-        protocol: ProtocolBinding {
-            id: "lianli/al",
-            build: build_uni_hub_al_protocol,
+        DeviceDescriptor {
+            vendor_id: LIANLI_ENE_VENDOR_ID,
+            product_id: PID_UNI_HUB_AL,
+            name: "Lian Li Uni Hub - AL10",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: TransportType::UsbVendor,
+            protocol: ProtocolBinding {
+                id: "lianli/al10",
+                build: build_uni_hub_al10_protocol,
+            },
+            firmware_predicate: Some(is_al10_firmware),
+            serial_quirk: None,
         },
-        firmware_predicate: Some(is_al_hid_firmware),
-        serial_quirk: None,
-    },
-    DeviceDescriptor {
-        vendor_id: LIANLI_ENE_VENDOR_ID,
-        product_id: PID_UNI_HUB_AL,
-        name: "Lian Li Uni Hub - AL10",
-        family: DeviceFamily::new_static("lianli", "Lian Li"),
-        transport: TransportType::UsbVendor,
-        protocol: ProtocolBinding {
-            id: "lianli/al10",
-            build: build_uni_hub_al10_protocol,
+        ene_descriptor!(
+            pid: PID_UNI_HUB_SL_INFINITY,
+            name: "Lian Li Uni Hub - SL Infinity",
+            protocol_id: "lianli/sl-infinity",
+            builder: build_uni_hub_sl_infinity_protocol
+        ),
+        ene_descriptor!(
+            pid: PID_UNI_HUB_SL_V2,
+            name: "Lian Li Uni Hub - SL V2",
+            protocol_id: "lianli/sl-v2",
+            builder: build_uni_hub_sl_v2_protocol
+        ),
+        ene_descriptor!(
+            pid: PID_UNI_HUB_AL_V2,
+            name: "Lian Li Uni Hub - AL V2",
+            protocol_id: "lianli/al-v2",
+            builder: build_uni_hub_al_v2_protocol
+        ),
+        ene_descriptor!(
+            pid: PID_UNI_HUB_SL_V2A,
+            name: "Lian Li Uni Hub - SL V2a",
+            protocol_id: "lianli/sl-v2",
+            builder: build_uni_hub_sl_v2_protocol
+        ),
+        ene_descriptor!(
+            pid: PID_UNI_HUB_SL_REDRAGON,
+            name: "Lian Li Uni Hub - SL Redragon",
+            protocol_id: "lianli/sl-redragon",
+            builder: build_uni_hub_sl_redragon_protocol
+        ),
+        DeviceDescriptor {
+            vendor_id: LIANLI_ENE_VENDOR_ID,
+            product_id: PID_UNI_HUB_ORIGINAL,
+            name: "Lian Li Uni Hub",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: TransportType::UsbVendor,
+            protocol: ProtocolBinding {
+                id: "lianli/original",
+                build: build_uni_hub_original_protocol,
+            },
+            firmware_predicate: None,
+            serial_quirk: None,
         },
-        firmware_predicate: Some(is_al10_firmware),
-        serial_quirk: None,
-    },
-    ene_descriptor!(
-        pid: PID_UNI_HUB_SL_INFINITY,
-        name: "Lian Li Uni Hub - SL Infinity",
-        protocol_id: "lianli/sl-infinity",
-        builder: build_uni_hub_sl_infinity_protocol
-    ),
-    ene_descriptor!(
-        pid: PID_UNI_HUB_SL_V2,
-        name: "Lian Li Uni Hub - SL V2",
-        protocol_id: "lianli/sl-v2",
-        builder: build_uni_hub_sl_v2_protocol
-    ),
-    ene_descriptor!(
-        pid: PID_UNI_HUB_AL_V2,
-        name: "Lian Li Uni Hub - AL V2",
-        protocol_id: "lianli/al-v2",
-        builder: build_uni_hub_al_v2_protocol
-    ),
-    ene_descriptor!(
-        pid: PID_UNI_HUB_SL_V2A,
-        name: "Lian Li Uni Hub - SL V2a",
-        protocol_id: "lianli/sl-v2",
-        builder: build_uni_hub_sl_v2_protocol
-    ),
-    ene_descriptor!(
-        pid: PID_UNI_HUB_SL_REDRAGON,
-        name: "Lian Li Uni Hub - SL Redragon",
-        protocol_id: "lianli/sl-redragon",
-        builder: build_uni_hub_sl_redragon_protocol
-    ),
-    DeviceDescriptor {
-        vendor_id: LIANLI_ENE_VENDOR_ID,
-        product_id: PID_UNI_HUB_ORIGINAL,
-        name: "Lian Li Uni Hub",
-        family: DeviceFamily::new_static("lianli", "Lian Li"),
-        transport: TransportType::UsbVendor,
-        protocol: ProtocolBinding {
-            id: "lianli/original",
-            build: build_uni_hub_original_protocol,
+        DeviceDescriptor {
+            vendor_id: LIANLI_TL_VENDOR_ID,
+            product_id: PID_TL_FAN_HUB,
+            name: "Lian Li TL Fan Hub",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: TransportType::UsbHidApi {
+                interface: None,
+                report_id: TL_REPORT_ID,
+                report_mode: HidRawReportMode::OutputReportWithReportId,
+                max_report_len: TL_PACKET_LEN,
+                usage_page: Some(LIANLI_TL_USAGE_PAGE),
+                usage: None,
+            },
+            protocol: ProtocolBinding {
+                id: "lianli/tl-fan",
+                build: build_tl_fan_protocol,
+            },
+            firmware_predicate: None,
+            serial_quirk: None,
         },
-        firmware_predicate: None,
-        serial_quirk: None,
-    },
-    DeviceDescriptor {
-        vendor_id: LIANLI_TL_VENDOR_ID,
-        product_id: PID_TL_FAN_HUB,
-        name: "Lian Li TL Fan Hub",
-        family: DeviceFamily::new_static("lianli", "Lian Li"),
-        transport: TransportType::UsbHidApi {
-            interface: None,
-            report_id: TL_REPORT_ID,
-            report_mode: HidRawReportMode::OutputReportWithReportId,
-            max_report_len: TL_PACKET_LEN,
-            usage_page: Some(LIANLI_TL_USAGE_PAGE),
-            usage: None,
+        DeviceDescriptor {
+            vendor_id: LIANLI_TL_LCD_VENDOR_ID,
+            product_id: PID_TL_LCD,
+            name: "Lian Li Uni Fan TL LCD",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: resolve_current_transport(TL_LCD_TRANSPORT_INTENT)
+                .expect("wired TL LCD HID transport should support the current platform"),
+            protocol: ProtocolBinding {
+                id: "lianli/tl-lcd",
+                build: build_tl_lcd_protocol,
+            },
+            firmware_predicate: None,
+            serial_quirk: Some(SerialQuirk::PlaceholderValues(TL_LCD_PLACEHOLDER_SERIALS)),
         },
-        protocol: ProtocolBinding {
-            id: "lianli/tl-fan",
-            build: build_tl_fan_protocol,
-        },
-        firmware_predicate: None,
-        serial_quirk: None,
-    },
-];
+    ]
+});
 
 /// Static Lian Li descriptors for HAL registration.
 #[must_use]
 pub fn descriptors() -> &'static [DeviceDescriptor] {
-    LIANLI_DESCRIPTORS
+    &LIANLI_DESCRIPTORS
 }
