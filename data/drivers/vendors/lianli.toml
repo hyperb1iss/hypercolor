@@ -84,6 +84,16 @@ transport = "usb_hid"
 leds = 260
 notes = "VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported."
 
+[[devices]]
+pid = 0x7393
+vid = 0x04FC
+name = "Uni Fan TL LCD"
+type = "lcd"
+status = "supported"
+driver = "lianli"
+transport = "usb_hid"
+notes = "400x400 round panel. JPEG streaming in 512-byte packets; every unit reports serial TL_LCDV0.1, so identity keys on the USB port path."
+
 # ─── Not Yet Supported ───────────────────────────────────────────────
 
 [[devices]]
