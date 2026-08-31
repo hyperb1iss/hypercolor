@@ -3,9 +3,9 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 32,
-    "devices": 414,
+    "devices": 415,
     "byStatus": {
-      "supported": 179,
+      "supported": 180,
       "in_progress": 0,
       "planned": 0,
       "researched": 95,
@@ -43,6 +43,8 @@
         {
           "pid": 6503,
           "pidHex": "0x1967",
+          "vid": null,
+          "vidHex": null,
           "name": "Push 2",
           "type": "other",
           "status": "supported",
@@ -91,6 +93,8 @@
         {
           "pid": 1328,
           "pidHex": "0x0530",
+          "vid": null,
+          "vidHex": null,
           "name": "Alienware 15 R3",
           "type": "keyboard",
           "status": "known",
@@ -102,6 +106,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Alienware Monitor (Gen 1-3)",
           "type": "monitor",
           "status": "known",
@@ -113,6 +119,8 @@
         {
           "pid": 165,
           "pidHex": "0x00A5",
+          "vid": null,
+          "vidHex": null,
           "name": "AW558 Mouse",
           "type": "mouse",
           "status": "known",
@@ -155,6 +163,8 @@
         {
           "pid": 61454,
           "pidHex": "0xF00E",
+          "vid": null,
+          "vidHex": null,
           "name": "D5 Next",
           "type": "other",
           "status": "known",
@@ -166,6 +176,8 @@
         {
           "pid": 61456,
           "pidHex": "0xF010",
+          "vid": null,
+          "vidHex": null,
           "name": "Farbwerk 360",
           "type": "argb_controller",
           "status": "known",
@@ -177,6 +189,8 @@
         {
           "pid": 61455,
           "pidHex": "0xF00F",
+          "vid": null,
+          "vidHex": null,
           "name": "Farbwerk Nano",
           "type": "argb_controller",
           "status": "known",
@@ -188,6 +202,8 @@
         {
           "pid": 61458,
           "pidHex": "0xF012",
+          "vid": null,
+          "vidHex": null,
           "name": "HighFlow Next",
           "type": "other",
           "status": "known",
@@ -229,6 +245,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "ASRock GPU (SMBus)",
           "type": "gpu",
           "status": "known",
@@ -240,6 +258,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "ASRock LCD",
           "type": "lcd",
           "status": "known",
@@ -251,6 +271,8 @@
         {
           "pid": 452,
           "pidHex": "0x01C4",
+          "vid": null,
+          "vidHex": null,
           "name": "Monitor Controller",
           "type": "monitor",
           "status": "known",
@@ -262,6 +284,8 @@
         {
           "pid": 418,
           "pidHex": "0x01A2",
+          "vid": null,
+          "vidHex": null,
           "name": "Polychrome Motherboard",
           "type": "motherboard",
           "status": "known",
@@ -305,6 +329,8 @@
         {
           "pid": 6247,
           "pidHex": "0x1867",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Addressable (Gen 1)",
           "type": "argb_controller",
           "status": "supported",
@@ -316,6 +342,8 @@
         {
           "pid": 6258,
           "pidHex": "0x1872",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Addressable (Gen 2)",
           "type": "argb_controller",
           "status": "supported",
@@ -327,6 +355,8 @@
         {
           "pid": 6307,
           "pidHex": "0x18A3",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Addressable (Gen 3)",
           "type": "argb_controller",
           "status": "supported",
@@ -338,6 +368,8 @@
         {
           "pid": 6309,
           "pidHex": "0x18A5",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Addressable (Gen 4)",
           "type": "argb_controller",
           "status": "supported",
@@ -349,6 +381,8 @@
         {
           "pid": 6387,
           "pidHex": "0x18F3",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Motherboard (Gen 1)",
           "type": "motherboard",
           "status": "supported",
@@ -360,6 +394,8 @@
         {
           "pid": 6457,
           "pidHex": "0x1939",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Motherboard (Gen 2)",
           "type": "motherboard",
           "status": "supported",
@@ -371,6 +407,8 @@
         {
           "pid": 6575,
           "pidHex": "0x19AF",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Motherboard (Gen 3)",
           "type": "motherboard",
           "status": "supported",
@@ -382,6 +420,8 @@
         {
           "pid": 6822,
           "pidHex": "0x1AA6",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Motherboard (Gen 4)",
           "type": "motherboard",
           "status": "supported",
@@ -393,6 +433,8 @@
         {
           "pid": 7149,
           "pidHex": "0x1BED",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Motherboard (Gen 5)",
           "type": "motherboard",
           "status": "supported",
@@ -404,6 +446,8 @@
         {
           "pid": 6281,
           "pidHex": "0x1889",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Terminal",
           "type": "argb_controller",
           "status": "supported",
@@ -415,6 +459,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Aura GPU (SMBus)",
           "type": "gpu",
           "status": "researched",
@@ -426,6 +472,8 @@
         {
           "pid": 6228,
           "pidHex": "0x1854",
+          "vid": null,
+          "vidHex": null,
           "name": "Aura Core (Laptop)",
           "type": "keyboard",
           "status": "known",
@@ -437,6 +485,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "ROG Balteus Qi",
           "type": "mousepad",
           "status": "known",
@@ -448,6 +498,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "ROG Claymore II",
           "type": "keyboard",
           "status": "known",
@@ -459,6 +511,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "ROG Spotlight",
           "type": "strip",
           "status": "known",
@@ -470,6 +524,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "ROG Strix LC AIO",
           "type": "aio",
           "status": "known",
@@ -481,6 +537,8 @@
         {
           "pid": 6246,
           "pidHex": "0x1866",
+          "vid": null,
+          "vidHex": null,
           "name": "ROG Strix SCAR 17",
           "type": "keyboard",
           "status": "known",
@@ -492,6 +550,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "ROG Throne Qi Stand",
           "type": "other",
           "status": "known",
@@ -503,6 +563,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Ryujin AIO",
           "type": "aio",
           "status": "known",
@@ -514,6 +576,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "TUF K1",
           "type": "keyboard",
           "status": "known",
@@ -565,6 +629,8 @@
         {
           "pid": 4096,
           "pidHex": "0x1000",
+          "vid": null,
+          "vidHex": null,
           "name": "A-RGB LED Small Controller",
           "type": "argb_controller",
           "status": "researched",
@@ -576,6 +642,8 @@
         {
           "pid": 4113,
           "pidHex": "0x1011",
+          "vid": null,
+          "vidHex": null,
           "name": "ARGB Controller",
           "type": "argb_controller",
           "status": "researched",
@@ -587,6 +655,8 @@
         {
           "pid": 371,
           "pidHex": "0x0173",
+          "vid": null,
+          "vidHex": null,
           "name": "Gen2 LED Controller A1",
           "type": "argb_controller",
           "status": "researched",
@@ -598,6 +668,8 @@
         {
           "pid": 327,
           "pidHex": "0x0147",
+          "vid": null,
+          "vidHex": null,
           "name": "CK530 V2",
           "type": "keyboard",
           "status": "known",
@@ -609,6 +681,8 @@
         {
           "pid": 325,
           "pidHex": "0x0145",
+          "vid": null,
+          "vidHex": null,
           "name": "CK550 V2",
           "type": "keyboard",
           "status": "known",
@@ -620,6 +694,8 @@
         {
           "pid": 127,
           "pidHex": "0x007F",
+          "vid": null,
+          "vidHex": null,
           "name": "CK552 V2",
           "type": "keyboard",
           "status": "known",
@@ -631,6 +707,8 @@
         {
           "pid": 363,
           "pidHex": "0x016B",
+          "vid": null,
+          "vidHex": null,
           "name": "CK720",
           "type": "keyboard",
           "status": "known",
@@ -642,6 +720,8 @@
         {
           "pid": 365,
           "pidHex": "0x016D",
+          "vid": null,
+          "vidHex": null,
           "name": "CK721",
           "type": "keyboard",
           "status": "known",
@@ -653,6 +733,8 @@
         {
           "pid": 143,
           "pidHex": "0x008F",
+          "vid": null,
+          "vidHex": null,
           "name": "MK730",
           "type": "keyboard",
           "status": "known",
@@ -664,6 +746,8 @@
         {
           "pid": 103,
           "pidHex": "0x0067",
+          "vid": null,
+          "vidHex": null,
           "name": "MK750",
           "type": "keyboard",
           "status": "known",
@@ -675,6 +759,8 @@
         {
           "pid": 105,
           "pidHex": "0x0069",
+          "vid": null,
+          "vidHex": null,
           "name": "MK850",
           "type": "keyboard",
           "status": "known",
@@ -686,6 +772,8 @@
         {
           "pid": 257,
           "pidHex": "0x0101",
+          "vid": null,
+          "vidHex": null,
           "name": "MM711",
           "type": "mouse",
           "status": "known",
@@ -697,6 +785,8 @@
         {
           "pid": 263,
           "pidHex": "0x0107",
+          "vid": null,
+          "vidHex": null,
           "name": "MP750L",
           "type": "mousepad",
           "status": "known",
@@ -708,6 +798,8 @@
         {
           "pid": 261,
           "pidHex": "0x0105",
+          "vid": null,
+          "vidHex": null,
           "name": "MP750M",
           "type": "mousepad",
           "status": "known",
@@ -719,6 +811,8 @@
         {
           "pid": 265,
           "pidHex": "0x0109",
+          "vid": null,
+          "vidHex": null,
           "name": "MP750XL",
           "type": "mousepad",
           "status": "known",
@@ -730,6 +824,8 @@
         {
           "pid": 109,
           "pidHex": "0x006D",
+          "vid": null,
+          "vidHex": null,
           "name": "MP860",
           "type": "mousepad",
           "status": "known",
@@ -741,6 +837,8 @@
         {
           "pid": 135,
           "pidHex": "0x0087",
+          "vid": null,
+          "vidHex": null,
           "name": "SK620/SK622",
           "type": "keyboard",
           "status": "known",
@@ -752,6 +850,8 @@
         {
           "pid": 141,
           "pidHex": "0x008D",
+          "vid": null,
+          "vidHex": null,
           "name": "SK650",
           "type": "keyboard",
           "status": "known",
@@ -763,6 +863,8 @@
         {
           "pid": 349,
           "pidHex": "0x015D",
+          "vid": null,
+          "vidHex": null,
           "name": "SK652",
           "type": "keyboard",
           "status": "known",
@@ -774,6 +876,8 @@
         {
           "pid": 427,
           "pidHex": "0x01AB",
+          "vid": null,
+          "vidHex": null,
           "name": "SK653",
           "type": "keyboard",
           "status": "known",
@@ -817,6 +921,8 @@
         {
           "pid": 7424,
           "pidHex": "0x1D00",
+          "vid": null,
+          "vidHex": null,
           "name": "1000D Obsidian",
           "type": "argb_controller",
           "status": "supported",
@@ -828,6 +934,8 @@
         {
           "pid": 3088,
           "pidHex": "0x0C10",
+          "vid": null,
+          "vidHex": null,
           "name": "Commander Pro",
           "type": "fan_controller",
           "status": "supported",
@@ -839,6 +947,8 @@
         {
           "pid": 7038,
           "pidHex": "0x1B7E",
+          "vid": null,
+          "vidHex": null,
           "name": "Dark Core RGB Pro SE (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -850,6 +960,8 @@
         {
           "pid": 6987,
           "pidHex": "0x1B4B",
+          "vid": null,
+          "vidHex": null,
           "name": "Dark Core RGB SE (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -861,6 +973,8 @@
         {
           "pid": 3129,
           "pidHex": "0x0C39",
+          "vid": null,
+          "vidHex": null,
           "name": "Elite Capellix LCD",
           "type": "lcd",
           "status": "supported",
@@ -872,6 +986,8 @@
         {
           "pid": 3123,
           "pidHex": "0x0C33",
+          "vid": null,
+          "vidHex": null,
           "name": "Elite Capellix LCD (Alt PID)",
           "type": "lcd",
           "status": "supported",
@@ -883,6 +999,8 @@
         {
           "pid": 7006,
           "pidHex": "0x1B5E",
+          "vid": null,
+          "vidHex": null,
           "name": "Harpoon Wireless (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -894,6 +1012,8 @@
         {
           "pid": 3150,
           "pidHex": "0x0C4E",
+          "vid": null,
+          "vidHex": null,
           "name": "iCUE LINK LCD",
           "type": "lcd",
           "status": "supported",
@@ -905,6 +1025,8 @@
         {
           "pid": 3135,
           "pidHex": "0x0C3F",
+          "vid": null,
+          "vidHex": null,
           "name": "iCUE LINK System Hub",
           "type": "fan_controller",
           "status": "supported",
@@ -916,6 +1038,8 @@
         {
           "pid": 6988,
           "pidHex": "0x1B4C",
+          "vid": null,
+          "vidHex": null,
           "name": "Ironclaw Wireless (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -927,6 +1051,8 @@
         {
           "pid": 7037,
           "pidHex": "0x1B7D",
+          "vid": null,
+          "vidHex": null,
           "name": "K100 MX Red",
           "type": "keyboard",
           "status": "supported",
@@ -938,6 +1064,8 @@
         {
           "pid": 7036,
           "pidHex": "0x1B7C",
+          "vid": null,
+          "vidHex": null,
           "name": "K100 RGB Optical V1",
           "type": "keyboard",
           "status": "supported",
@@ -949,6 +1077,8 @@
         {
           "pid": 7109,
           "pidHex": "0x1BC5",
+          "vid": null,
+          "vidHex": null,
           "name": "K100 RGB Optical V2",
           "type": "keyboard",
           "status": "supported",
@@ -960,6 +1090,8 @@
         {
           "pid": 7076,
           "pidHex": "0x1BA4",
+          "vid": null,
+          "vidHex": null,
           "name": "K55 RGB Pro",
           "type": "keyboard",
           "status": "supported",
@@ -971,6 +1103,8 @@
         {
           "pid": 7043,
           "pidHex": "0x1B83",
+          "vid": null,
+          "vidHex": null,
           "name": "K60 Pro Mono",
           "type": "keyboard",
           "status": "supported",
@@ -982,6 +1116,8 @@
         {
           "pid": 7072,
           "pidHex": "0x1BA0",
+          "vid": null,
+          "vidHex": null,
           "name": "K60 Pro RGB",
           "type": "keyboard",
           "status": "supported",
@@ -993,6 +1129,8 @@
         {
           "pid": 7085,
           "pidHex": "0x1BAD",
+          "vid": null,
+          "vidHex": null,
           "name": "K60 Pro RGB Low Profile",
           "type": "keyboard",
           "status": "supported",
@@ -1004,6 +1142,8 @@
         {
           "pid": 7053,
           "pidHex": "0x1B8D",
+          "vid": null,
+          "vidHex": null,
           "name": "K60 Pro RGB SE",
           "type": "keyboard",
           "status": "supported",
@@ -1015,6 +1155,8 @@
         {
           "pid": 7111,
           "pidHex": "0x1BC7",
+          "vid": null,
+          "vidHex": null,
           "name": "K60 Pro TKL Black",
           "type": "keyboard",
           "status": "supported",
@@ -1026,6 +1168,8 @@
         {
           "pid": 7149,
           "pidHex": "0x1BED",
+          "vid": null,
+          "vidHex": null,
           "name": "K60 Pro TKL White",
           "type": "keyboard",
           "status": "supported",
@@ -1037,6 +1181,8 @@
         {
           "pid": 7087,
           "pidHex": "0x1BAF",
+          "vid": null,
+          "vidHex": null,
           "name": "K65 Mini",
           "type": "keyboard",
           "status": "supported",
@@ -1048,6 +1194,8 @@
         {
           "pid": 11018,
           "pidHex": "0x2B0A",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 Core RGB",
           "type": "keyboard",
           "status": "supported",
@@ -1059,6 +1207,8 @@
         {
           "pid": 7167,
           "pidHex": "0x1BFF",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 Core RGB",
           "type": "keyboard",
           "status": "supported",
@@ -1070,6 +1220,8 @@
         {
           "pid": 7165,
           "pidHex": "0x1BFD",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 Core RGB",
           "type": "keyboard",
           "status": "supported",
@@ -1081,6 +1233,8 @@
         {
           "pid": 11009,
           "pidHex": "0x2B01",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 Core RGB TKL",
           "type": "keyboard",
           "status": "supported",
@@ -1092,6 +1246,8 @@
         {
           "pid": 7124,
           "pidHex": "0x1BD4",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 Pro Optical",
           "type": "keyboard",
           "status": "supported",
@@ -1103,6 +1259,8 @@
         {
           "pid": 7108,
           "pidHex": "0x1BC4",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 RGB Pro",
           "type": "keyboard",
           "status": "supported",
@@ -1114,6 +1272,8 @@
         {
           "pid": 7091,
           "pidHex": "0x1BB3",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 RGB Pro V2",
           "type": "keyboard",
           "status": "supported",
@@ -1125,6 +1285,8 @@
         {
           "pid": 7027,
           "pidHex": "0x1B73",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 TKL",
           "type": "keyboard",
           "status": "supported",
@@ -1136,6 +1298,8 @@
         {
           "pid": 7097,
           "pidHex": "0x1BB9",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 TKL Champion Optical",
           "type": "keyboard",
           "status": "supported",
@@ -1147,6 +1311,8 @@
         {
           "pid": 7049,
           "pidHex": "0x1B89",
+          "vid": null,
+          "vidHex": null,
           "name": "K95 Platinum XT",
           "type": "keyboard",
           "status": "supported",
@@ -1158,6 +1324,8 @@
         {
           "pid": 7059,
           "pidHex": "0x1B93",
+          "vid": null,
+          "vidHex": null,
           "name": "Katar Pro",
           "type": "mouse",
           "status": "supported",
@@ -1169,6 +1337,8 @@
         {
           "pid": 7098,
           "pidHex": "0x1BBA",
+          "vid": null,
+          "vidHex": null,
           "name": "Katar Pro V2",
           "type": "mouse",
           "status": "supported",
@@ -1180,6 +1350,8 @@
         {
           "pid": 7084,
           "pidHex": "0x1BAC",
+          "vid": null,
+          "vidHex": null,
           "name": "Katar Pro XT",
           "type": "mouse",
           "status": "supported",
@@ -1191,6 +1363,8 @@
         {
           "pid": 3098,
           "pidHex": "0x0C1A",
+          "vid": null,
+          "vidHex": null,
           "name": "Lighting Node Core",
           "type": "argb_controller",
           "status": "supported",
@@ -1202,6 +1376,8 @@
         {
           "pid": 3083,
           "pidHex": "0x0C0B",
+          "vid": null,
+          "vidHex": null,
           "name": "Lighting Node Pro",
           "type": "argb_controller",
           "status": "supported",
@@ -1213,6 +1389,8 @@
         {
           "pid": 3102,
           "pidHex": "0x0C1E",
+          "vid": null,
+          "vidHex": null,
           "name": "LS100 Starter Kit",
           "type": "strip",
           "status": "supported",
@@ -1224,6 +1402,8 @@
         {
           "pid": 3107,
           "pidHex": "0x0C23",
+          "vid": null,
+          "vidHex": null,
           "name": "LT100 Tower",
           "type": "strip",
           "status": "supported",
@@ -1235,6 +1415,8 @@
         {
           "pid": 7024,
           "pidHex": "0x1B70",
+          "vid": null,
+          "vidHex": null,
           "name": "M55 RGB Pro",
           "type": "mouse",
           "status": "supported",
@@ -1246,6 +1428,8 @@
         {
           "pid": 7070,
           "pidHex": "0x1B9E",
+          "vid": null,
+          "vidHex": null,
           "name": "M65 RGB Ultra Wired",
           "type": "mouse",
           "status": "supported",
@@ -1257,6 +1441,8 @@
         {
           "pid": 7093,
           "pidHex": "0x1BB5",
+          "vid": null,
+          "vidHex": null,
           "name": "M65 RGB Ultra Wireless (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -1268,6 +1454,8 @@
         {
           "pid": 7152,
           "pidHex": "0x1BF0",
+          "vid": null,
+          "vidHex": null,
           "name": "M75 Gaming Mouse",
           "type": "mouse",
           "status": "supported",
@@ -1279,6 +1467,8 @@
         {
           "pid": 7067,
           "pidHex": "0x1B9B",
+          "vid": null,
+          "vidHex": null,
           "name": "MM700",
           "type": "mousepad",
           "status": "supported",
@@ -1290,6 +1480,8 @@
         {
           "pid": 7113,
           "pidHex": "0x1BC9",
+          "vid": null,
+          "vidHex": null,
           "name": "MM700 3XL",
           "type": "mousepad",
           "status": "supported",
@@ -1301,6 +1493,8 @@
         {
           "pid": 3157,
           "pidHex": "0x0C55",
+          "vid": null,
+          "vidHex": null,
           "name": "Nautilus RS LCD",
           "type": "lcd",
           "status": "supported",
@@ -1312,6 +1506,8 @@
         {
           "pid": 7139,
           "pidHex": "0x1BE3",
+          "vid": null,
+          "vidHex": null,
           "name": "Scimitar Elite",
           "type": "mouse",
           "status": "supported",
@@ -1323,6 +1519,8 @@
         {
           "pid": 7428,
           "pidHex": "0x1D04",
+          "vid": null,
+          "vidHex": null,
           "name": "SPEC OMEGA RGB",
           "type": "argb_controller",
           "status": "supported",
@@ -1334,6 +1532,8 @@
         {
           "pid": 3138,
           "pidHex": "0x0C42",
+          "vid": null,
+          "vidHex": null,
           "name": "XC7 RGB Elite LCD",
           "type": "lcd",
           "status": "supported",
@@ -1345,6 +1545,8 @@
         {
           "pid": 3139,
           "pidHex": "0x0C43",
+          "vid": null,
+          "vidHex": null,
           "name": "XD6 Elite LCD",
           "type": "lcd",
           "status": "supported",
@@ -1356,6 +1558,8 @@
         {
           "pid": 3090,
           "pidHex": "0x0C12",
+          "vid": null,
+          "vidHex": null,
           "name": "Commander Core",
           "type": "fan_controller",
           "status": "researched",
@@ -1367,6 +1571,8 @@
         {
           "pid": 3100,
           "pidHex": "0x0C1C",
+          "vid": null,
+          "vidHex": null,
           "name": "Commander Core XT",
           "type": "fan_controller",
           "status": "researched",
@@ -1378,6 +1584,8 @@
         {
           "pid": 7039,
           "pidHex": "0x1B7F",
+          "vid": null,
+          "vidHex": null,
           "name": "Dark Core RGB Pro SE Wireless Dongle",
           "type": "other",
           "status": "researched",
@@ -1389,6 +1597,8 @@
         {
           "pid": 7041,
           "pidHex": "0x1B81",
+          "vid": null,
+          "vidHex": null,
           "name": "Dark Core RGB Pro Wireless Dongle",
           "type": "other",
           "status": "researched",
@@ -1400,6 +1610,8 @@
         {
           "pid": 6958,
           "pidHex": "0x1B2E",
+          "vid": null,
+          "vidHex": null,
           "name": "Dominator RAM",
           "type": "ram",
           "status": "researched",
@@ -1411,6 +1623,8 @@
         {
           "pid": 6976,
           "pidHex": "0x1B40",
+          "vid": null,
+          "vidHex": null,
           "name": "Dominator Titanium RAM",
           "type": "ram",
           "status": "researched",
@@ -1422,6 +1636,8 @@
         {
           "pid": 7078,
           "pidHex": "0x1BA6",
+          "vid": null,
+          "vidHex": null,
           "name": "Generic Bragi Dongle",
           "type": "other",
           "status": "researched",
@@ -1433,6 +1649,8 @@
         {
           "pid": 7013,
           "pidHex": "0x1B65",
+          "vid": null,
+          "vidHex": null,
           "name": "Harpoon Wireless Dongle",
           "type": "other",
           "status": "researched",
@@ -1444,6 +1662,8 @@
         {
           "pid": 2639,
           "pidHex": "0x0A4F",
+          "vid": null,
+          "vidHex": null,
           "name": "HS80 RGB Wired",
           "type": "headset",
           "status": "researched",
@@ -1455,6 +1675,8 @@
         {
           "pid": 7014,
           "pidHex": "0x1B66",
+          "vid": null,
+          "vidHex": null,
           "name": "Ironclaw RGB Wireless Dongle",
           "type": "other",
           "status": "researched",
@@ -1466,6 +1688,8 @@
         {
           "pid": 6973,
           "pidHex": "0x1B3D",
+          "vid": null,
+          "vidHex": null,
           "name": "K55",
           "type": "keyboard",
           "status": "researched",
@@ -1477,6 +1701,8 @@
         {
           "pid": 7010,
           "pidHex": "0x1B62",
+          "vid": null,
+          "vidHex": null,
           "name": "K57 Wireless Dongle",
           "type": "other",
           "status": "researched",
@@ -1488,6 +1714,8 @@
         {
           "pid": 6919,
           "pidHex": "0x1B07",
+          "vid": null,
+          "vidHex": null,
           "name": "K65 Legacy",
           "type": "keyboard",
           "status": "researched",
@@ -1499,6 +1727,8 @@
         {
           "pid": 6967,
           "pidHex": "0x1B37",
+          "vid": null,
+          "vidHex": null,
           "name": "K65 Lux RGB",
           "type": "keyboard",
           "status": "researched",
@@ -1510,6 +1740,8 @@
         {
           "pid": 6935,
           "pidHex": "0x1B17",
+          "vid": null,
+          "vidHex": null,
           "name": "K65 RGB",
           "type": "keyboard",
           "status": "researched",
@@ -1521,6 +1753,8 @@
         {
           "pid": 6977,
           "pidHex": "0x1B41",
+          "vid": null,
+          "vidHex": null,
           "name": "K66",
           "type": "keyboard",
           "status": "researched",
@@ -1532,6 +1766,8 @@
         {
           "pid": 6921,
           "pidHex": "0x1B09",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 Legacy",
           "type": "keyboard",
           "status": "researched",
@@ -1543,6 +1779,8 @@
         {
           "pid": 6963,
           "pidHex": "0x1B33",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 Lux RGB",
           "type": "keyboard",
           "status": "researched",
@@ -1554,6 +1792,8 @@
         {
           "pid": 6985,
           "pidHex": "0x1B49",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 MK.2",
           "type": "keyboard",
           "status": "researched",
@@ -1565,6 +1805,8 @@
         {
           "pid": 6931,
           "pidHex": "0x1B13",
+          "vid": null,
+          "vidHex": null,
           "name": "K70 RGB",
           "type": "keyboard",
           "status": "researched",
@@ -1576,6 +1818,8 @@
         {
           "pid": 6914,
           "pidHex": "0x1B02",
+          "vid": null,
+          "vidHex": null,
           "name": "K90 Legacy",
           "type": "keyboard",
           "status": "researched",
@@ -1587,6 +1831,8 @@
         {
           "pid": 6920,
           "pidHex": "0x1B08",
+          "vid": null,
+          "vidHex": null,
           "name": "K95 Legacy",
           "type": "keyboard",
           "status": "researched",
@@ -1598,6 +1844,8 @@
         {
           "pid": 6957,
           "pidHex": "0x1B2D",
+          "vid": null,
+          "vidHex": null,
           "name": "K95 Platinum",
           "type": "keyboard",
           "status": "researched",
@@ -1609,6 +1857,8 @@
         {
           "pid": 6929,
           "pidHex": "0x1B11",
+          "vid": null,
+          "vidHex": null,
           "name": "K95 RGB",
           "type": "keyboard",
           "status": "researched",
@@ -1620,6 +1870,8 @@
         {
           "pid": 6930,
           "pidHex": "0x1B12",
+          "vid": null,
+          "vidHex": null,
           "name": "M65",
           "type": "mouse",
           "status": "researched",
@@ -1631,6 +1883,8 @@
         {
           "pid": 6918,
           "pidHex": "0x1B06",
+          "vid": null,
+          "vidHex": null,
           "name": "M95",
           "type": "mouse",
           "status": "researched",
@@ -1642,6 +1896,8 @@
         {
           "pid": 2628,
           "pidHex": "0x0A44",
+          "vid": null,
+          "vidHex": null,
           "name": "Nexus LCD Companion",
           "type": "lcd",
           "status": "researched",
@@ -1653,6 +1909,8 @@
         {
           "pid": 6971,
           "pidHex": "0x1B3B",
+          "vid": null,
+          "vidHex": null,
           "name": "Polaris",
           "type": "mousepad",
           "status": "researched",
@@ -1664,6 +1922,8 @@
         {
           "pid": 6942,
           "pidHex": "0x1B1E",
+          "vid": null,
+          "vidHex": null,
           "name": "Scimitar",
           "type": "mouse",
           "status": "researched",
@@ -1675,6 +1935,8 @@
         {
           "pid": 2612,
           "pidHex": "0x0A34",
+          "vid": null,
+          "vidHex": null,
           "name": "ST100",
           "type": "other",
           "status": "researched",
@@ -1686,6 +1948,8 @@
         {
           "pid": 6944,
           "pidHex": "0x1B20",
+          "vid": null,
+          "vidHex": null,
           "name": "Strafe RGB",
           "type": "keyboard",
           "status": "researched",
@@ -1697,6 +1961,8 @@
         {
           "pid": 2641,
           "pidHex": "0x0A51",
+          "vid": null,
+          "vidHex": null,
           "name": "Void Elite Wireless",
           "type": "headset",
           "status": "researched",
@@ -1708,6 +1974,8 @@
         {
           "pid": 2645,
           "pidHex": "0x0A55",
+          "vid": null,
+          "vidHex": null,
           "name": "Void Elite Wireless (White)",
           "type": "headset",
           "status": "researched",
@@ -1719,6 +1987,8 @@
         {
           "pid": 2648,
           "pidHex": "0x0A58",
+          "vid": null,
+          "vidHex": null,
           "name": "Void Pro Wireless",
           "type": "headset",
           "status": "researched",
@@ -1772,6 +2042,8 @@
         {
           "pid": 16,
           "pidHex": "0x0010",
+          "vid": null,
+          "vidHex": null,
           "name": "Defy (Wired)",
           "type": "keyboard",
           "status": "blocked",
@@ -1783,6 +2055,8 @@
         {
           "pid": 18,
           "pidHex": "0x0012",
+          "vid": null,
+          "vidHex": null,
           "name": "Defy (Wireless)",
           "type": "keyboard",
           "status": "blocked",
@@ -1827,6 +2101,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "EVGA GPU (Pascal/Turing/Ampere)",
           "type": "gpu",
           "status": "known",
@@ -1838,6 +2114,8 @@
         {
           "pid": 9237,
           "pidHex": "0x2415",
+          "vid": null,
+          "vidHex": null,
           "name": "X15 Mouse",
           "type": "mouse",
           "status": "known",
@@ -1849,6 +2127,8 @@
         {
           "pid": 9229,
           "pidHex": "0x240D",
+          "vid": null,
+          "vidHex": null,
           "name": "X17 Mouse",
           "type": "mouse",
           "status": "known",
@@ -1860,6 +2140,8 @@
         {
           "pid": 9736,
           "pidHex": "0x2608",
+          "vid": null,
+          "vidHex": null,
           "name": "Z15 Keyboard (ANSI)",
           "type": "keyboard",
           "status": "known",
@@ -1871,6 +2153,8 @@
         {
           "pid": 9742,
           "pidHex": "0x260E",
+          "vid": null,
+          "vidHex": null,
           "name": "Z15 Keyboard (ISO)",
           "type": "keyboard",
           "status": "known",
@@ -1882,6 +2166,8 @@
         {
           "pid": 9738,
           "pidHex": "0x260A",
+          "vid": null,
+          "vidHex": null,
           "name": "Z20 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -1893,6 +2179,8 @@
         {
           "pid": 9744,
           "pidHex": "0x2610",
+          "vid": null,
+          "vidHex": null,
           "name": "Z20 Keyboard (ISO)",
           "type": "keyboard",
           "status": "known",
@@ -1935,6 +2223,8 @@
         {
           "pid": 259,
           "pidHex": "0x0103",
+          "vid": null,
+          "vidHex": null,
           "name": "miniSTREAK Speed",
           "type": "keyboard",
           "status": "known",
@@ -1946,6 +2236,8 @@
         {
           "pid": 257,
           "pidHex": "0x0101",
+          "vid": null,
+          "vidHex": null,
           "name": "STREAK",
           "type": "keyboard",
           "status": "known",
@@ -1957,6 +2249,8 @@
         {
           "pid": 261,
           "pidHex": "0x0105",
+          "vid": null,
+          "vidHex": null,
           "name": "STREAK65",
           "type": "keyboard",
           "status": "known",
@@ -2001,6 +2295,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Gigabyte GPU (Gen 1-4)",
           "type": "gpu",
           "status": "researched",
@@ -2012,6 +2308,8 @@
         {
           "pid": 22274,
           "pidHex": "0x5702",
+          "vid": null,
+          "vidHex": null,
           "name": "RGB Fusion Motherboard Controller",
           "type": "motherboard",
           "status": "researched",
@@ -2023,6 +2321,8 @@
         {
           "pid": 33431,
           "pidHex": "0x8297",
+          "vid": null,
+          "vidHex": null,
           "name": "RGB Fusion Motherboard Controller (Alt)",
           "type": "motherboard",
           "status": "researched",
@@ -2034,6 +2334,8 @@
         {
           "pid": 22289,
           "pidHex": "0x5711",
+          "vid": null,
+          "vidHex": null,
           "name": "RGB Fusion Motherboard Controller (Gen 2)",
           "type": "motherboard",
           "status": "researched",
@@ -2045,6 +2347,8 @@
         {
           "pid": 31298,
           "pidHex": "0x7A42",
+          "vid": null,
+          "vidHex": null,
           "name": "Aorus ATC800",
           "type": "aio",
           "status": "known",
@@ -2056,6 +2360,8 @@
         {
           "pid": 31302,
           "pidHex": "0x7A46",
+          "vid": null,
+          "vidHex": null,
           "name": "Aorus Liquid Cooler 360",
           "type": "aio",
           "status": "known",
@@ -2067,6 +2373,8 @@
         {
           "pid": 31309,
           "pidHex": "0x7A4D",
+          "vid": null,
+          "vidHex": null,
           "name": "Aorus Waterforce X I",
           "type": "aio",
           "status": "known",
@@ -2078,6 +2386,8 @@
         {
           "pid": 31326,
           "pidHex": "0x7A5E",
+          "vid": null,
+          "vidHex": null,
           "name": "Aorus Waterforce X II",
           "type": "aio",
           "status": "known",
@@ -2122,6 +2432,8 @@
         {
           "pid": 20548,
           "pidHex": "0x5044",
+          "vid": null,
+          "vidHex": null,
           "name": "GMMK Pro",
           "type": "keyboard",
           "status": "supported",
@@ -2133,6 +2445,8 @@
         {
           "pid": 8229,
           "pidHex": "0x2025",
+          "vid": null,
+          "vidHex": null,
           "name": "Model D Wireless",
           "type": "mouse",
           "status": "known",
@@ -2144,6 +2458,8 @@
         {
           "pid": 8212,
           "pidHex": "0x2014",
+          "vid": null,
+          "vidHex": null,
           "name": "Model D Wireless (Wired)",
           "type": "mouse",
           "status": "known",
@@ -2155,6 +2471,8 @@
         {
           "pid": 8226,
           "pidHex": "0x2022",
+          "vid": null,
+          "vidHex": null,
           "name": "Model O Wireless",
           "type": "mouse",
           "status": "known",
@@ -2166,6 +2484,8 @@
         {
           "pid": 8209,
           "pidHex": "0x2011",
+          "vid": null,
+          "vidHex": null,
           "name": "Model O Wireless (Wired)",
           "type": "mouse",
           "status": "known",
@@ -2207,6 +2527,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Govee Outdoor & String Lights",
           "type": "strip",
           "status": "supported",
@@ -2218,6 +2540,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Govee RGBIC LED Strip",
           "type": "strip",
           "status": "supported",
@@ -2229,6 +2553,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Govee RGBIC Light Bars",
           "type": "lightbar",
           "status": "supported",
@@ -2240,6 +2566,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Govee RGBIC TV Backlight",
           "type": "strip",
           "status": "supported",
@@ -2287,6 +2615,8 @@
         {
           "pid": 5905,
           "pidHex": "0x1711",
+          "vid": null,
+          "vidHex": null,
           "name": "Alloy Elite 2",
           "type": "keyboard",
           "status": "known",
@@ -2298,6 +2628,8 @@
         {
           "pid": 5822,
           "pidHex": "0x16BE",
+          "vid": null,
+          "vidHex": null,
           "name": "Alloy Elite RGB",
           "type": "keyboard",
           "status": "known",
@@ -2309,6 +2641,8 @@
         {
           "pid": 5852,
           "pidHex": "0x16DC",
+          "vid": null,
+          "vidHex": null,
           "name": "Alloy FPS RGB",
           "type": "keyboard",
           "status": "known",
@@ -2320,6 +2654,8 @@
         {
           "pid": 5861,
           "pidHex": "0x16E5",
+          "vid": null,
+          "vidHex": null,
           "name": "Alloy Origins",
           "type": "keyboard",
           "status": "known",
@@ -2331,6 +2667,8 @@
         {
           "pid": 5940,
           "pidHex": "0x1734",
+          "vid": null,
+          "vidHex": null,
           "name": "Alloy Origins 60",
           "type": "keyboard",
           "status": "known",
@@ -2342,6 +2680,8 @@
         {
           "pid": 911,
           "pidHex": "0x038F",
+          "vid": null,
+          "vidHex": null,
           "name": "Alloy Origins 65",
           "type": "keyboard",
           "status": "known",
@@ -2353,6 +2693,8 @@
         {
           "pid": 5862,
           "pidHex": "0x16E6",
+          "vid": null,
+          "vidHex": null,
           "name": "Alloy Origins Core",
           "type": "keyboard",
           "status": "known",
@@ -2364,6 +2706,8 @@
         {
           "pid": 5828,
           "pidHex": "0x16C4",
+          "vid": null,
+          "vidHex": null,
           "name": "Cloud Flight",
           "type": "headset",
           "status": "known",
@@ -2375,6 +2719,8 @@
         {
           "pid": 2444,
           "pidHex": "0x098C",
+          "vid": null,
+          "vidHex": null,
           "name": "Duocast",
           "type": "microphone",
           "status": "known",
@@ -2386,6 +2732,8 @@
         {
           "pid": 5893,
           "pidHex": "0x1705",
+          "vid": null,
+          "vidHex": null,
           "name": "Fury Ultra",
           "type": "mousepad",
           "status": "known",
@@ -2397,6 +2745,8 @@
         {
           "pid": 5854,
           "pidHex": "0x16DE",
+          "vid": null,
+          "vidHex": null,
           "name": "PulseFire Core",
           "type": "mouse",
           "status": "known",
@@ -2408,6 +2758,8 @@
         {
           "pid": 5927,
           "pidHex": "0x1727",
+          "vid": null,
+          "vidHex": null,
           "name": "PulseFire Haste",
           "type": "mouse",
           "status": "known",
@@ -2419,6 +2771,8 @@
         {
           "pid": 5860,
           "pidHex": "0x16E4",
+          "vid": null,
+          "vidHex": null,
           "name": "PulseFire Raid",
           "type": "mouse",
           "status": "known",
@@ -2430,6 +2784,8 @@
         {
           "pid": 5843,
           "pidHex": "0x16D3",
+          "vid": null,
+          "vidHex": null,
           "name": "PulseFire Surge",
           "type": "mouse",
           "status": "known",
@@ -2441,6 +2797,8 @@
         {
           "pid": 693,
           "pidHex": "0x02B5",
+          "vid": null,
+          "vidHex": null,
           "name": "Quadcast 2 S",
           "type": "microphone",
           "status": "known",
@@ -2452,6 +2810,8 @@
         {
           "pid": 5917,
           "pidHex": "0x171D",
+          "vid": null,
+          "vidHex": null,
           "name": "Quadcast S",
           "type": "microphone",
           "status": "known",
@@ -2496,6 +2856,8 @@
         {
           "pid": 2816,
           "pidHex": "0x0B00",
+          "vid": null,
+          "vidHex": null,
           "name": "CNVS",
           "type": "mousepad",
           "status": "known",
@@ -2507,6 +2869,8 @@
         {
           "pid": 2817,
           "pidHex": "0x0B01",
+          "vid": null,
+          "vidHex": null,
           "name": "CNVS (Alt PID)",
           "type": "mousepad",
           "status": "known",
@@ -2549,6 +2913,8 @@
         {
           "pid": 29554,
           "pidHex": "0x7372",
+          "vid": null,
+          "vidHex": null,
           "name": "TL Fan Hub",
           "type": "fan_controller",
           "status": "supported",
@@ -2558,8 +2924,23 @@
           "notes": "VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported."
         },
         {
+          "pid": 29587,
+          "pidHex": "0x7393",
+          "vid": 1276,
+          "vidHex": "0x04FC",
+          "name": "Uni Fan TL LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_hid",
+          "leds": null,
+          "notes": "400x400 round panel. JPEG streaming in 512-byte packets; every unit reports serial TL_LCDV0.1, so identity keys on the USB port path."
+        },
+        {
           "pid": 41217,
           "pidHex": "0xA101",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub - AL",
           "type": "fan_controller",
           "status": "supported",
@@ -2571,6 +2952,8 @@
         {
           "pid": 41220,
           "pidHex": "0xA104",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub - AL V2",
           "type": "fan_controller",
           "status": "supported",
@@ -2582,6 +2965,8 @@
         {
           "pid": 41216,
           "pidHex": "0xA100",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub - SL",
           "type": "fan_controller",
           "status": "supported",
@@ -2593,6 +2978,8 @@
         {
           "pid": 41218,
           "pidHex": "0xA102",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub - SL Infinity",
           "type": "fan_controller",
           "status": "supported",
@@ -2604,6 +2991,8 @@
         {
           "pid": 41222,
           "pidHex": "0xA106",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub - SL Redragon",
           "type": "fan_controller",
           "status": "supported",
@@ -2615,6 +3004,8 @@
         {
           "pid": 41219,
           "pidHex": "0xA103",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub - SL V2",
           "type": "fan_controller",
           "status": "supported",
@@ -2626,6 +3017,8 @@
         {
           "pid": 41221,
           "pidHex": "0xA105",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub - SL V2a",
           "type": "fan_controller",
           "status": "supported",
@@ -2637,6 +3030,8 @@
         {
           "pid": 30544,
           "pidHex": "0x7750",
+          "vid": null,
+          "vidHex": null,
           "name": "Uni Hub (Original)",
           "type": "fan_controller",
           "status": "supported",
@@ -2648,6 +3043,8 @@
         {
           "pid": 29589,
           "pidHex": "0x7395",
+          "vid": null,
+          "vidHex": null,
           "name": "Galahad II LCD",
           "type": "aio",
           "status": "researched",
@@ -2659,6 +3056,8 @@
         {
           "pid": 41472,
           "pidHex": "0xA200",
+          "vid": null,
+          "vidHex": null,
           "name": "Strimer Controller",
           "type": "strip",
           "status": "researched",
@@ -2669,14 +3068,14 @@
         }
       ],
       "counts": {
-        "supported": 9,
+        "supported": 10,
         "in_progress": 0,
         "planned": 0,
         "researched": 2,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 11,
+      "totalDevices": 12,
       "drivers": [
         "lianli"
       ],
@@ -2687,6 +3086,7 @@
       "deviceTypes": [
         "aio",
         "fan_controller",
+        "lcd",
         "strip"
       ],
       "sourceFile": "data/drivers/vendors/lianli.toml"
@@ -2706,6 +3106,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "G13 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -2717,6 +3119,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "G19 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -2728,6 +3132,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "G513 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -2739,6 +3145,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "G560 Speakers",
           "type": "speakers",
           "status": "known",
@@ -2750,6 +3158,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "G600 Mouse",
           "type": "mouse",
           "status": "known",
@@ -2761,6 +3171,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "G810 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -2772,6 +3184,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "G910 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -2783,6 +3197,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Logitech Modern Device (multi-PID)",
           "type": "keyboard",
           "status": "known",
@@ -2794,6 +3210,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Wireless Dongle",
           "type": "other",
           "status": "known",
@@ -2837,6 +3255,8 @@
         {
           "pid": 5,
           "pidHex": "0x0005",
+          "vid": null,
+          "vidHex": null,
           "name": "Everest 60",
           "type": "keyboard",
           "status": "known",
@@ -2848,6 +3268,8 @@
         {
           "pid": 1,
           "pidHex": "0x0001",
+          "vid": null,
+          "vidHex": null,
           "name": "Everest Max",
           "type": "keyboard",
           "status": "known",
@@ -2859,6 +3281,8 @@
         {
           "pid": 8,
           "pidHex": "0x0008",
+          "vid": null,
+          "vidHex": null,
           "name": "Macropad",
           "type": "keyboard",
           "status": "known",
@@ -2870,6 +3294,8 @@
         {
           "pid": 3,
           "pidHex": "0x0003",
+          "vid": null,
+          "vidHex": null,
           "name": "Makalu 67",
           "type": "mouse",
           "status": "known",
@@ -2915,6 +3341,8 @@
         {
           "pid": 31621,
           "pidHex": "0x7B85",
+          "vid": null,
+          "vidHex": null,
           "name": "B450 Gaming Pro Carbon AC",
           "type": "motherboard",
           "status": "researched",
@@ -2926,6 +3354,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "MSI GPU (Lovelace)",
           "type": "gpu",
           "status": "researched",
@@ -2937,6 +3367,8 @@
         {
           "pid": 5920,
           "pidHex": "0x1720",
+          "vid": null,
+          "vidHex": null,
           "name": "Mystic Light Controller (162 Byte)",
           "type": "motherboard",
           "status": "researched",
@@ -2948,6 +3380,8 @@
         {
           "pid": 31511,
           "pidHex": "0x7B17",
+          "vid": null,
+          "vidHex": null,
           "name": "Mystic Light Controller (162 Byte)",
           "type": "motherboard",
           "status": "researched",
@@ -2959,6 +3393,8 @@
         {
           "pid": 31512,
           "pidHex": "0x7B18",
+          "vid": null,
+          "vidHex": null,
           "name": "Mystic Light Controller (162 Byte)",
           "type": "motherboard",
           "status": "researched",
@@ -2970,6 +3406,8 @@
         {
           "pid": 47398,
           "pidHex": "0xB926",
+          "vid": null,
+          "vidHex": null,
           "name": "Mystic Light Controller (162 Byte)",
           "type": "motherboard",
           "status": "researched",
@@ -2981,6 +3419,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Mystic Light Controller (185 Byte)",
           "type": "motherboard",
           "status": "researched",
@@ -2992,6 +3432,8 @@
         {
           "pid": 65280,
           "pidHex": "0xFF00",
+          "vid": null,
+          "vidHex": null,
           "name": "GS63 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -3003,6 +3445,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "MSI GPU (Blackwell)",
           "type": "gpu",
           "status": "known",
@@ -3014,6 +3458,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "MSI Keyboard (Modern)",
           "type": "keyboard",
           "status": "known",
@@ -3025,6 +3471,8 @@
         {
           "pid": 16292,
           "pidHex": "0x3FA4",
+          "vid": null,
+          "vidHex": null,
           "name": "MSI Monitor Controller",
           "type": "monitor",
           "status": "known",
@@ -3064,6 +3512,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Nanoleaf Panels (any)",
           "type": "strip",
           "status": "supported",
@@ -3116,6 +3566,8 @@
         {
           "pid": 7953,
           "pidHex": "0x1F11",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 1",
           "type": "argb_controller",
           "status": "supported",
@@ -3127,6 +3579,8 @@
         {
           "pid": 10753,
           "pidHex": "0x2A01",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 1 CDC",
           "type": "argb_controller",
           "status": "supported",
@@ -3138,6 +3592,8 @@
         {
           "pid": 5651,
           "pidHex": "0x1613",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 16 #1 legacy / v1.2",
           "type": "argb_controller",
           "status": "supported",
@@ -3149,6 +3605,8 @@
         {
           "pid": 5653,
           "pidHex": "0x1615",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 16 #2 legacy / v1.2",
           "type": "argb_controller",
           "status": "supported",
@@ -3160,6 +3618,8 @@
         {
           "pid": 18198,
           "pidHex": "0x4716",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 16 v3",
           "type": "argb_controller",
           "status": "supported",
@@ -3171,6 +3631,8 @@
         {
           "pid": 10774,
           "pidHex": "0x2A16",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 16 v3 NOS2",
           "type": "argb_controller",
           "status": "supported",
@@ -3182,6 +3644,8 @@
         {
           "pid": 5657,
           "pidHex": "0x1619",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 2",
           "type": "argb_controller",
           "status": "supported",
@@ -3193,6 +3657,8 @@
         {
           "pid": 5654,
           "pidHex": "0x1616",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 28/12 v1.2",
           "type": "argb_controller",
           "status": "supported",
@@ -3204,6 +3670,8 @@
         {
           "pid": 18196,
           "pidHex": "0x4714",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 32",
           "type": "argb_controller",
           "status": "supported",
@@ -3215,6 +3683,8 @@
         {
           "pid": 10802,
           "pidHex": "0x2A32",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 32 NOS2",
           "type": "argb_controller",
           "status": "supported",
@@ -3226,6 +3696,8 @@
         {
           "pid": 18193,
           "pidHex": "0x4711",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 4",
           "type": "argb_controller",
           "status": "supported",
@@ -3237,6 +3709,8 @@
         {
           "pid": 10760,
           "pidHex": "0x2A08",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 8 CDC",
           "type": "argb_controller",
           "status": "supported",
@@ -3248,6 +3722,8 @@
         {
           "pid": 5650,
           "pidHex": "0x1612",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 8 legacy / Nollie 8 v1.2",
           "type": "argb_controller",
           "status": "supported",
@@ -3259,6 +3735,8 @@
         {
           "pid": 7937,
           "pidHex": "0x1F01",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 8 v2 / PrismRGB Prism 8",
           "type": "argb_controller",
           "status": "supported",
@@ -3270,6 +3748,8 @@
         {
           "pid": 18194,
           "pidHex": "0x4712",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie 8 Youth",
           "type": "argb_controller",
           "status": "supported",
@@ -3281,6 +3761,8 @@
         {
           "pid": 5655,
           "pidHex": "0x1617",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie L1 v1.2",
           "type": "argb_controller",
           "status": "supported",
@@ -3292,6 +3774,8 @@
         {
           "pid": 5656,
           "pidHex": "0x1618",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie L2 v1.2",
           "type": "argb_controller",
           "status": "supported",
@@ -3303,6 +3787,8 @@
         {
           "pid": 1,
           "pidHex": "0x0001",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie Matrix",
           "type": "argb_controller",
           "status": "supported",
@@ -3314,6 +3800,8 @@
         {
           "pid": 5664,
           "pidHex": "0x1620",
+          "vid": null,
+          "vidHex": null,
           "name": "Nollie TT",
           "type": "argb_controller",
           "status": "supported",
@@ -3359,6 +3847,8 @@
         {
           "pid": 12302,
           "pidHex": "0x300E",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken",
           "type": "aio",
           "status": "researched",
@@ -3370,6 +3860,8 @@
         {
           "pid": 12300,
           "pidHex": "0x300C",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken Elite",
           "type": "aio",
           "status": "researched",
@@ -3381,6 +3873,8 @@
         {
           "pid": 12306,
           "pidHex": "0x3012",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken Elite V2",
           "type": "aio",
           "status": "researched",
@@ -3392,6 +3886,8 @@
         {
           "pid": 12296,
           "pidHex": "0x3008",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken Z3",
           "type": "aio",
           "status": "researched",
@@ -3403,6 +3899,8 @@
         {
           "pid": 8201,
           "pidHex": "0x2009",
+          "vid": null,
+          "vidHex": null,
           "name": "RGB and Fan Controller",
           "type": "fan_controller",
           "status": "researched",
@@ -3414,6 +3912,8 @@
         {
           "pid": 8193,
           "pidHex": "0x2001",
+          "vid": null,
+          "vidHex": null,
           "name": "Smart Device V2 (Hue 2)",
           "type": "argb_controller",
           "status": "researched",
@@ -3425,6 +3925,8 @@
         {
           "pid": 8496,
           "pidHex": "0x2130",
+          "vid": null,
+          "vidHex": null,
           "name": "Function 2 Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -3436,6 +3938,8 @@
         {
           "pid": 8451,
           "pidHex": "0x2103",
+          "vid": null,
+          "vidHex": null,
           "name": "Function Keyboard",
           "type": "keyboard",
           "status": "known",
@@ -3447,6 +3951,8 @@
         {
           "pid": 5902,
           "pidHex": "0x170E",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken X2/M2",
           "type": "aio",
           "status": "known",
@@ -3458,6 +3964,8 @@
         {
           "pid": 8199,
           "pidHex": "0x2007",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken X3",
           "type": "aio",
           "status": "known",
@@ -3469,6 +3977,8 @@
         {
           "pid": 8448,
           "pidHex": "0x2100",
+          "vid": null,
+          "vidHex": null,
           "name": "Lift Mouse",
           "type": "mouse",
           "status": "known",
@@ -3480,6 +3990,8 @@
         {
           "pid": 8203,
           "pidHex": "0x200B",
+          "vid": null,
+          "vidHex": null,
           "name": "N7 B550",
           "type": "motherboard",
           "status": "known",
@@ -3491,6 +4003,8 @@
         {
           "pid": 8219,
           "pidHex": "0x201B",
+          "vid": null,
+          "vidHex": null,
           "name": "N7 B650E",
           "type": "motherboard",
           "status": "known",
@@ -3502,6 +4016,8 @@
         {
           "pid": 8197,
           "pidHex": "0x2005",
+          "vid": null,
+          "vidHex": null,
           "name": "N7 Z390",
           "type": "motherboard",
           "status": "known",
@@ -3513,6 +4029,8 @@
         {
           "pid": 8202,
           "pidHex": "0x200A",
+          "vid": null,
+          "vidHex": null,
           "name": "N7 Z490",
           "type": "motherboard",
           "status": "known",
@@ -3524,6 +4042,8 @@
         {
           "pid": 8221,
           "pidHex": "0x201D",
+          "vid": null,
+          "vidHex": null,
           "name": "N7 Z790",
           "type": "motherboard",
           "status": "known",
@@ -3535,6 +4055,8 @@
         {
           "pid": 5908,
           "pidHex": "0x1714",
+          "vid": null,
+          "vidHex": null,
           "name": "Smart Device V1",
           "type": "argb_controller",
           "status": "known",
@@ -3576,6 +4098,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Hue Bridge (any)",
           "type": "argb_controller",
           "status": "supported",
@@ -3622,6 +4146,8 @@
         {
           "pid": 7937,
           "pidHex": "0x1F01",
+          "vid": null,
+          "vidHex": null,
           "name": "Prism 8",
           "type": "argb_controller",
           "status": "supported",
@@ -3633,6 +4159,8 @@
         {
           "pid": 5127,
           "pidHex": "0x1407",
+          "vid": null,
+          "vidHex": null,
           "name": "Prism Mini",
           "type": "argb_controller",
           "status": "supported",
@@ -3644,6 +4172,8 @@
         {
           "pid": 4756,
           "pidHex": "0x1294",
+          "vid": null,
+          "vidHex": null,
           "name": "Prism S",
           "type": "argb_controller",
           "status": "supported",
@@ -3705,6 +4235,8 @@
         {
           "pid": 20548,
           "pidHex": "0x5044",
+          "vid": null,
+          "vidHex": null,
           "name": "Glorious GMMK Pro",
           "type": "keyboard",
           "status": "supported",
@@ -3716,6 +4248,8 @@
         {
           "pid": 272,
           "pidHex": "0x0110",
+          "vid": null,
+          "vidHex": null,
           "name": "Keychron Q1",
           "type": "keyboard",
           "status": "supported",
@@ -3727,6 +4261,8 @@
         {
           "pid": 288,
           "pidHex": "0x0120",
+          "vid": null,
+          "vidHex": null,
           "name": "Keychron Q2",
           "type": "keyboard",
           "status": "supported",
@@ -3738,6 +4274,8 @@
         {
           "pid": 304,
           "pidHex": "0x0130",
+          "vid": null,
+          "vidHex": null,
           "name": "Keychron Q3",
           "type": "keyboard",
           "status": "supported",
@@ -3749,6 +4287,8 @@
         {
           "pid": 336,
           "pidHex": "0x0150",
+          "vid": null,
+          "vidHex": null,
           "name": "Keychron Q5",
           "type": "keyboard",
           "status": "supported",
@@ -3760,6 +4300,8 @@
         {
           "pid": 352,
           "pidHex": "0x0160",
+          "vid": null,
+          "vidHex": null,
           "name": "Keychron Q6",
           "type": "keyboard",
           "status": "supported",
@@ -3771,6 +4313,8 @@
         {
           "pid": 784,
           "pidHex": "0x0310",
+          "vid": null,
+          "vidHex": null,
           "name": "Keychron V1",
           "type": "keyboard",
           "status": "supported",
@@ -3782,6 +4326,8 @@
         {
           "pid": 24672,
           "pidHex": "0x6060",
+          "vid": null,
+          "vidHex": null,
           "name": "OLKB Planck",
           "type": "keyboard",
           "status": "supported",
@@ -3793,6 +4339,8 @@
         {
           "pid": 6505,
           "pidHex": "0x1969",
+          "vid": null,
+          "vidHex": null,
           "name": "ZSA Moonlander",
           "type": "keyboard",
           "status": "supported",
@@ -3804,6 +4352,8 @@
         {
           "pid": 1937,
           "pidHex": "0x0791",
+          "vid": null,
+          "vidHex": null,
           "name": "ZSA Voyager",
           "type": "keyboard",
           "status": "supported",
@@ -3848,6 +4398,8 @@
         {
           "pid": 3872,
           "pidHex": "0x0F20",
+          "vid": null,
+          "vidHex": null,
           "name": "Base Station V2 Chroma",
           "type": "other",
           "status": "supported",
@@ -3859,6 +4411,8 @@
         {
           "pid": 134,
           "pidHex": "0x0086",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk Ultimate",
           "type": "mouse",
           "status": "supported",
@@ -3870,6 +4424,8 @@
         {
           "pid": 136,
           "pidHex": "0x0088",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk Ultimate (Wireless)",
           "type": "mouse",
           "status": "supported",
@@ -3881,6 +4437,8 @@
         {
           "pid": 153,
           "pidHex": "0x0099",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3",
           "type": "mouse",
           "status": "supported",
@@ -3892,6 +4450,8 @@
         {
           "pid": 203,
           "pidHex": "0x00CB",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 35K",
           "type": "mouse",
           "status": "supported",
@@ -3903,6 +4463,8 @@
         {
           "pid": 170,
           "pidHex": "0x00AA",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 Pro (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -3914,6 +4476,8 @@
         {
           "pid": 171,
           "pidHex": "0x00AB",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 Pro (Wireless)",
           "type": "mouse",
           "status": "supported",
@@ -3925,6 +4489,8 @@
         {
           "pid": 204,
           "pidHex": "0x00CC",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 Pro 35K (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -3936,6 +4502,8 @@
         {
           "pid": 205,
           "pidHex": "0x00CD",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 Pro 35K (Wireless)",
           "type": "mouse",
           "status": "supported",
@@ -3947,6 +4515,8 @@
         {
           "pid": 214,
           "pidHex": "0x00D6",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 Pro 35K Phantom Green (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -3958,6 +4528,8 @@
         {
           "pid": 215,
           "pidHex": "0x00D7",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 Pro 35K Phantom Green (Wireless)",
           "type": "mouse",
           "status": "supported",
@@ -3969,6 +4541,8 @@
         {
           "pid": 185,
           "pidHex": "0x00B9",
+          "vid": null,
+          "vidHex": null,
           "name": "Basilisk V3 X HyperSpeed",
           "type": "mouse",
           "status": "supported",
@@ -3980,6 +4554,8 @@
         {
           "pid": 590,
           "pidHex": "0x024E",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V3",
           "type": "keyboard",
           "status": "supported",
@@ -3991,6 +4567,8 @@
         {
           "pid": 600,
           "pidHex": "0x0258",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V3 Mini (Wired)",
           "type": "keyboard",
           "status": "supported",
@@ -4002,6 +4580,8 @@
         {
           "pid": 602,
           "pidHex": "0x025A",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V3 Pro (Wired)",
           "type": "keyboard",
           "status": "supported",
@@ -4013,6 +4593,8 @@
         {
           "pid": 604,
           "pidHex": "0x025C",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V3 Pro (Wireless)",
           "type": "keyboard",
           "status": "supported",
@@ -4024,6 +4606,8 @@
         {
           "pid": 2596,
           "pidHex": "0x0A24",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V3 TKL",
           "type": "keyboard",
           "status": "supported",
@@ -4035,6 +4619,8 @@
         {
           "pid": 647,
           "pidHex": "0x0287",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V4",
           "type": "keyboard",
           "status": "supported",
@@ -4046,6 +4632,8 @@
         {
           "pid": 653,
           "pidHex": "0x028D",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V4 Pro",
           "type": "keyboard",
           "status": "supported",
@@ -4057,6 +4645,8 @@
         {
           "pid": 691,
           "pidHex": "0x02B3",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V4 Pro 75% (Wired)",
           "type": "keyboard",
           "status": "supported",
@@ -4068,6 +4658,8 @@
         {
           "pid": 692,
           "pidHex": "0x02B4",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow V4 Pro 75% (Wireless)",
           "type": "keyboard",
           "status": "supported",
@@ -4079,6 +4671,8 @@
         {
           "pid": 624,
           "pidHex": "0x0270",
+          "vid": null,
+          "vidHex": null,
           "name": "Blade 14 (2021)",
           "type": "keyboard",
           "status": "supported",
@@ -4090,6 +4684,8 @@
         {
           "pid": 669,
           "pidHex": "0x029D",
+          "vid": null,
+          "vidHex": null,
           "name": "Blade 14 (2023)",
           "type": "keyboard",
           "status": "supported",
@@ -4101,6 +4697,8 @@
         {
           "pid": 650,
           "pidHex": "0x028A",
+          "vid": null,
+          "vidHex": null,
           "name": "Blade 15 (2022)",
           "type": "keyboard",
           "status": "supported",
@@ -4112,6 +4710,8 @@
         {
           "pid": 630,
           "pidHex": "0x0276",
+          "vid": null,
+          "vidHex": null,
           "name": "Blade 15 (Late 2021 Advanced)",
           "type": "keyboard",
           "status": "supported",
@@ -4123,6 +4723,8 @@
         {
           "pid": 528,
           "pidHex": "0x0210",
+          "vid": null,
+          "vidHex": null,
           "name": "Blade Pro (2016)",
           "type": "keyboard",
           "status": "supported",
@@ -4134,6 +4736,8 @@
         {
           "pid": 3878,
           "pidHex": "0x0F26",
+          "vid": null,
+          "vidHex": null,
           "name": "Charging Pad Chroma",
           "type": "mousepad",
           "status": "supported",
@@ -4145,6 +4749,8 @@
         {
           "pid": 3849,
           "pidHex": "0x0F09",
+          "vid": null,
+          "vidHex": null,
           "name": "Chroma HDK",
           "type": "argb_controller",
           "status": "supported",
@@ -4156,6 +4762,8 @@
         {
           "pid": 163,
           "pidHex": "0x00A3",
+          "vid": null,
+          "vidHex": null,
           "name": "Cobra",
           "type": "mouse",
           "status": "supported",
@@ -4167,6 +4775,8 @@
         {
           "pid": 175,
           "pidHex": "0x00AF",
+          "vid": null,
+          "vidHex": null,
           "name": "Cobra Pro (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -4178,6 +4788,8 @@
         {
           "pid": 176,
           "pidHex": "0x00B0",
+          "vid": null,
+          "vidHex": null,
           "name": "Cobra Pro (Wireless)",
           "type": "mouse",
           "status": "supported",
@@ -4189,6 +4801,8 @@
         {
           "pid": 554,
           "pidHex": "0x022A",
+          "vid": null,
+          "vidHex": null,
           "name": "Cynosa Chroma",
           "type": "keyboard",
           "status": "supported",
@@ -4200,6 +4814,8 @@
         {
           "pid": 152,
           "pidHex": "0x0098",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathAdder Essential V2",
           "type": "mouse",
           "status": "supported",
@@ -4211,6 +4827,8 @@
         {
           "pid": 132,
           "pidHex": "0x0084",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathAdder V2",
           "type": "mouse",
           "status": "supported",
@@ -4222,6 +4840,8 @@
         {
           "pid": 140,
           "pidHex": "0x008C",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathAdder V2 Mini",
           "type": "mouse",
           "status": "supported",
@@ -4233,6 +4853,8 @@
         {
           "pid": 661,
           "pidHex": "0x0295",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathStalker V2",
           "type": "keyboard",
           "status": "supported",
@@ -4244,6 +4866,8 @@
         {
           "pid": 664,
           "pidHex": "0x0298",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathStalker V2 Pro TKL (Wired)",
           "type": "keyboard",
           "status": "supported",
@@ -4255,6 +4879,8 @@
         {
           "pid": 3080,
           "pidHex": "0x0C08",
+          "vid": null,
+          "vidHex": null,
           "name": "Firefly V2 Pro",
           "type": "mousepad",
           "status": "supported",
@@ -4266,6 +4892,8 @@
         {
           "pid": 3078,
           "pidHex": "0x0C06",
+          "vid": null,
+          "vidHex": null,
           "name": "Goliathus Chroma 3XL",
           "type": "mousepad",
           "status": "supported",
@@ -4277,6 +4905,8 @@
         {
           "pid": 551,
           "pidHex": "0x0227",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman",
           "type": "keyboard",
           "status": "supported",
@@ -4288,6 +4918,8 @@
         {
           "pid": 550,
           "pidHex": "0x0226",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman Elite",
           "type": "keyboard",
           "status": "supported",
@@ -4299,6 +4931,8 @@
         {
           "pid": 599,
           "pidHex": "0x0257",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman Mini",
           "type": "keyboard",
           "status": "supported",
@@ -4310,6 +4944,8 @@
         {
           "pid": 642,
           "pidHex": "0x0282",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman Mini Analog",
           "type": "keyboard",
           "status": "supported",
@@ -4321,6 +4957,8 @@
         {
           "pid": 598,
           "pidHex": "0x0256",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman Mini Wireless",
           "type": "keyboard",
           "status": "supported",
@@ -4332,6 +4970,8 @@
         {
           "pid": 579,
           "pidHex": "0x0243",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman Tournament Edition",
           "type": "keyboard",
           "status": "supported",
@@ -4343,6 +4983,8 @@
         {
           "pid": 620,
           "pidHex": "0x026C",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman V2",
           "type": "keyboard",
           "status": "supported",
@@ -4354,6 +4996,8 @@
         {
           "pid": 614,
           "pidHex": "0x0266",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman V2 Analog",
           "type": "keyboard",
           "status": "supported",
@@ -4365,6 +5009,8 @@
         {
           "pid": 619,
           "pidHex": "0x026B",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman V2 TKL",
           "type": "keyboard",
           "status": "supported",
@@ -4376,6 +5022,8 @@
         {
           "pid": 678,
           "pidHex": "0x02A6",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman V3 Pro",
           "type": "keyboard",
           "status": "supported",
@@ -4387,6 +5035,8 @@
         {
           "pid": 679,
           "pidHex": "0x02A7",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman V3 Pro TKL White",
           "type": "keyboard",
           "status": "supported",
@@ -4398,6 +5048,8 @@
         {
           "pid": 672,
           "pidHex": "0x02A0",
+          "vid": null,
+          "vidHex": null,
           "name": "Huntsman V3 Pro Wireless",
           "type": "keyboard",
           "status": "supported",
@@ -4409,6 +5061,8 @@
         {
           "pid": 3853,
           "pidHex": "0x0F0D",
+          "vid": null,
+          "vidHex": null,
           "name": "Laptop Stand Chroma",
           "type": "other",
           "status": "supported",
@@ -4420,6 +5074,8 @@
         {
           "pid": 3883,
           "pidHex": "0x0F2B",
+          "vid": null,
+          "vidHex": null,
           "name": "Laptop Stand Chroma V2",
           "type": "other",
           "status": "supported",
@@ -4431,6 +5087,8 @@
         {
           "pid": 1330,
           "pidHex": "0x0532",
+          "vid": null,
+          "vidHex": null,
           "name": "Leviathan V2",
           "type": "speakers",
           "status": "supported",
@@ -4442,6 +5100,8 @@
         {
           "pid": 3859,
           "pidHex": "0x0F13",
+          "vid": null,
+          "vidHex": null,
           "name": "Lian Li O11 Dynamic - Razer Edition",
           "type": "case",
           "status": "supported",
@@ -4453,6 +5113,8 @@
         {
           "pid": 108,
           "pidHex": "0x006C",
+          "vid": null,
+          "vidHex": null,
           "name": "Mamba Elite",
           "type": "mouse",
           "status": "supported",
@@ -4464,6 +5126,8 @@
         {
           "pid": 3869,
           "pidHex": "0x0F1D",
+          "vid": null,
+          "vidHex": null,
           "name": "Mouse Bungee V3 Chroma",
           "type": "other",
           "status": "supported",
@@ -4475,6 +5139,8 @@
         {
           "pid": 147,
           "pidHex": "0x0093",
+          "vid": null,
+          "vidHex": null,
           "name": "Naga Classic",
           "type": "mouse",
           "status": "supported",
@@ -4486,6 +5152,8 @@
         {
           "pid": 141,
           "pidHex": "0x008D",
+          "vid": null,
+          "vidHex": null,
           "name": "Naga Left Handed",
           "type": "mouse",
           "status": "supported",
@@ -4497,6 +5165,8 @@
         {
           "pid": 143,
           "pidHex": "0x008F",
+          "vid": null,
+          "vidHex": null,
           "name": "Naga Pro (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -4508,6 +5178,8 @@
         {
           "pid": 144,
           "pidHex": "0x0090",
+          "vid": null,
+          "vidHex": null,
           "name": "Naga Pro (Wireless)",
           "type": "mouse",
           "status": "supported",
@@ -4519,6 +5191,8 @@
         {
           "pid": 167,
           "pidHex": "0x00A7",
+          "vid": null,
+          "vidHex": null,
           "name": "Naga Pro V2 (Wired)",
           "type": "mouse",
           "status": "supported",
@@ -4530,6 +5204,8 @@
         {
           "pid": 168,
           "pidHex": "0x00A8",
+          "vid": null,
+          "vidHex": null,
           "name": "Naga Pro V2 (Wireless)",
           "type": "mouse",
           "status": "supported",
@@ -4541,6 +5217,8 @@
         {
           "pid": 542,
           "pidHex": "0x021E",
+          "vid": null,
+          "vidHex": null,
           "name": "Ornata Chroma",
           "type": "keyboard",
           "status": "supported",
@@ -4552,6 +5230,8 @@
         {
           "pid": 3867,
           "pidHex": "0x0F1B",
+          "vid": null,
+          "vidHex": null,
           "name": "Seiren Emote",
           "type": "microphone",
           "status": "supported",
@@ -4563,6 +5243,8 @@
         {
           "pid": 1391,
           "pidHex": "0x056F",
+          "vid": null,
+          "vidHex": null,
           "name": "Seiren V3 Chroma",
           "type": "microphone",
           "status": "supported",
@@ -4574,6 +5256,8 @@
         {
           "pid": 520,
           "pidHex": "0x0208",
+          "vid": null,
+          "vidHex": null,
           "name": "Tartarus Chroma",
           "type": "keyboard",
           "status": "supported",
@@ -4585,6 +5269,8 @@
         {
           "pid": 555,
           "pidHex": "0x022B",
+          "vid": null,
+          "vidHex": null,
           "name": "Tartarus V2",
           "type": "keyboard",
           "status": "supported",
@@ -4596,6 +5282,8 @@
         {
           "pid": 3843,
           "pidHex": "0x0F03",
+          "vid": null,
+          "vidHex": null,
           "name": "Tiamat 7.1 V2",
           "type": "headset",
           "status": "supported",
@@ -4607,6 +5295,8 @@
         {
           "pid": 145,
           "pidHex": "0x0091",
+          "vid": null,
+          "vidHex": null,
           "name": "Viper 8kHz",
           "type": "mouse",
           "status": "supported",
@@ -4618,6 +5308,8 @@
         {
           "pid": 3871,
           "pidHex": "0x0F1F",
+          "vid": null,
+          "vidHex": null,
           "name": "Addressable RGB Controller",
           "type": "argb_controller",
           "status": "researched",
@@ -4629,6 +5321,8 @@
         {
           "pid": 1396,
           "pidHex": "0x0574",
+          "vid": null,
+          "vidHex": null,
           "name": "Barracuda X Chroma",
           "type": "headset",
           "status": "researched",
@@ -4640,6 +5334,8 @@
         {
           "pid": 3848,
           "pidHex": "0x0F08",
+          "vid": null,
+          "vidHex": null,
           "name": "Base Station Chroma",
           "type": "other",
           "status": "researched",
@@ -4651,6 +5347,8 @@
         {
           "pid": 577,
           "pidHex": "0x0241",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow 2019",
           "type": "keyboard",
           "status": "researched",
@@ -4662,6 +5360,8 @@
         {
           "pid": 515,
           "pidHex": "0x0203",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow Chroma",
           "type": "keyboard",
           "status": "researched",
@@ -4673,6 +5373,8 @@
         {
           "pid": 529,
           "pidHex": "0x0211",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow Chroma Overwatch",
           "type": "keyboard",
           "status": "researched",
@@ -4684,6 +5386,8 @@
         {
           "pid": 521,
           "pidHex": "0x0209",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow Tournament Edition Chroma",
           "type": "keyboard",
           "status": "researched",
@@ -4695,6 +5399,8 @@
         {
           "pid": 282,
           "pidHex": "0x011A",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow Ultimate 2013/2014",
           "type": "keyboard",
           "status": "researched",
@@ -4706,6 +5412,8 @@
         {
           "pid": 534,
           "pidHex": "0x0216",
+          "vid": null,
+          "vidHex": null,
           "name": "BlackWidow X Chroma",
           "type": "keyboard",
           "status": "researched",
@@ -4717,6 +5425,8 @@
         {
           "pid": 3884,
           "pidHex": "0x0F2C",
+          "vid": null,
+          "vidHex": null,
           "name": "Chroma Light Strip Set",
           "type": "strip",
           "status": "researched",
@@ -4728,6 +5438,8 @@
         {
           "pid": 3854,
           "pidHex": "0x0F0E",
+          "vid": null,
+          "vidHex": null,
           "name": "Chroma Lighting Kit",
           "type": "argb_controller",
           "status": "researched",
@@ -4739,6 +5451,8 @@
         {
           "pid": 575,
           "pidHex": "0x023F",
+          "vid": null,
+          "vidHex": null,
           "name": "Cynosa Lite",
           "type": "keyboard",
           "status": "researched",
@@ -4750,6 +5464,8 @@
         {
           "pid": 606,
           "pidHex": "0x025E",
+          "vid": null,
+          "vidHex": null,
           "name": "Cynosa V2",
           "type": "keyboard",
           "status": "researched",
@@ -4761,6 +5477,8 @@
         {
           "pid": 113,
           "pidHex": "0x0071",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathAdder Essential (Alt)",
           "type": "mouse",
           "status": "researched",
@@ -4772,6 +5490,8 @@
         {
           "pid": 110,
           "pidHex": "0x006E",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathAdder Essential (Legacy)",
           "type": "mouse",
           "status": "researched",
@@ -4783,6 +5503,8 @@
         {
           "pid": 662,
           "pidHex": "0x0296",
+          "vid": null,
+          "vidHex": null,
           "name": "DeathStalker V2 Pro TKL (Wireless)",
           "type": "keyboard",
           "status": "researched",
@@ -4794,6 +5516,8 @@
         {
           "pid": 76,
           "pidHex": "0x004C",
+          "vid": null,
+          "vidHex": null,
           "name": "Diamondback Chroma",
           "type": "mouse",
           "status": "researched",
@@ -4805,6 +5529,8 @@
         {
           "pid": 3908,
           "pidHex": "0x0F44",
+          "vid": null,
+          "vidHex": null,
           "name": "Hanbo AIO",
           "type": "aio",
           "status": "researched",
@@ -4816,6 +5542,8 @@
         {
           "pid": 1296,
           "pidHex": "0x0510",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken 7.1 V2",
           "type": "headset",
           "status": "researched",
@@ -4827,6 +5555,8 @@
         {
           "pid": 1319,
           "pidHex": "0x0527",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken Headset",
           "type": "headset",
           "status": "researched",
@@ -4838,6 +5568,8 @@
         {
           "pid": 527,
           "pidHex": "0x020F",
+          "vid": null,
+          "vidHex": null,
           "name": "Kraken Kitty Edition",
           "type": "headset",
           "status": "researched",
@@ -4849,6 +5581,8 @@
         {
           "pid": 3907,
           "pidHex": "0x0F43",
+          "vid": null,
+          "vidHex": null,
           "name": "Laptop Cooling Pad",
           "type": "other",
           "status": "researched",
@@ -4860,6 +5594,8 @@
         {
           "pid": 1330,
           "pidHex": "0x0532",
+          "vid": null,
+          "vidHex": null,
           "name": "Leviathan V2 Soundbar",
           "type": "speakers",
           "status": "researched",
@@ -4871,6 +5607,8 @@
         {
           "pid": 3876,
           "pidHex": "0x0F24",
+          "vid": null,
+          "vidHex": null,
           "name": "Mouse Bungee V3",
           "type": "other",
           "status": "researched",
@@ -4882,6 +5620,8 @@
         {
           "pid": 3874,
           "pidHex": "0x0F22",
+          "vid": null,
+          "vidHex": null,
           "name": "Mouse Dock",
           "type": "other",
           "status": "researched",
@@ -4893,6 +5633,8 @@
         {
           "pid": 3875,
           "pidHex": "0x0F23",
+          "vid": null,
+          "vidHex": null,
           "name": "Mouse Dock Pro",
           "type": "other",
           "status": "researched",
@@ -4904,6 +5646,8 @@
         {
           "pid": 3072,
           "pidHex": "0x0C00",
+          "vid": null,
+          "vidHex": null,
           "name": "Mousepad Controller",
           "type": "mousepad",
           "status": "researched",
@@ -4915,6 +5659,8 @@
         {
           "pid": 78,
           "pidHex": "0x004E",
+          "vid": null,
+          "vidHex": null,
           "name": "Naga Hex V2",
           "type": "mouse",
           "status": "researched",
@@ -4926,6 +5672,8 @@
         {
           "pid": 1308,
           "pidHex": "0x051C",
+          "vid": null,
+          "vidHex": null,
           "name": "Nari Headset",
           "type": "headset",
           "status": "researched",
@@ -4937,6 +5685,8 @@
         {
           "pid": 1303,
           "pidHex": "0x0517",
+          "vid": null,
+          "vidHex": null,
           "name": "Nommo Speakers",
           "type": "speakers",
           "status": "researched",
@@ -4948,6 +5698,8 @@
         {
           "pid": 519,
           "pidHex": "0x0207",
+          "vid": null,
+          "vidHex": null,
           "name": "Orbweaver Chroma",
           "type": "keyboard",
           "status": "researched",
@@ -4959,6 +5711,8 @@
         {
           "pid": 613,
           "pidHex": "0x0265",
+          "vid": null,
+          "vidHex": null,
           "name": "Ornata V3 TKL",
           "type": "keyboard",
           "status": "researched",
@@ -4970,6 +5724,8 @@
         {
           "pid": 660,
           "pidHex": "0x0294",
+          "vid": null,
+          "vidHex": null,
           "name": "Ornata V3 X",
           "type": "keyboard",
           "status": "researched",
@@ -4981,6 +5737,8 @@
         {
           "pid": 3900,
           "pidHex": "0x0F3C",
+          "vid": null,
+          "vidHex": null,
           "name": "PWM Controller",
           "type": "fan_controller",
           "status": "researched",
@@ -4992,6 +5750,8 @@
         {
           "pid": 3858,
           "pidHex": "0x0F12",
+          "vid": null,
+          "vidHex": null,
           "name": "Raptor 27 Inch Monitor",
           "type": "monitor",
           "status": "researched",
@@ -5003,6 +5763,8 @@
         {
           "pid": 556,
           "pidHex": "0x022C",
+          "vid": null,
+          "vidHex": null,
           "name": "Tartarus Pro",
           "type": "keyboard",
           "status": "researched",
@@ -5014,6 +5776,8 @@
         {
           "pid": 3873,
           "pidHex": "0x0F21",
+          "vid": null,
+          "vidHex": null,
           "name": "Thunderbolt Dock",
           "type": "other",
           "status": "researched",
@@ -5025,6 +5789,8 @@
         {
           "pid": 3845,
           "pidHex": "0x0F05",
+          "vid": null,
+          "vidHex": null,
           "name": "Tomahawk ATX Case",
           "type": "case",
           "status": "researched",
@@ -5081,6 +5847,8 @@
         {
           "pid": 13370,
           "pidHex": "0x343A",
+          "vid": null,
+          "vidHex": null,
           "name": "AIMO Pad",
           "type": "mousepad",
           "status": "known",
@@ -5092,6 +5860,8 @@
         {
           "pid": 11745,
           "pidHex": "0x2DE1",
+          "vid": null,
+          "vidHex": null,
           "name": "Burst Pro",
           "type": "mouse",
           "status": "known",
@@ -5103,6 +5873,8 @@
         {
           "pid": 14900,
           "pidHex": "0x3A34",
+          "vid": null,
+          "vidHex": null,
           "name": "Elo 7.1 USB",
           "type": "headset",
           "status": "known",
@@ -5114,6 +5886,8 @@
         {
           "pid": 11815,
           "pidHex": "0x2E27",
+          "vid": null,
+          "vidHex": null,
           "name": "Kone",
           "type": "mouse",
           "status": "known",
@@ -5125,6 +5899,8 @@
         {
           "pid": 11400,
           "pidHex": "0x2C88",
+          "vid": null,
+          "vidHex": null,
           "name": "Kone Pro",
           "type": "mouse",
           "status": "known",
@@ -5136,6 +5912,8 @@
         {
           "pid": 11403,
           "pidHex": "0x2C8B",
+          "vid": null,
+          "vidHex": null,
           "name": "Kone XP",
           "type": "mouse",
           "status": "known",
@@ -5147,6 +5925,8 @@
         {
           "pid": 12580,
           "pidHex": "0x3124",
+          "vid": null,
+          "vidHex": null,
           "name": "Magma",
           "type": "keyboard",
           "status": "known",
@@ -5158,6 +5938,8 @@
         {
           "pid": 12620,
           "pidHex": "0x314C",
+          "vid": null,
+          "vidHex": null,
           "name": "Pyro",
           "type": "keyboard",
           "status": "known",
@@ -5169,6 +5951,8 @@
         {
           "pid": 14934,
           "pidHex": "0x3A56",
+          "vid": null,
+          "vidHex": null,
           "name": "Torch",
           "type": "microphone",
           "status": "known",
@@ -5180,6 +5964,8 @@
         {
           "pid": 12410,
           "pidHex": "0x307A",
+          "vid": null,
+          "vidHex": null,
           "name": "Vulcan 100",
           "type": "keyboard",
           "status": "known",
@@ -5191,6 +5977,8 @@
         {
           "pid": 12002,
           "pidHex": "0x2EE2",
+          "vid": null,
+          "vidHex": null,
           "name": "Vulcan II MAX",
           "type": "keyboard",
           "status": "known",
@@ -5202,6 +5990,8 @@
         {
           "pid": 12041,
           "pidHex": "0x2F09",
+          "vid": null,
+          "vidHex": null,
           "name": "Vulcan II Mini",
           "type": "keyboard",
           "status": "known",
@@ -5213,6 +6003,8 @@
         {
           "pid": 12535,
           "pidHex": "0x30F7",
+          "vid": null,
+          "vidHex": null,
           "name": "Vulcan Pro",
           "type": "keyboard",
           "status": "known",
@@ -5224,6 +6016,8 @@
         {
           "pid": 12270,
           "pidHex": "0x2FEE",
+          "vid": null,
+          "vidHex": null,
           "name": "Vulcan TKL",
           "type": "keyboard",
           "status": "known",
@@ -5268,6 +6062,8 @@
         {
           "pid": 3302,
           "pidHex": "0x0CE6",
+          "vid": null,
+          "vidHex": null,
           "name": "DualSense",
           "type": "lightbar",
           "status": "known",
@@ -5279,6 +6075,8 @@
         {
           "pid": 1476,
           "pidHex": "0x05C4",
+          "vid": null,
+          "vidHex": null,
           "name": "DualShock 4",
           "type": "lightbar",
           "status": "known",
@@ -5290,6 +6088,8 @@
         {
           "pid": 2508,
           "pidHex": "0x09CC",
+          "vid": null,
+          "vidHex": null,
           "name": "DualShock 4 V2",
           "type": "lightbar",
           "status": "known",
@@ -5330,6 +6130,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Aerox 3",
           "type": "mouse",
           "status": "known",
@@ -5341,6 +6143,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Apex 7 TKL",
           "type": "keyboard",
           "status": "known",
@@ -5352,6 +6156,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Apex Pro TKL",
           "type": "keyboard",
           "status": "known",
@@ -5363,6 +6169,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Arctis Nova Pro",
           "type": "headset",
           "status": "known",
@@ -5374,6 +6182,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "QcK Prism XL",
           "type": "mousepad",
           "status": "known",
@@ -5385,6 +6195,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "Rival 600",
           "type": "mouse",
           "status": "known",
@@ -5428,6 +6240,8 @@
         {
           "pid": 32802,
           "pidHex": "0x8022",
+          "vid": null,
+          "vidHex": null,
           "name": "Argent HS1 Headphone Stand",
           "type": "other",
           "status": "known",
@@ -5439,6 +6253,8 @@
         {
           "pid": 32800,
           "pidHex": "0x8020",
+          "vid": null,
+          "vidHex": null,
           "name": "Argent Mouse Bungee",
           "type": "other",
           "status": "known",
@@ -5450,6 +6266,8 @@
         {
           "pid": 36881,
           "pidHex": "0x9011",
+          "vid": null,
+          "vidHex": null,
           "name": "Argent MP1 Mousepad",
           "type": "mousepad",
           "status": "known",
@@ -5461,6 +6279,8 @@
         {
           "pid": 9001,
           "pidHex": "0x2329",
+          "vid": null,
+          "vidHex": null,
           "name": "DPSG PSU",
           "type": "other",
           "status": "known",
@@ -5472,6 +6292,8 @@
         {
           "pid": 8100,
           "pidHex": "0x1FA4",
+          "vid": null,
+          "vidHex": null,
           "name": "Floe Riing Controller",
           "type": "fan_controller",
           "status": "known",
@@ -5483,6 +6305,8 @@
         {
           "pid": 8508,
           "pidHex": "0x213C",
+          "vid": null,
+          "vidHex": null,
           "name": "LedBox",
           "type": "argb_controller",
           "status": "known",
@@ -5494,6 +6318,8 @@
         {
           "pid": 8602,
           "pidHex": "0x219A",
+          "vid": null,
+          "vidHex": null,
           "name": "LedBox Pacific",
           "type": "argb_controller",
           "status": "known",
@@ -5505,6 +6331,8 @@
         {
           "pid": 8800,
           "pidHex": "0x2260",
+          "vid": null,
+          "vidHex": null,
           "name": "LedBox Standard",
           "type": "argb_controller",
           "status": "known",
@@ -5516,6 +6344,8 @@
         {
           "pid": 2001,
           "pidHex": "0x07D1",
+          "vid": null,
+          "vidHex": null,
           "name": "Level 20 Desk",
           "type": "desk",
           "status": "known",
@@ -5527,6 +6357,8 @@
         {
           "pid": 8501,
           "pidHex": "0x2135",
+          "vid": null,
+          "vidHex": null,
           "name": "Riing Controller",
           "type": "fan_controller",
           "status": "known",
@@ -5567,6 +6399,8 @@
         {
           "pid": null,
           "pidHex": null,
+          "vid": null,
+          "vidHex": null,
           "name": "WLED Controller (any)",
           "type": "argb_controller",
           "status": "supported",
@@ -5613,6 +6447,8 @@
         {
           "pid": 4880,
           "pidHex": "0x1310",
+          "vid": null,
+          "vidHex": null,
           "name": "Wooting 60 HE",
           "type": "keyboard",
           "status": "known",
@@ -5624,6 +6460,8 @@
         {
           "pid": 5120,
           "pidHex": "0x1400",
+          "vid": null,
+          "vidHex": null,
           "name": "Wooting 80 HE",
           "type": "keyboard",
           "status": "known",
@@ -5635,6 +6473,8 @@
         {
           "pid": 65281,
           "pidHex": "0xFF01",
+          "vid": null,
+          "vidHex": null,
           "name": "Wooting One",
           "type": "keyboard",
           "status": "known",
@@ -5646,6 +6486,8 @@
         {
           "pid": 4640,
           "pidHex": "0x1220",
+          "vid": null,
+          "vidHex": null,
           "name": "Wooting Two HE",
           "type": "keyboard",
           "status": "known",

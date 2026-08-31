@@ -88,6 +88,9 @@ const TRANSPORT_LABELS: Record<string, string> = {
 interface DeviceEntry {
     pid: number | null
     pidHex: string | null
+    /** Set only when the device does not use its vendor's default VID. */
+    vid: number | null
+    vidHex: string | null
     name: string
     type: string | null
     status: Status
@@ -144,7 +147,7 @@ interface ParsedToml {
 }
 
 const VENDOR_KEYS = new Set(['name', 'vid', 'website', 'notes'])
-const DEVICE_KEYS = new Set(['pid', 'name', 'type', 'status', 'driver', 'transport', 'leds', 'notes'])
+const DEVICE_KEYS = new Set(['pid', 'vid', 'name', 'type', 'status', 'driver', 'transport', 'leds', 'notes'])
 
 function parseToml(src: string, file: string): ParsedToml {
     const out: ParsedToml = { vendor: {}, devices: [] }
@@ -376,6 +379,7 @@ function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
         const status = requireStatus(d, `${file}[${i}]`)
         const name = requireString(d, 'name', `${file}[${i}]`)
         const pid = typeof d.pid === 'number' ? d.pid : null
+        const vid = typeof d.vid === 'number' ? d.vid : null
         const type = typeof d.type === 'string' ? d.type : null
         const driver = typeof d.driver === 'string' ? d.driver : null
         const transport = typeof d.transport === 'string' ? d.transport : null
@@ -390,6 +394,8 @@ function normalizeVendor(file: string, src: ParsedToml): VendorEntry {
         devices.push({
             pid,
             pidHex: pid !== null ? formatHex(pid, 4) : null,
+            vid,
+            vidHex: vid !== null ? formatHex(vid, 4) : null,
             name,
             type,
             status,
@@ -652,12 +658,18 @@ function byDriverList(report: Report): string[] {
     return items.map(([driver, count]) => `- **\`${driver}\`** — ${count} supported device${count === 1 ? '' : 's'}`)
 }
 
+/** The device's wire identity: a VID:PID pair when it overrides its vendor. */
+function deviceIdCell(device: DeviceEntry): string {
+    if (device.pidHex === null) return '—'
+    return device.vidHex === null ? device.pidHex : `${device.vidHex}:${device.pidHex}`
+}
+
 function statusTable(report: Report, status: Status): string[] {
     const rows: string[] = []
-    // PID is vendor-scoped; multi-VID vendors (like QMK, which has nine VIDs,
-    // or Lian Li which straddles two) encode the per-device VID inside the
-    // `notes` string rather than as a structured field, so we show PID alone
-    // and let the vendor section header surface the VID list.
+    // PID is vendor-scoped, and the vendor section header carries the VID
+    // list. A device that does not use one of its vendor's VIDs sets `vid`
+    // itself and renders as a VID:PID pair, so the ID stays unambiguous
+    // without a second column.
     const showPid = report.vendors.some((v) => v.devices.some((d) => d.status === status && d.pidHex))
     const showLeds = status === 'supported' || status === 'in_progress'
     const showDriver = status === 'supported' || status === 'in_progress' || status === 'blocked'
@@ -679,7 +691,7 @@ function statusTable(report: Report, status: Status): string[] {
             if (d.status !== status) continue
             any = true
             const cells: string[] = [escape(v.name), escape(d.name)]
-            if (showPid) cells.push(d.pidHex ?? '—')
+            if (showPid) cells.push(deviceIdCell(d))
             cells.push(typeLabel(d.type))
             if (showDriver) cells.push(d.driver ? `\`${d.driver}\`` : '—')
             cells.push(transportLabel(d.transport))
@@ -750,7 +762,7 @@ function vendorDeviceTable(devices: DeviceEntry[], status: Status): string[] {
 
     for (const d of devices) {
         const cells: string[] = [escape(d.name)]
-        if (showPid) cells.push(d.pidHex ?? '—')
+        if (showPid) cells.push(deviceIdCell(d))
         cells.push(typeLabel(d.type))
         if (showDriver) cells.push(d.driver ? `\`${d.driver}\`` : '—')
         cells.push(transportLabel(d.transport))
