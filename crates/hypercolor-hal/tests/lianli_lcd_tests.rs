@@ -504,3 +504,47 @@ fn an_empty_static_image_emits_nothing_at_all() {
 
     assert!(commands.is_empty(), "no chunks means no latch either");
 }
+
+#[test]
+fn a_frame_rate_request_is_clamped_to_what_the_panel_can_do() {
+    let protocol = TlLcdProtocol::new();
+
+    let too_fast = protocol
+        .encode_display_setting(DisplaySetting::FrameRate(240))
+        .expect("a frame-rate request should encode");
+    assert_eq!(
+        too_fast[0].data[TL_LCD_HEADER_LEN + 5],
+        30,
+        "the panel tops out at 30fps"
+    );
+
+    let stalled = protocol
+        .encode_display_setting(DisplaySetting::FrameRate(0))
+        .expect("a frame-rate request should encode");
+    assert_eq!(
+        stalled[0].data[TL_LCD_HEADER_LEN + 5],
+        1,
+        "zero would stall the panel rather than pace it"
+    );
+}
+
+#[test]
+fn a_new_session_forgets_the_firmware_the_last_one_learned() {
+    let protocol = TlLcdProtocol::new();
+
+    protocol
+        .parse_response(&reply(TlLcdCommand::GetProductInfo, b"V0.1.7\0"))
+        .expect("the version report should parse");
+    assert_eq!(protocol.firmware().as_deref(), Some("V0.1.7"));
+
+    let _ = protocol.init_sequence();
+    protocol
+        .parse_response(&reply(TlLcdCommand::GetProductInfo, b"V0.2.0\0"))
+        .expect("the version report should parse");
+
+    assert_eq!(
+        protocol.firmware().as_deref(),
+        Some("V0.2.0"),
+        "a reflashed panel reports its new version, not the cached one"
+    );
+}

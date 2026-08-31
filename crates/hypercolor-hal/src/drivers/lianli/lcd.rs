@@ -434,6 +434,14 @@ impl Protocol for TlLcdProtocol {
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        // A session starts by forgetting what the last one learned, so a
+        // panel reflashed between connects reports its new firmware instead
+        // of keeping the old string forever.
+        self.state
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .firmware = None;
+
         vec![
             Self::command(TlLcdCommand::ReadSerial, &[], true)
                 .with_response_timeout(TL_LCD_INIT_TIMEOUT),
@@ -495,7 +503,11 @@ impl Protocol for TlLcdProtocol {
                     state.brightness = brightness.min(TL_LCD_DEFAULT_BRIGHTNESS);
                 }
                 DisplaySetting::Rotation(rotation) => state.rotation = rotation,
-                DisplaySetting::FrameRate(fps) => state.fps = fps,
+                // The panel tops out at 30fps; a higher request would be a
+                // number the hardware cannot honour, and zero would stall it.
+                DisplaySetting::FrameRate(fps) => {
+                    state.fps = fps.clamp(1, TL_LCD_DEFAULT_FPS);
+                }
             }
         }
 

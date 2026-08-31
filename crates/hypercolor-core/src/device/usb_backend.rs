@@ -43,6 +43,10 @@ use crate::attachment::ComponentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
+/// How long to wait for a report left queued by an attempt that is being
+/// retried. Short on purpose: the device has usually said all it intends to,
+/// and the resend is what recovers the exchange.
+const DRAIN_REPORT_TIMEOUT: Duration = Duration::from_millis(20);
 const USB_ACTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_STARTED: u8 = 1;

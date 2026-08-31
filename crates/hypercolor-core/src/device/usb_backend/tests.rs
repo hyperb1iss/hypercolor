@@ -2143,15 +2143,26 @@ impl Transport for ResponsePlanTransport {
 
 const PLAN_PROTOCOL_TIMEOUT: Duration = Duration::from_millis(150);
 
-/// Records every report handed to `parse_response`, in arrival order.
+/// Records every report handed to `parse_response`, in arrival order, and
+/// answers scripted statuses so retry paths can be driven.
 struct ReportRecordingProtocol {
     seen: Mutex<Vec<Vec<u8>>>,
+    statuses: Mutex<Vec<ResponseStatus>>,
 }
 
 impl ReportRecordingProtocol {
     fn new() -> Self {
         Self {
             seen: Mutex::new(Vec::new()),
+            statuses: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Answer these statuses in order, then `Ok` forever after.
+    fn with_statuses(statuses: Vec<ResponseStatus>) -> Self {
+        Self {
+            seen: Mutex::new(Vec::new()),
+            statuses: Mutex::new(statuses),
         }
     }
 
@@ -2185,8 +2196,18 @@ impl Protocol for ReportRecordingProtocol {
             .lock()
             .expect("report log should not be poisoned")
             .push(data.to_vec());
+
+        let mut statuses = self
+            .statuses
+            .lock()
+            .expect("statuses should not be poisoned");
+        let status = if statuses.is_empty() {
+            ResponseStatus::Ok
+        } else {
+            statuses.remove(0)
+        };
         Ok(ProtocolResponse {
-            status: ResponseStatus::Ok,
+            status,
             data: data.to_vec(),
         })
     }
@@ -2308,5 +2329,49 @@ async fn response_len_reaches_the_transport_as_a_read_capacity() {
         capacities,
         vec![Some(508), None],
         "capacity travels per command, and a command without one reads at the transport default"
+    );
+}
+
+/// A retry partway through a multi-report command must not leave the rest of
+/// that attempt's reports queued: the resend would read one as its own reply
+/// and every read after it would be answering the wrong command.
+#[tokio::test]
+async fn a_retry_discards_the_reports_left_over_from_the_failed_attempt() {
+    let protocol =
+        ReportRecordingProtocol::with_statuses(vec![ResponseStatus::Busy, ResponseStatus::Ok]);
+    let transport = ResponsePlanTransport::new(vec![
+        b"busy".to_vec(),
+        b"stale-date".to_vec(),
+        b"version".to_vec(),
+        b"date".to_vec(),
+        b"next-command-reply".to_vec(),
+    ]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[
+            responding_command(0xA6).with_response_count(2),
+            responding_command(0xAA),
+        ],
+    )
+    .await
+    .expect("the retried command should succeed on its second attempt");
+
+    assert_eq!(
+        transport.sends(),
+        vec![vec![0xA6], vec![0xA6], vec![0xAA]],
+        "the busy command is resent once"
+    );
+    assert_eq!(
+        protocol.seen(),
+        vec![
+            b"busy".to_vec(),
+            b"version".to_vec(),
+            b"date".to_vec(),
+            b"next-command-reply".to_vec(),
+        ],
+        "the abandoned attempt's second report is discarded, not parsed as \
+         the resend's reply"
     );
 }
