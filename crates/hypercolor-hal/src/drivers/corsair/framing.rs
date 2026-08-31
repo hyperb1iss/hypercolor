@@ -154,8 +154,9 @@ pub fn build_lcd_display_packet(
 
 /// Append one fixed-size Corsair LCD display packet to an existing buffer.
 ///
-/// Payload bytes beyond `LCD_DATA_PER_PACKET` are dropped; the streaming path
-/// chunks ahead of this call so the truncation only affects direct callers.
+/// Builds a single packet from an already-chunked payload; bytes beyond
+/// `LCD_DATA_PER_PACKET` are dropped. Display streaming goes through the
+/// shared chunk engine instead, which owns the chunk boundaries.
 pub fn append_lcd_display_packet(
     buffer: &mut Vec<u8>,
     zone_byte: u8,

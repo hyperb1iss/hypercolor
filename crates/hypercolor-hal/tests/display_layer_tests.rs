@@ -7,7 +7,9 @@ use hypercolor_hal::display::{
     Packed16Format, WireKeepalive, encode_chunked_display_frame, encode_chunked_display_frame_into,
     encode_prefixed_display_frame,
 };
-use hypercolor_hal::protocol::{CommandBuffer, ProtocolCommand, TransferType};
+use hypercolor_hal::drivers::corsair::CorsairLcdProtocol;
+use hypercolor_hal::drivers::corsair::framing::{LCD_DATA_PER_PACKET, LCD_MAX_DISPLAY_CHUNKS};
+use hypercolor_hal::protocol::{CommandBuffer, Protocol, ProtocolCommand, TransferType};
 
 const MARKER: u8 = 0xA5;
 const HEADER_LEN: usize = 8;
@@ -347,6 +349,36 @@ fn payload_window_past_the_packet_end_is_rejected() {
     assert!(commands.is_empty());
 }
 
+/// The display seam has no error channel, so a protocol maps an engine error
+/// to skip-and-warn: no commands, and success back to the caller.
+#[test]
+fn a_protocol_skips_a_frame_the_engine_rejects_and_keeps_going() {
+    let protocol = CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0);
+    let past_the_counter = usize::try_from(LCD_MAX_DISPLAY_CHUNKS)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    let oversized = vec![0x5A; LCD_DATA_PER_PACKET * past_the_counter];
+    let mut commands = stale_commands(3);
+
+    protocol
+        .encode_display_frame_into(&oversized, &mut commands)
+        .expect("the seam reports success even when it drops the frame");
+
+    assert!(
+        commands.is_empty(),
+        "a frame the wire format cannot address must not go out truncated"
+    );
+
+    protocol
+        .encode_display_frame_into(&[0x11; 64], &mut commands)
+        .expect("the next frame should still encode");
+    assert_eq!(
+        commands.len(),
+        2,
+        "one bulk packet plus the keepalive the skipped frame never consumed"
+    );
+}
+
 // --- Buffer reuse ---
 
 #[test]
@@ -465,6 +497,32 @@ fn prefixed_frame_without_a_fixed_length_is_header_plus_payload() {
         "frame_len reaches the header writer"
     );
     assert_eq!(commands[0].transfer_type, TransferType::HidReport);
+}
+
+/// Unlike the chunk engine, a prefixed frame with no payload is still a
+/// frame: the header alone is the message.
+#[test]
+fn prefixed_frame_with_no_payload_is_still_emitted() {
+    let mut commands = Vec::new();
+
+    encode_prefixed_display_frame(
+        4,
+        |frame, ctx| {
+            frame[0] = MARKER;
+            frame[1] = u8::try_from(ctx.payload.len()).unwrap_or(u8::MAX);
+        },
+        &[],
+        Some(8),
+        ChunkCommandPolicy::default(),
+        &mut commands,
+    )
+    .expect("an empty payload is not an error for a prefixed frame");
+
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].data.len(), 8);
+    assert_eq!(commands[0].data[0], MARKER);
+    assert_eq!(commands[0].data[1], 0, "the header sees an empty payload");
+    assert!(commands[0].data[2..].iter().all(|&b| b == 0));
 }
 
 #[test]
