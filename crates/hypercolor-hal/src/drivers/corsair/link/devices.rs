@@ -46,6 +46,7 @@ static LINK_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             build: build_icue_link_system_hub_protocol,
         },
         firmware_predicate: None,
+        serial_quirk: None,
     }]
 });
 

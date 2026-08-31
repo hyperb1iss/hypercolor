@@ -44,6 +44,7 @@ macro_rules! dygma_descriptor {
                 build: $builder,
             },
             firmware_predicate: None,
+            serial_quirk: None,
         }
     };
 }

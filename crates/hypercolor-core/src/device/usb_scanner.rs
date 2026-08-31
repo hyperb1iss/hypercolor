@@ -162,10 +162,14 @@ impl UsbScanner {
 
             let protocol = (descriptor.protocol.build)();
             let path = usb_path(&usb);
+            // A placeholder serial is a model string every unit reports, so it
+            // must not reach identity: the fingerprint prefers serial over
+            // path, and a chain of panels would collapse into one device.
+            let identity_serial = identity_serial(descriptor, usb.serial_number());
             let identifier = DeviceIdentifier::UsbHid {
                 vendor_id,
                 product_id,
-                serial: usb.serial_number().map(ToOwned::to_owned),
+                serial: identity_serial.map(ToOwned::to_owned),
                 usb_path: (!path.is_empty()).then_some(path.clone()),
             };
             let fingerprint = identifier.fingerprint(&descriptor.driver_id());
@@ -180,7 +184,7 @@ impl UsbScanner {
             // fingerprint string discards it. Refusal (no registered
             // normalizer, placeholder serial, no serial at all) yields None
             // and the device re-binds per machine.
-            let claim = usb.serial_number().and_then(|serial| {
+            let claim = identity_serial.and_then(|serial| {
                 PortableIdentityClaim::usb_serial(
                     vendor_id,
                     product_id,
@@ -249,9 +253,103 @@ fn usb_path(usb: &nusb::DeviceInfo) -> String {
     }
 }
 
+/// The serial a device may be identified by, or `None` when its descriptor
+/// says the reported value is a factory placeholder.
+///
+/// Placeholder serials are worse than no serial: `DeviceIdentifier` prefers
+/// serial over USB path, so a family that reports one fixed string would map
+/// every unit onto a single fingerprint.
+fn identity_serial<'a>(
+    descriptor: &DeviceDescriptor,
+    observed: Option<&'a str>,
+) -> Option<&'a str> {
+    observed.filter(|serial| !descriptor.is_placeholder_serial(serial))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::reviewed_serial_normalizers;
+    use hypercolor_hal::registry::SerialQuirk;
+    use hypercolor_types::device::DeviceIdentifier;
+
+    use super::*;
+
+    const PLACEHOLDER: &str = "TL_LCDV0.1";
+
+    fn descriptor_with_quirk(quirk: Option<SerialQuirk>) -> DeviceDescriptor {
+        let mut descriptor = ProtocolDatabase::all()
+            .first()
+            .cloned()
+            .expect("the device database should not be empty");
+        descriptor.serial_quirk = quirk;
+        descriptor
+    }
+
+    fn fingerprint_for(
+        descriptor: &DeviceDescriptor,
+        serial: &str,
+        path: &str,
+    ) -> hypercolor_types::device::DeviceId {
+        let identifier = DeviceIdentifier::UsbHid {
+            vendor_id: 0x04FC,
+            product_id: 0x7393,
+            serial: identity_serial(descriptor, Some(serial)).map(ToOwned::to_owned),
+            usb_path: Some(path.to_owned()),
+        };
+        identifier
+            .fingerprint(&descriptor.driver_id())
+            .stable_device_id()
+    }
+
+    #[test]
+    fn a_placeholder_serial_keys_identity_on_the_usb_path() {
+        let descriptor =
+            descriptor_with_quirk(Some(SerialQuirk::PlaceholderValues(&[PLACEHOLDER])));
+
+        let first = fingerprint_for(&descriptor, PLACEHOLDER, "1-1.2");
+        let second = fingerprint_for(&descriptor, PLACEHOLDER, "1-1.3");
+
+        assert_ne!(
+            first, second,
+            "two panels on different ports must be two devices"
+        );
+    }
+
+    /// The regression this quirk exists to prevent.
+    #[test]
+    fn without_the_quirk_a_shared_serial_collapses_two_panels_into_one() {
+        let descriptor = descriptor_with_quirk(None);
+
+        let first = fingerprint_for(&descriptor, PLACEHOLDER, "1-1.2");
+        let second = fingerprint_for(&descriptor, PLACEHOLDER, "1-1.3");
+
+        assert_eq!(
+            first, second,
+            "serial wins over path, so a shared serial is one fingerprint"
+        );
+    }
+
+    #[test]
+    fn a_real_serial_still_identifies_the_device() {
+        let descriptor =
+            descriptor_with_quirk(Some(SerialQuirk::PlaceholderValues(&[PLACEHOLDER])));
+
+        assert_eq!(
+            identity_serial(&descriptor, Some("A1B2C3D4")),
+            Some("A1B2C3D4"),
+            "the quirk only suppresses the placeholder values it names"
+        );
+        assert_eq!(identity_serial(&descriptor, None), None);
+    }
+
+    #[test]
+    fn placeholder_matching_ignores_case_and_padding() {
+        let descriptor =
+            descriptor_with_quirk(Some(SerialQuirk::PlaceholderValues(&[PLACEHOLDER])));
+
+        assert!(descriptor.is_placeholder_serial("  TL_LCDV0.1 "));
+        assert!(descriptor.is_placeholder_serial("tl_lcdv0.1"));
+        assert!(!descriptor.is_placeholder_serial("TL_LCDV0.2"));
+    }
 
     #[test]
     fn the_reviewed_registry_ships_empty_until_a_pair_carries_evidence() {

@@ -122,6 +122,7 @@ macro_rules! ene_descriptor {
                 build: $builder,
             },
             firmware_predicate: None,
+            serial_quirk: None,
         }
     };
 }
@@ -146,6 +147,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
             build: build_uni_hub_al_protocol,
         },
         firmware_predicate: Some(is_al_hid_firmware),
+        serial_quirk: None,
     },
     DeviceDescriptor {
         vendor_id: LIANLI_ENE_VENDOR_ID,
@@ -158,6 +160,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
             build: build_uni_hub_al10_protocol,
         },
         firmware_predicate: Some(is_al10_firmware),
+        serial_quirk: None,
     },
     ene_descriptor!(
         pid: PID_UNI_HUB_SL_INFINITY,
@@ -200,6 +203,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
             build: build_uni_hub_original_protocol,
         },
         firmware_predicate: None,
+        serial_quirk: None,
     },
     DeviceDescriptor {
         vendor_id: LIANLI_TL_VENDOR_ID,
@@ -219,6 +223,7 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
             build: build_tl_fan_protocol,
         },
         firmware_predicate: None,
+        serial_quirk: None,
     },
 ];
 

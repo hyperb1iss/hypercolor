@@ -66,6 +66,7 @@ macro_rules! prismrgb_descriptor {
                 build: $builder,
             },
             firmware_predicate: None,
+            serial_quirk: None,
         }
     };
 }
