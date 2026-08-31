@@ -1126,6 +1126,11 @@ impl UsbBackend {
             pending.usb_path.as_deref(),
             usage_page,
             usage,
+            // A family whose firmware reports one shared serial for every unit
+            // cannot be told apart by serial, and HID enumeration exposes a USB
+            // path only on Linux. Opening "the first match" there would bind two
+            // discovered devices to one panel and leave another one dark.
+            pending.descriptor.serial_quirk.is_some(),
         )
         .with_context(|| {
             format!(
