@@ -1136,17 +1136,32 @@ impl UsbBackend {
         command: &ProtocolCommand,
         remaining: u16,
     ) {
-        for _ in 0..remaining {
-            if transport
+        for index in 0..remaining {
+            match transport
                 .receive_logical(
                     DRAIN_REPORT_TIMEOUT,
                     command.transfer_type,
                     command.response_len,
                 )
                 .await
-                .is_err()
             {
-                break;
+                Ok(report) => trace!(
+                    transport = transport.name(),
+                    report_index = index,
+                    remaining,
+                    report = %describe_packet(&report),
+                    "discarding queued report from a retried attempt"
+                ),
+                Err(error) => {
+                    debug!(
+                        transport = transport.name(),
+                        report_index = index,
+                        remaining,
+                        error = %error,
+                        "queued-report drain stopped early; device had nothing more to send"
+                    );
+                    break;
+                }
             }
         }
     }

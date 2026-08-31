@@ -46,7 +46,9 @@ pub const TL_LCD_MAX_CHUNKS: u32 = 1 << 24;
 /// Panel resolution, square and round.
 pub const TL_LCD_RESOLUTION: u32 = 400;
 
-const TL_LCD_MAX_FPS: u32 = 30;
+/// Panel refresh ceiling. The one source for both the advertised capability
+/// and the clamp applied to a frame-rate request.
+const TL_LCD_MAX_FPS: u8 = 30;
 const TL_LCD_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// Reads during a session handshake; the panel is slow to answer identity,
 /// handshake, and firmware queries.
@@ -59,7 +61,7 @@ const TL_LCD_PRODUCT_INFO_REPORTS: u8 = 2;
 const TL_LCD_CONTROL_PAYLOAD_LEN: usize = 11;
 const TL_LCD_SERIAL_LEN: usize = 32;
 const TL_LCD_DEFAULT_BRIGHTNESS: u8 = 100;
-const TL_LCD_DEFAULT_FPS: u8 = 30;
+const TL_LCD_DEFAULT_FPS: u8 = TL_LCD_MAX_FPS;
 
 /// Command byte of a panel packet (§5.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -506,7 +508,7 @@ impl Protocol for TlLcdProtocol {
                 // The panel tops out at 30fps; a higher request would be a
                 // number the hardware cannot honour, and zero would stall it.
                 DisplaySetting::FrameRate(fps) => {
-                    state.fps = fps.clamp(1, TL_LCD_DEFAULT_FPS);
+                    state.fps = fps.clamp(1, TL_LCD_MAX_FPS);
                 }
             }
         }
@@ -575,7 +577,7 @@ impl Protocol for TlLcdProtocol {
             supports_brightness: false,
             has_display: true,
             display_resolution: Some((TL_LCD_RESOLUTION, TL_LCD_RESOLUTION)),
-            max_fps: TL_LCD_MAX_FPS,
+            max_fps: u32::from(TL_LCD_MAX_FPS),
             color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }
