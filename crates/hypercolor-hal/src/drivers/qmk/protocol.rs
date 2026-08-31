@@ -346,5 +346,6 @@ fn command_from_packet(packet: &QmkPacket, expects_response: bool) -> ProtocolCo
         response_delay: Duration::from_millis(super::types::HID_READ_TIMEOUT_MS),
         post_delay: Duration::ZERO,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }
 }

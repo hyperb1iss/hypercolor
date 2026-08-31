@@ -100,6 +100,7 @@ impl SeirenV3Protocol {
             response_delay: Duration::ZERO,
             post_delay,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 }

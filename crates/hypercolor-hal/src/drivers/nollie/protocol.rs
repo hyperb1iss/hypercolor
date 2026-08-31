@@ -710,5 +710,6 @@ pub(super) fn command_from_packet(
         response_delay,
         post_delay,
         transfer_type: crate::protocol::TransferType::Primary,
+        ..Default::default()
     }
 }

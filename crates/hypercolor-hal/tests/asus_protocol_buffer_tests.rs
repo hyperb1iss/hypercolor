@@ -13,6 +13,7 @@ fn aura_usb_encode_frame_into_reuses_existing_command_buffers() {
         response_delay: Duration::from_millis(7),
         post_delay: Duration::from_millis(9),
         transfer_type: TransferType::Bulk,
+        ..Default::default()
     }];
     let original_ptr = commands[0].data.as_ptr();
 
@@ -33,6 +34,7 @@ fn aura_usb_encode_frame_into_overwrites_stale_commands_for_empty_frames() {
         response_delay: Duration::from_millis(7),
         post_delay: Duration::from_millis(9),
         transfer_type: TransferType::Bulk,
+        ..Default::default()
     }];
 
     protocol.encode_frame_into(&[], &mut commands);
