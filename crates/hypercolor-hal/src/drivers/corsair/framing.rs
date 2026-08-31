@@ -27,18 +27,29 @@ pub const LCD_DATA_PER_PACKET: usize = 1_016;
 /// Corsair LCD HID report size.
 pub const LCD_REPORT_SIZE: usize = 32;
 
+/// Header size of a Corsair LCD display bulk packet.
+pub const LCD_DISPLAY_HEADER_SIZE: usize = 8;
+
+/// Chunks a Corsair LCD frame can address.
+///
+/// The sequence number is one byte, so `0..=255` is the whole counter and a
+/// longer frame has no way to say which packet is which.
+pub const LCD_MAX_DISPLAY_CHUNKS: u32 = 256;
+
+const _: () = assert!(
+    std::mem::size_of::<LcdDisplayHeader>() == LCD_DISPLAY_HEADER_SIZE,
+    "LcdDisplayHeader must match LCD_DISPLAY_HEADER_SIZE (8 bytes)"
+);
+
 const _: () = assert!(
     std::mem::size_of::<LcdDisplayPacket>() == LCD_PACKET_SIZE,
     "LcdDisplayPacket must match LCD_PACKET_SIZE (1024 bytes)"
 );
 
-/// Wire-format Corsair LCD display bulk packet (1024 bytes).
-///
-/// Each packet carries up to 1016 bytes of JPEG payload for one display
-/// zone. The final packet in a sequence sets `is_final` to `0x01`.
+/// Wire-format header of a Corsair LCD display bulk packet (8 bytes).
 #[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
-struct LcdDisplayPacket {
+struct LcdDisplayHeader {
     /// Command marker (always `0x02`).
     command: u8,
     /// Sub-command marker (always `0x05`).
@@ -53,6 +64,17 @@ struct LcdDisplayPacket {
     reserved: u8,
     /// Declared payload length (always `LCD_DATA_PER_PACKET`, little-endian).
     data_length: U16<LittleEndian>,
+}
+
+/// Wire-format Corsair LCD display bulk packet (1024 bytes).
+///
+/// Each packet carries up to 1016 bytes of JPEG payload for one display
+/// zone. The final packet in a sequence sets `is_final` to `0x01`.
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct LcdDisplayPacket {
+    /// Framing header.
+    header: LcdDisplayHeader,
     /// JPEG payload (up to 1016 bytes, zero-padded).
     data: [u8; LCD_DATA_PER_PACKET],
 }
@@ -131,6 +153,9 @@ pub fn build_lcd_display_packet(
 }
 
 /// Append one fixed-size Corsair LCD display packet to an existing buffer.
+///
+/// Payload bytes beyond `LCD_DATA_PER_PACKET` are dropped; the streaming path
+/// chunks ahead of this call so the truncation only affects direct callers.
 pub fn append_lcd_display_packet(
     buffer: &mut Vec<u8>,
     zone_byte: u8,
@@ -139,19 +164,44 @@ pub fn append_lcd_display_packet(
     payload: &[u8],
 ) {
     buffer.resize(LCD_PACKET_SIZE, 0);
-    buffer[0] = 0x02;
-    buffer[1] = 0x05;
-    buffer[2] = zone_byte;
-    buffer[3] = u8::from(final_packet);
-    buffer[4] = packet_number;
-    buffer[5] = 0x00;
-    buffer[6..8].copy_from_slice(
-        &u16::try_from(LCD_DATA_PER_PACKET)
-            .unwrap_or(u16::MAX)
-            .to_le_bytes(),
-    );
+    write_lcd_display_header(buffer, zone_byte, final_packet, packet_number);
+
     let copy_len = payload.len().min(LCD_DATA_PER_PACKET);
-    buffer[8..8 + copy_len].copy_from_slice(&payload[..copy_len]);
+    buffer[LCD_DISPLAY_HEADER_SIZE..LCD_DISPLAY_HEADER_SIZE + copy_len]
+        .copy_from_slice(&payload[..copy_len]);
+}
+
+/// Write the display packet header into the first bytes of `packet`.
+///
+/// The declared payload length is always the full per-packet capacity, which
+/// is what the device expects even on a short final packet. Buffers shorter
+/// than the header trip a debug assert and are left untouched in release
+/// builds.
+pub fn write_lcd_display_header(
+    packet: &mut [u8],
+    zone_byte: u8,
+    final_packet: bool,
+    packet_number: u8,
+) {
+    debug_assert!(
+        packet.len() >= LCD_DISPLAY_HEADER_SIZE,
+        "LCD display packet must hold its {LCD_DISPLAY_HEADER_SIZE}-byte header, got {}B",
+        packet.len(),
+    );
+    if packet.len() < LCD_DISPLAY_HEADER_SIZE {
+        return;
+    }
+
+    let header = LcdDisplayHeader {
+        command: 0x02,
+        sub_command: 0x05,
+        zone: zone_byte,
+        is_final: u8::from(final_packet),
+        packet_number,
+        reserved: 0x00,
+        data_length: U16::new(u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX)),
+    };
+    packet[..LCD_DISPLAY_HEADER_SIZE].copy_from_slice(header.as_bytes());
 }
 
 /// Build a fixed-size Corsair LCD HID feature report.
