@@ -884,6 +884,7 @@ fn hidapi_descriptor(
             build,
         },
         firmware_predicate: None,
+        serial_quirk: None,
     }
 }
 
@@ -907,6 +908,7 @@ fn control_descriptor(
             build,
         },
         firmware_predicate: None,
+        serial_quirk: None,
     }
 }
 
