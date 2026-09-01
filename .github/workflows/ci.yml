@@ -112,8 +112,8 @@ jobs:
       docs: ${{ steps.filter.outputs.docs }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: dorny/paths-filter@v4.0.1
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           filters: |
@@ -202,7 +202,7 @@ jobs:
     if: needs.changes.outputs.workflow == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
 
@@ -216,7 +216,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-shared
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -281,7 +281,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-check-macos
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Qualify macOS runner and SDK
         run: |
@@ -451,7 +451,7 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: effects-${{ hashFiles('sdk/bun.lock') }}
@@ -494,7 +494,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/${{ matrix.target_dir }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -619,7 +619,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/servo
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -737,7 +737,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -824,7 +824,7 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           arguments: ""
@@ -842,7 +842,7 @@ jobs:
     if: needs.changes.outputs.compat == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -861,7 +861,7 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -869,7 +869,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: python/uv.lock
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version-file: python/.python-version
 
@@ -909,7 +909,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-test-daemon
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -931,7 +931,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: python/uv.lock
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version-file: python/.python-version
 
@@ -968,12 +968,12 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version-file: python/.python-version
 
@@ -1008,7 +1008,7 @@ jobs:
       run:
         working-directory: sdk
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: sdk-${{ hashFiles('sdk/bun.lock') }}
@@ -1031,7 +1031,7 @@ jobs:
       run:
         working-directory: crates/hypercolor-ui
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: ui-${{ hashFiles('crates/hypercolor-ui/bun.lock') }}
@@ -1068,7 +1068,7 @@ jobs:
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-test-daemon
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -1179,7 +1179,7 @@ jobs:
       HYPERCOLOR_E2E_UI_DIST_DIR: ${{ github.workspace }}/crates/hypercolor-ui/dist
       HYPERCOLOR_E2E_STACK: ${{ matrix.suite }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Download e2e stack
         uses: actions/download-artifact@v8
@@ -1201,7 +1201,7 @@ jobs:
             -o Acquire::https::Timeout="$APT_HTTP_TIMEOUT" \
             install -y --no-install-recommends ${{ env.LINUX_RUST_DEPS }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           # Node 24.16+ hangs `playwright install` in extract-zip
           # (microsoft/playwright#41000, fixed in Playwright 1.60); stay on
@@ -1254,7 +1254,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install Zola
         run: |
@@ -1311,7 +1311,7 @@ jobs:
       inputs.release_artifacts != 'none')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/bun-cache
         with:
           key: web-assets-${{ hashFiles('sdk/bun.lock', 'crates/hypercolor-ui/bun.lock') }}
@@ -1401,7 +1401,7 @@ jobs:
       # build had just finished compiling.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Qualify macOS runner and SDK
         if: runner.os == 'macOS'
@@ -1594,7 +1594,7 @@ jobs:
     needs: web-assets
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies
         run: |
@@ -1717,7 +1717,7 @@ jobs:
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Report runner capacity
         shell: bash
@@ -1904,7 +1904,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8
         with:
@@ -1961,13 +1961,13 @@ jobs:
       contents: read
       id-token: write # npm trusted publishing / provenance
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -2037,7 +2037,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Determine version
         id: version
