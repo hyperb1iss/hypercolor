@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 The installer is idempotent: re-running it upgrades an existing install. Pin any tagged release with `--version`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.3.2
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.4.0
 ```
 
 On Linux the install root is fixed. `HYPERCOLOR_INSTALL_PREFIX` must be
