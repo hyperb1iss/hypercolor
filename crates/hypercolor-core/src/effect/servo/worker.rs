@@ -22,8 +22,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use base::generic_channel::GenericCallback;
 use dpi::PhysicalSize;
 use hypercolor_types::canvas::Canvas;
-use profile_traits::mem::MemoryReportResult;
 use reqwest::Url;
+use servo::profile_traits::mem::MemoryReportResult;
 use servo::{
     JSValue, JavaScriptEvaluationError, Preferences, RenderingContext, Servo, ServoBuilder,
     WebView, WebViewBuilder,
@@ -143,6 +143,9 @@ fn trimmed_servo_preferences() -> Preferences {
         thread_pool_async_runtime_workers_max: 1,
         thread_pool_workers_max: 1,
         thread_pool_webrender_workers_max: 1,
+        // Servo 0.5 disables incremental SpiderMonkey GC after upstream found
+        // timing-dependent memory corruption. Keep the safety invariant local.
+        js_mem_gc_incremental_enabled: false,
         js_mem_gc_empty_chunk_count_min: 0,
         js_mem_gc_high_frequency_heap_growth_max: 150,
         js_mem_gc_high_frequency_heap_growth_min: 120,

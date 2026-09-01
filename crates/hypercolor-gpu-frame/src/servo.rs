@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use paint_api::rendering_context::RenderingContext;
+use servo::RenderingContext;
 
 use crate::ImportedEffectFrame;
 

@@ -24,7 +24,6 @@ media-video = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 servo = [
     "dep:base",
     "dep:servo",
-    "dep:profile_traits",
     "dep:dpi",
     "dep:gleam",
     "hypercolor-gpu-frame/servo-context",
@@ -107,12 +106,11 @@ gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 gstreamer-video = { workspace = true, optional = true }
 base = { workspace = true, optional = true }
-profile_traits = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 dpi = { workspace = true, optional = true }
 nvml-wrapper = { workspace = true }
 servo = { workspace = true, features = ["baked-in-resources", "js_jit"], optional = true }
-# Pinned to match servo-paint-api's `Rc<dyn gleam::gl::Gl>` so the direct
+# Pinned to match Servo's `Rc<dyn gleam::gl::Gl>` so the direct
 # glReadPixels path in servo/worker.rs can call into Servo's context.
 gleam = { version = "0.15", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }

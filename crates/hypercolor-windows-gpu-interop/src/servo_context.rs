@@ -14,12 +14,11 @@ use dpi::PhysicalSize;
 use euclid::default::Size2D;
 use gleam::gl::{self, Gl};
 use image::RgbaImage;
-use paint_api::rendering_context::RenderingContext;
+use servo::{DeviceIntRect, RenderingContext};
 use surfman::{
     Adapter, Connection, Context, ContextAttributeFlags, ContextAttributes, Device, Error, GLApi,
     Surface, SurfaceAccess, SurfaceInfo, SurfaceTexture, SurfaceType,
 };
-use webrender_api::units::DeviceIntRect;
 use winapi::Interface;
 use winapi::shared::dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1,

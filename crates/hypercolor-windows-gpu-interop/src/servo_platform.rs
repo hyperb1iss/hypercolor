@@ -7,7 +7,7 @@ use std::rc::Rc;
 use hypercolor_gpu_frame::servo::{
     ServoGpuAdapterIdentity, ServoGpuImportSession, ServoRenderPlatform,
 };
-use paint_api::rendering_context::RenderingContext;
+use servo::RenderingContext;
 
 use crate::servo_window::hidden_window_rendering_context;
 
@@ -64,7 +64,7 @@ mod gpu_import {
         ServoGpuAdapterIdentity, ServoGpuFrameImporter, ServoGpuImportFailure,
         ServoGpuImportSession,
     };
-    use paint_api::rendering_context::RenderingContext;
+    use servo::RenderingContext;
 
     use crate::servo_context::{
         WindowsAngleRenderingContext, WindowsDxgiAdapterIdentity, WindowsServoNativeFrame,
