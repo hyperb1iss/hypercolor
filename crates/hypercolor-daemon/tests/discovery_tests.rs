@@ -538,7 +538,7 @@ fn legacy_asus_dram_layout() -> SpatialLayout {
         .zones
         .first_mut()
         .expect("test layout should contain one output");
-    output.name = "ASUS Aura DRAM (SMBus 0x73) · Lighting".to_owned();
+    "ASUS Aura DRAM (SMBus 0x73) · Lighting".clone_into(&mut output.name);
     output.zone_name = Some("Lighting".to_owned());
     output.topology = LedTopology::Strip {
         count: 8,
