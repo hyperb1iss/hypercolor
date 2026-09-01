@@ -174,6 +174,41 @@ SITE_BUILD_DIR=""
 info "Building Hypercolor v${VERSION} for ${PLATFORM} (${RUST_TARGET})"
 info "Rust artifacts will land in ${CARGO_TARGET_DIR}"
 
+if [[ "${CI_MODE}" -eq 1 ]]; then
+  [[ -n "${WEB_ASSETS_DIR}" ]] || die "--ci requires --web-assets <dir>"
+  [[ -f "${WEB_ASSETS_DIR}/ui/index.html" ]] \
+    || die "pre-built web assets are missing ui/index.html: ${WEB_ASSETS_DIR}"
+  info "Using pre-built web assets from ${WEB_ASSETS_DIR}"
+  rm -rf crates/hypercolor-ui/dist
+  mkdir -p crates/hypercolor-ui/dist
+  cp -R "${WEB_ASSETS_DIR}/ui/." crates/hypercolor-ui/dist/
+else
+  require_cmd trunk
+  require_cmd bun
+
+  info "Building web UI (Leptos/Trunk)"
+  (
+    cd crates/hypercolor-ui
+    bun install --frozen-lockfile
+    if command -v rustup >/dev/null 2>&1; then
+      rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
+    fi
+    HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR \
+      "${CARGO_CACHE_BUILD}" trunk build --release --locked
+  )
+
+  if [[ "${SKIP_EFFECTS}" -eq 0 ]]; then
+    info "Building bundled effects and faces"
+    (
+      cd sdk
+      bun install --frozen-lockfile
+      bun run build:effects
+    )
+  fi
+
+  WEB_ASSETS_DIR=""
+fi
+
 if [[ -n "${BIN_DIR}" ]]; then
   info "Using pre-built binaries from ${BIN_DIR}"
 else
@@ -202,36 +237,6 @@ else
     -p hypercolor-cli --bin hypercolor \
     -p hypercolor-app --bin hypercolor-app \
     ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
-fi
-
-if [[ "${CI_MODE}" -eq 1 ]]; then
-  [[ -n "${WEB_ASSETS_DIR}" ]] || die "--ci requires --web-assets <dir>"
-  info "Using pre-built web assets from ${WEB_ASSETS_DIR}"
-else
-  require_cmd trunk
-  require_cmd bun
-
-  info "Building web UI (Leptos/Trunk)"
-  (
-    cd crates/hypercolor-ui
-    bun install --frozen-lockfile
-    if command -v rustup >/dev/null 2>&1; then
-      rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-    fi
-    HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR \
-      "${CARGO_CACHE_BUILD}" trunk build --release --locked
-  )
-
-  if [[ "${SKIP_EFFECTS}" -eq 0 ]]; then
-    info "Building bundled effects and faces"
-    (
-      cd sdk
-      bun install --frozen-lockfile
-      bun run build:effects
-    )
-  fi
-
-  WEB_ASSETS_DIR=""
 fi
 
 if [[ "${SKIP_DOCS}" -eq 0 ]]; then
