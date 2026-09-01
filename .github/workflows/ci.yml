@@ -1397,8 +1397,9 @@ jobs:
       # Absolute on purpose. Cargo resolves a relative CARGO_TARGET_DIR
       # against the current directory, and the Tauri bundle step runs from
       # crates/hypercolor-app, so a bare "target" sent that build to its own
-      # cold directory and recompiled the whole dependency tree the sidecar
-      # build had just finished compiling.
+      # cold directory and rebuilt the third of its graph the sidecar build
+      # shares (157 of ~475 crates). The rest is the app's own tree, which
+      # nothing here compiles twice, so this saves work and not wall time.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v6
