@@ -6,29 +6,44 @@ from typing import Any, TypeVar
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-T = TypeVar("T", bound="EdgeBehavior")
+T = TypeVar("T", bound="EdgeBehaviorFadeToBlackValue")
 
 
 @_attrs_define
-class EdgeBehavior:
-    """Edge behavior for out-of-bounds LED positions."""
+class EdgeBehaviorFadeToBlackValue:
+    """Fade to black outside canvas bounds. `falloff` controls fade rate.
 
+    Attributes:
+        falloff (float): Higher values produce a sharper cutoff.
+    """
+
+    falloff: float
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        falloff = self.falloff
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
+        field_dict.update(
+            {
+                "falloff": falloff,
+            }
+        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        edge_behavior = cls()
+        falloff = d.pop("falloff")
 
-        edge_behavior.additional_properties = d
-        return edge_behavior
+        edge_behavior_fade_to_black_value = cls(
+            falloff=falloff,
+        )
+
+        edge_behavior_fade_to_black_value.additional_properties = d
+        return edge_behavior_fade_to_black_value
 
     @property
     def additional_keys(self) -> list[str]:

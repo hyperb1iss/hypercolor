@@ -339,7 +339,9 @@ from .driver_transport_kind_type_4 import DriverTransportKindType4
 from .driver_transport_kind_type_5 import DriverTransportKindType5
 from .driver_transport_kind_type_6 import DriverTransportKindType6
 from .driver_transport_kind_type_7 import DriverTransportKindType7
-from .edge_behavior import EdgeBehavior
+from .edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
+from .edge_behavior_fade_to_black_value import EdgeBehaviorFadeToBlackValue
+from .edge_behavior_type_0 import EdgeBehaviorType0
 from .effect_capability_set import EffectCapabilitySet
 from .effect_category import EffectCategory
 from .effect_detail_response import EffectDetailResponse
@@ -921,7 +923,9 @@ __all__ = (
     "DriverTransportKindType5",
     "DriverTransportKindType6",
     "DriverTransportKindType7",
-    "EdgeBehavior",
+    "EdgeBehaviorFadeToBlack",
+    "EdgeBehaviorFadeToBlackValue",
+    "EdgeBehaviorType0",
     "EffectCapabilitySet",
     "EffectCategory",
     "EffectDetailResponse",

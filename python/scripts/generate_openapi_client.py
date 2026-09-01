@@ -128,7 +128,6 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
         "ControlSurfaceEvent",
         "ControlSurfaceScope",
         "DisplayFaceResponseOptional",
-        "EdgeBehavior",
         "EffectSource",
         "LayerSource",
     ):
@@ -139,6 +138,7 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
                 "description": schema.get("description", f"{name} payload"),
             }
 
+    normalize_edge_behavior_schema(schemas)
     normalize_recursive_control_schemas(schemas)
 
     normalize_binary_response_media_types(spec)
@@ -146,6 +146,62 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
     generator_spec = temp_dir / "openapi-python-client.json"
     generator_spec.write_text(json.dumps(spec, indent=2), encoding="utf-8")
     return generator_spec
+
+
+def normalize_edge_behavior_schema(schemas: dict[str, object]) -> None:
+    schema = schemas.get("EdgeBehavior")
+    if not isinstance(schema, dict):
+        return
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list):
+        return
+
+    string_values = [
+        value
+        for variant in variants
+        if isinstance(variant, dict) and variant.get("type") == "string"
+        for enum_values in [variant.get("enum")]
+        if isinstance(enum_values, list)
+        for value in enum_values
+        if isinstance(value, str)
+    ]
+    fade_wrapper = None
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        properties = variant.get("properties")
+        if isinstance(properties, dict) and "fade_to_black" in properties:
+            fade_wrapper = variant
+            break
+    if not string_values or not isinstance(fade_wrapper, dict):
+        return
+    fade_properties = fade_wrapper.get("properties")
+    if not isinstance(fade_properties, dict):
+        return
+    fade_value = fade_properties.get("fade_to_black")
+    if not isinstance(fade_value, dict):
+        return
+
+    schemas["EdgeBehavior"] = {
+        "description": schema.get(
+            "description", "Edge behavior for out-of-bounds LED positions."
+        ),
+        "oneOf": [
+            {"type": "string", "enum": string_values},
+            {"$ref": "#/components/schemas/EdgeBehaviorFadeToBlack"},
+        ],
+    }
+    schemas["EdgeBehaviorFadeToBlack"] = {
+        "type": "object",
+        "description": fade_wrapper.get("description"),
+        "required": ["fade_to_black"],
+        "properties": {
+            "fade_to_black": {
+                "$ref": "#/components/schemas/EdgeBehaviorFadeToBlackValue"
+            }
+        },
+    }
+    schemas["EdgeBehaviorFadeToBlackValue"] = fade_value
 
 
 def normalize_recursive_control_schemas(schemas: dict[str, object]) -> None:

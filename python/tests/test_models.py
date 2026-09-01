@@ -8,7 +8,10 @@ from hypercolor import models
 from hypercolor._generated.api.devices import update_attachments
 from hypercolor._generated.models import (
     ComponentBinding,
+    EdgeBehaviorFadeToBlack,
+    EdgeBehaviorType0,
     EffectDetailResponse,
+    SpatialLayout,
     UpdateAttachmentsRequest,
 )
 from hypercolor._generated.types import Unset
@@ -41,6 +44,54 @@ def test_generated_attachment_update_sends_the_complete_request() -> None:
         ],
         "validate_only": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("wire_value", "expected"),
+    [
+        ("clamp", EdgeBehaviorType0.CLAMP),
+        ("wrap", EdgeBehaviorType0.WRAP),
+        ("mirror", EdgeBehaviorType0.MIRROR),
+    ],
+)
+def test_spatial_layout_decodes_string_edge_behavior(
+    wire_value: str,
+    expected: EdgeBehaviorType0,
+) -> None:
+    layout = SpatialLayout.from_dict(
+        {
+            "canvas_height": 480,
+            "canvas_width": 640,
+            "id": "default",
+            "name": "Default",
+            "version": 1,
+            "zones": [],
+            "default_edge_behavior": wire_value,
+        }
+    )
+
+    assert layout.default_edge_behavior is expected
+    assert layout.to_dict()["default_edge_behavior"] == wire_value
+
+
+def test_spatial_layout_decodes_fade_edge_behavior() -> None:
+    wire_value = {"fade_to_black": {"falloff": 2.0}}
+
+    layout = SpatialLayout.from_dict(
+        {
+            "canvas_height": 480,
+            "canvas_width": 640,
+            "id": "default",
+            "name": "Default",
+            "version": 1,
+            "zones": [],
+            "default_edge_behavior": wire_value,
+        }
+    )
+
+    assert isinstance(layout.default_edge_behavior, EdgeBehaviorFadeToBlack)
+    assert layout.default_edge_behavior.fade_to_black.falloff == 2.0
+    assert layout.to_dict()["default_edge_behavior"] == wire_value
 
 
 def test_device_model_decodes_canonical_connection() -> None:

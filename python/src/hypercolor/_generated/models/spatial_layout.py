@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.edge_behavior_type_0 import EdgeBehaviorType0
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.edge_behavior import EdgeBehavior
+    from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
     from ..models.output import Output
     from ..models.sampling_mode_type_0 import SamplingModeType0
     from ..models.sampling_mode_type_1 import SamplingModeType1
@@ -35,7 +36,8 @@ class SpatialLayout:
             name (str): Human-readable name (e.g., "Bliss's PC Case", "Full Room").
             version (int): Schema version for forward-compatible migrations.
             zones (list[Output]): All device zones in this layout, ordered by rendering priority.
-            default_edge_behavior (EdgeBehavior | Unset): Edge behavior for out-of-bounds LED positions.
+            default_edge_behavior (EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset): Edge behavior for out-of-bounds LED
+                positions.
             default_sampling_mode (SamplingModeType0 | SamplingModeType1 | SamplingModeType2 | SamplingModeType3 | Unset):
                 Sampling algorithm for canvas-to-LED color extraction.
             description (None | str | Unset): Optional description for the layout editor UI.
@@ -47,7 +49,7 @@ class SpatialLayout:
     name: str
     version: int
     zones: list[Output]
-    default_edge_behavior: EdgeBehavior | Unset = UNSET
+    default_edge_behavior: EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset = UNSET
     default_sampling_mode: (
         SamplingModeType0
         | SamplingModeType1
@@ -78,8 +80,12 @@ class SpatialLayout:
             zones_item = zones_item_data.to_dict()
             zones.append(zones_item)
 
-        default_edge_behavior: dict[str, Any] | Unset = UNSET
-        if not isinstance(self.default_edge_behavior, Unset):
+        default_edge_behavior: dict[str, Any] | str | Unset
+        if isinstance(self.default_edge_behavior, Unset):
+            default_edge_behavior = UNSET
+        elif isinstance(self.default_edge_behavior, EdgeBehaviorType0):
+            default_edge_behavior = self.default_edge_behavior.value
+        else:
             default_edge_behavior = self.default_edge_behavior.to_dict()
 
         default_sampling_mode: dict[str, Any] | Unset
@@ -123,7 +129,7 @@ class SpatialLayout:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edge_behavior import EdgeBehavior
+        from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
         from ..models.output import Output
         from ..models.sampling_mode_type_0 import SamplingModeType0
         from ..models.sampling_mode_type_1 import SamplingModeType1
@@ -148,12 +154,30 @@ class SpatialLayout:
 
             zones.append(zones_item)
 
-        _default_edge_behavior = d.pop("default_edge_behavior", UNSET)
-        default_edge_behavior: EdgeBehavior | Unset
-        if isinstance(_default_edge_behavior, Unset):
-            default_edge_behavior = UNSET
-        else:
-            default_edge_behavior = EdgeBehavior.from_dict(_default_edge_behavior)
+        def _parse_default_edge_behavior(
+            data: object,
+        ) -> EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset:
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                componentsschemas_edge_behavior_type_0 = EdgeBehaviorType0(data)
+
+                return componentsschemas_edge_behavior_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            if not isinstance(data, dict):
+                raise TypeError()
+            componentsschemas_edge_behavior_type_1 = EdgeBehaviorFadeToBlack.from_dict(
+                data
+            )
+
+            return componentsschemas_edge_behavior_type_1
+
+        default_edge_behavior = _parse_default_edge_behavior(
+            d.pop("default_edge_behavior", UNSET)
+        )
 
         def _parse_default_sampling_mode(
             data: object,

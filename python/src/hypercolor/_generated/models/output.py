@@ -6,11 +6,12 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.edge_behavior_type_0 import EdgeBehaviorType0
 from ..models.orientation import Orientation
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.edge_behavior import EdgeBehavior
+    from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
     from ..models.led_topology_type_0 import LedTopologyType0
     from ..models.led_topology_type_1 import LedTopologyType1
     from ..models.led_topology_type_2 import LedTopologyType2
@@ -88,7 +89,7 @@ class Output:
                 strip against the rest of the setup.
             display_order (int | Unset): Display stacking order in the layout editor.
                 Higher values render on top. Zones with equal values use vector order.
-            edge_behavior (EdgeBehavior | None | Unset):
+            edge_behavior (EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | None | Unset):
             led_mapping (list[int] | None | Unset): Optional spatial-index -> physical-index remap applied before device
                 writes.
 
@@ -121,7 +122,7 @@ class Output:
     attachment: None | OutputComponent | Unset = UNSET
     brightness: float | None | Unset = UNSET
     display_order: int | Unset = UNSET
-    edge_behavior: EdgeBehavior | None | Unset = UNSET
+    edge_behavior: EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | None | Unset = UNSET
     led_mapping: list[int] | None | Unset = UNSET
     orientation: None | Orientation | Unset = UNSET
     sampling_mode: (
@@ -141,7 +142,7 @@ class Output:
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.edge_behavior import EdgeBehavior
+        from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
         from ..models.led_topology_type_0 import LedTopologyType0
         from ..models.led_topology_type_1 import LedTopologyType1
         from ..models.led_topology_type_2 import LedTopologyType2
@@ -202,10 +203,12 @@ class Output:
 
         display_order = self.display_order
 
-        edge_behavior: dict[str, Any] | None | Unset
+        edge_behavior: dict[str, Any] | None | str | Unset
         if isinstance(self.edge_behavior, Unset):
             edge_behavior = UNSET
-        elif isinstance(self.edge_behavior, EdgeBehavior):
+        elif isinstance(self.edge_behavior, EdgeBehaviorType0):
+            edge_behavior = self.edge_behavior.value
+        elif isinstance(self.edge_behavior, EdgeBehaviorFadeToBlack):
             edge_behavior = self.edge_behavior.to_dict()
         else:
             edge_behavior = self.edge_behavior
@@ -309,7 +312,7 @@ class Output:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edge_behavior import EdgeBehavior
+        from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
         from ..models.led_topology_type_0 import LedTopologyType0
         from ..models.led_topology_type_1 import LedTopologyType1
         from ..models.led_topology_type_2 import LedTopologyType2
@@ -436,20 +439,34 @@ class Output:
 
         display_order = d.pop("display_order", UNSET)
 
-        def _parse_edge_behavior(data: object) -> EdgeBehavior | None | Unset:
+        def _parse_edge_behavior(
+            data: object,
+        ) -> EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             try:
-                if not isinstance(data, dict):
+                if not isinstance(data, str):
                     raise TypeError()
-                edge_behavior_type_1 = EdgeBehavior.from_dict(data)
+                componentsschemas_edge_behavior_type_0 = EdgeBehaviorType0(data)
 
-                return edge_behavior_type_1
+                return componentsschemas_edge_behavior_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
-            return cast(EdgeBehavior | None | Unset, data)
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_edge_behavior_type_1 = (
+                    EdgeBehaviorFadeToBlack.from_dict(data)
+                )
+
+                return componentsschemas_edge_behavior_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(
+                EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | None | Unset, data
+            )
 
         edge_behavior = _parse_edge_behavior(d.pop("edge_behavior", UNSET))
 
