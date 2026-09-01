@@ -183,9 +183,7 @@ def normalize_edge_behavior_schema(schemas: dict[str, object]) -> None:
         return
 
     schemas["EdgeBehavior"] = {
-        "description": schema.get(
-            "description", "Edge behavior for out-of-bounds LED positions."
-        ),
+        "description": schema.get("description", "Edge behavior for out-of-bounds LED positions."),
         "oneOf": [
             {"type": "string", "enum": string_values},
             {"$ref": "#/components/schemas/EdgeBehaviorFadeToBlack"},
@@ -196,9 +194,7 @@ def normalize_edge_behavior_schema(schemas: dict[str, object]) -> None:
         "description": fade_wrapper.get("description"),
         "required": ["fade_to_black"],
         "properties": {
-            "fade_to_black": {
-                "$ref": "#/components/schemas/EdgeBehaviorFadeToBlackValue"
-            }
+            "fade_to_black": {"$ref": "#/components/schemas/EdgeBehaviorFadeToBlackValue"}
         },
     }
     schemas["EdgeBehaviorFadeToBlackValue"] = fade_value
