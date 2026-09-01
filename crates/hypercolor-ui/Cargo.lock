@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-color"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-leptos-ext"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "gloo-events",
@@ -794,7 +794,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-types"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "hypercolor-color",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "hypercolor-ui"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "console_error_panic_hook",

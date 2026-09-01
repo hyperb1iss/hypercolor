@@ -5,6 +5,87 @@ All notable changes to Hypercolor will be documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-01
+
+macOS becomes a first-class capture and input platform, the REST surface collapses onto a canonical resource model rooted at `/api/v1/system` and `/api/v1/scene`, and the workspace splits platform code into dedicated crates. Installation, code signing, and daemon ownership are now transactional and attested on both macOS and Linux.
+
+### Added
+
+- ✨ Add a native macOS capture and host-input stack: `hypercolor-macos-capture` (ScreenCaptureKit streams, picker, IOSurface mailbox, screenshot reference), `hypercolor-macos-input`, `hypercolor-macos-media`, and `hypercolor-macos-session`, with GPU import and Metal reduction in `hypercolor-macos-gpu-interop` (see `docs/specs/79-macos-screen-capture-and-host-input.md`)
+- ✨ Add macOS daemon ownership and TCC attestation: the `hypercolor-macos-owner` crate (launchd adapter, guard coordination, journal, retained-code validation), plus daemon-side `macos_launcher_authority`, `macos_service_identity`, and the `macos_tcc_canary` harness with receipts and validation lifecycle
+- ✨ Add a transactional installer under `hypercolor-cli/src/install/` with per-platform executors, payload manifests, staging trees, proofs, and rollback, backed by `hypercolor-platform-fs` handle-relative tree replacement and new `install_payload`/`install_transaction` test suites
+- ✨ Add release signing and packaging plumbing: `scripts/sign-macos-artifacts.sh`, `scripts/macos-dev-signing-identity.sh`, `scripts/verify-macos-deployment-target.sh`, `packaging/macos/*.entitlements.plist`, and `packaging/macos/signing-manifest.tsv`
+- ✨ Add the `hypercolor-color` crate (transfer functions, blending, encoding, hex parsing) with a shared oracle in `sdk/shared/color-vectors.json`, plus generated SDK `color-prelude` and `glsl-prelude` so Rust, TypeScript, and GLSL agree on color math
+- ✨ Add a topic-based WebSocket layer: `api/ws/topics.rs`, `api/ws/manifest.rs`, the `hypercolor-ws-manifest` binary, `protocol/websocket-v1.descriptions.json`, golden frame fixtures under `tests/fixtures/ws/`, and a client-side registry with backoff in `hypercolor-leptos-ext`
+- ✨ Add a daemon domain service layer under `hypercolor-daemon/src/domain/` (scene, scene tree, zone, layout, display, effect identity, device binding, diagnostics, spatial) with dedicated service test suites
+- ✨ Add platform-neutral crates carved out of the daemon, core, and driver-api: `hypercolor-persistence` (from `daemon/src/persistence.rs`), `hypercolor-driver-support` (from the deleted `driver-api` `control_apply`, `control_surface`, `net/*`, `support`, `validation` modules), `hypercolor-gpu-frame`, `hypercolor-worker-retention`, `hypercolor-linux-input`, `hypercolor-linux-session`, `hypercolor-pipewire-interop`, `hypercolor-windows-session`, and `hypercolor-windows-telemetry` (#220)
+- ✨ Add live config sections and redaction to the config API (`api/config/live/{audio,capture,input,render}.rs`, `api/config/redaction.rs`) plus a typed `config_registry` and `GET /api/v1/config/schema`
+
+### Changed
+
+- 🔄 Split the daemon HTTP surface into `api/routes/*` with a single typed error path (`api/error.rs`, `api/envelope.rs`) and merge discovery plus runtime telemetry into `GET /api/v1/system`, replacing `GET /api/v1/server` and `GET /api/v1/status`
+- 🔄 Make `/api/v1/scene` the single owner of live render state, fold power and brightness into `GET`/`PATCH /api/v1/output`, and add `POST /api/v1/scenes/snapshot` so saved lighting snapshots are scenes (`daemon.start_scene` replaces `daemon.start_profile` in config schema version 5)
+- 🔄 Rename device LED regions to **segments** across REST responses, identify paths, and internal vocabulary; scene render zones keep their existing names
+- ♻️ Rename the renderer's `render_groups` module to `render_zones` and split it into projection, reconcile, retention, scene assembly, and render-pass units
+- 🔄 Split the monolithic config type into `hypercolor-types/src/config/*` (root plus per-section modules) with an `extensions` flatten catch-all that preserves unmodeled top-level sections verbatim across saves
+- 🔄 Decode every Python client response through the generated OpenAPI models; the handwritten msgspec mirrors are gone, so a field the daemon stops sending fails the decode instead of arriving as `None`
+- 🔄 Import legacy `profiles.json` entries into scenes on first startup and retire the source only after the scene write is durable (`daemon/src/profile_import.rs`, `path_migration.rs`)
+
+### Fixed
+
+- 🐛 Preserve macOS capture through repick failures and fence interrupted capture recovery (356fa03, ac563f6)
+- 🐛 Track live IOSurface ownership, select IOSurface storage by GPU family, and retain capture owners in GPU caches (a779b0d, e97b602, 2c4a94c)
+- 🐛 Retain native screen leases through GPU completion and invalidate screen publications coherently (2ce483b, 6492bba)
+- 🐛 Service macOS capture UI on the main thread, admit the first capture surface, and order capture lifecycle delivery (ea06477, fb7f3b9, 7eb2662)
+- 🐛 Bind protected input actions to exact executors and require protected control authority for capture (2a12031, 5645e81)
+- 🐛 Bind trusted UI to verified daemon sessions and stop exact macOS daemon owner incarnations (b881c79, 88bd416)
+- 🐛 Preserve canonical pointer scroll events in the Servo bridge and legacy wheel units in the SDK (268c1fc, ec5dfc5)
+- 🐛 Preserve complete WebSocket contracts in the Python client (8fc11c1)
+
+### Security
+
+- 🔒 Isolate macOS signing credentials in release workflows, with transport tests under `scripts/tests/macos-signing-secret-transport-tests.sh` (0c70949)
+- 🔒 Redact protected config and system selections for callers without control authority (`api/config/redaction.rs`, `api/security.rs`)
+
+### Removed
+
+- 🔥 Remove the `hypercolor-tray` and `hypercolor-leptos-ext-macros` crates; tray supervision moved into `hypercolor-app` (#220)
+- 🔥 Remove profiles end to end: REST routes, CLI commands, `profile_store`, shared types, WebSocket fields and events, the MCP `set_profile` tool, and the `hypercolor://profiles` resource
+- 🔥 Remove the `[dbus]`, `[tui]`, and `[features]` config sections and the top-level `include` key; none reached a consumer, and existing files keep loading with the retired keys preserved through the extension catch-all
+- 🔥 Remove effect layout association routes and the `effect-layouts.json` store; scene `layout_id` is the successor
+- 🔥 Remove singleton live-effect routes, `/scenes/active`, `/scenes/deactivate`, the nested `/scenes/{id}/zones/*` mutation tree, and `/library/presets/{id}/apply`
+- 🔥 Remove logical-device, binding, rebind, device metrics/debug, sensor-item, memory-diagnostics, screenshot-mount, and attachment catalog/category/vendor REST routes
+- 🔥 Remove the unimplemented multi-room model: `SpaceDefinition`, `RoomDimensions`, `RoomAdjacency`, `Wall`, and `SpatialLayout.spaces`
+- 🔥 Remove the platform-mirrored contracts `InputSourcePlatformStatus`, `MacosInputTelemetry`, `MacosArchitecture`, `MacosAuthorizationState`, and `MacosProtectedSourceState`
+
+### Breaking Changes
+
+- **Live render state is the `/api/v1/scene` tree.** Read real zone and layer ids from `GET /api/v1/scene`, patch through `/scene/zones/{zone}/layers/{layer}/controls`, stop with `POST /scene/clear`, and return to the default scene with `POST /scene/deactivate`. Structural mutations may use the scene `revision` as `If-Match`; control patches never do. Never synthesize a layer id from a zone id.
+- **Route renames.** `GET /api/v1/audio/devices` becomes `GET /api/v1/system/audio-devices`; display preview becomes `/displays/{id}/frame`; capture picker becomes `PUT /capture/source`; playlist stop becomes `POST /library/playlists/deactivate`. Retired paths answer 404 (79f08cb)
+- **Power and brightness are one resource.** `GET`/`PATCH /api/v1/output` carries `{power, brightness}`, replacing `/output/power`, `/settings/brightness`, and `/effects/pause`|`resume`. `{"power":"paused"}` preserves the live tree and holds outputs at the off frame.
+- **Attachment dry-runs fold into `PUT /devices/{id}/attachments` with `validate_only`**, and profiles embed through `GET /devices?include=attachments`.
+- **MCP `stop_effect` is removed.** Clear a zone with `clear_zone` and patch live layer controls with `adjust_controls` (#218)
+- **Config sections `[dbus]`, `[tui]`, `[features]` and the top-level `include` key are no longer modeled.** They load and round-trip through the extension catch-all but have no effect; `include` never merged a file.
+- **Device fingerprints and portable driver identities gained namespaces.** Hardware may appear once under its new identity and require re-adoption. `device-aliases.json` schema version 1 is no longer loaded: back it up, remove it, then rescan to rebuild the schema version 2 overlay.
+- **Python: `discover_devices()` takes `targets` instead of `backends`**, honors `wait`, and returns the status-tagged union of `DiscoveryScanningResponse` and `DiscoveryCompletedResponse`.
+- **Python: `get_audio_spectrum()` is typed `NoReturn`.** It always raised; spectrum snapshots exist only on the WebSocket stream.
+- **Python: the `Layout` alias and handwritten resource mirrors are removed.** Import `SpatialLayout` from the shared spatial contract and the generated types from `hypercolor.models` (`Device` -> `DeviceSummary`, `Driver` -> `DriverSummary`, `ControlSurface` -> `ControlSurfaceDocument`, `Preset` -> `EffectPreset`, `OutputState` -> `OutputResource`, and so on).
+- **SDK: `InputData.available` and the `dev` CLI command are removed.** Read `routed` and `healthy`; use the Bun workspace `dev` script for package watch builds.
+
+Upgrade notes:
+
+- Regenerate OpenAPI-derived clients so they consume `SceneDocument`, `ZoneResource`, real layer ids, and `OutputResource`.
+- Point pause/resume integrations at `PATCH /api/v1/output` and read status from `GET /api/v1/output`.
+- Existing `effect-layouts.json` files are deliberately left orphaned; set `scene.layout_id` explicitly for scenes that should select a named layout.
+
+### Metrics
+
+- Total Commits: ~420 (enumerated from `git log v0.3.2..HEAD`, merge commits included; not confirmed with `git rev-list --count`)
+- Files Changed: 2,775
+- Insertions: +405,648
+- Deletions: -173,520
+<!-- -------------------------------------------------------------- -->
+
 ## [Unreleased]
 
 ### Changed
