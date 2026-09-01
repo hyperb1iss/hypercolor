@@ -134,10 +134,6 @@ pub struct Cli {
 /// network → system.
 #[derive(Subcommand)]
 pub enum Commands {
-    #[cfg(unix)]
-    #[command(name = "__install-release", hide = true)]
-    InstallRelease(InstallReleaseArgs),
-
     // ── Lighting ──────────────────────────────────────────────
     /// System state, render loop, and active effect
     #[command(display_order = 1)]
@@ -238,6 +234,35 @@ pub struct InstallReleaseArgs {
     no_service: bool,
 }
 
+#[cfg(unix)]
+#[derive(Parser)]
+#[command(name = "hypercolor __install-release")]
+struct InstallReleaseInvocation {
+    #[command(flatten)]
+    args: InstallReleaseArgs,
+}
+
+#[cfg(unix)]
+fn parse_install_release_invocation<I, T>(
+    raw_args: I,
+) -> Option<std::result::Result<InstallReleaseArgs, clap::Error>>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let mut raw_args = raw_args.into_iter().map(Into::into);
+    let executable = raw_args.next()?;
+    let command = raw_args.next()?;
+    if command != std::ffi::OsStr::new("__install-release") {
+        return None;
+    }
+
+    Some(
+        InstallReleaseInvocation::try_parse_from(std::iter::once(executable).chain(raw_args))
+            .map(|invocation| invocation.args),
+    )
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 pub async fn run() -> Result<()> {
@@ -245,18 +270,18 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()> {
+    #[cfg(unix)]
+    match parse_install_release_invocation(std::env::args_os()) {
+        Some(Ok(args)) => return install_command::execute(&args),
+        Some(Err(error)) => error.exit(),
+        None => {}
+    }
+
     let cli = Cli::from_arg_matches(
         &Cli::command()
             .before_help(output::painter::help_banner())
             .get_matches(),
     )?;
-
-    #[cfg(unix)]
-    {
-        if let Commands::InstallRelease(args) = &cli.command {
-            return install_command::execute(args);
-        }
-    }
 
     // TUI takes over the terminal and routes tracing to a file instead of
     // stderr, so dispatch before CLI tracing initialization.
@@ -317,8 +342,6 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,
         Commands::Servers(args) => commands::servers::execute(args, &ctx).await,
         Commands::External(args) => execute_external_command(args, extensions, &client, &ctx).await,
-        #[cfg(unix)]
-        Commands::InstallRelease(_) => unreachable!(),
         #[cfg(feature = "tui")]
         Commands::Tui(_) => unreachable!(),
         Commands::Completions(args) => {

@@ -1,91 +1,76 @@
 #![cfg(unix)]
 
-use clap::{CommandFactory as _, Parser as _};
-use hypercolor_cli::{Cli, Commands};
+use clap::CommandFactory as _;
+use hypercolor_cli::Cli;
 
 const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[test]
-fn hidden_release_command_is_strict_and_absent_from_help() {
-    let parsed = Cli::try_parse_from([
-        "hypercolor",
-        "__install-release",
-        "--install-prefix",
-        "/home/test/.local",
-        "--install-dir",
-        "/home/test/.local/bin",
-        "--expected-manifest-sha256",
-        DIGEST,
-        "--no-service",
-    ])
-    .expect("hidden release command should parse");
-    assert!(matches!(parsed.command, Commands::InstallRelease(_)));
-
+fn installer_protocol_is_strict_and_absent_from_help() {
     let uppercase = DIGEST.to_ascii_uppercase();
-    assert!(
-        Cli::try_parse_from([
-            "hypercolor",
-            "__install-release",
-            "--install-prefix",
-            "/home/test/.local",
-            "--install-dir",
-            "/home/test/.local/bin",
-            "--expected-manifest-sha256",
-            &uppercase,
-        ])
-        .is_err()
-    );
-    assert!(
-        Cli::try_parse_from([
-            "hypercolor",
-            "__install-release",
-            "--install-prefix",
-            "/home/test/.local",
-            "--install-prefix",
-            "/home/test/.local",
-            "--install-dir",
-            "/home/test/.local/bin",
-            "--expected-manifest-sha256",
-            DIGEST,
-        ])
-        .is_err()
-    );
-    assert!(
-        Cli::try_parse_from([
-            "hypercolor",
-            "__install-release",
-            "--install-prefix",
-            "/home/test/.local",
-            "--install-dir",
-            "/home/test/.local/bin",
-            "--expected-manifest-sha256",
-            DIGEST,
-            "--no-service",
-            "--no-service",
-        ])
-        .is_err()
-    );
     let legacy = format!("legacy-{DIGEST}");
-    assert!(
-        Cli::try_parse_from([
-            "hypercolor",
+    let invalid_cases = [
+        vec![
             "__install-release",
             "--install-prefix",
             "/home/test/.local",
             "--install-dir",
             "/home/test/.local/bin",
             "--expected-manifest-sha256",
-            &legacy,
-        ])
-        .is_err()
-    );
+            uppercase.as_str(),
+        ],
+        vec![
+            "__install-release",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-dir",
+            "/home/test/.local/bin",
+            "--expected-manifest-sha256",
+            DIGEST,
+        ],
+        vec![
+            "__install-release",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-dir",
+            "/home/test/.local/bin",
+            "--expected-manifest-sha256",
+            DIGEST,
+            "--no-service",
+            "--no-service",
+        ],
+        vec![
+            "__install-release",
+            "--install-prefix",
+            "/home/test/.local",
+            "--install-dir",
+            "/home/test/.local/bin",
+            "--expected-manifest-sha256",
+            legacy.as_str(),
+        ],
+    ];
+
+    for args in invalid_cases {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_hypercolor"))
+            .args(args)
+            .output()
+            .expect("run release installer parser");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            stderr.contains("error:"),
+            "invalid installer invocation escaped strict parsing: {stderr}"
+        );
+    }
 
     let help = Cli::command().render_long_help().to_string();
     assert!(!help.contains("__install-release"));
 }
 
 #[test]
-fn hidden_release_failure_bypasses_connection_setup_and_propagates() {
+fn valid_installer_protocol_dispatches_before_connection_setup() {
     use std::fs;
     use std::os::unix::fs::PermissionsExt as _;
     use std::process::Command;
