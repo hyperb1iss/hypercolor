@@ -19,8 +19,8 @@ screen-capture-fixtures = [
 servo-window = [
   "dep:anyhow",
   "dep:dpi",
-  "dep:paint_api",
   "dep:raw-window-handle",
+  "dep:servo",
   "dep:tao",
   "hypercolor-gpu-frame/servo-context",
 ]
@@ -31,10 +31,8 @@ servo-context = [
   "dep:gleam",
   "dep:glow",
   "dep:image",
-  "dep:paint_api",
   "dep:surfman",
   "dep:tracing",
-  "dep:webrender_api",
   "dep:winapi",
   "dep:wio",
 ]
@@ -72,12 +70,11 @@ euclid = { version = "0.22", optional = true }
 gleam = { version = "0.15", optional = true }
 glow = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
-paint_api = { workspace = true, optional = true }
 raw-window-handle = { version = "0.6", optional = true }
+servo = { workspace = true, features = ["no-wgl"], optional = true }
 surfman = { workspace = true, features = ["sm-angle-builtin", "sm-angle-default"], optional = true }
 tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
 tracing = { workspace = true, optional = true }
-webrender_api = { workspace = true, optional = true }
 winapi = { version = "0.3", features = ["d3d11", "dxgi", "winerror"], optional = true }
 wio = { version = "0.2", optional = true }
 

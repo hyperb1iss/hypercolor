@@ -9,12 +9,11 @@ use gleam::gl::{self, Gl};
 use image::RgbaImage;
 use objc2_core_foundation::CFRetained;
 use objc2_io_surface::IOSurfaceRef;
-use paint_api::rendering_context::RenderingContext;
+use servo::{DeviceIntRect, RenderingContext};
 use surfman::{
     Connection, Context, ContextAttributeFlags, ContextAttributes, Device, Error, GLApi, Surface,
     SurfaceAccess, SurfaceInfo, SurfaceTexture, SurfaceType,
 };
-use webrender_api::units::DeviceIntRect;
 
 use crate::{
     FrameOrigin, ImportedFrameFormat, MacosGpuInteropError, MacosIosurfaceImportDescriptor, Result,

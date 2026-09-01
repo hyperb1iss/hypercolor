@@ -97,7 +97,7 @@ private, so `effect::traits::…` and friends are not reachable paths.
 
 | Feature | What it gates |
 |---|---|
-| `servo` | Servo HTML/Canvas renderer. Pulls in `servo`, `base`, `profile_traits`, `dpi`, `gleam`, `hypercolor-gpu-frame/servo-context`, and `hypercolor-windows-gpu-interop/servo-window` for the Windows hidden-window CPU path. On Windows, uses the `no-wgl` Servo variant. |
+| `servo` | Servo HTML/Canvas renderer. Pulls in the top-level `servo` API, the unreexported `base` memory-report callback, `dpi`, `gleam`, `hypercolor-gpu-frame/servo-context`, and `hypercolor-windows-gpu-interop/servo-window` for the Windows hidden-window CPU path. On Windows, uses the `no-wgl` Servo variant. |
 | `servo-gpu-import` | Extends `servo` with zero-copy GPU texture import on all three platforms: `hypercolor-linux-gpu-interop` (GL/Vulkan external memory), `hypercolor-macos-gpu-interop` (IOSurface/Metal), `hypercolor-windows-gpu-interop` (D3D11/Vulkan). Also pulls in `wgpu`. |
 | `media-lottie` | Lottie playback in the media-player renderer, via `rlottie`. |
 | `media-video` | GStreamer video playback in the media-player renderer. |

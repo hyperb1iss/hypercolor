@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use anyhow::anyhow;
 use dpi::PhysicalSize;
-use paint_api::rendering_context::{RenderingContext, WindowRenderingContext};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use servo::{RenderingContext, WindowRenderingContext};
 use tao::event_loop::{EventLoop, EventLoopBuilder};
 use tao::platform::windows::EventLoopBuilderExtWindows;
 use tao::window::{Window, WindowBuilder};

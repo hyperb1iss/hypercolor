@@ -8,7 +8,7 @@ use hypercolor_gpu_frame::servo::{
     ServoGpuAdapterIdentity, ServoGpuFrameImporter, ServoGpuImportFailure, ServoGpuImportSession,
     ServoRenderPlatform,
 };
-use paint_api::rendering_context::RenderingContext;
+use servo::RenderingContext;
 
 use crate::servo_context::{MacosHardwareRenderingContext, MacosServoNativeFrame};
 use crate::{

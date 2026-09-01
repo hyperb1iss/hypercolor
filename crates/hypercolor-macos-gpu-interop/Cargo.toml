@@ -19,10 +19,9 @@ servo-context = [
   "dep:gleam",
   "dep:glow",
   "dep:image",
-  "dep:paint_api",
+  "dep:servo",
   "dep:surfman",
   "dep:tracing",
-  "dep:webrender_api",
   "hypercolor-gpu-frame/servo-context",
 ]
 
@@ -83,10 +82,9 @@ objc2-metal = { workspace = true, features = [
   "objc2-io-surface",
 ] }
 objc2-foundation = { workspace = true, features = ["std", "NSError", "NSString"] }
-paint_api = { workspace = true, optional = true }
+servo = { workspace = true, optional = true }
 surfman = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
-webrender_api = { workspace = true, optional = true }
 wgpu-hal = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]

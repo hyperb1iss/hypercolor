@@ -6,8 +6,7 @@ use hypercolor_macos_gpu_interop::{
     FrameOrigin, ImportedFrameFormat, MacosHardwareRenderingContext,
 };
 use objc2_io_surface::{IOSurfaceLockOptions, IOSurfaceRef};
-use paint_api::rendering_context::RenderingContext;
-use webrender_api::units::{DeviceIntPoint, DeviceIntRect, DeviceIntSize};
+use servo::{DeviceIntPoint, DeviceIntRect, DeviceIntSize, RenderingContext};
 
 const WIDTH: u32 = 4;
 const HEIGHT: u32 = 3;

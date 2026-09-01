@@ -8,7 +8,7 @@ use hypercolor_windows_gpu_interop::{
     WindowsD3d11SharedTextureImportDescriptor, WindowsD3d11SharedTextureImporter,
     WindowsDxgiAdapterIdentity,
 };
-use paint_api::rendering_context::RenderingContext;
+use servo::RenderingContext;
 
 mod support;
 

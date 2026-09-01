@@ -12,11 +12,11 @@ rust-version.workspace = true
 default = []
 # Servo rendering-context and frame-import seam shared by the GPU interop
 # crates and the Servo worker.
-servo-context = ["dep:anyhow", "dep:paint_api"]
+servo-context = ["dep:anyhow", "dep:servo"]
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
-paint_api = { workspace = true, optional = true }
+servo = { workspace = true, optional = true }
 wgpu = { workspace = true }
 
 [dev-dependencies]

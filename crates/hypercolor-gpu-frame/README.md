@@ -13,7 +13,7 @@ frame.
 
 ## Workspace position
 
-**Depends on:** `wgpu`; optionally `anyhow` and `paint_api` behind
+**Depends on:** `wgpu`; optionally `anyhow` and the top-level `servo` API behind
 `servo-context`. No other Hypercolor crates.
 
 **Depended on by:** `hypercolor-core`, `hypercolor-daemon`,
@@ -47,7 +47,7 @@ frame.
 
 | Feature | What it gates |
 |---|---|
-| `servo-context` | The Servo rendering-context and frame-import seam (`servo` module) shared by the GPU interop crates and the Servo worker. Pulls in `anyhow` and `paint_api`. |
+| `servo-context` | The Servo rendering-context and frame-import seam (`servo` module) shared by the GPU interop crates and the Servo worker. Pulls in `anyhow` and `servo`. |
 | `default` | Empty. |
 
 ---
