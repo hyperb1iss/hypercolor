@@ -289,7 +289,7 @@ fn unsupported_smbus_platform() -> Result<Vec<SmBusProbe>> {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
-    let hub_present = bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS);
+    let hub_present = bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS).await;
     if hub_present {
         debug!(
             bus_path,
@@ -304,7 +304,7 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
         );
     }
 
-    let occupied_addresses = probe_occupied_dram_addresses(bus_path);
+    let occupied_addresses = probe_occupied_dram_addresses(bus_path).await;
     trace!(
         bus_path,
         occupied_addresses = ?occupied_addresses,
@@ -320,7 +320,7 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
         let mut next_address_index = 0_usize;
 
         for slot_index in 0..ASUS_DRAM_REMAP_SLOT_COUNT {
-            if !bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
+            if !bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS).await {
                 break;
             }
 
@@ -653,22 +653,28 @@ pub fn resolve_parent_pci_id_from_sysfs_path(path: &Path) -> Option<(u16, u16)> 
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn probe_occupied_dram_addresses(bus_path: &str) -> HashSet<u16> {
-    ASUS_DRAM_SMBUS_ADDRESSES
-        .iter()
-        .copied()
-        .filter(|&address| bus_address_quick_responds(bus_path, address))
-        .collect()
+async fn probe_occupied_dram_addresses(bus_path: &str) -> HashSet<u16> {
+    let mut occupied_addresses = HashSet::new();
+    for &address in ASUS_DRAM_SMBUS_ADDRESSES {
+        if bus_address_quick_responds(bus_path, address).await {
+            occupied_addresses.insert(address);
+        }
+    }
+    occupied_addresses
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn bus_address_responds(bus_path: &str, address: u16) -> bool {
-    SmBusTransport::probe_presence(bus_path, address).unwrap_or(false)
+async fn bus_address_responds(bus_path: &str, address: u16) -> bool {
+    SmBusTransport::probe_presence(bus_path, address)
+        .await
+        .unwrap_or(false)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn bus_address_quick_responds(bus_path: &str, address: u16) -> bool {
-    SmBusTransport::probe_quick_write(bus_path, address).unwrap_or(false)
+async fn bus_address_quick_responds(bus_path: &str, address: u16) -> bool {
+    SmBusTransport::probe_quick_write(bus_path, address)
+        .await
+        .unwrap_or(false)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]

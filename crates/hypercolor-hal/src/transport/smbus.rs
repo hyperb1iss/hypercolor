@@ -1,6 +1,7 @@
 //! `SMBus` transport framing and transport support for Linux and Windows.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -22,7 +23,21 @@ pub struct SmBusBusArbiter {
     transaction_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+static SMBUS_BUS_ARBITERS: LazyLock<Mutex<HashMap<String, SmBusBusArbiter>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 impl SmBusBusArbiter {
+    /// Resolve the process-wide transaction arbiter for one physical bus.
+    #[must_use]
+    pub fn for_bus(bus_path: &str) -> Self {
+        SMBUS_BUS_ARBITERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(bus_path.to_owned())
+            .or_default()
+            .clone()
+    }
+
     /// Acquire exclusive ownership of one physical bus transaction segment.
     pub async fn acquire_transaction(&self) -> tokio::sync::OwnedMutexGuard<()> {
         Arc::clone(&self.transaction_lock).lock_owned().await
@@ -234,8 +249,6 @@ pub fn decode_operations(data: &[u8]) -> Result<Vec<SmBusOperation>, TransportEr
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use std::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 use i2cdev::core::I2CDevice;
@@ -267,7 +280,8 @@ impl SmBusTransport {
     ///
     /// Returns [`TransportError`] when the device path cannot be opened.
     pub fn open<P: AsRef<Path>>(path: P, address: u16) -> Result<Self, TransportError> {
-        Self::open_with_arbiter(path, address, SmBusBusArbiter::default())
+        let bus_arbiter = SmBusBusArbiter::for_bus(&path.as_ref().display().to_string());
+        Self::open_with_arbiter(path, address, bus_arbiter)
     }
 
     /// Open one `SMBus` slave with a transaction arbiter shared by its bus.
@@ -303,20 +317,28 @@ impl SmBusTransport {
     /// # Errors
     ///
     /// Returns [`TransportError`] when the bus path itself cannot be opened.
-    pub fn probe_presence<P: AsRef<Path>>(path: P, address: u16) -> Result<bool, TransportError> {
+    pub async fn probe_presence<P: AsRef<Path>>(
+        path: P,
+        address: u16,
+    ) -> Result<bool, TransportError> {
         let path_string = path.as_ref().display().to_string();
-        let mut device = LinuxI2CDevice::new(path.as_ref(), address)
-            .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
+        let bus_arbiter = SmBusBusArbiter::for_bus(&path_string);
+        bus_arbiter
+            .run_blocking(move || {
+                let mut device = LinuxI2CDevice::new(&path_string, address)
+                    .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
 
-        if device.smbus_write_quick(false).is_ok() {
-            return Ok(true);
-        }
+                if device.smbus_write_quick(false).is_ok() {
+                    return Ok(true);
+                }
 
-        if device.smbus_read_byte().is_ok() {
-            return Ok(true);
-        }
+                if device.smbus_read_byte().is_ok() {
+                    return Ok(true);
+                }
 
-        Ok(device.smbus_read_byte_data(0x00).is_ok())
+                Ok(device.smbus_read_byte_data(0x00).is_ok())
+            })
+            .await
     }
 
     /// Probe whether one `SMBus` address acknowledges a quick-write transaction.
@@ -324,15 +346,20 @@ impl SmBusTransport {
     /// # Errors
     ///
     /// Returns [`TransportError`] when the bus path itself cannot be opened.
-    pub fn probe_quick_write<P: AsRef<Path>>(
+    pub async fn probe_quick_write<P: AsRef<Path>>(
         path: P,
         address: u16,
     ) -> Result<bool, TransportError> {
         let path_string = path.as_ref().display().to_string();
-        let mut device = LinuxI2CDevice::new(path.as_ref(), address)
-            .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
+        let bus_arbiter = SmBusBusArbiter::for_bus(&path_string);
+        bus_arbiter
+            .run_blocking(move || {
+                let mut device = LinuxI2CDevice::new(&path_string, address)
+                    .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
 
-        Ok(device.smbus_write_quick(false).is_ok())
+                Ok(device.smbus_write_quick(false).is_ok())
+            })
+            .await
     }
 
     fn check_open(&self) -> Result<(), TransportError> {
@@ -460,7 +487,7 @@ impl SmBusTransport {
     ///
     /// Returns [`TransportError`] when PawnIO cannot open the bus.
     pub fn open(path: &str, address: u16) -> Result<Self, TransportError> {
-        Self::open_with_arbiter(path, address, SmBusBusArbiter::default())
+        Self::open_with_arbiter(path, address, SmBusBusArbiter::for_bus(path))
     }
 
     /// Open one `SMBus` slave with a transaction arbiter shared by its bus.
@@ -490,11 +517,17 @@ impl SmBusTransport {
     /// # Errors
     ///
     /// Returns [`TransportError`] when the bus path itself cannot be opened.
-    pub fn probe_presence(path: &str, address: u16) -> Result<bool, TransportError> {
+    pub async fn probe_presence(path: &str, address: u16) -> Result<bool, TransportError> {
         let address = u8_address(address)?;
-        let bus = open_smbus_bus(path).map_err(map_windows_pawnio_error)?;
-        bus.probe_presence(address)
-            .map_err(map_windows_pawnio_error)
+        let bus_arbiter = SmBusBusArbiter::for_bus(path);
+        let path = path.to_owned();
+        bus_arbiter
+            .run_blocking(move || {
+                let bus = open_smbus_bus(&path).map_err(map_windows_pawnio_error)?;
+                bus.probe_presence(address)
+                    .map_err(map_windows_pawnio_error)
+            })
+            .await
     }
 
     /// Probe whether one `SMBus` address acknowledges a quick-write transaction.
@@ -502,11 +535,17 @@ impl SmBusTransport {
     /// # Errors
     ///
     /// Returns [`TransportError`] when the bus path itself cannot be opened.
-    pub fn probe_quick_write(path: &str, address: u16) -> Result<bool, TransportError> {
+    pub async fn probe_quick_write(path: &str, address: u16) -> Result<bool, TransportError> {
         let address = u8_address(address)?;
-        let bus = open_smbus_bus(path).map_err(map_windows_pawnio_error)?;
-        bus.probe_quick_write(address)
-            .map_err(map_windows_pawnio_error)
+        let bus_arbiter = SmBusBusArbiter::for_bus(path);
+        let path = path.to_owned();
+        bus_arbiter
+            .run_blocking(move || {
+                let bus = open_smbus_bus(&path).map_err(map_windows_pawnio_error)?;
+                bus.probe_quick_write(address)
+                    .map_err(map_windows_pawnio_error)
+            })
+            .await
     }
 
     /// Enumerate PawnIO SMBus buses.
@@ -716,14 +755,14 @@ impl SmBusTransport {
     }
 
     /// `SMBus` transport is only available on Linux and Windows.
-    pub fn probe_presence(_path: &str, _address: u16) -> Result<bool, TransportError> {
+    pub async fn probe_presence(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux and Windows".to_owned(),
         })
     }
 
     /// `SMBus` transport is only available on Linux and Windows.
-    pub fn probe_quick_write(_path: &str, _address: u16) -> Result<bool, TransportError> {
+    pub async fn probe_quick_write(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux and Windows".to_owned(),
         })
