@@ -1012,9 +1012,12 @@ pub enum HypercolorEvent {
     /// A stored spatial layout changed, or the active layout switched.
     ///
     /// The layout domain publishes one per persisted mutation: create,
-    /// update, delete, apply, a config-driven canvas resize, and a
-    /// simulator prune. Consumers re-read `current` from the catalog; a
-    /// missing id means it was deleted.
+    /// update, delete, apply, a config-driven canvas resize, a
+    /// simulator prune, an auto-layout repair, and a device-binding
+    /// migration. Consumers re-read the catalog and the active layout:
+    /// a `current` id missing from the catalog was deleted, or names
+    /// the synthesized default that becomes active when the last stored
+    /// layout is removed (the list route omits it too).
     LayoutChanged {
         /// The layout that was active before, present only when the
         /// active selection moved (apply, or deleting the active layout).
