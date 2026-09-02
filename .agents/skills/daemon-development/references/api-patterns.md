@@ -4,7 +4,7 @@ Detailed patterns for the Hypercolor daemon REST API.
 
 ## Handler Pattern
 
-All handlers receive `State<Arc<AppState>>` via Axum extractor and return `Response` (not `Result`). A handler is a thin adapter over one domain service reached through `state.domains`: convert wire input, call the service, wrap the outcome. It never locks a subsystem mutex, and it leaves event publication to the service, which knows when the commit landed. The config routes are the standing exception: `api/config.rs` publishes `ConfigChanged` directly from the handler once the save succeeds.
+All handlers receive `State<Arc<AppState>>` via Axum extractor and return `Response` (not `Result`). A handler is a thin adapter over one domain service reached through `state.domains`: convert wire input, call the service, wrap the outcome. It never locks a subsystem mutex, and it leaves event publication to the service, which knows when the commit landed. The config routes follow the same rule: `ConfigManager` publishes `ConfigChanged` once a save lands, so `api/config.rs` never publishes on its own.
 
 ```rust
 // src/api/output.rs
