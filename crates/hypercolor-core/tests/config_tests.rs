@@ -603,3 +603,184 @@ fn macos_user_paths_live_under_the_home_library() {
         home.join("Applications")
     );
 }
+
+// ─── Change Stream ──────────────────────────────────────────────────────────
+
+mod change_stream {
+    use std::fs;
+    use std::sync::Arc;
+
+    use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
+    use hypercolor_core::config::ConfigManager;
+    use hypercolor_types::event::HypercolorEvent;
+    use serde_json::{Value, json};
+    use tokio::sync::broadcast::Receiver;
+
+    type ConfigChange = (String, Option<Value>, Value);
+
+    /// A manager over a fresh temp path with the change stream attached
+    /// and a subscriber opened before any write.
+    fn attached_manager() -> (ConfigManager, Receiver<TimestampedEvent>, tempfile::TempDir) {
+        let tempdir = tempfile::tempdir().expect("tempdir should build");
+        let manager = ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+            .expect("config manager should build");
+        let bus = Arc::new(HypercolorBus::new());
+        let events = bus.subscribe_all();
+        manager.attach_change_stream(bus);
+        (manager, events, tempdir)
+    }
+
+    fn drain_config_changes(events: &mut Receiver<TimestampedEvent>) -> Vec<ConfigChange> {
+        let mut changes = Vec::new();
+        while let Ok(timestamped) = events.try_recv() {
+            if let HypercolorEvent::ConfigChanged {
+                key,
+                old_value,
+                new_value,
+            } = timestamped.event
+            {
+                changes.push((key, old_value, new_value));
+            }
+        }
+        changes
+    }
+
+    #[test]
+    fn save_publishes_exactly_one_config_changed_for_one_key() {
+        let (manager, mut events, _tempdir) = attached_manager();
+
+        manager.modify(|config| config.daemon.target_fps = 45);
+        manager.save().expect("save should succeed");
+
+        assert_eq!(
+            drain_config_changes(&mut events),
+            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(45))]
+        );
+    }
+
+    #[test]
+    fn save_of_several_keys_publishes_their_shared_prefix_with_no_payload() {
+        let (manager, mut events, _tempdir) = attached_manager();
+
+        manager.modify(|config| {
+            config.daemon.target_fps = 45;
+            config.daemon.port = 9421;
+        });
+        manager.save().expect("save should succeed");
+        assert_eq!(
+            drain_config_changes(&mut events),
+            vec![("daemon".to_owned(), None, Value::Null)]
+        );
+
+        manager.modify(|config| {
+            config.daemon.target_fps = 60;
+            config.audio.device = "microphone".to_owned();
+        });
+        manager.save().expect("save should succeed");
+        assert_eq!(
+            drain_config_changes(&mut events),
+            vec![(String::new(), None, Value::Null)],
+            "keys in different sections share only the empty prefix"
+        );
+    }
+
+    #[test]
+    fn unchanged_saves_publish_nothing() {
+        let (manager, mut events, _tempdir) = attached_manager();
+
+        manager.save().expect("first save should succeed");
+        manager.modify(|config| config.daemon.target_fps = 45);
+        manager.save().expect("second save should succeed");
+        manager.save().expect("third save should succeed");
+
+        assert_eq!(
+            drain_config_changes(&mut events).len(),
+            1,
+            "only the save that changed the document fans out"
+        );
+    }
+
+    #[test]
+    fn secret_keys_publish_masked_on_both_sides() {
+        let (manager, mut events, _tempdir) = attached_manager();
+
+        manager.modify(|config| {
+            config
+                .extensions
+                .insert("cloud".to_owned(), json!({ "token": "sk-live-first" }));
+        });
+        manager.save().expect("save should succeed");
+        assert_eq!(
+            drain_config_changes(&mut events),
+            vec![("cloud".to_owned(), None, json!({ "redacted": true }))],
+            "a new secret section arrives as one masked leaf"
+        );
+
+        manager.modify(|config| {
+            config
+                .extensions
+                .insert("cloud".to_owned(), json!({ "token": "sk-live-second" }));
+        });
+        manager.save().expect("save should succeed");
+        assert_eq!(
+            drain_config_changes(&mut events),
+            vec![(
+                "cloud.token".to_owned(),
+                Some(json!({ "redacted": true })),
+                json!({ "redacted": true })
+            )],
+            "a rotated credential never fans out in either direction"
+        );
+    }
+
+    #[test]
+    fn modify_and_save_if_current_publishes_the_installed_document() {
+        let (manager, mut events, _tempdir) = attached_manager();
+        let expected = Arc::clone(&manager.get());
+
+        let installed = manager
+            .modify_and_save_if_current_snapshot(&expected, |config| {
+                config.daemon.target_fps = 50;
+            })
+            .expect("save should succeed")
+            .expect("snapshot should still be current");
+
+        assert_eq!(installed.daemon.target_fps, 50);
+        assert_eq!(manager.get().daemon.target_fps, 50);
+        assert_eq!(
+            drain_config_changes(&mut events),
+            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(50))]
+        );
+    }
+
+    #[test]
+    fn reload_publishes_an_external_edit() {
+        let (manager, mut events, _tempdir) = attached_manager();
+
+        fs::write(
+            manager.path(),
+            "schema_version = 5\n[daemon]\ntarget_fps = 50\n",
+        )
+        .expect("external edit should write");
+        manager.reload().expect("reload should succeed");
+
+        assert_eq!(
+            drain_config_changes(&mut events),
+            vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(50))]
+        );
+    }
+
+    #[test]
+    fn a_manager_without_a_stream_saves_silently() {
+        let tempdir = tempfile::tempdir().expect("tempdir should build");
+        let manager = ConfigManager::new(tempdir.path().join("hypercolor.toml"))
+            .expect("config manager should build");
+        let bus = Arc::new(HypercolorBus::new());
+        let mut events = bus.subscribe_all();
+
+        manager.modify(|config| config.daemon.target_fps = 45);
+        manager.save().expect("save should succeed");
+
+        assert!(drain_config_changes(&mut events).is_empty());
+    }
+}

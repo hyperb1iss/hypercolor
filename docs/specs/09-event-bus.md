@@ -370,11 +370,17 @@ pub enum HypercolorEvent {
         profile_id: String,
     },
 
-    /// A configuration value changed (daemon config, not effect controls).
-    /// Covers any change to the TOML configuration: audio settings, network
-    /// bindings, canvas resolution, etc.
+    /// A persisted configuration value changed (daemon config, not effect
+    /// controls). Covers any change to the TOML configuration: audio
+    /// settings, network bindings, canvas resolution, etc. The config
+    /// manager publishes exactly one per persisted document, whichever
+    /// path wrote it. One changed key carries its masked before and after;
+    /// several changed keys collapse to their deepest shared prefix (the
+    /// empty string for a whole-document change) with a null payload, so
+    /// consumers re-read that subtree.
     ConfigChanged {
-        /// Dotted path to the changed key (e.g., "daemon.fps", "audio.gain").
+        /// Dotted path to the changed key (e.g., "daemon.fps", "audio.gain"),
+        /// or the shared prefix of several changed keys.
         key: String,
         old_value: Option<serde_json::Value>,
         new_value: serde_json::Value,

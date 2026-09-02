@@ -461,6 +461,9 @@ impl AppState {
             }
         }
         let event_bus = Arc::new(HypercolorBus::new());
+        if let Some(manager) = &config_manager {
+            manager.attach_change_stream(Arc::clone(&event_bus));
+        }
         let zone_layout_previews = Arc::new(ZoneLayoutPreviewStore::default());
         let scene_manager = SceneService::new(
             scene_manager_inner,
