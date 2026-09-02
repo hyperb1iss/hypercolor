@@ -7,6 +7,7 @@ pub mod input;
 pub mod interactive_preview;
 pub mod messages;
 mod preview;
+pub mod transport;
 
 pub use connection::WsManager;
 pub use input::{

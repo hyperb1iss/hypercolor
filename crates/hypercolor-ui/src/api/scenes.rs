@@ -7,8 +7,8 @@ use hypercolor_types::layer::LayerSource;
 use hypercolor_types::library::PresetId;
 use hypercolor_types::spatial::Output;
 
+use super::http_transport::HttpMethod;
 use super::{ApiError, ApiResult, client};
-use gloo_net::http::Method;
 
 pub use hypercolor_types::api::scenes::{
     ActivateSceneRequest, CreateSceneRequest, ReplaceSceneRequest, SceneListResponse, SceneSummary,
@@ -112,7 +112,7 @@ pub async fn rename_scene(scene_id: &str, name: &str) -> ApiResult<()> {
     document.name = name.to_owned();
     let request = ReplaceSceneRequest::from(&document);
     match client::send_json_versioned::<_, SceneDocument>(
-        Method::PUT,
+        HttpMethod::Put,
         &url,
         Some(&request),
         Some(document.revision),

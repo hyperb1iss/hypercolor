@@ -18,6 +18,7 @@ pub mod devices;
 pub mod displays;
 pub mod drivers;
 pub mod effects;
+pub mod http_transport;
 pub mod layers;
 pub mod layouts;
 pub mod library;

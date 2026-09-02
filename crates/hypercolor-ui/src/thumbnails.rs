@@ -11,7 +11,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use gloo_net::http::Method;
 use hypercolor_leptos_ext::canvas::{context_2d, create_canvas, image_data_rgba, set_canvas_size};
 use hypercolor_leptos_ext::prelude::{console_warn_with_value, now_ms, spawn_timeout};
 use leptos::prelude::*;
@@ -241,23 +240,8 @@ pub fn effect_cover_url(effect_id: &str) -> String {
 fn spawn_curated_probe(effect_id: String, probe_cache: StoredValue<HashMap<String, CuratedProbe>>) {
     let route = format!("/api/v1/effects/{effect_id}/cover");
     wasm_bindgen_futures::spawn_local(async move {
-        let Ok(request) = crate::api::client::request(Method::HEAD, &route) else {
-            probe_cache.update_value(|cache| {
-                cache.insert(effect_id, CuratedProbe::Absent);
-            });
-            return;
-        };
-        let request = match request.build() {
-            Ok(request) => request,
-            Err(_) => {
-                probe_cache.update_value(|cache| {
-                    cache.insert(effect_id, CuratedProbe::Absent);
-                });
-                return;
-            }
-        };
-        let state = match request.send().await {
-            Ok(response) if response.status() == 200 => CuratedProbe::Present,
+        let state = match crate::api::client::head_status(&route).await {
+            Ok(200) => CuratedProbe::Present,
             _ => CuratedProbe::Absent,
         };
         probe_cache.update_value(|cache| {
