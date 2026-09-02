@@ -5,6 +5,7 @@
 //! [`HypercolorConfig`](hypercolor_types::config::HypercolorConfig) from
 //! `hypercolor-types`.
 
+mod change_stream;
 pub mod paths;
 pub mod servers;
 pub mod sources;
@@ -20,9 +21,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
-use arc_swap::{ArcSwap, Guard};
+use arc_swap::{ArcSwap, ArcSwapOption, Guard};
 use tracing::{debug, info, warn};
 
+use crate::bus::HypercolorBus;
 use crate::persistence::{AtomicFileWriter, AtomicWriteCommitResult};
 use hypercolor_types::config::{
     CURRENT_SCHEMA_VERSION, CaptureConfig, HypercolorConfig, default_driver_configs,
@@ -74,6 +76,9 @@ pub struct ConfigManager {
     /// reporting. Set exactly once by `load_with_sources`; managers
     /// built without a boot baseline report nothing pending.
     boot_state: std::sync::OnceLock<sources::BootState>,
+    /// Bus the persisted-change stream publishes on, once the daemon
+    /// attaches it. Managers without one persist silently.
+    change_stream: ArcSwapOption<HypercolorBus>,
     #[cfg(test)]
     persistence_fault: std::sync::Mutex<Option<ConfigPersistenceStage>>,
 }
@@ -95,6 +100,9 @@ struct ConfigWriterState {
     staged_capture_persistence_epochs: BTreeSet<u64>,
     capture_persistence_authority: Option<CapturePersistenceAuthority>,
     applied_capture: Option<CaptureConfig>,
+    /// The document the change stream last published against: the
+    /// baseline the next persisted document is diffed from.
+    published: Option<Arc<HypercolorConfig>>,
 }
 
 struct CapturePersistenceAuthority {
@@ -191,6 +199,7 @@ impl ConfigManager {
             persistence,
             write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
             boot_state: std::sync::OnceLock::new(),
+            change_stream: ArcSwapOption::empty(),
             #[cfg(test)]
             persistence_fault: std::sync::Mutex::new(None),
         })
@@ -225,6 +234,7 @@ impl ConfigManager {
             persistence,
             write_lock: std::sync::Mutex::new(ConfigWriterState::default()),
             boot_state: std::sync::OnceLock::new(),
+            change_stream: ArcSwapOption::empty(),
             #[cfg(test)]
             persistence_fault: std::sync::Mutex::new(None),
         })
@@ -362,6 +372,7 @@ impl ConfigManager {
         let candidate = Arc::new(normalize_config(candidate));
         self.persist(&candidate)?;
         self.publish_config(&mut writer, &current, Arc::clone(&candidate));
+        self.note_persisted(&mut writer, &candidate);
         Ok(Some(candidate))
     }
 
@@ -448,6 +459,7 @@ impl ConfigManager {
         });
         writer.staged_capture_persistence_epochs.clear();
         self.config.store(Arc::clone(&candidate));
+        self.note_persisted(&mut writer, &candidate);
         Ok(Some(candidate))
     }
 
@@ -526,6 +538,7 @@ impl ConfigManager {
             installed,
             "runtime commit did not install staged capture config"
         );
+        self.note_persisted(&mut writer, &candidate);
         Ok(Some((candidate, committed)))
     }
 
@@ -569,6 +582,7 @@ impl ConfigManager {
         authority.source.get_or_insert(source);
         writer.applied_capture = Some(candidate.capture.clone());
         self.config.store(Arc::clone(&candidate));
+        self.note_persisted(&mut writer, &candidate);
         Ok(Some(candidate))
     }
 
@@ -611,6 +625,7 @@ impl ConfigManager {
         authority.config = Arc::clone(&candidate);
         writer.applied_capture = Some(candidate.capture.clone());
         self.config.store(Arc::clone(&candidate));
+        self.note_persisted(&mut writer, &candidate);
         Ok(Some(candidate))
     }
 
@@ -674,7 +689,8 @@ impl ConfigManager {
         info!(path = %self.config_path.display(), "reloading configuration");
         let new_config = Arc::new(normalize_config(Self::load(&self.config_path)?));
         let current = self.config.load_full();
-        self.publish_config(&mut writer, &current, new_config);
+        self.publish_config(&mut writer, &current, Arc::clone(&new_config));
+        self.note_persisted(&mut writer, &new_config);
         info!("configuration reloaded successfully");
         Ok(())
     }
@@ -689,12 +705,56 @@ impl ConfigManager {
     ///
     /// Returns an error if serialization fails or the file cannot be written.
     pub fn save(&self) -> Result<()> {
-        let _writer = self
+        let mut writer = self
             .write_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let snapshot = self.config.load();
-        self.persist(&snapshot)
+        let snapshot = self.config.load_full();
+        self.persist(&snapshot)?;
+        self.note_persisted(&mut writer, &snapshot);
+        Ok(())
+    }
+
+    /// Publish every persisted config change on `bus`.
+    ///
+    /// The live document at attach time becomes the diff baseline, so
+    /// the first event describes the first write after attach, and a
+    /// later attach replaces the bus and resets that baseline. Each
+    /// persisted document then fans out as exactly one
+    /// [`HypercolorEvent::ConfigChanged`](hypercolor_types::event::HypercolorEvent::ConfigChanged),
+    /// whichever path wrote it; see [`change_stream`] for the payload
+    /// rules.
+    pub fn attach_change_stream(&self, bus: Arc<HypercolorBus>) {
+        let mut writer = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        writer.published = Some(self.config.load_full());
+        self.change_stream.store(Some(bus));
+    }
+
+    /// Record that `persisted` is now the on-disk document and publish
+    /// the change it represents.
+    ///
+    /// Every persisting path calls this under the writer lock after the
+    /// live pointer is installed, so a subscriber that reads the manager
+    /// on receipt already sees the document the event describes. The
+    /// soft persistence failures `persist` reports as `Ok` count too:
+    /// the mutation is authoritative and the flush registry retries the
+    /// file.
+    fn note_persisted(&self, writer: &mut ConfigWriterState, persisted: &Arc<HypercolorConfig>) {
+        let Some(bus) = self.change_stream.load_full() else {
+            return;
+        };
+        let Some(previous) = writer.published.replace(Arc::clone(persisted)) else {
+            return;
+        };
+        if Arc::ptr_eq(&previous, persisted) {
+            return;
+        }
+        if let Some(event) = change_stream::config_changed_event(&previous, persisted) {
+            bus.publish(event);
+        }
     }
 
     fn persist(&self, config: &HypercolorConfig) -> Result<()> {
@@ -1001,8 +1061,30 @@ pub fn canonical_audio_device_id(device: &str) -> String {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+    use hypercolor_types::event::HypercolorEvent;
 
     const UPDATED_PORT: u16 = 17_777;
+
+    fn attach_bus(
+        manager: &ConfigManager,
+    ) -> tokio::sync::broadcast::Receiver<crate::bus::TimestampedEvent> {
+        let bus = Arc::new(HypercolorBus::new());
+        let events = bus.subscribe_all();
+        manager.attach_change_stream(bus);
+        events
+    }
+
+    fn config_changed_keys(
+        events: &mut tokio::sync::broadcast::Receiver<crate::bus::TimestampedEvent>,
+    ) -> Vec<String> {
+        let mut keys = Vec::new();
+        while let Ok(timestamped) = events.try_recv() {
+            if let HypercolorEvent::ConfigChanged { key, .. } = timestamped.event {
+                keys.push(key);
+            }
+        }
+        keys
+    }
 
     fn manager_with_persisted_default(dir: &Path, name: &str) -> (ConfigManager, PathBuf) {
         let path = dir.join(name).join("config.toml");
@@ -1062,9 +1144,40 @@ mod persistence_tests {
     }
 
     #[test]
+    fn failed_persistence_publishes_no_config_changed() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, _path) = manager_with_persisted_default(dir.as_ref(), "silent-failure");
+        let mut events = attach_bus(&manager);
+        let expected = manager.get().clone();
+
+        manager.fail_next_persistence_at(ConfigPersistenceStage::Serialize);
+        assert!(
+            manager
+                .modify_and_save_if_current_snapshot(&expected, |config| {
+                    config.daemon.port = UPDATED_PORT;
+                })
+                .is_err()
+        );
+        assert!(config_changed_keys(&mut events).is_empty());
+
+        manager.modify(|config| config.daemon.port = UPDATED_PORT);
+        manager.fail_next_persistence_at(ConfigPersistenceStage::Serialize);
+        assert!(manager.save().is_err());
+        assert!(config_changed_keys(&mut events).is_empty());
+
+        manager.save().expect("the next save should land");
+        assert_eq!(
+            config_changed_keys(&mut events),
+            vec!["daemon.port".to_owned()],
+            "the stream stays live after a failed write"
+        );
+    }
+
+    #[test]
     fn admitted_failure_publishes_and_flushes_the_authoritative_config() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let (manager, path) = manager_with_persisted_default(dir.as_ref(), "retry");
+        let mut events = attach_bus(&manager);
         let expected = manager.get().clone();
         let original_port = expected.daemon.port;
         manager
@@ -1080,6 +1193,11 @@ mod persistence_tests {
                 .is_some()
         );
         assert_eq!(manager.get().daemon.port, UPDATED_PORT);
+        assert_eq!(
+            config_changed_keys(&mut events),
+            vec!["daemon.port".to_owned()],
+            "an admitted mutation is authoritative, so it publishes even before the file lands"
+        );
         assert_eq!(
             ConfigManager::load(&path)
                 .expect("previous config remains readable")

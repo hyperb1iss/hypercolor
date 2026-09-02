@@ -149,11 +149,20 @@ impl AdmittedLayoutCatalogBindingMigration {
 }
 
 impl LayoutCatalogBindingPublication {
-    pub(super) fn publish(&mut self) -> usize {
-        *self.entries = self
+    /// Install the migrated catalog, returning the migrated binding count
+    /// and the ids of every layout whose stored entry changed.
+    pub(super) fn publish(&mut self) -> (usize, Vec<String>) {
+        let candidate = self
             .candidate
             .take()
             .expect("layout binding migration must publish exactly once");
-        self.migrated
+        let mut rebound: Vec<String> = candidate
+            .iter()
+            .filter(|(id, layout)| self.entries.get(*id) != Some(layout))
+            .map(|(id, _)| id.clone())
+            .collect();
+        rebound.sort();
+        *self.entries = candidate;
+        (self.migrated, rebound)
     }
 }

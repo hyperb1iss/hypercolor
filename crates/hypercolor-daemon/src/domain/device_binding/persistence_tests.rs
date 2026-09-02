@@ -401,7 +401,21 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
         .prepare_publication(persisted)
         .await
         .expect("prepare renderer retry publication");
+    let mut events = event_bus.subscribe_all();
     assert_eq!(publication.publish(&context), 11);
+    let mut layout_changes = Vec::new();
+    while let Ok(timestamped) = events.try_recv() {
+        if let hypercolor_types::event::HypercolorEvent::LayoutChanged { previous, current } =
+            timestamped.event
+        {
+            layout_changes.push((previous, current));
+        }
+    }
+    assert_eq!(
+        layout_changes,
+        vec![(None, "saved".to_owned())],
+        "the migration rebinds one stored layout and names it once"
+    );
     context.journal.clear().expect("clear migration journal");
     assert!(
         context

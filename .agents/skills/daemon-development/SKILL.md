@@ -40,7 +40,7 @@ The daemon (`hypercolor-daemon`) serves the REST API, WebSocket protocol, and or
 
 `runtime_session`, `devices`, `scene`, `layout`, `output`, `platform`, `display`, `diagnostics`, `effects`, `scene_tree`, `scene_library`.
 
-A handler is a thin adapter: convert wire input, call one service function, wrap the outcome. It does not lock a subsystem mutex, and event publication is the service's job in almost every domain, because the service knows when the commit actually landed. The config routes are the standing exception: `api/config.rs` publishes `ConfigChanged` from the handler itself, after the save succeeds. Follow the service pattern unless you are extending that route family. Mutations take their provenance beside the command as a `MutationContext` (`MutationContext::api()` for REST, `MutationContext::mcp()` for MCP), never inside the command payload.
+A handler is a thin adapter: convert wire input, call one service function, wrap the outcome. It does not lock a subsystem mutex, and event publication is the service's job in almost every domain, because the service knows when the commit actually landed. The config routes follow the same rule: `ConfigManager` publishes `ConfigChanged` once a save lands, so `api/config.rs` never publishes on its own. Mutations take their provenance beside the command as a `MutationContext` (`MutationContext::api()` for REST, `MutationContext::mcp()` for MCP), never inside the command payload.
 
 ```rust
 // src/api/output.rs (both handlers in full)

@@ -243,6 +243,7 @@ impl DaemonState {
 
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
+        config_manager.attach_change_stream(Arc::clone(&event_bus));
         let macos_daemon_ownership = Arc::new(ArcSwapOption::empty());
         let service_status = Arc::new(ArcSwapOption::empty());
         if let Some(status) = initial_service_status {

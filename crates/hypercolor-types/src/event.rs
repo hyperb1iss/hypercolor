@@ -899,9 +899,21 @@ pub enum HypercolorEvent {
         kind: LibraryChangeKind,
     },
 
-    /// A configuration value changed (daemon config, not effect controls).
+    /// A persisted configuration value changed (daemon config, not
+    /// effect controls).
+    ///
+    /// The config manager publishes exactly one of these per persisted
+    /// document, whichever path wrote it: the config API, the CLI, MCP,
+    /// capture persistence, a migration, or a reload after an external
+    /// edit. When one key changed, `key` names it and the values carry
+    /// its before and after, masked the way every read surface masks a
+    /// secret. When several keys changed at once, `key` is their deepest
+    /// shared prefix (the empty string for a whole-document change),
+    /// `old_value` is `None`, and `new_value` is `null`: re-read that
+    /// subtree instead of diffing.
     ConfigChanged {
-        /// Dotted path to the changed key (e.g., `"daemon.fps"`, `"audio.gain"`).
+        /// Dotted path to the changed key (e.g., `"daemon.fps"`, `"audio.gain"`),
+        /// or the shared prefix of several changed keys.
         key: String,
         old_value: Option<serde_json::Value>,
         new_value: serde_json::Value,
@@ -997,9 +1009,21 @@ pub enum HypercolorEvent {
     },
 
     // ── Layout Events ───────────────────────────────────────────────
-    /// The active spatial layout changed.
+    /// A stored spatial layout changed, or the active layout switched.
+    ///
+    /// The layout domain publishes one per persisted mutation: create,
+    /// update, delete, apply, a config-driven canvas resize, a
+    /// simulator prune, an auto-layout repair, and a device-binding
+    /// migration. Consumers re-read the catalog and the active layout:
+    /// a `current` id missing from the catalog was deleted, or names
+    /// the synthesized default that becomes active when the last stored
+    /// layout is removed (the list route omits it too).
     LayoutChanged {
+        /// The layout that was active before, present only when the
+        /// active selection moved (apply, or deleting the active layout).
         previous: Option<String>,
+        /// The layout the change touched: created, updated, deleted, or
+        /// newly active.
         current: String,
     },
 

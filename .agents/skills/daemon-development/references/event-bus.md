@@ -91,13 +91,13 @@ Events are `HypercolorEvent` variants grouped by `EventCategory` with `EventPrio
 | `DeviceError`                      | Device   | **nowhere yet**: declared, never constructed              |
 | `SceneActivated`                   | Scene    | **nowhere yet**: declared, never constructed              |
 | `SceneLibraryChanged`              | Scene    | `domain/scene.rs`, on library create/update/delete        |
-| `ConfigChanged`                    | System   | `api/config.rs`, from the handler after the save succeeds |
+| `ConfigChanged`                    | System   | `hypercolor-core` `config/mod.rs`, once per persisted save |
 | `FrameRendered`                    | System   | `render_thread/frame_io.rs`                               |
 | `FpsChanged`                       | System   | **nowhere yet**: declared, never constructed              |
 | `BrightnessChanged`                | System   | `output_power.rs`, alongside `DeviceSettingsChanged`      |
 | `BeatDetected`                     | Audio    | **nowhere yet**: declared, never constructed              |
 | `AudioLevelUpdate`                 | Audio    | `render_thread/frame_io.rs`                               |
-| `LayoutChanged`                    | Layout   | **nowhere yet**: declared, never constructed              |
+| `LayoutChanged`                    | Layout   | `domain/layout/{workflows,convergence}.rs` and the binding migration publish |
 | `DaemonStarted` / `DaemonShutdown` | System   | `startup/lifecycle.rs`                                    |
 
 The five variants marked "nowhere yet" are declared in

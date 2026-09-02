@@ -343,6 +343,39 @@ pub fn is_redacted(key: &str) -> bool {
     matches!(descriptor_for(key).redaction, Redaction::Secret)
 }
 
+/// Mask `value`, read at `key`, the way every read surface renders it.
+///
+/// Plain keys pass through untouched. A secret dynamic namespace read
+/// at its root masks per entry, so a client still learns which driver
+/// blocks exist; every other secret read collapses to the marker.
+/// Config reads, key reads, and the `ConfigChanged` event share this
+/// one rule, so a credential renders the same way on every surface.
+#[must_use]
+pub fn redact_value(key: &str, value: serde_json::Value) -> serde_json::Value {
+    let descriptor = descriptor_for(key);
+    if !matches!(descriptor.redaction, Redaction::Secret) {
+        return value;
+    }
+    if key == descriptor.pattern.root()
+        && let KeyPattern::Namespace(_) = descriptor.pattern
+        && let Some(entries) = value.as_object()
+    {
+        return serde_json::Value::Object(
+            entries
+                .keys()
+                .map(|entry| (entry.clone(), redacted_marker()))
+                .collect(),
+        );
+    }
+    redacted_marker()
+}
+
+/// The marker every masked value renders as.
+#[must_use]
+pub fn redacted_marker() -> serde_json::Value {
+    serde_json::json!({ "redacted": true })
+}
+
 /// One schema row as served to clients (`GET /config/schema`,
 /// wave 4.3) — the wire projection of a descriptor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

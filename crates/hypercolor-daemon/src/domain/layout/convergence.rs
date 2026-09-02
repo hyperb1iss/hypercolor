@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 
 use crate::discovery::DiscoveryRuntime;
@@ -19,6 +22,7 @@ pub(super) struct LayoutConvergence {
     catalog: LayoutCatalog,
     exclusions: LayoutExclusions,
     publication: LayoutPublication,
+    events: Arc<HypercolorBus>,
 }
 
 impl LayoutConvergence {
@@ -26,11 +30,13 @@ impl LayoutConvergence {
         catalog: LayoutCatalog,
         exclusions: LayoutExclusions,
         publication: LayoutPublication,
+        events: Arc<HypercolorBus>,
     ) -> Self {
         Self {
             catalog,
             exclusions,
             publication,
+            events,
         }
     }
 
@@ -280,6 +286,10 @@ impl LayoutConvergence {
             (previous, layouts.clone())
         };
         let Err(error) = self.catalog.save_snapshot(snapshot).await else {
+            self.events.publish(HypercolorEvent::LayoutChanged {
+                previous: None,
+                current: layout.id.clone(),
+            });
             return true;
         };
 
