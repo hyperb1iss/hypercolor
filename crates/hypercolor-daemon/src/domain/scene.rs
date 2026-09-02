@@ -288,6 +288,12 @@ impl SceneService {
         self.0.event_bus.subscribe_all()
     }
 
+    /// The event sink, for sibling domain contexts composed over this
+    /// service that publish their own change events.
+    pub(crate) fn event_bus(&self) -> &Arc<HypercolorBus> {
+        &self.0.event_bus
+    }
+
     /// Snapshot the live scene state into an owned candidate.
     pub async fn begin_mutation(&self) -> SceneMutation {
         let manager = self.0.manager.read().await;

@@ -15,9 +15,11 @@ use std::sync::Arc;
 #[cfg(feature = "persistence-test-hooks")]
 use std::sync::Mutex as StdMutex;
 
+use hypercolor_core::bus::HypercolorBus;
 use hypercolor_types::api::layouts::LayoutSummary;
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::scene::{SceneId, Zone, ZoneId};
 use hypercolor_types::spatial::{Output, SamplingMode, SpatialLayout};
 #[cfg(feature = "persistence-test-hooks")]
@@ -404,6 +406,7 @@ pub struct LayoutContext {
     exclusions: LayoutExclusions,
     publication: LayoutPublication,
     convergence: LayoutConvergence,
+    events: Arc<HypercolorBus>,
     #[cfg(feature = "persistence-test-hooks")]
     test_hooks: LayoutMutationTestHooks,
 }
@@ -418,6 +421,7 @@ impl LayoutContext {
         runtime_projection: RuntimeSessionProjection,
     ) -> Self {
         let catalog = LayoutCatalog::new(resources.layouts, resources.layouts_path);
+        let events = Arc::clone(scenes.event_bus());
         let exclusions = LayoutExclusions::new(
             resources.layout_auto_exclusions,
             resources.layout_auto_exclusions_path,
@@ -437,9 +441,23 @@ impl LayoutContext {
             exclusions,
             publication,
             convergence,
+            events,
             #[cfg(feature = "persistence-test-hooks")]
             test_hooks: LayoutMutationTestHooks::default(),
         }
+    }
+
+    /// Publish one [`HypercolorEvent::LayoutChanged`] for a persisted
+    /// catalog mutation or an active-layout switch.
+    ///
+    /// `current` is the layout the change touched; `previous` is the
+    /// layout that was active before, present only when the active
+    /// selection moved. Workflows call this after the store write and
+    /// any active publication have landed, so a subscriber that re-reads
+    /// the catalog on receipt sees the state the event describes.
+    fn publish_layout_changed(&self, previous: Option<String>, current: String) {
+        self.events
+            .publish(HypercolorEvent::LayoutChanged { previous, current });
     }
 
     pub(crate) async fn collect_binding_evidence(&self) -> PersistedBindingEvidence {

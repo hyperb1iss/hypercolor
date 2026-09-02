@@ -8559,6 +8559,111 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     );
 }
 
+fn drain_layout_changes(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(Option<String>, String)> {
+    let mut changes = Vec::new();
+    while let Ok(timestamped) = events.try_recv() {
+        if let HypercolorEvent::LayoutChanged { previous, current } = timestamped.event {
+            changes.push((previous, current));
+        }
+    }
+    changes
+}
+
+#[tokio::test]
+async fn layout_apply_publishes_layout_changed_with_previous_and_current() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let candidate = create_stored_layout(&state, "Apply Target").await;
+    let previous_active = state.domains.layout.current().id;
+    let mut events = state.event_bus.subscribe_all();
+
+    let (apply_response, _) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(Some(previous_active), candidate.id)],
+        "an apply moves the active selection, so both ids are carried"
+    );
+}
+
+#[tokio::test]
+async fn layout_delete_publishes_layout_changed_for_the_removed_id() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let candidate = create_stored_layout(&state, "Disposable").await;
+    let mut events = state.event_bus.subscribe_all();
+
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{}", candidate.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(None, candidate.id)],
+        "deleting an inactive layout names it and leaves the active selection alone"
+    );
+}
+
+#[tokio::test]
+async fn layout_delete_of_the_active_layout_publishes_the_fallback_as_current() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let candidate = create_stored_layout(&state, "Active Then Gone").await;
+
+    let (apply_response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let mut events = state.event_bus.subscribe_all();
+
+    let (delete_response, _) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/layouts/{}", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let fallback = state.domains.layout.current().id;
+    assert_ne!(fallback, candidate.id);
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(Some(candidate.id), fallback)],
+        "the deleted layout was active, so the fallback becomes current"
+    );
+}
+
 #[tokio::test]
 async fn layout_delete_active_falls_back_to_default_layout() {
     let state = Arc::new(isolated_state());

@@ -156,6 +156,7 @@ impl LayoutContext {
             drop(guard);
             return Err(layout_store_persistence_error("create", error, rollback));
         }
+        self.publish_layout_changed(None, id);
         drop(guard);
         Ok(summary)
     }
@@ -264,6 +265,7 @@ impl LayoutContext {
                 .reconcile_layout(&layout_id, &previous_zones, &updated_zones)
                 .await;
         }
+        self.publish_layout_changed(None, layout_id);
         drop(guard);
         Ok(summary)
     }
@@ -292,10 +294,12 @@ impl LayoutContext {
         )
         .await;
         let guard = self.acquire_update_guard().await;
+        let previous_active_id = self.current().id;
         let layout = self.resolve(selector).await?;
         self.admit_persisted_update_under_guard(&guard, layout.clone(), runtime)
             .await
             .map_err(layout_update_domain_error)?;
+        self.publish_layout_changed(Some(previous_active_id), layout.id.clone());
         drop(guard);
         let persistence = self.converge_persisted_update(runtime).await;
         Ok(LayoutMutationResult {
@@ -408,6 +412,7 @@ impl LayoutContext {
         )
         .await;
 
+        let next_active_id = next_active_layout.as_ref().map(|layout| layout.id.clone());
         let active_layout_changed = next_active_layout.is_some();
         if let Some(layout) = next_active_layout
             && let Err(error) = self
@@ -455,6 +460,12 @@ impl LayoutContext {
         }
 
         self.exclusions.remove_layout(&key).await;
+        match next_active_id {
+            Some(next_active_id) => {
+                self.publish_layout_changed(Some(key.clone()), next_active_id);
+            }
+            None => self.publish_layout_changed(None, key.clone()),
+        }
         drop(guard);
         let persistence = if active_layout_changed {
             self.converge_persisted_update(runtime).await
@@ -514,6 +525,7 @@ impl LayoutContext {
         .await;
         if persisted_layout_updated {
             self.persist_catalog_best_effort().await;
+            self.publish_layout_changed(None, updated.id);
         }
         self.wait_test_hook(
             LayoutMutationTestPoint::AfterWorkflow,
@@ -538,6 +550,7 @@ impl LayoutContext {
         .await;
         let guard = self.acquire_update_guard().await;
         let active_layout_id = self.current().id;
+        let mut pruned_layout_ids = Vec::new();
         let active_layout = {
             let mut layouts = self.catalog.entries().write().await;
             let mut updated_active = None;
@@ -546,7 +559,11 @@ impl LayoutContext {
                 layout
                     .zones
                     .retain(|zone| !target_ids.contains(zone.device_id.as_str()));
-                if layout.zones.len() != zone_count && layout.id == active_layout_id {
+                if layout.zones.len() == zone_count {
+                    continue;
+                }
+                pruned_layout_ids.push(layout.id.clone());
+                if layout.id == active_layout_id {
                     updated_active = Some(layout.clone());
                 }
             }
@@ -568,6 +585,9 @@ impl LayoutContext {
             None
         };
         self.persist_catalog_best_effort().await;
+        for layout_id in pruned_layout_ids {
+            self.publish_layout_changed(None, layout_id);
+        }
         drop(guard);
         active_layout_error.map_or(Ok(()), Err)
     }

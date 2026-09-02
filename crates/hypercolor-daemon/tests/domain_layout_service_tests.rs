@@ -122,3 +122,96 @@ async fn catalog_list_marks_and_filters_the_active_layout() {
     assert_eq!(result.items[0].id, active.id);
     assert!(result.items[0].is_active);
 }
+
+// ─── Change Stream ──────────────────────────────────────────────────────────
+
+fn drain_layout_changes(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(Option<String>, String)> {
+    let mut changes = Vec::new();
+    while let Ok(timestamped) = events.try_recv() {
+        if let hypercolor_types::event::HypercolorEvent::LayoutChanged { previous, current } =
+            timestamped.event
+        {
+            changes.push((previous, current));
+        }
+    }
+    changes
+}
+
+#[tokio::test]
+async fn catalog_create_publishes_layout_changed_with_the_new_id() {
+    let (state, _tempdir) = isolated_state();
+    let mut events = state.event_bus.subscribe_all();
+
+    let created = state
+        .domains
+        .layout
+        .create(CreateLayoutRequest {
+            name: "Studio".to_owned(),
+            ..CreateLayoutRequest::default()
+        })
+        .await
+        .expect("layout should create");
+
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(None, created.id)],
+        "a created layout is not active, so nothing was active before it"
+    );
+}
+
+#[tokio::test]
+async fn catalog_update_publishes_layout_changed_with_the_updated_id() {
+    let (state, _tempdir) = isolated_state();
+    let created = state
+        .domains
+        .layout
+        .create(CreateLayoutRequest {
+            name: "Studio".to_owned(),
+            ..CreateLayoutRequest::default()
+        })
+        .await
+        .expect("layout should create");
+    let mut events = state.event_bus.subscribe_all();
+
+    state
+        .domains
+        .layout
+        .update(
+            "studio".to_owned(),
+            UpdateLayoutRequest {
+                name: Some("Editing Suite".to_owned()),
+                ..UpdateLayoutRequest::default()
+            },
+        )
+        .await
+        .expect("layout should update by name");
+
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(None, created.id)],
+        "an update names the stored id even when selected by name"
+    );
+}
+
+#[tokio::test]
+async fn catalog_rejected_update_publishes_nothing() {
+    let (state, _tempdir) = isolated_state();
+    let mut events = state.event_bus.subscribe_all();
+
+    let rejected = state
+        .domains
+        .layout
+        .update(
+            "missing".to_owned(),
+            UpdateLayoutRequest {
+                name: Some("Nowhere".to_owned()),
+                ..UpdateLayoutRequest::default()
+            },
+        )
+        .await;
+
+    assert!(matches!(rejected, Err(DomainError::NotFound { .. })));
+    assert!(drain_layout_changes(&mut events).is_empty());
+}
