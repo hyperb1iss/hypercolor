@@ -318,23 +318,9 @@ async fn write_config_key(
         .into_response();
     };
 
+    // The manager published the `ConfigChanged` event when the save
+    // landed; this handler only reports the outcome.
     let live_applied = apply_live_sections(state, sections, Some(&key), live_requested).await;
-
-    // Published only after the save succeeded: consumers (sync intake,
-    // UI hints) treat this as "the persisted config changed". The
-    // payload renders like any other read surface, so a secret-
-    // classified key fans out masked.
-    let old_value = serde_json::to_value(&current)
-        .ok()
-        .and_then(|previous| get_json_path(&previous, &key).cloned())
-        .map(|value| redact_key(&key, value));
-    state
-        .event_bus
-        .publish(hypercolor_types::event::HypercolorEvent::ConfigChanged {
-            key: key.clone(),
-            old_value,
-            new_value: redact_key(&key, effective_value.clone()),
-        });
 
     envelope::ok(mutation_result(
         manager,
@@ -528,26 +514,16 @@ async fn reset_config_state(
         apply_live_sections(state, sections, requested_key.as_deref(), live_requested).await
             || capture_live_applied;
 
-    // One event per reset; a whole-config reset publishes the empty key so
-    // consumers re-read everything rather than diffing per field. It carries
-    // no payload because the preserved driver and extension sections hold
-    // credentials, and this event fans out to every `events` subscriber.
-    let reset_event_key = requested_key.clone().unwrap_or_default();
-    let new_value = if reset_event_key.is_empty() {
-        None
-    } else {
+    // The manager published the `ConfigChanged` event when the save
+    // landed: a whole-config reset diffs to the empty key with no payload,
+    // so consumers re-read everything and the preserved driver and
+    // extension credentials never fan out to `events` subscribers.
+    let new_value = requested_key.as_deref().and_then(|key| {
         serde_json::to_value(&**manager.get())
             .ok()
-            .and_then(|root| get_json_path(&root, &reset_event_key).cloned())
-            .map(|value| redact_key(&reset_event_key, value))
-    };
-    state
-        .event_bus
-        .publish(hypercolor_types::event::HypercolorEvent::ConfigChanged {
-            key: reset_event_key,
-            old_value: None,
-            new_value: new_value.clone().unwrap_or(serde_json::Value::Null),
-        });
+            .and_then(|root| get_json_path(&root, key).cloned())
+            .map(|value| redact_key(key, value))
+    });
 
     envelope::ok(mutation_result(
         manager,

@@ -2159,6 +2159,48 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
 }
 
 #[tokio::test]
+async fn config_set_publishes_exactly_one_config_changed_from_the_manager() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+    let state = Arc::new(isolated_state_with_config_manager(config_manager));
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request(
+            "audio.device",
+            &serde_json::json!("microphone"),
+            Some(false),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut changes = Vec::new();
+    while let Ok(timestamped) = events.try_recv() {
+        if let HypercolorEvent::ConfigChanged {
+            key,
+            old_value,
+            new_value,
+        } = timestamped.event
+        {
+            changes.push((key, old_value, new_value));
+        }
+    }
+    assert_eq!(
+        changes,
+        vec![(
+            "audio.device".to_owned(),
+            Some(serde_json::json!("default")),
+            serde_json::json!("microphone")
+        )],
+        "the handler no longer publishes on its own: one save, one event"
+    );
+}
+
+#[tokio::test]
 async fn config_set_compositor_acceleration_key_updates_and_persists() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
