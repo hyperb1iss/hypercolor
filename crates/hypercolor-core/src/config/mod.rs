@@ -1061,8 +1061,30 @@ pub fn canonical_audio_device_id(device: &str) -> String {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+    use hypercolor_types::event::HypercolorEvent;
 
     const UPDATED_PORT: u16 = 17_777;
+
+    fn attach_bus(
+        manager: &ConfigManager,
+    ) -> tokio::sync::broadcast::Receiver<crate::bus::TimestampedEvent> {
+        let bus = Arc::new(HypercolorBus::new());
+        let events = bus.subscribe_all();
+        manager.attach_change_stream(bus);
+        events
+    }
+
+    fn config_changed_keys(
+        events: &mut tokio::sync::broadcast::Receiver<crate::bus::TimestampedEvent>,
+    ) -> Vec<String> {
+        let mut keys = Vec::new();
+        while let Ok(timestamped) = events.try_recv() {
+            if let HypercolorEvent::ConfigChanged { key, .. } = timestamped.event {
+                keys.push(key);
+            }
+        }
+        keys
+    }
 
     fn manager_with_persisted_default(dir: &Path, name: &str) -> (ConfigManager, PathBuf) {
         let path = dir.join(name).join("config.toml");
@@ -1122,9 +1144,40 @@ mod persistence_tests {
     }
 
     #[test]
+    fn failed_persistence_publishes_no_config_changed() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let (manager, _path) = manager_with_persisted_default(dir.as_ref(), "silent-failure");
+        let mut events = attach_bus(&manager);
+        let expected = manager.get().clone();
+
+        manager.fail_next_persistence_at(ConfigPersistenceStage::Serialize);
+        assert!(
+            manager
+                .modify_and_save_if_current_snapshot(&expected, |config| {
+                    config.daemon.port = UPDATED_PORT;
+                })
+                .is_err()
+        );
+        assert!(config_changed_keys(&mut events).is_empty());
+
+        manager.modify(|config| config.daemon.port = UPDATED_PORT);
+        manager.fail_next_persistence_at(ConfigPersistenceStage::Serialize);
+        assert!(manager.save().is_err());
+        assert!(config_changed_keys(&mut events).is_empty());
+
+        manager.save().expect("the next save should land");
+        assert_eq!(
+            config_changed_keys(&mut events),
+            vec!["daemon.port".to_owned()],
+            "the stream stays live after a failed write"
+        );
+    }
+
+    #[test]
     fn admitted_failure_publishes_and_flushes_the_authoritative_config() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let (manager, path) = manager_with_persisted_default(dir.as_ref(), "retry");
+        let mut events = attach_bus(&manager);
         let expected = manager.get().clone();
         let original_port = expected.daemon.port;
         manager
@@ -1140,6 +1193,11 @@ mod persistence_tests {
                 .is_some()
         );
         assert_eq!(manager.get().daemon.port, UPDATED_PORT);
+        assert_eq!(
+            config_changed_keys(&mut events),
+            vec!["daemon.port".to_owned()],
+            "an admitted mutation is authoritative, so it publishes even before the file lands"
+        );
         assert_eq!(
             ConfigManager::load(&path)
                 .expect("previous config remains readable")

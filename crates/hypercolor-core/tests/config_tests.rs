@@ -611,7 +611,7 @@ mod change_stream {
     use std::sync::Arc;
 
     use hypercolor_core::bus::{HypercolorBus, TimestampedEvent};
-    use hypercolor_core::config::ConfigManager;
+    use hypercolor_core::config::{CapturePersistenceSource, ConfigManager};
     use hypercolor_types::event::HypercolorEvent;
     use serde_json::{Value, json};
     use tokio::sync::broadcast::Receiver;
@@ -751,6 +751,59 @@ mod change_stream {
             drain_config_changes(&mut events),
             vec![("daemon.target_fps".to_owned(), Some(json!(30)), json!(50))]
         );
+    }
+
+    #[test]
+    fn every_capture_persistence_path_publishes_exactly_once() {
+        let (manager, mut events, _tempdir) = attached_manager();
+        let base_fps = manager.get().capture.capture_fps;
+        let capture_change = |step: u32| {
+            (
+                "capture.capture_fps".to_owned(),
+                Some(json!(base_fps + step - 1)),
+                json!(base_fps + step),
+            )
+        };
+
+        let expected = Arc::clone(&manager.get());
+        let epoch = manager
+            .reserve_capture_persistence(&expected)
+            .expect("epoch should reserve");
+        let mut capture = expected.capture.clone();
+        capture.capture_fps = base_fps + 1;
+        manager
+            .save_capture_and_activate_if_current(&expected, epoch, None, capture)
+            .expect("save should succeed")
+            .expect("snapshot should still be current");
+        assert_eq!(drain_config_changes(&mut events), vec![capture_change(1)]);
+
+        manager
+            .modify_capture_if_epoch_current(epoch, |capture| capture.capture_fps = base_fps + 2)
+            .expect("save should succeed")
+            .expect("epoch should still be current");
+        assert_eq!(drain_config_changes(&mut events), vec![capture_change(2)]);
+
+        let source = CapturePersistenceSource::new(Arc::from("screen:0"), 1, 1);
+        manager
+            .modify_capture_if_authorized(epoch, source, |capture| {
+                capture.capture_fps = base_fps + 3;
+            })
+            .expect("save should succeed")
+            .expect("epoch should still be authorized");
+        assert_eq!(drain_config_changes(&mut events), vec![capture_change(3)]);
+
+        let expected = Arc::clone(&manager.get());
+        let mut capture = expected.capture.clone();
+        capture.capture_fps = base_fps + 4;
+        let staged = manager
+            .stage_capture_config(&expected, capture)
+            .expect("stage should succeed")
+            .expect("snapshot should still be current");
+        manager
+            .commit_staged_capture_if_current(&expected, None, staged, |install| install())
+            .expect("commit should succeed")
+            .expect("snapshot should still be current");
+        assert_eq!(drain_config_changes(&mut events), vec![capture_change(4)]);
     }
 
     #[test]
