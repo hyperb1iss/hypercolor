@@ -434,8 +434,12 @@ impl LayoutContext {
             runtime_state_path,
             runtime_projection,
         );
-        let convergence =
-            LayoutConvergence::new(catalog.clone(), exclusions.clone(), publication.clone());
+        let convergence = LayoutConvergence::new(
+            catalog.clone(),
+            exclusions.clone(),
+            publication.clone(),
+            Arc::clone(&events),
+        );
         Self {
             catalog,
             exclusions,
@@ -859,8 +863,11 @@ impl LayoutDeviceBindingMigration {
 impl LayoutDeviceBindingPublication {
     pub(crate) fn publish(&mut self, context: &LayoutContext) -> usize {
         let mut migrated = self.migrated;
+        let mut rebound_layout_ids = Vec::new();
         if let Some(catalog) = self.catalog.as_mut() {
-            migrated += catalog.publish();
+            let (count, layout_ids) = catalog.publish();
+            migrated += count;
+            rebound_layout_ids = layout_ids;
         }
         if let Some(exclusions) = self.exclusions.as_mut() {
             migrated += exclusions.publish();
@@ -871,6 +878,9 @@ impl LayoutDeviceBindingPublication {
             .publish_device_binding_migration(&mut self.scene);
         if let Some(active) = self.active.take() {
             context.publication.publish_active_binding_migration(active);
+        }
+        for layout_id in rebound_layout_ids {
+            context.publish_layout_changed(None, layout_id);
         }
         migrated
     }

@@ -9497,6 +9497,7 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
             .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
+    let mut events = state.event_bus.subscribe_all();
     let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 2));
 
     let runtime = state.driver_host().discovery_runtime();
@@ -9510,6 +9511,10 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
         .await
         .expect("layout publication worker should not panic");
     assert_eq!(applied.len(), 2);
+    assert!(
+        drain_layout_changes(&mut events).is_empty(),
+        "a rolled-back repair never reached the store, so it publishes nothing"
+    );
     assert!(!applied[0].zones.is_empty());
     assert_eq!(applied[1], active);
     assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &active);
@@ -9533,6 +9538,129 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
         persisted_active.as_ref(),
         saved_layout_present.then_some(&active)
     );
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_auto_repair_publishes_layout_changed_for_the_active_layout() {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let device_id = insert_test_device(&state, "Repaired Auto Layout").await;
+    state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    seed_stale_auto_layout_zone(&state, &device_id).await;
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
+    state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
+        .write()
+        .await
+        .insert(active.id.clone(), active.clone());
+    persist_current_layouts_for_test(&state).await;
+    let mut events = state.event_bus.subscribe_all();
+    let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 1));
+
+    let runtime = state.driver_host().discovery_runtime();
+    runtime
+        .layout
+        .test_workflows()
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
+
+    let applied = renderer
+        .await
+        .expect("layout publication worker should not panic");
+    assert_eq!(applied.len(), 1);
+    assert!(!applied[0].zones.is_empty());
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(None, active.id)],
+        "a persisted repair names the active layout it rewrote"
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+fn injected_layout_store_failure(state: &AppState) -> InjectedWriterCleanup {
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    cleanup
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_create_store_failure_publishes_nothing() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let mut events = state.event_bus.subscribe_all();
+    let cleanup = injected_layout_store_failure(&state);
+
+    let result = state
+        .domains
+        .layout
+        .create(hypercolor_types::api::layouts::CreateLayoutRequest {
+            name: "Doomed".to_owned(),
+            ..Default::default()
+        })
+        .await;
+
+    assert!(result.is_err(), "a failed store write rejects the create");
+    assert!(drain_layout_changes(&mut events).is_empty());
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_update_store_failure_publishes_nothing() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let kept = create_stored_layout(&state, "Kept").await;
+    let mut events = state.event_bus.subscribe_all();
+    let cleanup = injected_layout_store_failure(&state);
+
+    let result = state
+        .domains
+        .layout
+        .update(
+            kept.id.clone(),
+            hypercolor_types::api::layouts::UpdateLayoutRequest {
+                name: Some("Renamed".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert!(result.is_err(), "a failed store write rejects the update");
+    assert!(drain_layout_changes(&mut events).is_empty());
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_delete_store_failure_publishes_nothing() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let kept = create_stored_layout(&state, "Kept").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let mut events = state.event_bus.subscribe_all();
+    let cleanup = injected_layout_store_failure(&state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{}", kept.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(drain_layout_changes(&mut events).is_empty());
     cleanup.reset_and_flush();
 }
 
