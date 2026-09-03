@@ -289,11 +289,66 @@ pub enum SerialNormalization {
     LowercasedAscii,
 }
 
+/// The outcome of reviewing one `(vendor, product)` pair's serial
+/// reporting, as an auditable record rather than a bare enum.
+///
+/// A review answers two questions, and both have to survive into the
+/// registry. The first is how to canonicalize, which
+/// [`SerialNormalization`] carries. The second is whether the pair ships
+/// a constant, and that one has no home in a normalization: a serial the
+/// whole production run shares is well-formed, passes every generic
+/// placeholder check, and still names a model rather than a unit.
+/// Hypercolor has already met one (the wired Lian Li Uni Fan TL LCD panel
+/// reports `TL_LCDV0.1` on every panel), so the shape has to be
+/// expressible or the next reviewer registers the pair and silently
+/// merges every unit on the account into one identity.
+///
+/// `receipt` names where the evidence lives. It is not decoration: the
+/// registry's whole contract is that an entry asserts a review happened,
+/// and an assertion nobody can re-check is indistinguishable from a
+/// guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewedSerial {
+    /// How to canonicalize a serial from this pair.
+    pub normalization: SerialNormalization,
+    /// Values this pair is known to report on more than one unit.
+    /// Matched case-insensitively against the trimmed serial, because
+    /// these come back from firmware with incidental padding and casing.
+    pub refused: &'static [&'static str],
+    /// Where the review's evidence lives, for a later reader to re-check.
+    pub receipt: &'static str,
+}
+
+impl ReviewedSerial {
+    /// A review that found no constant, only a canonicalization.
+    #[must_use]
+    pub const fn new(normalization: SerialNormalization, receipt: &'static str) -> Self {
+        Self {
+            normalization,
+            refused: &[],
+            receipt,
+        }
+    }
+
+    /// Records constants this pair ships on more than one unit.
+    #[must_use]
+    pub const fn refusing(mut self, refused: &'static [&'static str]) -> Self {
+        self.refused = refused;
+        self
+    }
+
+    fn refuses(&self, trimmed: &str) -> bool {
+        self.refused
+            .iter()
+            .any(|constant| constant.eq_ignore_ascii_case(trimmed))
+    }
+}
+
 /// Host-owned registry mapping `(vendor, product)` pairs to their reviewed
-/// serial normalization.
+/// serial behavior.
 #[derive(Debug, Clone, Default)]
 pub struct SerialNormalizerRegistry {
-    entries: HashMap<(u16, u16), SerialNormalization>,
+    entries: HashMap<(u16, u16), ReviewedSerial>,
 }
 
 impl SerialNormalizerRegistry {
@@ -303,37 +358,41 @@ impl SerialNormalizerRegistry {
         Self::default()
     }
 
-    /// Registers the reviewed normalization for one `(vendor, product)`
-    /// pair, replacing any previous entry.
-    pub fn register(
-        &mut self,
-        vendor_id: u16,
-        product_id: u16,
-        normalization: SerialNormalization,
-    ) {
-        self.entries.insert((vendor_id, product_id), normalization);
+    /// Records the review of one `(vendor, product)` pair, replacing any
+    /// previous entry.
+    pub fn register(&mut self, vendor_id: u16, product_id: u16, reviewed: ReviewedSerial) {
+        self.entries.insert((vendor_id, product_id), reviewed);
     }
 
-    /// The registered normalization for a pair, if any.
+    /// The recorded review for a pair, if any.
     #[must_use]
-    pub fn get(&self, vendor_id: u16, product_id: u16) -> Option<SerialNormalization> {
+    pub fn get(&self, vendor_id: u16, product_id: u16) -> Option<ReviewedSerial> {
         self.entries.get(&(vendor_id, product_id)).copied()
     }
 
-    /// Canonicalizes a raw serial for a pair, refusing placeholders first
+    /// Every reviewed pair with its receipt, for operators and audits.
+    pub fn reviewed(&self) -> impl Iterator<Item = ((u16, u16), ReviewedSerial)> + '_ {
+        self.entries.iter().map(|(pair, entry)| (*pair, *entry))
+    }
+
+    /// Canonicalizes a raw serial for a pair, refusing generic
+    /// placeholders first, then the constants this pair's review found,
     /// and unregistered pairs always.
     #[must_use]
     pub fn normalize(&self, vendor_id: u16, product_id: u16, raw_serial: &str) -> Option<String> {
         let plausible = plausible_serial(raw_serial)?;
-        let normalization = self.get(vendor_id, product_id)?;
+        let reviewed = self.get(vendor_id, product_id)?;
         let trimmed: String = plausible
             .trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0')
             .to_owned();
         if trimmed.len() < MIN_SERIAL_LEN || !trimmed.chars().all(|c| c.is_ascii_graphic()) {
             return None;
         }
+        if reviewed.refuses(&trimmed) {
+            return None;
+        }
 
-        match normalization {
+        match reviewed.normalization {
             SerialNormalization::TrimmedAscii => Some(trimmed),
             SerialNormalization::LowercasedAscii => Some(trimmed.to_lowercase()),
         }
@@ -428,10 +487,21 @@ mod tests {
 
     const PEER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 40));
 
+    // Fixtures, not registrations: these two pairs exercise the two
+    // normalization variants. `reviewed_serial_normalizers()` ships empty,
+    // and nothing here is evidence that any real pair should be added.
     fn registry() -> SerialNormalizerRegistry {
         let mut registry = SerialNormalizerRegistry::new();
-        registry.register(0x1532, 0x0226, SerialNormalization::TrimmedAscii);
-        registry.register(0x1b1c, 0x0c10, SerialNormalization::LowercasedAscii);
+        registry.register(
+            0x1532,
+            0x0226,
+            ReviewedSerial::new(SerialNormalization::TrimmedAscii, "test fixture"),
+        );
+        registry.register(
+            0x1b1c,
+            0x0c10,
+            ReviewedSerial::new(SerialNormalization::LowercasedAscii, "test fixture"),
+        );
         registry
     }
 
@@ -499,6 +569,62 @@ mod tests {
 
             assert!(claim.is_none(), "accepted placeholder {placeholder:?}");
         }
+    }
+
+    #[test]
+    fn a_reviewed_constant_is_refused_though_it_looks_like_a_real_serial() {
+        // The failure this exists for: a serial that is well formed,
+        // survives every generic placeholder check, and still names a
+        // model. The wired Lian Li Uni Fan TL LCD panel reports
+        // TL_LCDV0.1 on every panel, so admitting it would merge a whole
+        // fan stack into one account-wide device.
+        let mut registry = SerialNormalizerRegistry::new();
+        registry.register(
+            0x04fc,
+            0x7393,
+            ReviewedSerial::new(SerialNormalization::TrimmedAscii, "test fixture")
+                .refusing(&["TL_LCDV0.1"]),
+        );
+
+        assert!(
+            plausible_serial("TL_LCDV0.1").is_some(),
+            "the generic list cannot catch it"
+        );
+        for raw in [
+            "TL_LCDV0.1",
+            "  TL_LCDV0.1 ",
+            "tl_lcdv0.1",
+            "TL_LCDV0.1\0\0",
+        ] {
+            assert_eq!(
+                registry.normalize(0x04fc, 0x7393, raw),
+                None,
+                "accepted the constant {raw:?}"
+            );
+        }
+        assert_eq!(
+            registry.normalize(0x04fc, 0x7393, "TL0000123456"),
+            Some("TL0000123456".to_owned()),
+            "a real per-unit serial from the same pair still claims"
+        );
+    }
+
+    #[test]
+    fn a_review_carries_its_receipt_into_the_registry() {
+        let mut registry = SerialNormalizerRegistry::new();
+        registry.register(
+            0x1532,
+            0x0226,
+            ReviewedSerial::new(SerialNormalization::TrimmedAscii, "docs/specs/34 §3.1"),
+        );
+
+        let reviewed = registry.get(0x1532, 0x0226).expect("registered pair");
+        assert_eq!(reviewed.receipt, "docs/specs/34 §3.1");
+        assert!(reviewed.refused.is_empty());
+        assert_eq!(
+            registry.reviewed().collect::<Vec<_>>(),
+            vec![((0x1532, 0x0226), reviewed)]
+        );
     }
 
     #[test]
