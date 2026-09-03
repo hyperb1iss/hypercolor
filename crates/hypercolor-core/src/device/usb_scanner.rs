@@ -10,6 +10,8 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceIdentifier,
     DeviceInfo, DeviceOrigin, DeviceTopologyHint, USB_OUTPUT_BACKEND_ID,
 };
+#[cfg(doc)]
+use hypercolor_types::portable::ReviewedSerial;
 use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
 
 /// The serial normalizations reviewed for cross-OS stability.
@@ -19,6 +21,30 @@ use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry
 /// checked byte-for-byte across the OS stacks we support, and no pair has
 /// that evidence yet. Until one does, USB devices re-bind per machine,
 /// which is the designed fallback rather than a failure.
+///
+/// A review that earns an entry answers three things, and a
+/// [`ReviewedSerial`] records all three so a later reader can re-check
+/// them:
+///
+/// 1. Does the pair report an `iSerialNumber` string descriptor at all?
+///    Plenty do not, and those devices key on USB topology instead. The
+///    PrismRGB Prism S (`16D0:1294`) is the documented in-tree example.
+/// 2. Is the value per unit rather than per model? A constant is well
+///    formed and passes every generic placeholder check, so nothing but a
+///    review catches it. The wired Lian Li Uni Fan TL LCD panel
+///    (`04FC:7393`) ships `TL_LCDV0.1` on every panel, which is exactly
+///    the trap: registering it with a plain normalization would merge a
+///    whole fan stack into one account-wide device. Such constants belong
+///    in the entry's `refused` list.
+/// 3. Do the OS stacks agree on case? They agree on the bytes, because
+///    all three read the same descriptor, but the reviewer has to say so
+///    rather than assume it. Padding is handled for every pair already:
+///    canonicalization trims ASCII whitespace and NUL.
+///
+/// The `receipt` on each entry names where that evidence lives. An
+/// assertion nobody can re-check is indistinguishable from a guess, and
+/// this registry exists precisely because guessing here silently merges
+/// two people's hardware into one identity.
 #[must_use]
 pub fn reviewed_serial_normalizers() -> SerialNormalizerRegistry {
     SerialNormalizerRegistry::new()
@@ -220,5 +246,30 @@ fn usb_path(usb: &nusb::DeviceInfo) -> String {
     {
         let _ = usb;
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reviewed_serial_normalizers;
+
+    #[test]
+    fn the_reviewed_registry_ships_empty_until_a_pair_carries_evidence() {
+        // This is a gate, not a tautology. Adding an entry means editing
+        // this test too, which is the point: the diff that registers a
+        // pair has to show the receipt beside it, and a reviewer who
+        // cannot name one has nothing to write here.
+        let registry = reviewed_serial_normalizers();
+        let reviewed: Vec<_> = registry.reviewed().collect();
+
+        assert!(
+            reviewed.is_empty(),
+            "registered pairs without receipts recorded here: {reviewed:?}"
+        );
+        assert_eq!(
+            registry.normalize(0x1532, 0x0226, "PM2332H12345678"),
+            None,
+            "an unregistered pair refuses even a well-formed serial"
+        );
     }
 }
