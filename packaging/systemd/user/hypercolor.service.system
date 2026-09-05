@@ -1,4 +1,4 @@
-# System-packaged variant — used by AUR, deb, and rpm packages.
+# System-installed user service for AUR, deb, and rpm packages.
 # Paths reference /usr instead of %h/.local.
 [Unit]
 Description=Hypercolor RGB Lighting Daemon
@@ -14,7 +14,7 @@ Restart=on-failure
 RestartSec=3
 Environment=HYPERCOLOR_LOG=info
 Environment=RUST_BACKTRACE=1
-Environment=HYPERCOLOR_SERVICE_IDENTITY=system_service:systemd:hypercolor.service
+Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service
 
 # Resource limits
 MemoryMax=512M

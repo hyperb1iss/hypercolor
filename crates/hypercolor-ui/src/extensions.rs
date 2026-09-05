@@ -191,6 +191,8 @@ impl Default for UiChromeFlags {
 /// so the standalone OSS app is byte-for-byte unchanged.
 #[derive(Default)]
 pub struct UiExtensions {
+    /// Independent route and static-asset prefixes for an embedded app.
+    pub mount: crate::route_ui::UiMount,
     /// Extra top-level routes, composed into the router once, by value. Each is
     /// rendered inside the app shell (they are appended as children of the
     /// shell parent route).

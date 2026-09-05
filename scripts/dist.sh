@@ -280,7 +280,7 @@ fi
 info "Assembling distribution at ${DIST_DIR}"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}/bin"
-mkdir -p "${DIST_DIR}/share/hypercolor"/{ui,effects/bundled,docs,agents}
+mkdir -p "${DIST_DIR}/share/hypercolor"/{ui,effects/bundled,docs,site,agents/skills,agents/agents}
 mkdir -p "${DIST_DIR}/share"/{applications,bash-completion/completions,zsh/site-functions,fish/vendor_completions.d}
 mkdir -p "${DIST_DIR}/share/icons/hicolor"/{scalable,48x48,128x128,256x256}/apps
 
@@ -325,7 +325,6 @@ if [[ -d .agents/agents ]]; then
 fi
 
 if [[ -n "${SITE_BUILD_DIR}" ]]; then
-  mkdir -p "${DIST_DIR}/share/hypercolor/site"
   cp -R "${SITE_BUILD_DIR}/." "${DIST_DIR}/share/hypercolor/site/"
 fi
 

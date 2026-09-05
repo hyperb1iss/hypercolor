@@ -344,6 +344,10 @@ pub fn parse_systemd_show(bytes: &[u8]) -> Result<LinuxSystemdObservation, Insta
             return Err(error(format!("duplicate systemctl show field {name}")));
         }
     }
+    // A nonexistent unit has no service interface, so systemctl omits ExecStart.
+    if fields.get("LoadState") == Some(&"not-found") {
+        fields.entry("ExecStart").or_insert("");
+    }
     if fields.len() != expected.len() {
         return Err(error("systemctl show output is missing required fields"));
     }

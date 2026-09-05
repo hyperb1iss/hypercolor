@@ -108,7 +108,7 @@ pub fn WelcomeOverlay() -> impl IntoView {
                             style="background: radial-gradient(circle at 45% 30%, rgba(225, 53, 255, 0.18), rgba(128, 255, 234, 0.05) 58%, rgba(10, 6, 18, 0.0)); box-shadow: 0 0 22px rgba(225, 53, 255, 0.16)"
                         >
                             <img
-                                src=WELCOME_MARK_SRC
+                                src=crate::route_ui::asset_href(WELCOME_MARK_SRC)
                                 alt=""
                                 class="h-10 w-10 object-contain"
                             />

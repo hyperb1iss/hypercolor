@@ -285,7 +285,8 @@ fn collect_public_tree(
                             files,
                         )?;
                     }
-                    ExactEntry::RegularFile { .. } if is_fixed_layout_path(&path) => {}
+                    ExactEntry::RegularFile { .. } | ExactEntry::Symlink { .. }
+                        if is_fixed_layout_path(&path) => {}
                     ExactEntry::RegularFile { .. } | ExactEntry::Symlink { .. }
                         if !include_all_files && !is_owned_icon_name(name) => {}
                     ExactEntry::Absent => {
