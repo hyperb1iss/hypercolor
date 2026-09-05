@@ -369,33 +369,3 @@ pub fn encode_prefixed_display_frame_into(
 
     Ok(())
 }
-
-/// Panel orientation for [`DisplaySetting::Rotation`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DisplayRotation {
-    /// No rotation.
-    Deg0,
-
-    /// Quarter turn clockwise.
-    Deg90,
-
-    /// Half turn.
-    Deg180,
-
-    /// Quarter turn counter-clockwise.
-    Deg270,
-}
-
-/// A hardware display setting a protocol may know how to encode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DisplaySetting {
-    /// Panel backlight level, `0..=100`. Devices with nonlinear curves own
-    /// their own lookup table.
-    Brightness(u8),
-
-    /// Panel orientation.
-    Rotation(DisplayRotation),
-
-    /// Panel refresh rate in frames per second.
-    FrameRate(u8),
-}

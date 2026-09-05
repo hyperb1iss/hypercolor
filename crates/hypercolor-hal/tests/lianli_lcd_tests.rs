@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
-use hypercolor_hal::display::{DisplayEncodeError, DisplayRotation, DisplaySetting};
+use hypercolor_hal::display::DisplayEncodeError;
 use hypercolor_hal::drivers::lianli::{
     LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD, TL_LCD_HEADER_LEN, TL_LCD_MAX_PAYLOAD, TL_LCD_PACKET_LEN,
     TL_LCD_REPORT_ID, TlLcdCommand, TlLcdMode, TlLcdProtocol,
@@ -289,55 +289,6 @@ fn the_init_control_command_sets_full_brightness_thirty_fps_and_no_rotation() {
 
 // --- Display settings (section 5.5) ---
 
-#[test]
-fn display_settings_ride_lcd_control_and_persist_between_changes() {
-    let protocol = TlLcdProtocol::new();
-
-    let brightness = protocol
-        .encode_display_setting(DisplaySetting::Brightness(40))
-        .expect("the panel supports hardware brightness");
-    let payload = &brightness[0].data[TL_LCD_HEADER_LEN..];
-    assert_eq!(payload[0], TlLcdMode::LcdSetting as u8);
-    assert_eq!(payload[4], 40);
-
-    let rotated = protocol
-        .encode_display_setting(DisplaySetting::Rotation(DisplayRotation::Deg270))
-        .expect("the panel supports rotation");
-    let payload = &rotated[0].data[TL_LCD_HEADER_LEN..];
-    assert_eq!(payload[6], 3, "270 degrees is rotation byte 3");
-    assert_eq!(
-        payload[4], 40,
-        "a rotation change carries the brightness already set"
-    );
-
-    let paced = protocol
-        .encode_display_setting(DisplaySetting::FrameRate(15))
-        .expect("the panel supports a frame-rate setting");
-    let payload = &paced[0].data[TL_LCD_HEADER_LEN..];
-    assert_eq!(payload[5], 15);
-    assert_eq!(payload[6], 3, "the rotation survives a frame-rate change");
-}
-
-#[test]
-fn every_rotation_maps_to_its_documented_byte() {
-    for (rotation, expected) in [
-        (DisplayRotation::Deg0, 0),
-        (DisplayRotation::Deg90, 1),
-        (DisplayRotation::Deg180, 2),
-        (DisplayRotation::Deg270, 3),
-    ] {
-        let protocol = TlLcdProtocol::new();
-        let commands = protocol
-            .encode_display_setting(DisplaySetting::Rotation(rotation))
-            .expect("rotation should encode");
-        assert_eq!(
-            commands[0].data[TL_LCD_HEADER_LEN + 6],
-            expected,
-            "{rotation:?}"
-        );
-    }
-}
-
 // --- Replies (section 5.4) ---
 
 fn reply(command: TlLcdCommand, payload: &[u8]) -> Vec<u8> {
@@ -465,29 +416,6 @@ fn the_descriptor_is_registered_with_its_placeholder_serial_quirk() {
         "every panel reports this serial, so it cannot be an identity"
     );
     assert!(!descriptor.is_placeholder_serial("A1B2C3D4"));
-}
-
-#[test]
-fn a_frame_rate_request_is_clamped_to_what_the_panel_can_do() {
-    let protocol = TlLcdProtocol::new();
-
-    let too_fast = protocol
-        .encode_display_setting(DisplaySetting::FrameRate(240))
-        .expect("a frame-rate request should encode");
-    assert_eq!(
-        too_fast[0].data[TL_LCD_HEADER_LEN + 5],
-        30,
-        "the panel tops out at 30fps"
-    );
-
-    let stalled = protocol
-        .encode_display_setting(DisplaySetting::FrameRate(0))
-        .expect("a frame-rate request should encode");
-    assert_eq!(
-        stalled[0].data[TL_LCD_HEADER_LEN + 5],
-        1,
-        "zero would stall the panel rather than pace it"
-    );
 }
 
 #[test]
