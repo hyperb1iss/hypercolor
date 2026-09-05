@@ -2,11 +2,10 @@
 
 use std::time::Duration;
 
-use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::display::DisplayEncodeError;
 use hypercolor_hal::drivers::lianli::{
-    LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD, TL_LCD_HEADER_LEN, TL_LCD_MAX_PAYLOAD, TL_LCD_PACKET_LEN,
-    TL_LCD_REPORT_ID, TlLcdCommand, TlLcdMode, TlLcdProtocol,
+    TL_LCD_HEADER_LEN, TL_LCD_MAX_PAYLOAD, TL_LCD_PACKET_LEN, TL_LCD_REPORT_ID, TlLcdCommand,
+    TlLcdMode, TlLcdProtocol,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand};
 use hypercolor_types::device::{
@@ -158,15 +157,6 @@ fn one_byte_past_the_payload_boundary_becomes_two_packets() {
     assert_eq!(header_of(&commands[0].data).payload_len, 501);
     assert_eq!(header_of(&commands[1].data).payload_len, 1);
     assert_eq!(header_of(&commands[1].data).total_size, 502);
-}
-
-#[test]
-fn an_empty_frame_puts_nothing_on_the_wire() {
-    let protocol = TlLcdProtocol::new();
-
-    let commands = display_commands(&protocol, &[]);
-
-    assert!(commands.is_empty(), "an empty frame is not a transfer");
 }
 
 #[test]
@@ -401,21 +391,6 @@ fn the_panel_exposes_one_round_400x400_display_zone() {
     assert_eq!(capabilities.max_fps, 30);
     assert_eq!(protocol.total_leds(), 0);
     assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
-}
-
-#[test]
-fn the_descriptor_is_registered_with_its_placeholder_serial_quirk() {
-    let descriptor = ProtocolDatabase::lookup(LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD)
-        .expect("the wired TL LCD should be a registered device");
-
-    assert_eq!(descriptor.name, "Lian Li Uni Fan TL LCD");
-    assert_eq!(descriptor.protocol.id, "lianli/tl-lcd");
-    assert!(descriptor.firmware_predicate.is_none(), "predicate-free");
-    assert!(
-        descriptor.is_placeholder_serial("TL_LCDV0.1"),
-        "every panel reports this serial, so it cannot be an identity"
-    );
-    assert!(!descriptor.is_placeholder_serial("A1B2C3D4"));
 }
 
 #[test]

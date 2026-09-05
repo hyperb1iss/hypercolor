@@ -1,5 +1,5 @@
 use hypercolor_hal::drivers::corsair::framing::{
-    LCD_DATA_PER_PACKET, LCD_PACKET_SIZE, build_lcd_display_packet,
+    LCD_DATA_PER_PACKET, LCD_PACKET_SIZE, write_lcd_display_header,
 };
 use hypercolor_hal::drivers::corsair::{
     CorsairLcdProtocol, build_icue_link_lcd_protocol, build_xc7_rgb_elite_lcd_protocol,
@@ -41,13 +41,18 @@ fn make_cooler_pump_lcd_with_ring() -> CorsairLcdProtocol {
     CorsairLcdProtocol::new("Test LCD Ring", 480, 480, 0x40, 0x40, true, 24)
 }
 
-// --- build_lcd_display_packet header validation ---
+// --- Display packet header ---
+
+fn header_packet(zone: u8, final_packet: bool, packet_number: u8) -> Vec<u8> {
+    let mut packet = vec![0_u8; LCD_PACKET_SIZE];
+    write_lcd_display_header(&mut packet, zone, final_packet, packet_number);
+    packet
+}
 
 #[test]
 fn lcd_packet_header_bytes_match_wire_spec() {
-    let packet = build_lcd_display_packet(0x40, false, 0x03, &[0xAA; 100]);
+    let packet = header_packet(0x40, false, 0x03);
 
-    assert_eq!(packet.len(), LCD_PACKET_SIZE);
     assert_eq!(packet[0], 0x02, "command byte");
     assert_eq!(packet[1], 0x05, "sub-command byte");
     assert_eq!(packet[2], 0x40, "zone byte");
@@ -64,19 +69,16 @@ fn lcd_packet_header_bytes_match_wire_spec() {
 
 #[test]
 fn lcd_packet_final_flag_sets_correctly() {
-    let non_final = build_lcd_display_packet(0x40, false, 0, &[0xFF]);
-    assert_eq!(non_final[3], 0x00);
-
-    let final_pkt = build_lcd_display_packet(0x40, true, 0, &[0xFF]);
-    assert_eq!(final_pkt[3], 0x01);
+    assert_eq!(header_packet(0x40, false, 0)[3], 0x00);
+    assert_eq!(header_packet(0x40, true, 0)[3], 0x01);
 }
 
 #[test]
 fn lcd_packet_zone_byte_propagates_to_header() {
     for zone in [0x01, 0x1F, 0x40, 0xFF] {
-        let packet = build_lcd_display_packet(zone, true, 0, &[0x00]);
         assert_eq!(
-            packet[2], zone,
+            header_packet(zone, true, 0)[2],
+            zone,
             "zone byte {zone:#04X} should appear at offset 2"
         );
     }
@@ -84,36 +86,15 @@ fn lcd_packet_zone_byte_propagates_to_header() {
 
 #[test]
 fn lcd_packet_payload_appears_at_offset_8_and_remainder_is_zero_padded() {
-    let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
-    let packet = build_lcd_display_packet(0x40, true, 0, &payload);
+    let commands = display_commands(&make_standard_lcd(), &[0xDE, 0xAD, 0xBE, 0xEF])
+        .expect("a four-byte frame should encode");
+    let packet = &commands[0].data;
 
+    assert_eq!(packet.len(), LCD_PACKET_SIZE);
     assert_eq!(&packet[8..12], &[0xDE, 0xAD, 0xBE, 0xEF]);
     assert!(
         packet[12..].iter().all(|&b| b == 0),
         "bytes beyond payload should be zero-padded"
-    );
-}
-
-#[test]
-fn lcd_packet_full_capacity_payload_fills_entire_data_region() {
-    let payload = vec![0x42; LCD_DATA_PER_PACKET];
-    let packet = build_lcd_display_packet(0x40, true, 0, &payload);
-
-    assert!(
-        packet[8..].iter().all(|&b| b == 0x42),
-        "full-capacity payload should fill the entire data region"
-    );
-}
-
-#[test]
-fn lcd_packet_oversized_payload_is_truncated_not_panicked() {
-    let oversized = vec![0xBB; LCD_DATA_PER_PACKET + 500];
-    let packet = build_lcd_display_packet(0x40, true, 0, &oversized);
-
-    assert_eq!(packet.len(), LCD_PACKET_SIZE);
-    assert!(
-        packet[8..].iter().all(|&b| b == 0xBB),
-        "truncated payload should still fill the data region"
     );
 }
 

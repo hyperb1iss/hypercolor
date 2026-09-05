@@ -13,7 +13,6 @@ use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, DisplayFrameFormat,
     DisplayFramePayload, SegmentInfo,
 };
-use tracing::debug;
 use zerocopy::byteorder::{BigEndian, U16, U32};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
@@ -24,6 +23,8 @@ use crate::display::{
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
+
+use super::common::{nul_terminated_ascii, record_first_product_info};
 
 /// HID report ID every panel packet carries.
 pub const TL_LCD_REPORT_ID: u8 = 0x02;
@@ -75,19 +76,13 @@ pub enum TlLcdCommand {
     GetProductInfo = 0x3D,
     /// Read the stored serial plus hub port and chain index.
     ReadSerial = 0x3E,
-    /// Write a 32-byte serial. Documented, deliberately never sent: it
-    /// mutates user hardware and re-keys the device fingerprint, orphaning
-    /// the path-keyed device it just renamed.
-    WriteSerial = 0x3F,
     /// Apply panel settings or switch display mode.
     LcdControl = 0x40,
-    /// Write a static image, acknowledged per chunk. Documented vocabulary
-    /// only: driving it soundly means checking that each ack echoes this
-    /// command byte, and `parse_response` is never told which command it is
-    /// answering, so a stale or mismatched report would silently advance the
-    /// upload. v1 streams instead (spec 80 section 5.6).
-    WriteJpg = 0x41,
     /// Stream a live frame, unacknowledged. The live path.
+    ///
+    /// The panel's other verbs (`WriteSerial` 0x3F, the acknowledged static
+    /// `WriteJpg` 0x41, and the AVI and boot-image writes) stay in spec 80
+    /// section 5.3 until something drives them.
     WriteSyncJpg = 0x46,
 }
 
@@ -95,17 +90,11 @@ pub enum TlLcdCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TlLcdMode {
-    /// Display the stored static image.
-    ShowJpg = 1,
-    /// Play the stored animation.
-    ShowAvi = 3,
-    /// Display streamed frames.
-    ShowAppSync = 4,
     /// Apply brightness, frame rate, and rotation without changing what the
-    /// panel is displaying.
+    /// panel is displaying. The content modes (stored image, animation,
+    /// streamed frames, test pattern) are in spec 80 section 5.5; streaming
+    /// needs no explicit switch, so nothing sends them.
     LcdSetting = 5,
-    /// Factory test pattern.
-    LcdTest = 6,
 }
 
 /// Wire-format header of a panel packet (11 bytes).
@@ -124,24 +113,9 @@ struct TlLcdHeader {
     payload_len: U16<BigEndian>,
 }
 
-/// Wire-format panel packet (512 bytes).
-#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
-#[repr(C)]
-struct TlLcdPacket {
-    /// Framing header.
-    header: TlLcdHeader,
-    /// Command payload or JPEG chunk, zero-padded.
-    payload: [u8; TL_LCD_MAX_PAYLOAD],
-}
-
 const _: () = assert!(
     std::mem::size_of::<TlLcdHeader>() == TL_LCD_HEADER_LEN,
     "TlLcdHeader must match the 11-byte panel packet header"
-);
-
-const _: () = assert!(
-    std::mem::size_of::<TlLcdPacket>() == TL_LCD_PACKET_LEN,
-    "TlLcdPacket must match the 512-byte panel packet size"
 );
 
 /// Write a panel packet header into the first bytes of `packet`.
@@ -317,12 +291,7 @@ impl TlLcdProtocol {
             return;
         }
 
-        let serial: Vec<u8> = payload[..TL_LCD_SERIAL_LEN]
-            .iter()
-            .take_while(|byte| **byte != 0x00)
-            .copied()
-            .collect();
-        let serial = String::from_utf8_lossy(&serial).trim().to_owned();
+        let serial = nul_terminated_ascii(&payload[..TL_LCD_SERIAL_LEN]);
 
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         state.serial = (!serial.is_empty()).then_some(serial);
@@ -341,27 +310,8 @@ impl TlLcdProtocol {
     }
 
     fn parse_product_info_reply(&self, payload: &[u8]) {
-        let text: Vec<u8> = payload
-            .iter()
-            .take_while(|byte| **byte != 0x00)
-            .copied()
-            .collect();
-        let text = String::from_utf8_lossy(&text).trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
-
-        // Report order carries the meaning: version first, build date second.
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(existing) = state.firmware.as_deref() {
-            debug!(
-                firmware = existing,
-                discarded = text.as_str(),
-                "ignoring trailing product-info report; firmware version already recorded"
-            );
-        } else {
-            state.firmware = Some(text);
-        }
+        record_first_product_info(&mut state.firmware, payload, "product-info");
     }
 }
 
