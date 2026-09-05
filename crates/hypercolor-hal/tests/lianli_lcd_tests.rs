@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
-use hypercolor_hal::display::{DisplayRotation, DisplaySetting};
+use hypercolor_hal::display::{DisplayEncodeError, DisplayRotation, DisplaySetting};
 use hypercolor_hal::drivers::lianli::{
     LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD, TL_LCD_HEADER_LEN, TL_LCD_MAX_PAYLOAD, TL_LCD_PACKET_LEN,
     TL_LCD_REPORT_ID, TlLcdCommand, TlLcdMode, TlLcdProtocol,
@@ -214,7 +214,15 @@ fn a_raw_rgb_payload_is_refused() {
         &mut commands,
     );
 
-    assert!(encoded.is_none(), "the panel takes JPEG frames only");
+    assert!(
+        matches!(
+            encoded,
+            Err(DisplayEncodeError::Unsupported {
+                format: DisplayFrameFormat::Rgb
+            })
+        ),
+        "the panel takes JPEG frames only: {encoded:?}"
+    );
 }
 
 // --- Init sequence (section 5.6) ---

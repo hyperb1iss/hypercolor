@@ -979,6 +979,20 @@ pub struct DisplayFramePayload<'a> {
     pub data: &'a [u8],
 }
 
+impl<'a> DisplayFramePayload<'a> {
+    /// A JPEG payload. The image carries its own dimensions, so the
+    /// geometry fields are zero.
+    #[must_use]
+    pub const fn jpeg(data: &'a [u8]) -> Self {
+        Self {
+            format: DisplayFrameFormat::Jpeg,
+            width: 0,
+            height: 0,
+            data,
+        }
+    }
+}
+
 /// Owned display frame payload.
 #[derive(Debug, Clone)]
 pub struct OwnedDisplayFramePayload {

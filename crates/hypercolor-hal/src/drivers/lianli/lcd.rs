@@ -13,13 +13,13 @@ use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, DisplayFrameFormat,
     DisplayFramePayload, SegmentInfo,
 };
-use tracing::{debug, warn};
+use tracing::debug;
 use zerocopy::byteorder::{BigEndian, U16, U32};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::display::{
-    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayRotation, DisplaySetting,
-    encode_chunked_display_frame,
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, DisplayRotation,
+    DisplaySetting, encode_chunked_display_frame,
 };
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
@@ -432,35 +432,18 @@ impl Protocol for TlLcdProtocol {
         Vec::new()
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        let mut commands = Vec::new();
-        self.encode_display_frame_into(jpeg_data, &mut commands)?;
-        Some(commands)
-    }
-
-    fn encode_display_frame_into(
-        &self,
-        jpeg_data: &[u8],
-        commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        if let Err(error) = encode_chunked_display_frame(&self.sync_layout, jpeg_data, commands) {
-            // Skip-and-warn: the display seam has no error channel, and a
-            // frame the counter cannot address must not go out truncated.
-            warn!(%error, jpeg_bytes = jpeg_data.len(), "skipping TL LCD display frame");
-        }
-
-        Some(())
-    }
-
     fn encode_display_payload_into(
         &self,
         payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        match payload.format {
-            DisplayFrameFormat::Jpeg => self.encode_display_frame_into(payload.data, commands),
-            DisplayFrameFormat::Rgb => None,
+    ) -> Result<(), DisplayEncodeError> {
+        if payload.format != DisplayFrameFormat::Jpeg {
+            return Err(DisplayEncodeError::Unsupported {
+                format: payload.format,
+            });
         }
+
+        encode_chunked_display_frame(&self.sync_layout, payload.data, commands)
     }
 
     fn encode_display_setting(&self, setting: DisplaySetting) -> Option<Vec<ProtocolCommand>> {
