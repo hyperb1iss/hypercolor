@@ -131,6 +131,11 @@ jobs:
               - 'scripts/check-macos-gpu-only.sh'
               - 'scripts/tests/cargo-cache-build-tests.sh'
               - 'scripts/tests/cargo-target-gc-tests.sh'
+              - 'scripts/dist.sh'
+              - 'scripts/verify-release-artifact.sh'
+              - 'scripts/tests/release-artifact-tests.sh'
+              - 'packaging/**'
+              - 'udev/**'
               - 'scripts/sign-macos-artifacts.sh'
               - 'scripts/macos-signing-keychain.c'
               - 'scripts/build-mac-installer.sh'
@@ -255,6 +260,9 @@ jobs:
         run: |
           ./scripts/tests/cargo-cache-build-tests.sh
           ./scripts/tests/cargo-target-gc-tests.sh
+
+      - name: Test release artifact contracts
+        run: ./scripts/tests/release-artifact-tests.sh
 
       - name: Clippy shared crates
         run: >-

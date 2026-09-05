@@ -21,7 +21,7 @@ const CARGO_TARGET_GC_TIMER: &str =
     include_str!("../../../packaging/systemd/user/hypercolor-cargo-target-gc.timer");
 const RUN_MACOS_TCC_CANARY_SH: &str = include_str!("../../../scripts/run-macos-tcc-canary-row.sh");
 const SYSTEMD_USER_UNIT: &str = include_str!("../../../packaging/systemd/user/hypercolor.service");
-const SYSTEMD_SYSTEM_UNIT: &str =
+const SYSTEMD_PACKAGED_USER_UNIT: &str =
     include_str!("../../../packaging/systemd/user/hypercolor.service.system");
 const WINDOWS_SERVICE_INSTALLER_PS1: &str =
     include_str!("../../../scripts/install-windows-service.ps1");
@@ -443,10 +443,10 @@ fn every_launcher_declares_a_neutral_service_identity() {
         "systemd user unit declares the user service identity"
     );
     assert!(
-        SYSTEMD_SYSTEM_UNIT.contains(
-            "Environment=HYPERCOLOR_SERVICE_IDENTITY=system_service:systemd:hypercolor.service\n"
+        SYSTEMD_PACKAGED_USER_UNIT.contains(
+            "Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service\n"
         ),
-        "systemd system unit declares the system service identity"
+        "system-installed systemd user unit declares the user service identity"
     );
     assert!(
         WINDOWS_SERVICE_INSTALLER_PS1.contains(
@@ -953,7 +953,7 @@ files = {
     "lib/udev/rules.d/99-hypercolor.rules": (0o644, b"udev"),
     "etc/modules-load.d/i2c-dev.conf": (0o644, b"i2c-dev"),
 }
-directories = set()
+directories = {"share/hypercolor/docs", "share/hypercolor/site"}
 for path in files:
     fields = path.split("/")[:-1]
     for index in range(1, len(fields) + 1):
@@ -1340,7 +1340,7 @@ for binary in [
 ]:
     files[f"bin/{binary}"] = (0o755, b"binary")
 
-directories = set()
+directories = {"share/hypercolor/docs", "share/hypercolor/site"}
 for path in files:
     fields = path.split("/")[:-1]
     for index in range(1, len(fields) + 1):
