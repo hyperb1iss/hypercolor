@@ -364,6 +364,7 @@ fn smbus_protocol_encode_frame_into_reuses_existing_command_buffers() {
         response_delay: Duration::from_millis(7),
         post_delay: Duration::from_millis(9),
         transfer_type: TransferType::Bulk,
+        ..Default::default()
     }];
     let original_ptr = commands[0].data.as_ptr();
 
@@ -384,6 +385,7 @@ fn smbus_protocol_encode_frame_into_drops_stale_commands_without_firmware() {
         response_delay: Duration::from_millis(7),
         post_delay: Duration::from_millis(9),
         transfer_type: TransferType::Bulk,
+        ..Default::default()
     }];
 
     protocol.encode_frame_into(&[[0x10, 0x20, 0x30]], &mut commands);
@@ -405,6 +407,7 @@ fn smbus_protocol_encode_frame_into_drops_stale_commands_for_empty_frames() {
         response_delay: Duration::from_millis(7),
         post_delay: Duration::from_millis(9),
         transfer_type: TransferType::Bulk,
+        ..Default::default()
     }];
 
     protocol.encode_frame_into(&[], &mut commands);

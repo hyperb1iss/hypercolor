@@ -24,7 +24,7 @@ pub use display::{
 pub use protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};
 pub use protocol_config::{ProtocolRuntimeConfig, runtime_config_for_attachment_profile};
 pub use registry::{
-    DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportConnectExecution,
+    DeviceDescriptor, ProtocolBinding, ProtocolFactory, SerialQuirk, TransportConnectExecution,
     TransportLifecycleHints, TransportType, UsbTransportBinding, UsbTransportFactory,
     UsbTransportFuture, UsbTransportKind, UsbTransportOpenRequest,
 };

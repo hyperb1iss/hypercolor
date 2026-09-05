@@ -190,6 +190,7 @@ async fn open_mamba_transport(
         Some(&device_usb_path),
         usage_page,
         usage,
+        false,
     )
     .map(|transport| -> Box<dyn Transport> { Box::new(transport) })
 }

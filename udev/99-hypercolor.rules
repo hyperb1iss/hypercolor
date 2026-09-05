@@ -102,6 +102,11 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0416", MODE="0660
 
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0cf2", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# Wired Uni Fan TL LCD panel. Scoped to the product: 04fc is a shared vendor
+# ID, so a vendor-wide rule would also grab unrelated hardware.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04fc", ATTRS{idProduct}=="7393", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04fc", ATTR{idProduct}=="7393", MODE="0660", GROUP="users", TAG+="uaccess"
+
 # ─── Ableton ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2982", MODE="0660", GROUP="users", TAG+="uaccess"
 

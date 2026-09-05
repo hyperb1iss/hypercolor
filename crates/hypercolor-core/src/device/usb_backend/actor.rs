@@ -12,9 +12,10 @@ use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace, warn};
 
 use super::{
-    AbortTaskOnDrop, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF, UsbBackend,
-    UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload, describe_packet, format_error_chain,
-    format_hex_preview, map_hal_transport_error, map_transport_error, record_usb_display_lane,
+    AbortTaskOnDrop, DRAIN_REPORT_TIMEOUT, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF,
+    UsbBackend, UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload, describe_packet,
+    format_error_chain, format_hex_preview, map_hal_transport_error, map_transport_error,
+    record_usb_display_lane,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1023,52 +1024,165 @@ impl UsbBackend {
         total_commands: usize,
         attempt: &mut u8,
     ) -> Result<bool> {
-        let response = if command.response_delay.is_zero() {
-            trace!(
-                protocol = protocol.name(),
-                transport = transport.name(),
-                command_index = command_position,
+        // Per-command budget when the protocol set one; init reads and steady
+        // reads on the same device routinely want different budgets.
+        let response_timeout = command
+            .response_timeout
+            .unwrap_or_else(|| protocol.response_timeout());
+        // A responding command always reads at least once, so a protocol that
+        // leaves the count at zero still gets its reply.
+        let report_count = u16::from(command.response_count.max(1));
+
+        for report_index in 0..report_count {
+            let response = if report_index > 0 {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    report_index,
+                    report_count,
+                    "usb reading additional response report"
+                );
+                transport
+                    .receive_logical(
+                        response_timeout,
+                        command.transfer_type,
+                        command.response_len,
+                    )
+                    .await
+                    .map_err(map_transport_error)?
+            } else if command.response_delay.is_zero() {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    attempt = *attempt + 1,
+                    transfer_type = ?command.transfer_type,
+                    "usb send_receive starting"
+                );
+                transport
+                    .send_receive_logical(
+                        &command.data,
+                        response_timeout,
+                        command.transfer_type,
+                        command.response_len,
+                    )
+                    .await
+                    .map_err(map_transport_error)?
+            } else {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    attempt = *attempt + 1,
+                    transfer_type = ?command.transfer_type,
+                    response_delay_us = command.response_delay.as_micros(),
+                    "usb send starting with delayed response read"
+                );
+                transport
+                    .send_with_type(&command.data, command.transfer_type)
+                    .await
+                    .map_err(map_transport_error)?;
+                tokio::time::sleep(command.response_delay).await;
+                transport
+                    .receive_logical(
+                        response_timeout,
+                        command.transfer_type,
+                        command.response_len,
+                    )
+                    .await
+                    .map_err(map_transport_error)?
+            };
+
+            if Self::parse_response_report(
+                protocol,
+                transport,
+                command,
+                command_position,
                 total_commands,
-                attempt = *attempt + 1,
-                transfer_type = ?command.transfer_type,
-                "usb send_receive starting"
-            );
-            transport
-                .send_receive_with_type(
-                    &command.data,
-                    protocol.response_timeout(),
+                attempt,
+                &response,
+            )
+            .await?
+            {
+                // The retry resends the whole command, so any report this
+                // attempt left queued would be read as a reply to the
+                // resend and desync every read after it.
+                Self::discard_queued_reports(
+                    transport,
+                    command,
+                    report_count.saturating_sub(report_index).saturating_sub(1),
+                )
+                .await;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Drop reports still queued for an attempt that is about to be resent.
+    ///
+    /// Best effort and deliberately impatient: the device may have sent
+    /// nothing further, and a resend is what recovers the exchange either
+    /// way, so this must not spend the command's full response budget per
+    /// report. The reports are discarded rather than parsed because they
+    /// belong to an attempt whose result was rejected.
+    async fn discard_queued_reports(
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        remaining: u16,
+    ) {
+        for index in 0..remaining {
+            match transport
+                .receive_logical(
+                    DRAIN_REPORT_TIMEOUT,
                     command.transfer_type,
+                    command.response_len,
                 )
                 .await
-                .map_err(map_transport_error)?
-        } else {
-            trace!(
-                protocol = protocol.name(),
-                transport = transport.name(),
-                command_index = command_position,
-                total_commands,
-                attempt = *attempt + 1,
-                transfer_type = ?command.transfer_type,
-                response_delay_us = command.response_delay.as_micros(),
-                "usb send starting with delayed response read"
-            );
-            transport
-                .send_with_type(&command.data, command.transfer_type)
-                .await
-                .map_err(map_transport_error)?;
-            tokio::time::sleep(command.response_delay).await;
-            transport
-                .receive_with_type(protocol.response_timeout(), command.transfer_type)
-                .await
-                .map_err(map_transport_error)?
-        };
+            {
+                Ok(report) => trace!(
+                    transport = transport.name(),
+                    report_index = index,
+                    remaining,
+                    report = %describe_packet(&report),
+                    "discarding queued report from a retried attempt"
+                ),
+                Err(error) => {
+                    debug!(
+                        transport = transport.name(),
+                        report_index = index,
+                        remaining,
+                        error = %error,
+                        "queued-report drain stopped early; device had nothing more to send"
+                    );
+                    break;
+                }
+            }
+        }
+    }
 
+    /// Parse one response report, answering whether the command should be
+    /// retried from the top.
+    async fn parse_response_report(
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        command_position: usize,
+        total_commands: usize,
+        attempt: &mut u8,
+        response: &[u8],
+    ) -> Result<bool> {
         trace!(
             protocol = protocol.name(),
             transport = transport.name(),
             command_index = command_position,
             total_commands,
-            response = %describe_packet(&response),
+            response = %describe_packet(response),
             "usb response received"
         );
         trace!(
@@ -1076,11 +1190,11 @@ impl UsbBackend {
             transport = transport.name(),
             command_index = command_position,
             total_commands,
-            response_hex = %format_hex_preview(&response, 32),
+            response_hex = %format_hex_preview(response, 32),
             "usb response bytes"
         );
 
-        match protocol.parse_response(&response) {
+        match protocol.parse_response(response) {
             Ok(parsed) => {
                 trace!(
                     protocol = protocol.name(),
@@ -1131,8 +1245,8 @@ impl UsbBackend {
                     command_hex = %format_hex_preview(&command.data, 32),
                     response_len = response.len(),
                     error = %error,
-                    response = %describe_packet(&response),
-                    response_hex = %format_hex_preview(&response, 32),
+                    response = %describe_packet(response),
+                    response_hex = %format_hex_preview(response, 32),
                     "protocol response parse failed"
                 );
                 Err(anyhow!("protocol response parse failed: {error}"))

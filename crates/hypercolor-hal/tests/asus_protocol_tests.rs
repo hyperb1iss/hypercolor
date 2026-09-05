@@ -201,6 +201,7 @@ fn encode_frame_into_reuses_existing_command_buffers() {
         response_delay: std::time::Duration::from_millis(7),
         post_delay: std::time::Duration::from_millis(9),
         transfer_type: TransferType::Bulk,
+        ..Default::default()
     }];
     let original_ptr = commands[0].data.as_ptr();
 
