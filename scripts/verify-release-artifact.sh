@@ -339,21 +339,27 @@ if (
     raise SystemExit("manifest binaries do not match the release payload")
 
 assets = manifest.get("assets")
-required_asset_counts = {
-    "ui_files",
-    "bundled_effect_files",
-    "docs_files",
-    "skill_files",
-    "agent_files",
-    "site_files",
+asset_roots = {
+    "ui_files": "share/hypercolor/ui",
+    "bundled_effect_files": "share/hypercolor/effects/bundled",
+    "docs_files": "share/hypercolor/docs",
+    "skill_files": "share/hypercolor/agents/skills",
+    "agent_files": "share/hypercolor/agents/agents",
+    "site_files": "share/hypercolor/site",
 }
-if not isinstance(assets, dict) or set(assets) != required_asset_counts:
+if not isinstance(assets, dict) or set(assets) != set(asset_roots):
     raise SystemExit("manifest assets must be an object")
-for key in required_asset_counts:
+for key, relative_root in asset_roots.items():
     value = assets.get(key)
     minimum = 0 if key in {"docs_files", "site_files"} else 1
     if type(value) is not int or value < minimum:
         raise SystemExit(f"manifest assets.{key} is invalid")
+    asset_root = root / relative_root
+    if not asset_root.is_dir() or asset_root.is_symlink():
+        raise SystemExit(f"manifest asset root is missing or not a directory: {relative_root}")
+    actual_count = sum(1 for path in asset_root.rglob("*") if path.is_file())
+    if actual_count != value:
+        raise SystemExit(f"manifest asset count is wrong for {relative_root}")
 
 members = manifest.get("members")
 if not isinstance(members, list) or not members:
