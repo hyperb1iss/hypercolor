@@ -6,7 +6,8 @@ use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
 use crate::registry::{
-    DeviceDescriptor, HidRawReportMode, ProtocolBinding, SerialQuirk, TransportType,
+    DeviceDescriptor, HidRawReportMode, ProtocolBinding, SerialQuirk, TransportLifecycleHints,
+    TransportType, UsbTransportBinding, UsbTransportKind,
 };
 use crate::transport::{
     HidAccessMode, HidTransportIntent, TransportIntent, resolve_current_transport,
@@ -17,6 +18,8 @@ use super::ene::Ene6k77Protocol;
 use super::lcd::{TL_LCD_PACKET_LEN, TL_LCD_REPORT_ID, TlLcdProtocol};
 use super::legacy::LegacyUniHubProtocol;
 use super::tl::{TL_PACKET_LEN, TlFanProtocol};
+use super::wireless::WirelessControllerProtocol;
+use super::wireless::transport::{PID_WIRELESS_TX, WIRELESS_VENDOR_ID, open_wireless_controller};
 
 /// ENE-based Lian Li vendor ID.
 pub const LIANLI_ENE_VENDOR_ID: u16 = 0x0CF2;
@@ -127,6 +130,12 @@ pub fn build_tl_fan_protocol() -> Box<dyn Protocol> {
 #[must_use]
 pub fn build_tl_lcd_protocol() -> Box<dyn Protocol> {
     Box::new(TlLcdProtocol::new())
+}
+
+/// Build an L-Wireless controller protocol instance.
+#[must_use]
+pub fn build_wireless_controller_protocol() -> Box<dyn Protocol> {
+    Box::new(WirelessControllerProtocol::new())
 }
 
 /// Build an original UNI Hub protocol instance.
@@ -276,6 +285,28 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             },
             firmware_predicate: None,
             serial_quirk: Some(SerialQuirk::PlaceholderValues(TL_LCD_PLACEHOLDER_SERIALS)),
+        },
+        DeviceDescriptor {
+            vendor_id: WIRELESS_VENDOR_ID,
+            product_id: PID_WIRELESS_TX,
+            name: "Lian Li L-Wireless Controller",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            // The TX is the device discovery binds; its factory opens the RX
+            // sibling behind the same hub and pairs the two.
+            transport: TransportType::DriverUsb {
+                binding: UsbTransportBinding {
+                    id: "lianli/wireless",
+                    kind: UsbTransportKind::Usb,
+                    lifecycle: TransportLifecycleHints::default(),
+                    open: open_wireless_controller,
+                },
+            },
+            protocol: ProtocolBinding {
+                id: "lianli/wireless",
+                build: build_wireless_controller_protocol,
+            },
+            firmware_predicate: None,
+            serial_quirk: None,
         },
     ]
 });

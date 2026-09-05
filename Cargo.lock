@@ -5158,6 +5158,7 @@ dependencies = [
  "alsa",
  "async-hid",
  "async-trait",
+ "chrono",
  "criterion",
  "futures-util",
  "hidapi",
