@@ -9,7 +9,9 @@ use hypercolor_hal::display::{
 };
 use hypercolor_hal::drivers::corsair::CorsairLcdProtocol;
 use hypercolor_hal::drivers::corsair::framing::{LCD_DATA_PER_PACKET, LCD_MAX_DISPLAY_CHUNKS};
-use hypercolor_hal::protocol::{CommandBuffer, Protocol, ProtocolCommand, TransferType};
+use hypercolor_hal::protocol::{
+    CommandBuffer, Protocol, ProtocolCommand, ResponsePlan, ResponseTolerance, TransferType,
+};
 
 const MARKER: u8 = 0xA5;
 const HEADER_LEN: usize = 8;
@@ -110,6 +112,12 @@ impl DisplayChunkLayout for TestLayout {
                 expects_response: ctx.is_final,
                 response_delay: Duration::from_millis(3),
                 post_delay: (!ctx.is_final).then(|| Duration::from_millis(2)),
+                response: ResponsePlan {
+                    count: 1,
+                    timeout: Some(Duration::from_secs(2)),
+                    capacity: Some(511),
+                    tolerance: ResponseTolerance::Optional,
+                },
             },
         }
     }
@@ -290,6 +298,21 @@ fn chunk_command_policy_is_applied_per_chunk() {
     assert_eq!(commands[0].post_delay, Duration::from_millis(2));
     assert!(commands[1].expects_response, "final chunk is acked");
     assert_eq!(commands[1].response_delay, Duration::from_millis(3));
+    assert_eq!(
+        commands[1].response,
+        ResponsePlan {
+            count: 1,
+            timeout: Some(Duration::from_secs(2)),
+            capacity: Some(511),
+            tolerance: ResponseTolerance::Optional,
+        },
+        "the policy's response plan rides the engine-emitted command"
+    );
+    assert_eq!(
+        commands[0].response,
+        ResponsePlan::default(),
+        "an unacked chunk carries the default plan"
+    );
     assert_eq!(
         commands[1].post_delay,
         Duration::ZERO,
@@ -514,7 +537,7 @@ fn prefixed_frame_with_no_payload_is_still_emitted() {
         },
         &[],
         Some(8),
-        ChunkCommandPolicy::default(),
+        ChunkCommandPolicy::fire_and_forget(TransferType::Primary),
         &mut commands,
     )
     .expect("an empty payload is not an error for a prefixed frame");
@@ -535,7 +558,7 @@ fn prefixed_frame_rejects_a_payload_that_does_not_fit() {
         |_frame, _ctx| unreachable!("the header writer must not run for a rejected frame"),
         &[0x00; 40],
         Some(32),
-        ChunkCommandPolicy::default(),
+        ChunkCommandPolicy::fire_and_forget(TransferType::Primary),
         &mut commands,
     )
     .expect_err("40 payload bytes cannot fit 32 minus an 8-byte header");

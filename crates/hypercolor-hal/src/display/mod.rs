@@ -18,7 +18,7 @@ pub mod repack;
 
 use std::time::Duration;
 
-use crate::protocol::{CommandBuffer, ProtocolCommand, TransferType};
+use crate::protocol::{CommandBuffer, ProtocolCommand, ResponsePlan, TransferType};
 
 pub use keepalive::WireKeepalive;
 pub use repack::{LineRepack, Packed16Format, RepackError};
@@ -70,6 +70,9 @@ pub struct ChunkCommandPolicy {
 
     /// Minimum delay after sending the chunk. `None` means no pacing.
     pub post_delay: Option<Duration>,
+
+    /// How the chunk's reply is read when `expects_response` is set.
+    pub response: ResponsePlan,
 }
 
 impl ChunkCommandPolicy {
@@ -81,13 +84,13 @@ impl ChunkCommandPolicy {
             expects_response: false,
             response_delay: Duration::ZERO,
             post_delay: None,
+            response: ResponsePlan {
+                count: 1,
+                timeout: None,
+                capacity: None,
+                tolerance: crate::protocol::ResponseTolerance::Required,
+            },
         }
-    }
-}
-
-impl Default for ChunkCommandPolicy {
-    fn default() -> Self {
-        Self::fire_and_forget(TransferType::Primary)
     }
 }
 
@@ -225,17 +228,19 @@ pub fn encode_chunked_display_frame_into(
         };
         let policy = layout.command_policy(&ctx);
 
-        buffer.push_fill(
-            policy.expects_response,
-            policy.response_delay,
-            policy.post_delay.unwrap_or(Duration::ZERO),
-            policy.transfer_type,
-            |packet| {
-                packet.resize(packet_len, 0);
-                packet[payload_offset..payload_offset + payload.len()].copy_from_slice(payload);
-                layout.write_header(packet, &ctx);
-            },
-        );
+        buffer
+            .push_fill(
+                policy.expects_response,
+                policy.response_delay,
+                policy.post_delay.unwrap_or(Duration::ZERO),
+                policy.transfer_type,
+                |packet| {
+                    packet.resize(packet_len, 0);
+                    packet[payload_offset..payload_offset + payload.len()].copy_from_slice(payload);
+                    layout.write_header(packet, &ctx);
+                },
+            )
+            .response = policy.response;
     }
 
     Ok(())
@@ -302,24 +307,26 @@ pub fn encode_prefixed_display_frame_into(
         });
     }
 
-    buffer.push_fill(
-        policy.expects_response,
-        policy.response_delay,
-        policy.post_delay.unwrap_or(Duration::ZERO),
-        policy.transfer_type,
-        |frame| {
-            frame.resize(frame_len, 0);
-            frame[header_len..natural_len].copy_from_slice(data);
-            write_header(
-                frame,
-                &PrefixContext {
-                    payload: data,
-                    header_len,
-                    frame_len,
-                },
-            );
-        },
-    );
+    buffer
+        .push_fill(
+            policy.expects_response,
+            policy.response_delay,
+            policy.post_delay.unwrap_or(Duration::ZERO),
+            policy.transfer_type,
+            |frame| {
+                frame.resize(frame_len, 0);
+                frame[header_len..natural_len].copy_from_slice(data);
+                write_header(
+                    frame,
+                    &PrefixContext {
+                        payload: data,
+                        header_len,
+                        frame_len,
+                    },
+                );
+            },
+        )
+        .response = policy.response;
 
     Ok(())
 }

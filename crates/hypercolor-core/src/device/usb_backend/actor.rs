@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
+use hypercolor_hal::protocol::{
+    Protocol, ProtocolCommand, ProtocolError, ResponseStatus, ResponseTolerance,
+};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceError, DeviceId, USB_OUTPUT_BACKEND_ID};
 use tokio::sync::{mpsc, watch};
@@ -1026,15 +1028,14 @@ impl UsbBackend {
     ) -> Result<bool> {
         // Per-command budget when the protocol set one; init reads and steady
         // reads on the same device routinely want different budgets.
-        let response_timeout = command
-            .response_timeout
-            .unwrap_or_else(|| protocol.response_timeout());
+        let plan = command.response;
+        let response_timeout = plan.timeout.unwrap_or_else(|| protocol.response_timeout());
         // A responding command always reads at least once, so a protocol that
         // leaves the count at zero still gets its reply.
-        let report_count = u16::from(command.response_count.max(1));
+        let report_count = u16::from(plan.count.max(1));
 
         for report_index in 0..report_count {
-            let response = if report_index > 0 {
+            let read = if report_index > 0 {
                 trace!(
                     protocol = protocol.name(),
                     transport = transport.name(),
@@ -1045,13 +1046,8 @@ impl UsbBackend {
                     "usb reading additional response report"
                 );
                 transport
-                    .receive_logical(
-                        response_timeout,
-                        command.transfer_type,
-                        command.response_len,
-                    )
+                    .receive_logical(response_timeout, command.transfer_type, plan.capacity)
                     .await
-                    .map_err(map_transport_error)?
             } else if command.response_delay.is_zero() {
                 trace!(
                     protocol = protocol.name(),
@@ -1067,10 +1063,9 @@ impl UsbBackend {
                         &command.data,
                         response_timeout,
                         command.transfer_type,
-                        command.response_len,
+                        plan.capacity,
                     )
                     .await
-                    .map_err(map_transport_error)?
             } else {
                 trace!(
                     protocol = protocol.name(),
@@ -1088,16 +1083,34 @@ impl UsbBackend {
                     .map_err(map_transport_error)?;
                 tokio::time::sleep(command.response_delay).await;
                 transport
-                    .receive_logical(
-                        response_timeout,
-                        command.transfer_type,
-                        command.response_len,
-                    )
+                    .receive_logical(response_timeout, command.transfer_type, plan.capacity)
                     .await
-                    .map_err(map_transport_error)?
             };
 
-            if Self::parse_response_report(
+            let response = match read {
+                Ok(response) => response,
+                // An optional reply that never came is the command completing
+                // normally: the device is allowed to stay quiet, and the
+                // reports it did send were already parsed.
+                Err(TransportError::Timeout { .. })
+                    if plan.tolerance == ResponseTolerance::Optional =>
+                {
+                    debug!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        report_index,
+                        report_count,
+                        "optional response report did not arrive; command complete"
+                    );
+                    return Ok(false);
+                }
+                Err(error) => return Err(map_transport_error(error)),
+            };
+
+            let remaining_reports = report_count.saturating_sub(report_index).saturating_sub(1);
+            let retry = match Self::parse_response_report(
                 protocol,
                 transport,
                 command,
@@ -1106,17 +1119,23 @@ impl UsbBackend {
                 attempt,
                 &response,
             )
-            .await?
+            .await
             {
+                Ok(retry) => retry,
+                // A parse failure aborts the batch, but the reports still
+                // queued for this command would otherwise answer whatever the
+                // next session asks first.
+                Err(error) => {
+                    Self::discard_queued_reports(transport, command, remaining_reports).await;
+                    return Err(error);
+                }
+            };
+
+            if retry {
                 // The retry resends the whole command, so any report this
                 // attempt left queued would be read as a reply to the
                 // resend and desync every read after it.
-                Self::discard_queued_reports(
-                    transport,
-                    command,
-                    report_count.saturating_sub(report_index).saturating_sub(1),
-                )
-                .await;
+                Self::discard_queued_reports(transport, command, remaining_reports).await;
                 return Ok(true);
             }
         }
@@ -1141,7 +1160,7 @@ impl UsbBackend {
                 .receive_logical(
                     DRAIN_REPORT_TIMEOUT,
                     command.transfer_type,
-                    command.response_len,
+                    command.response.capacity,
                 )
                 .await
             {
