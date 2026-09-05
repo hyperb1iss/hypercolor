@@ -29,3 +29,4 @@ pub use lcd::{
 };
 pub use legacy::LegacyUniHubProtocol;
 pub use tl::{TL_PACKET_LEN, TlFanProtocol};
+pub use wireless::WirelessControllerProtocol;
