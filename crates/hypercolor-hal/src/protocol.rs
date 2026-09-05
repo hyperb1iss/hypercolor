@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DisplayFramePayload, ScrollMode, SegmentInfo};
 
-use crate::display::{DisplayEncodeError, DisplaySetting};
+use crate::display::DisplayEncodeError;
 
 /// Pure byte-level protocol encoder/decoder.
 ///
@@ -111,16 +111,6 @@ pub trait Protocol: Send + Sync {
         Err(DisplayEncodeError::Unsupported {
             format: payload.format,
         })
-    }
-
-    /// Encode a hardware display setting, if the protocol supports it.
-    ///
-    /// Panels expose brightness, rotation, and refresh rate as device state
-    /// rather than frame content. Software brightness in the daemon stays
-    /// authoritative; this is the seam for the hardware knob.
-    #[must_use]
-    fn encode_display_setting(&self, _setting: DisplaySetting) -> Option<Vec<ProtocolCommand>> {
-        None
     }
 
     /// Zone descriptors for this device.

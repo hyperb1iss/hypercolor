@@ -18,8 +18,8 @@ use zerocopy::byteorder::{BigEndian, U16, U32};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::display::{
-    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, DisplayRotation,
-    DisplaySetting, encode_chunked_display_frame,
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError,
+    encode_chunked_display_frame,
 };
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
@@ -60,8 +60,10 @@ const TL_LCD_PRODUCT_INFO_REPORTS: u8 = 2;
 
 const TL_LCD_CONTROL_PAYLOAD_LEN: usize = 11;
 const TL_LCD_SERIAL_LEN: usize = 32;
-const TL_LCD_DEFAULT_BRIGHTNESS: u8 = 100;
-const TL_LCD_DEFAULT_FPS: u8 = TL_LCD_MAX_FPS;
+/// Hardware backlight level sent at init, on the panel's 0..=100 scale.
+const TL_LCD_BRIGHTNESS: u8 = 100;
+/// Rotation byte for the unrotated panel (§5.5: 0/1/2/3 = 0/90/180/270°).
+const TL_LCD_ROTATION_NONE: u8 = 0;
 
 /// Command byte of a panel packet (§5.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,8 +191,8 @@ fn build_tl_lcd_packet(command: TlLcdCommand, payload: &[u8]) -> Vec<u8> {
     packet
 }
 
-/// Panel state learned from replies, plus the settings last asked for.
-#[derive(Debug, Clone)]
+/// Panel state learned from replies.
+#[derive(Debug, Clone, Default)]
 struct TlLcdState {
     serial: Option<String>,
     port: Option<u8>,
@@ -198,25 +200,6 @@ struct TlLcdState {
     firmware: Option<String>,
     mode: Option<u8>,
     frame_index: Option<u16>,
-    brightness: u8,
-    fps: u8,
-    rotation: DisplayRotation,
-}
-
-impl Default for TlLcdState {
-    fn default() -> Self {
-        Self {
-            serial: None,
-            port: None,
-            index: None,
-            firmware: None,
-            mode: None,
-            frame_index: None,
-            brightness: TL_LCD_DEFAULT_BRIGHTNESS,
-            fps: TL_LCD_DEFAULT_FPS,
-            rotation: DisplayRotation::Deg0,
-        }
-    }
 }
 
 /// Chunk framing for a streamed JPEG frame.
@@ -315,15 +298,16 @@ impl TlLcdProtocol {
         }
     }
 
-    /// Build an `LcdControl` command from the current settings.
-    fn control_command(&self, mode: TlLcdMode) -> ProtocolCommand {
-        let state = self.read_state();
+    /// Build the `LcdControl` command that puts the panel in its streaming
+    /// state: full hardware brightness (the daemon's software brightness is
+    /// the runtime authority), the panel's 30 fps ceiling, and no rotation
+    /// (orientation is a layout-zone property applied before encoding).
+    fn control_command(mode: TlLcdMode) -> ProtocolCommand {
         let mut payload = [0_u8; TL_LCD_CONTROL_PAYLOAD_LEN];
         payload[0] = mode as u8;
-        payload[4] = state.brightness;
-        payload[5] = state.fps;
-        payload[6] = rotation_byte(state.rotation);
-        drop(state);
+        payload[4] = TL_LCD_BRIGHTNESS;
+        payload[5] = TL_LCD_MAX_FPS;
+        payload[6] = TL_LCD_ROTATION_NONE;
 
         Self::command(TlLcdCommand::LcdControl, &payload, true)
     }
@@ -381,15 +365,6 @@ impl TlLcdProtocol {
     }
 }
 
-const fn rotation_byte(rotation: DisplayRotation) -> u8 {
-    match rotation {
-        DisplayRotation::Deg0 => 0,
-        DisplayRotation::Deg90 => 1,
-        DisplayRotation::Deg180 => 2,
-        DisplayRotation::Deg270 => 3,
-    }
-}
-
 impl Default for TlLcdProtocol {
     fn default() -> Self {
         Self::new()
@@ -418,8 +393,7 @@ impl Protocol for TlLcdProtocol {
             Self::command(TlLcdCommand::GetProductInfo, &[], true)
                 .with_response_count(TL_LCD_PRODUCT_INFO_REPORTS)
                 .with_response_timeout(TL_LCD_INIT_TIMEOUT),
-            self.control_command(TlLcdMode::LcdSetting)
-                .with_response_timeout(TL_LCD_INIT_TIMEOUT),
+            Self::control_command(TlLcdMode::LcdSetting).with_response_timeout(TL_LCD_INIT_TIMEOUT),
         ]
     }
 
@@ -444,25 +418,6 @@ impl Protocol for TlLcdProtocol {
         }
 
         encode_chunked_display_frame(&self.sync_layout, payload.data, commands)
-    }
-
-    fn encode_display_setting(&self, setting: DisplaySetting) -> Option<Vec<ProtocolCommand>> {
-        {
-            let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-            match setting {
-                DisplaySetting::Brightness(brightness) => {
-                    state.brightness = brightness.min(TL_LCD_DEFAULT_BRIGHTNESS);
-                }
-                DisplaySetting::Rotation(rotation) => state.rotation = rotation,
-                // The panel tops out at 30fps; a higher request would be a
-                // number the hardware cannot honour, and zero would stall it.
-                DisplaySetting::FrameRate(fps) => {
-                    state.fps = fps.clamp(1, TL_LCD_MAX_FPS);
-                }
-            }
-        }
-
-        Some(vec![self.control_command(TlLcdMode::LcdSetting)])
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
