@@ -28,21 +28,24 @@ fn with_native_public_tree(
     fs::create_dir(&home).expect("home");
     prepare(&home);
     let runtime = tempfile::tempdir().expect("runtime");
-    fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    let _bus = UnixListener::bind(runtime.path().join("bus")).unwrap();
-    let uid = fs::metadata(runtime.path()).unwrap().uid();
-    let connection = LinuxSystemdConnection::from_runtime_directory(runtime.path(), uid).unwrap();
+    fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700)).expect("runtime mode");
+    let _bus = UnixListener::bind(runtime.path().join("bus")).expect("bus socket");
+    let uid = fs::metadata(runtime.path())
+        .expect("runtime metadata")
+        .uid();
+    let connection =
+        LinuxSystemdConnection::from_runtime_directory(runtime.path(), uid).expect("connection");
     let store = InstallStore::new(fixture.path().join("store"), 64 * 1024);
-    let lock = store.acquire_lock().unwrap();
-    let tree = super::directory::LinuxPublicTree::new(&lock, &home).unwrap();
+    let lock = store.acquire_lock().expect("install lock");
+    let tree = super::directory::LinuxPublicTree::new(&lock, &home).expect("public tree");
     let mut executor = LinuxNativeExecutor::new_with_connection(
         &store,
         &lock,
         tree,
-        "127.0.0.1:9420".parse().unwrap(),
+        "127.0.0.1:9420".parse().expect("daemon socket address"),
         connection,
     )
-    .unwrap();
+    .expect("native executor");
     check(&home, &mut executor);
 }
 
@@ -56,17 +59,21 @@ fn native_public_reads_accept_virgin_home_then_ordered_scaffold_creation() {
         |_| {},
         |home, executor| {
             assert_eq!(
-                executor.launcher_entry(4096).unwrap(),
+                executor
+                    .launcher_entry(4096)
+                    .expect("absent launcher before scaffolding"),
                 (LinuxExactEntry::Absent, vec![])
             );
             for item in LINUX_LAYOUT_ITEMS {
                 assert_eq!(
-                    executor.layout_entry(item).unwrap(),
+                    executor
+                        .layout_entry(item)
+                        .expect("absent layout before scaffolding"),
                     LinuxExactEntry::Absent
                 );
             }
             assert_eq!(
-                fs::read_dir(home).unwrap().count(),
+                fs::read_dir(home).expect("home entries").count(),
                 0,
                 "inspection must not create scaffolding"
             );
@@ -78,15 +85,19 @@ fn native_public_reads_accept_virgin_home_then_ordered_scaffold_creation() {
             for item in LINUX_DIRECTORY_ITEMS {
                 executor
                     .replace_directory(item, LinuxDirectoryState::Absent, true)
-                    .unwrap();
+                    .expect("ordered scaffold creation");
             }
             assert_eq!(
-                executor.launcher_entry(4096).unwrap(),
+                executor
+                    .launcher_entry(4096)
+                    .expect("absent launcher after scaffolding"),
                 (LinuxExactEntry::Absent, vec![])
             );
             for item in LINUX_LAYOUT_ITEMS {
                 assert_eq!(
-                    executor.layout_entry(item).unwrap(),
+                    executor
+                        .layout_entry(item)
+                        .expect("absent layout after scaffolding"),
                     LinuxExactEntry::Absent
                 );
             }
@@ -94,8 +105,10 @@ fn native_public_reads_accept_virgin_home_then_ordered_scaffold_creation() {
                 home.join(".config/systemd/user/hypercolor.service"),
                 b"foreign launcher",
             )
-            .unwrap();
-            let (entry, bytes) = executor.launcher_entry(4096).unwrap();
+            .expect("foreign launcher fixture");
+            let (entry, bytes) = executor
+                .launcher_entry(4096)
+                .expect("inspect foreign launcher");
             assert!(matches!(entry, LinuxExactEntry::RegularFile { .. }));
             assert_eq!(bytes, b"foreign launcher");
         },
@@ -112,9 +125,10 @@ fn native_public_absence_rejects_appeared_directory_or_symlink_ancestors() {
             |home, executor| {
                 for name in [".config", ".local"] {
                     if symlink {
-                        std::os::unix::fs::symlink(home, home.join(name)).unwrap();
+                        std::os::unix::fs::symlink(home, home.join(name))
+                            .expect("appeared symlink ancestor");
                     } else {
-                        fs::create_dir(home.join(name)).unwrap();
+                        fs::create_dir(home.join(name)).expect("appeared directory ancestor");
                     }
                 }
                 assert!(executor.launcher_entry(4096).is_err());
@@ -131,17 +145,22 @@ fn native_public_reads_reject_replaced_present_parent_and_malformed_launcher() {
     use super::executor::LinuxInstallExecutor as _;
     for symlink in [false, true] {
         with_native_public_tree(
-            |home| fs::create_dir_all(home.join(".config/systemd/user")).unwrap(),
+            |home| {
+                fs::create_dir_all(home.join(".config/systemd/user"))
+                    .expect("initial launcher parents");
+            },
             |home, executor| {
                 let launcher = home.join(".config/systemd/user/hypercolor.service");
-                fs::create_dir(&launcher).unwrap();
+                fs::create_dir(&launcher).expect("malformed launcher directory");
                 assert!(executor.launcher_entry(4096).is_err());
-                fs::rename(home.join(".config"), home.join("old-config")).unwrap();
+                fs::rename(home.join(".config"), home.join("old-config"))
+                    .expect("move retained config parent");
                 if symlink {
                     std::os::unix::fs::symlink(home.join("old-config"), home.join(".config"))
-                        .unwrap();
+                        .expect("replacement symlink parent");
                 } else {
-                    fs::create_dir_all(home.join(".config/systemd/user")).unwrap();
+                    fs::create_dir_all(home.join(".config/systemd/user"))
+                        .expect("replacement directory parent");
                 }
                 assert!(executor.launcher_entry(4096).is_err());
             },

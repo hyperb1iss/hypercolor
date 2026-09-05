@@ -686,8 +686,9 @@ fn first_install_accepts_exact_lazy_launcher_discovery_and_still_reloads() {
     let mut executor =
         FakeExecutor::absent(fixture.store.active_path(), fixture.daemon_digest.clone());
     executor.launcher_discovery = Some(|_| {});
-    let mut platform = LinuxInstallPlatform::new(executor, config(), []).unwrap();
-    let mut lock = fixture.store.acquire_lock().unwrap();
+    let mut platform =
+        LinuxInstallPlatform::new(executor, config(), []).expect("lazy discovery platform");
+    let mut lock = fixture.store.acquire_lock().expect("install lock");
     let outcome = InstallCoordinator::new(&fixture.store, &mut platform)
         .install_with_lock(
             fixture.request(InstallTargetPolicy::EnableOnFirstInstall),
@@ -719,8 +720,9 @@ fn lazy_launcher_discovery_rejects_foreign_or_running_manager_state() {
         let mut executor =
             FakeExecutor::absent(fixture.store.active_path(), fixture.daemon_digest.clone());
         executor.launcher_discovery = Some(mutate);
-        let mut platform = LinuxInstallPlatform::new(executor, config(), []).unwrap();
-        let mut lock = fixture.store.acquire_lock().unwrap();
+        let mut platform =
+            LinuxInstallPlatform::new(executor, config(), []).expect("foreign discovery platform");
+        let mut lock = fixture.store.acquire_lock().expect("install lock");
         assert!(
             InstallCoordinator::new(&fixture.store, &mut platform)
                 .install_with_lock(

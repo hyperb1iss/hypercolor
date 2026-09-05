@@ -130,12 +130,12 @@ fn fixed_icon_links_belong_only_to_layout_inspection_not_legacy_extras() {
     for size in [48, 128, 256] {
         let relative = format!("share/icons/hicolor/{size}x{size}/apps/hypercolor.png");
         let public = home.join(".local").join(&relative);
-        fs::remove_file(&public).unwrap();
+        fs::remove_file(&public).expect("remove fixed icon fixture");
         std::os::unix::fs::symlink(
             home.join(".local/lib/hypercolor/active").join(relative),
             public,
         )
-        .unwrap();
+        .expect("managed fixed icon link");
     }
     assert!(
         collect_public_legacy_inventory(&tree)
@@ -143,7 +143,7 @@ fn fixed_icon_links_belong_only_to_layout_inspection_not_legacy_extras() {
             .is_empty()
     );
     let extra = home.join(".local/share/icons/hicolor/48x48/apps/hypercolor-extra.png");
-    std::os::unix::fs::symlink("/foreign/extra.png", extra).unwrap();
+    std::os::unix::fs::symlink("/foreign/extra.png", extra).expect("unsupported legacy icon link");
     assert!(
         collect_public_legacy_inventory(&tree).is_err(),
         "historical extra owned links remain unsupported"

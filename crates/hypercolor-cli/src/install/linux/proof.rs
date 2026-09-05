@@ -557,7 +557,7 @@ mod identity_tests {
     fn response(value: serde_json::Value) -> LinuxHttpResponse {
         LinuxHttpResponse {
             status: 200,
-            body: serde_json::to_vec(&value).unwrap(),
+            body: serde_json::to_vec(&value).expect("serialize identity response fixture"),
         }
     }
 
