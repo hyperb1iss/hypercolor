@@ -23,6 +23,9 @@ use super::render::{
 use super::{DisplayGeometry, DisplayViewport};
 
 const JPEG_QUALITY: u8 = 85;
+/// Qualities tried, in order, when a frame overruns a device's wire cap at
+/// the base quality. A frame still over the cap at the last rung is dropped.
+const JPEG_QUALITY_LADDER: [u8; 3] = [70, 55, 40];
 const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 
 pub(super) struct EncodedDisplayFrame {
@@ -39,6 +42,8 @@ pub(super) struct DisplayEncodeState {
     pub jpeg_compressor: TurboJpegCompressor,
     pub fast_resizer: fr::Resizer,
     pub axis_plan: Option<PreparedDisplayPlan>,
+    /// The device's encoded-frame wire cap, when it has one.
+    pub max_frame_len: Option<usize>,
     brightness_factor: u16,
     brightness_lut: [u8; 256],
 }
@@ -62,6 +67,7 @@ impl DisplayEncodeState {
             jpeg_compressor,
             fast_resizer: fr::Resizer::new(),
             axis_plan: None,
+            max_frame_len: None,
             brightness_factor: u16::from(u8::MAX),
             brightness_lut: identity_brightness_lut(),
         })
@@ -451,10 +457,12 @@ fn encode_rgb_to_jpeg(
         height,
         format: TurboJpegPixelFormat::RGB,
     };
-    let jpeg_len = match encode_state
-        .jpeg_compressor
-        .compress_to_slice(image, jpeg_buffer.as_mut_slice())
-    {
+    let jpeg_len = match compress_within_budget(
+        &mut encode_state.jpeg_compressor,
+        encode_state.max_frame_len,
+        jpeg_buffer.as_mut_slice(),
+        |compressor, buffer| compressor.compress_to_slice(image, buffer),
+    ) {
         Ok(len) => len,
         Err(error) => {
             encode_state.jpeg_buffer = jpeg_buffer;
@@ -464,6 +472,65 @@ fn encode_rgb_to_jpeg(
 
     jpeg_buffer.truncate(jpeg_len);
     Ok(jpeg_buffer)
+}
+
+/// Compress at the base quality, then down the ladder until the frame fits
+/// `budget`. The compressor is left at the base quality either way.
+///
+/// # Errors
+///
+/// Returns the compressor's error, or a budget error when the frame still
+/// overruns the cap at the lowest rung; the caller drops that frame rather
+/// than sending bytes the device would truncate.
+fn compress_within_budget(
+    compressor: &mut TurboJpegCompressor,
+    budget: Option<usize>,
+    jpeg_buffer: &mut [u8],
+    mut compress: impl FnMut(&mut TurboJpegCompressor, &mut [u8]) -> turbojpeg::Result<usize>,
+) -> Result<usize> {
+    let mut len = compress(compressor, jpeg_buffer)?;
+    let Some(budget) = budget.filter(|budget| len > *budget) else {
+        return Ok(len);
+    };
+
+    let mut fitted = None;
+    for quality in JPEG_QUALITY_LADDER {
+        compressor
+            .set_quality(i32::from(quality))
+            .context("failed to step TurboJPEG quality down")?;
+        match compress(compressor, jpeg_buffer) {
+            Ok(stepped) => len = stepped,
+            Err(error) => {
+                restore_base_quality(compressor)?;
+                return Err(error).context("failed to TurboJPEG-encode at reduced quality");
+            }
+        }
+        if len <= budget {
+            fitted = Some(quality);
+            break;
+        }
+    }
+    restore_base_quality(compressor)?;
+
+    match fitted {
+        Some(quality) => {
+            debug!(
+                bytes = len,
+                budget, quality, "display frame stepped down to fit the device's wire cap"
+            );
+            Ok(len)
+        }
+        None => Err(anyhow::anyhow!(
+            "display frame is {len} bytes at quality {} and the device's wire cap is {budget} bytes",
+            JPEG_QUALITY_LADDER[JPEG_QUALITY_LADDER.len() - 1]
+        )),
+    }
+}
+
+fn restore_base_quality(compressor: &mut TurboJpegCompressor) -> Result<()> {
+    compressor
+        .set_quality(i32::from(JPEG_QUALITY))
+        .context("failed to restore TurboJPEG base quality")
 }
 
 fn encode_rgba_to_jpeg(
@@ -492,10 +559,12 @@ fn encode_rgba_to_jpeg(
         height,
         format: TurboJpegPixelFormat::RGBA,
     };
-    let jpeg_len = match encode_state
-        .jpeg_compressor
-        .compress_to_slice(image, jpeg_buffer.as_mut_slice())
-    {
+    let jpeg_len = match compress_within_budget(
+        &mut encode_state.jpeg_compressor,
+        encode_state.max_frame_len,
+        jpeg_buffer.as_mut_slice(),
+        |compressor, buffer| compressor.compress_to_slice(image, buffer),
+    ) {
         Ok(len) => len,
         Err(error) => {
             encode_state.jpeg_buffer = jpeg_buffer;
@@ -538,10 +607,12 @@ fn encode_yuv420_to_jpeg(
         v_stride: uv_stride,
         subsamp: JPEG_SUBSAMP,
     };
-    let jpeg_len = match encode_state
-        .jpeg_compressor
-        .compress_yuv_planes_to_slice(&image, jpeg_buffer.as_mut_slice())
-    {
+    let jpeg_len = match compress_within_budget(
+        &mut encode_state.jpeg_compressor,
+        encode_state.max_frame_len,
+        jpeg_buffer.as_mut_slice(),
+        |compressor, buffer| compressor.compress_yuv_planes_to_slice(&image, buffer),
+    ) {
         Ok(len) => len,
         Err(error) => {
             encode_state.jpeg_buffer = jpeg_buffer;
@@ -956,5 +1027,83 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Pseudo-random pixels: the worst case for a JPEG size budget.
+    fn noise_rgb(width: u32, height: u32) -> Vec<u8> {
+        let mut state = 0x9E37_79B9_u32;
+        (0..width * height * 3)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    fn noise_geometry() -> DisplayGeometry {
+        DisplayGeometry {
+            width: 160,
+            height: 160,
+            circular: false,
+        }
+    }
+
+    #[test]
+    fn a_frame_over_the_wire_cap_steps_quality_down_until_it_fits() {
+        let geometry = noise_geometry();
+        let mut state = DisplayEncodeState::new().expect("encoder");
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+
+        let base = encode_rgb_to_jpeg(&geometry, &mut state).expect("base encode");
+        state.max_frame_len = Some(base.len() - 1);
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let fitted = encode_rgb_to_jpeg(&geometry, &mut state).expect("stepped encode");
+        assert!(
+            fitted.len() < base.len(),
+            "a lower quality rung must shrink the frame: {} vs {}",
+            fitted.len(),
+            base.len()
+        );
+
+        // The compressor is back at the base quality for the next frame.
+        state.max_frame_len = None;
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let again = encode_rgb_to_jpeg(&geometry, &mut state).expect("base encode again");
+        assert_eq!(
+            again.len(),
+            base.len(),
+            "quality restored after a step-down"
+        );
+    }
+
+    #[test]
+    fn a_frame_the_lowest_rung_cannot_fit_is_an_error_not_a_truncated_jpeg() {
+        let geometry = noise_geometry();
+        let mut state = DisplayEncodeState::new().expect("encoder");
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        state.max_frame_len = Some(200);
+
+        let error = encode_rgb_to_jpeg(&geometry, &mut state).expect_err("cannot fit 200 bytes");
+        assert!(
+            format!("{error:#}").contains("wire cap is 200 bytes"),
+            "unexpected error: {error:#}"
+        );
+
+        state.max_frame_len = None;
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        encode_rgb_to_jpeg(&geometry, &mut state).expect("the encoder recovers");
+    }
+
+    #[test]
+    fn a_frame_under_the_wire_cap_is_untouched() {
+        let geometry = noise_geometry();
+        let mut state = DisplayEncodeState::new().expect("encoder");
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let base = encode_rgb_to_jpeg(&geometry, &mut state).expect("base encode");
+
+        state.max_frame_len = Some(base.len());
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let within = encode_rgb_to_jpeg(&geometry, &mut state).expect("fits exactly");
+        assert_eq!(within.len(), base.len());
     }
 }

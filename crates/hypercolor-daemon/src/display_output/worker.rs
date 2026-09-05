@@ -399,7 +399,10 @@ async fn run_display_worker(
     let mut last_delivered_input = None::<DisplayFrameInputState>;
     let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
-        Ok(state) => state,
+        Ok(mut state) => {
+            state.max_frame_len = target.max_frame_len;
+            state
+        }
         Err(error) => {
             warn!(
                 backend_id = %backend_key,
@@ -649,7 +652,8 @@ async fn run_display_worker(
             Err(error) => {
                 record_display_encode_failure(&display_frames, encode_started.elapsed()).await;
                 match DisplayEncodeState::new() {
-                    Ok(state) => {
+                    Ok(mut state) => {
+                        state.max_frame_len = target.max_frame_len;
                         encode_state = state;
                     }
                     Err(init_error) => {
