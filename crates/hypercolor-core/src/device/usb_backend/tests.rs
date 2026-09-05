@@ -2316,7 +2316,7 @@ async fn response_len_reaches_the_transport_as_a_read_capacity() {
         &protocol,
         &transport,
         &[
-            responding_command(0xA0).with_response_len(508),
+            responding_command(0xA0).with_response_capacity(508),
             responding_command(0xA1),
         ],
     )
@@ -2373,5 +2373,236 @@ async fn a_retry_discards_the_reports_left_over_from_the_failed_attempt() {
         ],
         "the abandoned attempt's second report is discarded, not parsed as \
          the resend's reply"
+    );
+}
+
+/// Answers each read from a script of results, so a scripted timeout can
+/// stand in for a device that stays quiet.
+struct ScriptedReadTransport {
+    reads: Mutex<Vec<std::result::Result<Vec<u8>, TransportError>>>,
+    sends: Mutex<Vec<Vec<u8>>>,
+}
+
+impl ScriptedReadTransport {
+    fn new(reads: Vec<std::result::Result<Vec<u8>, TransportError>>) -> Self {
+        Self {
+            reads: Mutex::new(reads),
+            sends: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn next_read(&self, timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        let mut reads = self.reads.lock().expect("reads should not be poisoned");
+        if reads.is_empty() {
+            Err(TransportError::Timeout {
+                timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+            })
+        } else {
+            reads.remove(0)
+        }
+    }
+
+    fn sends(&self) -> Vec<Vec<u8>> {
+        self.sends
+            .lock()
+            .expect("send log should not be poisoned")
+            .clone()
+    }
+
+    fn reads_left(&self) -> usize {
+        self.reads
+            .lock()
+            .expect("reads should not be poisoned")
+            .len()
+    }
+}
+
+#[async_trait]
+impl Transport for ScriptedReadTransport {
+    fn name(&self) -> &'static str {
+        "scripted-read-test"
+    }
+
+    async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+        self.sends
+            .lock()
+            .expect("send log should not be poisoned")
+            .push(data.to_vec());
+        Ok(())
+    }
+
+    async fn receive(&self, timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        self.next_read(timeout)
+    }
+
+    async fn receive_logical(
+        &self,
+        timeout: Duration,
+        _transfer_type: TransferType,
+        _capacity: Option<usize>,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        self.next_read(timeout)
+    }
+
+    async fn send_receive_logical(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        _transfer_type: TransferType,
+        _capacity: Option<usize>,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        self.send(data).await?;
+        self.next_read(timeout)
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+/// A status packet the firmware sends most of the time is an optional reply:
+/// its absence completes the command instead of failing the batch.
+#[tokio::test]
+async fn an_optional_reply_that_never_arrives_completes_the_command() {
+    let protocol = ReportRecordingProtocol::new();
+    let transport = ScriptedReadTransport::new(vec![
+        Err(TransportError::Timeout { timeout_ms: 1 }),
+        Ok(b"next-command-reply".to_vec()),
+    ]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[
+            responding_command(0x65).with_optional_response(),
+            responding_command(0xAA),
+        ],
+    )
+    .await
+    .expect("a quiet device does not fail an optional read");
+
+    assert_eq!(
+        transport.sends(),
+        vec![vec![0x65], vec![0xAA]],
+        "the quiet reply is not retried, the batch moves on"
+    );
+    assert_eq!(protocol.seen(), vec![b"next-command-reply".to_vec()]);
+}
+
+/// A trailing report some units skip is the same shape: the reports that did
+/// arrive are parsed, the missing one ends the command.
+#[tokio::test]
+async fn an_optional_trailing_report_ends_the_command_after_the_reports_that_came() {
+    let protocol = ReportRecordingProtocol::new();
+    let transport = ScriptedReadTransport::new(vec![
+        Ok(b"version".to_vec()),
+        Err(TransportError::Timeout { timeout_ms: 1 }),
+        Ok(b"next-command-reply".to_vec()),
+    ]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[
+            responding_command(0xA6)
+                .with_response_count(2)
+                .with_optional_response(),
+            responding_command(0xAA),
+        ],
+    )
+    .await
+    .expect("a missing second report is tolerated");
+
+    assert_eq!(
+        protocol.seen(),
+        vec![b"version".to_vec(), b"next-command-reply".to_vec()]
+    );
+}
+
+/// The default plan keeps the old contract: a required reply that never comes
+/// fails the batch.
+#[tokio::test]
+async fn a_required_reply_that_never_arrives_fails_the_batch() {
+    let protocol = ReportRecordingProtocol::new();
+    let transport =
+        ScriptedReadTransport::new(vec![Err(TransportError::Timeout { timeout_ms: 1 })]);
+
+    let error = UsbBackend::run_commands(&protocol, &transport, &[responding_command(0x3C)])
+        .await
+        .expect_err("a required reply is part of the contract");
+
+    assert!(
+        format!("{error:#}").contains("timeout"),
+        "the failure names the timeout: {error:#}"
+    );
+}
+
+/// Parses every report as malformed, standing in for a device whose first
+/// report of a multi-report command is garbage.
+struct MalformedReportProtocol;
+
+impl Protocol for MalformedReportProtocol {
+    fn name(&self) -> &'static str {
+        "malformed-report-test"
+    }
+
+    fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn encode_frame(&self, _colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
+        Err(ProtocolError::MalformedResponse {
+            detail: "scripted".to_owned(),
+        })
+    }
+
+    fn response_timeout(&self) -> Duration {
+        PLAN_PROTOCOL_TIMEOUT
+    }
+
+    fn zones(&self) -> Vec<SegmentInfo> {
+        Vec::new()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities::default()
+    }
+
+    fn total_leds(&self) -> u32 {
+        0
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_millis(16)
+    }
+}
+
+/// A parse failure aborts the batch, but the reports still queued for the
+/// failed command must not be left for the next session to misread.
+#[tokio::test]
+async fn a_parse_failure_drains_the_reports_still_queued_for_the_command() {
+    let transport =
+        ScriptedReadTransport::new(vec![Ok(b"garbage".to_vec()), Ok(b"stale-date".to_vec())]);
+
+    UsbBackend::run_commands(
+        &MalformedReportProtocol,
+        &transport,
+        &[responding_command(0xA6).with_response_count(2)],
+    )
+    .await
+    .expect_err("a malformed report fails the command");
+
+    assert_eq!(
+        transport.reads_left(),
+        0,
+        "the second report was drained before the failure propagated"
     );
 }

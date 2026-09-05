@@ -246,14 +246,14 @@ fn the_init_sequence_runs_in_the_documented_order_at_the_init_timeout() {
             "init command {index} reads a reply"
         );
         assert_eq!(
-            command.response_timeout,
+            command.response.timeout,
             Some(INIT_TIMEOUT),
             "init command {index} uses the 3000ms init budget"
         );
     }
 
     assert_eq!(
-        commands[2].response_count, 2,
+        commands[2].response.count, 2,
         "GetProductInfo answers with a version report and a build-date report"
     );
     assert_eq!(

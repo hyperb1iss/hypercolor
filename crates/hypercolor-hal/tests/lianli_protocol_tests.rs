@@ -341,7 +341,7 @@ fn tl_product_info_reads_two_reports_and_keeps_the_version() {
     let product_info = &commands[1];
     assert_eq!(product_info.data[1], 0xA6);
     assert_eq!(
-        product_info.response_count, 2,
+        product_info.response.count, 2,
         "0xA6 answers with a version report and a build-date report"
     );
 
