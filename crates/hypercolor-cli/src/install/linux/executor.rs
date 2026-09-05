@@ -406,7 +406,7 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         path: &'static str,
         max_bytes: usize,
     ) -> Result<LinuxHttpResponse, InstallPlatformError> {
-        if !matches!(path, "/health" | "/api/v1/server") {
+        if !matches!(path, "/health" | "/api/v1/system") {
             return Err(error("Linux owner proof requested an unapproved HTTP path"));
         }
         http_get(self.http_address, path, max_bytes)

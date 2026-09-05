@@ -474,8 +474,8 @@ impl LinuxInstallExecutor for FakeExecutor {
             .map_or(VERSION, String::as_str);
         let value = match path {
             "/health" => json!({"status":"healthy","version":version}),
-            "/api/v1/server" => {
-                json!({"data":{"instance_id":"local","instance_name":"Hypercolor","version":version}})
+            "/api/v1/system" => {
+                json!({"data":{"identity":{"instance_id":"local","instance_name":"Hypercolor","version":version},"status":null}})
             }
             _ => unreachable!("fixed proof endpoint"),
         };
