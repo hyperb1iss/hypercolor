@@ -221,7 +221,7 @@ fn SurfaceStage() -> impl IntoView {
                                         .map(|display| {
                                             view! {
                                                 <a
-                                                    href=display_preview_shell_url(&display.id)
+                                                    href=crate::route_ui::route_href(&display_preview_shell_url(&display.id))
                                                     target="_blank"
                                                     rel="noopener"
                                                     class="rounded-md p-1 text-fg-tertiary transition-colors hover:text-fg-primary"

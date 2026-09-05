@@ -19,7 +19,7 @@ use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_model};
-use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
+use crate::route_ui::NowPlayingCanvasMode;
 use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
 use hypercolor_leptos_ext::events::Input;
@@ -59,7 +59,8 @@ pub fn Sidebar() -> impl IntoView {
                         .any(|state| state.effect_id.is_some() || state.zone.top_layer.is_some())
                 }))
     });
-    let canvas_mode = Signal::derive(move || now_playing_canvas_mode(&location.pathname.get()));
+    let canvas_mode =
+        Signal::derive(move || crate::route_ui::mounted_canvas_mode(&location.pathname.get()));
 
     // ── Live canvas + palette from WebSocket frames ────────────────────
     let ws = use_context::<WsContext>();
@@ -242,7 +243,7 @@ pub fn Sidebar() -> impl IntoView {
                     style:display=move || if collapsed.get() { "flex" } else { "none" }
                 >
                     <img
-                        src="/assets/brand/mark-color.png"
+                        src=crate::route_ui::asset_href("/assets/brand/mark-color.png")
                         alt="Hypercolor"
                         class="w-8 h-8 select-none logo-mark-image"
                         draggable="false"
@@ -256,7 +257,7 @@ pub fn Sidebar() -> impl IntoView {
                 >
                     <div class="logo-bg logo-bg-mark" />
                     <img
-                        src="/assets/brand/lockup-vertical-color.png"
+                        src=crate::route_ui::asset_href("/assets/brand/lockup-vertical-color.png")
                         alt="Hypercolor"
                         class="h-24 w-auto select-none object-contain logo-mark-image"
                         draggable="false"
@@ -271,17 +272,13 @@ pub fn Sidebar() -> impl IntoView {
                         let path = item.path;
                         Memo::new(move |_| {
                             let current = location.pathname.get();
-                            if path == "/" {
-                                current == "/"
-                            } else {
-                                current.starts_with(path)
-                            }
+                            crate::route_ui::route_is_active(&current, path)
                         })
                     };
 
                     let link = view! {
                         <A
-                            href=item.path
+                            href=crate::route_ui::route_href(item.path)
                             attr:class=move || {
                                 let base = "flex items-center h-10 px-3 rounded-lg nav-item-hover group relative";
                                 if is_active.get() {
