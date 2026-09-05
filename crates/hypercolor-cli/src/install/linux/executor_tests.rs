@@ -151,6 +151,37 @@ fn systemctl_command_has_only_fixed_locale_and_bound_connection_environment() {
 }
 
 #[test]
+fn systemd_absent_unit_accepts_missing_service_property_only() {
+    let captured = "MainPID=0\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nFragmentPath=\nUnitFileState=\nInvocationID=\n";
+    let observation = parse_systemd_show(captured.as_bytes()).expect("absent systemd unit");
+    assert_eq!(observation.load_state, "not-found");
+    assert!(observation.exec_start.is_empty());
+
+    for missing in [
+        "MainPID=0\n",
+        "LoadState=not-found\n",
+        "ActiveState=inactive\n",
+        "SubState=dead\n",
+        "FragmentPath=\n",
+        "UnitFileState=\n",
+        "InvocationID=\n",
+    ] {
+        assert!(parse_systemd_show(captured.replace(missing, "").as_bytes()).is_err());
+    }
+    for (field, contradictory) in [
+        ("LoadState=not-found", "LoadState=loaded"),
+        ("ActiveState=inactive", "ActiveState=active"),
+        ("FragmentPath=", "FragmentPath=/foreign.service"),
+        ("UnitFileState=", "UnitFileState=enabled"),
+    ] {
+        assert!(parse_systemd_show(captured.replace(field, contradictory).as_bytes()).is_err());
+    }
+    let loaded = "MainPID=0\nLoadState=loaded\nActiveState=inactive\nSubState=dead\nFragmentPath=/home/test/.config/systemd/user/hypercolor.service\nUnitFileState=enabled\nInvocationID=\n";
+    let error = parse_systemd_show(loaded.as_bytes()).expect_err("loaded unit needs ExecStart");
+    assert!(error.to_string().contains("missing required fields"));
+}
+
+#[test]
 fn absent_disable_emits_no_command_but_loaded_enablement_does() {
     let absent = parse_systemd_show(
         b"LoadState=not-found\nActiveState=inactive\nSubState=dead\nUnitFileState=\nFragmentPath=\nExecStart=\nMainPID=0\nInvocationID=\n",
