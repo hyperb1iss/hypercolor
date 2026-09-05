@@ -113,11 +113,15 @@ impl DisplayChunkLayout for TestLayout {
                 expects_response: ctx.is_final,
                 response_delay: Duration::from_millis(3),
                 post_delay: (!ctx.is_final).then(|| Duration::from_millis(2)),
-                response: ResponsePlan {
-                    count: 1,
-                    timeout: Some(Duration::from_secs(2)),
-                    capacity: Some(511),
-                    tolerance: ResponseTolerance::Optional,
+                response: if ctx.is_final {
+                    ResponsePlan {
+                        count: 1,
+                        timeout: Some(Duration::from_secs(2)),
+                        capacity: Some(511),
+                        tolerance: ResponseTolerance::Optional,
+                    }
+                } else {
+                    ResponsePlan::default()
                 },
             },
         }

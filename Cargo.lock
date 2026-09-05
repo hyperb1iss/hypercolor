@@ -2516,6 +2516,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "des"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "916a94e407b54f9034d71dd748234cd1e516ced6284009906ae246f177eafe5a"
+dependencies = [
+ "cipher 0.5.2",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5158,8 +5167,10 @@ dependencies = [
  "alsa",
  "async-hid",
  "async-trait",
+ "cbc 0.2.1",
  "chrono",
  "criterion",
+ "des",
  "futures-util",
  "hidapi",
  "hypercolor-color",
@@ -13699,7 +13710,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

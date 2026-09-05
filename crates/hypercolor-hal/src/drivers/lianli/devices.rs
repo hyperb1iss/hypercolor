@@ -19,6 +19,9 @@ use super::lcd::{TL_LCD_PACKET_LEN, TL_LCD_REPORT_ID, TlLcdProtocol};
 use super::legacy::LegacyUniHubProtocol;
 use super::tl::{TL_PACKET_LEN, TlFanProtocol};
 use super::wireless::WirelessControllerProtocol;
+use super::wireless::lcd::{
+    PID_SL_WIRELESS_LCD, PID_TL_WIRELESS_LCD, WIRELESS_LCD_VENDOR_ID, WirelessLcdProtocol,
+};
 use super::wireless::transport::{PID_WIRELESS_TX, WIRELESS_VENDOR_ID, open_wireless_controller};
 
 /// ENE-based Lian Li vendor ID.
@@ -136,6 +139,12 @@ pub fn build_tl_lcd_protocol() -> Box<dyn Protocol> {
 #[must_use]
 pub fn build_wireless_controller_protocol() -> Box<dyn Protocol> {
     Box::new(WirelessControllerProtocol::new())
+}
+
+/// Build a wireless LCD receiver protocol instance.
+#[must_use]
+pub fn build_wireless_lcd_protocol() -> Box<dyn Protocol> {
+    Box::new(WirelessLcdProtocol::new())
 }
 
 /// Build an original UNI Hub protocol instance.
@@ -304,6 +313,40 @@ static LIANLI_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             protocol: ProtocolBinding {
                 id: "lianli/wireless",
                 build: build_wireless_controller_protocol,
+            },
+            firmware_predicate: None,
+            serial_quirk: None,
+        },
+        DeviceDescriptor {
+            vendor_id: WIRELESS_LCD_VENDOR_ID,
+            product_id: PID_TL_WIRELESS_LCD,
+            name: "Lian Li Uni Fan TL Wireless LCD",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: TransportType::UsbBulk {
+                interface: 0,
+                report_id: 0,
+            },
+            protocol: ProtocolBinding {
+                id: "lianli/wireless-lcd",
+                build: build_wireless_lcd_protocol,
+            },
+            firmware_predicate: None,
+            // Serial uniqueness across receivers is unverified on hardware;
+            // a placeholder list goes here the day one is observed.
+            serial_quirk: None,
+        },
+        DeviceDescriptor {
+            vendor_id: WIRELESS_LCD_VENDOR_ID,
+            product_id: PID_SL_WIRELESS_LCD,
+            name: "Lian Li Uni Fan SL Wireless LCD",
+            family: DeviceFamily::new_static("lianli", "Lian Li"),
+            transport: TransportType::UsbBulk {
+                interface: 0,
+                report_id: 0,
+            },
+            protocol: ProtocolBinding {
+                id: "lianli/wireless-lcd",
+                build: build_wireless_lcd_protocol,
             },
             firmware_predicate: None,
             serial_quirk: None,

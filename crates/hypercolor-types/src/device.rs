@@ -111,6 +111,12 @@ pub struct DeviceFeatures {
 
     /// Supports scroll acceleration toggle.
     pub scroll_acceleration: bool,
+
+    /// Largest encoded display frame the device's wire format can carry,
+    /// in bytes. The host's encoder steps quality down to fit it and drops
+    /// a frame it cannot fit rather than truncating it.
+    #[serde(default)]
+    pub max_display_frame_len: Option<usize>,
 }
 
 /// Generic scroll wheel operating mode.
