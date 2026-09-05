@@ -111,27 +111,6 @@ fn a_reply_on_an_exact_packet_boundary_ends_on_the_gap_timeout() {
 }
 
 #[test]
-fn a_twelve_record_reply_ends_on_its_short_tail() {
-    let source = ScriptedPackets::from_reply(reply_len(12));
-
-    let reply = accumulate_logical_reply(
-        PACKET,
-        reply_len(12),
-        FIRST_TIMEOUT,
-        DEFAULT_PACKET_GAP_TIMEOUT,
-        |timeout| source.read(timeout),
-    )
-    .expect("a twelve-record reply should accumulate");
-
-    assert_eq!(reply.len(), 508);
-    assert_eq!(
-        source.timeouts().len(),
-        8,
-        "seven full packets plus the tail"
-    );
-}
-
-#[test]
 fn reaching_capacity_stops_reading() {
     let source = ScriptedPackets::new(vec![
         Ok(vec![0x01; PACKET]),

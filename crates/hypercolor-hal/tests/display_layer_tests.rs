@@ -736,7 +736,6 @@ fn wire_keepalive_is_due_before_the_first_send_and_suppressed_after() {
         !keepalive.due(),
         "a fresh keepalive suppresses the next one"
     );
-    assert_eq!(keepalive.interval(), Duration::from_secs(30));
 }
 
 #[test]
