@@ -13,6 +13,10 @@ use turbojpeg::{
 };
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
+use crate::display::{
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, LineRepack, Packed16Format,
+    encode_chunked_display_frame_into,
+};
 use crate::protocol::{CommandBuffer, ProtocolCommand, TransferType};
 
 use super::{
@@ -32,10 +36,17 @@ const DISPLAY_HEADER: Push2DisplayHeader = Push2DisplayHeader {
     magic: [0xFF, 0xCC, 0xAA, 0x88],
     padding: [0; 12],
 };
-const PUSH2_DISPLAY_LINES_PER_TRANSFER: usize =
-    PUSH2_DISPLAY_TRANSFER_CHUNK / PUSH2_DISPLAY_LINE_SIZE;
-const PUSH2_DISPLAY_LINE_PADDING_BYTES: [u8; PUSH2_DISPLAY_LINE_PADDING] =
-    push2_display_line_padding();
+const PUSH2_DISPLAY_FRAME_BYTES: usize = PUSH2_DISPLAY_LINE_SIZE * PUSH2_DISPLAY_HEIGHT;
+
+/// Pixel stage: RGB888 to the panel's masked BGR565 lines.
+const PUSH2_DISPLAY_REPACK: LineRepack<'static> = LineRepack {
+    width: PUSH2_DISPLAY_WIDTH,
+    height: PUSH2_DISPLAY_HEIGHT,
+    format: Packed16Format::Bgr565,
+    line_len: PUSH2_DISPLAY_LINE_SIZE,
+    filler: 0x00,
+    xor_mask: &PUSH2_DISPLAY_XOR_MASK,
+};
 
 const _: () = assert!(
     std::mem::size_of::<Push2DisplayHeader>() == 16,
@@ -45,21 +56,48 @@ const _: () = assert!(
     PUSH2_DISPLAY_LINE_SIZE == PUSH2_DISPLAY_LINE_PIXELS + PUSH2_DISPLAY_LINE_PADDING,
     "Push2 display line must be exactly 2048 bytes"
 );
+const _: () = assert!(
+    PUSH2_DISPLAY_FRAME_BYTES.is_multiple_of(PUSH2_DISPLAY_TRANSFER_CHUNK),
+    "Push2 frames must divide into whole transfer chunks; a short final chunk \
+     would be zero-padded up to the chunk size and desync the panel"
+);
 
-const fn push2_display_line_padding() -> [u8; PUSH2_DISPLAY_LINE_PADDING] {
-    let mut padding = [0; PUSH2_DISPLAY_LINE_PADDING];
-    let mut index = 0;
-    while index < PUSH2_DISPLAY_LINE_PADDING {
-        padding[index] = PUSH2_DISPLAY_XOR_MASK[index & 3];
-        index += 1;
+/// Framing stage: fixed 16 KiB bulk chunks with no per-chunk header.
+///
+/// The frame's magic header is one command ahead of the chunk stream, not a
+/// per-packet prefix, so the layout writes no header of its own.
+struct Push2DisplayLayout;
+
+impl DisplayChunkLayout for Push2DisplayLayout {
+    fn packet_len(&self) -> usize {
+        PUSH2_DISPLAY_TRANSFER_CHUNK
     }
-    padding
+
+    fn max_payload(&self) -> usize {
+        PUSH2_DISPLAY_TRANSFER_CHUNK
+    }
+
+    fn payload_offset(&self) -> usize {
+        0
+    }
+
+    fn write_header(&self, _packet: &mut [u8], _ctx: &ChunkContext<'_>) {}
+
+    fn command_policy(&self, _ctx: &ChunkContext<'_>) -> ChunkCommandPolicy {
+        ChunkCommandPolicy::fire_and_forget(TransferType::Bulk)
+    }
+
+    fn max_chunks(&self) -> u32 {
+        // The panel counts chunks itself; nothing on the wire numbers them.
+        u32::MAX
+    }
 }
 
 #[derive(Default)]
 pub(super) struct Push2DisplayEncoder {
     cached_jpeg: Vec<u8>,
     rgb_buffer: Vec<u8>,
+    frame_buffer: Vec<u8>,
     turbojpeg: Option<TurboJpegDecompressor>,
 }
 
@@ -77,6 +115,7 @@ impl Push2DisplayEncoder {
             jpeg_data,
             commands,
             &mut self.rgb_buffer,
+            &mut self.frame_buffer,
             &mut self.turbojpeg,
         )?;
 
@@ -105,8 +144,7 @@ impl Push2DisplayEncoder {
         }
 
         self.cached_jpeg.clear();
-        build_display_commands(rgb_data, commands);
-        Some(())
+        build_display_commands(rgb_data, &mut self.frame_buffer, commands)
     }
 }
 
@@ -114,11 +152,11 @@ fn encode_display_frame_uncached(
     jpeg_data: &[u8],
     commands: &mut Vec<ProtocolCommand>,
     rgb_buffer: &mut Vec<u8>,
+    frame_buffer: &mut Vec<u8>,
     turbojpeg: &mut Option<TurboJpegDecompressor>,
 ) -> Option<()> {
     if decode_jpeg_into_rgb_buffer(jpeg_data, rgb_buffer, turbojpeg).is_some() {
-        build_display_commands(rgb_buffer.as_slice(), commands);
-        return Some(());
+        return build_display_commands(rgb_buffer.as_slice(), frame_buffer, commands);
     }
 
     let image = image::load_from_memory_with_format(jpeg_data, ImageFormat::Jpeg).ok()?;
@@ -129,8 +167,7 @@ fn encode_display_frame_uncached(
             .resize_exact(960, 160, FilterType::Nearest)
             .into_rgb8()
     };
-    build_display_commands(rgb.as_raw(), commands);
-    Some(())
+    build_display_commands(rgb.as_raw(), frame_buffer, commands)
 }
 
 fn decode_jpeg_into_rgb_buffer(
@@ -170,7 +207,20 @@ fn decode_jpeg_into_rgb_buffer(
     Some(())
 }
 
-fn build_display_commands(rgb_bytes: &[u8], commands: &mut Vec<ProtocolCommand>) {
+/// Repack one decoded frame and emit the magic header plus its bulk chunks.
+///
+/// `frame_buffer` is the encoder's reusable packed-pixel scratch; the repack
+/// rewrites every byte of it, so nothing survives from the previous frame.
+fn build_display_commands(
+    rgb_bytes: &[u8],
+    frame_buffer: &mut Vec<u8>,
+    commands: &mut Vec<ProtocolCommand>,
+) -> Option<()> {
+    if let Err(error) = PUSH2_DISPLAY_REPACK.repack_rgb888(rgb_bytes, frame_buffer) {
+        tracing::warn!(%error, "skipping Push 2 display frame with unusable geometry");
+        return None;
+    }
+
     let mut buffer = CommandBuffer::new(commands);
     buffer.push_struct(
         &DISPLAY_HEADER,
@@ -179,54 +229,14 @@ fn build_display_commands(rgb_bytes: &[u8], commands: &mut Vec<ProtocolCommand>)
         Duration::ZERO,
         TransferType::Bulk,
     );
-
-    for first_row in (0..PUSH2_DISPLAY_HEIGHT).step_by(PUSH2_DISPLAY_LINES_PER_TRANSFER) {
-        let row_count = PUSH2_DISPLAY_LINES_PER_TRANSFER.min(PUSH2_DISPLAY_HEIGHT - first_row);
-        buffer.push_fill(
-            false,
-            Duration::ZERO,
-            Duration::ZERO,
-            TransferType::Bulk,
-            |chunk| {
-                chunk.resize(row_count * PUSH2_DISPLAY_LINE_SIZE, 0);
-                for local_row in 0..row_count {
-                    encode_display_line_into(
-                        rgb_bytes,
-                        first_row + local_row,
-                        &mut chunk[local_row * PUSH2_DISPLAY_LINE_SIZE
-                            ..(local_row + 1) * PUSH2_DISPLAY_LINE_SIZE],
-                    );
-                }
-            },
-        );
-    }
-
+    let framed = encode_chunked_display_frame_into(&Push2DisplayLayout, frame_buffer, &mut buffer);
     buffer.finish();
-}
 
-fn encode_display_line_into(rgb_bytes: &[u8], row: usize, line: &mut [u8]) {
-    let row_start = row * PUSH2_DISPLAY_WIDTH * 3;
-    let row_end = row_start + PUSH2_DISPLAY_WIDTH * 3;
-    let row_bytes = &rgb_bytes[row_start..row_end];
-    let pixel_bytes = &mut line[..PUSH2_DISPLAY_LINE_PIXELS];
-
-    for (rgb_pair, output_pair) in row_bytes
-        .chunks_exact(6)
-        .zip(pixel_bytes.chunks_exact_mut(4))
-    {
-        output_pair[0] = encode_rgb565_low(rgb_pair[0], rgb_pair[1]) ^ PUSH2_DISPLAY_XOR_MASK[0];
-        output_pair[1] = encode_rgb565_high(rgb_pair[1], rgb_pair[2]) ^ PUSH2_DISPLAY_XOR_MASK[1];
-        output_pair[2] = encode_rgb565_low(rgb_pair[3], rgb_pair[4]) ^ PUSH2_DISPLAY_XOR_MASK[2];
-        output_pair[3] = encode_rgb565_high(rgb_pair[4], rgb_pair[5]) ^ PUSH2_DISPLAY_XOR_MASK[3];
+    if let Err(error) = framed {
+        commands.clear();
+        tracing::warn!(%error, "skipping Push 2 display frame the wire format cannot carry");
+        return None;
     }
 
-    line[PUSH2_DISPLAY_LINE_PIXELS..].copy_from_slice(&PUSH2_DISPLAY_LINE_PADDING_BYTES);
-}
-
-fn encode_rgb565_low(red: u8, green: u8) -> u8 {
-    (red >> 3) | ((green << 3) & 0xE0)
-}
-
-fn encode_rgb565_high(green: u8, blue: u8) -> u8 {
-    (green >> 5) | (blue & 0xF8)
+    Some(())
 }

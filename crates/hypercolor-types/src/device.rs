@@ -41,7 +41,7 @@ impl Default for DeviceId {
 /// Populated during discovery and enriched during connection. Serialized to
 /// TOML for the device registry and transmitted to frontends via the event
 /// bus.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceInfo {
     /// Stable unique identifier.
     pub id: DeviceId,
@@ -208,7 +208,7 @@ impl Default for DeviceUserSettings {
 ///
 /// Each segment maps to a contiguous range of LEDs with a specific topology.
 /// The spatial layout engine positions segments on the canvas independently.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SegmentInfo {
     /// Segment name (e.g., "Channel 1", "ATX Strimer", "Keyboard Backlight").
     pub name: String,
