@@ -865,6 +865,7 @@ fn publish_display_face_route(
             device_id: display_target.device_id,
             blend_mode: display_target.blend_mode,
             opacity: display_target.opacity,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -2841,6 +2842,7 @@ async fn display_preview_survives_display_face_worker_config_restart() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -2912,6 +2914,7 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3001,6 +3004,7 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3109,6 +3113,7 @@ async fn display_output_uses_render_published_face_route_metadata() {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -3266,6 +3271,7 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3372,6 +3378,7 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
             device_id,
             blend_mode: BlendMode::Screen,
             opacity: 1.0,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3461,6 +3468,7 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
             device_id,
             blend_mode: BlendMode::Tint,
             opacity: 1.0,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3550,6 +3558,7 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
             device_id,
             blend_mode: BlendMode::LumaReveal,
             opacity: 1.0,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 

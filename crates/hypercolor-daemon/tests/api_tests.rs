@@ -6203,6 +6203,7 @@ async fn pausing_output_darkens_display_zones_without_an_active_effect() {
             device_id: DeviceId::new(),
             blend_mode: BlendMode::Alpha,
             opacity: 1.0,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );

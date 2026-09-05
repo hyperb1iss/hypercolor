@@ -208,11 +208,18 @@ pub async fn set_display_face(
     };
 
     let composition_explicit = body.blend_mode.is_some() || body.opacity.is_some();
+    // A face change does not move the screen: an omitted rotation keeps the
+    // one stored with the display.
+    let rotation = match body.rotation {
+        Some(rotation) => rotation,
+        None => state.domains.display.default_face_rotation(device_id).await,
+    };
     // Without an explicit composition the face blends over the live effect
     // instead of replacing it.
     let display_target = normalize_display_face_target(DisplayFaceTarget {
         blend_mode: body.blend_mode.unwrap_or(BlendMode::Alpha),
         device_id,
+        rotation,
         opacity: body.opacity.unwrap_or(1.0),
     });
 
@@ -293,9 +300,11 @@ pub async fn patch_display_face_composition(
         Err(error) => return error.into_response(),
     };
 
-    if body.blend_mode.is_none() && body.opacity.is_none() {
-        return DomainError::validation("composition payload must include blend_mode or opacity")
-            .into_response();
+    if body.blend_mode.is_none() && body.opacity.is_none() && body.rotation.is_none() {
+        return DomainError::validation(
+            "composition payload must include blend_mode, opacity, or rotation",
+        )
+        .into_response();
     }
 
     let layers = state.domains.display.face_layers(device_id).await;
@@ -303,7 +312,7 @@ pub async fn patch_display_face_composition(
         if let Err(error) = state
             .domains
             .display
-            .patch_default_composition(device_id, body.blend_mode, body.opacity)
+            .patch_default_composition(device_id, body.blend_mode, body.opacity, body.rotation)
             .await
         {
             return error.into_response();
@@ -325,6 +334,7 @@ pub async fn patch_display_face_composition(
             zone_id: zone.id,
             blend_mode: body.blend_mode,
             opacity: body.opacity,
+            rotation: body.rotation,
         },
     )
     .await

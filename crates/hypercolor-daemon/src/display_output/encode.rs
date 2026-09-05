@@ -174,7 +174,7 @@ pub(super) fn encode_face_scene_blend(
         prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
     }
 
-    render_direct_canvas_frame_rgba(face_source, geometry, encode_state, true)?;
+    render_direct_canvas_frame_rgba(face_source, geometry, viewport.rotation, encode_state, true)?;
     SparkleFlinger::blend_face_overlay_rgba(
         &mut encode_state.rgba_buffer,
         &encode_state.scratch_rgba_buffer,
@@ -193,11 +193,12 @@ pub(super) fn encode_face_scene_blend(
 pub(super) fn encode_finalized_canvas_frame(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
+    rotation: f32,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
-    render_direct_canvas_frame_rgba(source, geometry, encode_state, false)?;
+    render_direct_canvas_frame_rgba(source, geometry, rotation, encode_state, false)?;
     finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
@@ -267,12 +268,17 @@ fn render_canvas_frame_rgba(
     Ok(())
 }
 
+/// Draw a frame composed for this display at full size, turned by the
+/// layout's `rotation` so a screen mounted upside down or on its side reads
+/// correctly. Unrotated frames of the right size are copied as they are.
 fn render_direct_canvas_frame_rgba(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
+    rotation: f32,
     encode_state: &mut DisplayEncodeState,
     use_scratch: bool,
 ) -> Result<()> {
+    let rotated = rotation.abs() > f32::EPSILON;
     if geometry.width == 0 || geometry.height == 0 {
         if use_scratch {
             encode_state.scratch_rgba_buffer.clear();
@@ -282,7 +288,7 @@ fn render_direct_canvas_frame_rgba(
         return Ok(());
     }
 
-    if source.width == geometry.width && source.height == geometry.height {
+    if !rotated && source.width == geometry.width && source.height == geometry.height {
         let Some(render_len) = rgba_buffer_len(geometry.width, geometry.height) else {
             if use_scratch {
                 encode_state.scratch_rgba_buffer.clear();
@@ -308,7 +314,7 @@ fn render_direct_canvas_frame_rgba(
         &DisplayViewport {
             position: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5),
             size: hypercolor_types::spatial::NormalizedPosition::new(1.0, 1.0),
-            rotation: 0.0,
+            rotation,
             scale: 1.0,
             edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
         },
@@ -822,6 +828,54 @@ mod tests {
         assert_eq!(
             rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
             [RED_RGB, GREEN_RGB, BLUE_RGB, YELLOW_RGB],
+        );
+    }
+
+    /// A screen mounted upside down carries a half-turn in its layout zone;
+    /// the face must turn with it, not just the scene underlay.
+    #[test]
+    fn display_face_encode_turns_with_the_layout_rotation() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let frame =
+            CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
+        let viewport = DisplayViewport {
+            rotation: std::f32::consts::PI,
+            ..default_viewport()
+        };
+
+        let encoded = encode_face_scene_blend(
+            None,
+            &frame,
+            &viewport,
+            &test_geometry(),
+            1.0,
+            BlendMode::Replace,
+            1.0,
+            DisplayFrameFormat::Rgb,
+            false,
+            &mut state,
+        )
+        .expect("face encode should succeed");
+
+        assert_rgb_corners_close(
+            rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
+            [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
+            8,
+        );
+
+        let encoded = encode_finalized_canvas_frame(
+            &frame,
+            &test_geometry(),
+            std::f32::consts::PI,
+            DisplayFrameFormat::Rgb,
+            false,
+            &mut state,
+        )
+        .expect("canvas encode should succeed");
+        assert_rgb_corners_close(
+            rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
+            [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
+            8,
         );
     }
 

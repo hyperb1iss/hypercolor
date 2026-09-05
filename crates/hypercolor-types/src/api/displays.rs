@@ -8,7 +8,7 @@ use crate::control::ControlValue;
 use crate::display::DisplayDescriptor;
 use crate::effect::EffectMetadata;
 use crate::layer::BlendMode;
-use crate::scene::Zone;
+use crate::scene::{DisplayRotation, Zone};
 
 /// Which assignment layer a face operation targets (spec 69 §3.6).
 ///
@@ -84,6 +84,9 @@ pub struct SetDisplayFaceRequest {
     pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    /// How the screen is mounted; omitted keeps the display's stored rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<DisplayRotation>,
     #[serde(default)]
     pub scope: DisplayFaceScope,
 }
@@ -116,4 +119,7 @@ pub struct UpdateDisplayFaceCompositionRequest {
     pub blend_mode: Option<BlendMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f32>,
+    /// How the screen is mounted; the face turns to match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<DisplayRotation>,
 }

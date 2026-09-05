@@ -599,6 +599,7 @@ async fn run_display_worker(
                     DisplayZoneFrame::Canvas(frame) => encode_finalized_canvas_frame(
                         frame,
                         &geometry,
+                        viewport.rotation,
                         frame_format,
                         include_preview_jpeg,
                         &mut encode_state,

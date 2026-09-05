@@ -28,7 +28,7 @@ use hypercolor_core::spatial::is_display_zone;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::layer::BlendMode;
-use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
+use hypercolor_types::scene::{DisplayFaceTarget, DisplayRotation, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use self::render::display_viewport_signature;
@@ -774,9 +774,22 @@ async fn display_targets(
                 .is_zone_direct()
                 .then_some(default_display_viewport())
         });
-        let Some(viewport) = viewport else {
+        let Some(mut viewport) = viewport else {
             continue;
         };
+        // The layout says where the screen sits on the canvas; the target
+        // says how it is mounted. Both turns apply to everything drawn.
+        if let Some(target) = &display_target {
+            viewport.rotation += target.rotation.radians();
+        }
+        debug!(
+            device_id = %tracked.info.id,
+            face_zone = ?display_face_targets.get(&tracked.info.id).map(|binding| binding.zone_id),
+            mount_rotation = ?display_target.as_ref().map(|target| target.rotation),
+            viewport_rotation = viewport.rotation,
+            face_bindings = display_face_targets.len(),
+            "display target viewport resolved"
+        );
 
         let backend_id = tracked.info.output_backend_id().to_owned();
         targets.push(Arc::new(DisplayTarget {
@@ -846,7 +859,29 @@ fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<
     event_bus.retain_display_zone_output_routes(&active_zone_ids);
 }
 
+/// Pick one face target per device, and carry the device's mounting
+/// rotation onto it whichever zone wins: a screen's default face sets the
+/// rotation on its overlay zone, while the scene's own surface zone for the
+/// same device usually finalizes and takes the binding.
 fn display_face_targets_by_device(
+    targets: HashMap<ZoneId, hypercolor_core::bus::DisplayZoneTarget>,
+) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
+    let mut mount_rotation: HashMap<DeviceId, DisplayRotation> = HashMap::new();
+    for target in targets.values() {
+        if !target.rotation.is_upright() {
+            mount_rotation.insert(target.device_id, target.rotation);
+        }
+    }
+    let mut by_device = display_face_targets_by_zone_preference(targets);
+    for (device_id, rotation) in mount_rotation {
+        if let Some(binding) = by_device.get_mut(&device_id) {
+            binding.target.rotation = rotation;
+        }
+    }
+    by_device
+}
+
+fn display_face_targets_by_zone_preference(
     targets: HashMap<ZoneId, hypercolor_core::bus::DisplayZoneTarget>,
 ) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
     let mut by_device = HashMap::new();
@@ -857,6 +892,7 @@ fn display_face_targets_by_device(
                 device_id: target.device_id,
                 blend_mode: target.blend_mode,
                 opacity: target.opacity,
+                rotation: target.rotation,
             },
             finalized: target.finalized,
         };
@@ -1097,6 +1133,7 @@ mod tests {
                 device_id,
                 blend_mode,
                 opacity: 0.5,
+                rotation: DisplayRotation::default(),
             }),
             finalized_face: false,
             viewport: default_display_viewport(),
@@ -1116,6 +1153,7 @@ mod tests {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
+            rotation: DisplayRotation::default(),
             finalized,
         }
     }
@@ -1373,5 +1411,29 @@ mod tests {
             .expect("device target should resolve");
         assert_eq!(binding.zone_id, newer);
         assert!(binding.finalized);
+    }
+
+    /// The default face's overlay zone carries how the screen is mounted;
+    /// the scene's surface zone for the same device wins the binding but
+    /// must not lose the turn.
+    #[test]
+    fn display_face_target_resolution_keeps_the_mounting_rotation_of_the_losing_zone() {
+        let device_id = fixed_device_id(3);
+        let surface = fixed_zone_id(1);
+        let overlay = fixed_zone_id(2);
+        let mut turned = display_zone_target(device_id, false);
+        turned.rotation = DisplayRotation::Deg180;
+        let targets = std::collections::HashMap::from([
+            (surface, display_zone_target(device_id, true)),
+            (overlay, turned),
+        ]);
+
+        let resolved = display_face_targets_by_device(targets);
+
+        let binding = resolved
+            .get(&device_id)
+            .expect("device target should resolve");
+        assert_eq!(binding.zone_id, surface);
+        assert_eq!(binding.target.rotation, DisplayRotation::Deg180);
     }
 }

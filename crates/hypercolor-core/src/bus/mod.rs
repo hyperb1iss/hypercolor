@@ -31,7 +31,7 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface};
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::{FrameData, HypercolorEvent, SpectrumData};
 use hypercolor_types::layer::BlendMode;
-use hypercolor_types::scene::{DisplayFaceTarget, SceneId, ZoneId};
+use hypercolor_types::scene::{DisplayFaceTarget, DisplayRotation, SceneId, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -469,6 +469,8 @@ pub struct DisplayZoneTarget {
     pub device_id: DeviceId,
     pub blend_mode: BlendMode,
     pub opacity: f32,
+    /// How the screen is mounted; everything drawn turns to match.
+    pub rotation: DisplayRotation,
     pub finalized: bool,
 }
 
@@ -498,6 +500,7 @@ impl From<DisplayFaceTarget> for DisplayZoneTarget {
             device_id: value.device_id,
             blend_mode: value.blend_mode,
             opacity: value.opacity,
+            rotation: value.rotation,
             finalized: false,
         }
     }
@@ -509,6 +512,7 @@ impl From<&DisplayFaceTarget> for DisplayZoneTarget {
             device_id: value.device_id,
             blend_mode: value.blend_mode,
             opacity: value.opacity,
+            rotation: value.rotation,
             finalized: false,
         }
     }

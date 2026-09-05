@@ -172,6 +172,7 @@ async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
                 controls: HashMap::new(),
                 blend_mode: BlendMode::Alpha,
                 opacity: 1.0,
+                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect("display preference should persist");
@@ -928,6 +929,7 @@ async fn publication_conflict_reprepares_inside_the_same_rescan() {
                 controls: HashMap::new(),
                 blend_mode: BlendMode::Replace,
                 opacity: 1.0,
+                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect("concurrent preference should publish");
