@@ -363,8 +363,10 @@ impl Protocol for CorsairLcdProtocol {
                 width: self.width,
                 height: self.height,
                 circular: self.circular,
+                format: DisplayFrameFormat::Jpeg,
             },
-            color_format: DeviceColorFormat::Jpeg,
+            // LED byte order has no meaning for a display segment.
+            color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
         }];
 

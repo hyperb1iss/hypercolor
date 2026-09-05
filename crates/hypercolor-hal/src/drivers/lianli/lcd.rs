@@ -418,8 +418,10 @@ impl Protocol for TlLcdProtocol {
                 width: TL_LCD_RESOLUTION,
                 height: TL_LCD_RESOLUTION,
                 circular: true,
+                format: DisplayFrameFormat::Jpeg,
             },
-            color_format: DeviceColorFormat::Jpeg,
+            // LED byte order has no meaning for a display segment.
+            color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
         }]
     }

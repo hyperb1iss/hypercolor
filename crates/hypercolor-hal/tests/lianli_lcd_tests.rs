@@ -8,9 +8,7 @@ use hypercolor_hal::drivers::lianli::{
     TlLcdMode, TlLcdProtocol,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand};
-use hypercolor_types::device::{
-    DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload,
-};
+use hypercolor_types::device::{DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload};
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(3);
 const STEADY_TIMEOUT: Duration = Duration::from_millis(200);
@@ -375,13 +373,13 @@ fn the_panel_exposes_one_round_400x400_display_zone() {
     assert_eq!(zones.len(), 1);
     assert_eq!(zones[0].name, "Display");
     assert_eq!(zones[0].led_count, 0);
-    assert_eq!(zones[0].color_format, DeviceColorFormat::Jpeg);
     assert!(matches!(
         zones[0].topology,
         DeviceTopologyHint::Display {
             width: 400,
             height: 400,
             circular: true,
+            format: DisplayFrameFormat::Jpeg,
         }
     ));
 

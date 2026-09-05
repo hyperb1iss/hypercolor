@@ -4,7 +4,7 @@ use std::sync::Arc;
 use hypercolor_core::bus::{DisplayZoneOutputRoute, DisplayZoneViewport};
 use hypercolor_core::scene::ScenePlanSnapshot;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::layer::{BindingSource, LayerSource};
 use hypercolor_types::scene::{ColorInterpolation, SceneId, UnassignedBehavior, Zone, ZoneId};
@@ -461,39 +461,16 @@ fn display_zone_output_route_for_device(
     info: &DeviceInfo,
     brightness: f32,
 ) -> Option<DisplayZoneOutputRoute> {
-    let resolution_geometry = info
-        .capabilities
-        .display_resolution
-        .map(|(width, height)| (width, height, false, DisplayFrameFormat::Jpeg));
-    let (width, height, circular, frame_format) =
-        display_target_geometry_for_device(&info.segments).or(resolution_geometry)?;
+    let surface = info.display_surface()?;
 
     Some(DisplayZoneOutputRoute {
         device_id: info.id,
-        width,
-        height,
-        circular,
+        width: surface.width,
+        height: surface.height,
+        circular: surface.circular,
         brightness: brightness.clamp(0.0, 1.0),
-        frame_format,
+        frame_format: surface.format,
         viewport: default_display_zone_viewport(),
-    })
-}
-
-fn display_target_geometry_for_device(
-    segments: &[hypercolor_types::device::SegmentInfo],
-) -> Option<(u32, u32, bool, DisplayFrameFormat)> {
-    segments.iter().find_map(|segment| match segment.topology {
-        DeviceTopologyHint::Display {
-            width,
-            height,
-            circular,
-        } => Some((
-            width,
-            height,
-            circular,
-            DisplayFrameFormat::from_device_color_format(segment.color_format),
-        )),
-        _ => None,
     })
 }
 
@@ -512,10 +489,7 @@ pub(super) fn display_descriptors_for_zones(
                 .get(zone_id)
                 .copied()
                 .unwrap_or(DISPLAY_FACE_DEFAULT_FPS);
-            let pixel_format = match route.frame_format {
-                DisplayFrameFormat::Rgb => DisplayPixelFormat::Rgb,
-                DisplayFrameFormat::Jpeg => DisplayPixelFormat::Yuv420,
-            };
+            let pixel_format = DisplayPixelFormat::from(route.frame_format);
             (
                 *zone_id,
                 DisplayDescriptor::derive(
@@ -885,6 +859,7 @@ mod tests {
                     width: 320,
                     height: 320,
                     circular: true,
+                    format: DisplayFrameFormat::Rgb,
                 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,

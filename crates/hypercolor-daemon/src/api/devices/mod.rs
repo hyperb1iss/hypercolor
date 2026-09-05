@@ -1054,6 +1054,7 @@ fn summarize_segment_topology(topology: &DeviceTopologyHint) -> SegmentTopologyS
             width,
             height,
             circular,
+            ..
         } => SegmentTopologySummary::Display {
             width: *width,
             height: *height,

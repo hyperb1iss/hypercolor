@@ -729,26 +729,15 @@ async fn display_targets(
         if is_simulator && !display_preview_subscribers.contains(&tracked.info.id) {
             continue;
         }
-        let Some((geometry, frame_format)) =
-            display_target_geometry_for_device(&tracked.info.segments).or_else(|| {
-                tracked
-                    .info
-                    .capabilities
-                    .display_resolution
-                    .map(|(width, height)| {
-                        (
-                            DisplayGeometry {
-                                width,
-                                height,
-                                circular: false,
-                            },
-                            DisplayFrameFormat::Jpeg,
-                        )
-                    })
-            })
-        else {
+        let Some(surface) = tracked.info.display_surface() else {
             continue;
         };
+        let geometry = DisplayGeometry {
+            width: surface.width,
+            height: surface.height,
+            circular: surface.circular,
+        };
+        let frame_format = surface.format;
         let has_non_display_led_segments = tracked.info.segments.iter().any(|segment| {
             segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
         });
@@ -898,26 +887,6 @@ fn display_face_target_binding_preferred(
 ) -> bool {
     (candidate.finalized && !current.finalized)
         || (candidate.finalized == current.finalized && candidate.zone_id.0 > current.zone_id.0)
-}
-
-fn display_target_geometry_for_device(
-    segments: &[hypercolor_types::device::SegmentInfo],
-) -> Option<(DisplayGeometry, DisplayFrameFormat)> {
-    segments.iter().find_map(|segment| match segment.topology {
-        DeviceTopologyHint::Display {
-            width,
-            height,
-            circular,
-        } => Some((
-            DisplayGeometry {
-                width,
-                height,
-                circular,
-            },
-            DisplayFrameFormat::from_device_color_format(segment.color_format),
-        )),
-        _ => None,
-    })
 }
 
 fn display_viewport_for_device(

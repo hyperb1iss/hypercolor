@@ -14,7 +14,7 @@ use hypercolor_types::api::displays::{
     DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone};
@@ -654,20 +654,7 @@ pub(crate) fn display_descriptor_for_device(
     info: &DeviceInfo,
     target_fps: u32,
 ) -> Option<DisplayDescriptor> {
-    let surface = display_surface_info(info)?;
-    let pixel_format = info
-        .segments
-        .iter()
-        .find_map(|segment| match segment.topology {
-            DeviceTopologyHint::Display { .. } => Some(
-                DisplayFrameFormat::from_device_color_format(segment.color_format),
-            ),
-            _ => None,
-        })
-        .map_or(DisplayPixelFormat::Yuv420, |format| match format {
-            DisplayFrameFormat::Rgb => DisplayPixelFormat::Rgb,
-            DisplayFrameFormat::Jpeg => DisplayPixelFormat::Yuv420,
-        });
+    let surface = info.display_surface()?;
 
     Some(DisplayDescriptor::derive(
         surface.width,
@@ -675,6 +662,6 @@ pub(crate) fn display_descriptor_for_device(
         surface.circular,
         None,
         target_fps,
-        pixel_format,
+        DisplayPixelFormat::from(surface.format),
     ))
 }

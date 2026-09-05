@@ -11,7 +11,7 @@ use hypercolor_hal::protocol::{
 use hypercolor_hal::registry::{TransportLifecycleHints, UsbTransportFuture, UsbTransportKind};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint,
-    DisplayFramePayload, SegmentInfo,
+    DisplayFrameFormat, DisplayFramePayload, SegmentInfo,
 };
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::time::timeout;
@@ -42,6 +42,22 @@ fn background_driver_transport() -> TransportType {
             },
             open: unreachable_test_transport,
         },
+    }
+}
+
+/// A 320x320 JPEG display segment, the shape the display gate keys on.
+fn test_display_segment() -> SegmentInfo {
+    SegmentInfo {
+        name: "Display".to_owned(),
+        led_count: 0,
+        topology: DeviceTopologyHint::Display {
+            width: 320,
+            height: 320,
+            circular: true,
+            format: DisplayFrameFormat::Jpeg,
+        },
+        color_format: hypercolor_types::device::DeviceColorFormat::Rgb,
+        layout_hint: None,
     }
 }
 
@@ -779,7 +795,8 @@ fn backend_with_stored_actor_error(device_id: DeviceId, error: DeviceError) -> U
     let backend = UsbBackend::new();
     let mut info = temporary_control_test_device(true, 1);
     info.id = device_id;
-    info.capabilities.has_display = true;
+    info.segments.push(test_display_segment());
+    info.sync_display_capabilities();
     info.capabilities.supports_brightness = true;
     let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
     let (frame_tx, _frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
@@ -831,7 +848,8 @@ fn backend_with_display_actor(
     let backend = Arc::new(UsbBackend::new());
     let mut info = temporary_control_test_device(true, 1);
     info.id = device_id;
-    info.capabilities.has_display = true;
+    info.segments.push(test_display_segment());
+    info.sync_display_capabilities();
     let protocol: Arc<dyn Protocol> = Arc::new(ParallelFairnessProtocol);
     let actor_transport: Arc<dyn Transport> = transport;
     let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);

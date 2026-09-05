@@ -23,7 +23,8 @@ use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
-    DeviceTopologyHint, ErrorRecoverability, OwnedDisplayFramePayload, SegmentInfo,
+    DeviceTopologyHint, DisplayFrameFormat, ErrorRecoverability, OwnedDisplayFramePayload,
+    SegmentInfo,
 };
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
@@ -568,7 +569,7 @@ fn display_device_info(
         width,
         height,
         circular,
-        DeviceColorFormat::Jpeg,
+        DisplayFrameFormat::Jpeg,
         30,
     )
 }
@@ -601,7 +602,7 @@ fn display_device_info_with_max_fps(
         width,
         height,
         circular,
-        DeviceColorFormat::Jpeg,
+        DisplayFrameFormat::Jpeg,
         max_fps,
     )
 }
@@ -610,17 +611,9 @@ fn display_device_info_with_format(
     device_id: DeviceId,
     width: u32,
     height: u32,
-    color_format: DeviceColorFormat,
+    format: DisplayFrameFormat,
 ) -> DeviceInfo {
-    display_device_info_with_format_and_max_fps(
-        device_id,
-        true,
-        width,
-        height,
-        false,
-        color_format,
-        30,
-    )
+    display_device_info_with_format_and_max_fps(device_id, true, width, height, false, format, 30)
 }
 
 fn display_device_info_with_format_and_max_fps(
@@ -629,7 +622,7 @@ fn display_device_info_with_format_and_max_fps(
     width: u32,
     height: u32,
     circular: bool,
-    color_format: DeviceColorFormat,
+    format: DisplayFrameFormat,
     max_fps: u32,
 ) -> DeviceInfo {
     let segments = if has_display {
@@ -640,8 +633,9 @@ fn display_device_info_with_format_and_max_fps(
                 width,
                 height,
                 circular,
+                format,
             },
-            color_format,
+            color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
         }]
     } else {
@@ -992,7 +986,7 @@ async fn wait_for_scene_canvas_receiver_count(event_bus: &HypercolorBus, expecte
     .expect("authoritative scene canvas receiver should appear within timeout");
 }
 
-async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat) -> Duration {
+async fn scene_display_write_cadence_for_format(format: DisplayFrameFormat) -> Duration {
     let _guard = display_output_test_guard().await;
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
@@ -1020,13 +1014,7 @@ async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat)
 
     let tracked_id = device_registry
         .add(display_device_info_with_format_and_max_fps(
-            device_id,
-            true,
-            320,
-            200,
-            false,
-            color_format,
-            60,
+            device_id, true, 320, 200, false, format, 60,
         ))
         .await;
     assert_eq!(tracked_id, device_id);
@@ -1101,7 +1089,7 @@ async fn scene_display_write_cadence_for_format(color_format: DeviceColorFormat)
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scene_raw_rgb_display_output_uses_30_fps_cadence_on_60_fps_devices() {
-    let cadence = scene_display_write_cadence_for_format(DeviceColorFormat::Rgb).await;
+    let cadence = scene_display_write_cadence_for_format(DisplayFrameFormat::Rgb).await;
 
     assert!(
         cadence >= Duration::from_millis(24) && cadence <= Duration::from_millis(55),
@@ -1111,7 +1099,7 @@ async fn scene_raw_rgb_display_output_uses_30_fps_cadence_on_60_fps_devices() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scene_jpeg_display_output_remains_capped_at_15_fps_on_60_fps_devices() {
-    let cadence = scene_display_write_cadence_for_format(DeviceColorFormat::Jpeg).await;
+    let cadence = scene_display_write_cadence_for_format(DisplayFrameFormat::Jpeg).await;
 
     assert!(
         cadence >= Duration::from_millis(55),
@@ -1149,8 +1137,9 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
                     width,
                     height,
                     circular: false,
+                    format: DisplayFrameFormat::Jpeg,
                 },
-                color_format: DeviceColorFormat::Jpeg,
+                color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
         ],
@@ -1935,7 +1924,7 @@ async fn automatic_display_output_sends_raw_rgb_for_rgb_display_zones() {
             device_id,
             320,
             200,
-            DeviceColorFormat::Rgb,
+            DisplayFrameFormat::Rgb,
         ))
         .await;
     assert_eq!(tracked_id, device_id);
@@ -2006,7 +1995,7 @@ async fn rgb_display_preview_subscriber_stays_attached_without_worker_restart() 
             device_id,
             320,
             200,
-            DeviceColorFormat::Rgb,
+            DisplayFrameFormat::Rgb,
         ))
         .await;
     assert_eq!(tracked_id, device_id);
