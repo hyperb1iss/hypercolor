@@ -107,6 +107,11 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0cf2", MODE="0660
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04fc", ATTRS{idProduct}=="7393", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="04fc", ATTR{idProduct}=="7393", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# Wireless LCD receivers (TL 0006, SL V3 0005). Scoped to the products: 1cbe
+# is the Luminary Micro / TI vendor ID and covers unrelated dev boards.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="0006", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="0005", MODE="0660", GROUP="users", TAG+="uaccess"
+
 # ─── Ableton ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2982", MODE="0660", GROUP="users", TAG+="uaccess"
 

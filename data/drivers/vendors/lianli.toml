@@ -94,6 +94,35 @@ driver = "lianli"
 transport = "usb_hid"
 notes = "400x400 round panel. JPEG streaming in 512-byte packets; every unit reports serial TL_LCDV0.1, so identity keys on the USB port path."
 
+[[devices]]
+pid = 0x8040
+name = "L-Wireless Controller"
+type = "fan_controller"
+status = "supported"
+driver = "lianli"
+transport = "usb_bulk"
+notes = "V1 2.4GHz TX (SLV3TX) paired with its 0x8041 RX sibling behind the controller's internal hub. Discovers bound TL/SL wireless fan clusters and streams per-LED RGB over RF; 26 LEDs per TL fan, up to 4 fans per cluster."
+
+[[devices]]
+pid = 0x0006
+vid = 0x1CBE
+name = "Uni Fan TL Wireless LCD"
+type = "lcd"
+status = "supported"
+driver = "lianli"
+transport = "usb_bulk"
+notes = "One bulk receiver per wireless LCD fan over its 9-pin USB cable. 400x400 round panel; DES-wrapped 512-byte headers and a fixed 102400-byte frame write (101888 bytes of JPEG)."
+
+[[devices]]
+pid = 0x0005
+vid = 0x1CBE
+name = "Uni Fan SL Wireless LCD"
+type = "lcd"
+status = "supported"
+driver = "lianli"
+transport = "usb_bulk"
+notes = "SL V3 wireless LCD receiver; same protocol as the TL receiver."
+
 # ─── Not Yet Supported ───────────────────────────────────────────────
 
 [[devices]]
