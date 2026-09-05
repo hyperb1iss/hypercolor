@@ -104,8 +104,8 @@ firmware-looped RF animations as an effect-delivery optimization.
 |---|---|---|---|---|---|
 | Uni Hub TL (fan/RGB, wired) | `0x0416` | `0x7372` | HID | `UsbHidApi`, usage page `0xFF1B` | Already supported (spec 19 §6). Product string carries firmware: `TL_Series_ControllerV0.62` |
 | **Uni Fan TL LCD panel (wired)** | `0x04FC` | `0x7393` | HID | `UsbHidApi`, report ID `0x02` | One USB device **per LCD fan**. Ships non-unique serial `TL_LCDV0.1` |
-| L-Wireless TX dongle V1 | `0x0416` | `0x8040` | vendor (`ff-00-00`) | `UsbBulk` | Product string carries firmware (`SLV3TX_V1.6`) |
-| L-Wireless RX dongle V1 | `0x0416` | `0x8041` | vendor | — | Radio's other half; not a protocol device |
+| L-Wireless TX dongle V1 | `0x0416` | `0x8040` | vendor (`ff-00-00`) | `DriverUsb` (bulk + RX companion) | Product string carries firmware (`SLV3TX_V1.6`); iSerial absent, so identity keys on the USB path. Both halves sit behind the controller's internal `1A86:8091` hub |
+| L-Wireless RX dongle V1 | `0x0416` | `0x8041` | vendor (`ff-00-00`) | `UsbBulk` (companion) | The half that answers `GetDev`; opened by the TX's driver-owned transport factory as its companion, never a device of its own (§6.1) |
 | L-Wireless TX dongle V2 | `0x1A86` | `0xE304` | vendor | `UsbBulk` | WCH/QinHeng silicon; 2025 hardware revision; **validation-gated** |
 | L-Wireless RX dongle V2 | `0x1A86` | `0xE305` | vendor | — | |
 | V2 dongle HID companion | `0x1A86` | `0x2107` | HID | HID | Cmd `0x1C` returns the paired group's 6-byte MAC |
@@ -181,7 +181,7 @@ HID cmd `0x1C` → group MAC, matched by shared USB parent hub) is documented in
 | Protocol id | Device | Role | Transport |
 |---|---|---|---|
 | `lianli/tl-lcd` | `0x04FC:0x7393` | wired panel: JPEG display sink | HID output reports, report ID `0x02`, 512B |
-| `lianli/wireless` | dongles (`0x0416:0x8040`; V2 gated) | fan discovery + per-LED RGB over RF | USB bulk, 64B packets |
+| `lianli/wireless` | dongles (`0x0416:0x8040`; V2 gated) | fan discovery + per-LED RGB over RF | USB bulk, 64B packets, TX primary + RX companion (`TransferType::Companion`) |
 | `lianli/wireless-lcd` | `0x1CBE:0x0005/0x0006` | wireless panel: DES-wrapped JPEG display sink | USB bulk, 512B header + payload |
 
 All three ids share the `lianli` prefix so they stay inside the existing
@@ -569,9 +569,18 @@ mechanism (measured, not preemptively nerfed).
 
 ## 6. Wireless RF Dongle Protocol
 
-The dongle tunnels RF frames over USB bulk. All fan discovery, PWM, RGB, and
-sensor traffic rides this path. Confirmed on hardware for TL V2/SL V3; RGB
-framing verified against upstream source (`wireless/rgb.rs`).
+The controller tunnels RF frames over USB bulk. It is two USB functions
+behind one internal hub: the **TX** (`0x8040`) takes RF envelope slices and
+answers the MAC query; the **RX** (`0x8041`) answers the `GetDev` device
+table poll. The TX answers *every* command with its own status packet
+(command echo, its MAC, a running counter, its firmware), so discovery must
+go to the RX. Verified on hardware 2026-09-04 (V1, `SLV3TX_V1.6`), which is
+also where the earlier draft's "RX is not a protocol device" was found
+wrong. In the HAL the TX descriptor's driver-owned transport factory opens
+the RX sibling (same parent port chain) and pairs them as a
+`CompanionTransport`; the protocol tags RX commands
+`TransferType::Companion`. RGB framing verified against upstream source
+(`wireless/rgb.rs`).
 
 ### 6.1 USB layer
 
@@ -607,8 +616,10 @@ Precomposed control frames (zero-padded to 64): `11 08 00 00` TX reset,
 | 14–17 | 4 | command-specific | | rx_type/channel/slot for PWM & bind; effect index for RGB |
 | 18+ | | payload | | command-specific (§6.4, §6.7) |
 
-The four USB chunks of one RF buffer are paced **2 ms apart** (`post_delay`
-on each chunk command; the encoder owns this pacing, not the caller).
+The four USB chunks of one RF buffer are paced **1 ms apart** (`post_delay`
+on each chunk command; the encoder owns this pacing, not the caller). The
+reference driver ships 1 ms between slices; 2 ms is what its RGB path's
+inter-envelope header repeat uses.
 
 ### 6.3 RF sub-commands
 
@@ -636,16 +647,18 @@ Hypercolor: L-Connect on any machine can rebind.
 
 ### 6.5 Discovery: GetDev and the 42-byte device record
 
-Poll by writing `{0x10, pages}` (pages = ceil(known devices / 10), clamped
-1–2) and reading one logical bulk response. A full 12-record reply is
-4 + 12 × 42 = **508 bytes**, but the dongle's bulk endpoint has a 64-byte
-max packet size and the bulk transport sizes a default receive to exactly
-one packet — so the GetDev command **must** set `response_len` (capacity
-1024 covers every reply) and rely on the §4.5 completion rule: short packet,
-capacity, or inter-packet gap. Replies are pinned by tests (§12) at two
-records (88 bytes = 4 + 2 × 42, short-packet terminated), **six records
-(256 bytes — an exact packet-boundary reply, gap-terminated)**, and twelve
-records (508 bytes).
+Poll the **RX** by writing `{0x10, pages}` (pages = ceil(known devices /
+10), clamped 1–2; v1 always polls 2) and reading one logical bulk response.
+Observed on hardware: the reply is **page-sized, not record-sized**: 448
+bytes for one page and 896 for two, exact multiples of the 64-byte packet
+with no short packet, so the read ends on the inter-packet gap (~25–30 ms
+total). The GetDev command therefore sets a response capacity of 1024 and
+relies on the §4.5 completion rule (short packet, capacity, or gap).
+
+The parser must not clamp the count byte: a TX status packet echoing the
+poll (`10 a0 71 ae …`) would read as 160 devices. A count above 12 is a
+malformed reply, and the controller's own MAC at bytes 1–6 is the status
+packet, which the protocol ignores and keeps its last table.
 
 Response layout:
 
@@ -896,7 +909,7 @@ All registered in `LIANLI_DESCRIPTORS` with `DeviceFamily::new_static
 | Descriptor | Transport | Protocol binding | Notes |
 |---|---|---|---|
 | `0x04FC:0x7393` "Uni Fan TL LCD" | `TransportIntent::Hid` per §5.1, resolved via `resolve_current_transport` | `lianli/tl-lcd` | `serial_quirk: PlaceholderValues(["TL_LCDV0.1"])` |
-| `0x0416:0x8040` "L-Wireless Controller" | `TransportType::UsbBulk { interface: 0, report_id: 0 }` | `lianli/wireless` | bulk endpoints auto-discovered from the interface descriptor (observed `0x01`/`0x81`) |
+| `0x0416:0x8040` "L-Wireless Controller" | `TransportType::DriverUsb` (factory opens TX bulk + RX `0x8041` companion under the same hub) | `lianli/wireless` | bulk endpoints auto-discovered on both halves (observed `0x01`/`0x81`) |
 | `0x1CBE:0x0006` "Uni Fan TL Wireless LCD" | `UsbBulk { interface: 0, report_id: 0 }` | `lianli/wireless-lcd` | serial quirk pending hardware observation (§11.7) |
 | `0x1CBE:0x0005` "Uni Fan SL Wireless LCD" | `UsbBulk { interface: 0, report_id: 0 }` | `lianli/wireless-lcd` | |
 
@@ -923,14 +936,22 @@ driver module.
 
 ### 9.4 Cross-cutting protocol changes
 
-- `ProtocolCommand` gains `response_count: u8` (default 1),
-  `response_timeout: Option<Duration>`, and `response_len: Option<usize>`
-  (§4.5), with the actor read loop, per-command timeout override, and
-  bulk multi-packet logical reads to match. The wired TL hub's `0xA6`
-  adopts `response_count: 2` plus the first-report-wins parse fix.
+- `ProtocolCommand.response: ResponsePlan { count, timeout, capacity,
+  tolerance }` (§4.5), with the actor read loop, per-command timeout
+  override, and bulk multi-packet logical reads to match.
+  `ResponseTolerance::Optional` completes a command whose reply never
+  arrives (the wireless LCD receiver's status packets, the TL hub's second
+  `0xA6` report). `ChunkCommandPolicy` carries a plan the display engines
+  apply per chunk. The wired TL hub's `0xA6` adopts `count: 2` plus the
+  first-report-wins parse fix.
+- `TransferType::Companion` and `transport::companion::CompanionTransport`
+  for devices made of two USB functions (§6.1).
 - `DeviceDescriptor.serial_quirk: Option<SerialQuirk>` consulted by the USB
   scanner (§5.7, §10).
-- Optional `Protocol::encode_display_setting` (§4.4).
+- The display seam is one hook, `Protocol::encode_display_payload_into ->
+  Result<(), DisplayEncodeError>`; the JPEG-only `encode_display_frame`
+  pair and the §4.4 settings hook were removed in review (no caller; the
+  daemon owns brightness, rotation, and frame rate).
 - New crate deps: `des`, `cbc` (RustCrypto; `cargo deny` review).
 
 ### 9.5 Wire structs
@@ -948,7 +969,7 @@ mix: wired LCD counters and RF sizes are **BE**, the DES header timestamp is
 Two additive daemon changes (the pipeline itself — workers, lanes, faces,
 previews, simulator — is untouched):
 
-- **Encoded-frame size budget.** `DeviceCapabilities` gains
+- **Encoded-frame size budget.** `DeviceFeatures` gains
   `max_display_frame_len: Option<usize>` (the wireless receiver sets
   101,888; other displays leave it `None`). `display_output`'s encode step
   checks the budget after compression; on overflow it re-encodes with
@@ -1036,7 +1057,14 @@ Registration and data surfaces:
    protocol construction; none exists (`ProtocolFactory` is
    configuration-free). Design that bridge as its own small spec when the
    first real consumer lands; nothing in v1 depends on it.
-10. **DES/`slv3tuzx` in open source.** The key is already public in multiple
+10. **Hardware findings, 2026-09-04 (V1 controller, no fans bound).**
+    Master query answers on channel 8 first try (MAC `a0:71:ae:72:ab:3c`,
+    firmware `0x0010`). GetDev lives on the RX and answers page-sized
+    (§6.5). Bytes 7–10 of the TX status packet are a running counter that
+    froze once video mode was entered. Everything below needs powered
+    fans: real GetDev records, the live RGB tick rate (§11.4), the
+    clock-blob tolerance (§11.3), receiver serial uniqueness (§11.7).
+11. **DES/`slv3tuzx` in open source.** The key is already public in multiple
     repos and in every L-Connect install; shipping it is documentation of an
     interoperability fact, not a secret. Noting for license/audit review.
 
@@ -1168,3 +1196,18 @@ All hardware-free, in `crates/hypercolor-hal/tests/` unless noted:
   hold-steady keepalive policy; staged acceptance criteria; wire tables
   normalized to house format; corrected wired-LCD init/mode facts and
   response layouts from upstream source.
+
+### Round 6 (2026-09-04, implementation review, PRs #238/#239 and wave 3)
+
+Four parallel review lanes (abstraction fitness, many-panel scale, dead and
+duplicate code, plumbing correctness) plus a hardware probe of the V1
+controller. Landed: `ResponsePlan` with a tolerance; one display hook with
+an error channel; the settings hook, the JPEG-only hook pair, and the
+backend's JPEG-only write pair deleted; the display segment made the single
+source of display truth (`DisplaySurface`, `DeviceColorFormat::Jpeg` gone,
+capability fields derived at adoption); the companion transport seam; the
+RX-side GetDev correction above. Deferred with sizing: per-transport IO
+threads and one blocking call per display frame (wired multi-panel
+throughput), encode/transport pipelining, content-shared face sessions,
+macOS/Windows HID identity for identical-serial panels, command-aware
+`parse_response` for acked uploads, wider pixel repack.
