@@ -59,7 +59,11 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
         };
         displays.push(DisplaySummary {
             id: tracked.info.id.to_string(),
-            name: tracked.info.name.clone(),
+            name: tracked
+                .user_settings
+                .name
+                .clone()
+                .unwrap_or_else(|| tracked.info.name.clone()),
             vendor: tracked.info.vendor.clone(),
             family: tracked.info.family.to_string(),
             width: surface.width,
@@ -69,8 +73,36 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
         });
     }
 
+    disambiguate_display_names(&state, &mut displays).await;
     displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     envelope::ok(displays)
+}
+
+/// A stack of identical panels ships identical names, so a name shared by
+/// more than one display gets the USB port it hangs off, which is the one
+/// fact that tells the units apart.
+async fn disambiguate_display_names(state: &AppState, displays: &mut [DisplaySummary]) {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for display in displays.iter() {
+        *counts.entry(display.name.as_str()).or_default() += 1;
+    }
+    let shared: Vec<usize> = displays
+        .iter()
+        .enumerate()
+        .filter(|(_, display)| counts.get(display.name.as_str()).copied().unwrap_or(0) > 1)
+        .map(|(index, _)| index)
+        .collect();
+    for index in shared {
+        let Ok(device_id) = displays[index].id.parse::<DeviceId>() else {
+            continue;
+        };
+        let Some(metadata) = state.device_registry.metadata_for_id(&device_id).await else {
+            continue;
+        };
+        if let Some(path) = metadata.get("usb_path") {
+            displays[index].name = format!("{} (USB {path})", displays[index].name);
+        }
+    }
 }
 
 /// `GET /api/v1/displays/{id}/frame` — latest composited frame for a display.
