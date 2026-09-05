@@ -18,6 +18,8 @@ pub mod repack;
 
 use std::time::Duration;
 
+use hypercolor_types::device::DisplayFrameFormat;
+
 use crate::protocol::{CommandBuffer, ProtocolCommand, ResponsePlan, TransferType};
 
 pub use keepalive::WireKeepalive;
@@ -123,9 +125,46 @@ pub trait DisplayChunkLayout: Send + Sync {
     fn max_chunks(&self) -> u32;
 }
 
-/// Encoding failures that must never be silently truncated onto the wire.
+/// Why a display payload produced no wire commands.
+///
+/// The actor fails the delivery on any of these; nothing here is ever
+/// silently truncated onto the wire.
 #[derive(Debug, thiserror::Error)]
 pub enum DisplayEncodeError {
+    /// The protocol drives no display, or none that takes this payload format.
+    #[error("protocol cannot take a {format} display payload")]
+    Unsupported {
+        /// Format the caller offered.
+        format: DisplayFrameFormat,
+    },
+
+    /// The payload's pixel geometry is not the panel's.
+    #[error("display payload is {width}x{height}, panel is {expected_width}x{expected_height}")]
+    WrongGeometry {
+        /// Width the panel needs.
+        expected_width: u32,
+
+        /// Height the panel needs.
+        expected_height: u32,
+
+        /// Width the caller supplied.
+        width: u32,
+
+        /// Height the caller supplied.
+        height: u32,
+    },
+
+    /// Compressed payload bytes that no decoder would accept.
+    #[error("display payload could not be decoded: {detail}")]
+    Undecodable {
+        /// What the decoder objected to.
+        detail: String,
+    },
+
+    /// Pixel repacking failed.
+    #[error(transparent)]
+    Repack(#[from] RepackError),
+
     /// Payload does not fit the frame or packet capacity it was given.
     #[error("display payload of {actual} bytes exceeds the {capacity}-byte capacity")]
     PayloadTooLarge {

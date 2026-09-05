@@ -2,11 +2,9 @@
 
 use std::time::Duration;
 
-use hypercolor_types::device::{
-    DeviceCapabilities, DisplayFrameFormat, DisplayFramePayload, ScrollMode, SegmentInfo,
-};
+use hypercolor_types::device::{DeviceCapabilities, DisplayFramePayload, ScrollMode, SegmentInfo};
 
-use crate::display::DisplaySetting;
+use crate::display::{DisplayEncodeError, DisplaySetting};
 
 /// Pure byte-level protocol encoder/decoder.
 ///
@@ -93,35 +91,26 @@ pub trait Protocol: Send + Sync {
         Duration::from_secs(1)
     }
 
-    /// Encode a display frame from JPEG-compressed image data.
-    ///
-    /// Only implemented by protocols that drive pixel displays.
-    #[must_use]
-    fn encode_display_frame(&self, _jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        None
-    }
-
-    /// Encode a display frame into a reusable command buffer.
-    fn encode_display_frame_into(
-        &self,
-        jpeg_data: &[u8],
-        commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        commands.clear();
-        commands.extend(self.encode_display_frame(jpeg_data)?);
-        Some(())
-    }
-
     /// Encode a display payload into a reusable command buffer.
+    ///
+    /// The one display seam. `commands` is rewritten from the start and
+    /// holds exactly this frame's wire commands on success; on failure its
+    /// contents are unspecified and the caller must not send them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DisplayEncodeError::Unsupported`] when the protocol drives no
+    /// display or none that takes `payload.format`, and the engine's own
+    /// errors when the frame cannot be expressed on the wire.
     fn encode_display_payload_into(
         &self,
         payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        match payload.format {
-            DisplayFrameFormat::Jpeg => self.encode_display_frame_into(payload.data, commands),
-            DisplayFrameFormat::Rgb => None,
-        }
+    ) -> Result<(), DisplayEncodeError> {
+        let _ = commands;
+        Err(DisplayEncodeError::Unsupported {
+            format: payload.format,
+        })
     }
 
     /// Encode a hardware display setting, if the protocol supports it.

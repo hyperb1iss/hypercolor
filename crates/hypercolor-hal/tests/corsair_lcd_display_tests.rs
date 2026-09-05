@@ -5,8 +5,29 @@ use hypercolor_hal::drivers::corsair::{
     CorsairLcdProtocol, build_icue_link_lcd_protocol, build_xc7_rgb_elite_lcd_protocol,
     build_xd6_elite_lcd_protocol,
 };
-use hypercolor_hal::protocol::{Protocol, TransferType};
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand, TransferType};
+use hypercolor_types::device::DisplayFramePayload;
 use hypercolor_types::spatial::LedTopology;
+
+/// Drive the one display seam with a JPEG payload, mapping failure to `None`
+/// so the assertions below read as they did against the JPEG-only hook.
+fn display_commands<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+) -> Option<Vec<ProtocolCommand>> {
+    let mut commands = Vec::new();
+    encode_into(protocol, jpeg, &mut commands).map(|()| commands)
+}
+
+fn encode_into<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+    commands: &mut Vec<ProtocolCommand>,
+) -> Option<()> {
+    protocol
+        .encode_display_payload_into(DisplayFramePayload::jpeg(jpeg), commands)
+        .ok()
+}
 
 fn make_standard_lcd() -> CorsairLcdProtocol {
     CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0)
@@ -103,9 +124,7 @@ fn single_chunk_jpeg_produces_one_data_packet_plus_keepalive() {
     let protocol = make_standard_lcd();
     let jpeg = vec![0x55; 100];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     assert_eq!(commands.len(), 2);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
@@ -123,9 +142,7 @@ fn exact_boundary_jpeg_produces_one_chunk() {
     let protocol = make_standard_lcd();
     let jpeg = vec![0x77; LCD_DATA_PER_PACKET];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     let data_commands: Vec<_> = commands
         .iter()
@@ -140,9 +157,7 @@ fn boundary_plus_one_jpeg_produces_two_chunks() {
     let protocol = make_standard_lcd();
     let jpeg = vec![0x77; LCD_DATA_PER_PACKET + 1];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     let data_commands: Vec<_> = commands
         .iter()
@@ -161,9 +176,7 @@ fn multi_chunk_jpeg_has_correct_packet_count_and_sequence_numbers() {
     let jpeg_size = LCD_DATA_PER_PACKET * 5 + 200;
     let jpeg = vec![0xAA; jpeg_size];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     let data_commands: Vec<_> = commands
         .iter()
@@ -193,9 +206,7 @@ fn all_bulk_packets_are_exactly_lcd_packet_size() {
     let protocol = make_standard_lcd();
     let jpeg = vec![0x11; 3000];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     for (index, cmd) in commands.iter().enumerate() {
         if cmd.transfer_type == TransferType::Bulk {
@@ -211,7 +222,7 @@ fn all_bulk_packets_are_exactly_lcd_packet_size() {
 #[test]
 fn empty_jpeg_still_produces_one_packet() {
     let protocol = make_standard_lcd();
-    let commands = protocol.encode_display_frame(&[]);
+    let commands = display_commands(&protocol, &[]);
 
     // div_ceil(0, N) = 0 chunks, so no data packets are emitted
     // but the keepalive still fires, meaning we get just 1 keepalive command
@@ -236,9 +247,7 @@ fn empty_jpeg_still_produces_one_packet() {
 #[test]
 fn minimal_one_byte_jpeg_produces_one_data_packet() {
     let protocol = make_standard_lcd();
-    let commands = protocol
-        .encode_display_frame(&[0xFF])
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &[0xFF]).expect("display encoding should succeed");
 
     let bulk_commands: Vec<_> = commands
         .iter()
@@ -272,9 +281,7 @@ fn encode_display_frame_into_shrinks_oversized_buffer() {
     }
 
     let jpeg = vec![0x33; 50];
-    protocol
-        .encode_display_frame_into(&jpeg, &mut commands)
-        .expect("buffer reuse should succeed");
+    encode_into(&protocol, &jpeg, &mut commands).expect("buffer reuse should succeed");
 
     // 1 data packet + 1 keepalive = 2 commands total
     assert_eq!(
@@ -292,9 +299,7 @@ fn encode_display_frame_into_grows_empty_buffer() {
     let mut commands = Vec::new();
 
     let jpeg = vec![0x99; LCD_DATA_PER_PACKET * 3];
-    protocol
-        .encode_display_frame_into(&jpeg, &mut commands)
-        .expect("buffer growth should succeed");
+    encode_into(&protocol, &jpeg, &mut commands).expect("buffer growth should succeed");
 
     let bulk_count = commands
         .iter()
@@ -310,9 +315,8 @@ fn xc7_display_encoding_uses_zone_byte_0x1f() {
     let protocol = build_xc7_rgb_elite_lcd_protocol();
     let jpeg = vec![0x55; 500];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("XC7 display encoding should succeed");
+    let commands =
+        display_commands(protocol.as_ref(), &jpeg).expect("XC7 display encoding should succeed");
 
     let bulk_cmd = commands
         .iter()
@@ -332,8 +336,7 @@ fn icue_link_lcd_display_encoding_uses_zone_byte_0x40() {
     let protocol = build_icue_link_lcd_protocol();
     let jpeg = vec![0x55; 500];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
+    let commands = display_commands(protocol.as_ref(), &jpeg)
         .expect("iCUE LINK LCD display encoding should succeed");
 
     let bulk_cmd = commands
@@ -348,8 +351,7 @@ fn xd6_lcd_display_encoding_uses_zone_byte_0x01() {
     let protocol = build_xd6_elite_lcd_protocol();
     let jpeg = vec![0x55; 500];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
+    let commands = display_commands(protocol.as_ref(), &jpeg)
         .expect("XD6 LCD display encoding should succeed");
 
     let bulk_cmd = commands
@@ -367,12 +369,10 @@ fn lcd_with_ring_still_encodes_display_frames_identically() {
     let with_ring = make_standard_lcd_with_ring();
     let jpeg = vec![0xCC; 2000];
 
-    let no_ring_cmds = no_ring
-        .encode_display_frame(&jpeg)
-        .expect("no-ring LCD should encode display");
-    let with_ring_cmds = with_ring
-        .encode_display_frame(&jpeg)
-        .expect("ring LCD should encode display");
+    let no_ring_cmds =
+        display_commands(&no_ring, &jpeg).expect("no-ring LCD should encode display");
+    let with_ring_cmds =
+        display_commands(&with_ring, &jpeg).expect("ring LCD should encode display");
 
     let no_ring_bulk: Vec<_> = no_ring_cmds
         .iter()
@@ -417,9 +417,7 @@ fn keepalive_packet_reports_correct_chunk_count_and_data_length() {
     let jpeg_size = LCD_DATA_PER_PACKET * 3 + 100;
     let jpeg = vec![0x88; jpeg_size];
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     let keepalive = commands
         .iter()
@@ -443,9 +441,7 @@ fn second_encode_suppresses_keepalive_within_interval() {
     let protocol = make_standard_lcd();
     let jpeg = vec![0x55; 100];
 
-    let first = protocol
-        .encode_display_frame(&jpeg)
-        .expect("first encode should succeed");
+    let first = display_commands(&protocol, &jpeg).expect("first encode should succeed");
     let keepalive_count_1 = first
         .iter()
         .filter(|c| c.transfer_type == TransferType::HidReport)
@@ -455,9 +451,7 @@ fn second_encode_suppresses_keepalive_within_interval() {
         "first encode should include keepalive"
     );
 
-    let second = protocol
-        .encode_display_frame(&jpeg)
-        .expect("second encode should succeed");
+    let second = display_commands(&protocol, &jpeg).expect("second encode should succeed");
     let keepalive_count_2 = second
         .iter()
         .filter(|c| c.transfer_type == TransferType::HidReport)
@@ -477,9 +471,7 @@ fn jpeg_payload_bytes_are_preserved_across_chunks() {
         .map(|v| u8::try_from(v % 251).unwrap_or_default())
         .collect();
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     let mut reassembled = Vec::new();
     for cmd in &commands {

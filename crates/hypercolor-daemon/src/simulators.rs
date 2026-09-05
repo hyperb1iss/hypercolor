@@ -17,7 +17,7 @@ use hypercolor_driver_api::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
     DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin,
-    FingerprintNamespace, SegmentInfo,
+    DisplayFrameFormat, FingerprintNamespace, OwnedDisplayFramePayload, SegmentInfo,
 };
 
 use crate::discovery::{
@@ -328,22 +328,20 @@ impl DeviceBackend for SimulatedDisplayBackend {
         })
     }
 
-    async fn write_display_frame(
+    async fn write_display_payload_owned(
         &self,
         id: &DeviceId,
-        jpeg_data: &[u8],
+        payload: Arc<OwnedDisplayFramePayload>,
     ) -> Result<(), DeviceError> {
-        self.store_display_frame(id, Arc::new(jpeg_data.to_vec()))
-            .await
-            .map_err(|error| DeviceError::write(id, error))
-    }
-
-    async fn write_display_frame_owned(
-        &self,
-        id: &DeviceId,
-        jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<(), DeviceError> {
-        self.store_display_frame(id, jpeg_data)
+        // The simulator keeps the last frame as the JPEG it serves as a
+        // preview image, so it takes what the daemon's JPEG route sends.
+        if payload.format != DisplayFrameFormat::Jpeg {
+            return Err(DeviceError::Unsupported {
+                backend: SIMULATED_DISPLAY_BACKEND_ID.to_owned(),
+                operation: "RGB display output",
+            });
+        }
+        self.store_display_frame(id, Arc::clone(&payload.data))
             .await
             .map_err(|error| DeviceError::write(id, error))
     }

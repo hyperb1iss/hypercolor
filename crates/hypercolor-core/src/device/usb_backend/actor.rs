@@ -769,9 +769,7 @@ impl UsbBackend {
     ) -> Result<()> {
         if let Err(error) = protocol
             .encode_display_payload_into(frame.payload.as_borrowed(), commands)
-            .with_context(|| {
-                format!("USB protocol does not support display output for device {device_id}")
-            })
+            .with_context(|| format!("USB display encode failed for device {device_id}"))
         {
             if let Some(id) = frame.delivery_id {
                 frame.acknowledge(super::DeviceDeliveryAck::failed(

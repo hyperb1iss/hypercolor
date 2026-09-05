@@ -486,10 +486,6 @@ impl DeviceBackend for RecordingDisplayBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
-        self.record_display_write_data(id, jpeg_data).await
-    }
-
     async fn write_display_payload_owned(
         &self,
         id: &DeviceId,
@@ -543,7 +539,11 @@ impl DeviceBackend for FailingDisplayBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&self, id: &DeviceId, _jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_payload_owned(
+        &self,
+        id: &DeviceId,
+        _payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }

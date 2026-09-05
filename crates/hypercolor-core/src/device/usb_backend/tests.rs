@@ -4,12 +4,14 @@ use std::sync::{LazyLock, Mutex};
 use anyhow::anyhow;
 use async_trait::async_trait;
 use hypercolor_driver_api::DeviceDeliveryStatus;
+use hypercolor_hal::display::DisplayEncodeError;
 use hypercolor_hal::protocol::{
     ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
 use hypercolor_hal::registry::{TransportLifecycleHints, UsbTransportFuture, UsbTransportKind};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    ConnectionType, DeviceCapabilities, DeviceFamily, DeviceOrigin, DeviceTopologyHint,
+    DisplayFramePayload, SegmentInfo,
 };
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 use tokio::time::timeout;
@@ -1762,10 +1764,14 @@ impl Protocol for FairnessProtocol {
         vec![test_command(colors.first().map_or(0x11, |color| color[0]))]
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        Some(vec![test_command(
-            jpeg_data.first().copied().unwrap_or(0xD1),
-        )])
+    fn encode_display_payload_into(
+        &self,
+        payload: DisplayFramePayload<'_>,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> std::result::Result<(), DisplayEncodeError> {
+        commands.clear();
+        commands.push(test_command(payload.data.first().copied().unwrap_or(0xD1)));
+        Ok(())
     }
 
     fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
@@ -1818,11 +1824,17 @@ impl Protocol for ParallelFairnessProtocol {
         Some(vec![test_command(brightness)])
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        Some(vec![test_command_with_transfer(
-            jpeg_data.first().copied().unwrap_or(0xD1),
+    fn encode_display_payload_into(
+        &self,
+        payload: DisplayFramePayload<'_>,
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> std::result::Result<(), DisplayEncodeError> {
+        commands.clear();
+        commands.push(test_command_with_transfer(
+            payload.data.first().copied().unwrap_or(0xD1),
             TransferType::Bulk,
-        )])
+        ));
+        Ok(())
     }
 
     fn parse_response(&self, _data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
