@@ -12,8 +12,10 @@
 //! keepalive tick, which also holds each cluster's observed PWM steady and
 //! broadcasts the 1 Hz clock the fan firmware expects.
 
+pub mod crypto;
 pub mod discovery;
 pub mod frame;
+pub mod lcd;
 pub mod tinyuz;
 pub mod transport;
 
