@@ -212,3 +212,21 @@ fn output_limit_is_enforced() {
         Err(DecodeError::OutputTooLarge(100))
     );
 }
+
+/// A two-byte match at a distance above the long-distance threshold is
+/// only encodable through the same-distance shortcut, which needs a literal
+/// right before it. The greedy matcher must not pick one otherwise.
+#[test]
+fn a_two_byte_repeat_match_past_the_long_distance_threshold_is_not_chosen_blindly() {
+    let mut state = 0x1234_5678_u32;
+    let period: Vec<u8> = (0..3000)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            u8::try_from(state >> 24).expect("top byte")
+        })
+        .collect();
+    let input: Vec<u8> = period.iter().copied().cycle().take(68_537).collect();
+
+    let code = compress(&input, Params::default());
+    assert_eq!(decompress(&code, input.len()).expect("decodes"), input);
+}

@@ -204,7 +204,13 @@ pub fn compress(input: &[u8], params: Params) -> Vec<u8> {
     let mut cursor = 0_usize;
 
     while cursor < input.len() {
-        match best_match(input, cursor, window, writer.dict_pos_back) {
+        match best_match(
+            input,
+            cursor,
+            window,
+            writer.dict_pos_back,
+            writer.have_data_back,
+        ) {
             Some((len, distance)) => {
                 if literal_start < cursor {
                     writer.out_literals(&input[literal_start..cursor]);
@@ -222,11 +228,16 @@ pub fn compress(input: &[u8], params: Params) -> Vec<u8> {
     writer.finish()
 }
 
+/// `have_data_back` says whether the previous item was a literal, which is
+/// the only time the same-distance shortcut is encodable; without it a
+/// distance above the long-distance threshold borrows a length unit and
+/// needs a match of at least three.
 fn best_match(
     input: &[u8],
     cursor: usize,
     window: usize,
     repeat_distance: usize,
+    have_data_back: bool,
 ) -> Option<(usize, usize)> {
     let max_len = (input.len() - cursor).min(MAX_MATCH_LEN);
     if max_len < MIN_MATCH_LEN {
@@ -261,7 +272,12 @@ fn best_match(
 
     if repeat_distance >= 1 && repeat_distance <= max_distance {
         let len = match_len_at(repeat_distance);
-        if len >= MIN_MATCH_LEN && best.is_none_or(|(best_len, _)| len + 1 >= best_len) {
+        let min_len = if !have_data_back && repeat_distance > BIG_POS_FOR_LEN {
+            MIN_MATCH_LEN + 1
+        } else {
+            MIN_MATCH_LEN
+        };
+        if len >= min_len && best.is_none_or(|(best_len, _)| len + 1 >= best_len) {
             return Some((len, repeat_distance));
         }
     }

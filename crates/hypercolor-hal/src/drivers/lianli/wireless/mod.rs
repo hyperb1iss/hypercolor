@@ -71,9 +71,52 @@ const LIVE_INTERVAL_MS: u16 = 5000;
 #[derive(Debug, Default)]
 struct WirelessState {
     master: Option<MasterInfo>,
+    /// The clusters this session drives, in the order its segments were
+    /// published. Frozen once upkeep or streaming begins: a later poll
+    /// refreshes telemetry by MAC but never reorders or grows the routing,
+    /// which would put one cluster's colors on another. Membership changes
+    /// take effect on reconnect (spec 80 section 6.5).
     table: DeviceTable,
+    topology_frozen: bool,
     streaming_started: bool,
     clock_sent: bool,
+}
+
+impl WirelessState {
+    /// Adopt a freshly parsed table: as the routing while topology is still
+    /// open, as telemetry only once it is frozen.
+    fn adopt_table(&mut self, mut table: DeviceTable) {
+        let master = WirelessControllerProtocol::master_mac(self);
+        table
+            .clusters
+            .retain(|cluster| cluster.is_bound_fan_cluster(master));
+
+        if !self.topology_frozen {
+            self.table = table;
+            return;
+        }
+
+        self.table.motherboard_pwm = table.motherboard_pwm;
+        for cluster in &mut self.table.clusters {
+            if let Some(fresh) = table.clusters.iter().find(|fresh| fresh.mac == cluster.mac) {
+                cluster.rpm = fresh.rpm;
+                cluster.pwm = fresh.pwm;
+                cluster.cmd_seq = fresh.cmd_seq;
+                cluster.effect_index = fresh.effect_index;
+                cluster.channel = fresh.channel;
+                cluster.rx_type = fresh.rx_type;
+            }
+        }
+        let known = self.table.clusters.len();
+        let seen = table.clusters.len();
+        if seen != known {
+            debug!(
+                known,
+                seen,
+                "wireless cluster membership changed; routing keeps the connect-time set until reconnect"
+            );
+        }
+    }
 }
 
 /// The L-Wireless controller protocol.
@@ -198,6 +241,21 @@ impl WirelessControllerProtocol {
             .first()
             .map_or(DEFAULT_CHANNEL, |cluster| cluster.channel)
     }
+
+    /// The streaming-mode switch plus one prep packet per driven cluster.
+    ///
+    /// Sent ahead of the first frame and again on every upkeep tick: the
+    /// protocol never learns whether a batch reached the wire, so a
+    /// transient failure on the first frame would otherwise leave the radio
+    /// out of streaming mode for the rest of the session.
+    fn streaming_preamble(state: &WirelessState, commands: &mut Vec<ProtocolCommand>) {
+        let channel = Self::channel(state);
+        commands.push(Self::tx_command(control_packet(&TX_VIDEO_START), false));
+        let clusters = u8::try_from(state.table.clusters.len().max(1)).unwrap_or(u8::MAX);
+        for index in 0..clusters {
+            commands.push(Self::tx_command(stream_prep_packet(index, channel), false));
+        }
+    }
 }
 
 impl Protocol for WirelessControllerProtocol {
@@ -241,21 +299,16 @@ impl Protocol for WirelessControllerProtocol {
     /// a session preceded by the streaming-mode switch.
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        state.topology_frozen = true;
         let master = Self::master_mac(&state);
-        let channel = Self::channel(&state);
         let mut buffer = CommandBuffer::new(commands);
 
         if !state.streaming_started {
-            buffer.push_slice(
-                &control_packet(&TX_VIDEO_START),
-                false,
-                Duration::ZERO,
-                SLICE_PACING,
-                TransferType::Primary,
-            );
-            for index in 0..u8::try_from(state.table.clusters.len().max(1)).unwrap_or(u8::MAX) {
+            let mut preamble = Vec::new();
+            Self::streaming_preamble(&state, &mut preamble);
+            for command in preamble {
                 buffer.push_slice(
-                    &stream_prep_packet(index, channel),
+                    &command.data,
                     false,
                     Duration::ZERO,
                     SLICE_PACING,
@@ -309,13 +362,16 @@ impl Protocol for WirelessControllerProtocol {
         })
     }
 
-    /// The 1 Hz upkeep: refresh the table, hold every cluster at the PWM it
-    /// reported, and broadcast the clock.
+    /// The 1 Hz upkeep: refresh the table, re-arm streaming mode, hold every
+    /// cluster at the PWM it reported, and broadcast the clock.
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        state.topology_frozen = true;
         let master = Self::master_mac(&state);
         let channel = Self::channel(&state);
         let mut commands = vec![Self::get_dev_command(STEADY_TIMEOUT)];
+        Self::streaming_preamble(&state, &mut commands);
+        state.streaming_started = true;
 
         for (index, cluster) in state.table.clusters.iter().enumerate() {
             let slot_index = u8::try_from(index + 1).unwrap_or(u8::MAX);
@@ -361,10 +417,13 @@ impl Protocol for WirelessControllerProtocol {
                         self.state
                             .write()
                             .unwrap_or_else(PoisonError::into_inner)
-                            .table = table;
+                            .adopt_table(table);
                     }
                     Err(DiscoveryError::StatusEcho) => {
                         debug!("controller status packet where a device table was expected");
+                    }
+                    Err(error @ DiscoveryError::Truncated { .. }) => {
+                        debug!(%error, "keeping the last device table");
                     }
                     Err(error) => {
                         return Err(ProtocolError::MalformedResponse {
