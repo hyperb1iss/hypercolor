@@ -1046,7 +1046,9 @@ impl UsbBackend {
                 transport
                     .receive_logical(response_timeout, command.transfer_type, plan.capacity)
                     .await
-            } else if command.response_delay.is_zero() {
+            } else if command.response_delay.is_zero()
+                && plan.tolerance == ResponseTolerance::Required
+            {
                 trace!(
                     protocol = protocol.name(),
                     transport = transport.name(),
@@ -1063,6 +1065,27 @@ impl UsbBackend {
                         command.transfer_type,
                         plan.capacity,
                     )
+                    .await
+            } else if command.response_delay.is_zero() {
+                // An optional reply forgives a quiet device, never a failed
+                // send: the combined send-and-receive folds an OUT timeout
+                // into the same error as an absent reply, so the two steps
+                // stay separate here and only the read is forgiven.
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    attempt = *attempt + 1,
+                    transfer_type = ?command.transfer_type,
+                    "usb send starting with optional response read"
+                );
+                transport
+                    .send_with_type(&command.data, command.transfer_type)
+                    .await
+                    .map_err(map_transport_error)?;
+                transport
+                    .receive_logical(response_timeout, command.transfer_type, plan.capacity)
                     .await
             } else {
                 trace!(

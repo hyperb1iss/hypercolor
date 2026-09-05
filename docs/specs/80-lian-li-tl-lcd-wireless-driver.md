@@ -693,12 +693,18 @@ validation-gated). All TL wireless: 26 LEDs/fan, minimum duty 11%.
 
 **Topology lifetime (v1):** fan membership is captured by GetDev polling
 during connect (the init handshake path, like the wired TL hub) and refreshed
-by the 1 Hz upkeep polling (§6.8), which updates RPM/PWM state and cmd_seq.
-Segment topology, however, is published to the daemon only at
-connect/reconnect — the daemon refreshes protocol-derived segments on
-reconnect, not live. v1 therefore surfaces membership changes (a newly bound
-fan) after a device rescan/reconnect; live topology-change publication is a
-named follow-up, not silently promised.
+by the 1 Hz upkeep polling (§6.8), which updates RPM/PWM state and cmd_seq
+**by MAC against the connect-time cluster set**. The protocol freezes that
+set the moment upkeep or streaming begins: a later poll never reorders or
+grows the routing, because the daemon's segments were published from the
+connect-time order and a reordered table would put one cluster's colors on
+another. Only fan clusters (record type 0) bound to this controller's MAC
+enter the set; receivers bound elsewhere, unbound receivers, and AIO or case
+gear heard on the channel are ignored. A truncated reply (fewer whole records
+than the count byte) keeps the last table. Segment topology is published to
+the daemon only at connect/reconnect, so v1 surfaces membership changes (a
+newly bound fan) after a rescan/reconnect; live topology-change publication
+is a named follow-up, not silently promised.
 
 ### 6.6 Group correlation (future)
 
@@ -756,8 +762,11 @@ occasionally spikes RPM.
    send 0,
 3. emits RF_CLOCK_SYNC at 1 Hz: first an init frame (bytes [14..64] filled
    with the `0x14` sentinel), then frames carrying real date/time at
-   [32..39], zeroed CPU/GPU sensor fields, and per-receiver fan blocks
-   (14 × 12 bytes at [50..218]) reflecting observed state,
+   [32..39], zeroed CPU/GPU sensor fields, and the per-receiver fan blocks
+   (14 × 12 bytes at [50..218]) left zero. The hardware-tested reference
+   sends those blocks zeroed as well (`clock_sync.rs` "defaults for now"),
+   so zero is the validated value; filling them from observed state is a
+   follow-up gated on hardware, not a v1 requirement,
 4. sends nothing after disconnect/shutdown — fans revert to firmware
    defaults, which is the same behavior as L-Connect exiting; documented, not
    hidden.
@@ -1063,7 +1072,10 @@ Registration and data surfaces:
     (§6.5). Bytes 7–10 of the TX status packet are a running counter that
     froze once video mode was entered. Everything below needs powered
     fans: real GetDev records, the live RGB tick rate (§11.4), the
-    clock-blob tolerance (§11.3), receiver serial uniqueness (§11.7).
+    clock-blob tolerance (§11.3), receiver serial uniqueness (§11.7), and
+    whether the TX's per-command status packets, which the RF send path
+    never reads (the reference does not read them either), ever back up
+    the device under sustained streaming.
 11. **DES/`slv3tuzx` in open source.** The key is already public in multiple
     repos and in every L-Connect install; shipping it is documentation of an
     interoperability fact, not a secret. Noting for license/audit review.

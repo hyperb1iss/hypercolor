@@ -467,10 +467,18 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     let commands = protocol.keepalive_commands();
     assert_eq!(commands[0].transfer_type, TransferType::Companion);
     assert_eq!(commands[0].response.capacity, Some(GET_DEV_REPLY_CAPACITY));
-    // Two PWM envelopes and one clock envelope, four packets each.
-    assert_eq!(commands.len(), 1 + 3 * 4);
+    // The poll, the streaming preamble (video start plus one prep packet
+    // per cluster), then two PWM envelopes and one clock envelope at four
+    // packets each.
+    let preamble = 1 + 2;
+    assert_eq!(commands.len(), 1 + preamble + 3 * 4);
+    assert_eq!(
+        &commands[1].data[..4],
+        &TX_VIDEO_START,
+        "streaming is re-armed every tick"
+    );
 
-    let pwm = &commands[1].data;
+    let pwm = &commands[1 + preamble].data;
     assert_eq!(pwm[5], RfSubCommand::Pwm as u8);
     assert_eq!(&pwm[6..12], &[0x11; 6]);
     assert_eq!(
@@ -478,10 +486,10 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
         &[3, 8, 1, 128, 64, 32, 0],
         "observed duty, never invented"
     );
-    let second_pwm = &commands[5].data;
+    let second_pwm = &commands[1 + preamble + 4].data;
     assert_eq!(second_pwm[20], 2, "slot index counts clusters from one");
 
-    let clock = &commands[9].data;
+    let clock = &commands[1 + preamble + 8].data;
     assert_eq!(&clock[..4], &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]);
     assert_eq!(clock[5], RfSubCommand::ClockSync as u8);
     assert!(
@@ -491,7 +499,9 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
 
     let later = protocol.keepalive_commands();
     assert!(
-        later[9].data[18..64].iter().any(|&b| b != 0x14),
+        later[1 + preamble + 8].data[18..64]
+            .iter()
+            .any(|&b| b != 0x14),
         "later ticks send the blob"
     );
 }
@@ -525,5 +535,88 @@ fn the_controller_is_registered_with_a_driver_owned_transport() {
     assert!(
         ProtocolDatabase::lookup(0x0416, 0x8041).is_none(),
         "the RX is the TX's companion, never a device of its own"
+    );
+}
+
+#[test]
+fn only_fan_clusters_bound_to_this_controller_are_driven() {
+    let protocol = WirelessControllerProtocol::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("MAC reply parses");
+    let mut foreign = record([0x33; 6], 0x00, 2, 28);
+    foreign[6..12].copy_from_slice(&[0xEE; 6]);
+    let mut unbound = record([0x44; 6], 0x00, 2, 28);
+    unbound[6..12].copy_from_slice(&[0; 6]);
+    let aio = record([0x55; 6], 10, 1, 0);
+    let ours = record([0x11; 6], 0x00, 3, 28);
+    protocol
+        .parse_response(&table_with(&[foreign, unbound, aio, ours]))
+        .expect("table parses");
+
+    let clusters = protocol.clusters();
+    assert_eq!(
+        clusters.len(),
+        1,
+        "receivers we do not own are not ours to drive"
+    );
+    assert_eq!(clusters[0].mac, [0x11; 6]);
+    assert_eq!(protocol.zones().len(), 3);
+}
+
+#[test]
+fn a_truncated_table_keeps_the_last_good_one() {
+    let protocol = discovered_protocol();
+    assert_eq!(protocol.clusters().len(), 2);
+
+    let mut short = table_with(&[record([0x11; 6], 0x00, 3, 28)]);
+    short[1] = 2;
+    short.truncate(4 + RECORD_LEN + 10);
+    assert_eq!(
+        parse_device_table(&short, Some(MASTER_MAC)),
+        Err(DiscoveryError::Truncated {
+            declared: 2,
+            present: 1
+        })
+    );
+    protocol
+        .parse_response(&short)
+        .expect("a truncated poll is not a session error");
+    assert_eq!(protocol.clusters().len(), 2, "the last table stands");
+}
+
+/// Segments are published from the connect-time order, so a later poll may
+/// refresh what a cluster reports but never move it.
+#[test]
+fn once_streaming_starts_a_new_table_refreshes_telemetry_but_not_routing() {
+    let protocol = discovered_protocol();
+    let _ = protocol.keepalive_commands();
+
+    // The second cluster now reports first, with new duty, and a third
+    // cluster appears.
+    let mut second = record([0x22; 6], 0x00, 2, 27);
+    second[36..40].copy_from_slice(&[200, 201, 0, 0]);
+    let third = record([0x33; 6], 0x00, 1, 28);
+    let first = record([0x11; 6], 0x00, 3, 28);
+    protocol
+        .parse_response(&table_with(&[second, third, first]))
+        .expect("table parses");
+
+    let clusters = protocol.clusters();
+    assert_eq!(
+        clusters.iter().map(|c| c.mac).collect::<Vec<_>>(),
+        vec![[0x11; 6], [0x22; 6]],
+        "routing order is the published order"
+    );
+    assert_eq!(clusters[1].pwm, [200, 201, 0, 0], "telemetry did refresh");
+    assert_eq!(protocol.zones().len(), 5, "no segment appears mid-session");
+
+    // Upkeep already armed streaming, so the frame opens on its first
+    // header envelope rather than the preamble.
+    let frame = protocol.encode_frame(&[[1, 2, 3]; 5 * 26]);
+    assert_eq!(
+        &frame[0].data[6..12],
+        &[0x11; 6],
+        "first colors still go to the first cluster"
     );
 }

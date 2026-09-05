@@ -149,6 +149,9 @@ pub struct FanCluster {
     pub channel: u8,
     /// Radio endpoint slot, 1 to 13.
     pub rx_type: u8,
+    /// Record device type: `0` for a fan cluster; AIO and case gear use
+    /// other values and are not driven by this protocol.
+    pub device_type: u8,
     /// Fans on the chain, 1 to 4.
     pub fan_count: u8,
     /// SL-INF chains that attach on the right wire right to left, so the
@@ -173,6 +176,16 @@ impl FanCluster {
     #[must_use]
     pub fn led_count(&self) -> u32 {
         u32::from(self.fan_count) * u32::from(self.model.leds_per_fan())
+    }
+
+    /// Whether this record is a fan cluster bound to `master`, the only kind
+    /// this protocol drives. Receivers bound elsewhere, unbound receivers,
+    /// and AIO or case gear are visible on the channel but not ours.
+    #[must_use]
+    pub fn is_bound_fan_cluster(&self, master: Mac) -> bool {
+        self.device_type == DEVICE_TYPE_FAN_CLUSTER
+            && self.master_mac == master
+            && self.fan_count > 0
     }
 }
 
@@ -201,6 +214,14 @@ pub enum DiscoveryError {
     /// controller's own MAC; there is no table in it.
     #[error("controller status packet, not a device table")]
     StatusEcho,
+    /// The reply ended before every record it declared.
+    #[error("GetDev reply declares {declared} records but carries {present}")]
+    Truncated {
+        /// Records the count byte promised.
+        declared: u8,
+        /// Whole records actually present.
+        present: usize,
+    },
 }
 
 /// Parse a GetDev reply from the RX.
@@ -240,11 +261,17 @@ pub fn parse_device_table(
         None
     };
 
-    let clusters = reply[TABLE_HEADER_LEN..]
-        .chunks_exact(RECORD_LEN)
-        .take(usize::from(count))
-        .filter_map(parse_record)
-        .collect();
+    let records = reply[TABLE_HEADER_LEN..].chunks_exact(RECORD_LEN);
+    let present = records.len().min(usize::from(count));
+    if present < usize::from(count) {
+        // A short reply (an early inter-packet gap) must not replace a good
+        // table with the clusters that happened to arrive.
+        return Err(DiscoveryError::Truncated {
+            declared: count,
+            present,
+        });
+    }
+    let clusters = records.take(present).filter_map(parse_record).collect();
 
     Ok(DeviceTable {
         clusters,
@@ -295,6 +322,7 @@ fn parse_record(record: &[u8]) -> Option<FanCluster> {
         master_mac,
         channel: record[12],
         rx_type: record[13],
+        device_type: record[18],
         fan_count,
         right_attach,
         fan_types,

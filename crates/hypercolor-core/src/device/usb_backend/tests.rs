@@ -2636,3 +2636,42 @@ async fn a_parse_failure_drains_the_reports_still_queued_for_the_command() {
         "the second report was drained before the failure propagated"
     );
 }
+
+/// Refuses every send with a timeout, standing in for an OUT transfer that
+/// never completes.
+struct SendTimeoutTransport;
+
+#[async_trait]
+impl Transport for SendTimeoutTransport {
+    fn name(&self) -> &'static str {
+        "send-timeout-test"
+    }
+
+    async fn send(&self, _data: &[u8]) -> std::result::Result<(), TransportError> {
+        Err(TransportError::Timeout { timeout_ms: 1 })
+    }
+
+    async fn receive(&self, _timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        Ok(vec![0x01])
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+/// An optional reply forgives a quiet device, not a failed send.
+#[tokio::test]
+async fn an_optional_reply_does_not_forgive_a_send_that_timed_out() {
+    let protocol = ReportRecordingProtocol::new();
+
+    UsbBackend::run_commands(
+        &protocol,
+        &SendTimeoutTransport,
+        &[responding_command(0x65).with_optional_response()],
+    )
+    .await
+    .expect_err("the frame never reached the wire");
+
+    assert!(protocol.seen().is_empty(), "nothing was read as a reply");
+}
