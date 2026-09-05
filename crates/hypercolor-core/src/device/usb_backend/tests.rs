@@ -1987,7 +1987,7 @@ impl RecordingTransport {
         match transfer_type {
             TransferType::Primary => self.primary_send_delay.unwrap_or(self.send_delay),
             TransferType::Bulk => self.bulk_send_delay.unwrap_or(self.send_delay),
-            TransferType::HidReport => self.send_delay,
+            TransferType::HidReport | TransferType::Companion => self.send_delay,
         }
     }
 }

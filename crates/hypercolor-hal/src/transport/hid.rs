@@ -177,6 +177,10 @@ impl Transport for UsbHidTransport {
                 })
                 .await
             }
+            TransferType::Companion => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
             TransferType::HidReport => {
                 let interface = Arc::clone(&self.interface);
                 let interface_number = self.interface_number;
@@ -214,10 +218,12 @@ impl Transport for UsbHidTransport {
                 })
                 .await
             }
-            TransferType::HidReport => Err(TransportError::UnsupportedTransfer {
-                transport: self.name().to_owned(),
-                transfer_type,
-            }),
+            TransferType::HidReport | TransferType::Companion => {
+                Err(TransportError::UnsupportedTransfer {
+                    transport: self.name().to_owned(),
+                    transfer_type,
+                })
+            }
         }
     }
 
@@ -258,6 +264,10 @@ impl Transport for UsbHidTransport {
                 })
                 .await
             }
+            TransferType::Companion => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
             TransferType::HidReport => {
                 let Some(&report_id) = data.first() else {
                     return Err(TransportError::IoError {

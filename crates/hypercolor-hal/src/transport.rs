@@ -16,6 +16,7 @@ use crate::registry::{HidRawReportMode, TransportType};
 pub const DEFAULT_PACKET_GAP_TIMEOUT: Duration = Duration::from_millis(20);
 
 pub mod bulk;
+pub mod companion;
 pub mod control;
 pub mod hid;
 pub mod hidapi;
