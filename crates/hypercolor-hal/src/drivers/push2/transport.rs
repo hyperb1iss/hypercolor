@@ -451,10 +451,12 @@ impl Transport for Push2Transport {
                 })
                 .await
             }
-            TransferType::HidReport => Err(TransportError::UnsupportedTransfer {
-                transport: self.name().to_owned(),
-                transfer_type,
-            }),
+            TransferType::HidReport | TransferType::Companion => {
+                Err(TransportError::UnsupportedTransfer {
+                    transport: self.name().to_owned(),
+                    transfer_type,
+                })
+            }
         }
     }
 
@@ -475,7 +477,7 @@ impl Transport for Push2Transport {
                     .expect("Push 2 catch-all response token should be nonzero");
                 self.midi.receive(timeout, fallback_token).await
             }
-            TransferType::Bulk | TransferType::HidReport => {
+            TransferType::Bulk | TransferType::HidReport | TransferType::Companion => {
                 Err(TransportError::UnsupportedTransfer {
                     transport: self.name().to_owned(),
                     transfer_type,
@@ -519,7 +521,7 @@ impl Transport for Push2Transport {
                     .send_receive(data.to_vec(), response_token, timeout)
                     .await
             }
-            TransferType::Bulk | TransferType::HidReport => {
+            TransferType::Bulk | TransferType::HidReport | TransferType::Companion => {
                 Err(TransportError::UnsupportedTransfer {
                     transport: self.name().to_owned(),
                     transfer_type,

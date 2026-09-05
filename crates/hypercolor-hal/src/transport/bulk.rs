@@ -177,6 +177,10 @@ impl Transport for UsbBulkTransport {
                 })
                 .await
             }
+            TransferType::Companion => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
             TransferType::HidReport => {
                 let interface = Arc::clone(&self.interface);
                 let interface_number = self.interface_number;
@@ -222,6 +226,10 @@ impl Transport for UsbBulkTransport {
                 })
                 .await
             }
+            TransferType::Companion => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
             TransferType::HidReport => {
                 let interface = Arc::clone(&self.interface);
                 let interface_number = self.interface_number;
@@ -302,6 +310,10 @@ impl Transport for UsbBulkTransport {
                 })
                 .await
             }
+            TransferType::Companion => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
             TransferType::HidReport => {
                 let interface = Arc::clone(&self.interface);
                 let interface_number = self.interface_number;
@@ -368,6 +380,10 @@ impl Transport for UsbBulkTransport {
                 })
                 .await
             }
+            TransferType::Companion => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
             TransferType::HidReport => {
                 let interface = Arc::clone(&self.interface);
                 let interface_number = self.interface_number;

@@ -138,6 +138,13 @@ pub enum TransferType {
 
     /// Use HID feature reports over control transfers.
     HidReport,
+
+    /// Use the descriptor's companion device, on that device's default path.
+    ///
+    /// Only a transport built from two USB functions (see
+    /// `transport::companion`) accepts this; every other transport refuses
+    /// it as unsupported.
+    Companion,
 }
 
 /// One transport-ready command produced by a protocol encoder.
