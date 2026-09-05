@@ -362,7 +362,7 @@ fn sanitize_auto_layout_component(raw: &str) -> String {
 mod tests {
     use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-        DeviceOrigin, DeviceTopologyHint, SegmentInfo, SegmentLayoutHint,
+        DeviceOrigin, DeviceTopologyHint, DisplayFrameFormat, SegmentInfo, SegmentLayoutHint,
     };
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout, ZoneShape,
@@ -420,6 +420,7 @@ mod tests {
                     width: 320,
                     height: 320,
                     circular: true,
+                    format: DisplayFrameFormat::Jpeg,
                 },
             ),
         ]);
@@ -450,6 +451,7 @@ mod tests {
                 width: 320,
                 height: 320,
                 circular: true,
+                format: DisplayFrameFormat::Jpeg,
             },
         )]);
         let mut layout = layout();

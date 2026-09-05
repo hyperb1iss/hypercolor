@@ -3,8 +3,9 @@ use std::time::Duration;
 
 use hypercolor_hal::drivers::push2::{Push2Protocol, build_push2_protocol};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
-use hypercolor_types::device::DisplayFramePayload;
-use hypercolor_types::device::{DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload,
+};
 use image::{ColorType, ImageEncoder, RgbImage, codecs::jpeg::JpegEncoder};
 
 /// Drive the one display seam with a JPEG payload, mapping failure to `None`
@@ -473,6 +474,7 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
             width: 960,
             height: 160,
             circular: false,
+            format: DisplayFrameFormat::Rgb,
         }
     );
 

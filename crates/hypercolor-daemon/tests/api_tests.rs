@@ -68,7 +68,7 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
-    DeviceTopologyHint, DriverTransportKind, SegmentInfo,
+    DeviceTopologyHint, DisplayFrameFormat, DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
@@ -3962,6 +3962,7 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
                 width: 320,
                 height: 320,
                 circular: true,
+                format: DisplayFrameFormat::Jpeg,
             },
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,

@@ -19,7 +19,7 @@ use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    SegmentInfo,
+    DisplayFrameFormat, SegmentInfo,
 };
 use hypercolor_types::effect::{
     EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -312,6 +312,7 @@ fn display_device_info(device_id: DeviceId, width: u32, height: u32) -> DeviceIn
                 width,
                 height,
                 circular: false,
+                format: DisplayFrameFormat::Jpeg,
             },
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,

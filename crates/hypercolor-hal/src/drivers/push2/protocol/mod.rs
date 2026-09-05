@@ -416,6 +416,7 @@ impl Protocol for Push2Protocol {
                     width: 960,
                     height: 160,
                     circular: false,
+                    format: DisplayFrameFormat::Rgb,
                 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,

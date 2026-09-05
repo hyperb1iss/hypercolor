@@ -9,8 +9,7 @@ use hypercolor_hal::drivers::corsair::{
     build_xd6_elite_lcd_protocol,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
-use hypercolor_types::device::DeviceTopologyHint;
-use hypercolor_types::device::DisplayFramePayload;
+use hypercolor_types::device::{DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload};
 use hypercolor_types::spatial::LedTopology;
 
 /// Drive the one display seam with a JPEG payload, mapping failure to `None`
@@ -320,6 +319,7 @@ fn lcd_init_sequence_uses_hid_reports_and_reports_display_capabilities() {
             width: 480,
             height: 480,
             circular: true,
+            format: DisplayFrameFormat::Jpeg,
         }
     );
 

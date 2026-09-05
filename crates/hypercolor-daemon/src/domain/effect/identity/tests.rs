@@ -11,7 +11,7 @@ use hypercolor_types::api::scene::ReplaceLayerRequest;
 use hypercolor_types::api::scenes::ReplaceSceneRequest;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, DisplayFrameFormat, SegmentInfo,
 };
 use hypercolor_types::effect::{EffectCategory, EffectId};
 use hypercolor_types::event::HypercolorEvent;
@@ -277,6 +277,7 @@ async fn register_display_device(state: &AppState, device_id: DeviceId) {
                 width: 320,
                 height: 320,
                 circular: false,
+                format: DisplayFrameFormat::Jpeg,
             },
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
