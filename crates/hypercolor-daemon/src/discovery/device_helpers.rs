@@ -343,6 +343,10 @@ pub(crate) async fn desired_connect_behavior(
         return hypercolor_driver_api::DiscoveryConnectBehavior::Deferred;
     }
 
+    if topology_unknown_until_connect(device_info) {
+        return hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect;
+    }
+
     if runtime
         .layout
         .active_layout_targets_enabled_device(runtime, device_id, &layout_device_id)
@@ -352,6 +356,16 @@ pub(crate) async fn desired_connect_behavior(
     } else {
         hypercolor_driver_api::DiscoveryConnectBehavior::Deferred
     }
+}
+
+/// Whether a device has nothing a layout could place yet: no light segment
+/// with LEDs. Hubs and radios learn their topology from the hardware at
+/// connect, and a screen gets its surface zone seeded once it is up, so
+/// waiting for the layout to target such a device would wait forever.
+pub(crate) fn topology_unknown_until_connect(info: &DeviceInfo) -> bool {
+    !info.segments.iter().any(|segment| {
+        segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
+    })
 }
 
 fn map_device_with_zone_segments(
@@ -448,5 +462,76 @@ pub(super) fn device_ref_for_tracked(info: &DeviceInfo) -> DeviceRef {
         name: info.name.clone(),
         origin: info.origin.clone(),
         led_count: info.total_led_count(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceOrigin,
+        SegmentInfo,
+    };
+
+    use super::*;
+
+    fn device(segments: Vec<SegmentInfo>) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "Probe".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::new_static("probe", "Probe"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("probe", "usb", ConnectionType::Usb),
+            segments,
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }
+    }
+
+    fn segment(led_count: u32, topology: DeviceTopologyHint) -> SegmentInfo {
+        SegmentInfo {
+            name: "Segment".to_owned(),
+            led_count,
+            topology,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }
+    }
+
+    #[test]
+    fn a_hub_with_no_segments_yet_connects_without_a_layout() {
+        assert!(topology_unknown_until_connect(&device(Vec::new())));
+    }
+
+    #[test]
+    fn a_screen_only_device_connects_without_a_layout() {
+        let screen = segment(
+            0,
+            DeviceTopologyHint::Display {
+                width: 480,
+                height: 480,
+                circular: true,
+                format: hypercolor_types::device::DisplayFrameFormat::Jpeg,
+            },
+        );
+        assert!(topology_unknown_until_connect(&device(vec![screen])));
+    }
+
+    #[test]
+    fn a_device_with_placeable_leds_waits_for_the_layout() {
+        let ring = segment(20, DeviceTopologyHint::Ring { count: 20 });
+        assert!(!topology_unknown_until_connect(&device(vec![ring])));
+        let screen = segment(
+            0,
+            DeviceTopologyHint::Display {
+                width: 480,
+                height: 480,
+                circular: true,
+                format: hypercolor_types::device::DisplayFrameFormat::Jpeg,
+            },
+        );
+        let ring = segment(20, DeviceTopologyHint::Ring { count: 20 });
+        assert!(!topology_unknown_until_connect(&device(vec![screen, ring])));
     }
 }
