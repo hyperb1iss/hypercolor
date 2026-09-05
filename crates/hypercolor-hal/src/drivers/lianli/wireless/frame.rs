@@ -52,6 +52,8 @@ pub enum RfSubCommand {
     SelectedGroup = 0x12,
     /// 1 Hz master clock and sensor broadcast.
     ClockSync = 0x14,
+    /// Persist the current binding to receiver flash.
+    SaveConfig = 0x15,
     /// Per-LED RGB, tinyuz-compressed.
     SetRgb = 0x20,
 }
@@ -141,6 +143,15 @@ pub fn pwm_envelope(
     envelope.0[15] = channel;
     envelope.0[16] = slot_index;
     envelope.0[17..21].copy_from_slice(&pwm);
+    envelope
+}
+
+/// The broadcast that makes every receiver bound to `master` write its
+/// binding to flash, so it survives a power cycle without this controller.
+#[must_use]
+pub fn save_config_envelope(master: Mac) -> RfEnvelope {
+    let mut envelope = RfEnvelope::new(RfSubCommand::SaveConfig, [0xFF; 6], master);
+    envelope.0[14] = RF_BROADCAST_SLOT;
     envelope
 }
 

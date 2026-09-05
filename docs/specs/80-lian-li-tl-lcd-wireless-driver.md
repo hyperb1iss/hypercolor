@@ -91,9 +91,10 @@ byte ranges ship in the parser but gated fan types are reported as unknown
 models, not bound to features).
 
 **Research-only in this spec:** TL Flex (`0x1CBE:0xA018` WinUSB/H.264 path,
-`0x43A8` controller), pairing/binding UI (§6.4; devices ship pre-bound and
-L-Connect can rebind — a future `hypercolor-driver-support` service), fan
-curves as a product feature (v1 only holds observed PWM steady, §6.8),
+`0x43A8` controller), a pairing UI with unbind and per-cluster choice (§6.4
+ships automatic adoption of unowned clusters; choosing among them and
+unbinding are a future `hypercolor-driver-support` service), fan curves as
+a product feature (v1 only holds observed PWM steady, §6.8),
 firmware-looped RF animations as an effect-delivery optimization.
 
 ## 2. Device Registry & Variant Matrix
@@ -636,14 +637,38 @@ inter-envelope header repeat uses.
 
 (Others exist for AIO/case products: `0x19`, `0x21`, `0x23`.)
 
-### 6.4 Binding (documented, not implemented in v1)
+### 6.4 Binding: automatic adoption of unowned clusters
 
-Bind = RF_PWM_CMD frame carrying master MAC at [8..14], rx slot (1–13) at
-[16], current PWM at [17..21]; sent 6× with 30 ms gaps; poll GetDev until the
-device reports the new master/rx (3 sightings, 5 s timeout); then SaveConfig.
-Unbind writes an all-zero master MAC and rx=0. Bindings persist in receiver
-flash, which is why v1 can require pre-bound fans. Recovery without
-Hypercolor: L-Connect on any machine can rebind.
+Fans do not ship pre-bound: a TL LCD Wireless cluster fresh from the box
+reports an all-zero master MAC and answers on the pairing slot (`rx_type`
+`0xFE`), which is exactly what the live V1 rig showed on 2026-09-05 before
+it had ever met L-Connect. So v1 pairs. The wire recipe is the reference
+driver's, validated against its `bind.rs`:
+
+- Bind carrier = an RF_PWM_CMD envelope: target MAC at [2..8], **our**
+  master MAC at [8..14], the receiver slot we hand out (lowest of 1–13 not
+  used by a cluster we already drive) at [14], the master channel at [15],
+  the 1-based device index at [16], the PWM the cluster reported at
+  [17..21]. The four USB packets are relayed on the cluster's current
+  channel and its **current** rx_type, so `0xFE` while unpaired.
+- One round = the carrier 6× at 30 ms gaps, a 150 ms settle, one GetDev poll.
+  The poll's table parsing is what observes convergence: the cluster now
+  reports our MAC and moves from the adoptable set into the routing set.
+- `connection_diagnostics()` runs three rounds back to back, after init and
+  before the daemon publishes segments, so a cluster that pairs at connect
+  is driven from the first frame. Upkeep (§6.8) retries one round per tick
+  up to eight rounds in total, then warns and leaves the cluster alone until
+  reconnect. A cluster that pairs after the topology froze is driven on the
+  next reconnect, since the routing set does not grow live (§6.5).
+- The tick after any convergence broadcasts SaveConfig (`0x15`, target
+  `FF:FF:FF:FF:FF:FF`, our master MAC, rx `0xFF`) 3× at 200 ms gaps so the
+  receiver keeps the binding across a power cycle. The reference caps a
+  controller at 10 bound devices; so do we.
+
+Clusters bound to another master are never poached (the reference refuses
+while that master is online; we cannot see whether it is, so we never
+try). Unbind writes an all-zero master MAC and rx=0 and is not exposed yet.
+Recovery without Hypercolor: L-Connect on any machine can rebind.
 
 ### 6.5 Discovery: GetDev and the 42-byte device record
 
@@ -699,8 +724,8 @@ set the moment upkeep or streaming begins: a later poll never reorders or
 grows the routing, because the daemon's segments were published from the
 connect-time order and a reordered table would put one cluster's colors on
 another. Only fan clusters (record type 0) bound to this controller's MAC
-enter the set; receivers bound elsewhere, unbound receivers, and AIO or case
-gear heard on the channel are ignored. A truncated reply (fewer whole records
+enter the set; receivers bound elsewhere and AIO or case gear heard on the
+channel are ignored, and unbound receivers are paired first (§6.4). A truncated reply (fewer whole records
 than the count byte) keeps the last table. Segment topology is published to
 the daemon only at connect/reconnect, so v1 surfaces membership changes (a
 newly bound fan) after a rescan/reconnect; live topology-change publication

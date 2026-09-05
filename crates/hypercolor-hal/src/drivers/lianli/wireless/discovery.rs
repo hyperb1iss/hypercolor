@@ -187,6 +187,16 @@ impl FanCluster {
             && self.master_mac == master
             && self.fan_count > 0
     }
+
+    /// A fan cluster no controller owns: its receiver reports an all-zero
+    /// master and answers on the pairing slot. These are what a first run
+    /// of L-Connect pairs, and what this driver adopts.
+    #[must_use]
+    pub fn is_unbound_fan_cluster(&self) -> bool {
+        self.device_type == DEVICE_TYPE_FAN_CLUSTER
+            && self.master_mac == [0; 6]
+            && self.fan_count > 0
+    }
 }
 
 /// A parsed GetDev reply.

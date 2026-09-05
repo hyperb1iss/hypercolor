@@ -26,7 +26,7 @@ use std::time::Duration;
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, SegmentInfo,
 };
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
@@ -40,7 +40,8 @@ use discovery::{
 use frame::{
     DEFAULT_CHANNEL, Mac, RF_BROADCAST_SLOT, RfEnvelope, TX_RESET, TX_VIDEO_START, USB_CMD_GET_MAC,
     USB_CMD_SEND_RF, WallClock, clock_payload, clock_sync_envelope, control_packet, get_dev_poll,
-    get_mac_query, pwm_envelope, reverse_fan_order, rgb_transfer, stream_prep_packet,
+    get_mac_query, pwm_envelope, reverse_fan_order, rgb_transfer, save_config_envelope,
+    stream_prep_packet,
 };
 
 /// Reads at init, where the RX answers a two-page poll in about 30 ms and
@@ -66,6 +67,23 @@ const MAX_FPS: u32 = 10;
 /// reference sends for stills.
 const LIVE_TOTAL_FRAMES: u16 = 1;
 const LIVE_INTERVAL_MS: u16 = 5000;
+/// One bind round: the bind carrier repeated this many times, this far
+/// apart, then a settle before the table is polled for the result. The
+/// numbers are the reference driver's, which pair reliably on first try.
+const BIND_REPEATS: usize = 6;
+const BIND_REPEAT_GAP: Duration = Duration::from_millis(30);
+const BIND_SETTLE: Duration = Duration::from_millis(150);
+/// Rounds sent back to back at connect, before the topology is published,
+/// and the ceiling over the whole session counting upkeep retries.
+const BIND_ROUNDS_AT_CONNECT: u8 = 3;
+const BIND_ROUND_LIMIT: u8 = 8;
+/// Receiver slots a controller can hand out.
+const RX_SLOTS: std::ops::RangeInclusive<u8> = 1..=13;
+/// How many devices one controller drives; the reference refuses more.
+const MAX_BOUND_DEVICES: usize = 10;
+/// The flash write is broadcast this many times, this far apart.
+const SAVE_CONFIG_REPEATS: usize = 3;
+const SAVE_CONFIG_GAP: Duration = Duration::from_millis(200);
 
 /// Everything learned from the controller and its table.
 #[derive(Debug, Default)]
@@ -77,6 +95,13 @@ struct WirelessState {
     /// which would put one cluster's colors on another. Membership changes
     /// take effect on reconnect (spec 80 section 6.5).
     table: DeviceTable,
+    /// Fan clusters heard on the last poll that no controller owns.
+    adoptable: Vec<FanCluster>,
+    /// Clusters a bind has been sent to and not yet seen bound.
+    binding: Vec<Mac>,
+    bind_rounds: u8,
+    /// A bind converged; the next upkeep tick writes it to flash.
+    save_pending: bool,
     topology_frozen: bool,
     streaming_started: bool,
     clock_sent: bool,
@@ -86,10 +111,17 @@ impl WirelessState {
     /// Adopt a freshly parsed table: as the routing while topology is still
     /// open, as telemetry only once it is frozen.
     fn adopt_table(&mut self, mut table: DeviceTable) {
-        let master = WirelessControllerProtocol::master_mac(self);
+        let master = self.master.map(|master| master.mac);
+        self.adoptable = table
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.is_unbound_fan_cluster())
+            .cloned()
+            .collect();
         table
             .clusters
-            .retain(|cluster| cluster.is_bound_fan_cluster(master));
+            .retain(|cluster| master.is_some_and(|master| cluster.is_bound_fan_cluster(master)));
+        self.settle_binds(&table);
 
         if !self.topology_frozen {
             self.table = table;
@@ -117,6 +149,105 @@ impl WirelessState {
             );
         }
     }
+
+    /// Retire the pending binds a fresh table shows as ours, and queue the
+    /// flash write when any did.
+    fn settle_binds(&mut self, bound: &DeviceTable) {
+        let before = self.binding.len();
+        self.binding
+            .retain(|mac| !bound.clusters.iter().any(|cluster| cluster.mac == *mac));
+        let converged = before - self.binding.len();
+        if converged == 0 {
+            return;
+        }
+        self.save_pending = true;
+        if self.topology_frozen {
+            warn!(
+                converged,
+                "wireless cluster paired after the topology was published; reconnect the controller to drive it"
+            );
+        } else {
+            info!(converged, "wireless cluster paired to this controller");
+        }
+    }
+
+    /// One bind round for every adoptable cluster: the bind carrier is the
+    /// PWM envelope with this controller as master and a free receiver
+    /// slot, relayed on the pairing slot the cluster currently answers on,
+    /// repeated, then a poll to see whether the receiver took it.
+    fn bind_round(&mut self, commands: &mut Vec<ProtocolCommand>) {
+        let master = WirelessControllerProtocol::master_mac(self);
+        let channel = WirelessControllerProtocol::channel(self);
+        let mut taken: Vec<u8> = self.table.clusters.iter().map(|c| c.rx_type).collect();
+        let mut slot_index = self.table.clusters.len();
+        let mut sent = 0_usize;
+
+        for cluster in &self.adoptable {
+            if self.table.clusters.len() + sent >= MAX_BOUND_DEVICES {
+                warn!(
+                    mac = %format_mac(cluster.mac),
+                    "wireless controller already drives its maximum; cluster left unpaired"
+                );
+                continue;
+            }
+            let Some(rx_slot) = RX_SLOTS.clone().find(|slot| !taken.contains(slot)) else {
+                warn!(
+                    mac = %format_mac(cluster.mac),
+                    "no free receiver slot; cluster left unpaired"
+                );
+                continue;
+            };
+            taken.push(rx_slot);
+            slot_index += 1;
+            sent += 1;
+            let slot_index = u8::try_from(slot_index).unwrap_or(u8::MAX);
+            let envelope = pwm_envelope(
+                cluster.mac,
+                master,
+                rx_slot,
+                channel,
+                slot_index,
+                cluster.pwm,
+            );
+            for _ in 0..BIND_REPEATS {
+                WirelessControllerProtocol::envelope_commands(
+                    commands,
+                    &envelope,
+                    cluster.channel,
+                    cluster.rx_type,
+                );
+                if let Some(last) = commands.last_mut() {
+                    last.post_delay = BIND_REPEAT_GAP;
+                }
+            }
+            if !self.binding.contains(&cluster.mac) {
+                self.binding.push(cluster.mac);
+            }
+            info!(
+                mac = %format_mac(cluster.mac),
+                model = cluster.model.name(),
+                fans = cluster.fan_count,
+                rx_slot,
+                "pairing wireless cluster to this controller"
+            );
+        }
+
+        if sent == 0 {
+            return;
+        }
+        if let Some(last) = commands.last_mut() {
+            last.post_delay = BIND_SETTLE;
+        }
+        commands.push(WirelessControllerProtocol::get_dev_command(STEADY_TIMEOUT));
+        self.bind_rounds = self.bind_rounds.saturating_add(1);
+    }
+}
+
+fn format_mac(mac: Mac) -> String {
+    mac.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// The L-Wireless controller protocol.
@@ -289,6 +420,21 @@ impl Protocol for WirelessControllerProtocol {
         Vec::new()
     }
 
+    /// Pair every unowned fan cluster the RX heard, before the topology is
+    /// published, so a rig that has never met L-Connect lights up on first
+    /// connect. Clusters bound to another controller are left alone.
+    fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        let mut commands = Vec::new();
+        if state.adoptable.is_empty() {
+            return commands;
+        }
+        for _ in 0..BIND_ROUNDS_AT_CONNECT {
+            state.bind_round(&mut commands);
+        }
+        commands
+    }
+
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
         let mut commands = Vec::new();
         self.encode_frame_into(colors, &mut commands);
@@ -390,6 +536,28 @@ impl Protocol for WirelessControllerProtocol {
         let envelope = clock_sync_envelope(master, &payload, !state.clock_sent);
         Self::envelope_commands(&mut commands, &envelope, channel, RF_BROADCAST_SLOT);
         state.clock_sent = true;
+
+        if state.save_pending {
+            state.save_pending = false;
+            info!("writing wireless pairing to receiver flash");
+            let envelope = save_config_envelope(master);
+            for _ in 0..SAVE_CONFIG_REPEATS {
+                Self::envelope_commands(&mut commands, &envelope, channel, RF_BROADCAST_SLOT);
+                if let Some(last) = commands.last_mut() {
+                    last.post_delay = SAVE_CONFIG_GAP;
+                }
+            }
+        } else if !state.adoptable.is_empty() {
+            if state.bind_rounds < BIND_ROUND_LIMIT {
+                state.bind_round(&mut commands);
+            } else if state.bind_rounds == BIND_ROUND_LIMIT {
+                state.bind_rounds = state.bind_rounds.saturating_add(1);
+                warn!(
+                    clusters = state.adoptable.len(),
+                    "wireless clusters did not take the pairing; giving up until reconnect"
+                );
+            }
+        }
 
         commands
     }

@@ -620,3 +620,243 @@ fn once_streaming_starts_a_new_table_refreshes_telemetry_but_not_routing() {
         "first colors still go to the first cluster"
     );
 }
+
+// --- Pairing (section 6.4) ---
+
+const UNBOUND_MAC: [u8; 6] = [0xBF, 0xDA, 0xEE, 0x72, 0xAB, 0x3C];
+
+/// A record the way the live V1 rig reported its never-paired TL LCD
+/// cluster: master all zeros, answering on the pairing slot.
+fn unbound_record(mac: [u8; 6]) -> [u8; RECORD_LEN] {
+    let mut record = record(mac, 0x00, 3, 32);
+    record[6..12].copy_from_slice(&[0; 6]);
+    record[13] = 0xFE;
+    record
+}
+
+/// The first slice of every bind carrier aimed at the unowned cluster: a
+/// PWM envelope relayed on the pairing slot rather than a bound one.
+fn bind_packets(commands: &[hypercolor_hal::protocol::ProtocolCommand]) -> Vec<&[u8]> {
+    commands
+        .iter()
+        .map(|command| command.data.as_slice())
+        .filter(|data| {
+            data.len() == USB_PACKET_LEN
+                && data[0] == USB_CMD_SEND_RF
+                && data[1] == 0
+                && data[3] == 0xFE
+                && data[4] == RF_SELECT
+                && data[5] == RfSubCommand::Pwm as u8
+                && data[6..12] == UNBOUND_MAC
+        })
+        .collect()
+}
+
+/// The first slice of every SaveConfig broadcast.
+fn save_packets(commands: &[hypercolor_hal::protocol::ProtocolCommand]) -> Vec<&[u8]> {
+    commands
+        .iter()
+        .map(|command| command.data.as_slice())
+        .filter(|data| {
+            data.len() == USB_PACKET_LEN
+                && data[0] == USB_CMD_SEND_RF
+                && data[1] == 0
+                && data[4] == RF_SELECT
+                && data[5] == RfSubCommand::SaveConfig as u8
+        })
+        .collect()
+}
+
+#[test]
+fn a_bound_rig_needs_no_pairing() {
+    assert!(discovered_protocol().connection_diagnostics().is_empty());
+}
+
+#[test]
+fn a_cluster_bound_elsewhere_is_not_poached() {
+    let protocol = WirelessControllerProtocol::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("MAC reply parses");
+    let mut foreign = record([0x33; 6], 0x00, 2, 28);
+    foreign[6..12].copy_from_slice(&[0xEE; 6]);
+    protocol
+        .parse_response(&table_with(&[foreign]))
+        .expect("table parses");
+    assert!(protocol.connection_diagnostics().is_empty());
+}
+
+#[test]
+fn a_table_before_the_mac_reply_drives_nothing() {
+    let protocol = WirelessControllerProtocol::new();
+    protocol
+        .parse_response(&table_with(&[unbound_record(UNBOUND_MAC)]))
+        .expect("table parses");
+    assert!(protocol.clusters().is_empty());
+}
+
+#[test]
+fn an_unowned_cluster_gets_the_bind_carrier_on_its_pairing_slot_then_a_poll() {
+    let protocol = WirelessControllerProtocol::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("MAC reply parses");
+    protocol
+        .parse_response(&table_with(&[
+            record([0x11; 6], 0x00, 3, 28),
+            unbound_record(UNBOUND_MAC),
+        ]))
+        .expect("table parses");
+    assert_eq!(
+        protocol.zones().len(),
+        3,
+        "the unpaired cluster is not yet a zone"
+    );
+
+    let commands = protocol.connection_diagnostics();
+    // Three rounds of six four-packet carriers, each followed by a poll.
+    assert_eq!(commands.len(), 3 * (6 * 4 + 1));
+
+    let first = &commands[0];
+    assert_eq!(first.transfer_type, TransferType::Primary);
+    assert!(!first.expects_response);
+    assert_eq!(
+        &first.data[..4],
+        &[USB_CMD_SEND_RF, 0, 8, 0xFE],
+        "relayed on the pairing slot"
+    );
+    assert_eq!(first.data[4], RF_SELECT);
+    assert_eq!(first.data[5], RfSubCommand::Pwm as u8);
+    assert_eq!(&first.data[6..12], &UNBOUND_MAC);
+    assert_eq!(
+        &first.data[12..18],
+        &MASTER_MAC,
+        "this controller becomes its master"
+    );
+    assert_eq!(
+        first.data[18], 1,
+        "lowest receiver slot the bound cluster (rx 3) leaves free"
+    );
+    assert_eq!(first.data[19], 8, "on the controller's channel");
+    assert_eq!(
+        first.data[20], 2,
+        "second device after the one already bound"
+    );
+    assert_eq!(
+        &first.data[21..25],
+        &[128, 64, 32, 0],
+        "holding the duty it reported"
+    );
+
+    assert_eq!(commands[2].post_delay, Duration::from_millis(1));
+    assert_eq!(
+        commands[3].post_delay,
+        Duration::from_millis(30),
+        "carrier repeats 30 ms apart"
+    );
+    assert_eq!(
+        commands[23].post_delay,
+        Duration::from_millis(150),
+        "settle before the poll"
+    );
+    let poll = &commands[24];
+    assert!(poll.expects_response);
+    assert_eq!(poll.transfer_type, TransferType::Companion);
+    assert_eq!(bind_packets(&commands).len(), 3 * 6);
+    assert!(
+        save_packets(&commands).is_empty(),
+        "nothing is written to flash until it took"
+    );
+}
+
+#[test]
+fn a_pairing_that_takes_is_written_to_flash_on_the_next_upkeep() {
+    let protocol = WirelessControllerProtocol::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("MAC reply parses");
+    let ours = record([0x11; 6], 0x00, 3, 28);
+    protocol
+        .parse_response(&table_with(&[ours, unbound_record(UNBOUND_MAC)]))
+        .expect("table parses");
+    let _ = protocol.connection_diagnostics();
+
+    // The poll after the carrier shows the receiver took the binding.
+    let mut paired = record(UNBOUND_MAC, 0x00, 3, 32);
+    paired[13] = 1;
+    protocol
+        .parse_response(&table_with(&[ours, paired]))
+        .expect("table parses");
+    assert_eq!(protocol.clusters().len(), 2);
+    assert_eq!(
+        protocol.zones().len(),
+        6,
+        "three TL LCD rings joined the three SL rings"
+    );
+
+    let upkeep = protocol.keepalive_commands();
+    let saves = save_packets(&upkeep);
+    assert_eq!(saves.len(), 3, "three broadcasts");
+    for packet in &saves {
+        assert_eq!(&packet[..4], &[USB_CMD_SEND_RF, 0, 8, RF_BROADCAST_SLOT]);
+    }
+    assert_eq!(&saves[0][6..12], &[0xFF; 6], "addressed to every receiver");
+    assert_eq!(&saves[0][12..18], &MASTER_MAC, "that this controller owns");
+    assert_eq!(saves[0][18], RF_BROADCAST_SLOT);
+    let starts: Vec<usize> = upkeep
+        .iter()
+        .enumerate()
+        .filter(|(_, command)| {
+            command.data[1] == 0
+                && command.data[4..6] == [RF_SELECT, RfSubCommand::SaveConfig as u8]
+        })
+        .map(|(index, _)| index)
+        .collect();
+    for start in starts {
+        assert_eq!(upkeep[start + 3].post_delay, Duration::from_millis(200));
+    }
+    assert!(
+        bind_packets(&upkeep).is_empty(),
+        "no carrier for a cluster that is ours"
+    );
+
+    assert!(
+        save_packets(&protocol.keepalive_commands()).is_empty(),
+        "flash is written once"
+    );
+}
+
+#[test]
+fn a_pairing_that_does_not_take_is_retried_by_upkeep_then_left() {
+    let protocol = WirelessControllerProtocol::new();
+    protocol
+        .parse_response(&captured_master_reply())
+        .expect("MAC reply parses");
+    let still_unbound = table_with(&[unbound_record(UNBOUND_MAC)]);
+    protocol
+        .parse_response(&still_unbound)
+        .expect("table parses");
+
+    let connect = protocol.connection_diagnostics();
+    assert_eq!(
+        connect[0].data[18], 1,
+        "first receiver slot on an empty rig"
+    );
+    assert_eq!(connect[0].data[20], 1, "first device on an empty rig");
+
+    let mut retried = 0;
+    for _ in 0..10 {
+        protocol
+            .parse_response(&still_unbound)
+            .expect("table parses");
+        let upkeep = protocol.keepalive_commands();
+        let carriers = bind_packets(&upkeep).len();
+        assert!(carriers == 0 || carriers == 6);
+        retried += usize::from(carriers == 6);
+        assert!(save_packets(&upkeep).is_empty());
+    }
+    assert_eq!(
+        retried, 5,
+        "eight rounds in all: three at connect, five from upkeep"
+    );
+}
