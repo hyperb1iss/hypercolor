@@ -4,6 +4,7 @@ mod common;
 mod ene;
 mod lcd;
 mod tl;
+pub mod wireless;
 
 pub mod devices;
 pub mod legacy;
@@ -28,3 +29,5 @@ pub use lcd::{
 };
 pub use legacy::LegacyUniHubProtocol;
 pub use tl::{TL_PACKET_LEN, TlFanProtocol};
+pub use wireless::WirelessControllerProtocol;
+pub use wireless::lcd::WirelessLcdProtocol;

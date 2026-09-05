@@ -579,7 +579,6 @@ fn color_format_maps_to_pixel_layouts() {
         DeviceColorFormat::Rgbw.pixel_layout(),
         Some(DevicePixelLayout::RgbwZeroWhite)
     );
-    assert_eq!(DeviceColorFormat::Jpeg.pixel_layout(), None);
 }
 
 #[test]

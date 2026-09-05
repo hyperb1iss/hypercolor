@@ -9,8 +9,28 @@ use hypercolor_hal::drivers::corsair::{
     build_xd6_elite_lcd_protocol,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
-use hypercolor_types::device::DeviceTopologyHint;
+use hypercolor_types::device::{DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload};
 use hypercolor_types::spatial::LedTopology;
+
+/// Drive the one display seam with a JPEG payload, mapping failure to `None`
+/// so the assertions below read as they did against the JPEG-only hook.
+fn display_commands<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+) -> Option<Vec<ProtocolCommand>> {
+    let mut commands = Vec::new();
+    encode_into(protocol, jpeg, &mut commands).map(|()| commands)
+}
+
+fn encode_into<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+    commands: &mut Vec<ProtocolCommand>,
+) -> Option<()> {
+    protocol
+        .encode_display_payload_into(DisplayFramePayload::jpeg(jpeg), commands)
+        .ok()
+}
 
 fn link_enumeration_response(records: &[(u8, u8, &str)]) -> Vec<u8> {
     let mut data = vec![0x00, 0x00, 0x00, 0x00];
@@ -299,6 +319,7 @@ fn lcd_init_sequence_uses_hid_reports_and_reports_display_capabilities() {
             width: 480,
             height: 480,
             circular: true,
+            format: DisplayFrameFormat::Jpeg,
         }
     );
 
@@ -316,9 +337,7 @@ fn lcd_encode_display_frame_chunks_bulk_packets_and_appends_keepalive() {
         .map(|value| u8::try_from(value % 251).unwrap_or_default())
         .collect::<Vec<_>>();
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display frames should be supported");
+    let commands = display_commands(&protocol, &jpeg).expect("display frames should be supported");
 
     assert_eq!(commands.len(), 3);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
@@ -354,9 +373,7 @@ fn lcd_encode_display_frame_into_reuses_command_buffer() {
         ..Default::default()
     }];
 
-    protocol
-        .encode_display_frame_into(&jpeg, &mut commands)
-        .expect("display frames should be supported");
+    encode_into(&protocol, &jpeg, &mut commands).expect("display frames should be supported");
     assert_eq!(commands.len(), 2);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
     assert_eq!(commands[1].transfer_type, TransferType::HidReport);
@@ -365,8 +382,7 @@ fn lcd_encode_display_frame_into_reuses_command_buffer() {
         &[0x02, 0x05, 0x40, 0x01, 0x00, 0x00, 0xF8, 0x03]
     );
 
-    protocol
-        .encode_display_frame_into(&jpeg[..8], &mut commands)
+    encode_into(&protocol, &jpeg[..8], &mut commands)
         .expect("display frames should still be supported on buffer reuse");
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
@@ -448,9 +464,8 @@ fn xc7_lcd_supports_ring_zone_and_model_specific_keepalive() {
     );
 
     let jpeg = vec![0x55; 32];
-    let display_commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("XC7 should support display frames");
+    let display_commands =
+        display_commands(&protocol, &jpeg).expect("XC7 should support display frames");
     assert_eq!(display_commands.len(), 2);
     assert_eq!(display_commands[0].transfer_type, TransferType::Bulk);
     assert_eq!(display_commands[1].transfer_type, TransferType::HidReport);
@@ -485,8 +500,7 @@ fn icue_link_lcd_matches_standard_lcd_flow() {
     assert_eq!(&init[3].data[..6], &[0x03, 0x0B, 0x40, 0x01, 0x79, 0xE7]);
 
     let jpeg = vec![0x55; 32];
-    let commands = protocol
-        .encode_display_frame(&jpeg)
+    let commands = display_commands(protocol.as_ref(), &jpeg)
         .expect("iCUE LINK LCD should support display frames");
 
     assert_eq!(commands.len(), 2);
@@ -511,9 +525,8 @@ fn xd6_lcd_uses_standard_init_with_model_specific_zone_byte() {
     assert_eq!(&init[3].data[..6], &[0x03, 0x0B, 0x40, 0x01, 0x79, 0xE7]);
 
     let jpeg = vec![0xAA; 32];
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("XD6 LCD should support display frames");
+    let commands =
+        display_commands(protocol.as_ref(), &jpeg).expect("XD6 LCD should support display frames");
 
     assert_eq!(commands.len(), 2);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);

@@ -9,6 +9,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::device::DisplayFrameFormat;
+
 /// Current `window.hypercolor.display` contract version.
 pub const DISPLAY_DESCRIPTOR_API_VERSION: u32 = 1;
 
@@ -78,6 +80,18 @@ impl DisplayRect {
 pub enum DisplayPixelFormat {
     Rgb,
     Yuv420,
+}
+
+impl From<DisplayFrameFormat> for DisplayPixelFormat {
+    /// Raw RGB transports keep every pixel; JPEG transports apply 4:2:0
+    /// chroma subsampling, surfaced so face authors can avoid one-pixel
+    /// colored hairlines.
+    fn from(format: DisplayFrameFormat) -> Self {
+        match format {
+            DisplayFrameFormat::Rgb => Self::Rgb,
+            DisplayFrameFormat::Jpeg => Self::Yuv420,
+        }
+    }
 }
 
 /// Everything a face needs to know about the surface it renders on.

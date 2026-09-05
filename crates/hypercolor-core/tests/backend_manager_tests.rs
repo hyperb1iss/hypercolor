@@ -1107,7 +1107,11 @@ impl DeviceBackend for DisplayRecordingBackend {
         Ok(())
     }
 
-    async fn write_display_frame(&self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+    async fn write_display_payload_owned(
+        &self,
+        id: &DeviceId,
+        payload: Arc<OwnedDisplayFramePayload>,
+    ) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
@@ -1115,7 +1119,10 @@ impl DeviceBackend for DisplayRecordingBackend {
             bail!("display write while disconnected");
         }
 
-        self.display_writes.lock().await.push(jpeg_data.to_vec());
+        self.display_writes
+            .lock()
+            .await
+            .push(payload.data.as_slice().to_vec());
         Ok(())
     }
 }

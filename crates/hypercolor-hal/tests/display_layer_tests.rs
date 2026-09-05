@@ -9,7 +9,10 @@ use hypercolor_hal::display::{
 };
 use hypercolor_hal::drivers::corsair::CorsairLcdProtocol;
 use hypercolor_hal::drivers::corsair::framing::{LCD_DATA_PER_PACKET, LCD_MAX_DISPLAY_CHUNKS};
-use hypercolor_hal::protocol::{CommandBuffer, Protocol, ProtocolCommand, TransferType};
+use hypercolor_hal::protocol::{
+    CommandBuffer, Protocol, ProtocolCommand, ResponsePlan, ResponseTolerance, TransferType,
+};
+use hypercolor_types::device::{DisplayFrameFormat, DisplayFramePayload};
 
 const MARKER: u8 = 0xA5;
 const HEADER_LEN: usize = 8;
@@ -110,6 +113,16 @@ impl DisplayChunkLayout for TestLayout {
                 expects_response: ctx.is_final,
                 response_delay: Duration::from_millis(3),
                 post_delay: (!ctx.is_final).then(|| Duration::from_millis(2)),
+                response: if ctx.is_final {
+                    ResponsePlan {
+                        count: 1,
+                        timeout: Some(Duration::from_secs(2)),
+                        capacity: Some(511),
+                        tolerance: ResponseTolerance::Optional,
+                    }
+                } else {
+                    ResponsePlan::default()
+                },
             },
         }
     }
@@ -291,6 +304,21 @@ fn chunk_command_policy_is_applied_per_chunk() {
     assert!(commands[1].expects_response, "final chunk is acked");
     assert_eq!(commands[1].response_delay, Duration::from_millis(3));
     assert_eq!(
+        commands[1].response,
+        ResponsePlan {
+            count: 1,
+            timeout: Some(Duration::from_secs(2)),
+            capacity: Some(511),
+            tolerance: ResponseTolerance::Optional,
+        },
+        "the policy's response plan rides the engine-emitted command"
+    );
+    assert_eq!(
+        commands[0].response,
+        ResponsePlan::default(),
+        "an unacked chunk carries the default plan"
+    );
+    assert_eq!(
         commands[1].post_delay,
         Duration::ZERO,
         "a None post_delay means no pacing"
@@ -350,10 +378,10 @@ fn payload_window_past_the_packet_end_is_rejected() {
     assert!(commands.is_empty());
 }
 
-/// The display seam has no error channel, so a protocol maps an engine error
-/// to skip-and-warn: no commands, and success back to the caller.
+/// The display seam carries the engine's error to the actor, which fails
+/// that one delivery; the protocol keeps working for the next frame.
 #[test]
-fn a_protocol_skips_a_frame_the_engine_rejects_and_keeps_going() {
+fn a_protocol_surfaces_a_frame_the_engine_rejects_and_keeps_going() {
     let protocol = CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0);
     let past_the_counter = usize::try_from(LCD_MAX_DISPLAY_CHUNKS)
         .unwrap_or(usize::MAX)
@@ -361,22 +389,55 @@ fn a_protocol_skips_a_frame_the_engine_rejects_and_keeps_going() {
     let oversized = vec![0x5A; LCD_DATA_PER_PACKET * past_the_counter];
     let mut commands = stale_commands(3);
 
-    protocol
-        .encode_display_frame_into(&oversized, &mut commands)
-        .expect("the seam reports success even when it drops the frame");
-
+    let error = protocol
+        .encode_display_payload_into(DisplayFramePayload::jpeg(&oversized), &mut commands)
+        .expect_err("a frame the wire format cannot address is an error, not a silent drop");
+    assert!(
+        matches!(error, DisplayEncodeError::TooManyChunks { .. }),
+        "unexpected error: {error}"
+    );
     assert!(
         commands.is_empty(),
-        "a frame the wire format cannot address must not go out truncated"
+        "a rejected frame leaves nothing for the actor to send"
     );
 
     protocol
-        .encode_display_frame_into(&[0x11; 64], &mut commands)
+        .encode_display_payload_into(DisplayFramePayload::jpeg(&[0x11; 64]), &mut commands)
         .expect("the next frame should still encode");
     assert_eq!(
         commands.len(),
         2,
-        "one bulk packet plus the keepalive the skipped frame never consumed"
+        "one bulk packet plus the keepalive the rejected frame never consumed"
+    );
+}
+
+/// A protocol that drives no display, or none in the offered format, says so
+/// through the same channel instead of pretending the frame went out.
+#[test]
+fn an_unsupported_payload_format_is_an_error_not_a_silent_drop() {
+    let protocol = CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0);
+    let mut commands = Vec::new();
+    let pixels = vec![0; 480 * 480 * 3];
+
+    let error = protocol
+        .encode_display_payload_into(
+            DisplayFramePayload {
+                format: DisplayFrameFormat::Rgb,
+                width: 480,
+                height: 480,
+                data: &pixels,
+            },
+            &mut commands,
+        )
+        .expect_err("a JPEG panel cannot take raw RGB");
+    assert!(
+        matches!(
+            error,
+            DisplayEncodeError::Unsupported {
+                format: DisplayFrameFormat::Rgb
+            }
+        ),
+        "unexpected error: {error}"
     );
 }
 
@@ -514,7 +575,7 @@ fn prefixed_frame_with_no_payload_is_still_emitted() {
         },
         &[],
         Some(8),
-        ChunkCommandPolicy::default(),
+        ChunkCommandPolicy::fire_and_forget(TransferType::Primary),
         &mut commands,
     )
     .expect("an empty payload is not an error for a prefixed frame");
@@ -535,7 +596,7 @@ fn prefixed_frame_rejects_a_payload_that_does_not_fit() {
         |_frame, _ctx| unreachable!("the header writer must not run for a rejected frame"),
         &[0x00; 40],
         Some(32),
-        ChunkCommandPolicy::default(),
+        ChunkCommandPolicy::fire_and_forget(TransferType::Primary),
         &mut commands,
     )
     .expect_err("40 payload bytes cannot fit 32 minus an 8-byte header");
@@ -679,7 +740,6 @@ fn wire_keepalive_is_due_before_the_first_send_and_suppressed_after() {
         !keepalive.due(),
         "a fresh keepalive suppresses the next one"
     );
-    assert_eq!(keepalive.interval(), Duration::from_secs(30));
 }
 
 #[test]

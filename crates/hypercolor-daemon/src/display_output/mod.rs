@@ -101,6 +101,8 @@ struct DisplayTarget {
     brightness: f32,
     geometry: DisplayGeometry,
     frame_format: DisplayFrameFormat,
+    /// The device's encoded-frame wire cap, when it declares one.
+    max_frame_len: Option<usize>,
     canvas_source: DisplayCanvasSource,
     zone_canvas_sender: Option<watch::Sender<DisplayZoneFrame>>,
     display_target: Option<DisplayFaceTarget>,
@@ -123,6 +125,7 @@ pub(super) struct DisplayWorkerConfigSignature {
     brightness_bits: u32,
     geometry: DisplayGeometry,
     frame_format: DisplayFrameFormat,
+    max_frame_len: Option<usize>,
     canvas_source: DisplayCanvasSourceSignature,
     face_blend_mode: BlendMode,
     face_opacity_bits: u32,
@@ -270,6 +273,7 @@ impl DisplayTarget {
             brightness_bits: self.brightness.to_bits(),
             geometry: self.geometry,
             frame_format: self.frame_format,
+            max_frame_len: self.max_frame_len,
             canvas_source: self.canvas_source.signature(),
             face_blend_mode: self.face_blend_mode(),
             face_opacity_bits: self.face_opacity().to_bits(),
@@ -729,26 +733,15 @@ async fn display_targets(
         if is_simulator && !display_preview_subscribers.contains(&tracked.info.id) {
             continue;
         }
-        let Some((geometry, frame_format)) =
-            display_target_geometry_for_device(&tracked.info.segments).or_else(|| {
-                tracked
-                    .info
-                    .capabilities
-                    .display_resolution
-                    .map(|(width, height)| {
-                        (
-                            DisplayGeometry {
-                                width,
-                                height,
-                                circular: false,
-                            },
-                            DisplayFrameFormat::Jpeg,
-                        )
-                    })
-            })
-        else {
+        let Some(surface) = tracked.info.display_surface() else {
             continue;
         };
+        let geometry = DisplayGeometry {
+            width: surface.width,
+            height: surface.height,
+            circular: surface.circular,
+        };
+        let frame_format = surface.format;
         let has_non_display_led_segments = tracked.info.segments.iter().any(|segment| {
             segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
         });
@@ -800,6 +793,7 @@ async fn display_targets(
             brightness: tracked.user_settings.brightness,
             geometry,
             frame_format,
+            max_frame_len: tracked.info.capabilities.features.max_display_frame_len,
             canvas_source,
             zone_canvas_sender,
             display_target,
@@ -898,26 +892,6 @@ fn display_face_target_binding_preferred(
 ) -> bool {
     (candidate.finalized && !current.finalized)
         || (candidate.finalized == current.finalized && candidate.zone_id.0 > current.zone_id.0)
-}
-
-fn display_target_geometry_for_device(
-    segments: &[hypercolor_types::device::SegmentInfo],
-) -> Option<(DisplayGeometry, DisplayFrameFormat)> {
-    segments.iter().find_map(|segment| match segment.topology {
-        DeviceTopologyHint::Display {
-            width,
-            height,
-            circular,
-        } => Some((
-            DisplayGeometry {
-                width,
-                height,
-                circular,
-            },
-            DisplayFrameFormat::from_device_color_format(segment.color_format),
-        )),
-        _ => None,
-    })
 }
 
 fn display_viewport_for_device(
@@ -1114,6 +1088,7 @@ mod tests {
                 circular: false,
             },
             frame_format: DisplayFrameFormat::Jpeg,
+            max_frame_len: None,
             canvas_source: DisplayCanvasSource::ZoneDirect {
                 zone_id: ZoneId::new(),
             },

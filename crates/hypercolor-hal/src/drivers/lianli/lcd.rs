@@ -13,17 +13,18 @@ use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, DisplayFrameFormat,
     DisplayFramePayload, SegmentInfo,
 };
-use tracing::{debug, warn};
 use zerocopy::byteorder::{BigEndian, U16, U32};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::display::{
-    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayRotation, DisplaySetting,
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError,
     encode_chunked_display_frame,
 };
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus, TransferType,
 };
+
+use super::common::{nul_terminated_ascii, record_first_product_info};
 
 /// HID report ID every panel packet carries.
 pub const TL_LCD_REPORT_ID: u8 = 0x02;
@@ -60,8 +61,10 @@ const TL_LCD_PRODUCT_INFO_REPORTS: u8 = 2;
 
 const TL_LCD_CONTROL_PAYLOAD_LEN: usize = 11;
 const TL_LCD_SERIAL_LEN: usize = 32;
-const TL_LCD_DEFAULT_BRIGHTNESS: u8 = 100;
-const TL_LCD_DEFAULT_FPS: u8 = TL_LCD_MAX_FPS;
+/// Hardware backlight level sent at init, on the panel's 0..=100 scale.
+const TL_LCD_BRIGHTNESS: u8 = 100;
+/// Rotation byte for the unrotated panel (§5.5: 0/1/2/3 = 0/90/180/270°).
+const TL_LCD_ROTATION_NONE: u8 = 0;
 
 /// Command byte of a panel packet (§5.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,19 +76,13 @@ pub enum TlLcdCommand {
     GetProductInfo = 0x3D,
     /// Read the stored serial plus hub port and chain index.
     ReadSerial = 0x3E,
-    /// Write a 32-byte serial. Documented, deliberately never sent: it
-    /// mutates user hardware and re-keys the device fingerprint, orphaning
-    /// the path-keyed device it just renamed.
-    WriteSerial = 0x3F,
     /// Apply panel settings or switch display mode.
     LcdControl = 0x40,
-    /// Write a static image, acknowledged per chunk. Documented vocabulary
-    /// only: driving it soundly means checking that each ack echoes this
-    /// command byte, and `parse_response` is never told which command it is
-    /// answering, so a stale or mismatched report would silently advance the
-    /// upload. v1 streams instead (spec 80 section 5.6).
-    WriteJpg = 0x41,
     /// Stream a live frame, unacknowledged. The live path.
+    ///
+    /// The panel's other verbs (`WriteSerial` 0x3F, the acknowledged static
+    /// `WriteJpg` 0x41, and the AVI and boot-image writes) stay in spec 80
+    /// section 5.3 until something drives them.
     WriteSyncJpg = 0x46,
 }
 
@@ -93,17 +90,11 @@ pub enum TlLcdCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TlLcdMode {
-    /// Display the stored static image.
-    ShowJpg = 1,
-    /// Play the stored animation.
-    ShowAvi = 3,
-    /// Display streamed frames.
-    ShowAppSync = 4,
     /// Apply brightness, frame rate, and rotation without changing what the
-    /// panel is displaying.
+    /// panel is displaying. The content modes (stored image, animation,
+    /// streamed frames, test pattern) are in spec 80 section 5.5; streaming
+    /// needs no explicit switch, so nothing sends them.
     LcdSetting = 5,
-    /// Factory test pattern.
-    LcdTest = 6,
 }
 
 /// Wire-format header of a panel packet (11 bytes).
@@ -122,24 +113,9 @@ struct TlLcdHeader {
     payload_len: U16<BigEndian>,
 }
 
-/// Wire-format panel packet (512 bytes).
-#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
-#[repr(C)]
-struct TlLcdPacket {
-    /// Framing header.
-    header: TlLcdHeader,
-    /// Command payload or JPEG chunk, zero-padded.
-    payload: [u8; TL_LCD_MAX_PAYLOAD],
-}
-
 const _: () = assert!(
     std::mem::size_of::<TlLcdHeader>() == TL_LCD_HEADER_LEN,
     "TlLcdHeader must match the 11-byte panel packet header"
-);
-
-const _: () = assert!(
-    std::mem::size_of::<TlLcdPacket>() == TL_LCD_PACKET_LEN,
-    "TlLcdPacket must match the 512-byte panel packet size"
 );
 
 /// Write a panel packet header into the first bytes of `packet`.
@@ -189,8 +165,8 @@ fn build_tl_lcd_packet(command: TlLcdCommand, payload: &[u8]) -> Vec<u8> {
     packet
 }
 
-/// Panel state learned from replies, plus the settings last asked for.
-#[derive(Debug, Clone)]
+/// Panel state learned from replies.
+#[derive(Debug, Clone, Default)]
 struct TlLcdState {
     serial: Option<String>,
     port: Option<u8>,
@@ -198,25 +174,6 @@ struct TlLcdState {
     firmware: Option<String>,
     mode: Option<u8>,
     frame_index: Option<u16>,
-    brightness: u8,
-    fps: u8,
-    rotation: DisplayRotation,
-}
-
-impl Default for TlLcdState {
-    fn default() -> Self {
-        Self {
-            serial: None,
-            port: None,
-            index: None,
-            firmware: None,
-            mode: None,
-            frame_index: None,
-            brightness: TL_LCD_DEFAULT_BRIGHTNESS,
-            fps: TL_LCD_DEFAULT_FPS,
-            rotation: DisplayRotation::Deg0,
-        }
-    }
 }
 
 /// Chunk framing for a streamed JPEG frame.
@@ -315,15 +272,16 @@ impl TlLcdProtocol {
         }
     }
 
-    /// Build an `LcdControl` command from the current settings.
-    fn control_command(&self, mode: TlLcdMode) -> ProtocolCommand {
-        let state = self.read_state();
+    /// Build the `LcdControl` command that puts the panel in its streaming
+    /// state: full hardware brightness (the daemon's software brightness is
+    /// the runtime authority), the panel's 30 fps ceiling, and no rotation
+    /// (orientation is a layout-zone property applied before encoding).
+    fn control_command(mode: TlLcdMode) -> ProtocolCommand {
         let mut payload = [0_u8; TL_LCD_CONTROL_PAYLOAD_LEN];
         payload[0] = mode as u8;
-        payload[4] = state.brightness;
-        payload[5] = state.fps;
-        payload[6] = rotation_byte(state.rotation);
-        drop(state);
+        payload[4] = TL_LCD_BRIGHTNESS;
+        payload[5] = TL_LCD_MAX_FPS;
+        payload[6] = TL_LCD_ROTATION_NONE;
 
         Self::command(TlLcdCommand::LcdControl, &payload, true)
     }
@@ -333,12 +291,7 @@ impl TlLcdProtocol {
             return;
         }
 
-        let serial: Vec<u8> = payload[..TL_LCD_SERIAL_LEN]
-            .iter()
-            .take_while(|byte| **byte != 0x00)
-            .copied()
-            .collect();
-        let serial = String::from_utf8_lossy(&serial).trim().to_owned();
+        let serial = nul_terminated_ascii(&payload[..TL_LCD_SERIAL_LEN]);
 
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         state.serial = (!serial.is_empty()).then_some(serial);
@@ -357,36 +310,8 @@ impl TlLcdProtocol {
     }
 
     fn parse_product_info_reply(&self, payload: &[u8]) {
-        let text: Vec<u8> = payload
-            .iter()
-            .take_while(|byte| **byte != 0x00)
-            .copied()
-            .collect();
-        let text = String::from_utf8_lossy(&text).trim().to_owned();
-        if text.is_empty() {
-            return;
-        }
-
-        // Report order carries the meaning: version first, build date second.
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-        if let Some(existing) = state.firmware.as_deref() {
-            debug!(
-                firmware = existing,
-                discarded = text.as_str(),
-                "ignoring trailing product-info report; firmware version already recorded"
-            );
-        } else {
-            state.firmware = Some(text);
-        }
-    }
-}
-
-const fn rotation_byte(rotation: DisplayRotation) -> u8 {
-    match rotation {
-        DisplayRotation::Deg0 => 0,
-        DisplayRotation::Deg90 => 1,
-        DisplayRotation::Deg180 => 2,
-        DisplayRotation::Deg270 => 3,
+        record_first_product_info(&mut state.firmware, payload, "product-info");
     }
 }
 
@@ -418,8 +343,7 @@ impl Protocol for TlLcdProtocol {
             Self::command(TlLcdCommand::GetProductInfo, &[], true)
                 .with_response_count(TL_LCD_PRODUCT_INFO_REPORTS)
                 .with_response_timeout(TL_LCD_INIT_TIMEOUT),
-            self.control_command(TlLcdMode::LcdSetting)
-                .with_response_timeout(TL_LCD_INIT_TIMEOUT),
+            Self::control_command(TlLcdMode::LcdSetting).with_response_timeout(TL_LCD_INIT_TIMEOUT),
         ]
     }
 
@@ -432,54 +356,18 @@ impl Protocol for TlLcdProtocol {
         Vec::new()
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        let mut commands = Vec::new();
-        self.encode_display_frame_into(jpeg_data, &mut commands)?;
-        Some(commands)
-    }
-
-    fn encode_display_frame_into(
-        &self,
-        jpeg_data: &[u8],
-        commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        if let Err(error) = encode_chunked_display_frame(&self.sync_layout, jpeg_data, commands) {
-            // Skip-and-warn: the display seam has no error channel, and a
-            // frame the counter cannot address must not go out truncated.
-            warn!(%error, jpeg_bytes = jpeg_data.len(), "skipping TL LCD display frame");
-        }
-
-        Some(())
-    }
-
     fn encode_display_payload_into(
         &self,
         payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        match payload.format {
-            DisplayFrameFormat::Jpeg => self.encode_display_frame_into(payload.data, commands),
-            DisplayFrameFormat::Rgb => None,
-        }
-    }
-
-    fn encode_display_setting(&self, setting: DisplaySetting) -> Option<Vec<ProtocolCommand>> {
-        {
-            let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-            match setting {
-                DisplaySetting::Brightness(brightness) => {
-                    state.brightness = brightness.min(TL_LCD_DEFAULT_BRIGHTNESS);
-                }
-                DisplaySetting::Rotation(rotation) => state.rotation = rotation,
-                // The panel tops out at 30fps; a higher request would be a
-                // number the hardware cannot honour, and zero would stall it.
-                DisplaySetting::FrameRate(fps) => {
-                    state.fps = fps.clamp(1, TL_LCD_MAX_FPS);
-                }
-            }
+    ) -> Result<(), DisplayEncodeError> {
+        if payload.format != DisplayFrameFormat::Jpeg {
+            return Err(DisplayEncodeError::Unsupported {
+                format: payload.format,
+            });
         }
 
-        Some(vec![self.control_command(TlLcdMode::LcdSetting)])
+        encode_chunked_display_frame(&self.sync_layout, payload.data, commands)
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
@@ -530,8 +418,10 @@ impl Protocol for TlLcdProtocol {
                 width: TL_LCD_RESOLUTION,
                 height: TL_LCD_RESOLUTION,
                 circular: true,
+                format: DisplayFrameFormat::Jpeg,
             },
-            color_format: DeviceColorFormat::Jpeg,
+            // LED byte order has no meaning for a display segment.
+            color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
         }]
     }

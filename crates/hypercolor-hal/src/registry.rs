@@ -175,9 +175,7 @@ impl DeviceDescriptor {
             None => false,
         }
     }
-}
 
-impl DeviceDescriptor {
     /// Driver module that owns this protocol descriptor.
     #[must_use]
     pub fn driver_id(&self) -> Cow<'_, str> {

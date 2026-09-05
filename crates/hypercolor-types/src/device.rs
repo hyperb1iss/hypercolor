@@ -111,6 +111,12 @@ pub struct DeviceFeatures {
 
     /// Supports scroll acceleration toggle.
     pub scroll_acceleration: bool,
+
+    /// Largest encoded display frame the device's wire format can carry,
+    /// in bytes. The host's encoder steps quality down to fit it and drops
+    /// a frame it cannot fit rather than truncating it.
+    #[serde(default)]
+    pub max_display_frame_len: Option<usize>,
 }
 
 /// Generic scroll wheel operating mode.
@@ -146,9 +152,14 @@ pub struct DeviceCapabilities {
     pub supports_brightness: bool,
 
     /// Whether the device exposes a pixel display surface.
+    ///
+    /// A summary of the device's `Display` segment, rewritten by the host at
+    /// adoption through [`DeviceInfo::sync_display_capabilities`]; the
+    /// segment is authoritative.
     pub has_display: bool,
 
-    /// Display resolution in pixels, when applicable.
+    /// Display resolution in pixels, when applicable. Derived like
+    /// `has_display`.
     pub display_resolution: Option<(u32, u32)>,
 
     /// Maximum sustainable frame rate (0 = unknown / unlimited).
@@ -341,6 +352,9 @@ pub enum DeviceTopologyHint {
         height: u32,
         /// Whether the panel is circular.
         circular: bool,
+        /// Payload format the device takes for a frame.
+        #[serde(default)]
+        format: DisplayFrameFormat,
     },
 
     /// Arbitrary positions defined in the spatial layout.
@@ -898,9 +912,6 @@ pub enum DeviceColorFormat {
 
     /// Red-Blue-Green channel order.
     Rbg,
-
-    /// JPEG-compressed pixel data.
-    Jpeg,
 }
 
 impl DeviceColorFormat {
@@ -915,7 +926,6 @@ impl DeviceColorFormat {
             Self::Rgbw => Some(DevicePixelLayout::RgbwZeroWhite),
             Self::Grb => Some(DevicePixelLayout::Grb),
             Self::Rbg => Some(DevicePixelLayout::Rbg),
-            Self::Jpeg => None,
         }
     }
 }
@@ -927,33 +937,79 @@ impl fmt::Display for DeviceColorFormat {
             Self::Rgbw => write!(f, "RGBW"),
             Self::Grb => write!(f, "GRB"),
             Self::Rbg => write!(f, "RBG"),
-            Self::Jpeg => write!(f, "JPEG"),
         }
     }
 }
 
 /// Pixel payload format for display-capable devices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayFrameFormat {
     /// JPEG-compressed image bytes.
+    #[default]
     Jpeg,
 
     /// Raw RGB byte triplets, row-major.
     Rgb,
 }
 
-impl DisplayFrameFormat {
-    /// Convert a display zone color format into a payload format.
+/// The pixel surface a display segment declares: the one place a device's
+/// display geometry and payload format live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DisplaySurface {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Whether the panel is circular.
+    pub circular: bool,
+    /// Payload format the device takes for a frame.
+    pub format: DisplayFrameFormat,
+}
+
+impl DeviceTopologyHint {
+    /// The display surface this hint declares, if it is a display.
     #[must_use]
-    pub const fn from_device_color_format(format: DeviceColorFormat) -> Self {
-        match format {
-            DeviceColorFormat::Rgb => Self::Rgb,
-            DeviceColorFormat::Rgbw
-            | DeviceColorFormat::Grb
-            | DeviceColorFormat::Rbg
-            | DeviceColorFormat::Jpeg => Self::Jpeg,
+    pub const fn display_surface(&self) -> Option<DisplaySurface> {
+        match *self {
+            Self::Display {
+                width,
+                height,
+                circular,
+                format,
+            } => Some(DisplaySurface {
+                width,
+                height,
+                circular,
+                format,
+            }),
+            _ => None,
         }
+    }
+}
+
+impl DeviceInfo {
+    /// The device's display surface, from its first `Display` segment.
+    ///
+    /// The segment is the single source of truth for display geometry and
+    /// format; [`DeviceCapabilities::has_display`] and
+    /// [`DeviceCapabilities::display_resolution`] are summaries derived from
+    /// it by [`DeviceInfo::sync_display_capabilities`].
+    #[must_use]
+    pub fn display_surface(&self) -> Option<DisplaySurface> {
+        self.segments
+            .iter()
+            .find_map(|segment| segment.topology.display_surface())
+    }
+
+    /// Rewrite the display capability summary from the display segment, so a
+    /// driver that declared one without the other cannot leave the two
+    /// disagreeing.
+    pub fn sync_display_capabilities(&mut self) {
+        let surface = self.display_surface();
+        self.capabilities.has_display = surface.is_some();
+        self.capabilities.display_resolution =
+            surface.map(|surface| (surface.width, surface.height));
     }
 }
 
@@ -977,6 +1033,20 @@ pub struct DisplayFramePayload<'a> {
     pub height: u32,
     /// Pixel or compressed image bytes.
     pub data: &'a [u8],
+}
+
+impl<'a> DisplayFramePayload<'a> {
+    /// A JPEG payload. The image carries its own dimensions, so the
+    /// geometry fields are zero.
+    #[must_use]
+    pub const fn jpeg(data: &'a [u8]) -> Self {
+        Self {
+            format: DisplayFrameFormat::Jpeg,
+            width: 0,
+            height: 0,
+            data,
+        }
+    }
 }
 
 /// Owned display frame payload.

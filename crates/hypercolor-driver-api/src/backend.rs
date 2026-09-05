@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use crate::discovery::DiscoveredDevice;
 use hypercolor_types::device::{
-    DeviceError, DeviceId, DeviceInfo, DisplayFrameFormat, ErrorRecoverability,
-    OwnedDisplayFramePayload,
+    DeviceError, DeviceId, DeviceInfo, ErrorRecoverability, OwnedDisplayFramePayload,
 };
 use serde::{Deserialize, Serialize};
 
@@ -632,37 +631,10 @@ pub trait DeviceBackend: Send + Sync {
         DeviceLifecyclePolicy::default()
     }
 
-    /// Push a JPEG-compressed display frame to a connected device, if supported.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if display output is unsupported or the write fails.
-    async fn write_display_frame(
-        &self,
-        id: &DeviceId,
-        jpeg_data: &[u8],
-    ) -> Result<(), DeviceError> {
-        let _ = (id, jpeg_data);
-        Err(DeviceError::Unsupported {
-            backend: self.info().id,
-            operation: "device display output",
-        })
-    }
-
-    /// Push an owned JPEG-compressed display frame to a connected device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if display output is unsupported or the write fails.
-    async fn write_display_frame_owned(
-        &self,
-        id: &DeviceId,
-        jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<(), DeviceError> {
-        self.write_display_frame(id, jpeg_data.as_slice()).await
-    }
-
     /// Push an owned display payload to a connected device.
+    ///
+    /// The one display write on the backend; a backend that drives displays
+    /// overrides it and decides per payload format what it can take.
     ///
     /// # Errors
     ///
@@ -672,16 +644,11 @@ pub trait DeviceBackend: Send + Sync {
         id: &DeviceId,
         payload: Arc<OwnedDisplayFramePayload>,
     ) -> Result<(), DeviceError> {
-        match payload.format {
-            DisplayFrameFormat::Jpeg => {
-                self.write_display_frame_owned(id, Arc::clone(&payload.data))
-                    .await
-            }
-            DisplayFrameFormat::Rgb => Err(DeviceError::Unsupported {
-                backend: self.info().id,
-                operation: "RGB display output",
-            }),
-        }
+        let _ = (id, payload);
+        Err(DeviceError::Unsupported {
+            backend: self.info().id,
+            operation: "device display output",
+        })
     }
 
     /// Adjust hardware brightness for a connected device, if supported.

@@ -817,6 +817,7 @@ impl Protocol for RazerProtocol {
                 scroll_mode: self.supports_scroll_features,
                 scroll_smart_reel: self.supports_scroll_features,
                 scroll_acceleration: self.supports_scroll_features,
+                max_display_frame_len: None,
             },
         }
     }

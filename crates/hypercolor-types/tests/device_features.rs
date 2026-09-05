@@ -15,6 +15,7 @@ fn device_features_serde_round_trip() {
         scroll_mode: true,
         scroll_smart_reel: true,
         scroll_acceleration: false,
+        max_display_frame_len: None,
     };
 
     let json = serde_json::to_string(&features).expect("serialize device features");
@@ -37,6 +38,7 @@ fn device_capabilities_round_trip_and_require_current_fields() {
             scroll_mode: true,
             scroll_smart_reel: false,
             scroll_acceleration: true,
+            max_display_frame_len: None,
         },
     };
     let json = serde_json::to_value(capabilities).expect("serialize capabilities");

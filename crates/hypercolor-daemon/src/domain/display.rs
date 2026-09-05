@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_types::control::ControlValue;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
@@ -43,32 +43,14 @@ pub struct DisplaySurfaceInfo {
     pub circular: bool,
 }
 
-/// Resolve native display geometry from segment topology or capabilities.
+/// Resolve native display geometry from the device's display segment.
 #[must_use]
 pub fn display_surface_info(info: &DeviceInfo) -> Option<DisplaySurfaceInfo> {
-    for segment in &info.segments {
-        if let DeviceTopologyHint::Display {
-            width,
-            height,
-            circular,
-        } = &segment.topology
-        {
-            return Some(DisplaySurfaceInfo {
-                width: *width,
-                height: *height,
-                circular: *circular,
-            });
-        }
-    }
-
-    info.capabilities
-        .display_resolution
-        .filter(|_| info.capabilities.has_display)
-        .map(|(width, height)| DisplaySurfaceInfo {
-            width,
-            height,
-            circular: false,
-        })
+    info.display_surface().map(|surface| DisplaySurfaceInfo {
+        width: surface.width,
+        height: surface.height,
+        circular: surface.circular,
+    })
 }
 
 /// Build a native-resolution canvas for one display face.

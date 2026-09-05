@@ -15,6 +15,7 @@ use hypercolor_types::device::{
 };
 use tracing::warn;
 
+use crate::display::DisplayEncodeError;
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ResponseStatus,
     TransferType,
@@ -335,28 +336,11 @@ impl Protocol for Push2Protocol {
         })
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        let mut commands = Vec::new();
-        self.encode_display_frame_into(jpeg_data, &mut commands)?;
-        Some(commands)
-    }
-
-    fn encode_display_frame_into(
-        &self,
-        jpeg_data: &[u8],
-        commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        self.display_encoder
-            .lock()
-            .expect("Push 2 display encoder lock should not be poisoned")
-            .encode_display_frame_from_jpeg(jpeg_data, commands)
-    }
-
     fn encode_display_payload_into(
         &self,
         payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
+    ) -> Result<(), DisplayEncodeError> {
         let mut encoder = self
             .display_encoder
             .lock()
@@ -432,6 +416,7 @@ impl Protocol for Push2Protocol {
                     width: 960,
                     height: 160,
                     circular: false,
+                    format: DisplayFrameFormat::Rgb,
                 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,

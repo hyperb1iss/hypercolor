@@ -1419,9 +1419,8 @@ impl DeviceBackend for UsbBackend {
         let frame_sink = device.frame_sink(*id);
         let display_sink = device
             .info_template
-            .capabilities
-            .has_display
-            .then(|| device.display_sink(*id));
+            .display_surface()
+            .map(|_| device.display_sink(*id));
         let connected = ConnectedUsbDevice {
             info_template: device.info_template.clone(),
             protocol: Arc::clone(&device.protocol),
@@ -1538,24 +1537,6 @@ impl DeviceBackend for UsbBackend {
         Ok(())
     }
 
-    async fn write_display_frame(
-        &self,
-        id: &DeviceId,
-        jpeg_data: &[u8],
-    ) -> Result<(), DeviceError> {
-        self.write_display_frame_owned(id, Arc::new(jpeg_data.to_vec()))
-            .await
-    }
-
-    async fn write_display_frame_owned(
-        &self,
-        id: &DeviceId,
-        jpeg_data: Arc<Vec<u8>>,
-    ) -> Result<(), DeviceError> {
-        let payload = Arc::new(OwnedDisplayFramePayload::jpeg(0, 0, jpeg_data));
-        self.write_display_payload_owned(id, payload).await
-    }
-
     async fn write_display_payload_owned(
         &self,
         id: &DeviceId,
@@ -1574,7 +1555,7 @@ impl DeviceBackend for UsbBackend {
         };
         let mut device = connected.device.lock().await;
 
-        if !device.info_template.capabilities.has_display {
+        if device.info_template.display_surface().is_none() {
             return Err(DeviceError::Unsupported {
                 backend: USB_OUTPUT_BACKEND_ID.to_owned(),
                 operation: "device display output",
@@ -1841,6 +1822,7 @@ fn build_connected_device_info(
     info.id = device_id;
     info.segments = protocol.zones();
     info.capabilities = protocol.capabilities();
+    info.sync_display_capabilities();
     info
 }
 

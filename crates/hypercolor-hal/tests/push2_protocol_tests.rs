@@ -3,8 +3,30 @@ use std::time::Duration;
 
 use hypercolor_hal::drivers::push2::{Push2Protocol, build_push2_protocol};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
-use hypercolor_types::device::{DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload,
+};
 use image::{ColorType, ImageEncoder, RgbImage, codecs::jpeg::JpegEncoder};
+
+/// Drive the one display seam with a JPEG payload, mapping failure to `None`
+/// so the assertions below read as they did against the JPEG-only hook.
+fn display_commands<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+) -> Option<Vec<ProtocolCommand>> {
+    let mut commands = Vec::new();
+    encode_into(protocol, jpeg, &mut commands).map(|()| commands)
+}
+
+fn encode_into<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+    commands: &mut Vec<ProtocolCommand>,
+) -> Option<()> {
+    protocol
+        .encode_display_payload_into(DisplayFramePayload::jpeg(jpeg), commands)
+        .ok()
+}
 
 fn palette_reply(index: u8, rgba: [u8; 4]) -> Vec<u8> {
     let mut response = vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x04, index];
@@ -407,9 +429,8 @@ fn push2_keepalive_reasserts_user_mode_without_forced_led_resync() {
 #[test]
 fn push2_display_encoding_emits_header_and_bulk_packets() {
     let protocol = Push2Protocol::new();
-    let commands = protocol
-        .encode_display_frame(&solid_red_jpeg())
-        .expect("display frames should be supported");
+    let commands =
+        display_commands(&protocol, &solid_red_jpeg()).expect("display frames should be supported");
 
     assert_eq!(commands.len(), 21);
     assert_eq!(commands[0].transfer_type, TransferType::Bulk);
@@ -453,6 +474,7 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
             width: 960,
             height: 160,
             circular: false,
+            format: DisplayFrameFormat::Rgb,
         }
     );
 

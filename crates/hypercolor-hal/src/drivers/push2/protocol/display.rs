@@ -14,8 +14,8 @@ use turbojpeg::{
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use crate::display::{
-    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, LineRepack, Packed16Format,
-    encode_chunked_display_frame_into,
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, LineRepack,
+    Packed16Format, encode_chunked_display_frame_into,
 };
 use crate::protocol::{CommandBuffer, ProtocolCommand, TransferType};
 
@@ -106,9 +106,9 @@ impl Push2DisplayEncoder {
         &mut self,
         jpeg_data: &[u8],
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
+    ) -> Result<(), DisplayEncodeError> {
         if !commands.is_empty() && self.cached_jpeg == jpeg_data {
-            return Some(());
+            return Ok(());
         }
 
         encode_display_frame_uncached(
@@ -121,7 +121,7 @@ impl Push2DisplayEncoder {
 
         self.cached_jpeg.clear();
         self.cached_jpeg.extend_from_slice(jpeg_data);
-        Some(())
+        Ok(())
     }
 
     pub(super) fn encode_display_frame_from_rgb(
@@ -130,17 +130,25 @@ impl Push2DisplayEncoder {
         height: u32,
         rgb_data: &[u8],
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        if width != u32::try_from(PUSH2_DISPLAY_WIDTH).ok()?
-            || height != u32::try_from(PUSH2_DISPLAY_HEIGHT).ok()?
-        {
-            return None;
+    ) -> Result<(), DisplayEncodeError> {
+        let expected_width = u32::try_from(PUSH2_DISPLAY_WIDTH).unwrap_or(u32::MAX);
+        let expected_height = u32::try_from(PUSH2_DISPLAY_HEIGHT).unwrap_or(u32::MAX);
+        if width != expected_width || height != expected_height {
+            return Err(DisplayEncodeError::WrongGeometry {
+                expected_width,
+                expected_height,
+                width,
+                height,
+            });
         }
-        let expected_len = PUSH2_DISPLAY_WIDTH
-            .checked_mul(PUSH2_DISPLAY_HEIGHT)?
-            .checked_mul(3)?;
+        let expected_len = PUSH2_DISPLAY_WIDTH * PUSH2_DISPLAY_HEIGHT * 3;
         if rgb_data.len() != expected_len {
-            return None;
+            return Err(DisplayEncodeError::Undecodable {
+                detail: format!(
+                    "RGB888 payload is {} bytes, {expected_len} needed",
+                    rgb_data.len()
+                ),
+            });
         }
 
         self.cached_jpeg.clear();
@@ -154,12 +162,17 @@ fn encode_display_frame_uncached(
     rgb_buffer: &mut Vec<u8>,
     frame_buffer: &mut Vec<u8>,
     turbojpeg: &mut Option<TurboJpegDecompressor>,
-) -> Option<()> {
+) -> Result<(), DisplayEncodeError> {
     if decode_jpeg_into_rgb_buffer(jpeg_data, rgb_buffer, turbojpeg).is_some() {
         return build_display_commands(rgb_buffer.as_slice(), frame_buffer, commands);
     }
 
-    let image = image::load_from_memory_with_format(jpeg_data, ImageFormat::Jpeg).ok()?;
+    let image =
+        image::load_from_memory_with_format(jpeg_data, ImageFormat::Jpeg).map_err(|error| {
+            DisplayEncodeError::Undecodable {
+                detail: error.to_string(),
+            }
+        })?;
     let rgb = if image.width() == 960 && image.height() == 160 {
         image.into_rgb8()
     } else {
@@ -215,11 +228,8 @@ fn build_display_commands(
     rgb_bytes: &[u8],
     frame_buffer: &mut Vec<u8>,
     commands: &mut Vec<ProtocolCommand>,
-) -> Option<()> {
-    if let Err(error) = PUSH2_DISPLAY_REPACK.repack_rgb888(rgb_bytes, frame_buffer) {
-        tracing::warn!(%error, "skipping Push 2 display frame with unusable geometry");
-        return None;
-    }
+) -> Result<(), DisplayEncodeError> {
+    PUSH2_DISPLAY_REPACK.repack_rgb888(rgb_bytes, frame_buffer)?;
 
     let mut buffer = CommandBuffer::new(commands);
     buffer.push_struct(
@@ -232,11 +242,10 @@ fn build_display_commands(
     let framed = encode_chunked_display_frame_into(&Push2DisplayLayout, frame_buffer, &mut buffer);
     buffer.finish();
 
-    if let Err(error) = framed {
+    // The preamble command is already in the buffer; on failure the caller
+    // must not send it alone, so the buffer is emptied with the error.
+    if framed.is_err() {
         commands.clear();
-        tracing::warn!(%error, "skipping Push 2 display frame the wire format cannot carry");
-        return None;
     }
-
-    Some(())
+    framed
 }

@@ -3,9 +3,9 @@
   "generatorPath": "scripts/gen-compat.ts",
   "totals": {
     "vendors": 32,
-    "devices": 415,
+    "devices": 418,
     "byStatus": {
-      "supported": 180,
+      "supported": 183,
       "in_progress": 0,
       "planned": 0,
       "researched": 95,
@@ -2911,6 +2911,19 @@
       "notes": null,
       "devices": [
         {
+          "pid": 32832,
+          "pidHex": "0x8040",
+          "vid": null,
+          "vidHex": null,
+          "name": "L-Wireless Controller",
+          "type": "fan_controller",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": "V1 2.4GHz TX (SLV3TX) paired with its 0x8041 RX sibling behind the controller's internal hub. Discovers bound TL/SL wireless fan clusters and streams per-LED RGB over RF; 26 LEDs per TL fan, up to 4 fans per cluster."
+        },
+        {
           "pid": 29554,
           "pidHex": "0x7372",
           "vid": null,
@@ -2924,6 +2937,19 @@
           "notes": "VID 0x0416, Nuvoton-based. 26 LEDs/fan, 10 fans/port, 4 ports. RPM reading supported."
         },
         {
+          "pid": 5,
+          "pidHex": "0x0005",
+          "vid": 7358,
+          "vidHex": "0x1CBE",
+          "name": "Uni Fan SL Wireless LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": "SL V3 wireless LCD receiver; same protocol as the TL receiver."
+        },
+        {
           "pid": 29587,
           "pidHex": "0x7393",
           "vid": 1276,
@@ -2935,6 +2961,19 @@
           "transport": "usb_hid",
           "leds": null,
           "notes": "400x400 round panel. JPEG streaming in 512-byte packets; every unit reports serial TL_LCDV0.1, so identity keys on the USB port path."
+        },
+        {
+          "pid": 6,
+          "pidHex": "0x0006",
+          "vid": 7358,
+          "vidHex": "0x1CBE",
+          "name": "Uni Fan TL Wireless LCD",
+          "type": "lcd",
+          "status": "supported",
+          "driver": "lianli",
+          "transport": "usb_bulk",
+          "leds": null,
+          "notes": "One bulk receiver per wireless LCD fan over its 9-pin USB cable. 400x400 round panel; DES-wrapped 512-byte headers and a fixed 102400-byte frame write (101888 bytes of JPEG)."
         },
         {
           "pid": 41217,
@@ -3068,18 +3107,19 @@
         }
       ],
       "counts": {
-        "supported": 10,
+        "supported": 13,
         "in_progress": 0,
         "planned": 0,
         "researched": 2,
         "known": 0,
         "blocked": 0
       },
-      "totalDevices": 12,
+      "totalDevices": 15,
       "drivers": [
         "lianli"
       ],
       "transports": [
+        "usb_bulk",
         "usb_hid",
         "usb_vendor"
       ],

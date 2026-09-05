@@ -25,12 +25,6 @@ impl WireKeepalive {
         }
     }
 
-    /// Interval between keepalives.
-    #[must_use]
-    pub const fn interval(&self) -> Duration {
-        self.interval
-    }
-
     /// Whether a keepalive is due: none has been sent, or the interval has
     /// elapsed since the last one.
     #[must_use]
