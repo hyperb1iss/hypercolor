@@ -11478,6 +11478,97 @@ async fn list_displays_only_returns_display_capable_devices() {
     );
 }
 
+/// A stack of identical wireless LCD fans ships identical names; the port
+/// is what tells them apart.
+async fn insert_test_display_device_at_port(
+    state: &Arc<AppState>,
+    name: &str,
+    usb_path: &str,
+) -> DeviceId {
+    let id = DeviceId::new();
+    let mut info = DeviceInfo {
+        id,
+        name: name.to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("lianli", "Lian Li"),
+        model: None,
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("lianli", "usb", ConnectionType::Usb),
+        segments: vec![SegmentInfo {
+            name: "Display".to_owned(),
+            led_count: 0,
+            topology: DeviceTopologyHint::Display {
+                width: 400,
+                height: 400,
+                circular: true,
+                format: DisplayFrameFormat::Jpeg,
+            },
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    info.sync_display_capabilities();
+    let fingerprint = DeviceFingerprint::from_persisted(format!("usb:lianli:{usb_path}"));
+    let metadata = HashMap::from([("usb_path".to_owned(), usb_path.to_owned())]);
+    state
+        .device_registry
+        .add_with_fingerprint_and_metadata(info, fingerprint, metadata)
+        .await
+}
+
+#[tokio::test]
+async fn list_displays_tells_identical_panels_apart_by_port_and_honours_user_names() {
+    let state = Arc::new(isolated_state());
+    let left = insert_test_display_device_at_port(&state, "Fan LCD", "1-1.2").await;
+    let right = insert_test_display_device_at_port(&state, "Fan LCD", "1-1.3").await;
+    let renamed = insert_test_display_device_at_port(&state, "Fan LCD", "1-1.4").await;
+    state
+        .device_registry
+        .update_user_settings(&renamed, Some("Top Left Fan".to_owned()), None, None)
+        .await
+        .expect("device exists");
+    let lone = insert_test_display_device(&state, "Pump LCD").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/displays")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let names: HashMap<String, String> = json["data"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|item| {
+            (
+                item["id"].as_str().expect("id").to_owned(),
+                item["name"].as_str().expect("name").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(names[&left.to_string()], "Fan LCD (USB 1-1.2)");
+    assert_eq!(names[&right.to_string()], "Fan LCD (USB 1-1.3)");
+    assert_eq!(
+        names[&renamed.to_string()],
+        "Top Left Fan",
+        "a user name is unique on its own"
+    );
+    assert_eq!(
+        names[&lone.to_string()],
+        "Pump LCD",
+        "a lone name is untouched"
+    );
+}
+
 #[tokio::test]
 async fn patch_display_face_controls_rejects_binding_clears() {
     let state = Arc::new(isolated_state());
