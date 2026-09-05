@@ -12,10 +12,25 @@ use super::model::{
 };
 
 #[derive(Debug)]
+enum DirectoryObservation {
+    Absent,
+    Present(PublicDirectoryAuthority),
+}
+
+impl DirectoryObservation {
+    fn state(&self) -> LinuxDirectoryState {
+        match self {
+            Self::Absent => LinuxDirectoryState::Absent,
+            Self::Present(_) => LinuxDirectoryState::Present,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct LinuxPublicTree {
     home: PublicDirectoryAuthority,
     direct_fragment_path: String,
-    directories: BTreeMap<LinuxDirectoryItem, LinuxDirectoryState>,
+    directories: BTreeMap<LinuxDirectoryItem, DirectoryObservation>,
 }
 
 impl LinuxPublicTree {
@@ -36,7 +51,7 @@ impl LinuxPublicTree {
         for item in LINUX_DIRECTORY_ITEMS {
             let state = match tree.parent_state(item) {
                 LinuxDirectoryState::Present => tree.observe_child(item)?,
-                LinuxDirectoryState::Absent => LinuxDirectoryState::Absent,
+                LinuxDirectoryState::Absent => DirectoryObservation::Absent,
             };
             tree.directories.insert(item, state);
         }
@@ -60,13 +75,18 @@ impl LinuxPublicTree {
         let recorded = self
             .directories
             .get(&item)
-            .copied()
+            .map(DirectoryObservation::state)
             .ok_or_else(|| error("unknown Linux public directory"))?;
         if recorded == LinuxDirectoryState::Present {
             self.open_directory(item)?;
             return Ok(recorded);
         }
-        if self.parent_state(item) == LinuxDirectoryState::Present {
+        let parent_state = item
+            .parent()
+            .map(|parent| self.state(parent))
+            .transpose()?
+            .unwrap_or(LinuxDirectoryState::Present);
+        if parent_state == LinuxDirectoryState::Present {
             self.require_child_absent(item)?;
         }
         Ok(recorded)
@@ -102,7 +122,8 @@ impl LinuxPublicTree {
         }
         .map_err(io_error)?;
         created.validate_ancestry().map_err(io_error)?;
-        self.directories.insert(item, LinuxDirectoryState::Present);
+        self.directories
+            .insert(item, DirectoryObservation::Present(created));
         Ok(())
     }
 
@@ -124,9 +145,14 @@ impl LinuxPublicTree {
         &self,
         item: LinuxDirectoryItem,
     ) -> Result<PublicDirectoryAuthority, InstallPlatformError> {
-        if self.directories.get(&item) != Some(&LinuxDirectoryState::Present) {
-            return Err(error("Linux public directory authority is absent"));
-        }
+        let retained = match self.directories.get(&item) {
+            Some(DirectoryObservation::Present(authority)) => authority,
+            Some(DirectoryObservation::Absent) => {
+                return Err(error("Linux public directory authority is absent"));
+            }
+            None => return Err(error("unknown Linux public directory")),
+        };
+        retained.validate_ancestry().map_err(io_error)?;
         let mut authority = self
             .home
             .open_child_directory(Path::new(first_name(item)))
@@ -136,6 +162,7 @@ impl LinuxPublicTree {
                 .open_child_directory(Path::new(component))
                 .map_err(io_error)?;
         }
+        retained.validate_ancestry().map_err(io_error)?;
         Ok(authority)
     }
 
@@ -169,7 +196,7 @@ impl LinuxPublicTree {
             .map_or(LinuxDirectoryState::Present, |parent| {
                 self.directories
                     .get(&parent)
-                    .copied()
+                    .map(DirectoryObservation::state)
                     .unwrap_or(LinuxDirectoryState::Absent)
             })
     }
@@ -177,20 +204,20 @@ impl LinuxPublicTree {
     fn observe_child(
         &self,
         item: LinuxDirectoryItem,
-    ) -> Result<LinuxDirectoryState, InstallPlatformError> {
-        let observe = |parent: &PublicDirectoryAuthority| match parent
-            .open_child_directory(Path::new(item.name()))
-        {
-            Ok(_) => Ok(LinuxDirectoryState::Present),
+    ) -> Result<DirectoryObservation, InstallPlatformError> {
+        let opened = match item.parent() {
+            Some(parent) => self
+                .open_directory(parent)?
+                .open_child_directory(Path::new(item.name())),
+            None => self.home.open_child_directory(Path::new(item.name())),
+        };
+        match opened {
+            Ok(authority) => Ok(DirectoryObservation::Present(authority)),
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
-                require_absent(parent, item)?;
-                Ok(LinuxDirectoryState::Absent)
+                self.require_child_absent(item)?;
+                Ok(DirectoryObservation::Absent)
             }
             Err(source) => Err(io_error(source)),
-        };
-        match item.parent() {
-            Some(parent) => observe(&self.open_directory(parent)?),
-            None => observe(&self.home),
         }
     }
 

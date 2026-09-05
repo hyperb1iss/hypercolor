@@ -245,6 +245,9 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         &mut self,
         max_bytes: usize,
     ) -> Result<(LinuxExactEntry, Vec<u8>), InstallPlatformError> {
+        if self.public_tree.state(LinuxDirectoryItem::SystemdUser)? == LinuxDirectoryState::Absent {
+            return Ok((LinuxExactEntry::Absent, Vec::new()));
+        }
         let (directory, name) = self.launcher_authority()?;
         read_exact_entry(&directory, name, max_bytes)
     }
@@ -253,6 +256,9 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         &mut self,
         item: LinuxLayoutItem,
     ) -> Result<LinuxExactEntry, InstallPlatformError> {
+        if self.public_tree.state(public_parent(item))? == LinuxDirectoryState::Absent {
+            return Ok(LinuxExactEntry::Absent);
+        }
         let (directory, name) = self.layout_entry_authority(item)?;
         directory
             .observe_entry(name)
