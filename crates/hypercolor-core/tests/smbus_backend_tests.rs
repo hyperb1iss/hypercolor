@@ -398,7 +398,7 @@ async fn smbus_backend_preserves_transport_timeout_without_private_retry() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions() {
+async fn smbus_backend_instances_share_one_physical_bus_arbiter() {
     let first_id = DeviceId::new();
     let second_id = DeviceId::new();
     let discovered = [
@@ -406,35 +406,38 @@ async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions()
         discovered_smbus_device_at(second_id, "/dev/i2c-9", 0x73),
     ];
     let probe = Arc::new(SmBusConcurrencyProbe::new());
-    let backend = SmBusBackend::with_transport_factory({
+    let make_backend = || {
         let probe = Arc::clone(&probe);
-        move |bus_path, address, bus_arbiter| {
+        SmBusBackend::with_transport_factory(move |bus_path, address, bus_arbiter| {
             assert_eq!(bus_path, "/dev/i2c-9");
             assert!(matches!(address, 0x71 | 0x73));
             Ok(Box::new(ConcurrentSmBusTransport::new(
                 bus_arbiter,
                 Arc::clone(&probe),
             )))
-        }
-    });
+        })
+    };
+    let first_backend = make_backend();
+    let second_backend = make_backend();
 
-    for device in &discovered {
-        backend
-            .adopt_device(device)
-            .expect("backend should adopt discovery descriptor");
-    }
-    backend
+    first_backend
+        .adopt_device(&discovered[0])
+        .expect("first backend should adopt its discovery descriptor");
+    second_backend
+        .adopt_device(&discovered[1])
+        .expect("second backend should adopt its discovery descriptor");
+    first_backend
         .connect(&first_id)
         .await
         .expect("first connect should succeed");
-    backend
+    second_backend
         .connect(&second_id)
         .await
         .expect("second connect should succeed");
-    let first_sink = backend
+    let first_sink = first_backend
         .frame_sink(&first_id)
         .expect("first device should expose a frame sink");
-    let second_sink = backend
+    let second_sink = second_backend
         .frame_sink(&second_id)
         .expect("second device should expose a frame sink");
 
@@ -454,10 +457,14 @@ async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions()
     assert_eq!(probe.max_active_waits.load(Ordering::SeqCst), 2);
 
     probe.finish();
-    backend
+    first_backend
         .disconnect(&first_id)
         .await
         .expect("first disconnect should succeed");
+    second_backend
+        .disconnect(&second_id)
+        .await
+        .expect("second disconnect should succeed");
     let stale_sink_error = first_sink
         .write_colors_shared(Arc::new(vec![[0, 0, 0]; 8]))
         .await

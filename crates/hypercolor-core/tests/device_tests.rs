@@ -966,6 +966,47 @@ async fn registry_generation_advances_on_mutation() {
 }
 
 #[tokio::test]
+async fn registry_identical_rediscovery_preserves_generation_and_device_revision() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint::from_persisted("usb:stable-device".to_owned());
+    let original = mock_device_info("Stable Device");
+    let device_id = registry
+        .add_with_fingerprint(original.clone(), fingerprint.clone())
+        .await;
+    let settings = DeviceUserSettings {
+        name: Some("Desk Glow".to_owned()),
+        enabled: true,
+        brightness: 0.6,
+    };
+    registry
+        .replace_user_settings(&device_id, settings)
+        .await
+        .expect("device settings should update");
+
+    let generation = registry.generation();
+    let revision = registry
+        .get(&device_id)
+        .await
+        .expect("device should exist")
+        .revision;
+    let mut rediscovered = original;
+    rediscovered.id = DeviceId::new();
+
+    let rediscovered_id = registry
+        .add_with_fingerprint(rediscovered, fingerprint)
+        .await;
+    let tracked = registry
+        .get(&device_id)
+        .await
+        .expect("device should still exist");
+
+    assert_eq!(rediscovered_id, device_id);
+    assert_eq!(registry.generation(), generation);
+    assert_eq!(tracked.revision, revision);
+    assert_eq!(tracked.info.name, "Desk Glow");
+}
+
+#[tokio::test]
 async fn registry_fingerprint_lookup_round_trips_device_id() {
     let registry = DeviceRegistry::new();
     let fingerprint = DeviceFingerprint::from_persisted("net:12:34:56:78:9a:bc".to_owned());
@@ -1215,6 +1256,38 @@ async fn registry_replace_user_settings_reapplies_name_override_on_metadata_refr
     assert_eq!(updated.info.name, "Override Name");
     assert_eq!(updated.user_settings.name.as_deref(), Some("Override Name"));
     assert!((updated.user_settings.brightness - 0.6).abs() < f32::EPSILON);
+}
+
+#[tokio::test]
+async fn registry_identical_user_settings_preserve_generation_and_device_revision() {
+    let registry = DeviceRegistry::new();
+    let original = mock_device_info("Original Name");
+    let device_id = original.id;
+    registry.add(original).await;
+    let settings = DeviceUserSettings {
+        name: Some("Override Name".to_owned()),
+        enabled: true,
+        brightness: 0.6,
+    };
+    registry
+        .replace_user_settings(&device_id, settings.clone())
+        .await
+        .expect("settings should update");
+    let generation = registry.generation();
+    let revision = registry
+        .get(&device_id)
+        .await
+        .expect("device should exist")
+        .revision;
+
+    let tracked = registry
+        .replace_user_settings(&device_id, settings)
+        .await
+        .expect("device should still exist");
+
+    assert_eq!(registry.generation(), generation);
+    assert_eq!(tracked.revision, revision);
+    assert_eq!(tracked.info.name, "Override Name");
 }
 
 #[tokio::test]

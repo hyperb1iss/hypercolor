@@ -4,7 +4,7 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, PoisonError, RwLock as StdRwLock};
+use std::sync::{Arc, PoisonError, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -60,7 +60,6 @@ struct SmBusDeviceFrameSink {
 pub struct SmBusBackend {
     pending: StdRwLock<HashMap<DeviceId, PendingSmBusDevice>>,
     connected: StdRwLock<HashMap<DeviceId, Arc<ConnectedSmBusDevice>>>,
-    bus_arbiters: StdMutex<HashMap<String, SmBusBusArbiter>>,
     transport_factory: SmBusTransportFactory,
 }
 
@@ -94,7 +93,6 @@ impl SmBusBackend {
         Self {
             pending: StdRwLock::new(HashMap::new()),
             connected: StdRwLock::new(HashMap::new()),
-            bus_arbiters: StdMutex::new(HashMap::new()),
             transport_factory: Arc::new(transport_factory),
         }
     }
@@ -105,7 +103,6 @@ impl Default for SmBusBackend {
         Self {
             pending: StdRwLock::new(HashMap::new()),
             connected: StdRwLock::new(HashMap::new()),
-            bus_arbiters: StdMutex::new(HashMap::new()),
             transport_factory: Self::default_transport_factory(),
         }
     }
@@ -194,13 +191,7 @@ impl DeviceBackend for SmBusBackend {
             "attempting SMBus connect"
         );
 
-        let bus_arbiter = self
-            .bus_arbiters
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .entry(pending.bus_path.clone())
-            .or_default()
-            .clone();
+        let bus_arbiter = SmBusBusArbiter::for_bus(&pending.bus_path);
         let device = connect_pending_device(&pending, &self.transport_factory, bus_arbiter)
             .await
             .map_err(|error| {

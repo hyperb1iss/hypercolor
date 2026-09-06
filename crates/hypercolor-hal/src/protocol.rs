@@ -6,6 +6,8 @@ use hypercolor_types::device::{
     DeviceCapabilities, DisplayFrameFormat, DisplayFramePayload, ScrollMode, SegmentInfo,
 };
 
+use crate::display::DisplaySetting;
+
 /// Pure byte-level protocol encoder/decoder.
 ///
 /// Implementations keep wire-format logic isolated from transport I/O.
@@ -120,6 +122,16 @@ pub trait Protocol: Send + Sync {
             DisplayFrameFormat::Jpeg => self.encode_display_frame_into(payload.data, commands),
             DisplayFrameFormat::Rgb => None,
         }
+    }
+
+    /// Encode a hardware display setting, if the protocol supports it.
+    ///
+    /// Panels expose brightness, rotation, and refresh rate as device state
+    /// rather than frame content. Software brightness in the daemon stays
+    /// authoritative; this is the seam for the hardware knob.
+    #[must_use]
+    fn encode_display_setting(&self, _setting: DisplaySetting) -> Option<Vec<ProtocolCommand>> {
+        None
     }
 
     /// Zone descriptors for this device.

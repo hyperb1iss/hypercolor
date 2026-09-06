@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use hypercolor_types::device::{
     ConnectionType, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
@@ -217,22 +217,47 @@ impl DeviceRegistry {
                 updated_info.id = existing_id;
                 preserve_renderable_device_shape(&mut updated_info, &entry.info, &entry.state);
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
-                debug!(
-                    device_id = %existing_id,
-                    name = %updated_info.name,
-                    "Updating existing device in registry"
-                );
-                entry.info = updated_info;
-                entry.connect_behavior = connect_behavior;
-                bump_device_revision(entry);
-                inner
-                    .id_to_fingerprint
-                    .insert(existing_id, fingerprint.clone());
-                if !metadata.is_empty() {
-                    inner.metadata_by_id.insert(existing_id, metadata);
+                let entry_changed =
+                    entry.info != updated_info || entry.connect_behavior != connect_behavior;
+                let fingerprint_changed =
+                    inner.id_to_fingerprint.get(&existing_id) != Some(&fingerprint);
+                let metadata_changed = !metadata.is_empty()
+                    && inner.metadata_by_id.get(&existing_id) != Some(&metadata);
+                let claim_changed = claim
+                    .as_ref()
+                    .is_some_and(|claim| inner.claims_by_id.get(&existing_id) != Some(claim));
+
+                if entry_changed || fingerprint_changed || metadata_changed || claim_changed {
+                    let updated_name = updated_info.name.clone();
+                    {
+                        let entry = inner
+                            .devices
+                            .get_mut(&existing_id)
+                            .expect("existing device was resolved above");
+                        entry.info = updated_info;
+                        entry.connect_behavior = connect_behavior;
+                        bump_device_revision(entry);
+                    }
+                    inner
+                        .id_to_fingerprint
+                        .insert(existing_id, fingerprint.clone());
+                    if !metadata.is_empty() {
+                        inner.metadata_by_id.insert(existing_id, metadata);
+                    }
+                    store_portable_claim(&mut inner, existing_id, claim);
+                    self.bump_generation();
+                    debug!(
+                        device_id = %existing_id,
+                        name = %updated_name,
+                        "Updated existing device in registry"
+                    );
+                } else {
+                    trace!(
+                        device_id = %existing_id,
+                        name = %updated_info.name,
+                        "Observed unchanged device in registry"
+                    );
                 }
-                store_portable_claim(&mut inner, existing_id, claim);
-                self.bump_generation();
                 return existing_id;
             }
 
@@ -454,8 +479,14 @@ impl DeviceRegistry {
         let mut inner = self.inner.write().await;
         let entry = inner.devices.get_mut(id)?;
 
+        let mut updated_info = entry.info.clone();
+        apply_user_settings_to_info(&mut updated_info, &settings);
+        if entry.user_settings == settings && entry.info == updated_info {
+            return Some(entry.clone());
+        }
+
         entry.user_settings = settings;
-        apply_user_settings_to_info(&mut entry.info, &entry.user_settings);
+        entry.info = updated_info;
 
         bump_device_revision(entry);
         self.bump_generation();
