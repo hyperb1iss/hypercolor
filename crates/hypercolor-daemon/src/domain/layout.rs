@@ -4,6 +4,8 @@ mod auto_layout;
 mod catalog;
 mod convergence;
 mod exclusions;
+
+pub(crate) use auto_layout::adopt_primary_zone_outputs;
 mod publication;
 mod workflows;
 
@@ -629,6 +631,22 @@ impl LayoutContext {
             .restore_startup_layout(layout.clone())
             .await?;
         Ok(Some(layout))
+    }
+
+    /// Publish a layout the startup restore merged (the store's entry plus
+    /// outputs the persisted scene held) and write it back to the catalog so
+    /// the two agree from now on.
+    pub(crate) async fn adopt_startup_layout(
+        &self,
+        layout: SpatialLayout,
+    ) -> Result<(), DomainError> {
+        self.catalog
+            .entries()
+            .write()
+            .await
+            .insert(layout.id.clone(), layout.clone());
+        self.catalog.persist_best_effort().await;
+        self.publication.restore_startup_layout(layout).await
     }
 
     pub(crate) async fn acquire_scene_activation_guard(&self) -> SceneActivationGuard {

@@ -3,11 +3,33 @@ use std::collections::HashSet;
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::channel_name_matches_slot_alias;
 use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::scene::{Zone, ZoneRole};
 use hypercolor_types::spatial::{
     Corner, EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection, Winding, ZoneShape,
 };
 #[must_use]
+/// Adopt into `layout` every output a persisted primary zone holds that the
+/// layout does not: a member assigned in Studio is minted into the scene's
+/// zone, and the layout store only learns of it here. Returns how many were
+/// adopted.
+pub(crate) fn adopt_primary_zone_outputs(layout: &mut SpatialLayout, zones: &[Zone]) -> usize {
+    let mut adopted = 0;
+    for zone in zones
+        .iter()
+        .filter(|zone| zone.role == ZoneRole::Primary && zone.display_target.is_none())
+    {
+        for output in &zone.layout.zones {
+            if layout.zones.iter().any(|existing| existing.id == output.id) {
+                continue;
+            }
+            layout.zones.push(output.clone());
+            adopted += 1;
+        }
+    }
+    adopted
+}
+
 pub(super) fn append_auto_layout_zones_for_device(
     layout: &mut SpatialLayout,
     layout_device_id: &str,
@@ -100,6 +122,13 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
         })
         .cloned()
         .collect::<Vec<_>>();
+    // A device that reports no light segments has said nothing about its
+    // layout yet: a hub or radio learns its topology at connect, and until
+    // then a rescan describes it from the bare descriptor. Pruning on that
+    // would throw away every placed output on each daemon start.
+    if eligible_segments.is_empty() {
+        return 0;
+    }
     let expected_segment_names = eligible_segments
         .iter()
         .map(|segment| segment.name.as_str())
@@ -118,9 +147,6 @@ pub(super) fn reconcile_auto_layout_zones_for_device(
     });
 
     let mut repaired = before_len.saturating_sub(layout.zones.len());
-    if eligible_segments.is_empty() {
-        return repaired;
-    }
 
     for (index, segment_info) in eligible_segments.iter().enumerate() {
         let layout_hint = segment_info.layout_hint.as_ref();
@@ -368,7 +394,11 @@ mod tests {
         EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout, ZoneShape,
     };
 
-    use super::{append_auto_layout_zones_for_device, reconcile_auto_layout_zones_for_device};
+    use super::{
+        adopt_primary_zone_outputs, append_auto_layout_zones_for_device,
+        reconcile_auto_layout_zones_for_device,
+    };
+    use hypercolor_types::scene::{Zone, ZoneRole};
 
     fn layout() -> SpatialLayout {
         SpatialLayout {
@@ -641,6 +671,73 @@ mod tests {
                 .zones
                 .iter()
                 .all(|zone| zone.zone_name.as_deref() != Some("Aux"))
+        );
+    }
+
+    /// A hub rediscovered before it connects reports no segments; its
+    /// placed outputs must survive that, or every restart empties them.
+    #[test]
+    fn reconcile_keeps_placed_zones_while_the_device_reports_no_segments() {
+        let mut layout = layout();
+        let initial = device(vec![segment(
+            "Fan 1",
+            26,
+            DeviceTopologyHint::Ring { count: 26 },
+        )]);
+        let _ = append_auto_layout_zones_for_device(&mut layout, "usb:radio", &initial);
+        assert_eq!(layout.zones.len(), 1);
+
+        let rescanned = device(Vec::new());
+        assert_eq!(
+            reconcile_auto_layout_zones_for_device(&mut layout, "usb:radio", &rescanned),
+            0
+        );
+        assert_eq!(
+            layout.zones.len(),
+            1,
+            "the ring waits for the device to connect"
+        );
+    }
+
+    /// Studio mints a member into the scene's primary zone; the layout store
+    /// hears about it at restore and must not throw it away.
+    #[test]
+    fn restore_adopts_outputs_the_primary_zone_holds_and_the_layout_lacks() {
+        let mut stored = layout();
+        let radio = device(vec![segment(
+            "Fan 1",
+            26,
+            DeviceTopologyHint::Ring { count: 26 },
+        )]);
+        let mut held = layout();
+        let _ = append_auto_layout_zones_for_device(&mut held, "usb:radio", &radio);
+        let zone = |role: ZoneRole, layout: SpatialLayout| Zone {
+            id: hypercolor_types::scene::ZoneId::new(),
+            name: "Zone".to_owned(),
+            description: None,
+            layers: Vec::new(),
+            layout,
+            brightness: 1.0,
+            enabled: true,
+            color: None,
+            display_target: None,
+            role,
+            controls_version: 0,
+            layers_version: 0,
+        };
+        let primary = zone(ZoneRole::Primary, held.clone());
+        let screen = zone(ZoneRole::Display, held);
+
+        assert_eq!(adopt_primary_zone_outputs(&mut stored, &[screen]), 0);
+        assert_eq!(
+            adopt_primary_zone_outputs(&mut stored, std::slice::from_ref(&primary)),
+            1
+        );
+        assert_eq!(stored.zones.len(), 1);
+        assert_eq!(
+            adopt_primary_zone_outputs(&mut stored, &[primary]),
+            0,
+            "an output already in the layout is not adopted twice"
         );
     }
 }
