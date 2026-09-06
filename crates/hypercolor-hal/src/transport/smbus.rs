@@ -755,6 +755,9 @@ impl SmBusTransport {
     }
 
     /// `SMBus` transport is only available on Linux and Windows.
+    // The Linux and Windows probes await the bus arbiter; the stub keeps
+    // their signature so callers compile the same on every target.
+    #[allow(clippy::unused_async)]
     pub async fn probe_presence(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux and Windows".to_owned(),
@@ -762,6 +765,9 @@ impl SmBusTransport {
     }
 
     /// `SMBus` transport is only available on Linux and Windows.
+    // The Linux and Windows probes await the bus arbiter; the stub keeps
+    // their signature so callers compile the same on every target.
+    #[allow(clippy::unused_async)]
     pub async fn probe_quick_write(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux and Windows".to_owned(),
