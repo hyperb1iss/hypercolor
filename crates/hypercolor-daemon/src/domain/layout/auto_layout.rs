@@ -13,7 +13,7 @@ use hypercolor_types::spatial::{
 /// layout does not: a member assigned in Studio is minted into the scene's
 /// zone, and the layout store only learns of it here. Returns how many were
 /// adopted.
-pub(crate) fn adopt_primary_zone_outputs(layout: &mut SpatialLayout, zones: &[Zone]) -> usize {
+pub(super) fn adopt_primary_zone_outputs(layout: &mut SpatialLayout, zones: &[Zone]) -> usize {
     let mut adopted = 0;
     for zone in zones
         .iter()

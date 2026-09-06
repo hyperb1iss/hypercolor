@@ -4,8 +4,6 @@ mod auto_layout;
 mod catalog;
 mod convergence;
 mod exclusions;
-
-pub(crate) use auto_layout::adopt_primary_zone_outputs;
 mod publication;
 mod workflows;
 
@@ -631,6 +629,16 @@ impl LayoutContext {
             .restore_startup_layout(layout.clone())
             .await?;
         Ok(Some(layout))
+    }
+
+    /// Adopt into `layout` the outputs a persisted primary zone holds that
+    /// it lacks; see [`auto_layout::adopt_primary_zone_outputs`].
+    pub(crate) fn adopt_primary_zone_outputs(
+        &self,
+        layout: &mut SpatialLayout,
+        zones: &[Zone],
+    ) -> usize {
+        auto_layout::adopt_primary_zone_outputs(layout, zones)
     }
 
     /// Publish a layout the startup restore merged (the store's entry plus

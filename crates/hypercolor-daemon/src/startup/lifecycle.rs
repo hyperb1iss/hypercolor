@@ -601,10 +601,10 @@ impl DaemonState {
         // zone is re-aligned to it, or every restart drops them.
         {
             let mut active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
-            let adopted = crate::domain::layout::adopt_primary_zone_outputs(
-                &mut active_layout,
-                &snapshot.default_scene_zones,
-            );
+            let adopted = self
+                .domains
+                .layout
+                .adopt_primary_zone_outputs(&mut active_layout, &snapshot.default_scene_zones);
             if adopted > 0 {
                 info!(
                     adopted,
