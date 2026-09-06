@@ -73,7 +73,7 @@ image = { workspace = true, optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 servo = { workspace = true, features = ["no-wgl"], optional = true }
 surfman = { workspace = true, features = ["sm-angle-builtin", "sm-angle-default"], optional = true }
-tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
+tao = { version = "0.35", default-features = false, features = ["rwh_06"], optional = true }
 tracing = { workspace = true, optional = true }
 winapi = { version = "0.3", features = ["d3d11", "dxgi", "winerror"], optional = true }
 wio = { version = "0.2", optional = true }
