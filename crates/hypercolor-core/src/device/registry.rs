@@ -215,7 +215,7 @@ impl DeviceRegistry {
                 let mut updated_info = info;
                 // Keep the canonical registry ID stable across rediscovery.
                 updated_info.id = existing_id;
-                preserve_renderable_device_shape(&mut updated_info, &entry.info, &entry.state);
+                preserve_resolved_device_shape(&mut updated_info, &entry.info);
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
                 let entry_changed =
                     entry.info != updated_info || entry.connect_behavior != connect_behavior;
@@ -278,7 +278,7 @@ impl DeviceRegistry {
             if let Some(entry) = inner.devices.get_mut(&existing_id) {
                 let mut updated_info = info;
                 updated_info.id = existing_id;
-                preserve_renderable_device_shape(&mut updated_info, &entry.info, &entry.state);
+                preserve_resolved_device_shape(&mut updated_info, &entry.info);
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
                 debug!(
                     device_id = %existing_id,
@@ -928,15 +928,12 @@ fn smbus_dram_identity(
     })
 }
 
-fn preserve_renderable_device_shape(
-    incoming: &mut DeviceInfo,
-    existing: &DeviceInfo,
-    state: &DeviceState,
-) {
-    if !state.is_renderable() {
-        return;
-    }
-
+/// A rescan describes a device from its descriptor, which for a hub or a
+/// radio carries no segments; the shape the device reported on its last
+/// connect is the better answer in every state, so a shapeless rediscovery
+/// never erases it. Dropping it would make the device look brand new on
+/// every scan and reconnect it just to learn what it already told us.
+fn preserve_resolved_device_shape(incoming: &mut DeviceInfo, existing: &DeviceInfo) {
     let incoming_has_shape = !incoming.segments.is_empty()
         || incoming.capabilities.led_count > 0
         || incoming.capabilities.has_display;

@@ -928,6 +928,95 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
 }
 
 #[tokio::test]
+async fn registry_add_with_fingerprint_preserves_resolved_shape_of_a_known_device_when_rediscovery_is_blank()
+ {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint::from_persisted("usb:1b1c:0c3f:corsair-hub".to_owned());
+
+    let connected = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Corsair Hub".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::new_static("corsair", "Corsair"),
+        model: Some("icue_link_system_hub".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+        segments: vec![
+            SegmentInfo {
+                name: "iCUE LINK H-Series AIO".to_owned(),
+                led_count: 20,
+                topology: DeviceTopologyHint::Ring { count: 20 },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            },
+            SegmentInfo {
+                name: "iCUE LINK Cooler Pump LCD".to_owned(),
+                led_count: 24,
+                topology: DeviceTopologyHint::Ring { count: 24 },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            },
+        ],
+        firmware_version: Some("2.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 44,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+
+    let device_id = registry
+        .add_with_fingerprint(connected, fingerprint.clone())
+        .await;
+    // Connected once, then deferred by the layout: the hub still knows
+    // its own shape, and a rescan from the bare descriptor must not
+    // erase it or the hub would look brand new and reconnect every scan.
+    assert!(
+        registry.set_state(&device_id, DeviceState::Connected).await,
+        "device state should update"
+    );
+    assert!(
+        registry.set_state(&device_id, DeviceState::Known).await,
+        "device state should update"
+    );
+
+    let rediscovered = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Corsair Hub (rediscovered)".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::new_static("corsair", "Corsair"),
+        model: Some("icue_link_system_hub".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+        segments: Vec::new(),
+        firmware_version: Some("2.2.0".to_owned()),
+        capabilities: DeviceCapabilities::default(),
+    };
+
+    let rediscovered_id = registry
+        .add_with_fingerprint(rediscovered, fingerprint)
+        .await;
+
+    assert_eq!(rediscovered_id, device_id);
+
+    let tracked = registry
+        .get(&device_id)
+        .await
+        .expect("device should still exist");
+    assert_eq!(tracked.info.name, "Corsair Hub (rediscovered)");
+    assert_eq!(tracked.info.segments.len(), 2);
+    assert_eq!(tracked.info.total_led_count(), 44);
+    assert_eq!(tracked.info.capabilities.led_count, 44);
+    assert_eq!(tracked.info.capabilities.max_fps, 30);
+    assert_eq!(tracked.state, DeviceState::Known);
+}
+
+#[tokio::test]
 async fn registry_generation_advances_on_mutation() {
     let registry = DeviceRegistry::new();
     assert_eq!(registry.generation(), 0);
