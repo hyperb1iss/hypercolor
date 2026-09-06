@@ -371,7 +371,14 @@ pub async fn delete_display_face(
 ) -> Response {
     let device_id = match resolve_display_device_id_or_error(&state, &device).await {
         Ok(id) => id,
-        Err(error) => return error.into_response(),
+        // A stored default outlives its display (re-fingerprinted, or a
+        // simulator since removed). A bare id that still keys the
+        // preference store clears cleanly rather than leaving an orphan
+        // no client can reach.
+        Err(error) => match orphaned_default_face_id(&state, &device, query.scope).await {
+            Some(id) => id,
+            None => return error.into_response(),
+        },
     };
 
     if query.scope == DisplayFaceScope::Default {
@@ -593,6 +600,25 @@ async fn resolve_display_device_id_or_error(
         )));
     }
     Ok(device_id)
+}
+
+/// The device id behind a default-scope delete whose display is no
+/// longer registered, when the preference store still holds it.
+async fn orphaned_default_face_id(
+    state: &AppState,
+    raw: &str,
+    scope: DisplayFaceScope,
+) -> Option<DeviceId> {
+    if scope != DisplayFaceScope::Default {
+        return None;
+    }
+    let device_id = raw.trim().parse::<DeviceId>().ok()?;
+    state
+        .domains
+        .display
+        .has_default_face(device_id)
+        .await
+        .then_some(device_id)
 }
 
 async fn current_display_face_assignment(

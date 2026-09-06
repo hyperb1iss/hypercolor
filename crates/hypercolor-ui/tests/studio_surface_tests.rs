@@ -9,7 +9,10 @@ use hypercolor_types::scene::{DisplayFaceTarget, ZoneId, ZoneRole};
 use uuid::Uuid;
 
 use hypercolor_ui::api::ZoneResource;
-use hypercolor_ui::pages::studio::surface::{SurfaceKind, led_zone_count, surfaces_from_zones};
+use hypercolor_ui::pages::studio::surface::{
+    Surface, SurfaceKind, led_zone_count, now_playing, selected_screen_device_id,
+    surfaces_from_zones,
+};
 
 fn zone_resource(
     name: &str,
@@ -193,4 +196,81 @@ fn led_zone_count_excludes_display_zones() {
         ),
     ];
     assert_eq!(led_zone_count(&zones), 2);
+}
+
+fn surface(kind: SurfaceKind, top_layer: Option<&str>) -> Surface {
+    Surface {
+        id: "surface".to_owned(),
+        name: "Surface".to_owned(),
+        kind,
+        enabled: true,
+        role: match kind {
+            SurfaceKind::Screen => ZoneRole::Display,
+            SurfaceKind::Light => ZoneRole::Custom,
+        },
+        color: None,
+        display_device_id: None,
+        layer_ids: Vec::new(),
+        top_layer: top_layer.map(str::to_owned),
+    }
+}
+
+#[test]
+fn now_playing_prefers_the_scene_top_layer() {
+    let screen = surface(SurfaceKind::Screen, Some("Neon Clock"));
+    let playing = now_playing(Some(&screen), Some("Sensor Grid"));
+    assert_eq!(playing.label, "Neon Clock");
+    assert!(!playing.is_default_face);
+}
+
+#[test]
+fn now_playing_names_the_default_face_on_an_empty_screen() {
+    let screen = surface(SurfaceKind::Screen, None);
+    let playing = now_playing(Some(&screen), Some("Neon Clock"));
+    assert_eq!(playing.label, "Neon Clock");
+    assert!(playing.is_default_face);
+
+    let blank = now_playing(Some(&screen), Some("   "));
+    assert_eq!(blank.label, "No layers");
+    assert!(!blank.is_default_face);
+}
+
+#[test]
+fn now_playing_ignores_default_faces_for_lights_and_no_selection() {
+    let light = surface(SurfaceKind::Light, None);
+    let playing = now_playing(Some(&light), Some("Neon Clock"));
+    assert_eq!(playing.label, "No layers");
+    assert!(!playing.is_default_face);
+
+    let none = now_playing(None, Some("Neon Clock"));
+    assert_eq!(none.label, "No layers");
+    assert!(!none.is_default_face);
+}
+
+#[test]
+fn selected_screen_device_id_resolves_only_bound_display_zones() {
+    let device_id = DeviceId::new();
+    let zones = vec![
+        zone_resource("Default zone", ZoneRole::Primary, None),
+        zone_resource(
+            "Screen",
+            ZoneRole::Display,
+            Some(DisplayFaceTarget::new(device_id)),
+        ),
+        zone_resource("Unbound screen", ZoneRole::Display, None),
+    ];
+
+    assert_eq!(
+        selected_screen_device_id(&zones, &zones[1].id.to_string()),
+        Some(device_id.to_string())
+    );
+    assert_eq!(
+        selected_screen_device_id(&zones, &zones[0].id.to_string()),
+        None
+    );
+    assert_eq!(
+        selected_screen_device_id(&zones, &zones[2].id.to_string()),
+        None
+    );
+    assert_eq!(selected_screen_device_id(&zones, "missing"), None);
 }

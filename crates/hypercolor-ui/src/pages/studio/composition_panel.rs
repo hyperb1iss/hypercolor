@@ -10,15 +10,13 @@ use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::ZoneRole;
-
 use crate::api;
 use crate::components::layer_panel::LayerPanel;
 use crate::icons::*;
 
 use super::StudioContext;
-use super::face_composition::ScreenCompositionSection;
-use super::surface::UNASSIGNED_SURFACE_ID;
+use super::face_composition::{DefaultFaceCard, ScreenCompositionSection};
+use super::surface::{UNASSIGNED_SURFACE_ID, selected_screen_device_id};
 
 /// The right-edge composition slide-over. Stays mounted and animates via
 /// a transform; `inert` while closed keeps its controls out of the tab
@@ -50,12 +48,7 @@ pub fn CompositionPanel(
     let screen_device_id = Memo::new(move |_| {
         let selected = selected_zone_id.get()?;
         let scene = active_scene.get()?;
-        scene
-            .zones
-            .iter()
-            .find(|zone| zone.id.to_string() == selected && zone.role == ZoneRole::Display)
-            .and_then(|zone| zone.display_target.as_ref())
-            .map(|target| target.device_id.to_string())
+        selected_screen_device_id(&scene.zones, &selected)
     });
 
     // Escape closes the panel while it is open, unless a text field owns
@@ -100,6 +93,10 @@ pub fn CompositionPanel(
                         view! { <UnassignedNote /> }.into_any()
                     } else {
                         view! {
+                            <DefaultFaceCard
+                                display_device_id=screen_device_id
+                                on_layers_mutated=on_layers_mutated
+                            />
                             <ScreenCompositionSection display_device_id=screen_device_id />
                             <LayerPanel
                                 active_scene=active_scene
