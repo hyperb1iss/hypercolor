@@ -38,10 +38,10 @@ use discovery::{
     parse_device_table, parse_master_reply,
 };
 use frame::{
-    DEFAULT_CHANNEL, Mac, RF_BROADCAST_SLOT, RfEnvelope, TX_RESET, TX_VIDEO_START, USB_CMD_GET_MAC,
-    USB_CMD_SEND_RF, WallClock, clock_payload, clock_sync_envelope, control_packet, get_dev_poll,
-    get_mac_query, pwm_envelope, reverse_fan_order, rgb_transfer, save_config_envelope,
-    stream_prep_packet,
+    DEFAULT_CHANNEL, Mac, RF_BROADCAST_SLOT, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfEnvelope,
+    TX_RESET, TX_VIDEO_START, USB_CMD_GET_MAC, USB_CMD_SEND_RF, WallClock, clock_payload,
+    clock_sync_envelope, control_packet, effect_index_for, get_dev_poll, get_mac_query,
+    pwm_envelope, reverse_fan_order, rgb_transfer, save_config_envelope, stream_prep_packet,
 };
 
 /// Reads at init, where the RX answers a two-page poll in about 30 ms and
@@ -67,6 +67,12 @@ const MAX_FPS: u32 = 10;
 /// reference sends for stills.
 const LIVE_TOTAL_FRAMES: u16 = 1;
 const LIVE_INTERVAL_MS: u16 = 5000;
+/// Frames are traced this often at debug level.
+const FRAME_TRACE_EVERY: u32 = 100;
+/// The transfer header goes out twice, this far apart, so one lost packet
+/// does not cost the whole frame; the data envelopes go once.
+const HEADER_REPEATS: usize = 2;
+const HEADER_REPEAT_GAP: Duration = Duration::from_millis(2);
 /// One bind round: the bind carrier repeated this many times, this far
 /// apart, then a settle before the table is polled for the result. The
 /// numbers are the reference driver's, which pair reliably on first try.
@@ -253,9 +259,7 @@ fn format_mac(mac: Mac) -> String {
 /// The L-Wireless controller protocol.
 pub struct WirelessControllerProtocol {
     state: RwLock<WirelessState>,
-    /// Tag stamped on each RGB transfer; receivers echo the last one they
-    /// accepted in their device record.
-    effect_counter: AtomicU32,
+    frames_encoded: AtomicU32,
 }
 
 impl Default for WirelessControllerProtocol {
@@ -270,7 +274,7 @@ impl WirelessControllerProtocol {
     pub fn new() -> Self {
         Self {
             state: RwLock::new(WirelessState::default()),
-            effect_counter: AtomicU32::new(1),
+            frames_encoded: AtomicU32::new(0),
         }
     }
 
@@ -330,18 +334,46 @@ impl WirelessControllerProtocol {
         .with_response_timeout(timeout)
     }
 
+    /// One RX setup packet; the replies to the queries are informational,
+    /// so a missing one never fails the connect.
+    fn rx_setup_command(prefix: &[u8], reads_reply: bool) -> ProtocolCommand {
+        let mut command = ProtocolCommand {
+            data: control_packet(prefix),
+            expects_response: reads_reply,
+            transfer_type: TransferType::Companion,
+            post_delay: Duration::from_millis(2),
+            ..Default::default()
+        };
+        if reads_reply {
+            command = command
+                .with_optional_response()
+                .with_response_timeout(STEADY_TIMEOUT);
+        }
+        command
+    }
+
+    /// Queue an envelope's four USB packets; `tail_delay` is the pause after
+    /// the last one, where a repeat or the next envelope follows.
     fn push_envelope(
         buffer: &mut CommandBuffer<'_>,
         envelope: &RfEnvelope,
         channel: u8,
         rx_type: u8,
+        tail_delay: Duration,
     ) {
-        for packet in envelope.usb_packets(channel, rx_type) {
+        let packets = envelope.usb_packets(channel, rx_type);
+        let last = packets.len() - 1;
+        for (index, packet) in packets.iter().enumerate() {
+            let post_delay = if index == last {
+                tail_delay
+            } else {
+                SLICE_PACING
+            };
             buffer.push_slice(
-                &packet,
+                packet,
                 false,
                 Duration::ZERO,
-                SLICE_PACING,
+                post_delay,
                 TransferType::Primary,
             );
         }
@@ -356,12 +388,6 @@ impl WirelessControllerProtocol {
         for packet in envelope.usb_packets(channel, rx_type) {
             commands.push(Self::tx_command(packet.to_vec(), false));
         }
-    }
-
-    fn next_effect_index(&self) -> [u8; 4] {
-        self.effect_counter
-            .fetch_add(1, Ordering::Relaxed)
-            .to_be_bytes()
     }
 
     /// The channel envelopes ride: the first cluster's, else the default.
@@ -394,9 +420,10 @@ impl Protocol for WirelessControllerProtocol {
         "Lian Li L-Wireless Controller"
     }
 
-    /// Reset the radio, learn the controller's MAC, then read the device
-    /// table from the RX. Every session starts from an empty table so a
-    /// cluster unbound while the daemon was down does not linger.
+    /// Reset the radio, learn the controller's MAC, read the device table
+    /// from the RX, then run the RX setup the reference sends once (two
+    /// queries and the LCD-mode switch). Every session starts from an empty
+    /// table so a cluster unbound while the daemon was down does not linger.
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
         {
             let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
@@ -411,6 +438,9 @@ impl Protocol for WirelessControllerProtocol {
             Self::tx_command(get_mac_query(DEFAULT_CHANNEL), true)
                 .with_response_timeout(INIT_TIMEOUT),
             Self::get_dev_command(INIT_TIMEOUT),
+            Self::rx_setup_command(&RX_QUERY_34, true),
+            Self::rx_setup_command(&RX_QUERY_37, true),
+            Self::rx_setup_command(&RX_LCD_MODE, false),
         ]
     }
 
@@ -464,6 +494,7 @@ impl Protocol for WirelessControllerProtocol {
             state.streaming_started = true;
         }
 
+        let frame_number = self.frames_encoded.fetch_add(1, Ordering::Relaxed);
         let mut offset = 0_usize;
         for cluster in &state.table.clusters {
             let leds_per_fan = usize::from(cluster.model.leds_per_fan());
@@ -481,20 +512,44 @@ impl Protocol for WirelessControllerProtocol {
             let transfer = rgb_transfer(
                 cluster.mac,
                 master,
-                self.next_effect_index(),
-                cluster.model.leds_per_fan(),
+                effect_index_for(&raw),
+                u8::try_from(led_count).unwrap_or(u8::MAX),
                 LIVE_TOTAL_FRAMES,
                 LIVE_INTERVAL_MS,
                 &raw,
             );
-            Self::push_envelope(
-                &mut buffer,
-                &transfer.header,
-                cluster.channel,
-                cluster.rx_type,
-            );
+            if frame_number.is_multiple_of(FRAME_TRACE_EVERY) {
+                debug!(
+                    frame_number,
+                    mac = %format_mac(cluster.mac),
+                    led_count,
+                    data_envelopes = transfer.data.len(),
+                    first_pixel = ?raw.get(..3),
+                    "wireless frame encoded"
+                );
+            }
+            for repeat in 0..HEADER_REPEATS {
+                let tail_delay = if repeat + 1 < HEADER_REPEATS {
+                    HEADER_REPEAT_GAP
+                } else {
+                    SLICE_PACING
+                };
+                Self::push_envelope(
+                    &mut buffer,
+                    &transfer.header,
+                    cluster.channel,
+                    cluster.rx_type,
+                    tail_delay,
+                );
+            }
             for envelope in &transfer.data {
-                Self::push_envelope(&mut buffer, envelope, cluster.channel, cluster.rx_type);
+                Self::push_envelope(
+                    &mut buffer,
+                    envelope,
+                    cluster.channel,
+                    cluster.rx_type,
+                    SLICE_PACING,
+                );
             }
         }
 

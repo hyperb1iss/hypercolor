@@ -41,6 +41,11 @@ pub const CLOCK_PAYLOAD_LEN: usize = 220;
 pub const TX_RESET: [u8; 4] = [USB_CMD_GET_MAC, 0x08, 0x00, 0x00];
 /// Precomposed TX control: enter the streaming ("video") mode.
 pub const TX_VIDEO_START: [u8; 4] = [USB_CMD_GET_MAC, 0x01, 0x00, 0x00];
+/// RX setup the reference driver sends once after discovery starts: two
+/// queries it reads a reply for, then the LCD-mode switch it does not.
+pub const RX_QUERY_34: [u8; 4] = [USB_CMD_SEND_RF, 0x01, 0x04, 0x34];
+pub const RX_QUERY_37: [u8; 4] = [USB_CMD_SEND_RF, 0x01, 0x04, 0x37];
+pub const RX_LCD_MODE: [u8; 4] = [USB_CMD_SEND_RF, 0x01, 0x04, 0x30];
 
 /// Sub-command byte at envelope offset 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +231,23 @@ pub fn clock_sync_envelope(
     envelope
 }
 
+/// The effect tag for a frame: an FNV-1a hash of its pixels, never zero.
+/// The receiver echoes the tag it last accepted in its device record, so a
+/// frame that changes gets a new tag and a still keeps its old one, which
+/// is what lets a firmware fallback show up as drift.
+#[must_use]
+pub fn effect_index_for(raw_rgb: &[u8]) -> [u8; 4] {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &byte in raw_rgb {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    if hash == 0 {
+        hash = 1;
+    }
+    hash.to_be_bytes()
+}
+
 /// Per-LED RGB for one cluster, ready for the radio.
 #[derive(Debug, Clone)]
 pub struct RgbTransfer {
@@ -239,14 +261,17 @@ pub struct RgbTransfer {
 /// LED, frames concatenated for an animation).
 ///
 /// `effect_index` is an opaque tag the receiver echoes in its device record.
-/// `total_frames` is 1 for a live still; more than one uploads a
-/// firmware-looped animation stepping every `interval_ms`.
+/// `led_count` is the LEDs in one frame, every fan of the cluster together;
+/// the firmware lights that many and leaves the rest dark, so a per-fan
+/// count would light one fan of three. `total_frames` is 1 for a live
+/// still; more than one uploads a firmware-looped animation stepping every
+/// `interval_ms`.
 #[must_use]
 pub fn rgb_transfer(
     target: Mac,
     master: Mac,
     effect_index: [u8; 4],
-    leds_per_fan: u8,
+    led_count: u8,
     total_frames: u16,
     interval_ms: u16,
     raw_rgb: &[u8],
@@ -264,7 +289,7 @@ pub fn rgb_transfer(
     header.0[20..24].copy_from_slice(&compressed_len.to_be_bytes());
     header.0[24] = 0;
     header.0[25..27].copy_from_slice(&total_frames.to_be_bytes());
-    header.0[27] = leds_per_fan;
+    header.0[27] = led_count;
     header.0[32..34].copy_from_slice(&interval_ms.to_be_bytes());
 
     let data = compressed

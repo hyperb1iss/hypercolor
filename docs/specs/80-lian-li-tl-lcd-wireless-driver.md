@@ -755,15 +755,22 @@ Header frame (packet index 0), fields within the §6.2 envelope:
 | 20–23 | 4 | compressed length | u32 BE | |
 | 24 | 1 | reserved | 0 | |
 | 25–26 | 2 | total frames | u16 BE | 1 = live still; >1 = firmware-looped animation |
-| 27 | 1 | LEDs per fan | 26 (TL) | |
+| 27 | 1 | LEDs in the frame | fans × per-fan (78 for three TL) | the firmware lights this many and leaves the rest dark; a per-fan count lit one fan of three on the bench |
 | 28–31 | 4 | reserved | 0 | |
 | 32–33 | 2 | frame interval | u16 BE, ms | loop interval for animations; reference sends 5000 for single stills |
 | 34–239 | 206 | reserved | 0 | zero-filled remainder of the 240-byte envelope |
 
 The header frame is sent `header_repeats` times (≥1; inter-repeat gap 2 ms
-when ≤2 repeats, else 20 ms). Data frames (index 1..N) carry the packet index
-at [18] and up to 220 compressed bytes at [20..240]; bytes past the final
-chunk's length are zero.
+when ≤2 repeats, else 20 ms); Hypercolor sends it twice, 2 ms apart, the
+way the reference adapter streams direct color. Data frames (index 1..N)
+carry the packet index at [18] and up to 220 compressed bytes at
+[20..240]; bytes past the final chunk's length are zero. The effect index
+of a live frame is the constant `00 00 00 01` the reference uses, so the
+tag a receiver echoes in its record is the drift detector, not a counter.
+
+After the first device table poll, init sends the RX setup the reference
+daemon sends once after discovery starts: `10 01 04 34` and `10 01 04 37`
+(replies read but not required) and the LCD-mode switch `10 01 04 30`.
 
 Live streaming = `total_frames: 1` per render tick. The achievable tick rate
 is bandwidth-bound and must be measured on hardware (§11.4) — the spec sets

@@ -11,9 +11,9 @@ use hypercolor_hal::drivers::lianli::wireless::discovery::{
 };
 use hypercolor_hal::drivers::lianli::wireless::frame::{
     CLOCK_PAYLOAD_LEN, RF_BROADCAST_SLOT, RF_ENVELOPE_LEN, RF_SELECT, RGB_CHUNK_LEN,
-    RGB_DATA_OFFSET, RfSubCommand, TX_RESET, TX_VIDEO_START, USB_CMD_GET_MAC, USB_CMD_SEND_RF,
-    USB_PACKET_LEN, WallClock, clock_payload, clock_sync_envelope, pwm_envelope, reverse_fan_order,
-    rgb_transfer,
+    RGB_DATA_OFFSET, RX_LCD_MODE, RX_QUERY_34, RX_QUERY_37, RfSubCommand, TX_RESET, TX_VIDEO_START,
+    USB_CMD_GET_MAC, USB_CMD_SEND_RF, USB_PACKET_LEN, WallClock, clock_payload,
+    clock_sync_envelope, pwm_envelope, reverse_fan_order, rgb_transfer,
 };
 use hypercolor_hal::drivers::lianli::wireless::tinyuz;
 use hypercolor_hal::protocol::{Protocol, ResponseTolerance, TransferType};
@@ -283,7 +283,7 @@ fn an_rgb_transfer_has_a_header_then_220_byte_chunks_of_compressed_data() {
         [1; 6],
         MASTER_MAC,
         [0xDE, 0xAD, 0xBE, 0xEF],
-        26,
+        4 * 26,
         1,
         5000,
         &raw,
@@ -303,7 +303,7 @@ fn an_rgb_transfer_has_a_header_then_220_byte_chunks_of_compressed_data() {
         compressed.len()
     );
     assert_eq!(&header[25..27], &[0, 1], "one frame: a live still");
-    assert_eq!(header[27], 26);
+    assert_eq!(header[27], 4 * 26, "every LED of the frame, not one fan's");
     assert_eq!(&header[32..34], &5000_u16.to_be_bytes());
 
     assert_eq!(transfer.data.len(), data_packets);
@@ -354,7 +354,20 @@ fn discovered_protocol() -> WirelessControllerProtocol {
 fn init_resets_the_radio_learns_the_mac_then_polls_the_rx() {
     let protocol = WirelessControllerProtocol::new();
     let commands = protocol.init_sequence();
-    assert_eq!(commands.len(), 3);
+    assert_eq!(commands.len(), 6, "reset, MAC query, table poll, RX setup");
+    for (command, prefix) in commands[3..]
+        .iter()
+        .zip([RX_QUERY_34, RX_QUERY_37, RX_LCD_MODE])
+    {
+        assert_eq!(&command.data[..4], &prefix);
+        assert_eq!(command.transfer_type, TransferType::Companion);
+    }
+    assert_eq!(commands[3].response.tolerance, ResponseTolerance::Optional);
+    assert_eq!(commands[4].response.tolerance, ResponseTolerance::Optional);
+    assert!(
+        !commands[5].expects_response,
+        "the LCD-mode switch is not answered"
+    );
 
     assert_eq!(&commands[0].data[..4], &TX_RESET);
     assert_eq!(commands[0].transfer_type, TransferType::Primary);
@@ -426,9 +439,9 @@ fn the_first_frame_switches_the_radio_to_streaming_and_later_frames_do_not() {
         &first[2].data[..4],
         &[USB_CMD_SEND_RF, 1, 8, RF_BROADCAST_SLOT]
     );
-    // Two clusters, each a header envelope plus one data envelope of a
-    // solid color, four USB packets per envelope.
-    assert_eq!(first.len(), 3 + 2 * 2 * 4);
+    // Two clusters, each a header envelope sent twice plus one data
+    // envelope of a solid color, four USB packets per envelope.
+    assert_eq!(first.len(), 3 + 2 * 3 * 4);
     assert!(first.iter().all(|command| !command.expects_response));
     assert!(
         first
@@ -442,12 +455,41 @@ fn the_first_frame_switches_the_radio_to_streaming_and_later_frames_do_not() {
     assert_eq!(header[5], RfSubCommand::SetRgb as u8);
     assert_eq!(&header[6..12], &[0x11; 6], "first cluster first");
 
-    let second = protocol.encode_frame(&colors);
-    assert_eq!(second.len(), 2 * 2 * 4, "no preamble once streaming");
+    let first_cluster = &protocol.clusters()[0];
+    assert_eq!(
+        u32::from(header[4 + 27]),
+        first_cluster.led_count(),
+        "the header counts every LED of the cluster's frame"
+    );
     assert_ne!(
         &first[3].data[18..22],
+        &[0, 0, 0, 0],
+        "live frames carry a tag hashed from their pixels"
+    );
+    assert_eq!(
+        &first[7].data[4..],
+        &first[3].data[4..],
+        "header sent twice"
+    );
+    assert_eq!(
+        first[6].post_delay,
+        Duration::from_millis(2),
+        "two ms apart"
+    );
+    assert_eq!(first[10].post_delay, Duration::from_millis(1));
+
+    let second = protocol.encode_frame(&colors);
+    assert_eq!(second.len(), 2 * 3 * 4, "no preamble once streaming");
+    assert_eq!(
+        &first[3].data[18..22],
         &second[0].data[18..22],
-        "every transfer carries a fresh effect tag"
+        "the same pixels carry the same tag"
+    );
+    let changed = protocol.encode_frame(&vec![[0, 255, 0]; 5 * 26]);
+    assert_ne!(
+        &changed[0].data[18..22],
+        &second[0].data[18..22],
+        "new pixels carry a new tag"
     );
 }
 
@@ -455,7 +497,7 @@ fn the_first_frame_switches_the_radio_to_streaming_and_later_frames_do_not() {
 fn a_short_color_slice_pads_the_missing_fans_with_black() {
     let protocol = discovered_protocol();
     let commands = protocol.encode_frame(&[[9, 9, 9]; 10]);
-    assert_eq!(commands.len(), 3 + 2 * 2 * 4);
+    assert_eq!(commands.len(), 3 + 2 * 3 * 4);
 }
 
 #[test]
