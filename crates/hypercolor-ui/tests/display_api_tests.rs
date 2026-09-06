@@ -173,6 +173,7 @@ fn set_display_face_request_skips_empty_controls() {
         controls: std::collections::HashMap::new(),
         blend_mode: Some(hypercolor_types::layer::BlendMode::Replace),
         opacity: Some(1.0),
+        rotation: None,
         scope: hypercolor_ui::api::DisplayFaceScope::Default,
     })
     .expect("display-face request should serialize");
@@ -198,6 +199,7 @@ fn set_display_face_request_serializes_present_controls() {
         )]),
         blend_mode: Some(hypercolor_types::layer::BlendMode::Replace),
         opacity: Some(1.0),
+        rotation: None,
         scope: hypercolor_ui::api::DisplayFaceScope::Scene,
     })
     .expect("display-face request should serialize");
