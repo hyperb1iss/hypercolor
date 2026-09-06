@@ -31,7 +31,8 @@ use crate::domain::layout::LayoutContext;
 use crate::logical_devices::LogicalDevice;
 
 pub(crate) use device_helpers::{
-    apply_persisted_device_settings, desired_connect_behavior, sync_registry_state,
+    adopt_discovered_device, apply_persisted_device_settings, desired_connect_behavior,
+    sync_registry_state,
 };
 pub use hypercolor_types::api::devices::{DiscoveryScanResult, DiscoveryScannerResult};
 pub(crate) use lifecycle::execute_lifecycle_actions;

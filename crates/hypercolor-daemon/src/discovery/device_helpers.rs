@@ -194,7 +194,11 @@ async fn connect_backend_device_inner(
     Ok(())
 }
 
-async fn adopt_discovered_device(
+/// Hand the backend the descriptor it needs before a connect. The scan
+/// adopts a device under the id it discovered it with, which for a
+/// device without a serial is fresh every scan, so any connect that
+/// bypasses the lifecycle path has to adopt under the registry's id first.
+pub(crate) async fn adopt_discovered_device(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
     backend: &BackendIo,
