@@ -806,13 +806,13 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             return;
         };
 
-        let current_device_ids = devices_resource
+        let current_devices = devices_resource
             .get_untracked()
             .and_then(|result| result.ok())
             .map(|devices| {
                 devices
                     .into_iter()
-                    .map(|device| device.id)
+                    .map(|device| (device.id, device.status))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -821,7 +821,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             &event.event_type,
             event.device_id.as_deref(),
             event.found_count,
-            &current_device_ids,
+            &current_devices,
         );
 
         if should_refetch {
