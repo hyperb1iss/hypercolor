@@ -5,6 +5,11 @@
 //! blend amount, and one-tap looks. This is the display target's
 //! composition, a different axis from the per-layer blend inside the
 //! face's own canvas, so it gets its own section above the layer stack.
+//!
+//! Also home to the default-face card: a screen with no scene layer of
+//! its own may still be painting the display's stored default (spec 69
+//! §3.6, a per-display preference that never lives in the scene). The
+//! card names that face and offers to copy it into the scene or clear it.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -14,6 +19,7 @@ use hypercolor_leptos_ext::events::Input;
 use hypercolor_types::layer::BlendMode;
 
 use crate::api;
+use crate::api::DisplayFaceScope;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::face_blend::{
@@ -38,20 +44,10 @@ pub fn ScreenCompositionSection(
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
 
-    // The face assignment for the selected screen. Retargets when the
-    // selection moves and refreshes after every composition commit.
-    let (face_tick, set_face_tick) = signal(0_u64);
-    let face_resource = api::daemon_resource(move || {
-        let _ = face_tick.get();
-        let device_id = display_device_id.get();
-        async move {
-            match device_id {
-                Some(device_id) => api::fetch_display_face(&device_id).await,
-                None => Ok(None),
-            }
-        }
-    });
-    let face = Signal::derive(move || face_resource.get().and_then(Result::ok).flatten());
+    // The face assignment for the selected screen, shared with the Stage
+    // chip and the default-face card. Refreshed after every commit here.
+    let face = studio.screen_face;
+    let refresh_face = studio.refresh_screen_face;
     let has_face = Signal::derive(move || face.get().is_some());
 
     // Local composition state, seeded from the server and pushed back
@@ -94,11 +90,11 @@ pub fn ScreenCompositionSection(
             commits_in_flight.try_update_value(|count| *count = count.saturating_sub(1));
             match result {
                 Ok(_) => {
-                    set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+                    refresh_face.run(());
                     refresh_scene.run(());
                 }
                 Err(error) => {
-                    set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+                    refresh_face.run(());
                     toasts::toast_error(&format!("Face composition update failed: {error}"));
                 }
             }
@@ -225,6 +221,139 @@ pub fn ScreenCompositionSection(
                                 .collect_view()}
                         </div>
                     </div>
+                </div>
+            </section>
+        </Show>
+    }
+}
+
+/// The Screen's default-face card. Shown while the screen paints its
+/// stored default with no scene layer of its own, so Studio never reports
+/// an empty stack over a face that is visibly running. "Use in this
+/// scene" copies the default into the scene as an editable layer (the
+/// scene layer then wins, per spec 69 precedence); "Clear default" drops
+/// the preference, which blanks the screen in every scene that gives it
+/// no face of its own.
+#[component]
+pub fn DefaultFaceCard(
+    /// Physical display device backing the selected Screen surface.
+    #[prop(into)]
+    display_device_id: Signal<Option<String>>,
+    /// Fired after the default is copied into the scene, so the host
+    /// refetches the layer stack and the scene.
+    on_layers_mutated: Callback<()>,
+) -> impl IntoView {
+    let studio = expect_context::<StudioContext>();
+    let default_face = Memo::new(move |_| {
+        studio
+            .screen_face
+            .get()
+            .filter(|face| face.live_scope == DisplayFaceScope::Default)
+    });
+    let face_name = move || {
+        default_face
+            .get()
+            .map(|face| face.effect.name)
+            .unwrap_or_default()
+    };
+    let (busy, set_busy) = signal(false);
+    let refresh_face = studio.refresh_screen_face;
+    let refresh_scene = studio.refresh_scene;
+
+    // Both actions resolve after an await, possibly once this card has
+    // been swapped out by a selection change, so every post-await write
+    // goes through the fallible forms and a disposed card stays silent.
+    let promote = move |_| {
+        let (Some(device_id), Some(face)) = (
+            display_device_id.get_untracked(),
+            default_face.get_untracked(),
+        ) else {
+            return;
+        };
+        set_busy.set(true);
+        spawn_local(async move {
+            match api::promote_default_face(&device_id, &face).await {
+                Ok(_) => toasts::toast_success("Face copied into this scene"),
+                Err(error) => {
+                    toasts::toast_error(&format!(
+                        "Could not copy the face into this scene: {error}"
+                    ));
+                }
+            }
+            set_busy.try_set(false);
+            refresh_face.try_run(());
+            on_layers_mutated.try_run(());
+        });
+    };
+    let clear = move |_| {
+        let Some(device_id) = display_device_id.get_untracked() else {
+            return;
+        };
+        set_busy.set(true);
+        spawn_local(async move {
+            match api::delete_display_face(&device_id, DisplayFaceScope::Default).await {
+                Ok(()) => toasts::toast_success("Default face cleared"),
+                Err(error) => {
+                    toasts::toast_error(&format!("Could not clear the default face: {error}"));
+                }
+            }
+            set_busy.try_set(false);
+            refresh_face.try_run(());
+            refresh_scene.try_run(());
+        });
+    };
+
+    view! {
+        <Show when=move || default_face.get().is_some()>
+            <section class="mt-4 rounded-xl border border-edge-subtle/70 bg-surface-overlay/50">
+                <div class="flex items-center justify-between gap-3 border-b border-edge-subtle/60 px-4 py-3">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                            <span class="truncate text-sm font-semibold text-fg-primary">
+                                {face_name}
+                            </span>
+                            <span
+                                class="shrink-0 rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-[0.14em]"
+                                style="border-color: rgba(225, 53, 255, 0.35); color: rgba(225, 53, 255, 0.85)"
+                            >
+                                "Default"
+                            </span>
+                        </div>
+                        <div class="text-[11px] text-fg-tertiary">
+                            "This display's default face. It shows in every scene that gives the screen no face of its own."
+                        </div>
+                    </div>
+                    <Icon
+                        icon=LuMonitor
+                        width="16px"
+                        height="16px"
+                        style="color: rgba(225, 53, 255, 0.72)"
+                    />
+                </div>
+                <div class="flex flex-wrap items-center gap-2 px-4 py-3">
+                    <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-md border border-accent-muted/60 bg-accent/10 px-2.5 py-1.5 text-[11px] font-medium text-fg-primary transition btn-press hover:bg-accent/20 disabled:cursor-wait disabled:opacity-60"
+                        title="Copy this face into the scene as an editable layer"
+                        disabled=move || busy.get()
+                        on:click=promote
+                    >
+                        <Icon icon=LuCopy width="12px" height="12px" />
+                        "Use in this scene"
+                    </button>
+                    <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-md border border-edge-subtle bg-surface-overlay/50 px-2.5 py-1.5 text-[11px] font-medium text-fg-secondary transition btn-press hover:text-fg-primary disabled:cursor-wait disabled:opacity-60"
+                        title="Remove the default face from this display"
+                        disabled=move || busy.get()
+                        on:click=clear
+                    >
+                        <Icon icon=LuTrash2 width="12px" height="12px" />
+                        "Clear default"
+                    </button>
+                    <p class="basis-full text-[10px] leading-relaxed text-fg-tertiary/80">
+                        "Adding a layer to this screen also overrides the default here; the default keeps running in other scenes."
+                    </p>
                 </div>
             </section>
         </Show>

@@ -153,3 +153,51 @@ fn is_blank_default_name(name: &str) -> bool {
     let trimmed = name.trim();
     trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary")
 }
+
+/// What the Stage's now-playing chip names for a surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NowPlaying {
+    pub label: String,
+    /// The label names the display's stored default face rather than a
+    /// layer in the scene.
+    pub is_default_face: bool,
+}
+
+/// Resolve the now-playing label. A surface's top scene layer wins; a
+/// Screen with no scene layers that paints its stored default names that
+/// face instead, so a visibly running face never reads as "No layers".
+#[must_use]
+pub fn now_playing(surface: Option<&Surface>, default_face: Option<&str>) -> NowPlaying {
+    if let Some(label) = surface.and_then(|surface| surface.top_layer.clone()) {
+        return NowPlaying {
+            label,
+            is_default_face: false,
+        };
+    }
+    let default_face = surface
+        .filter(|surface| surface.kind == SurfaceKind::Screen)
+        .and(default_face)
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    match default_face {
+        Some(name) => NowPlaying {
+            label: name.to_owned(),
+            is_default_face: true,
+        },
+        None => NowPlaying {
+            label: "No layers".to_owned(),
+            is_default_face: false,
+        },
+    }
+}
+
+/// The display device behind the selected surface, when that surface is
+/// a Screen with a bound target.
+#[must_use]
+pub fn selected_screen_device_id(zones: &[ZoneResource], selected_id: &str) -> Option<String> {
+    zones
+        .iter()
+        .find(|zone| zone.id.to_string() == selected_id && zone.role == ZoneRole::Display)
+        .and_then(|zone| zone.display_target.as_ref())
+        .map(|target| target.device_id.to_string())
+}

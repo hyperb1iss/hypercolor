@@ -33,6 +33,7 @@ pub mod source;
 use std::collections::HashMap;
 
 use hypercolor_types::layer::{LayerAdjust, LayerTransform, SceneLayer};
+use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -258,11 +259,21 @@ pub fn LayerPanel(
                                 {error.to_string()}
                             </div>
                         }.into_any(),
-                        Some(Ok(stack)) if stack.items.is_empty() => view! {
-                            <div class="rounded-lg border border-edge-subtle bg-surface-sunken/45 px-3 py-8 text-center text-xs text-fg-tertiary">
+                        Some(Ok(stack)) if stack.items.is_empty() => {
+                            // A screen may still be painting its stored
+                            // default face; only the scene's own stack is
+                            // empty, and the card above the panel says so.
+                            let copy = if selected_zone_role.get() == Some(ZoneRole::Display) {
+                                "No scene layers on this screen"
+                            } else {
                                 "No layers in this zone"
-                            </div>
-                        }.into_any(),
+                            };
+                            view! {
+                                <div class="rounded-lg border border-edge-subtle bg-surface-sunken/45 px-3 py-8 text-center text-xs text-fg-tertiary">
+                                    {copy}
+                                </div>
+                            }.into_any()
+                        }
                         Some(Ok(stack)) => {
                             // `try_get`: Suspense can re-poll this closure after
                             // the panel instance owning these memos is disposed

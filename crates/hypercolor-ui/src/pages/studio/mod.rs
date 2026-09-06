@@ -24,6 +24,7 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::api::ComponentBindingSummary;
+use crate::app::WsContext;
 use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -32,7 +33,9 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
 
-use crate::zones::surface::{UNASSIGNED_SURFACE_ID, surfaces_from_zones};
+use crate::zones::surface::{
+    UNASSIGNED_SURFACE_ID, selected_screen_device_id, surfaces_from_zones,
+};
 use composition_panel::CompositionPanel;
 use scene_selector::SceneSelector;
 use stage::Stage;
@@ -89,6 +92,12 @@ pub struct StudioContext {
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
     pub composition_open: RwSignal<bool>,
+    /// The selected Screen's live face: the scene's own assignment when it
+    /// has one, otherwise the display's stored default. `None` for Lights,
+    /// for Screens with no bound display, and for screens showing nothing.
+    pub screen_face: Signal<Option<api::DisplayFaceResponse>>,
+    /// Re-fetch the selected Screen's face after a face write.
+    pub refresh_screen_face: Callback<()>,
     /// Per-(scene, zone) sets of `Output` ids the user has hidden from
     /// the zone's device card. Keys are built by
     /// [`hidden_outputs_storage_key`]. Client UI state only; never
@@ -247,6 +256,35 @@ pub fn StudioPage() -> impl IntoView {
     });
     let refresh_scene = zones_ctx.refresh;
 
+    // The selected Screen's face rides the display face endpoint, which
+    // reports the scene layer or the stored default, whichever is live.
+    // It refetches on selection, after every face write from this page,
+    // and on any scene event (the daemon publishes zone_changed for
+    // default-face writes too), so it never needs a timer.
+    let ws = expect_context::<WsContext>();
+    let (face_tick, set_face_tick) = signal(0_u64);
+    let selected_screen_device = Memo::new(move |_| {
+        let selected = selected_surface_id.get()?;
+        let scene = active_scene.get()?;
+        selected_screen_device_id(&scene.zones, &selected)
+    });
+    let screen_face_resource = api::daemon_resource(move || {
+        let _ = face_tick.get();
+        let _ = ws.last_scene_event.get();
+        let device_id = selected_screen_device.get();
+        async move {
+            match device_id {
+                Some(device_id) => api::fetch_display_face(&device_id).await,
+                None => Ok(None),
+            }
+        }
+    });
+    let screen_face =
+        Signal::derive(move || screen_face_resource.get().and_then(Result::ok).flatten());
+    let refresh_screen_face = Callback::new(move |()| {
+        set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+    });
+
     // The zone tree owns selection, so the layer panel shows the selected
     // surface's name in its header rather than a redundant zone selector.
     let surface_label = Signal::derive(move || {
@@ -321,6 +359,8 @@ pub fn StudioPage() -> impl IntoView {
         active_scene,
         refresh_scene,
         composition_open,
+        screen_face,
+        refresh_screen_face,
         hidden_outputs,
         selected_output_ids,
         hovered_output_ids,
