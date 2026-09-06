@@ -59,10 +59,12 @@ const GET_DEV_PAGES: u8 = 2;
 /// Upkeep cadence: fans drift to firmware defaults when PWM traffic stops,
 /// and miss the clock into an autonomous fallback.
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
-/// Frame cadence baseline until the live RF rate is measured on hardware;
-/// raise on measurement, never lower (spec 80 section 11.4).
-const FRAME_INTERVAL: Duration = Duration::from_millis(100);
-const MAX_FPS: u32 = 10;
+/// Frame cadence. A frame for a three-fan cluster is twelve USB packets a
+/// millisecond apart, so 30 fps leaves the radio most of every interval;
+/// the 10 fps floor froze visibly whenever upkeep interrupted the stream.
+/// Raise on measurement, never lower (spec 80 section 11.4).
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const MAX_FPS: u32 = 30;
 /// A live frame is a one-frame animation; the interval is what the
 /// reference sends for stills.
 const LIVE_TOTAL_FRAMES: u16 = 1;
@@ -401,10 +403,10 @@ impl WirelessControllerProtocol {
 
     /// The streaming-mode switch plus one prep packet per driven cluster.
     ///
-    /// Sent ahead of the first frame and again on every upkeep tick: the
-    /// protocol never learns whether a batch reached the wire, so a
-    /// transient failure on the first frame would otherwise leave the radio
-    /// out of streaming mode for the rest of the session.
+    /// Sent once per session, ahead of the first frame or the first upkeep
+    /// tick, whichever comes first. Re-sending it every tick made the radio
+    /// restart its stream once a second, which showed as a freeze and a
+    /// snap on the fans; the reference arms video mode once as well.
     fn streaming_preamble(state: &WirelessState, commands: &mut Vec<ProtocolCommand>) {
         let channel = Self::channel(state);
         commands.push(Self::tx_command(control_packet(&TX_VIDEO_START), false));
@@ -563,16 +565,19 @@ impl Protocol for WirelessControllerProtocol {
         })
     }
 
-    /// The 1 Hz upkeep: refresh the table, re-arm streaming mode, hold every
-    /// cluster at the PWM it reported, and broadcast the clock.
+    /// The 1 Hz upkeep: refresh the table, hold every cluster at the PWM it
+    /// reported, and broadcast the clock. Streaming mode is armed here only
+    /// when no frame has done it yet.
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
         let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
         state.topology_frozen = true;
         let master = Self::master_mac(&state);
         let channel = Self::channel(&state);
         let mut commands = vec![Self::get_dev_command(STEADY_TIMEOUT)];
-        Self::streaming_preamble(&state, &mut commands);
-        state.streaming_started = true;
+        if !state.streaming_started {
+            Self::streaming_preamble(&state, &mut commands);
+            state.streaming_started = true;
+        }
 
         for (index, cluster) in state.table.clusters.iter().enumerate() {
             let slot_index = u8::try_from(index + 1).unwrap_or(u8::MAX);

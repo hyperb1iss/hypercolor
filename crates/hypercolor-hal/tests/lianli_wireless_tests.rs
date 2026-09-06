@@ -500,6 +500,24 @@ fn a_short_color_slice_pads_the_missing_fans_with_black() {
     assert_eq!(commands.len(), 3 + 2 * 3 * 4);
 }
 
+/// Re-arming video mode restarts the radio's stream; once a frame or a
+/// tick has armed it, upkeep leaves it alone.
+#[test]
+fn upkeep_does_not_restart_the_stream_once_it_is_armed() {
+    let protocol = discovered_protocol();
+    let _ = protocol.encode_frame(&[[1, 2, 3]; 5 * 26]);
+    let commands = protocol.keepalive_commands();
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.data[..4] != TX_VIDEO_START),
+        "no video start after the first frame"
+    );
+    assert_eq!(commands.len(), 1 + 3 * 4, "poll, two PWM holds, one clock");
+    let again = protocol.keepalive_commands();
+    assert_eq!(again.len(), 1 + 3 * 4);
+}
+
 #[test]
 fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     let protocol = discovered_protocol();
@@ -510,14 +528,14 @@ fn upkeep_polls_the_table_holds_pwm_steady_and_broadcasts_the_clock() {
     assert_eq!(commands[0].transfer_type, TransferType::Companion);
     assert_eq!(commands[0].response.capacity, Some(GET_DEV_REPLY_CAPACITY));
     // The poll, the streaming preamble (video start plus one prep packet
-    // per cluster), then two PWM envelopes and one clock envelope at four
-    // packets each.
+    // per cluster) because no frame has armed it yet, then two PWM
+    // envelopes and one clock envelope at four packets each.
     let preamble = 1 + 2;
     assert_eq!(commands.len(), 1 + preamble + 3 * 4);
     assert_eq!(
         &commands[1].data[..4],
         &TX_VIDEO_START,
-        "streaming is re-armed every tick"
+        "the first tick arms streaming when no frame has"
     );
 
     let pwm = &commands[1 + preamble].data;

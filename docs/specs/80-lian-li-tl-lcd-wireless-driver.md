@@ -801,7 +801,13 @@ occasionally spikes RPM.
    follow-up gated on hardware, not a v1 requirement,
 4. sends nothing after disconnect/shutdown — fans revert to firmware
    defaults, which is the same behavior as L-Connect exiting; documented, not
-   hidden.
+   hidden,
+5. arms the radio's streaming mode (video start plus one prep packet per
+   cluster) once per session, from whichever of the first frame or the
+   first upkeep tick comes first, never per tick. Re-arming it every second
+   restarted the stream: on the bench the rings froze for about a second
+   and snapped to the newest frame each tick. The reference arms video
+   mode once as well.
 
 This holds user-set speeds steady without making Hypercolor a fan-curve
 product. Exact clock-blob field values are validated on hardware before the
@@ -1075,9 +1081,11 @@ Registration and data surfaces:
 4. **RF RGB throughput ceiling is unmeasured.** Compressed frame size ×
    220-byte chunks × 2 ms pacing bounds the live per-LED rate; nobody has
    published numbers. Measure on hardware, then set the dongle protocol's
-   `max_fps`/`frame_interval` from data (provisional at implementation:
-   the wired TL hub's 100 ms interval as a floor, adjusted by measurement in
-   either direction). No preemptive caps.
+   `max_fps`/`frame_interval` from data. Bench, 2026-09-06, one three-fan
+   TL LCD cluster: a frame is twelve USB packets a millisecond apart, the
+   10 ms floor of the wired hub made every upkeep interruption visible, and
+   30 fps (33 ms) is the shipped cadence; push higher with more clusters on
+   the radio before treating it as the ceiling. No preemptive caps.
 5. **V2 dongle deltas.** V2 (`0x1A86`) appears to add an HID-flavored path
    (the reference has a dedicated module for it) alongside behavior changes
    (RPM sync moved into receivers, no signal-loss spin-up). V1 is the
