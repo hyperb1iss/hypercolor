@@ -19,6 +19,10 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 nusb = { workspace = true }
+chrono = { workspace = true }
+# DES-CBC header wrap for the Lian Li wireless LCD receivers (spec 80 section 7).
+des = "0.9"
+cbc = "0.2"
 tokio = { workspace = true }
 tokio-serial = "5"
 zerocopy = { workspace = true }

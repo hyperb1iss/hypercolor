@@ -151,6 +151,7 @@ async fn assign_command(
             blend_mode: BlendMode::Alpha,
             device_id,
             opacity: 1.0,
+            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     }
 }
@@ -250,6 +251,7 @@ async fn set_display_face_applies_the_requested_composition() {
         blend_mode: BlendMode::Alpha,
         device_id,
         opacity: 0.4,
+        rotation: hypercolor_types::scene::DisplayRotation::default(),
     };
     let written = set_display_face(&state.domains.effects, command)
         .await
@@ -364,6 +366,7 @@ async fn patching_composition_and_controls_reports_a_missing_zone() {
                 zone_id: ZoneId::new(),
                 blend_mode: Some(BlendMode::Replace),
                 opacity: None,
+                rotation: None,
             },
         )
         .await

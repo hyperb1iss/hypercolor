@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use hypercolor_types::device::DeviceColorFormat;
+use tracing::debug;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 /// Shared report ID for ENE 6K77 feature/output/input reports.
@@ -229,5 +230,36 @@ pub(super) fn strip_optional_report_id(data: &[u8], report_id: u8) -> &[u8] {
         &data[1..]
     } else {
         data
+    }
+}
+
+/// The ASCII text of a NUL-padded report field, trimmed.
+#[must_use]
+pub(crate) fn nul_terminated_ascii(payload: &[u8]) -> String {
+    let text: Vec<u8> = payload
+        .iter()
+        .take_while(|byte| **byte != 0x00)
+        .copied()
+        .collect();
+    String::from_utf8_lossy(&text).trim().to_owned()
+}
+
+/// Keep the first non-empty report of a product-info query.
+///
+/// Both TL families answer the query with the firmware version and then the
+/// build date; report order carries the meaning, so a later report never
+/// replaces what the first one said.
+pub(crate) fn record_first_product_info(slot: &mut Option<String>, report: &[u8], label: &str) {
+    let text = nul_terminated_ascii(report);
+    if text.is_empty() {
+        return;
+    }
+    match slot.as_deref() {
+        Some(existing) => debug!(
+            firmware = existing,
+            discarded = text.as_str(),
+            "ignoring trailing {label} report; firmware version already recorded"
+        ),
+        None => *slot = Some(text),
     }
 }

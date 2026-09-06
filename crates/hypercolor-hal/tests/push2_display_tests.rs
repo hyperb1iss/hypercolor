@@ -1,9 +1,29 @@
 use std::io::Cursor;
 
 use hypercolor_hal::drivers::push2::{Push2Protocol, build_push2_protocol};
-use hypercolor_hal::protocol::{Protocol, TransferType};
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand, TransferType};
 use hypercolor_types::device::{DisplayFrameFormat, DisplayFramePayload};
 use image::{ColorType, ImageEncoder, RgbImage, codecs::jpeg::JpegEncoder};
+
+/// Drive the one display seam with a JPEG payload, mapping failure to `None`
+/// so the assertions below read as they did against the JPEG-only hook.
+fn display_commands<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+) -> Option<Vec<ProtocolCommand>> {
+    let mut commands = Vec::new();
+    encode_into(protocol, jpeg, &mut commands).map(|()| commands)
+}
+
+fn encode_into<P: Protocol + ?Sized>(
+    protocol: &P,
+    jpeg: &[u8],
+    commands: &mut Vec<ProtocolCommand>,
+) -> Option<()> {
+    protocol
+        .encode_display_payload_into(DisplayFramePayload::jpeg(jpeg), commands)
+        .ok()
+}
 
 const PUSH2_DISPLAY_WIDTH: usize = 960;
 const PUSH2_DISPLAY_HEIGHT: usize = 160;
@@ -41,9 +61,7 @@ fn display_header_is_16_bytes_with_correct_magic() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([0, 0, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     assert_eq!(commands[0].data.len(), HEADER_SIZE);
     assert_eq!(&commands[0].data[..4], &HEADER_MAGIC);
@@ -61,9 +79,7 @@ fn data_chunks_do_not_exceed_transfer_chunk_size() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([128, 64, 200]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     for (index, cmd) in commands.iter().enumerate().skip(1) {
         assert!(
@@ -79,9 +95,7 @@ fn total_command_count_matches_expected_chunks_plus_header() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([255, 255, 255]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     let expected = 1 + expected_chunk_count();
     assert_eq!(
@@ -97,9 +111,7 @@ fn all_commands_use_bulk_transfer_type() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([0, 255, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     for (index, cmd) in commands.iter().enumerate() {
         assert_eq!(
@@ -117,9 +129,7 @@ fn total_pixel_data_matches_display_geometry() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([100, 50, 200]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     let total_data_bytes: usize = commands.iter().skip(1).map(|c| c.data.len()).sum();
     assert_eq!(
@@ -135,9 +145,7 @@ fn solid_black_frame_produces_xor_mask_pattern_in_pixel_region() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([0, 0, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     // Black pixels in RGB565 = 0x0000, so after XOR the output should be
     // the mask pattern itself in the pixel region of each line.
@@ -163,9 +171,7 @@ fn xor_mask_is_applied_to_pixel_region_of_each_line() {
     // Use solid black: RGB565 = 0x0000, XOR with mask = mask itself
     let jpeg = make_960x160_jpeg([0, 0, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     // Reconstruct first line from the first data chunk
     let first_line = &commands[1].data[..PUSH2_DISPLAY_LINE_SIZE];
@@ -197,9 +203,7 @@ fn solid_red_frame_encodes_to_expected_rgb565_pattern() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([255, 0, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     // Pure red in Push 2's BGR565 encoding:
     // blue=0>>3=0, green=0>>2=0, red=255>>3=31
@@ -249,9 +253,7 @@ fn solid_green_frame_encodes_to_expected_rgb565_pattern() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([0, 252, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     // Pure green (252 so it survives JPEG better):
     // blue=0>>3=0, green=252>>2=63, red=0>>3=0
@@ -273,9 +275,7 @@ fn solid_blue_frame_encodes_to_expected_rgb565_pattern() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([0, 0, 248]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     // Pure blue (248 for clean bit-shifting):
     // blue=248>>3=31, green=0>>2=0, red=0>>3=0
@@ -301,9 +301,7 @@ fn each_line_includes_128_byte_padding_after_pixel_data() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([0, 0, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
-        .expect("display encoding should succeed");
+    let commands = display_commands(&protocol, &jpeg).expect("display encoding should succeed");
 
     // Concatenate all data chunks
     let mut frame_data = Vec::new();
@@ -336,8 +334,7 @@ fn small_jpeg_is_resized_to_display_dimensions() {
     let protocol = Push2Protocol::new();
     let small_jpeg = make_jpeg(4, 4, [255, 0, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&small_jpeg)
+    let commands = display_commands(&protocol, &small_jpeg)
         .expect("small image should be accepted and resized");
 
     let total_data: usize = commands.iter().skip(1).map(|c| c.data.len()).sum();
@@ -352,8 +349,7 @@ fn large_jpeg_is_resized_to_display_dimensions() {
     let protocol = Push2Protocol::new();
     let large_jpeg = make_jpeg(1920, 320, [0, 128, 255]);
 
-    let commands = protocol
-        .encode_display_frame(&large_jpeg)
+    let commands = display_commands(&protocol, &large_jpeg)
         .expect("large image should be accepted and resized");
 
     let total_data: usize = commands.iter().skip(1).map(|c| c.data.len()).sum();
@@ -370,14 +366,14 @@ fn invalid_jpeg_data_returns_none() {
     let protocol = Push2Protocol::new();
     let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00];
 
-    let result = protocol.encode_display_frame(&garbage);
+    let result = display_commands(&protocol, &garbage);
     assert!(result.is_none(), "invalid JPEG data should return None");
 }
 
 #[test]
 fn empty_data_returns_none() {
     let protocol = Push2Protocol::new();
-    let result = protocol.encode_display_frame(&[]);
+    let result = display_commands(&protocol, &[]);
     assert!(result.is_none(), "empty data should return None");
 }
 
@@ -389,15 +385,12 @@ fn encode_display_frame_into_reuses_command_buffer() {
     let jpeg = make_960x160_jpeg([64, 128, 192]);
 
     let mut commands = Vec::new();
-    protocol
-        .encode_display_frame_into(&jpeg, &mut commands)
-        .expect("first encode should succeed");
+    encode_into(&protocol, &jpeg, &mut commands).expect("first encode should succeed");
 
     let first_count = commands.len();
     assert!(first_count > 0);
 
-    protocol
-        .encode_display_frame_into(&jpeg, &mut commands)
+    encode_into(&protocol, &jpeg, &mut commands)
         .expect("second encode with same buffer should succeed");
 
     assert_eq!(
@@ -423,8 +416,7 @@ fn encode_display_frame_into_truncates_oversized_buffer() {
         })
         .collect();
 
-    protocol
-        .encode_display_frame_into(&jpeg, &mut commands)
+    encode_into(&protocol, &jpeg, &mut commands)
         .expect("encode into oversized buffer should succeed");
 
     let expected = 1 + expected_chunk_count();
@@ -442,12 +434,8 @@ fn same_input_produces_identical_output() {
     let protocol = Push2Protocol::new();
     let jpeg = make_960x160_jpeg([200, 100, 50]);
 
-    let first = protocol
-        .encode_display_frame(&jpeg)
-        .expect("first encode should succeed");
-    let second = protocol
-        .encode_display_frame(&jpeg)
-        .expect("second encode should succeed");
+    let first = display_commands(&protocol, &jpeg).expect("first encode should succeed");
+    let second = display_commands(&protocol, &jpeg).expect("second encode should succeed");
 
     assert_eq!(first.len(), second.len());
     for (index, (a, b)) in first.iter().zip(second.iter()).enumerate() {
@@ -464,12 +452,8 @@ fn changed_input_invalidates_display_frame_cache() {
     let red = make_960x160_jpeg([255, 0, 0]);
     let blue = make_960x160_jpeg([0, 0, 248]);
 
-    let first = protocol
-        .encode_display_frame(&red)
-        .expect("first encode should succeed");
-    let second = protocol
-        .encode_display_frame(&blue)
-        .expect("second encode should succeed");
+    let first = display_commands(&protocol, &red).expect("first encode should succeed");
+    let second = display_commands(&protocol, &blue).expect("second encode should succeed");
 
     assert_ne!(
         &first[1].data[..8],
@@ -485,8 +469,7 @@ fn factory_protocol_supports_display_encoding() {
     let protocol = build_push2_protocol();
     let jpeg = make_960x160_jpeg([255, 128, 0]);
 
-    let commands = protocol
-        .encode_display_frame(&jpeg)
+    let commands = display_commands(protocol.as_ref(), &jpeg)
         .expect("factory protocol should support display encoding");
 
     assert_eq!(commands[0].data.len(), HEADER_SIZE);

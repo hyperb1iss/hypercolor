@@ -310,6 +310,7 @@ from .display_face_response_zone import DisplayFaceResponseZone
 from .display_face_scope import DisplayFaceScope
 from .display_pixel_format import DisplayPixelFormat
 from .display_rect import DisplayRect
+from .display_rotation import DisplayRotation
 from .display_shape import DisplayShape
 from .display_summary import DisplaySummary
 from .display_summary_list_item import DisplaySummaryListItem
@@ -898,6 +899,7 @@ __all__ = (
     "DisplayFaceScope",
     "DisplayPixelFormat",
     "DisplayRect",
+    "DisplayRotation",
     "DisplayShape",
     "DisplaySummary",
     "DisplaySummaryListItem",

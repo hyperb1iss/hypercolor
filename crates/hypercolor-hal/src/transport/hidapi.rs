@@ -212,7 +212,7 @@ impl Transport for UsbHidApiTransport {
         data: &[u8],
         transfer_type: crate::protocol::TransferType,
     ) -> Result<(), TransportError> {
-        self.send_with_mode(data, self.mode_for_transfer(transfer_type))
+        self.send_with_mode(data, self.mode_for_transfer(transfer_type)?)
             .await
     }
 
@@ -225,7 +225,7 @@ impl Transport for UsbHidApiTransport {
         timeout: Duration,
         transfer_type: crate::protocol::TransferType,
     ) -> Result<Vec<u8>, TransportError> {
-        self.receive_with_mode(timeout, self.mode_for_transfer(transfer_type))
+        self.receive_with_mode(timeout, self.mode_for_transfer(transfer_type)?)
             .await
     }
 
@@ -244,7 +244,7 @@ impl Transport for UsbHidApiTransport {
         timeout: Duration,
         transfer_type: crate::protocol::TransferType,
     ) -> Result<Vec<u8>, TransportError> {
-        self.send_receive_with_mode(data, timeout, self.mode_for_transfer(transfer_type))
+        self.send_receive_with_mode(data, timeout, self.mode_for_transfer(transfer_type)?)
             .await
     }
 
@@ -255,18 +255,25 @@ impl Transport for UsbHidApiTransport {
 }
 
 impl UsbHidApiTransport {
-    fn mode_for_transfer(&self, transfer_type: crate::protocol::TransferType) -> HidRawReportMode {
+    fn mode_for_transfer(
+        &self,
+        transfer_type: crate::protocol::TransferType,
+    ) -> Result<HidRawReportMode, TransportError> {
         match transfer_type {
             crate::protocol::TransferType::Primary | crate::protocol::TransferType::Bulk => {
-                self.report_mode
+                Ok(self.report_mode)
             }
             crate::protocol::TransferType::HidReport => {
                 if report_mode_payload_includes_report_id(self.report_mode) {
-                    HidRawReportMode::FeatureReportWithReportId
+                    Ok(HidRawReportMode::FeatureReportWithReportId)
                 } else {
-                    HidRawReportMode::FeatureReport
+                    Ok(HidRawReportMode::FeatureReport)
                 }
             }
+            crate::protocol::TransferType::Companion => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
         }
     }
 

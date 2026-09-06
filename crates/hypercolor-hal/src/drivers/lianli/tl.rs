@@ -13,7 +13,6 @@ use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
-use tracing::debug;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
@@ -21,7 +20,7 @@ use crate::protocol::{
     TransferType,
 };
 
-use super::common::{LianLiHubVariant, TL_REPORT_ID};
+use super::common::{LianLiHubVariant, TL_REPORT_ID, record_first_product_info};
 
 pub const TL_PACKET_LEN: usize = 64;
 const TL_PAYLOAD_LEN: usize = 58;
@@ -294,27 +293,8 @@ impl Protocol for TlFanProtocol {
                     .port_fan_counts = counts;
             }
             0xA6 => {
-                let firmware = payload
-                    .iter()
-                    .take_while(|byte| **byte != 0x00)
-                    .copied()
-                    .collect::<Vec<_>>();
-                let firmware = String::from_utf8_lossy(&firmware).trim().to_owned();
-                if !firmware.is_empty() {
-                    // Report order carries the meaning: version first, build
-                    // date second. Taking the latest would leave the date
-                    // stored as the firmware version.
-                    let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
-                    if let Some(existing) = state.firmware.as_deref() {
-                        debug!(
-                            firmware = existing,
-                            discarded = firmware.as_str(),
-                            "ignoring trailing 0xA6 report; firmware version already recorded"
-                        );
-                    } else {
-                        state.firmware = Some(firmware);
-                    }
-                }
+                let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+                record_first_product_info(&mut state.firmware, payload, "0xA6");
             }
             _ => {}
         }

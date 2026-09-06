@@ -42,6 +42,9 @@ pub async fn set_display_face(
         // composition panel for face-only looks.
         blend_mode: Some(BlendMode::Alpha),
         opacity: Some(1.0),
+        // The screen's mounting rotation is a display property; assigning
+        // a face keeps whatever the display already has.
+        rotation: None,
         scope,
     };
     client::put_json::<SetDisplayFaceRequest, DisplayFaceResponse>(&url, &body).await
@@ -79,6 +82,7 @@ pub async fn update_display_face_composition(
     let body = UpdateDisplayFaceCompositionRequest {
         blend_mode,
         opacity,
+        rotation: None,
     };
     client::patch_json::<UpdateDisplayFaceCompositionRequest, DisplayFaceResponse>(&url, &body)
         .await

@@ -2,16 +2,13 @@
 
 use std::time::Duration;
 
-use hypercolor_hal::database::ProtocolDatabase;
-use hypercolor_hal::display::{DisplayRotation, DisplaySetting};
+use hypercolor_hal::display::DisplayEncodeError;
 use hypercolor_hal::drivers::lianli::{
-    LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD, TL_LCD_HEADER_LEN, TL_LCD_MAX_PAYLOAD, TL_LCD_PACKET_LEN,
-    TL_LCD_REPORT_ID, TlLcdCommand, TlLcdMode, TlLcdProtocol,
+    TL_LCD_HEADER_LEN, TL_LCD_MAX_PAYLOAD, TL_LCD_PACKET_LEN, TL_LCD_REPORT_ID, TlLcdCommand,
+    TlLcdMode, TlLcdProtocol,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand};
-use hypercolor_types::device::{
-    DeviceColorFormat, DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload,
-};
+use hypercolor_types::device::{DeviceTopologyHint, DisplayFrameFormat, DisplayFramePayload};
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(3);
 const STEADY_TIMEOUT: Duration = Duration::from_millis(200);
@@ -161,15 +158,6 @@ fn one_byte_past_the_payload_boundary_becomes_two_packets() {
 }
 
 #[test]
-fn an_empty_frame_puts_nothing_on_the_wire() {
-    let protocol = TlLcdProtocol::new();
-
-    let commands = display_commands(&protocol, &[]);
-
-    assert!(commands.is_empty(), "an empty frame is not a transfer");
-}
-
-#[test]
 fn a_streamed_frame_is_reassembled_byte_for_byte() {
     let protocol = TlLcdProtocol::new();
     let frame = jpeg(TL_LCD_MAX_PAYLOAD * 2 + 300);
@@ -214,7 +202,15 @@ fn a_raw_rgb_payload_is_refused() {
         &mut commands,
     );
 
-    assert!(encoded.is_none(), "the panel takes JPEG frames only");
+    assert!(
+        matches!(
+            encoded,
+            Err(DisplayEncodeError::Unsupported {
+                format: DisplayFrameFormat::Rgb
+            })
+        ),
+        "the panel takes JPEG frames only: {encoded:?}"
+    );
 }
 
 // --- Init sequence (section 5.6) ---
@@ -246,14 +242,14 @@ fn the_init_sequence_runs_in_the_documented_order_at_the_init_timeout() {
             "init command {index} reads a reply"
         );
         assert_eq!(
-            command.response_timeout,
+            command.response.timeout,
             Some(INIT_TIMEOUT),
             "init command {index} uses the 3000ms init budget"
         );
     }
 
     assert_eq!(
-        commands[2].response_count, 2,
+        commands[2].response.count, 2,
         "GetProductInfo answers with a version report and a build-date report"
     );
     assert_eq!(
@@ -280,55 +276,6 @@ fn the_init_control_command_sets_full_brightness_thirty_fps_and_no_rotation() {
 }
 
 // --- Display settings (section 5.5) ---
-
-#[test]
-fn display_settings_ride_lcd_control_and_persist_between_changes() {
-    let protocol = TlLcdProtocol::new();
-
-    let brightness = protocol
-        .encode_display_setting(DisplaySetting::Brightness(40))
-        .expect("the panel supports hardware brightness");
-    let payload = &brightness[0].data[TL_LCD_HEADER_LEN..];
-    assert_eq!(payload[0], TlLcdMode::LcdSetting as u8);
-    assert_eq!(payload[4], 40);
-
-    let rotated = protocol
-        .encode_display_setting(DisplaySetting::Rotation(DisplayRotation::Deg270))
-        .expect("the panel supports rotation");
-    let payload = &rotated[0].data[TL_LCD_HEADER_LEN..];
-    assert_eq!(payload[6], 3, "270 degrees is rotation byte 3");
-    assert_eq!(
-        payload[4], 40,
-        "a rotation change carries the brightness already set"
-    );
-
-    let paced = protocol
-        .encode_display_setting(DisplaySetting::FrameRate(15))
-        .expect("the panel supports a frame-rate setting");
-    let payload = &paced[0].data[TL_LCD_HEADER_LEN..];
-    assert_eq!(payload[5], 15);
-    assert_eq!(payload[6], 3, "the rotation survives a frame-rate change");
-}
-
-#[test]
-fn every_rotation_maps_to_its_documented_byte() {
-    for (rotation, expected) in [
-        (DisplayRotation::Deg0, 0),
-        (DisplayRotation::Deg90, 1),
-        (DisplayRotation::Deg180, 2),
-        (DisplayRotation::Deg270, 3),
-    ] {
-        let protocol = TlLcdProtocol::new();
-        let commands = protocol
-            .encode_display_setting(DisplaySetting::Rotation(rotation))
-            .expect("rotation should encode");
-        assert_eq!(
-            commands[0].data[TL_LCD_HEADER_LEN + 6],
-            expected,
-            "{rotation:?}"
-        );
-    }
-}
 
 // --- Replies (section 5.4) ---
 
@@ -426,13 +373,13 @@ fn the_panel_exposes_one_round_400x400_display_zone() {
     assert_eq!(zones.len(), 1);
     assert_eq!(zones[0].name, "Display");
     assert_eq!(zones[0].led_count, 0);
-    assert_eq!(zones[0].color_format, DeviceColorFormat::Jpeg);
     assert!(matches!(
         zones[0].topology,
         DeviceTopologyHint::Display {
             width: 400,
             height: 400,
             circular: true,
+            format: DisplayFrameFormat::Jpeg,
         }
     ));
 
@@ -442,44 +389,6 @@ fn the_panel_exposes_one_round_400x400_display_zone() {
     assert_eq!(capabilities.max_fps, 30);
     assert_eq!(protocol.total_leds(), 0);
     assert_eq!(protocol.frame_interval(), Duration::from_millis(33));
-}
-
-#[test]
-fn the_descriptor_is_registered_with_its_placeholder_serial_quirk() {
-    let descriptor = ProtocolDatabase::lookup(LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD)
-        .expect("the wired TL LCD should be a registered device");
-
-    assert_eq!(descriptor.name, "Lian Li Uni Fan TL LCD");
-    assert_eq!(descriptor.protocol.id, "lianli/tl-lcd");
-    assert!(descriptor.firmware_predicate.is_none(), "predicate-free");
-    assert!(
-        descriptor.is_placeholder_serial("TL_LCDV0.1"),
-        "every panel reports this serial, so it cannot be an identity"
-    );
-    assert!(!descriptor.is_placeholder_serial("A1B2C3D4"));
-}
-
-#[test]
-fn a_frame_rate_request_is_clamped_to_what_the_panel_can_do() {
-    let protocol = TlLcdProtocol::new();
-
-    let too_fast = protocol
-        .encode_display_setting(DisplaySetting::FrameRate(240))
-        .expect("a frame-rate request should encode");
-    assert_eq!(
-        too_fast[0].data[TL_LCD_HEADER_LEN + 5],
-        30,
-        "the panel tops out at 30fps"
-    );
-
-    let stalled = protocol
-        .encode_display_setting(DisplaySetting::FrameRate(0))
-        .expect("a frame-rate request should encode");
-    assert_eq!(
-        stalled[0].data[TL_LCD_HEADER_LEN + 5],
-        1,
-        "zero would stall the panel rather than pace it"
-    );
 }
 
 #[test]

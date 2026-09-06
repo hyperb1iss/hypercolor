@@ -128,6 +128,7 @@ pub(super) async fn handle_set_display_face_with_state(
                 blend_mode: BlendMode::Alpha,
                 device_id,
                 opacity: 1.0,
+                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         },
     )
@@ -204,6 +205,7 @@ async fn handle_default_scope(
                 blend_mode: BlendMode::Alpha,
                 device_id,
                 opacity: 1.0,
+                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         })
         .await?;

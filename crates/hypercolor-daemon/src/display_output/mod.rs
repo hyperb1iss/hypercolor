@@ -28,7 +28,7 @@ use hypercolor_core::spatial::is_display_zone;
 use hypercolor_types::canvas::PublishedSurfaceStorageIdentity;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint, DisplayFrameFormat};
 use hypercolor_types::layer::BlendMode;
-use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
+use hypercolor_types::scene::{DisplayFaceTarget, DisplayRotation, ZoneId};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use self::render::display_viewport_signature;
@@ -101,6 +101,8 @@ struct DisplayTarget {
     brightness: f32,
     geometry: DisplayGeometry,
     frame_format: DisplayFrameFormat,
+    /// The device's encoded-frame wire cap, when it declares one.
+    max_frame_len: Option<usize>,
     canvas_source: DisplayCanvasSource,
     zone_canvas_sender: Option<watch::Sender<DisplayZoneFrame>>,
     display_target: Option<DisplayFaceTarget>,
@@ -123,6 +125,7 @@ pub(super) struct DisplayWorkerConfigSignature {
     brightness_bits: u32,
     geometry: DisplayGeometry,
     frame_format: DisplayFrameFormat,
+    max_frame_len: Option<usize>,
     canvas_source: DisplayCanvasSourceSignature,
     face_blend_mode: BlendMode,
     face_opacity_bits: u32,
@@ -270,6 +273,7 @@ impl DisplayTarget {
             brightness_bits: self.brightness.to_bits(),
             geometry: self.geometry,
             frame_format: self.frame_format,
+            max_frame_len: self.max_frame_len,
             canvas_source: self.canvas_source.signature(),
             face_blend_mode: self.face_blend_mode(),
             face_opacity_bits: self.face_opacity().to_bits(),
@@ -729,26 +733,15 @@ async fn display_targets(
         if is_simulator && !display_preview_subscribers.contains(&tracked.info.id) {
             continue;
         }
-        let Some((geometry, frame_format)) =
-            display_target_geometry_for_device(&tracked.info.segments).or_else(|| {
-                tracked
-                    .info
-                    .capabilities
-                    .display_resolution
-                    .map(|(width, height)| {
-                        (
-                            DisplayGeometry {
-                                width,
-                                height,
-                                circular: false,
-                            },
-                            DisplayFrameFormat::Jpeg,
-                        )
-                    })
-            })
-        else {
+        let Some(surface) = tracked.info.display_surface() else {
             continue;
         };
+        let geometry = DisplayGeometry {
+            width: surface.width,
+            height: surface.height,
+            circular: surface.circular,
+        };
+        let frame_format = surface.format;
         let has_non_display_led_segments = tracked.info.segments.iter().any(|segment| {
             segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
         });
@@ -781,9 +774,22 @@ async fn display_targets(
                 .is_zone_direct()
                 .then_some(default_display_viewport())
         });
-        let Some(viewport) = viewport else {
+        let Some(mut viewport) = viewport else {
             continue;
         };
+        // The layout says where the screen sits on the canvas; the target
+        // says how it is mounted. Both turns apply to everything drawn.
+        if let Some(target) = &display_target {
+            viewport.rotation += target.rotation.radians();
+        }
+        debug!(
+            device_id = %tracked.info.id,
+            face_zone = ?display_face_targets.get(&tracked.info.id).map(|binding| binding.zone_id),
+            mount_rotation = ?display_target.as_ref().map(|target| target.rotation),
+            viewport_rotation = viewport.rotation,
+            face_bindings = display_face_targets.len(),
+            "display target viewport resolved"
+        );
 
         let backend_id = tracked.info.output_backend_id().to_owned();
         targets.push(Arc::new(DisplayTarget {
@@ -800,6 +806,7 @@ async fn display_targets(
             brightness: tracked.user_settings.brightness,
             geometry,
             frame_format,
+            max_frame_len: tracked.info.capabilities.features.max_display_frame_len,
             canvas_source,
             zone_canvas_sender,
             display_target,
@@ -852,7 +859,29 @@ fn publish_display_zone_output_routes(event_bus: &HypercolorBus, targets: &[Arc<
     event_bus.retain_display_zone_output_routes(&active_zone_ids);
 }
 
+/// Pick one face target per device, and carry the device's mounting
+/// rotation onto it whichever zone wins: a screen's default face sets the
+/// rotation on its overlay zone, while the scene's own surface zone for the
+/// same device usually finalizes and takes the binding.
 fn display_face_targets_by_device(
+    targets: HashMap<ZoneId, hypercolor_core::bus::DisplayZoneTarget>,
+) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
+    let mut mount_rotation: HashMap<DeviceId, DisplayRotation> = HashMap::new();
+    for target in targets.values() {
+        if !target.rotation.is_upright() {
+            mount_rotation.insert(target.device_id, target.rotation);
+        }
+    }
+    let mut by_device = display_face_targets_by_zone_preference(targets);
+    for (device_id, rotation) in mount_rotation {
+        if let Some(binding) = by_device.get_mut(&device_id) {
+            binding.target.rotation = rotation;
+        }
+    }
+    by_device
+}
+
+fn display_face_targets_by_zone_preference(
     targets: HashMap<ZoneId, hypercolor_core::bus::DisplayZoneTarget>,
 ) -> HashMap<DeviceId, DisplayFaceTargetBinding> {
     let mut by_device = HashMap::new();
@@ -863,6 +892,7 @@ fn display_face_targets_by_device(
                 device_id: target.device_id,
                 blend_mode: target.blend_mode,
                 opacity: target.opacity,
+                rotation: target.rotation,
             },
             finalized: target.finalized,
         };
@@ -898,26 +928,6 @@ fn display_face_target_binding_preferred(
 ) -> bool {
     (candidate.finalized && !current.finalized)
         || (candidate.finalized == current.finalized && candidate.zone_id.0 > current.zone_id.0)
-}
-
-fn display_target_geometry_for_device(
-    segments: &[hypercolor_types::device::SegmentInfo],
-) -> Option<(DisplayGeometry, DisplayFrameFormat)> {
-    segments.iter().find_map(|segment| match segment.topology {
-        DeviceTopologyHint::Display {
-            width,
-            height,
-            circular,
-        } => Some((
-            DisplayGeometry {
-                width,
-                height,
-                circular,
-            },
-            DisplayFrameFormat::from_device_color_format(segment.color_format),
-        )),
-        _ => None,
-    })
 }
 
 fn display_viewport_for_device(
@@ -1114,6 +1124,7 @@ mod tests {
                 circular: false,
             },
             frame_format: DisplayFrameFormat::Jpeg,
+            max_frame_len: None,
             canvas_source: DisplayCanvasSource::ZoneDirect {
                 zone_id: ZoneId::new(),
             },
@@ -1122,6 +1133,7 @@ mod tests {
                 device_id,
                 blend_mode,
                 opacity: 0.5,
+                rotation: DisplayRotation::default(),
             }),
             finalized_face: false,
             viewport: default_display_viewport(),
@@ -1141,6 +1153,7 @@ mod tests {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
+            rotation: DisplayRotation::default(),
             finalized,
         }
     }
@@ -1398,5 +1411,29 @@ mod tests {
             .expect("device target should resolve");
         assert_eq!(binding.zone_id, newer);
         assert!(binding.finalized);
+    }
+
+    /// The default face's overlay zone carries how the screen is mounted;
+    /// the scene's surface zone for the same device wins the binding but
+    /// must not lose the turn.
+    #[test]
+    fn display_face_target_resolution_keeps_the_mounting_rotation_of_the_losing_zone() {
+        let device_id = fixed_device_id(3);
+        let surface = fixed_zone_id(1);
+        let overlay = fixed_zone_id(2);
+        let mut turned = display_zone_target(device_id, false);
+        turned.rotation = DisplayRotation::Deg180;
+        let targets = std::collections::HashMap::from([
+            (surface, display_zone_target(device_id, true)),
+            (overlay, turned),
+        ]);
+
+        let resolved = display_face_targets_by_device(targets);
+
+        let binding = resolved
+            .get(&device_id)
+            .expect("device target should resolve");
+        assert_eq!(binding.zone_id, surface);
+        assert_eq!(binding.target.rotation, DisplayRotation::Deg180);
     }
 }

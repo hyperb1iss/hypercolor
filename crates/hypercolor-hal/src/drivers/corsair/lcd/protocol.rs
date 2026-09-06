@@ -3,15 +3,15 @@
 use hypercolor_types::device::SegmentInfo;
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, DisplayFrameFormat,
+    DisplayFramePayload,
 };
 
 use crate::display::{
-    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, WireKeepalive,
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, WireKeepalive,
     encode_chunked_display_frame_into,
 };
 use crate::drivers::corsair::framing::{
@@ -97,9 +97,6 @@ pub struct CorsairLcdProtocol {
     shutdown_reports: Vec<Vec<u8>>,
     display_layout: CorsairLcdDisplayLayout,
     keepalive: WireKeepalive,
-    /// Latches the first oversized-frame warning so a stuck source cannot
-    /// flood the log at frame rate.
-    oversized_frame_warned: AtomicBool,
 }
 
 impl CorsairLcdProtocol {
@@ -169,7 +166,6 @@ impl CorsairLcdProtocol {
                 zone_byte: config.data_zone_byte,
             },
             keepalive: WireKeepalive::new(LCD_KEEPALIVE_INTERVAL),
-            oversized_frame_warned: AtomicBool::new(false),
         }
     }
 
@@ -297,58 +293,44 @@ impl Protocol for CorsairLcdProtocol {
         buffer.finish();
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        let mut commands = Vec::new();
-        self.encode_display_frame_into(jpeg_data, &mut commands)?;
-        Some(commands)
-    }
-
-    fn encode_display_frame_into(
+    fn encode_display_payload_into(
         &self,
-        jpeg_data: &[u8],
+        payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
+    ) -> Result<(), DisplayEncodeError> {
+        if payload.format != DisplayFrameFormat::Jpeg {
+            return Err(DisplayEncodeError::Unsupported {
+                format: payload.format,
+            });
+        }
+
+        let jpeg_data = payload.data;
         let mut buffer = CommandBuffer::new(commands);
         let framed =
             encode_chunked_display_frame_into(&self.display_layout, jpeg_data, &mut buffer);
 
-        match framed {
-            Ok(()) => {
-                if self.keepalive.due() {
-                    let chunk_count = jpeg_data.len().div_ceil(LCD_DATA_PER_PACKET);
-                    let packets_sent = u8::try_from(chunk_count).unwrap_or(u8::MAX);
-                    let keepalive = self.keepalive_command(
-                        0x01,
-                        packets_sent,
-                        u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX),
-                    );
-                    buffer.push_slice(
-                        keepalive.data.as_slice(),
-                        keepalive.expects_response,
-                        keepalive.response_delay,
-                        keepalive.post_delay,
-                        keepalive.transfer_type,
-                    );
-                }
-            }
-            // A frame past the one-byte sequence counter cannot be addressed
-            // on the wire, so it is skipped rather than sent with a saturated
-            // packet number. The daemon's encoded-size budget keeps this from
-            // firing in practice.
-            Err(error) => {
-                if !self.oversized_frame_warned.swap(true, Ordering::Relaxed) {
-                    tracing::warn!(
-                        protocol = self.name,
-                        jpeg_bytes = jpeg_data.len(),
-                        %error,
-                        "skipping LCD display frame the wire format cannot address"
-                    );
-                }
-            }
+        // A frame past the one-byte sequence counter cannot be addressed on
+        // the wire; the error goes back to the actor, which fails the
+        // delivery instead of sending a saturated packet number.
+        if framed.is_ok() && self.keepalive.due() {
+            let chunk_count = jpeg_data.len().div_ceil(LCD_DATA_PER_PACKET);
+            let packets_sent = u8::try_from(chunk_count).unwrap_or(u8::MAX);
+            let keepalive = self.keepalive_command(
+                0x01,
+                packets_sent,
+                u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX),
+            );
+            buffer.push_slice(
+                keepalive.data.as_slice(),
+                keepalive.expects_response,
+                keepalive.response_delay,
+                keepalive.post_delay,
+                keepalive.transfer_type,
+            );
         }
         buffer.finish();
 
-        Some(())
+        framed
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {
@@ -381,8 +363,10 @@ impl Protocol for CorsairLcdProtocol {
                 width: self.width,
                 height: self.height,
                 circular: self.circular,
+                format: DisplayFrameFormat::Jpeg,
             },
-            color_format: DeviceColorFormat::Jpeg,
+            // LED byte order has no meaning for a display segment.
+            color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
         }];
 

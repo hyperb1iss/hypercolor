@@ -631,6 +631,32 @@ impl LayoutContext {
         Ok(Some(layout))
     }
 
+    /// Adopt into `layout` the outputs a persisted primary zone holds that
+    /// it lacks; see [`auto_layout::adopt_primary_zone_outputs`].
+    pub(crate) fn adopt_primary_zone_outputs(
+        &self,
+        layout: &mut SpatialLayout,
+        zones: &[Zone],
+    ) -> usize {
+        auto_layout::adopt_primary_zone_outputs(layout, zones)
+    }
+
+    /// Publish a layout the startup restore merged (the store's entry plus
+    /// outputs the persisted scene held) and write it back to the catalog so
+    /// the two agree from now on.
+    pub(crate) async fn adopt_startup_layout(
+        &self,
+        layout: SpatialLayout,
+    ) -> Result<(), DomainError> {
+        self.catalog
+            .entries()
+            .write()
+            .await
+            .insert(layout.id.clone(), layout.clone());
+        self.catalog.persist_best_effort().await;
+        self.publication.restore_startup_layout(layout).await
+    }
+
     pub(crate) async fn acquire_scene_activation_guard(&self) -> SceneActivationGuard {
         self.publication.acquire_scene_activation_guard().await
     }

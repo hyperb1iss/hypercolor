@@ -91,9 +91,10 @@ byte ranges ship in the parser but gated fan types are reported as unknown
 models, not bound to features).
 
 **Research-only in this spec:** TL Flex (`0x1CBE:0xA018` WinUSB/H.264 path,
-`0x43A8` controller), pairing/binding UI (§6.4; devices ship pre-bound and
-L-Connect can rebind — a future `hypercolor-driver-support` service), fan
-curves as a product feature (v1 only holds observed PWM steady, §6.8),
+`0x43A8` controller), a pairing UI with unbind and per-cluster choice (§6.4
+ships automatic adoption of unowned clusters; choosing among them and
+unbinding are a future `hypercolor-driver-support` service), fan curves as
+a product feature (v1 only holds observed PWM steady, §6.8),
 firmware-looped RF animations as an effect-delivery optimization.
 
 ## 2. Device Registry & Variant Matrix
@@ -104,8 +105,8 @@ firmware-looped RF animations as an effect-delivery optimization.
 |---|---|---|---|---|---|
 | Uni Hub TL (fan/RGB, wired) | `0x0416` | `0x7372` | HID | `UsbHidApi`, usage page `0xFF1B` | Already supported (spec 19 §6). Product string carries firmware: `TL_Series_ControllerV0.62` |
 | **Uni Fan TL LCD panel (wired)** | `0x04FC` | `0x7393` | HID | `UsbHidApi`, report ID `0x02` | One USB device **per LCD fan**. Ships non-unique serial `TL_LCDV0.1` |
-| L-Wireless TX dongle V1 | `0x0416` | `0x8040` | vendor (`ff-00-00`) | `UsbBulk` | Product string carries firmware (`SLV3TX_V1.6`) |
-| L-Wireless RX dongle V1 | `0x0416` | `0x8041` | vendor | — | Radio's other half; not a protocol device |
+| L-Wireless TX dongle V1 | `0x0416` | `0x8040` | vendor (`ff-00-00`) | `DriverUsb` (bulk + RX companion) | Product string carries firmware (`SLV3TX_V1.6`); iSerial absent, so identity keys on the USB path. Both halves sit behind the controller's internal `1A86:8091` hub |
+| L-Wireless RX dongle V1 | `0x0416` | `0x8041` | vendor (`ff-00-00`) | `UsbBulk` (companion) | The half that answers `GetDev`; opened by the TX's driver-owned transport factory as its companion, never a device of its own (§6.1) |
 | L-Wireless TX dongle V2 | `0x1A86` | `0xE304` | vendor | `UsbBulk` | WCH/QinHeng silicon; 2025 hardware revision; **validation-gated** |
 | L-Wireless RX dongle V2 | `0x1A86` | `0xE305` | vendor | — | |
 | V2 dongle HID companion | `0x1A86` | `0x2107` | HID | HID | Cmd `0x1C` returns the paired group's 6-byte MAC |
@@ -181,7 +182,7 @@ HID cmd `0x1C` → group MAC, matched by shared USB parent hub) is documented in
 | Protocol id | Device | Role | Transport |
 |---|---|---|---|
 | `lianli/tl-lcd` | `0x04FC:0x7393` | wired panel: JPEG display sink | HID output reports, report ID `0x02`, 512B |
-| `lianli/wireless` | dongles (`0x0416:0x8040`; V2 gated) | fan discovery + per-LED RGB over RF | USB bulk, 64B packets |
+| `lianli/wireless` | dongles (`0x0416:0x8040`; V2 gated) | fan discovery + per-LED RGB over RF | USB bulk, 64B packets, TX primary + RX companion (`TransferType::Companion`) |
 | `lianli/wireless-lcd` | `0x1CBE:0x0005/0x0006` | wireless panel: DES-wrapped JPEG display sink | USB bulk, 512B header + payload |
 
 All three ids share the `lianli` prefix so they stay inside the existing
@@ -569,9 +570,18 @@ mechanism (measured, not preemptively nerfed).
 
 ## 6. Wireless RF Dongle Protocol
 
-The dongle tunnels RF frames over USB bulk. All fan discovery, PWM, RGB, and
-sensor traffic rides this path. Confirmed on hardware for TL V2/SL V3; RGB
-framing verified against upstream source (`wireless/rgb.rs`).
+The controller tunnels RF frames over USB bulk. It is two USB functions
+behind one internal hub: the **TX** (`0x8040`) takes RF envelope slices and
+answers the MAC query; the **RX** (`0x8041`) answers the `GetDev` device
+table poll. The TX answers *every* command with its own status packet
+(command echo, its MAC, a running counter, its firmware), so discovery must
+go to the RX. Verified on hardware 2026-09-04 (V1, `SLV3TX_V1.6`), which is
+also where the earlier draft's "RX is not a protocol device" was found
+wrong. In the HAL the TX descriptor's driver-owned transport factory opens
+the RX sibling (same parent port chain) and pairs them as a
+`CompanionTransport`; the protocol tags RX commands
+`TransferType::Companion`. RGB framing verified against upstream source
+(`wireless/rgb.rs`).
 
 ### 6.1 USB layer
 
@@ -607,8 +617,10 @@ Precomposed control frames (zero-padded to 64): `11 08 00 00` TX reset,
 | 14–17 | 4 | command-specific | | rx_type/channel/slot for PWM & bind; effect index for RGB |
 | 18+ | | payload | | command-specific (§6.4, §6.7) |
 
-The four USB chunks of one RF buffer are paced **2 ms apart** (`post_delay`
-on each chunk command; the encoder owns this pacing, not the caller).
+The four USB chunks of one RF buffer are paced **1 ms apart** (`post_delay`
+on each chunk command; the encoder owns this pacing, not the caller). The
+reference driver ships 1 ms between slices; 2 ms is what its RGB path's
+inter-envelope header repeat uses.
 
 ### 6.3 RF sub-commands
 
@@ -625,27 +637,53 @@ on each chunk command; the encoder owns this pacing, not the caller).
 
 (Others exist for AIO/case products: `0x19`, `0x21`, `0x23`.)
 
-### 6.4 Binding (documented, not implemented in v1)
+### 6.4 Binding: automatic adoption of unowned clusters
 
-Bind = RF_PWM_CMD frame carrying master MAC at [8..14], rx slot (1–13) at
-[16], current PWM at [17..21]; sent 6× with 30 ms gaps; poll GetDev until the
-device reports the new master/rx (3 sightings, 5 s timeout); then SaveConfig.
-Unbind writes an all-zero master MAC and rx=0. Bindings persist in receiver
-flash, which is why v1 can require pre-bound fans. Recovery without
-Hypercolor: L-Connect on any machine can rebind.
+Fans do not ship pre-bound: a TL LCD Wireless cluster fresh from the box
+reports an all-zero master MAC and answers on the pairing slot (`rx_type`
+`0xFE`), which is exactly what the live V1 rig showed on 2026-09-05 before
+it had ever met L-Connect. So v1 pairs. The wire recipe is the reference
+driver's, validated against its `bind.rs`:
+
+- Bind carrier = an RF_PWM_CMD envelope: target MAC at [2..8], **our**
+  master MAC at [8..14], the receiver slot we hand out (lowest of 1–13 not
+  used by a cluster we already drive) at [14], the master channel at [15],
+  the 1-based device index at [16], the PWM the cluster reported at
+  [17..21]. The four USB packets are relayed on the cluster's current
+  channel and its **current** rx_type, so `0xFE` while unpaired.
+- One round = the carrier 6× at 30 ms gaps, a 150 ms settle, one GetDev poll.
+  The poll's table parsing is what observes convergence: the cluster now
+  reports our MAC and moves from the adoptable set into the routing set.
+- `connection_diagnostics()` runs three rounds back to back, after init and
+  before the daemon publishes segments, so a cluster that pairs at connect
+  is driven from the first frame. Upkeep (§6.8) retries one round per tick
+  up to eight rounds in total, then warns and leaves the cluster alone until
+  reconnect. A cluster that pairs after the topology froze is driven on the
+  next reconnect, since the routing set does not grow live (§6.5).
+- The tick after any convergence broadcasts SaveConfig (`0x15`, target
+  `FF:FF:FF:FF:FF:FF`, our master MAC, rx `0xFF`) 3× at 200 ms gaps so the
+  receiver keeps the binding across a power cycle. The reference caps a
+  controller at 10 bound devices; so do we.
+
+Clusters bound to another master are never poached (the reference refuses
+while that master is online; we cannot see whether it is, so we never
+try). Unbind writes an all-zero master MAC and rx=0 and is not exposed yet.
+Recovery without Hypercolor: L-Connect on any machine can rebind.
 
 ### 6.5 Discovery: GetDev and the 42-byte device record
 
-Poll by writing `{0x10, pages}` (pages = ceil(known devices / 10), clamped
-1–2) and reading one logical bulk response. A full 12-record reply is
-4 + 12 × 42 = **508 bytes**, but the dongle's bulk endpoint has a 64-byte
-max packet size and the bulk transport sizes a default receive to exactly
-one packet — so the GetDev command **must** set `response_len` (capacity
-1024 covers every reply) and rely on the §4.5 completion rule: short packet,
-capacity, or inter-packet gap. Replies are pinned by tests (§12) at two
-records (88 bytes = 4 + 2 × 42, short-packet terminated), **six records
-(256 bytes — an exact packet-boundary reply, gap-terminated)**, and twelve
-records (508 bytes).
+Poll the **RX** by writing `{0x10, pages}` (pages = ceil(known devices /
+10), clamped 1–2; v1 always polls 2) and reading one logical bulk response.
+Observed on hardware: the reply is **page-sized, not record-sized**: 448
+bytes for one page and 896 for two, exact multiples of the 64-byte packet
+with no short packet, so the read ends on the inter-packet gap (~25–30 ms
+total). The GetDev command therefore sets a response capacity of 1024 and
+relies on the §4.5 completion rule (short packet, capacity, or gap).
+
+The parser must not clamp the count byte: a TX status packet echoing the
+poll (`10 a0 71 ae …`) would read as 160 devices. A count above 12 is a
+malformed reply, and the controller's own MAC at bytes 1–6 is the status
+packet, which the protocol ignores and keeps its last table.
 
 Response layout:
 
@@ -680,12 +718,18 @@ validation-gated). All TL wireless: 26 LEDs/fan, minimum duty 11%.
 
 **Topology lifetime (v1):** fan membership is captured by GetDev polling
 during connect (the init handshake path, like the wired TL hub) and refreshed
-by the 1 Hz upkeep polling (§6.8), which updates RPM/PWM state and cmd_seq.
-Segment topology, however, is published to the daemon only at
-connect/reconnect — the daemon refreshes protocol-derived segments on
-reconnect, not live. v1 therefore surfaces membership changes (a newly bound
-fan) after a device rescan/reconnect; live topology-change publication is a
-named follow-up, not silently promised.
+by the 1 Hz upkeep polling (§6.8), which updates RPM/PWM state and cmd_seq
+**by MAC against the connect-time cluster set**. The protocol freezes that
+set the moment upkeep or streaming begins: a later poll never reorders or
+grows the routing, because the daemon's segments were published from the
+connect-time order and a reordered table would put one cluster's colors on
+another. Only fan clusters (record type 0) bound to this controller's MAC
+enter the set; receivers bound elsewhere and AIO or case gear heard on the
+channel are ignored, and unbound receivers are paired first (§6.4). A truncated reply (fewer whole records
+than the count byte) keeps the last table. Segment topology is published to
+the daemon only at connect/reconnect, so v1 surfaces membership changes (a
+newly bound fan) after a rescan/reconnect; live topology-change publication
+is a named follow-up, not silently promised.
 
 ### 6.6 Group correlation (future)
 
@@ -711,15 +755,22 @@ Header frame (packet index 0), fields within the §6.2 envelope:
 | 20–23 | 4 | compressed length | u32 BE | |
 | 24 | 1 | reserved | 0 | |
 | 25–26 | 2 | total frames | u16 BE | 1 = live still; >1 = firmware-looped animation |
-| 27 | 1 | LEDs per fan | 26 (TL) | |
+| 27 | 1 | LEDs in the frame | fans × per-fan (78 for three TL) | the firmware lights this many and leaves the rest dark; a per-fan count lit one fan of three on the bench |
 | 28–31 | 4 | reserved | 0 | |
 | 32–33 | 2 | frame interval | u16 BE, ms | loop interval for animations; reference sends 5000 for single stills |
 | 34–239 | 206 | reserved | 0 | zero-filled remainder of the 240-byte envelope |
 
 The header frame is sent `header_repeats` times (≥1; inter-repeat gap 2 ms
-when ≤2 repeats, else 20 ms). Data frames (index 1..N) carry the packet index
-at [18] and up to 220 compressed bytes at [20..240]; bytes past the final
-chunk's length are zero.
+when ≤2 repeats, else 20 ms); Hypercolor sends it twice, 2 ms apart, the
+way the reference adapter streams direct color. Data frames (index 1..N)
+carry the packet index at [18] and up to 220 compressed bytes at
+[20..240]; bytes past the final chunk's length are zero. The effect index
+of a live frame is the constant `00 00 00 01` the reference uses, so the
+tag a receiver echoes in its record is the drift detector, not a counter.
+
+After the first device table poll, init sends the RX setup the reference
+daemon sends once after discovery starts: `10 01 04 34` and `10 01 04 37`
+(replies read but not required) and the LCD-mode switch `10 01 04 30`.
 
 Live streaming = `total_frames: 1` per render tick. The achievable tick rate
 is bandwidth-bound and must be measured on hardware (§11.4) — the spec sets
@@ -743,11 +794,20 @@ occasionally spikes RPM.
    send 0,
 3. emits RF_CLOCK_SYNC at 1 Hz: first an init frame (bytes [14..64] filled
    with the `0x14` sentinel), then frames carrying real date/time at
-   [32..39], zeroed CPU/GPU sensor fields, and per-receiver fan blocks
-   (14 × 12 bytes at [50..218]) reflecting observed state,
+   [32..39], zeroed CPU/GPU sensor fields, and the per-receiver fan blocks
+   (14 × 12 bytes at [50..218]) left zero. The hardware-tested reference
+   sends those blocks zeroed as well (`clock_sync.rs` "defaults for now"),
+   so zero is the validated value; filling them from observed state is a
+   follow-up gated on hardware, not a v1 requirement,
 4. sends nothing after disconnect/shutdown — fans revert to firmware
    defaults, which is the same behavior as L-Connect exiting; documented, not
-   hidden.
+   hidden,
+5. arms the radio's streaming mode (video start plus one prep packet per
+   cluster) once per session, from whichever of the first frame or the
+   first upkeep tick comes first, never per tick. Re-arming it every second
+   restarted the stream: on the bench the rings froze for about a second
+   and snapped to the newest frame each tick. The reference arms video
+   mode once as well.
 
 This holds user-set speeds steady without making Hypercolor a fan-curve
 product. Exact clock-blob field values are validated on hardware before the
@@ -896,7 +956,7 @@ All registered in `LIANLI_DESCRIPTORS` with `DeviceFamily::new_static
 | Descriptor | Transport | Protocol binding | Notes |
 |---|---|---|---|
 | `0x04FC:0x7393` "Uni Fan TL LCD" | `TransportIntent::Hid` per §5.1, resolved via `resolve_current_transport` | `lianli/tl-lcd` | `serial_quirk: PlaceholderValues(["TL_LCDV0.1"])` |
-| `0x0416:0x8040` "L-Wireless Controller" | `TransportType::UsbBulk { interface: 0, report_id: 0 }` | `lianli/wireless` | bulk endpoints auto-discovered from the interface descriptor (observed `0x01`/`0x81`) |
+| `0x0416:0x8040` "L-Wireless Controller" | `TransportType::DriverUsb` (factory opens TX bulk + RX `0x8041` companion under the same hub) | `lianli/wireless` | bulk endpoints auto-discovered on both halves (observed `0x01`/`0x81`) |
 | `0x1CBE:0x0006` "Uni Fan TL Wireless LCD" | `UsbBulk { interface: 0, report_id: 0 }` | `lianli/wireless-lcd` | serial quirk pending hardware observation (§11.7) |
 | `0x1CBE:0x0005` "Uni Fan SL Wireless LCD" | `UsbBulk { interface: 0, report_id: 0 }` | `lianli/wireless-lcd` | |
 
@@ -923,14 +983,22 @@ driver module.
 
 ### 9.4 Cross-cutting protocol changes
 
-- `ProtocolCommand` gains `response_count: u8` (default 1),
-  `response_timeout: Option<Duration>`, and `response_len: Option<usize>`
-  (§4.5), with the actor read loop, per-command timeout override, and
-  bulk multi-packet logical reads to match. The wired TL hub's `0xA6`
-  adopts `response_count: 2` plus the first-report-wins parse fix.
+- `ProtocolCommand.response: ResponsePlan { count, timeout, capacity,
+  tolerance }` (§4.5), with the actor read loop, per-command timeout
+  override, and bulk multi-packet logical reads to match.
+  `ResponseTolerance::Optional` completes a command whose reply never
+  arrives (the wireless LCD receiver's status packets, the TL hub's second
+  `0xA6` report). `ChunkCommandPolicy` carries a plan the display engines
+  apply per chunk. The wired TL hub's `0xA6` adopts `count: 2` plus the
+  first-report-wins parse fix.
+- `TransferType::Companion` and `transport::companion::CompanionTransport`
+  for devices made of two USB functions (§6.1).
 - `DeviceDescriptor.serial_quirk: Option<SerialQuirk>` consulted by the USB
   scanner (§5.7, §10).
-- Optional `Protocol::encode_display_setting` (§4.4).
+- The display seam is one hook, `Protocol::encode_display_payload_into ->
+  Result<(), DisplayEncodeError>`; the JPEG-only `encode_display_frame`
+  pair and the §4.4 settings hook were removed in review (no caller; the
+  daemon owns brightness, rotation, and frame rate).
 - New crate deps: `des`, `cbc` (RustCrypto; `cargo deny` review).
 
 ### 9.5 Wire structs
@@ -948,7 +1016,7 @@ mix: wired LCD counters and RF sizes are **BE**, the DES header timestamp is
 Two additive daemon changes (the pipeline itself — workers, lanes, faces,
 previews, simulator — is untouched):
 
-- **Encoded-frame size budget.** `DeviceCapabilities` gains
+- **Encoded-frame size budget.** `DeviceFeatures` gains
   `max_display_frame_len: Option<usize>` (the wireless receiver sets
   101,888; other displays leave it `None`). `display_output`'s encode step
   checks the budget after compression; on overflow it re-encodes with
@@ -1013,9 +1081,11 @@ Registration and data surfaces:
 4. **RF RGB throughput ceiling is unmeasured.** Compressed frame size ×
    220-byte chunks × 2 ms pacing bounds the live per-LED rate; nobody has
    published numbers. Measure on hardware, then set the dongle protocol's
-   `max_fps`/`frame_interval` from data (provisional at implementation:
-   the wired TL hub's 100 ms interval as a floor, adjusted by measurement in
-   either direction). No preemptive caps.
+   `max_fps`/`frame_interval` from data. Bench, 2026-09-06, one three-fan
+   TL LCD cluster: a frame is twelve USB packets a millisecond apart, the
+   10 ms floor of the wired hub made every upkeep interruption visible, and
+   30 fps (33 ms) is the shipped cadence; push higher with more clusters on
+   the radio before treating it as the ceiling. No preemptive caps.
 5. **V2 dongle deltas.** V2 (`0x1A86`) appears to add an HID-flavored path
    (the reference has a dedicated module for it) alongside behavior changes
    (RPM sync moved into receivers, no signal-loss spin-up). V1 is the
@@ -1036,7 +1106,17 @@ Registration and data surfaces:
    protocol construction; none exists (`ProtocolFactory` is
    configuration-free). Design that bridge as its own small spec when the
    first real consumer lands; nothing in v1 depends on it.
-10. **DES/`slv3tuzx` in open source.** The key is already public in multiple
+10. **Hardware findings, 2026-09-04 (V1 controller, no fans bound).**
+    Master query answers on channel 8 first try (MAC `a0:71:ae:72:ab:3c`,
+    firmware `0x0010`). GetDev lives on the RX and answers page-sized
+    (§6.5). Bytes 7–10 of the TX status packet are a running counter that
+    froze once video mode was entered. Everything below needs powered
+    fans: real GetDev records, the live RGB tick rate (§11.4), the
+    clock-blob tolerance (§11.3), receiver serial uniqueness (§11.7), and
+    whether the TX's per-command status packets, which the RF send path
+    never reads (the reference does not read them either), ever back up
+    the device under sustained streaming.
+11. **DES/`slv3tuzx` in open source.** The key is already public in multiple
     repos and in every L-Connect install; shipping it is documentation of an
     interoperability fact, not a secret. Noting for license/audit review.
 
@@ -1168,3 +1248,18 @@ All hardware-free, in `crates/hypercolor-hal/tests/` unless noted:
   hold-steady keepalive policy; staged acceptance criteria; wire tables
   normalized to house format; corrected wired-LCD init/mode facts and
   response layouts from upstream source.
+
+### Round 6 (2026-09-04, implementation review, PRs #238/#239 and wave 3)
+
+Four parallel review lanes (abstraction fitness, many-panel scale, dead and
+duplicate code, plumbing correctness) plus a hardware probe of the V1
+controller. Landed: `ResponsePlan` with a tolerance; one display hook with
+an error channel; the settings hook, the JPEG-only hook pair, and the
+backend's JPEG-only write pair deleted; the display segment made the single
+source of display truth (`DisplaySurface`, `DeviceColorFormat::Jpeg` gone,
+capability fields derived at adoption); the companion transport seam; the
+RX-side GetDev correction above. Deferred with sizing: per-transport IO
+threads and one blocking call per display frame (wired multi-panel
+throughput), encode/transport pipelining, content-shared face sessions,
+macOS/Windows HID identity for identical-serial panels, command-aware
+`parse_response` for acked uploads, wider pixel repack.

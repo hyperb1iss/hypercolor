@@ -11,7 +11,7 @@ use hypercolor_types::api::scene::ReplaceLayerRequest;
 use hypercolor_types::api::scenes::ReplaceSceneRequest;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, DisplayFrameFormat, SegmentInfo,
 };
 use hypercolor_types::effect::{EffectCategory, EffectId};
 use hypercolor_types::event::HypercolorEvent;
@@ -172,6 +172,7 @@ async fn late_migration_fixture(temp: &TempDir) -> LateMigrationFixture {
                 controls: HashMap::new(),
                 blend_mode: BlendMode::Alpha,
                 opacity: 1.0,
+                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect("display preference should persist");
@@ -277,6 +278,7 @@ async fn register_display_device(state: &AppState, device_id: DeviceId) {
                 width: 320,
                 height: 320,
                 circular: false,
+                format: DisplayFrameFormat::Jpeg,
             },
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
@@ -927,6 +929,7 @@ async fn publication_conflict_reprepares_inside_the_same_rescan() {
                 controls: HashMap::new(),
                 blend_mode: BlendMode::Replace,
                 opacity: 1.0,
+                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect("concurrent preference should publish");

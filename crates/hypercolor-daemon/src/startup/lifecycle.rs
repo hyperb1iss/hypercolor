@@ -596,6 +596,29 @@ impl DaemonState {
             .transpose()
             .map(|scene_id| scene_id.map(SceneId))?;
 
+        // A member assigned in Studio was minted into the scene's primary
+        // zone only; adopt those outputs into the active layout before the
+        // zone is re-aligned to it, or every restart drops them.
+        {
+            let mut active_layout = self.spatial_engine.snapshot().layout().as_ref().clone();
+            let adopted = self
+                .domains
+                .layout
+                .adopt_primary_zone_outputs(&mut active_layout, &snapshot.default_scene_zones);
+            if adopted > 0 {
+                info!(
+                    adopted,
+                    layout_id = %active_layout.id,
+                    "Adopted outputs the persisted scene held into the active layout"
+                );
+                self.domains
+                    .layout
+                    .adopt_startup_layout(active_layout)
+                    .await
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+            }
+        }
+
         {
             let mut mutation = self.scene_manager.begin_mutation().await;
             if !snapshot.default_scene_zones.is_empty() {

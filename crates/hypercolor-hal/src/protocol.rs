@@ -2,11 +2,9 @@
 
 use std::time::Duration;
 
-use hypercolor_types::device::{
-    DeviceCapabilities, DisplayFrameFormat, DisplayFramePayload, ScrollMode, SegmentInfo,
-};
+use hypercolor_types::device::{DeviceCapabilities, DisplayFramePayload, ScrollMode, SegmentInfo};
 
-use crate::display::DisplaySetting;
+use crate::display::DisplayEncodeError;
 
 /// Pure byte-level protocol encoder/decoder.
 ///
@@ -93,45 +91,26 @@ pub trait Protocol: Send + Sync {
         Duration::from_secs(1)
     }
 
-    /// Encode a display frame from JPEG-compressed image data.
-    ///
-    /// Only implemented by protocols that drive pixel displays.
-    #[must_use]
-    fn encode_display_frame(&self, _jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        None
-    }
-
-    /// Encode a display frame into a reusable command buffer.
-    fn encode_display_frame_into(
-        &self,
-        jpeg_data: &[u8],
-        commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        commands.clear();
-        commands.extend(self.encode_display_frame(jpeg_data)?);
-        Some(())
-    }
-
     /// Encode a display payload into a reusable command buffer.
+    ///
+    /// The one display seam. `commands` is rewritten from the start and
+    /// holds exactly this frame's wire commands on success; on failure its
+    /// contents are unspecified and the caller must not send them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DisplayEncodeError::Unsupported`] when the protocol drives no
+    /// display or none that takes `payload.format`, and the engine's own
+    /// errors when the frame cannot be expressed on the wire.
     fn encode_display_payload_into(
         &self,
         payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        match payload.format {
-            DisplayFrameFormat::Jpeg => self.encode_display_frame_into(payload.data, commands),
-            DisplayFrameFormat::Rgb => None,
-        }
-    }
-
-    /// Encode a hardware display setting, if the protocol supports it.
-    ///
-    /// Panels expose brightness, rotation, and refresh rate as device state
-    /// rather than frame content. Software brightness in the daemon stays
-    /// authoritative; this is the seam for the hardware knob.
-    #[must_use]
-    fn encode_display_setting(&self, _setting: DisplaySetting) -> Option<Vec<ProtocolCommand>> {
-        None
+    ) -> Result<(), DisplayEncodeError> {
+        let _ = commands;
+        Err(DisplayEncodeError::Unsupported {
+            format: payload.format,
+        })
     }
 
     /// Zone descriptors for this device.
@@ -159,6 +138,13 @@ pub enum TransferType {
 
     /// Use HID feature reports over control transfers.
     HidReport,
+
+    /// Use the descriptor's companion device, on that device's default path.
+    ///
+    /// Only a transport built from two USB functions (see
+    /// `transport::companion`) accepts this; every other transport refuses
+    /// it as unsupported.
+    Companion,
 }
 
 /// One transport-ready command produced by a protocol encoder.
@@ -179,24 +165,8 @@ pub struct ProtocolCommand {
     /// Transport path hint for this command.
     pub transfer_type: TransferType,
 
-    /// Number of response reports to read when `expects_response` is true.
-    ///
-    /// Each report is passed to `parse_response` in arrival order. Parsing is
-    /// ordinal-sensitive: a parser that treats every report of a command alike
-    /// lets a later report overwrite state derived from an earlier one.
-    pub response_count: u8,
-
-    /// Per-command response timeout, overriding [`Protocol::response_timeout`].
-    ///
-    /// Protocols whose init reads and steady-state reads want different
-    /// budgets cannot express that with the protocol-wide knob alone.
-    pub response_timeout: Option<Duration>,
-
-    /// Receive capacity in bytes: an upper bound, not an expected length.
-    ///
-    /// `None` reads once at the transport default. Set this when a logical
-    /// reply spans more packets than one transport read returns.
-    pub response_len: Option<usize>,
+    /// How the reply is read when `expects_response` is true.
+    pub response: ResponsePlan,
 }
 
 impl Default for ProtocolCommand {
@@ -207,44 +177,92 @@ impl Default for ProtocolCommand {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
-            response_count: DEFAULT_RESPONSE_COUNT,
-            response_timeout: None,
-            response_len: None,
+            response: ResponsePlan::default(),
         }
     }
 }
 
 impl ProtocolCommand {
-    fn empty() -> Self {
-        Self::default()
-    }
-
     /// Read `count` response reports instead of one.
     #[must_use]
-    pub fn with_response_count(mut self, count: u8) -> Self {
-        self.response_count = count;
+    pub const fn with_response_count(mut self, count: u8) -> Self {
+        self.response.count = count;
         self
     }
 
     /// Wait `timeout` for this command's response instead of the
     /// protocol-wide budget.
     #[must_use]
-    pub fn with_response_timeout(mut self, timeout: Duration) -> Self {
-        self.response_timeout = Some(timeout);
+    pub const fn with_response_timeout(mut self, timeout: Duration) -> Self {
+        self.response.timeout = Some(timeout);
         self
     }
 
-    /// Accumulate up to `len` response bytes across transport packets.
+    /// Accumulate up to `capacity` response bytes across transport packets.
     #[must_use]
-    pub fn with_response_len(mut self, len: usize) -> Self {
-        self.response_len = Some(len);
+    pub const fn with_response_capacity(mut self, capacity: usize) -> Self {
+        self.response.capacity = Some(capacity);
+        self
+    }
+
+    /// Treat a reply that never arrives as a normal outcome.
+    #[must_use]
+    pub const fn with_optional_response(mut self) -> Self {
+        self.response.tolerance = ResponseTolerance::Optional;
         self
     }
 }
 
-/// Response reports read per responding command unless a command says
-/// otherwise.
-pub const DEFAULT_RESPONSE_COUNT: u8 = 1;
+/// How the backend reads the reply to a responding command.
+///
+/// Every field is a per-command override; the default plan reads one report
+/// at the protocol-wide timeout and treats its absence as an error, which is
+/// what every command did before plans existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponsePlan {
+    /// Reports to read for this command, each handed to `parse_response` in
+    /// arrival order. Parsing is ordinal-sensitive: a parser that treats every
+    /// report alike lets a later report overwrite state from an earlier one.
+    pub count: u8,
+
+    /// Timeout for each read, overriding [`Protocol::response_timeout`].
+    /// Init reads and steady-state reads on one device routinely want
+    /// different budgets.
+    pub timeout: Option<Duration>,
+
+    /// Receive capacity in bytes: an upper bound, not an expected length.
+    /// `None` reads once at the transport default; set this when one logical
+    /// reply spans more packets than a single transport read returns.
+    pub capacity: Option<usize>,
+
+    /// Whether a report that never arrives fails the command.
+    pub tolerance: ResponseTolerance,
+}
+
+impl Default for ResponsePlan {
+    fn default() -> Self {
+        Self {
+            count: 1,
+            timeout: None,
+            capacity: None,
+            tolerance: ResponseTolerance::Required,
+        }
+    }
+}
+
+/// What a missing report means for the command that expected it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResponseTolerance {
+    /// The reply is part of the contract; a timeout fails the command.
+    #[default]
+    Required,
+
+    /// The device may or may not answer. A timeout completes the command with
+    /// whatever reports arrived, logged at debug. This is the shape of a
+    /// status packet a firmware sends most of the time, and of a trailing
+    /// report some units skip.
+    Optional,
+}
 
 /// Helper for filling reusable protocol command buffers in place.
 pub struct CommandBuffer<'a> {
@@ -258,6 +276,8 @@ impl<'a> CommandBuffer<'a> {
         Self { commands, used: 0 }
     }
 
+    /// Fill the next slot and hand it back, so a caller can adjust its
+    /// response plan after the bytes are in place.
     pub fn push_fill<F>(
         &mut self,
         expects_response: bool,
@@ -265,11 +285,12 @@ impl<'a> CommandBuffer<'a> {
         post_delay: Duration,
         transfer_type: TransferType,
         fill: F,
-    ) where
+    ) -> &mut ProtocolCommand
+    where
         F: FnOnce(&mut Vec<u8>),
     {
         if self.used == self.commands.len() {
-            self.commands.push(ProtocolCommand::empty());
+            self.commands.push(ProtocolCommand::default());
         }
 
         let command = &mut self.commands[self.used];
@@ -281,11 +302,10 @@ impl<'a> CommandBuffer<'a> {
         // Slots are reused across frames, so every field of a recycled
         // command must be rewritten or the previous frame's response plan
         // leaks into this one.
-        command.response_count = DEFAULT_RESPONSE_COUNT;
-        command.response_timeout = None;
-        command.response_len = None;
+        command.response = ResponsePlan::default();
         command.data.clear();
         fill(&mut command.data);
+        command
     }
 
     pub fn push_slice(
@@ -295,14 +315,14 @@ impl<'a> CommandBuffer<'a> {
         response_delay: Duration,
         post_delay: Duration,
         transfer_type: TransferType,
-    ) {
+    ) -> &mut ProtocolCommand {
         self.push_fill(
             expects_response,
             response_delay,
             post_delay,
             transfer_type,
             |buffer| buffer.extend_from_slice(data),
-        );
+        )
     }
 
     /// Write a zerocopy-compatible struct directly into the reusable command
@@ -314,14 +334,14 @@ impl<'a> CommandBuffer<'a> {
         response_delay: Duration,
         post_delay: Duration,
         transfer_type: TransferType,
-    ) {
+    ) -> &mut ProtocolCommand {
         self.push_fill(
             expects_response,
             response_delay,
             post_delay,
             transfer_type,
             |buffer| buffer.extend_from_slice(value.as_bytes()),
-        );
+        )
     }
 
     pub fn finish(self) {

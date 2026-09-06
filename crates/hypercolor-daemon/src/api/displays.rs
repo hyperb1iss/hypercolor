@@ -14,7 +14,7 @@ use hypercolor_types::api::displays::{
     DisplaySummary, SetDisplayFaceRequest, UpdateDisplayFaceCompositionRequest,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, DisplayFrameFormat};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::display::{DisplayDescriptor, DisplayPixelFormat};
 use hypercolor_types::layer::BlendMode;
 use hypercolor_types::scene::{DisplayFaceTarget, Zone};
@@ -59,7 +59,11 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
         };
         displays.push(DisplaySummary {
             id: tracked.info.id.to_string(),
-            name: tracked.info.name.clone(),
+            name: tracked
+                .user_settings
+                .name
+                .clone()
+                .unwrap_or_else(|| tracked.info.name.clone()),
             vendor: tracked.info.vendor.clone(),
             family: tracked.info.family.to_string(),
             width: surface.width,
@@ -69,8 +73,36 @@ pub async fn list_displays(State(state): State<Arc<AppState>>) -> Response {
         });
     }
 
+    disambiguate_display_names(&state, &mut displays).await;
     displays.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
     envelope::ok(displays)
+}
+
+/// A stack of identical panels ships identical names, so a name shared by
+/// more than one display gets the USB port it hangs off, which is the one
+/// fact that tells the units apart.
+async fn disambiguate_display_names(state: &AppState, displays: &mut [DisplaySummary]) {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for display in displays.iter() {
+        *counts.entry(display.name.as_str()).or_default() += 1;
+    }
+    let shared: Vec<usize> = displays
+        .iter()
+        .enumerate()
+        .filter(|(_, display)| counts.get(display.name.as_str()).copied().unwrap_or(0) > 1)
+        .map(|(index, _)| index)
+        .collect();
+    for index in shared {
+        let Ok(device_id) = displays[index].id.parse::<DeviceId>() else {
+            continue;
+        };
+        let Some(metadata) = state.device_registry.metadata_for_id(&device_id).await else {
+            continue;
+        };
+        if let Some(path) = metadata.get("usb_path") {
+            displays[index].name = format!("{} (USB {path})", displays[index].name);
+        }
+    }
 }
 
 /// `GET /api/v1/displays/{id}/frame` — latest composited frame for a display.
@@ -176,11 +208,18 @@ pub async fn set_display_face(
     };
 
     let composition_explicit = body.blend_mode.is_some() || body.opacity.is_some();
+    // A face change does not move the screen: an omitted rotation keeps the
+    // one stored with the display.
+    let rotation = match body.rotation {
+        Some(rotation) => rotation,
+        None => state.domains.display.default_face_rotation(device_id).await,
+    };
     // Without an explicit composition the face blends over the live effect
     // instead of replacing it.
     let display_target = normalize_display_face_target(DisplayFaceTarget {
         blend_mode: body.blend_mode.unwrap_or(BlendMode::Alpha),
         device_id,
+        rotation,
         opacity: body.opacity.unwrap_or(1.0),
     });
 
@@ -261,9 +300,11 @@ pub async fn patch_display_face_composition(
         Err(error) => return error.into_response(),
     };
 
-    if body.blend_mode.is_none() && body.opacity.is_none() {
-        return DomainError::validation("composition payload must include blend_mode or opacity")
-            .into_response();
+    if body.blend_mode.is_none() && body.opacity.is_none() && body.rotation.is_none() {
+        return DomainError::validation(
+            "composition payload must include blend_mode, opacity, or rotation",
+        )
+        .into_response();
     }
 
     let layers = state.domains.display.face_layers(device_id).await;
@@ -271,7 +312,7 @@ pub async fn patch_display_face_composition(
         if let Err(error) = state
             .domains
             .display
-            .patch_default_composition(device_id, body.blend_mode, body.opacity)
+            .patch_default_composition(device_id, body.blend_mode, body.opacity, body.rotation)
             .await
         {
             return error.into_response();
@@ -293,6 +334,7 @@ pub async fn patch_display_face_composition(
             zone_id: zone.id,
             blend_mode: body.blend_mode,
             opacity: body.opacity,
+            rotation: body.rotation,
         },
     )
     .await
@@ -654,20 +696,7 @@ pub(crate) fn display_descriptor_for_device(
     info: &DeviceInfo,
     target_fps: u32,
 ) -> Option<DisplayDescriptor> {
-    let surface = display_surface_info(info)?;
-    let pixel_format = info
-        .segments
-        .iter()
-        .find_map(|segment| match segment.topology {
-            DeviceTopologyHint::Display { .. } => Some(
-                DisplayFrameFormat::from_device_color_format(segment.color_format),
-            ),
-            _ => None,
-        })
-        .map_or(DisplayPixelFormat::Yuv420, |format| match format {
-            DisplayFrameFormat::Rgb => DisplayPixelFormat::Rgb,
-            DisplayFrameFormat::Jpeg => DisplayPixelFormat::Yuv420,
-        });
+    let surface = info.display_surface()?;
 
     Some(DisplayDescriptor::derive(
         surface.width,
@@ -675,6 +704,6 @@ pub(crate) fn display_descriptor_for_device(
         surface.circular,
         None,
         target_fps,
-        pixel_format,
+        DisplayPixelFormat::from(surface.format),
     ))
 }

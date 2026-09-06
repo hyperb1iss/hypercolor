@@ -1054,6 +1054,7 @@ fn summarize_segment_topology(topology: &DeviceTopologyHint) -> SegmentTopologyS
             width,
             height,
             circular,
+            ..
         } => SegmentTopologySummary::Display {
             width: *width,
             height: *height,
@@ -1348,7 +1349,12 @@ async fn prepare_identify_backend(
             device_state = %device_state,
             "temporarily connecting device for identify"
         );
-        if let Err(error) = direct_backend.connect(device_id).await {
+        let runtime = crate::api::discovery_runtime(state);
+        let connect = async {
+            crate::discovery::adopt_discovered_device(&runtime, device_id, &direct_backend).await?;
+            direct_backend.connect(device_id).await
+        };
+        if let Err(error) = connect.await {
             warn!(
                 backend_id = %backend_id,
                 device_id = %device_id,

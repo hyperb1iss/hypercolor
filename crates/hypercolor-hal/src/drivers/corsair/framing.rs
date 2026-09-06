@@ -41,11 +41,6 @@ const _: () = assert!(
     "LcdDisplayHeader must match LCD_DISPLAY_HEADER_SIZE (8 bytes)"
 );
 
-const _: () = assert!(
-    std::mem::size_of::<LcdDisplayPacket>() == LCD_PACKET_SIZE,
-    "LcdDisplayPacket must match LCD_PACKET_SIZE (1024 bytes)"
-);
-
 /// Wire-format header of a Corsair LCD display bulk packet (8 bytes).
 #[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -64,19 +59,6 @@ struct LcdDisplayHeader {
     reserved: u8,
     /// Declared payload length (always `LCD_DATA_PER_PACKET`, little-endian).
     data_length: U16<LittleEndian>,
-}
-
-/// Wire-format Corsair LCD display bulk packet (1024 bytes).
-///
-/// Each packet carries up to 1016 bytes of JPEG payload for one display
-/// zone. The final packet in a sequence sets `is_final` to `0x01`.
-#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
-#[repr(C)]
-struct LcdDisplayPacket {
-    /// Framing header.
-    header: LcdDisplayHeader,
-    /// JPEG payload (up to 1016 bytes, zero-padded).
-    data: [u8; LCD_DATA_PER_PACKET],
 }
 
 /// Pad a byte slice to a fixed length with zeros.
@@ -137,39 +119,6 @@ pub fn build_link_write_buffer(data_type: [u8; 2], payload: &[u8]) -> Vec<u8> {
 #[must_use]
 pub fn chunk_bytes(data: &[u8], chunk_size: usize) -> Vec<Vec<u8>> {
     data.chunks(chunk_size).map(<[u8]>::to_vec).collect()
-}
-
-/// Build a fixed-size Corsair LCD display packet.
-#[must_use]
-pub fn build_lcd_display_packet(
-    zone_byte: u8,
-    final_packet: bool,
-    packet_number: u8,
-    payload: &[u8],
-) -> Vec<u8> {
-    let mut buffer = Vec::with_capacity(LCD_PACKET_SIZE);
-    append_lcd_display_packet(&mut buffer, zone_byte, final_packet, packet_number, payload);
-    buffer
-}
-
-/// Append one fixed-size Corsair LCD display packet to an existing buffer.
-///
-/// Builds a single packet from an already-chunked payload; bytes beyond
-/// `LCD_DATA_PER_PACKET` are dropped. Display streaming goes through the
-/// shared chunk engine instead, which owns the chunk boundaries.
-pub fn append_lcd_display_packet(
-    buffer: &mut Vec<u8>,
-    zone_byte: u8,
-    final_packet: bool,
-    packet_number: u8,
-    payload: &[u8],
-) {
-    buffer.resize(LCD_PACKET_SIZE, 0);
-    write_lcd_display_header(buffer, zone_byte, final_packet, packet_number);
-
-    let copy_len = payload.len().min(LCD_DATA_PER_PACKET);
-    buffer[LCD_DISPLAY_HEADER_SIZE..LCD_DISPLAY_HEADER_SIZE + copy_len]
-        .copy_from_slice(&payload[..copy_len]);
 }
 
 /// Write the display packet header into the first bytes of `packet`.

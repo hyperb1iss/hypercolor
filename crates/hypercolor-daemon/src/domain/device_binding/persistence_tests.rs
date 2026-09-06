@@ -232,6 +232,7 @@ async fn transaction_preserves_layout_evidence_until_dependents_are_durable() {
                 controls: HashMap::new(),
                 blend_mode: BlendMode::Alpha,
                 opacity: 1.0,
+                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect("legacy display preference");

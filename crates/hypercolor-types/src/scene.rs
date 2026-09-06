@@ -175,6 +175,44 @@ pub struct DisplayFaceTarget {
         skip_serializing_if = "is_default_display_face_opacity"
     )]
     pub opacity: f32,
+    /// How the screen is mounted: the face is turned by this much so it
+    /// reads upright on a display installed upside down or on its side.
+    #[serde(default, skip_serializing_if = "DisplayRotation::is_upright")]
+    pub rotation: DisplayRotation,
+}
+
+/// Quarter turns applied to everything drawn on a display.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayRotation {
+    /// Mounted the way the vendor intended.
+    #[default]
+    Deg0,
+    /// A quarter turn clockwise.
+    Deg90,
+    /// Upside down.
+    Deg180,
+    /// A quarter turn counter-clockwise.
+    Deg270,
+}
+
+impl DisplayRotation {
+    /// The turn in radians, clockwise positive.
+    #[must_use]
+    pub fn radians(self) -> f32 {
+        match self {
+            Self::Deg0 => 0.0,
+            Self::Deg90 => std::f32::consts::FRAC_PI_2,
+            Self::Deg180 => std::f32::consts::PI,
+            Self::Deg270 => 3.0 * std::f32::consts::FRAC_PI_2,
+        }
+    }
+
+    #[must_use]
+    pub fn is_upright(&self) -> bool {
+        matches!(self, Self::Deg0)
+    }
 }
 
 impl DisplayFaceTarget {
@@ -188,6 +226,7 @@ impl DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::default(),
             opacity: default_display_face_opacity(),
+            rotation: DisplayRotation::default(),
         }
     }
 
