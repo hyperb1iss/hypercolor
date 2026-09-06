@@ -317,6 +317,61 @@ async fn delete_defaults_to_the_default_scope() {
     assert!(payload["data"].is_null());
 }
 
+#[tokio::test]
+async fn deleting_the_default_of_an_unregistered_display_clears_the_orphan() {
+    let (state, _tempdir) = isolated_state();
+    let effect_id = register_face_effect(&state, "Orphaned Face").await;
+    let app = api::build_router(Arc::clone(&state), None);
+    let orphan = DeviceId::new();
+    state
+        .domains
+        .display
+        .preferences()
+        .write()
+        .await
+        .set(
+            orphan,
+            DisplayPreference {
+                effect_id,
+                controls: std::collections::HashMap::new(),
+                blend_mode: hypercolor_types::layer::BlendMode::Alpha,
+                opacity: 1.0,
+            },
+        )
+        .expect("orphan preference should install");
+
+    let response = send(
+        &app,
+        delete_request(format!("/api/v1/displays/{orphan}/face?scope=default")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = body_json(response).await;
+    assert_eq!(payload["data"]["deleted"], true);
+    assert!(!state.domains.display.has_default_face(orphan).await);
+}
+
+#[tokio::test]
+async fn deleting_the_default_of_an_unknown_id_without_a_stored_face_is_not_found() {
+    let (state, _tempdir) = isolated_state();
+    let app = api::build_router(Arc::clone(&state), None);
+    let unknown = DeviceId::new();
+
+    let response = send(
+        &app,
+        delete_request(format!("/api/v1/displays/{unknown}/face?scope=default")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = send(
+        &app,
+        delete_request(format!("/api/v1/displays/{unknown}/face?scope=scene")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 // ── Controls routing ────────────────────────────────────────────────────
 
 #[tokio::test]
