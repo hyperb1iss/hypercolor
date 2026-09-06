@@ -279,8 +279,17 @@ pub fn StudioPage() -> impl IntoView {
             }
         }
     });
-    let screen_face =
-        Signal::derive(move || screen_face_resource.get().and_then(Result::ok).flatten());
+    // The resource keeps the previous screen's face while the next fetch is
+    // in flight; only a face for the currently selected display counts, so
+    // a fresh selection never wears, or acts on, its predecessor's face.
+    let screen_face = Signal::derive(move || {
+        let selected = selected_screen_device.get()?;
+        screen_face_resource
+            .get()
+            .and_then(Result::ok)
+            .flatten()
+            .filter(|face| face.device_id == selected)
+    });
     let refresh_screen_face = Callback::new(move |()| {
         set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
     });

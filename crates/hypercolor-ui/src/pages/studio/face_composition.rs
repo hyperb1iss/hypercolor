@@ -72,6 +72,10 @@ pub fn ScreenCompositionSection(
         if !echo && commits_in_flight.get_value() == 0 {
             set_blend_mode.set(mode);
             set_opacity.set(amount);
+            // The shared face also refetches on unrelated scene events. Record
+            // the seeded pair so an echo of it arriving mid-drag (before the
+            // debounced commit lands) cannot snap the slider back.
+            last_committed.set_value(Some((mode, opacity_key(amount))));
         }
     });
 
@@ -88,13 +92,15 @@ pub fn ScreenCompositionSection(
         spawn_local(async move {
             let result = api::update_display_face_composition(&device_id, mode, amount).await;
             commits_in_flight.try_update_value(|count| *count = count.saturating_sub(1));
+            // The page may be gone by the time the PUT resolves; a disposed
+            // callback must stay silent rather than panic the runtime.
             match result {
                 Ok(_) => {
-                    refresh_face.run(());
-                    refresh_scene.run(());
+                    refresh_face.try_run(());
+                    refresh_scene.try_run(());
                 }
                 Err(error) => {
-                    refresh_face.run(());
+                    refresh_face.try_run(());
                     toasts::toast_error(&format!("Face composition update failed: {error}"));
                 }
             }
