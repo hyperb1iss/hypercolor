@@ -267,6 +267,7 @@ fn encode_display_frame_into_shrinks_oversized_buffer() {
             response_delay: std::time::Duration::from_secs(1),
             post_delay: std::time::Duration::from_secs(1),
             transfer_type: TransferType::Primary,
+            ..Default::default()
         });
     }
 

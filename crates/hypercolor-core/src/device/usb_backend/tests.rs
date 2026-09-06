@@ -2042,5 +2042,336 @@ fn test_command_with_transfer(byte: u8, transfer_type: TransferType) -> Protocol
         response_delay: Duration::ZERO,
         post_delay: Duration::ZERO,
         transfer_type,
+        ..Default::default()
     }
+}
+
+/// One transport read as the actor asked for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoggedRead {
+    timeout: Duration,
+    capacity: Option<usize>,
+}
+
+/// Answers scripted reports in order and records how each read was requested.
+struct ResponsePlanTransport {
+    reports: Mutex<Vec<Vec<u8>>>,
+    reads: Mutex<Vec<LoggedRead>>,
+    sends: Mutex<Vec<Vec<u8>>>,
+}
+
+impl ResponsePlanTransport {
+    fn new(reports: Vec<Vec<u8>>) -> Self {
+        Self {
+            reports: Mutex::new(reports),
+            reads: Mutex::new(Vec::new()),
+            sends: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn next_report(&self, timeout: Duration, capacity: Option<usize>) -> Vec<u8> {
+        self.reads
+            .lock()
+            .expect("read log should not be poisoned")
+            .push(LoggedRead { timeout, capacity });
+
+        let mut reports = self.reports.lock().expect("reports should not be poisoned");
+        if reports.is_empty() {
+            Vec::new()
+        } else {
+            reports.remove(0)
+        }
+    }
+
+    fn reads(&self) -> Vec<LoggedRead> {
+        self.reads
+            .lock()
+            .expect("read log should not be poisoned")
+            .clone()
+    }
+
+    fn sends(&self) -> Vec<Vec<u8>> {
+        self.sends
+            .lock()
+            .expect("send log should not be poisoned")
+            .clone()
+    }
+}
+
+#[async_trait]
+impl Transport for ResponsePlanTransport {
+    fn name(&self) -> &'static str {
+        "response-plan-test"
+    }
+
+    async fn send(&self, data: &[u8]) -> std::result::Result<(), TransportError> {
+        self.sends
+            .lock()
+            .expect("send log should not be poisoned")
+            .push(data.to_vec());
+        Ok(())
+    }
+
+    async fn receive(&self, timeout: Duration) -> std::result::Result<Vec<u8>, TransportError> {
+        Ok(self.next_report(timeout, None))
+    }
+
+    async fn receive_logical(
+        &self,
+        timeout: Duration,
+        _transfer_type: TransferType,
+        capacity: Option<usize>,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        Ok(self.next_report(timeout, capacity))
+    }
+
+    async fn send_receive_logical(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        _transfer_type: TransferType,
+        capacity: Option<usize>,
+    ) -> std::result::Result<Vec<u8>, TransportError> {
+        self.send(data).await?;
+        Ok(self.next_report(timeout, capacity))
+    }
+
+    async fn close(&self) -> std::result::Result<(), TransportError> {
+        Ok(())
+    }
+}
+
+const PLAN_PROTOCOL_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// Records every report handed to `parse_response`, in arrival order, and
+/// answers scripted statuses so retry paths can be driven.
+struct ReportRecordingProtocol {
+    seen: Mutex<Vec<Vec<u8>>>,
+    statuses: Mutex<Vec<ResponseStatus>>,
+}
+
+impl ReportRecordingProtocol {
+    fn new() -> Self {
+        Self {
+            seen: Mutex::new(Vec::new()),
+            statuses: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Answer these statuses in order, then `Ok` forever after.
+    fn with_statuses(statuses: Vec<ResponseStatus>) -> Self {
+        Self {
+            seen: Mutex::new(Vec::new()),
+            statuses: Mutex::new(statuses),
+        }
+    }
+
+    fn seen(&self) -> Vec<Vec<u8>> {
+        self.seen
+            .lock()
+            .expect("report log should not be poisoned")
+            .clone()
+    }
+}
+
+impl Protocol for ReportRecordingProtocol {
+    fn name(&self) -> &'static str {
+        "report-recording-test"
+    }
+
+    fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn encode_frame(&self, _colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn parse_response(&self, data: &[u8]) -> std::result::Result<ProtocolResponse, ProtocolError> {
+        self.seen
+            .lock()
+            .expect("report log should not be poisoned")
+            .push(data.to_vec());
+
+        let mut statuses = self
+            .statuses
+            .lock()
+            .expect("statuses should not be poisoned");
+        let status = if statuses.is_empty() {
+            ResponseStatus::Ok
+        } else {
+            statuses.remove(0)
+        };
+        Ok(ProtocolResponse {
+            status,
+            data: data.to_vec(),
+        })
+    }
+
+    fn response_timeout(&self) -> Duration {
+        PLAN_PROTOCOL_TIMEOUT
+    }
+
+    fn zones(&self) -> Vec<SegmentInfo> {
+        Vec::new()
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities::default()
+    }
+
+    fn total_leds(&self) -> u32 {
+        0
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_millis(16)
+    }
+}
+
+fn responding_command(byte: u8) -> ProtocolCommand {
+    ProtocolCommand {
+        data: vec![byte],
+        expects_response: true,
+        ..Default::default()
+    }
+}
+
+/// A command that answers with two reports must have both read, or the
+/// second one is still queued when the next command reads its reply.
+#[tokio::test]
+async fn response_count_reads_every_report_and_keeps_the_next_command_in_sync() {
+    let protocol = ReportRecordingProtocol::new();
+    let transport = ResponsePlanTransport::new(vec![
+        b"1.0.5".to_vec(),
+        b"Mar 14 2026".to_vec(),
+        b"next-command-reply".to_vec(),
+    ]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[
+            responding_command(0xA6).with_response_count(2),
+            responding_command(0xAA),
+        ],
+    )
+    .await
+    .expect("both commands should run");
+
+    assert_eq!(
+        protocol.seen(),
+        vec![
+            b"1.0.5".to_vec(),
+            b"Mar 14 2026".to_vec(),
+            b"next-command-reply".to_vec(),
+        ],
+        "reports must reach parse_response in arrival order"
+    );
+    assert_eq!(transport.reads().len(), 3, "two reports plus one");
+    assert_eq!(
+        transport.sends(),
+        vec![vec![0xA6], vec![0xAA]],
+        "the extra report is a read, not a resend"
+    );
+}
+
+#[tokio::test]
+async fn a_command_response_timeout_overrides_the_protocol_budget() {
+    let protocol = ReportRecordingProtocol::new();
+    let transport = ResponsePlanTransport::new(vec![vec![0x01], vec![0x02], vec![0x03]]);
+
+    let init_timeout = Duration::from_secs(3);
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[
+            responding_command(0x3E)
+                .with_response_timeout(init_timeout)
+                .with_response_count(2),
+            responding_command(0x46),
+        ],
+    )
+    .await
+    .expect("commands should run");
+
+    let timeouts: Vec<Duration> = transport.reads().into_iter().map(|r| r.timeout).collect();
+    assert_eq!(
+        timeouts,
+        vec![init_timeout, init_timeout, PLAN_PROTOCOL_TIMEOUT],
+        "the override covers every report of its own command and nothing after"
+    );
+}
+
+#[tokio::test]
+async fn response_len_reaches_the_transport_as_a_read_capacity() {
+    let protocol = ReportRecordingProtocol::new();
+    let transport = ResponsePlanTransport::new(vec![vec![0x01; 8], vec![0x02; 8]]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[
+            responding_command(0xA0).with_response_len(508),
+            responding_command(0xA1),
+        ],
+    )
+    .await
+    .expect("commands should run");
+
+    let capacities: Vec<Option<usize>> =
+        transport.reads().into_iter().map(|r| r.capacity).collect();
+    assert_eq!(
+        capacities,
+        vec![Some(508), None],
+        "capacity travels per command, and a command without one reads at the transport default"
+    );
+}
+
+/// A retry partway through a multi-report command must not leave the rest of
+/// that attempt's reports queued: the resend would read one as its own reply
+/// and every read after it would be answering the wrong command.
+#[tokio::test]
+async fn a_retry_discards_the_reports_left_over_from_the_failed_attempt() {
+    let protocol =
+        ReportRecordingProtocol::with_statuses(vec![ResponseStatus::Busy, ResponseStatus::Ok]);
+    let transport = ResponsePlanTransport::new(vec![
+        b"busy".to_vec(),
+        b"stale-date".to_vec(),
+        b"version".to_vec(),
+        b"date".to_vec(),
+        b"next-command-reply".to_vec(),
+    ]);
+
+    UsbBackend::run_commands(
+        &protocol,
+        &transport,
+        &[
+            responding_command(0xA6).with_response_count(2),
+            responding_command(0xAA),
+        ],
+    )
+    .await
+    .expect("the retried command should succeed on its second attempt");
+
+    assert_eq!(
+        transport.sends(),
+        vec![vec![0xA6], vec![0xA6], vec![0xAA]],
+        "the busy command is resent once"
+    );
+    assert_eq!(
+        protocol.seen(),
+        vec![
+            b"busy".to_vec(),
+            b"version".to_vec(),
+            b"date".to_vec(),
+            b"next-command-reply".to_vec(),
+        ],
+        "the abandoned attempt's second report is discarded, not parsed as \
+         the resend's reply"
+    );
 }

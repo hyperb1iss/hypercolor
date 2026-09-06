@@ -146,6 +146,35 @@ pub struct DeviceDescriptor {
 
     /// Optional firmware-based disambiguation predicate.
     pub firmware_predicate: Option<fn(&str) -> bool>,
+
+    /// How to treat this device's reported USB serial, when it lies.
+    pub serial_quirk: Option<SerialQuirk>,
+}
+
+/// Known defects in a device family's reported USB serial number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SerialQuirk {
+    /// The firmware reports one of these fixed strings for every unit, so the
+    /// value identifies the model rather than the device. Treating it as an
+    /// identity collapses a chain of identical panels into one device.
+    PlaceholderValues(&'static [&'static str]),
+}
+
+impl DeviceDescriptor {
+    /// Whether `serial` is a factory placeholder rather than a real identity.
+    ///
+    /// Compared case-insensitively against the trimmed value, since these
+    /// strings come back from firmware with incidental padding.
+    #[must_use]
+    pub fn is_placeholder_serial(&self, serial: &str) -> bool {
+        let serial = serial.trim();
+        match self.serial_quirk {
+            Some(SerialQuirk::PlaceholderValues(values)) => values
+                .iter()
+                .any(|placeholder| placeholder.eq_ignore_ascii_case(serial)),
+            None => false,
+        }
+    }
 }
 
 impl DeviceDescriptor {

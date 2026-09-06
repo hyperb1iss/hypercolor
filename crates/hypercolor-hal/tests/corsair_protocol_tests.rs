@@ -172,6 +172,7 @@ fn link_encode_frame_into_reuses_existing_command_buffers() {
             response_delay: Duration::from_millis(1),
             post_delay: Duration::from_millis(1),
             transfer_type: TransferType::Bulk,
+            ..Default::default()
         };
         6
     ];
@@ -350,6 +351,7 @@ fn lcd_encode_display_frame_into_reuses_command_buffer() {
         response_delay: Duration::from_millis(1),
         post_delay: Duration::from_millis(1),
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }];
 
     protocol

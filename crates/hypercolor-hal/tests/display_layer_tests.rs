@@ -127,6 +127,7 @@ fn stale_commands(count: usize) -> Vec<ProtocolCommand> {
             response_delay: Duration::from_secs(9),
             post_delay: Duration::from_secs(9),
             transfer_type: TransferType::Primary,
+            ..Default::default()
         })
         .collect()
 }

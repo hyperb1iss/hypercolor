@@ -19,7 +19,7 @@ use crate::transport::{Transport, TransportError, format_hex_preview};
 #[cfg(target_os = "linux")]
 use std::path::Path;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct HidApiCandidate {
     path: String,
     interface_number: i32,
@@ -57,10 +57,6 @@ impl UsbHidApiTransport {
         clippy::too_many_arguments,
         reason = "HID device selection needs transport metadata, identity filters, and collection filters together"
     )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Device discovery, filtering, and diagnostic reporting stay together so probe failures are debuggable"
-    )]
     pub fn open(
         vendor_id: u16,
         product_id: u16,
@@ -72,10 +68,11 @@ impl UsbHidApiTransport {
         usb_path: Option<&str>,
         usage_page: Option<u16>,
         usage: Option<u16>,
+        require_unique_match: bool,
     ) -> Result<Self, TransportError> {
         let api = HidApi::new().map_err(|error| map_hidapi_error(&error))?;
 
-        let mut candidates = api
+        let candidates = api
             .device_list()
             .filter(|device| device.vendor_id() == vendor_id && device.product_id() == product_id)
             .map(|device| HidApiCandidate {
@@ -89,41 +86,24 @@ impl UsbHidApiTransport {
             .collect::<Vec<_>>();
 
         let original_candidates = candidates.clone();
-        if let Some(interface_number) = interface_number {
-            let requested_interface = i32::from(interface_number);
-            candidates.retain(|candidate| candidate.interface_number == requested_interface);
-        }
+        let selection = select_hid_candidate(
+            candidates,
+            &HidCandidateFilter {
+                interface_number,
+                serial,
+                usb_path,
+                usage_page,
+                usage,
+                require_unique_match,
+            },
+        );
 
-        if let Some(serial) = serial {
-            candidates.retain(|candidate| candidate.serial.as_deref() == Some(serial));
-        }
-
-        if let Some(usb_path) = usb_path {
-            let any_usb_paths = candidates
-                .iter()
-                .any(|candidate| candidate.usb_path.is_some());
-            if any_usb_paths {
-                candidates.retain(|candidate| {
-                    candidate
-                        .usb_path
-                        .as_deref()
-                        .is_some_and(|candidate_path| usb_paths_match(candidate_path, usb_path))
-                });
-            }
-        }
-
-        if let Some(usage_page) = usage_page {
-            candidates.retain(|candidate| candidate.usage_page == usage_page);
-        }
-
-        if let Some(usage) = usage {
-            candidates.retain(|candidate| candidate.usage == usage);
-        }
-
-        let Some(chosen) = candidates.into_iter().next() else {
-            let sample_candidates = original_candidates
-                .iter()
-                .take(6)
+        let chosen = match selection {
+            Ok(chosen) => chosen,
+            Err(failure) => {
+                let sample_candidates = original_candidates
+                    .iter()
+                    .take(6)
                 .map(|candidate| {
                     format!(
                         "{}(if={}, usage_page=0x{:04X}, usage=0x{:04X}, serial={}, usb_path={})",
@@ -138,19 +118,31 @@ impl UsbHidApiTransport {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            return Err(TransportError::NotFound {
-                detail: format!(
-                    "hidapi device not found for {:04X}:{:04X} interface {} (serial={}, usb_path={}, usage_page={}, usage={}); candidates=[{}]",
-                    vendor_id,
-                    product_id,
-                    interface_number.map_or_else(|| "<any>".to_owned(), |value| value.to_string()),
-                    serial.unwrap_or("<none>"),
-                    usb_path.unwrap_or("<unknown>"),
-                    usage_page.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
-                    usage.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
-                    sample_candidates
-                ),
-            });
+                let reason = match failure {
+                    HidSelectionFailure::NoMatch => "no candidate matched".to_owned(),
+                    HidSelectionFailure::Ambiguous { matched } => format!(
+                        "{matched} candidates matched and this device family reports the \
+                         same serial for every unit, so picking one would risk driving \
+                         a different unit than the one discovered"
+                    ),
+                };
+
+                return Err(TransportError::NotFound {
+                    detail: format!(
+                        "hidapi device not resolved for {:04X}:{:04X} interface {} ({reason}; serial={}, usb_path={}, usage_page={}, usage={}); candidates=[{}]",
+                        vendor_id,
+                        product_id,
+                        interface_number
+                            .map_or_else(|| "<any>".to_owned(), |value| value.to_string()),
+                        serial.unwrap_or("<none>"),
+                        usb_path.unwrap_or("<unknown>"),
+                        usage_page
+                            .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                        usage.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                        sample_candidates
+                    ),
+                });
+            }
         };
 
         let device_path = chosen.path;
@@ -773,6 +765,98 @@ fn hidapi_usb_path(_path: &CStr) -> Option<String> {
     None
 }
 
+/// Filters that narrow an enumerated HID candidate list to one device.
+struct HidCandidateFilter<'a> {
+    interface_number: Option<u8>,
+    serial: Option<&'a str>,
+    usb_path: Option<&'a str>,
+    usage_page: Option<u16>,
+    usage: Option<u16>,
+    /// Refuse to choose when several candidates survive the filters.
+    ///
+    /// Set for device families whose firmware reports one shared serial, where
+    /// the surviving candidates are different physical units rather than
+    /// different collections of one unit.
+    require_unique_match: bool,
+}
+
+/// Why a HID candidate list did not resolve to exactly one device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HidSelectionFailure {
+    /// Nothing matched the filters.
+    NoMatch,
+    /// Several units matched and none of the filters could separate them.
+    Ambiguous {
+        /// Candidates left after filtering.
+        matched: usize,
+    },
+}
+
+/// Narrow enumerated HID candidates to the one device to open.
+///
+/// The USB-path filter self-disables when no candidate exposes a path, since
+/// only the Linux backend can resolve one; on macOS and Windows it therefore
+/// cannot separate two units of the same model. That is exactly when
+/// `require_unique_match` matters: without it the first candidate wins and
+/// every panel of a chain opens the same physical unit.
+fn select_hid_candidate(
+    mut candidates: Vec<HidApiCandidate>,
+    filter: &HidCandidateFilter<'_>,
+) -> Result<HidApiCandidate, HidSelectionFailure> {
+    if let Some(interface_number) = filter.interface_number {
+        let requested_interface = i32::from(interface_number);
+        candidates.retain(|candidate| candidate.interface_number == requested_interface);
+    }
+
+    if let Some(serial) = filter.serial {
+        candidates.retain(|candidate| candidate.serial.as_deref() == Some(serial));
+    }
+
+    if let Some(usb_path) = filter.usb_path {
+        let any_usb_paths = candidates
+            .iter()
+            .any(|candidate| candidate.usb_path.is_some());
+        if any_usb_paths {
+            candidates.retain(|candidate| {
+                candidate
+                    .usb_path
+                    .as_deref()
+                    .is_some_and(|candidate_path| usb_paths_match(candidate_path, usb_path))
+            });
+        }
+    }
+
+    if let Some(usage_page) = filter.usage_page {
+        candidates.retain(|candidate| candidate.usage_page == usage_page);
+    }
+
+    if let Some(usage) = filter.usage {
+        candidates.retain(|candidate| candidate.usage == usage);
+    }
+
+    if filter.require_unique_match && candidates.len() > 1 {
+        // macOS enumerates one row per top-level usage collection, all
+        // sharing one hidapi path; rows that open the same node are one
+        // physical device, not an ambiguity.
+        let mut distinct_paths: Vec<&str> = candidates
+            .iter()
+            .map(|candidate| candidate.path.as_str())
+            .collect();
+        distinct_paths.sort_unstable();
+        distinct_paths.dedup();
+        if distinct_paths.len() > 1 {
+            return Err(HidSelectionFailure::Ambiguous {
+                matched: distinct_paths.len(),
+            });
+        }
+    }
+
+    candidates
+        .into_iter()
+        .next()
+        .ok_or(HidSelectionFailure::NoMatch)
+}
+
 fn usb_paths_match(candidate: &str, requested: &str) -> bool {
     if candidate == requested {
         return true;
@@ -793,6 +877,131 @@ fn normalize_usb_path(path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two units of one model, as HID enumeration reports them: identical
+    /// serials, and a USB path only where the platform can resolve one.
+    fn panel_pair(usb_paths: Option<(&str, &str)>) -> Vec<HidApiCandidate> {
+        let (first_path, second_path) = match usb_paths {
+            Some((first, second)) => (Some(first.to_owned()), Some(second.to_owned())),
+            None => (None, None),
+        };
+
+        vec![
+            HidApiCandidate {
+                path: "hid-node-a".to_owned(),
+                interface_number: 0,
+                serial: Some("TL_LCDV0.1".to_owned()),
+                usb_path: first_path,
+                usage_page: 0xFF00,
+                usage: 0x0001,
+            },
+            HidApiCandidate {
+                path: "hid-node-b".to_owned(),
+                interface_number: 0,
+                serial: Some("TL_LCDV0.1".to_owned()),
+                usb_path: second_path,
+                usage_page: 0xFF00,
+                usage: 0x0001,
+            },
+        ]
+    }
+
+    fn filter_for(usb_path: Option<&str>, require_unique_match: bool) -> HidCandidateFilter<'_> {
+        HidCandidateFilter {
+            interface_number: Some(0),
+            serial: None,
+            usb_path,
+            usage_page: None,
+            usage: None,
+            require_unique_match,
+        }
+    }
+
+    /// Where the platform resolves a USB path, the path is the selection key
+    /// and each panel opens its own node.
+    #[test]
+    fn a_usb_path_selects_one_panel_out_of_a_pair() {
+        let candidates = panel_pair(Some(("1-1.2", "1-1.3")));
+
+        let chosen = select_hid_candidate(candidates.clone(), &filter_for(Some("1-1.3"), true))
+            .expect("the requested panel should resolve");
+        assert_eq!(chosen.path, "hid-node-b");
+
+        let chosen = select_hid_candidate(candidates, &filter_for(Some("1-1.2"), true))
+            .expect("the other panel should resolve to the other node");
+        assert_eq!(chosen.path, "hid-node-a");
+    }
+
+    /// Without a resolvable USB path there is no key left, and every panel of
+    /// a chain would otherwise open the first node.
+    #[test]
+    fn indistinguishable_panels_are_refused_rather_than_guessed() {
+        let failure = select_hid_candidate(panel_pair(None), &filter_for(Some("1-1.3"), true))
+            .expect_err("two identical units must not resolve to one arbitrarily");
+
+        assert_eq!(failure, HidSelectionFailure::Ambiguous { matched: 2 });
+    }
+
+    /// Families that do not declare a placeholder serial keep the old
+    /// first-match behavior, so this stays scoped to the devices that need it.
+    #[test]
+    fn ambiguity_is_only_refused_when_the_caller_asks_for_it() {
+        let chosen = select_hid_candidate(panel_pair(None), &filter_for(Some("1-1.3"), false))
+            .expect("the legacy path still takes the first match");
+
+        assert_eq!(chosen.path, "hid-node-a");
+    }
+
+    /// macOS reports one row per top-level usage collection, every row
+    /// sharing the physical device's hidapi path. One panel exposing two
+    /// collections is still one panel, not an ambiguity.
+    #[test]
+    fn same_path_collection_rows_count_as_one_device() {
+        let mut candidates = panel_pair(None);
+        candidates[1].path = "hid-node-a".to_owned();
+        candidates[1].usage = 0x0002;
+
+        let chosen = select_hid_candidate(candidates, &filter_for(None, true))
+            .expect("collection rows of one device must resolve");
+
+        assert_eq!(chosen.path, "hid-node-a");
+    }
+
+    /// One panel is the common case and must keep working on every platform.
+    #[test]
+    fn a_single_candidate_resolves_even_with_no_usable_key() {
+        let mut candidates = panel_pair(None);
+        candidates.truncate(1);
+
+        let chosen = select_hid_candidate(candidates, &filter_for(Some("1-1.2"), true))
+            .expect("a lone candidate is unambiguous");
+
+        assert_eq!(chosen.path, "hid-node-a");
+    }
+
+    /// Collections of one unit are separated by the other filters, so they do
+    /// not read as two units.
+    #[test]
+    fn other_filters_still_narrow_before_ambiguity_is_judged() {
+        let mut candidates = panel_pair(None);
+        candidates[1].interface_number = 1;
+
+        let chosen = select_hid_candidate(candidates, &filter_for(None, true))
+            .expect("a second collection is not a second unit");
+
+        assert_eq!(chosen.path, "hid-node-a");
+    }
+
+    #[test]
+    fn no_candidate_matching_the_filters_is_reported_as_no_match() {
+        let failure = select_hid_candidate(
+            panel_pair(Some(("1-1.2", "1-1.3"))),
+            &filter_for(Some("2-4.1"), true),
+        )
+        .expect_err("a path that matches nothing should not resolve");
+
+        assert_eq!(failure, HidSelectionFailure::NoMatch);
+    }
 
     #[test]
     fn hidapi_classification_uses_io_kind_not_message() {

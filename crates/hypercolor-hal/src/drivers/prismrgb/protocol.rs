@@ -587,5 +587,6 @@ fn command_from_packet(
         response_delay: Duration::ZERO,
         post_delay,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }
 }

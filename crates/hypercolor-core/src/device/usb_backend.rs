@@ -43,6 +43,10 @@ use crate::attachment::ComponentRegistry;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
+/// How long to wait for a report left queued by an attempt that is being
+/// retried. Short on purpose: the device has usually said all it intends to,
+/// and the resend is what recovers the exchange.
+const DRAIN_REPORT_TIMEOUT: Duration = Duration::from_millis(20);
 const USB_ACTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_STARTED: u8 = 1;
@@ -1122,6 +1126,11 @@ impl UsbBackend {
             pending.usb_path.as_deref(),
             usage_page,
             usage,
+            // A family whose firmware reports one shared serial for every unit
+            // cannot be told apart by serial, and HID enumeration exposes a USB
+            // path only on Linux. Opening "the first match" there would bind two
+            // discovered devices to one panel and leave another one dark.
+            pending.descriptor.serial_quirk.is_some(),
         )
         .with_context(|| {
             format!(

@@ -8,6 +8,13 @@ use async_trait::async_trait;
 use crate::protocol::TransferType;
 use crate::registry::{HidRawReportMode, TransportType};
 
+/// Maximum quiet period between packets of one logical multi-packet reply.
+///
+/// Distinct from the response timeout, which bounds the wait for the first
+/// packet. A reply whose length is an exact multiple of the endpoint packet
+/// size has no short packet to terminate it, so it costs one gap timeout.
+pub const DEFAULT_PACKET_GAP_TIMEOUT: Duration = Duration::from_millis(20);
+
 pub mod bulk;
 pub mod control;
 pub mod hid;
@@ -282,6 +289,68 @@ where
         })?
 }
 
+/// Assemble one logical reply from a packet source.
+///
+/// `read_packet` is called with the timeout budget for that packet: the first
+/// packet gets `first_timeout`, every later one gets `gap_timeout`. The reply
+/// completes on the first of three conditions, in the order they are checked
+/// per packet: a short packet (shorter than `max_packet_size`), `capacity`
+/// bytes accumulated, or a timeout once at least one packet has arrived.
+///
+/// The gap case is a normal completion. A reply whose length is an exact
+/// multiple of the packet size sends no short packet, so it can only end by
+/// going quiet, and that costs exactly one gap timeout.
+///
+/// # Errors
+///
+/// Propagates the packet source's error when it fails before any bytes
+/// arrive, and any non-timeout error mid-reply.
+pub fn accumulate_logical_reply<F>(
+    max_packet_size: usize,
+    capacity: usize,
+    first_timeout: Duration,
+    gap_timeout: Duration,
+    mut read_packet: F,
+) -> Result<Vec<u8>, TransportError>
+where
+    F: FnMut(Duration) -> Result<Vec<u8>, TransportError>,
+{
+    if capacity == 0 || max_packet_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut accumulated: Vec<u8> = Vec::with_capacity(capacity.min(MAX_LOGICAL_PREALLOC));
+    let mut packet_timeout = first_timeout;
+
+    while accumulated.len() < capacity {
+        let packet = match read_packet(packet_timeout) {
+            Ok(packet) => packet,
+            Err(error) => {
+                // A quiet endpoint ends a reply already in hand; before that,
+                // the caller asked for a reply and got none.
+                if accumulated.is_empty() || !matches!(error, TransportError::Timeout { .. }) {
+                    return Err(error);
+                }
+                break;
+            }
+        };
+
+        let is_short = packet.len() < max_packet_size;
+        accumulated.extend_from_slice(&packet);
+        if is_short {
+            break;
+        }
+        packet_timeout = gap_timeout;
+    }
+
+    accumulated.truncate(capacity);
+    Ok(accumulated)
+}
+
+/// Upper bound on the buffer reserved up front for a logical reply, so a
+/// large declared capacity cannot turn one read into a large allocation.
+const MAX_LOGICAL_PREALLOC: usize = 8 * 1024;
+
 /// Async byte-level I/O transport.
 #[async_trait]
 pub trait Transport: Send + Sync {
@@ -400,6 +469,49 @@ pub trait Transport: Send + Sync {
         }
 
         self.send_receive(data, timeout).await
+    }
+
+    /// Receive one logical reply, accumulating up to `capacity` bytes.
+    ///
+    /// `capacity` is an upper bound, not an expected length. `None` means one
+    /// transport-default read, which is what every transport did before this
+    /// seam existed, so the default implementation ignores the bound.
+    ///
+    /// A transport whose reply can span several packets overrides this and
+    /// completes the logical read on the first of: a short packet, the
+    /// capacity being reached, or an inter-packet gap of
+    /// [`DEFAULT_PACKET_GAP_TIMEOUT`]. A gap-terminated read returns the bytes
+    /// accumulated so far as a normal reply, since a reply whose length is an
+    /// exact multiple of the packet size has no short packet to end it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the requested transfer type is not
+    /// supported or I/O fails before any bytes arrive.
+    async fn receive_logical(
+        &self,
+        timeout: Duration,
+        transfer_type: TransferType,
+        _capacity: Option<usize>,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.receive_with_type(timeout, transfer_type).await
+    }
+
+    /// Send then receive one logical reply over a specific transport path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the requested transfer type is not
+    /// supported or I/O fails.
+    async fn send_receive_logical(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        transfer_type: TransferType,
+        _capacity: Option<usize>,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.send_receive_with_type(data, timeout, transfer_type)
+            .await
     }
 
     /// Close transport and release resources.

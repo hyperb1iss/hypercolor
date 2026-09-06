@@ -14,7 +14,10 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
-use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
+use crate::transport::{
+    DEFAULT_PACKET_GAP_TIMEOUT, Transport, TransportError, accumulate_logical_reply,
+    spawn_blocking_transport_io,
+};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_REPORT_LEN: usize = 32;
@@ -369,6 +372,82 @@ impl Transport for UsbBulkTransport {
         }
     }
 
+    async fn receive_logical(
+        &self,
+        timeout: Duration,
+        transfer_type: TransferType,
+        capacity: Option<usize>,
+    ) -> Result<Vec<u8>, TransportError> {
+        let Some(capacity) = capacity.filter(|_| transfer_type != TransferType::HidReport) else {
+            return self.receive_with_type(timeout, transfer_type).await;
+        };
+
+        self.check_open()?;
+
+        let _guard = self.op_lock.lock().await;
+        let endpoint = Arc::clone(&self.in_endpoint);
+        let interface_number = self.interface_number;
+        let endpoint_address = self.in_endpoint_address;
+        let max_packet_size = self.in_max_packet_size;
+        spawn_blocking_transport_io("usb bulk logical receive", move || {
+            receive_bulk_logical_locked(
+                endpoint.as_ref(),
+                interface_number,
+                endpoint_address,
+                max_packet_size,
+                capacity,
+                timeout,
+            )
+        })
+        .await
+    }
+
+    async fn send_receive_logical(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        transfer_type: TransferType,
+        capacity: Option<usize>,
+    ) -> Result<Vec<u8>, TransportError> {
+        let Some(capacity) = capacity.filter(|_| transfer_type != TransferType::HidReport) else {
+            return self
+                .send_receive_with_type(data, timeout, transfer_type)
+                .await;
+        };
+
+        self.check_open()?;
+
+        // One lock across send and the whole accumulate loop: a second
+        // command's reply must not land in the middle of this one.
+        let _guard = self.op_lock.lock().await;
+        let out_endpoint = Arc::clone(&self.out_endpoint);
+        let in_endpoint = Arc::clone(&self.in_endpoint);
+        let scratch = Arc::clone(&self.out_buffer);
+        let interface_number = self.interface_number;
+        let out_endpoint_address = self.out_endpoint_address;
+        let in_endpoint_address = self.in_endpoint_address;
+        let in_max_packet_size = self.in_max_packet_size;
+        let packet = data.to_vec();
+        spawn_blocking_transport_io("usb bulk logical send_receive", move || {
+            send_bulk_owned_locked(
+                out_endpoint.as_ref(),
+                scratch.as_ref(),
+                interface_number,
+                out_endpoint_address,
+                packet,
+            )?;
+            receive_bulk_logical_locked(
+                in_endpoint.as_ref(),
+                interface_number,
+                in_endpoint_address,
+                in_max_packet_size,
+                capacity,
+                timeout,
+            )
+        })
+        .await
+    }
+
     async fn close(&self) -> Result<(), TransportError> {
         self.closed.store(true, Ordering::Release);
         Ok(())
@@ -428,6 +507,51 @@ fn receive_bulk_locked(
     );
 
     Ok(response)
+}
+
+/// Accumulate one logical reply across bulk packets.
+///
+/// The read completes on the first of: a short packet (the device said it is
+/// done), `capacity` bytes accumulated, or a gap timeout after at least one
+/// packet. The gap case is a normal completion, not an error: a reply that is
+/// an exact multiple of the packet size sends no short packet.
+fn receive_bulk_logical_locked(
+    endpoint: &Mutex<nusb::Endpoint<Bulk, In>>,
+    interface_number: u8,
+    endpoint_address: u8,
+    max_packet_size: usize,
+    capacity: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    if capacity == 0 || max_packet_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut endpoint = lock_mutex(endpoint, "bulk IN endpoint")?;
+    let accumulated = accumulate_logical_reply(
+        max_packet_size,
+        capacity,
+        timeout,
+        DEFAULT_PACKET_GAP_TIMEOUT,
+        |packet_timeout| {
+            endpoint
+                .transfer_blocking(Buffer::new(max_packet_size), packet_timeout)
+                .into_result()
+                .map(nusb::transfer::Buffer::into_vec)
+                .map_err(|error| map_transfer_error(error, packet_timeout))
+        },
+    )?;
+
+    trace!(
+        interface_number,
+        endpoint = format_args!("0x{endpoint_address:02X}"),
+        response_len = accumulated.len(),
+        capacity,
+        response_hex = %format_hex_preview(&accumulated, 32),
+        "usb bulk logical receive"
+    );
+
+    Ok(accumulated)
 }
 
 fn send_report_locked(

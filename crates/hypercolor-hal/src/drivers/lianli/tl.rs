@@ -13,6 +13,7 @@ use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use tracing::debug;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
@@ -32,6 +33,8 @@ const TL_MAX_PORTS: usize = 4;
 const TL_MAX_FANS_PER_PORT: usize = 10;
 const TL_MAX_TOTAL_FANS: usize = 16;
 const TL_RESPONSE_TIMEOUT: Duration = Duration::from_millis(100);
+/// `0xA6` answers with a version report followed by a build-date report.
+const TL_PRODUCT_INFO_REPORTS: u8 = 2;
 const TL_FRAME_INTERVAL: Duration = Duration::from_millis(100);
 const TL_EFFECT_STATIC: u8 = 0x01;
 const TL_BRIGHTNESS_FULL: u8 = 0x04;
@@ -129,6 +132,7 @@ impl TlFanProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 
@@ -136,8 +140,12 @@ impl TlFanProtocol {
         self.command(0xA1, &[], true)
     }
 
+    /// `0xA6` answers with two reports: the firmware version, then the build
+    /// date. Reading only one leaves the second queued, desyncing every later
+    /// read on this device.
     fn product_info_command(&self) -> ProtocolCommand {
         self.command(0xA6, &[], true)
+            .with_response_count(TL_PRODUCT_INFO_REPORTS)
     }
 
     /// Encode one TL per-fan PWM duty write.
@@ -293,10 +301,19 @@ impl Protocol for TlFanProtocol {
                     .collect::<Vec<_>>();
                 let firmware = String::from_utf8_lossy(&firmware).trim().to_owned();
                 if !firmware.is_empty() {
-                    self.state
-                        .write()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .firmware = Some(firmware);
+                    // Report order carries the meaning: version first, build
+                    // date second. Taking the latest would leave the date
+                    // stored as the firmware version.
+                    let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(existing) = state.firmware.as_deref() {
+                        debug!(
+                            firmware = existing,
+                            discarded = firmware.as_str(),
+                            "ignoring trailing 0xA6 report; firmware version already recorded"
+                        );
+                    } else {
+                        state.firmware = Some(firmware);
+                    }
                 }
             }
             _ => {}

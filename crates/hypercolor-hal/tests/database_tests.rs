@@ -18,9 +18,9 @@ use hypercolor_hal::drivers::corsair::{
 };
 use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
 use hypercolor_hal::drivers::lianli::{
-    LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_USAGE_PAGE, LIANLI_TL_VENDOR_ID,
-    PID_TL_FAN_HUB, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL_INFINITY, TL_PACKET_LEN,
-    TL_REPORT_ID,
+    LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_LCD_VENDOR_ID, LIANLI_TL_USAGE_PAGE,
+    LIANLI_TL_VENDOR_ID, PID_TL_FAN_HUB, PID_TL_LCD, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL,
+    PID_UNI_HUB_SL_INFINITY, TL_PACKET_LEN, TL_REPORT_ID,
 };
 use hypercolor_hal::drivers::nollie::{
     GEN1_HID_REPORT_SIZE, GEN2_COLOR_REPORT_SIZE, NOLLIE_GEN2_VENDOR_ID, NOLLIE_LEGACY_VENDOR_ID,
@@ -246,6 +246,30 @@ fn lookup_returns_lianli_tl_fan_descriptor() {
     assert_eq!(protocol.name(), "Lian Li TL Fan Hub");
     assert_eq!(protocol.total_leds(), 0);
     assert!(protocol.zones().is_empty());
+}
+
+#[test]
+fn lookup_returns_lianli_tl_lcd_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD)
+        .expect("wired Uni Fan TL LCD descriptor should exist");
+
+    assert_eq!(descriptor.name, "Lian Li Uni Fan TL LCD");
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("lianli", "Lian Li")
+    );
+    assert_eq!(descriptor.protocol.id, "lianli/tl-lcd");
+    assert!(descriptor.firmware_predicate.is_none());
+    assert!(
+        descriptor.is_placeholder_serial("TL_LCDV0.1"),
+        "the panel's stock serial is a model string, not an identity"
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Lian Li Uni Fan TL LCD");
+    assert_eq!(protocol.total_leds(), 0);
+    assert_eq!(protocol.zones().len(), 1);
+    assert!(protocol.capabilities().has_display);
 }
 
 #[test]

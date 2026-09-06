@@ -178,19 +178,73 @@ pub struct ProtocolCommand {
 
     /// Transport path hint for this command.
     pub transfer_type: TransferType,
+
+    /// Number of response reports to read when `expects_response` is true.
+    ///
+    /// Each report is passed to `parse_response` in arrival order. Parsing is
+    /// ordinal-sensitive: a parser that treats every report of a command alike
+    /// lets a later report overwrite state derived from an earlier one.
+    pub response_count: u8,
+
+    /// Per-command response timeout, overriding [`Protocol::response_timeout`].
+    ///
+    /// Protocols whose init reads and steady-state reads want different
+    /// budgets cannot express that with the protocol-wide knob alone.
+    pub response_timeout: Option<Duration>,
+
+    /// Receive capacity in bytes: an upper bound, not an expected length.
+    ///
+    /// `None` reads once at the transport default. Set this when a logical
+    /// reply spans more packets than one transport read returns.
+    pub response_len: Option<usize>,
 }
 
-impl ProtocolCommand {
-    fn empty() -> Self {
+impl Default for ProtocolCommand {
+    fn default() -> Self {
         Self {
             data: Vec::new(),
             expects_response: false,
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            response_count: DEFAULT_RESPONSE_COUNT,
+            response_timeout: None,
+            response_len: None,
         }
     }
 }
+
+impl ProtocolCommand {
+    fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Read `count` response reports instead of one.
+    #[must_use]
+    pub fn with_response_count(mut self, count: u8) -> Self {
+        self.response_count = count;
+        self
+    }
+
+    /// Wait `timeout` for this command's response instead of the
+    /// protocol-wide budget.
+    #[must_use]
+    pub fn with_response_timeout(mut self, timeout: Duration) -> Self {
+        self.response_timeout = Some(timeout);
+        self
+    }
+
+    /// Accumulate up to `len` response bytes across transport packets.
+    #[must_use]
+    pub fn with_response_len(mut self, len: usize) -> Self {
+        self.response_len = Some(len);
+        self
+    }
+}
+
+/// Response reports read per responding command unless a command says
+/// otherwise.
+pub const DEFAULT_RESPONSE_COUNT: u8 = 1;
 
 /// Helper for filling reusable protocol command buffers in place.
 pub struct CommandBuffer<'a> {
@@ -224,6 +278,12 @@ impl<'a> CommandBuffer<'a> {
         command.response_delay = response_delay;
         command.post_delay = post_delay;
         command.transfer_type = transfer_type;
+        // Slots are reused across frames, so every field of a recycled
+        // command must be rewritten or the previous frame's response plan
+        // leaks into this one.
+        command.response_count = DEFAULT_RESPONSE_COUNT;
+        command.response_timeout = None;
+        command.response_len = None;
         command.data.clear();
         fill(&mut command.data);
     }

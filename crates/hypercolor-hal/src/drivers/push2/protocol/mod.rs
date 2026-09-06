@@ -185,6 +185,7 @@ impl Protocol for Push2Protocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         });
         commands.push(primary_command(
             push2_sysex(PUSH2_CMD_SET_MIDI_MODE, &[PUSH2_MIDI_MODE_USER]),
@@ -467,6 +468,7 @@ fn primary_command(data: Vec<u8>, expects_response: bool) -> ProtocolCommand {
         response_delay: Duration::ZERO,
         post_delay: Duration::ZERO,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }
 }
 
@@ -477,6 +479,7 @@ fn primary_command_slice(data: &[u8], expects_response: bool) -> ProtocolCommand
         response_delay: Duration::ZERO,
         post_delay: Duration::ZERO,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }
 }
 
