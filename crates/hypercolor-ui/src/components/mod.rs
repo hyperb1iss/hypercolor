@@ -27,6 +27,7 @@ pub mod media_kind;
 pub mod media_preview;
 pub mod mobile_nav;
 pub mod modal;
+pub mod mounting_select;
 pub mod page_header;
 pub mod page_search_bar;
 pub mod perf_charts;

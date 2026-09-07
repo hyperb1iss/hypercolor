@@ -24,6 +24,7 @@ use crate::api::zones::ZoneOutcome;
 use crate::app::{CapabilitiesContext, DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::layout_builder::{LayoutEditorContext, LayoutWorkspace, ZoneCanvasActions};
+use crate::components::mounting_select::MountingSelect;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::display_preview_state::use_display_preview_subscription;
@@ -204,6 +205,11 @@ fn SurfaceStage() -> impl IntoView {
             .map(|display| format!("{}×{}", display.width, display.height))
             .unwrap_or_else(|| "—".to_owned())
     });
+    // The screen's mount is a device setting, surfaced here so a panel
+    // installed upside down is fixed where its preview is visible.
+    let mount_device_id = Signal::derive(move || selected_display.get().map(|display| display.id));
+    let mount_rotation =
+        Signal::derive(move || selected_display.get().map(|display| display.rotation));
 
     view! {
         <div class="flex h-full flex-col bg-surface-sunken/20">
@@ -213,6 +219,11 @@ fn SurfaceStage() -> impl IntoView {
                     if is_screen.get() {
                         view! {
                             <div class="flex items-center gap-2">
+                                <MountingSelect
+                                    device_id=mount_device_id
+                                    rotation=mount_rotation
+                                    class="border border-edge-subtle/60 bg-surface-overlay/40 px-2.5 py-1 text-[11px] text-fg-secondary"
+                                />
                                 <span class=label_class(
                                     LabelSize::Micro,
                                     LabelTone::Default,
