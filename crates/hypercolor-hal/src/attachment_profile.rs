@@ -3,7 +3,7 @@
 use hypercolor_types::attachment::{
     ComponentBinding, ComponentCategory, ComponentSlot, DeviceComponentProfile,
 };
-use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::device::{DeviceInfo, DeviceTopologyHint, DriverTransportKind};
 
 const PRISM_S_PROTOCOL_ID: &str = "prismrgb/prism-s";
 const NOLLIE32_PROTOCOL_ID: &str = "nollie/nollie-32";
@@ -40,16 +40,27 @@ pub fn normalize_attachment_profile_slots(
     normalize_nollie32_slot_offsets(device, &profile.bindings, &mut profile.slots);
 }
 
+/// Offer fan, AIO, heatsink, and ring templates on strip slots that are really
+/// ARGB headers.
+///
+/// A generic channel controller (Nollie, Prism Mini) reports every header as a
+/// strip because the controller cannot see what is plugged in. The same is
+/// true one level up for any bridged controller: the bridge relays whatever
+/// zone shape the external server reports, and OpenRGB models hub channels as
+/// resizable strips. In both cases the person wiring the rig knows a fan ring
+/// hangs off the header, so the slot must accept fan-class templates or the
+/// only way to bind one is a category-relabelled clone.
 fn augment_generic_channel_categories(device: &DeviceInfo, slots: &mut [ComponentSlot]) {
-    if !GENERIC_CHANNEL_PROTOCOL_IDS
+    let bridged = device.origin.transport == DriverTransportKind::Bridge;
+    let generic_protocol = GENERIC_CHANNEL_PROTOCOL_IDS
         .iter()
-        .any(|protocol_id| has_protocol(device, protocol_id))
-    {
+        .any(|protocol_id| has_protocol(device, protocol_id));
+    if !(bridged || generic_protocol) {
         return;
     }
 
     for slot in slots.iter_mut().filter(|slot| {
-        slot.name.starts_with("Channel ")
+        (bridged || slot.name.starts_with("Channel "))
             && slot
                 .suggested_categories
                 .contains(&ComponentCategory::Strip)
