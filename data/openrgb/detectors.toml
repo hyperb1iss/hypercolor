@@ -1,0 +1,119 @@
+# OpenRGB detector names owned by Hypercolor's native driver families.
+#
+# When the OpenRGB fallback bridge runs beside a native Hypercolor driver,
+# both would claim the same USB or SMBus device. The managed OpenRGB config
+# (Spec 81 §3.1) disables every OpenRGB detector whose name starts with one
+# of the `prefixes` below for each native driver that is enabled and owns at
+# least one enabled device. Matching is case-insensitive.
+#
+# `detectors` lists known OpenRGB detector names under each prefix so a fresh
+# OpenRGB.json can be seeded before OpenRGB has ever written one. The list is
+# a seed, not an inventory: prefixes do the real work, and any name OpenRGB
+# already recorded in an existing OpenRGB.json is matched by prefix too.
+#
+# Detector names follow OpenRGB 1.0 (Controllers/*/*Detect.cpp). Families
+# with no OpenRGB overlap (prismrgb, push2, wled, hue, nanoleaf, govee) are
+# intentionally absent: OpenRGB drives those through settings, not detectors.
+#
+# This file is embedded into hypercolor-openrgb-host with include_str!, so
+# the binaries need no data file at runtime.
+
+[[family]]
+driver_id = "razer"
+prefixes = ["Razer "]
+detectors = [
+  "Razer Base Station Chroma",
+  "Razer Basilisk",
+  "Razer Basilisk V3",
+  "Razer Blackwidow Chroma",
+  "Razer Blackwidow V3",
+  "Razer Blackwidow V4",
+  "Razer Blade 15 (2021)",
+  "Razer Charging Pad Chroma",
+  "Razer Chroma Addressable RGB Controller",
+  "Razer Chroma HDK",
+  "Razer Chroma Mug Holder",
+  "Razer Core",
+  "Razer Cynosa Chroma",
+  "Razer DeathAdder V2",
+  "Razer DeathStalker V2 Pro",
+  "Razer Firefly",
+  "Razer Firefly V2",
+  "Razer Goliathus",
+  "Razer Huntsman",
+  "Razer Huntsman V2",
+  "Razer Kraken Kitty Edition",
+  "Razer Laptop Stand Chroma",
+  "Razer Mamba Elite",
+  "Razer Mouse Bungee V3 Chroma",
+  "Razer Mouse Dock Chroma",
+  "Razer Naga Trinity",
+  "Razer Nommo Chroma",
+  "Razer Nommo Pro",
+  "Razer Ornata Chroma",
+  "Razer Ornata V3",
+  "Razer Seiren Emote",
+  "Razer Strider Chroma",
+  "Razer Tartarus V2",
+  "Razer Viper Ultimate",
+]
+
+[[family]]
+driver_id = "lianli"
+prefixes = ["Lian Li "]
+detectors = [
+  "Lian Li Galahad II LCD",
+  "Lian Li Galahad II Trinity",
+  "Lian Li Strimer L Connect",
+  "Lian Li Uni Hub",
+  "Lian Li Uni Hub - AL",
+  "Lian Li Uni Hub - AL V2",
+  "Lian Li Uni Hub - SL Infinity",
+  "Lian Li Uni Hub - SLV2",
+  "Lian Li Uni Hub - TL",
+  "Lian Li Uni Hub - TL LCD",
+]
+
+[[family]]
+driver_id = "corsair"
+prefixes = ["Corsair "]
+detectors = [
+  "Corsair Commander Core",
+  "Corsair Commander Core XT",
+  "Corsair Commander Pro",
+  "Corsair Hydro Series",
+  "Corsair iCUE Link System Hub",
+  "Corsair Lighting Node Core",
+  "Corsair Lighting Node Pro",
+  "Corsair LT100",
+  "Corsair Vengeance",
+  "Corsair Vengeance Pro",
+  "Corsair Dominator Platinum",
+]
+
+[[family]]
+driver_id = "dygma"
+prefixes = ["Dygma "]
+detectors = ["Dygma Raise"]
+
+[[family]]
+driver_id = "nollie"
+prefixes = ["Nollie "]
+detectors = ["Nollie 32CH", "Nollie 8CH", "Nollie 1CH"]
+
+[[family]]
+driver_id = "asus"
+prefixes = ["ASUS Aura", "ENE SMBus DRAM"]
+detectors = [
+  "ASUS Aura Addressable",
+  "ASUS Aura Core",
+  "ASUS Aura Motherboard",
+  "ASUS Aura SMBus Motherboard",
+  "ASUS Aura SMBus DRAM",
+  "ENE SMBus DRAM",
+]
+
+[[family]]
+driver_id = "qmk"
+prefixes = ["QMK OpenRGB"]
+detectors = ["QMK OpenRGB Protocol"]

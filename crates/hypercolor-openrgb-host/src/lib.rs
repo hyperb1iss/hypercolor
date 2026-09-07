@@ -14,12 +14,18 @@
 //! matching the SDK client. Filesystem inspection and the pure builders
 //! (hints, partition, launch spec) are synchronous.
 
+mod config_dir;
 mod detect;
 mod error;
 mod hints;
 mod permissions;
 mod probe;
 mod types;
+pub use config_dir::{
+    DETECTORS_MAP, DETECTORS_SECTION, DetectorFamily, DetectorPartition, MANAGED_DIR_NAME,
+    detector_families, detector_prefixes_for_drivers, managed_config_dir, matches_prefix,
+    parse_detector_table, partition_detectors, write_detector_partition,
+};
 pub use detect::{
     FLATPAK_APP_ID, SUBPROCESS_TIMEOUT, appimage_search_dirs, classify_binary, detect_binary,
     executable_names, find_appimage_in, find_in_path, find_native_binary, flatpak_app_version,
