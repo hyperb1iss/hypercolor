@@ -64,7 +64,7 @@ the real board when the user knows them):
 | `eps_header` | 20 | 12 | CPU power strimer |
 | `atx24_header` | 238 | 130 | 24-pin strimer |
 | `io_shroud_accent` | 30 | 40 | onboard accent LED |
-| `gpu_bay` | `u_bracket`, `length`, `v_from`, `v_to` | ghost outline for the preview and GPU-mounted parts |
+| `gpu_bay` | `u_bracket` (bracket edge), `length` along u | `v_from`, `v_to` | ghost outline for the preview and GPU-mounted parts |
 
 ## Deriving numbers from a spec page
 

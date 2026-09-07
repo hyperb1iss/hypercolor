@@ -30,7 +30,7 @@ Use these before changing anything, in this order:
 |---|---|---|
 | an output is dark | `POST /devices/{id}/attachments/{slot}/identify` with a colour | flash seen → mapping problem (zone off-canvas, wrong segment); no flash → device path or wiring |
 | an output shows the wrong colour | identify with `#0000FF` | blue → the effect or the zone's canvas position; another colour → channel order in the driver segment |
-| a fan lights but in the wrong place | identify the slot with `instance: n` | tells you which physical fan is chain position n |
+| a fan lights but in the wrong place | identify the slot with `binding_index` and `instance: n` | tells you which physical fan is chain position n (`instance` is zero-based; `binding_index` is zero-based and defaults to 0, so pass it whenever a slot carries more than one binding) |
 | a strimer is dark but its sibling on the same controller works | check the ribbon seating | narrow ribbons in wide sockets only work at the keyed end |
 
 Identify goes through the device path and skips the layout, which is exactly why it
