@@ -271,6 +271,10 @@ pub struct DaemonState {
     /// Periodic discovery worker task.
     pub(super) discovery_task: Option<tokio::task::JoinHandle<()>>,
 
+    /// Registers and unregisters driver output backends as `drivers.*`
+    /// config flips, driven by `ConfigChanged` on the event bus.
+    pub(super) driver_reconcile_task: Option<tokio::task::JoinHandle<()>>,
+
     /// Periodic per-device metrics collector task.
     pub(super) device_metrics_collector_task: Option<tokio::task::JoinHandle<()>>,
 

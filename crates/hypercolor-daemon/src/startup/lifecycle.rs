@@ -229,6 +229,7 @@ impl DaemonState {
         self.spawn_effect_error_fallback_worker();
         self.spawn_output_static_hold_worker();
         self.spawn_display_preference_sync_worker();
+        self.spawn_driver_registration_reconciler();
         if config.discovery.background_enabled {
             self.spawn_discovery_worker(Arc::clone(&config));
         }
@@ -327,6 +328,9 @@ impl DaemonState {
             handle.abort();
         }
         if let Some(handle) = self.discovery_task.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.driver_reconcile_task.take() {
             handle.abort();
         }
         if let Some(handle) = self.device_metrics_collector_task.take() {
@@ -719,6 +723,89 @@ impl DaemonState {
                 if matches!(event.event, HypercolorEvent::DeviceConnected { .. }) {
                     display.sync_connected_surfaces().await;
                     display.sync_preference_overlays().await;
+                }
+            }
+        }));
+    }
+
+    /// Register or unregister driver output backends when `drivers.*`
+    /// config changes, so enabling a driver gives output without a restart.
+    ///
+    /// A newly registered provider also gets a discovery scan scheduled so
+    /// its devices show up now rather than on the next periodic sweep.
+    fn spawn_driver_registration_reconciler(&mut self) {
+        let runtime = self.discovery_runtime();
+        let driver_registry = Arc::clone(&self.driver_registry);
+        let driver_host = Arc::clone(&self.driver_host);
+        let config_manager = Arc::clone(&self.config_manager);
+        let mut event_rx = self.event_bus.subscribe_all();
+
+        self.driver_reconcile_task = Some(tokio::spawn(async move {
+            loop {
+                let key = match event_rx.recv().await {
+                    Ok(event) => match event.event {
+                        HypercolorEvent::ConfigChanged { key, .. } => key,
+                        _ => continue,
+                    },
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "Driver registration reconciler lagged");
+                        String::new()
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if !crate::network::config_key_touches_drivers(&key) {
+                    continue;
+                }
+
+                let config = Arc::clone(&config_manager.get());
+                let report = match crate::network::reconcile_driver_output_backends(
+                    &runtime,
+                    driver_registry.as_ref(),
+                    driver_host.as_ref(),
+                    &config,
+                )
+                .await
+                {
+                    Ok(report) => report,
+                    Err(error) => {
+                        warn!(%error, key, "Driver output backend reconciliation failed");
+                        continue;
+                    }
+                };
+                if report.is_empty() {
+                    continue;
+                }
+                info!(
+                    registered = ?report.registered,
+                    unregistered = ?report.unregistered,
+                    disconnected = report.disconnected_devices.len(),
+                    key,
+                    "Reconciled driver output backends after config change"
+                );
+
+                let mut targets = Vec::new();
+                for driver_id in &report.registered_driver_ids {
+                    match discovery::rescan_targets_for_driver(
+                        driver_id,
+                        &config,
+                        driver_registry.as_ref(),
+                    ) {
+                        Ok(resolved) => targets.extend(resolved),
+                        Err(error) => debug!(
+                            driver_id,
+                            error, "no discovery target for a newly registered output backend"
+                        ),
+                    }
+                }
+                if !targets.is_empty() {
+                    discovery::schedule_discovery_scan(
+                        runtime.clone(),
+                        Arc::clone(&driver_registry),
+                        Arc::clone(&driver_host),
+                        config,
+                        targets,
+                        discovery::default_timeout(),
+                    );
                 }
             }
         }));

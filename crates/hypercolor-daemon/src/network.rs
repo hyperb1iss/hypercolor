@@ -1,6 +1,7 @@
 //! Built-in driver module registry and host adapters.
 
 mod host;
+mod reconcile;
 
 use std::collections::BTreeSet;
 #[cfg(not(feature = "builtin-drivers"))]
@@ -25,6 +26,9 @@ pub use host::DaemonDriverHost;
 pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin_driver_module_registry;
 #[cfg(feature = "builtin-drivers")]
 pub use hypercolor_driver_builtin::normalize_driver_config_entries as normalize_builtin_driver_config_entries;
+pub use reconcile::{
+    DriverBackendReconcileReport, config_key_touches_drivers, reconcile_driver_output_backends,
+};
 
 #[cfg(not(feature = "builtin-drivers"))]
 pub fn build_builtin_driver_module_registry(
