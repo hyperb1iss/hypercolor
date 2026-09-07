@@ -5,9 +5,11 @@
 Driver slice implemented. The active milestone is the clean SDK crate and Bridge
 driver against a user-installed or externally managed OpenRGB server.
 
-Bundled OpenRGB supervision, post-install download/install flows, Steam lanes,
-and release distribution compliance artifacts are deferred to later milestones.
-They must not block the driver slice and must not be quietly folded into it.
+App supervision of a system-installed OpenRGB server shipped under Spec 81
+(see App Supervisor below). Post-install download/install flows, Steam lanes,
+and release distribution compliance artifacts remain deferred to later
+milestones. They must not block the driver slice and must not be quietly
+folded into it.
 
 ## Goal
 
@@ -245,7 +247,19 @@ observes the driver's frame-sink error. Structured per-controller health
 metadata in one typed health payload, such as last success timestamp, protocol,
 and output-disabled reason, requires a future driver-health schema expansion.
 
-## App Supervisor (Deferred)
+## App Supervisor
+
+Implemented in `hypercolor-app` (`supervisor/openrgb.rs`) per Spec 81 §3.2,
+on top of the `hypercolor-openrgb-host` crate from Spec 81 §3.1. The desktop
+app detects an OpenRGB installation, adopts an SDK server that already answers
+on `127.0.0.1:6742`, or spawns a headless loopback server from the detected
+binary after writing the detector partition into the Hypercolor-managed config
+directory; it stops only a child it spawned, never restarts one that exited,
+and exposes `detect_openrgb`, `start_openrgb`, `stop_openrgb`, and
+`openrgb_install_hints` as Tauri commands for the UI. The "bundled runtime"
+below refers to that supervised system install: Hypercolor does not ship an
+OpenRGB binary. The behavior list stays as the contract the implementation
+meets.
 
 The app supervisor is separate from the driver. The driver receives endpoints and
 does not care whether they come from a system OpenRGB server or a supervised
