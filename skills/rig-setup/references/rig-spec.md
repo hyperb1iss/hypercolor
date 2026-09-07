@@ -123,12 +123,20 @@ Hubs arrive through the bridge with every zone at 0 LEDs, and OpenRGB does not p
 sizes you set. `bridge.zone_sizes` is fingerprint → zone name → LED count, the same shape
 as `drivers.openrgb.zone_sizes` in the daemon config; `gen_layout.py apply` merges it into
 that key (`--skip-zone-sizes` to opt out) so a reinstall or a server restart restores the
-hub. The fingerprint is the tail of the layout id after `openrgb:<host>:<port>:`
-(`serial:0994fa72ab3cae43`, or `location:...` for devices without a serial):
+hub. The key is the full fingerprint string as the driver mints it, the same form
+`controller_fps` uses: `bridge:openrgb:<host>:<port>:serial:<SERIAL>` with the serial in
+the case OpenRGB reports (upper for the Nollie), or `...:location:<path>` for devices
+without a serial. `hypercolor devices info <id>` prints it under device metadata, and
+lookup is case-insensitive:
 
 ```json
-"bridge": { "zone_sizes": { "serial:0994fa72ab3cae43": { "Channel 1": 20, "Channel 2": 60, "Channel ATX 1": 20 } } }
+"bridge": { "zone_sizes": { "bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43": { "Channel 1": 20, "Channel 2": 60, "Channel ATX 1": 20 } } }
 ```
+
+`apply` prefers the fingerprint the daemon reports for the matching controller
+(`GET /devices/{id}` metadata) over the spelling in the rig, so a key written as the
+device's layout id (`openrgb:127-0-0-1:6742:serial:...`) is also resolved when the device
+is on the daemon; the rig's own string is the fallback.
 
 `plan` warns when a zone the layout targets is still at 0 LEDs on the daemon, because
 frames into an unsized zone succeed and light nothing.

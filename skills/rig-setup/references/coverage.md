@@ -173,6 +173,13 @@ zone before any layout exists. Do not "fix" a `known` bridged device; place it a
   `references/rigs/o11d-evo-rgb-reversed-bridge-example.json` the worked example.
 - **DRAM and motherboards** are raw zones from their segment (`DRAM`, `Aura Mainboard`),
   exactly like their native counterparts with the `openrgb:` layout id.
-- **Layout ids** are `openrgb:<host>:<port>:<fingerprint>`; the fingerprint is `serial:<s>`
-  when OpenRGB reports a serial and `location:<path>` otherwise, and it is the key
-  `zone_sizes` uses.
+- **Layout ids** are `openrgb:<host>:<port>:<identity>`, lower-cased and with dots
+  replaced (`openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43`). The **fingerprint** the
+  driver mints is a different string and is what `zone_sizes` and `controller_fps` are
+  keyed by: `bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43`
+  (namespace:driver:endpoint:identity, serial in OpenRGB's own case, `location:<path>`
+  when there is no serial). `hypercolor devices info <id>` prints it under device
+  metadata; lookup is case-insensitive.
+- **Spotting bridge devices in scripts.** Key on `origin.driver_id == "openrgb"` (or the
+  `openrgb:` layout-id prefix), never on `origin.transport == "bridge"` alone: the ROLI
+  driver reports transport `bridge` too for its BLE blocks. `scripts/coverage.py` does this.

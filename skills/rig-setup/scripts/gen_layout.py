@@ -608,12 +608,53 @@ def warn_unsized_bridge_zones(api: Api, rig: dict, zones: list[dict]) -> None:
                   f"(hypercolor openrgb resize, or bridge.zone_sizes in this rig)")
 
 
-def push_zone_sizes(api: Api, sizes: dict[str, dict[str, int]]) -> None:
+def device_fingerprint(detail: dict) -> str | None:
+    """The driver-minted fingerprint from a GET /devices/{id} document, wherever it sits.
+
+    Daemons expose it under device metadata (`hypercolor devices info` prints it);
+    the exact envelope has moved, so a few plausible homes are checked."""
+    for holder in (detail, detail.get("metadata") or {}, detail.get("discovery") or {},
+                   detail.get("bridge") or {}):
+        value = holder.get("fingerprint") if isinstance(holder, dict) else None
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def resolve_zone_size_keys(api: Api, rig: dict, sizes: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
+    """Key the rig's zone_sizes by the fingerprint the daemon reports, when it can.
+
+    The config key is the full fingerprint string the driver mints
+    (`bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43`). A rig may spell it in a
+    different case or use the controller's layout id instead; both resolve through
+    GET /devices/{id} for the bridged controllers the rig names. Anything that cannot be
+    matched is written as declared."""
+    known: dict[str, str] = {}  # lower-cased rig key candidates -> daemon fingerprint
+    for ctrl in rig.get("controllers", {}).values():
+        lid = ctrl.get("layout_device_id", "")
+        if not lid.startswith(BRIDGE_PREFIX) or not ctrl.get("device"):
+            continue
+        detail = api.try_get(f"/devices/{ctrl['device']}")
+        fingerprint = device_fingerprint((detail or {}).get("data", {}))
+        if fingerprint:
+            known[fingerprint.lower()] = fingerprint
+            known[lid.lower()] = fingerprint
+    out: dict[str, dict[str, int]] = {}
+    for key, per_zone in sizes.items():
+        resolved = known.get(key.lower(), key)
+        if resolved != key:
+            print(f"  zone sizes: '{key}' -> daemon fingerprint '{resolved}'")
+        out.setdefault(resolved, {}).update(per_zone)
+    return out
+
+
+def push_zone_sizes(api: Api, rig: dict, sizes: dict[str, dict[str, int]]) -> None:
     """Write drivers.openrgb.zone_sizes through the config API (bare value body).
 
     The current value is merged when the daemon lets us read it; driver sections often
     read back redacted, in which case the rig's map is written as declared, so keep
     every bridged hub's sizes in the rig rather than half of them."""
+    sizes = resolve_zone_size_keys(api, rig, sizes)
     current = api.try_get("/config/keys/drivers.openrgb.zone_sizes")
     merged: dict = {}
     value = (current or {}).get("data", {}).get("value")
@@ -755,7 +796,7 @@ def main() -> None:
 
     # 5. bridge zone sizes, so a daemon reinstall or OpenRGB restart keeps the hub's LED counts
     if rig.get("bridge", {}).get("zone_sizes") and not args.skip_zone_sizes:
-        push_zone_sizes(api, rig["bridge"]["zone_sizes"])
+        push_zone_sizes(api, rig, rig["bridge"]["zone_sizes"])
     print("  activate with: POST /api/v1/scenes/{scene_id}/activate (or the activate_scene MCP tool)")
 
 
