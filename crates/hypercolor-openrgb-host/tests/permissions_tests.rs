@@ -1,9 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use hypercolor_openrgb_host::{
-    BinaryKind, CHECK_HIDRAW_NODES, CHECK_I2C_DEV_MODULE, CHECK_I2C_NODES, CHECK_UDEV_RULES,
-    OpenRgbBinary, PermissionCheck, UDEV_RULES_PATHS, linux_permission_checks_at,
-    permission_checks, udev_rules_remedy,
+    CHECK_HIDRAW_NODES, CHECK_I2C_DEV_MODULE, CHECK_I2C_NODES, CHECK_UDEV_RULES, PermissionCheck,
+    UDEV_RULES_PATHS, UDEV_RULES_URL, linux_permission_checks_at, permission_checks,
+    udev_rules_remedy,
 };
 
 fn check<'a>(checks: &'a [PermissionCheck], id: &str) -> &'a PermissionCheck {
@@ -21,7 +21,7 @@ fn touch(path: &Path) {
 #[test]
 fn empty_root_fails_udev_and_module_but_passes_absent_nodes() {
     let root = tempfile::tempdir().expect("tempdir");
-    let checks = linux_permission_checks_at(root.path(), None);
+    let checks = linux_permission_checks_at(root.path());
     assert_eq!(checks.len(), 4);
     let ids: Vec<&str> = checks.iter().map(|check| check.id.as_str()).collect();
     assert_eq!(
@@ -39,7 +39,7 @@ fn empty_root_fails_udev_and_module_but_passes_absent_nodes() {
     assert_eq!(
         udev.remedy.as_deref(),
         Some(
-            "sudo openrgb --generate-udev-rules /etc/udev/rules.d/60-openrgb.rules && sudo udevadm control --reload-rules && sudo udevadm trigger"
+            "sudo curl -fsSL -o /etc/udev/rules.d/60-openrgb.rules https://gitlab.com/CalcProgrammer1/OpenRGB/-/raw/release_candidate_1.0rc3.1/60-openrgb.rules && sudo udevadm control --reload-rules && sudo udevadm trigger"
         )
     );
 
@@ -65,7 +65,7 @@ fn udev_rules_are_found_in_any_documented_location() {
     for relative in UDEV_RULES_PATHS {
         let root = tempfile::tempdir().expect("tempdir");
         touch(&root.path().join(relative));
-        let checks = linux_permission_checks_at(root.path(), None);
+        let checks = linux_permission_checks_at(root.path());
         let udev = check(&checks, CHECK_UDEV_RULES);
         assert!(udev.ok, "{relative} should satisfy the check");
         assert_eq!(udev.detail, format!("found /{relative}"));
@@ -79,7 +79,7 @@ fn i2c_dev_module_is_detected_via_sysfs_or_procfs() {
     std::fs::create_dir_all(root.path().join("sys/module/i2c_dev")).expect("mkdir");
     assert!(
         check(
-            &linux_permission_checks_at(root.path(), None),
+            &linux_permission_checks_at(root.path()),
             CHECK_I2C_DEV_MODULE
         )
         .ok
@@ -94,7 +94,7 @@ fn i2c_dev_module_is_detected_via_sysfs_or_procfs() {
     .expect("write");
     assert!(
         check(
-            &linux_permission_checks_at(root.path(), None),
+            &linux_permission_checks_at(root.path()),
             CHECK_I2C_DEV_MODULE
         )
         .ok
@@ -109,7 +109,7 @@ fn i2c_dev_module_is_detected_via_sysfs_or_procfs() {
     .expect("write");
     assert!(
         !check(
-            &linux_permission_checks_at(root.path(), None),
+            &linux_permission_checks_at(root.path()),
             CHECK_I2C_DEV_MODULE
         )
         .ok
@@ -127,12 +127,7 @@ fn device_nodes_report_writable_and_unwritable_entries() {
     // stands in for a device node the current user may not write.
     std::fs::create_dir_all(root.path().join("dev/hidraw0")).expect("mkdir");
 
-    let binary = OpenRgbBinary {
-        path: PathBuf::from("/usr/bin/openrgb"),
-        kind: BinaryKind::Native,
-        version: None,
-    };
-    let checks = linux_permission_checks_at(root.path(), Some(&binary));
+    let checks = linux_permission_checks_at(root.path());
 
     let i2c = check(&checks, CHECK_I2C_NODES);
     assert!(i2c.ok);
@@ -145,36 +140,28 @@ fn device_nodes_report_writable_and_unwritable_entries() {
     assert_eq!(
         hidraw.remedy.as_deref(),
         Some(
-            "sudo /usr/bin/openrgb --generate-udev-rules /etc/udev/rules.d/60-openrgb.rules && sudo udevadm control --reload-rules && sudo udevadm trigger"
+            "sudo curl -fsSL -o /etc/udev/rules.d/60-openrgb.rules https://gitlab.com/CalcProgrammer1/OpenRGB/-/raw/release_candidate_1.0rc3.1/60-openrgb.rules && sudo udevadm control --reload-rules && sudo udevadm trigger"
         )
     );
 }
 
 #[test]
-fn udev_remedy_uses_the_flatpak_print_variant() {
-    let flatpak = OpenRgbBinary {
-        path: PathBuf::from("/usr/bin/flatpak"),
-        kind: BinaryKind::Flatpak,
-        version: None,
-    };
+fn udev_remedy_installs_the_release_rules_file_and_reloads() {
+    let remedy = udev_rules_remedy();
     assert_eq!(
-        udev_rules_remedy(Some(&flatpak)),
-        "sudo sh -c 'flatpak run org.openrgb.OpenRGB --print-udev-rules > /etc/udev/rules.d/60-openrgb.rules' && sudo udevadm control --reload-rules && sudo udevadm trigger"
+        remedy,
+        "sudo curl -fsSL -o /etc/udev/rules.d/60-openrgb.rules https://gitlab.com/CalcProgrammer1/OpenRGB/-/raw/release_candidate_1.0rc3.1/60-openrgb.rules && sudo udevadm control --reload-rules && sudo udevadm trigger"
     );
-    let appimage = OpenRgbBinary {
-        path: PathBuf::from("/opt/OpenRGB.AppImage"),
-        kind: BinaryKind::AppImage,
-        version: None,
-    };
+    assert!(remedy.contains(UDEV_RULES_URL));
     assert!(
-        udev_rules_remedy(Some(&appimage))
-            .starts_with("sudo /opt/OpenRGB.AppImage --generate-udev-rules")
+        !remedy.contains("--generate-udev-rules") && !remedy.contains("--print-udev-rules"),
+        "released OpenRGB has neither flag"
     );
 }
 
 #[test]
 fn host_entry_point_matches_the_platform_contract() {
-    let checks = permission_checks(None);
+    let checks = permission_checks();
     if cfg!(target_os = "linux") {
         assert_eq!(checks.len(), 4);
     } else {

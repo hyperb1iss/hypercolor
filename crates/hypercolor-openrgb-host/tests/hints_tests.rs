@@ -23,9 +23,11 @@ fn linux_orders_detected_managers_then_flatpak_then_download() {
         hints[1].command,
         "flatpak install flathub org.openrgb.OpenRGB"
     );
-    assert!(hints[1].note.contains("--print-udev-rules"));
+    assert!(hints[1].note.contains("60-openrgb.rules"));
+    assert!(hints[1].note.contains("release_candidate_1.0rc3.1"));
     assert!(hints[2].command.starts_with(RELEASES_URL));
-    assert!(hints[2].note.contains("--generate-udev-rules"));
+    assert!(hints[2].note.contains("sudo curl -fsSL"));
+    assert!(!hints[2].note.contains("--generate-udev-rules"));
 }
 
 #[test]
