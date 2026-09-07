@@ -28,6 +28,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 PI = math.pi
 DEFAULT_BASE = "http://localhost:9420/api/v1"
@@ -445,13 +446,30 @@ def write_preview(geo: Geometry, rig: dict, zones: list[dict], path: Path) -> No
             px, py = (p[0] - 0.5) * w, (p[1] - 0.5) * h
             els.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="{3.6 if i == 0 else 2.2}" fill="{"#ffffff" if i == 0 else color}"/>')
         els.append("</g>")
-        els.append(f'<text x="{cx:.1f}" y="{cy + 4:.1f}" fill="#e8e6f5" font-size="11" text-anchor="middle" font-family="sans-serif" opacity="0.9">{z["name"]}</text>')
+        els.append(f'<text x="{cx:.1f}" y="{cy + 4:.1f}" fill="#e8e6f5" font-size="11" text-anchor="middle" font-family="sans-serif" opacity="0.9">{xml_escape(z["name"])}</text>')
     front = "FRONT (left)" if geo.reversed else "REAR (left)"
     rear = "REAR (right)" if geo.reversed else "FRONT (right)"
-    els.append(f'<text x="12" y="{Hh - 12}" fill="#8f8ab8" font-size="13" font-family="sans-serif">{front}  ·  {rig["name"]}  ·  {geo.D}×{geo.H} mm at {cw}×{ch}  ·  {rear}</text>')
+    els.append(f'<text x="12" y="{Hh - 12}" fill="#8f8ab8" font-size="13" font-family="sans-serif">{front}  ·  {xml_escape(rig["name"])}  ·  {geo.D}×{geo.H} mm at {cw}×{ch}  ·  {rear}</text>')
     path.write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{Hh}" viewBox="0 0 {W} {Hh}">' + "".join(els) + "</svg>")
     if shutil.which("rsvg-convert"):
         subprocess.run(["rsvg-convert", "-o", str(path.with_suffix(".png")), str(path)], check=False)
+
+
+def resolve_by_name(api: Api, collection: str, name: str, receipt_id: str | None) -> str | None:
+    """Find the layout or scene this rig owns.
+
+    The daemon keys both by id and never rejects duplicate names, so a bare first-match
+    on name could update someone else's resource. Prefer the id recorded in receipt.json
+    from an earlier apply; otherwise accept a name match only when it is unique."""
+    items = api("GET", f"/{collection}?limit=200")["data"]["items"]
+    if receipt_id and any(item["id"] == receipt_id for item in items):
+        return receipt_id
+    matches = [item["id"] for item in items if item["name"] == name]
+    if len(matches) > 1:
+        raise SystemExit(
+            f"{len(matches)} {collection} are named '{name}' ({', '.join(matches)}); "
+            f"rename or delete the extras, or restore receipt.json so apply knows which one is yours")
+    return matches[0] if matches else None
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -505,8 +523,8 @@ def main() -> None:
         return
 
     # 3. layout (create or update by name), re-apply if it is live
-    existing = [l for l in api("GET", "/layouts?limit=200")["data"]["items"] if l["name"] == rig["name"]]
-    layout_id = existing[0]["id"] if existing else api("POST", "/layouts", {
+    receipt = json.loads((out / "receipt.json").read_text()) if (out / "receipt.json").exists() else {}
+    layout_id = resolve_by_name(api, "layouts", rig["name"], receipt.get("layout_id")) or api("POST", "/layouts", {
         "name": rig["name"], "description": description,
         "canvas_width": rig["canvas"]["width"], "canvas_height": rig["canvas"]["height"]})["data"]["id"]
     summary = api("PUT", f"/layouts/{layout_id}", {"description": description, "canvas_width": rig["canvas"]["width"],
@@ -517,8 +535,7 @@ def main() -> None:
         print(f"  re-applied active layout: applied={applied['applied']}")
 
     # 4. scene (create or update by name), one primary zone holding every output
-    scenes = [s for s in api("GET", "/scenes?limit=200")["data"]["items"] if s["name"] == rig["name"]]
-    scene_id = scenes[0]["id"] if scenes else api("POST", "/scenes", {"name": rig["name"], "description": description})["data"]["id"]
+    scene_id = resolve_by_name(api, "scenes", rig["name"], receipt.get("scene_id")) or api("POST", "/scenes", {"name": rig["name"], "description": description})["data"]["id"]
     scene = api("GET", f"/scenes/{scene_id}")["data"]
     members = [{"id": z["id"], "device_id": z["device_id"], "segment": z["zone_name"], "name": z["name"]} for z in zones]
     placements = [{"member": z["id"], "position": z["position"], "size": z["size"], "rotation": z["rotation"],

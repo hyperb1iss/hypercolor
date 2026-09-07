@@ -395,7 +395,9 @@ Multiple agents may work simultaneously. Follow these rules:
 
 Domain-specific knowledge lives in `.agents/`. Skills trigger automatically based on the
 work being done. Each skill's `SKILL.md` contains core knowledge; `references/` subdirectories
-hold detailed deep-dives.
+hold detailed deep-dives. Skills for people running Hypercolor (no source checkout, REST,
+MCP, or CLI only) live in top-level `skills/` and ship in the release bundle under
+`share/hypercolor/skills`; `.agents/skills/` symlinks them so they stay discoverable in-repo.
 
 ```
 .agents/skills/
@@ -405,7 +407,12 @@ hold detailed deep-dives.
   rgb-effect-design/          # LED color science, HTML canvas effects, palette design
   leptos-ui-development/      # Leptos 0.8 signals, WebSocket binary protocol, SilkCircuit tokens
   daemon-development/         # AppState, REST API, event bus, render pipeline, MCP
+  hypercolor-control/ -> ../../skills/hypercolor-control
+  rig-setup/          -> ../../skills/rig-setup
+
+skills/                       # User-facing skills (shipped)
   hypercolor-control/         # Drive a running daemon: apply effects, patch controls, and scenes
+  rig-setup/                  # Case research, device inventory, generated layout + scene, dial-in loop
 
 .agents/agents/
   driver-porter/              # End-to-end driver porting (research -> spec -> implement -> test)
