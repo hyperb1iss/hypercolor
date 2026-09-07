@@ -451,6 +451,12 @@ pub(crate) async fn execute_lifecycle_actions(
                                 )
                                 .await;
                             publish_device_connected(&runtime, &backend_id, device_id).await;
+                            // A bridge route that just came up may shadow a
+                            // native device; native wins immediately.
+                            Box::pin(super::conflict_guard::enforce_native_ownership_for_device(
+                                &runtime, device_id,
+                            ))
+                            .await;
                         }
                     }
                     Err(error) => {

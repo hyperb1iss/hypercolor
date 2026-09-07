@@ -6,7 +6,7 @@ use hypercolor_core::device::{DiscoveryOrchestrator, DiscoveryProgress, Lifecycl
 use hypercolor_driver_api::{DiscoveryRequest, DriverConfigView, DriverError};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState, DriverTransportKind};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -279,6 +279,11 @@ pub async fn execute_discovery_scan(
         &driver_registry,
         &config,
     ));
+    // The unclaimed inventory decides "claimable by a disabled driver" from
+    // the same enabled set this pass filters with.
+    runtime
+        .unclaimed_devices
+        .set_enabled_driver_ids(Some((*enabled_driver_ids).clone()));
     let registered_driver_ids = Arc::new(driver_registry.ids().into_iter().collect::<HashSet<_>>());
     for target in &targets {
         let driver_id = target.as_str().to_owned();
@@ -291,6 +296,8 @@ pub async fn execute_discovery_scan(
             continue;
         }
         let display_name = driver.descriptor().display_name.to_owned();
+        let serialize_probe = probes_shared_buses(&driver.descriptor().transport);
+        let probe_serializer = Arc::clone(&runtime.probe_serializer);
         let driver_config = network::driver_config_entry(&config, &driver_id);
         let host = Arc::clone(&driver_host);
         let request = DiscoveryRequest {
@@ -303,6 +310,13 @@ pub async fn execute_discovery_scan(
             let Some(capability) = driver.discovery() else {
                 return Ok::<_, DriverError>(Vec::new());
             };
+            // Native SMBus probing and bridge discovery both open the same
+            // I2C adapters; letting them overlap corrupted DRAM LED counts.
+            let probe_guard = if serialize_probe {
+                Some(probe_serializer.lock().await)
+            } else {
+                None
+            };
             let mut devices = capability
                 .discover(
                     host.as_ref(),
@@ -313,6 +327,7 @@ pub async fn execute_discovery_scan(
                     },
                 )
                 .await?;
+            drop(probe_guard);
             devices.retain(|device| {
                 let device_driver_id = device.info.driver_id();
                 !registered_driver_ids.contains(device_driver_id)
@@ -527,6 +542,15 @@ pub async fn execute_discovery_scan(
         manager.enable_unmapped_layout_warnings();
     }
 
+    let guard = super::conflict_guard::enforce_native_ownership(&runtime).await;
+    if !guard.locked.is_empty() || !guard.unlocked.is_empty() {
+        info!(
+            locked = guard.locked.len(),
+            unlocked = guard.unlocked.len(),
+            "conflict guard reconciled bridge routes after discovery"
+        );
+    }
+
     if let Err(error) = crate::device_aliases::sync_from_registry(
         &runtime.device_aliases_path,
         &runtime.device_registry,
@@ -550,6 +574,17 @@ pub async fn execute_discovery_scan(
         duration_ms,
         scanners: map_scanner_reports(&report.scanner_reports),
     }
+}
+
+/// Whether a discovery driver touches host buses another driver also probes.
+///
+/// Native SMBus scanning and out-of-process bridges (OpenRGB) both open the
+/// I2C adapters directly, so their discovery runs take turns.
+fn probes_shared_buses(transport: &DriverTransportKind) -> bool {
+    matches!(
+        transport,
+        DriverTransportKind::Smbus | DriverTransportKind::Bridge
+    )
 }
 
 fn complete_target_set(requested: &[DiscoveryTarget], expected: &[DiscoveryTarget]) -> bool {
