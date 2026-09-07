@@ -4657,6 +4657,7 @@ dependencies = [
  "hypercolor-macos-owner",
  "hypercolor-types",
  "image",
+ "libc",
  "notify",
  "objc2",
  "open",

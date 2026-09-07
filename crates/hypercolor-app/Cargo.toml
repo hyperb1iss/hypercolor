@@ -54,6 +54,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 hypercolor-linux-session = { workspace = true }
 

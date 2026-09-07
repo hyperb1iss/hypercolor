@@ -1,7 +1,6 @@
 //! Daemon supervision primitives for the unified desktop app.
 
 use std::{
-    fs::OpenOptions,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
@@ -9,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+#[cfg(target_os = "macos")]
 use hypercolor_core::config::paths::data_dir;
 use hypercolor_macos_owner::{MacosDaemonOwner, MacosExternalOwnerMode, MacosOwnerRemedy};
 #[cfg(target_os = "macos")]
@@ -30,14 +30,19 @@ use hypercolor_types::service::{
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
 
+mod child;
 mod plan;
 
+pub(crate) use child::PlatformGuard;
 pub use plan::{HoldReason, LauncherPlan, LauncherProbe, OwnerPreference, launcher_plan};
 
 /// Default daemon bind address used by the app-spawned daemon.
 pub const DEFAULT_DAEMON_BIND: &str = "127.0.0.1:9420";
 
 const DAEMON_EXECUTABLE_STEM: &str = "hypercolor-daemon";
+
+/// Log file (under `<data>/logs`) receiving the supervised daemon's stdio.
+const DAEMON_LOG_FILE_NAME: &str = "daemon-supervised.log";
 
 pub const VERIFIED_DAEMON_CONNECTION_CHANGED_EVENT: &str = "verified-daemon-connection-changed";
 
@@ -516,13 +521,8 @@ impl ManagedDaemon {
 
 impl Drop for ManagedDaemon {
     fn drop(&mut self) {
-        // Kill unless the child has provably exited: a try_wait error
-        // (EINTR, ECHILD) must not leak a live process.
-        if let Some(mut child) = self.child.take()
-            && !matches!(child.try_wait(), Ok(Some(_)))
-        {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut child) = self.child.take() {
+            child::kill_unless_exited(&mut child);
         }
     }
 }
@@ -3074,20 +3074,7 @@ pub fn spawn_daemon(command: &DaemonCommand) -> Result<ManagedDaemon> {
         .stdout(Stdio::from(daemon_log_file()?.try_clone()?))
         .stderr(Stdio::from(daemon_log_file()?));
 
-    configure_platform_command(&mut process);
-
-    let mut child = process
-        .spawn()
-        .with_context(|| format!("failed to spawn {}", command.program.display()))?;
-
-    let platform_guard = match attach_platform_guard(&child) {
-        Ok(platform_guard) => platform_guard,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
-        }
-    };
+    let (child, platform_guard) = child::spawn_supervised(&mut process, &command.program)?;
 
     Ok(ManagedDaemon {
         child: Some(child),
@@ -3096,55 +3083,5 @@ pub fn spawn_daemon(command: &DaemonCommand) -> Result<ManagedDaemon> {
 }
 
 fn daemon_log_file() -> std::io::Result<std::fs::File> {
-    let log_dir = data_dir().join("logs");
-    std::fs::create_dir_all(&log_dir)?;
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("daemon-supervised.log"))
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) type PlatformGuard = win32job::Job;
-
-#[cfg(target_os = "windows")]
-fn configure_platform_command(command: &mut Command) {
-    crate::process_ext::hide_console_window(command);
-}
-
-#[cfg(target_os = "windows")]
-fn attach_platform_guard(child: &Child) -> Result<PlatformGuard> {
-    use std::os::windows::io::AsRawHandle;
-
-    let mut limits = win32job::ExtendedLimitInfo::new();
-    limits.limit_kill_on_job_close();
-    let job = win32job::Job::create_with_limit_info(&limits)?;
-    job.assign_process(child.as_raw_handle() as isize)?;
-    Ok(job)
-}
-
-#[cfg(unix)]
-#[derive(Debug)]
-pub(crate) struct PlatformGuard;
-
-#[cfg(unix)]
-fn configure_platform_command(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-
-    command.process_group(0);
-    // Linux: the kernel delivers SIGTERM to the child when this process
-    // exits (pdeathsig), so supervisor death is a kernel fact rather than
-    // something the daemon has to notice. macOS arms the equivalent on the
-    // daemon side with a kqueue EVFILT_PROC watch on the parent pid.
-    #[cfg(target_os = "linux")]
-    hypercolor_linux_session::arm_parent_death(command, std::process::id());
-}
-
-#[cfg(unix)]
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "keeps the platform helper signature aligned with Windows"
-)]
-fn attach_platform_guard(_child: &Child) -> Result<PlatformGuard> {
-    Ok(PlatformGuard)
+    child::supervised_log_file(DAEMON_LOG_FILE_NAME)
 }
