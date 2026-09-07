@@ -41,8 +41,16 @@ Tell the owner which row each device landed in. A layout that covers what is dri
 today is a finished layout; the request is the path for the rest.
 
 Some devices the host scan lists are not lighting at all (a flash drive, a USB audio
-interface, the board's Bluetooth radio). The fallback hides devices whose USB classes
-rule out RGB; `--all` shows them. When in doubt, the owner knows what the thing is.
+interface, the board's Bluetooth radio). The fallback hides a device when its interfaces,
+HID set aside, are all of classes that rule out lighting (audio, storage, video,
+wireless, application-specific); a pure HID device or a vendor-specific one stays
+visible because RGB controllers live there. `--all` shows everything. When in doubt, the
+owner knows what the thing is.
+
+The fallback also has a fifth group, **known to a native driver, not adopted**: the
+VID:PID is in an enabled driver's protocol table, yet the daemon has no device for it.
+That is a permissions story (udev rules, hidraw access) or another program holding the
+handle, never a coverage decision; fix the access and rescan before reading further.
 
 ## Conflict rows
 
@@ -82,7 +90,7 @@ Each rung has a check. Do not climb past a failing check.
    own everything it can see (still guarded by the conflict rule), `disabled` to park it.
    Check: `hypercolor diagnose` shows the `openrgb` check.
 6. **Start the server.** `hypercolor openrgb start` runs
-   `openrgb --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect --config <dir>`
+   `openrgb --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect --config <dir> --loglevel 4`
    (the desktop app supervises it when running). Loopback only: the SDK has no
    authentication. Check: `hypercolor diagnose` reports the endpoint reachable with a
    protocol version and a controller count.
@@ -173,13 +181,14 @@ zone before any layout exists. Do not "fix" a `known` bridged device; place it a
   `references/rigs/o11d-evo-rgb-reversed-bridge-example.json` the worked example.
 - **DRAM and motherboards** are raw zones from their segment (`DRAM`, `Aura Mainboard`),
   exactly like their native counterparts with the `openrgb:` layout id.
-- **Layout ids** are `openrgb:<host>:<port>:<identity>`, lower-cased and with dots
-  replaced (`openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43`). The **fingerprint** the
-  driver mints is a different string and is what `zone_sizes` and `controller_fps` are
-  keyed by: `bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43`
-  (namespace:driver:endpoint:identity, serial in OpenRGB's own case, `location:<path>`
-  when there is no serial). `hypercolor devices info <id>` prints it under device
-  metadata; lookup is case-insensitive.
+- **Layout id versus fingerprint.** The layout id is
+  `openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43` (lower-cased, dots replaced) and is
+  what layouts and rig specs use. The fingerprint is a different string,
+  `bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43` (namespace:driver:endpoint:
+  identity, serial in OpenRGB's own case, `location:<path>` when there is no serial), and
+  is what `zone_sizes` and `controller_fps` are keyed by. `GET /devices/{id}` carries it as
+  `bridge.fingerprint` and `hypercolor devices info <id>` prints it on daemons that ship
+  the coverage routes; the bridge matches the key case-insensitively.
 - **Spotting bridge devices in scripts.** Key on `origin.driver_id == "openrgb"` (or the
   `openrgb:` layout-id prefix), never on `origin.transport == "bridge"` alone: the ROLI
   driver reports transport `bridge` too for its BLE blocks. `scripts/coverage.py` does this.

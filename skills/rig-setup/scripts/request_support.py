@@ -15,6 +15,10 @@ VID:PID, then from the host USB inventory (coverage.py's scanner), so on most ri
 `--vid-pid` is the only flag you need. The form's acknowledgement checkbox cannot be
 prefilled through the URL; the person filing ticks it in the browser.
 
+Every mode, URL and --json included, runs a read-only `gh issue list --search` for the
+VID:PID when gh is installed and logged in, so duplicates surface before anything is
+filed. Nothing is written without --file.
+
 Pure standard library, Python 3.11+.
 """
 from __future__ import annotations
@@ -51,22 +55,24 @@ def host_platform() -> str:
     return {"Linux": "Linux", "Darwin": "macOS", "Windows": "Windows"}.get(platform.system(), "Linux")
 
 
-def lookup_device(base: str, vid: int, pid: int) -> dict:
-    """Manufacturer/product/serial for the VID:PID from the daemon, else from the host."""
+def lookup_device(base: str, vid: int, pid: int) -> tuple[dict, str]:
+    """Manufacturer/product/serial for the VID:PID and where they came from: daemon, host, or flags."""
     try:
         doc = Daemon(base).get("/devices/unclaimed")
     except SystemExit:
         doc = None
     candidates = items_of(doc) if doc is not None and not is_device_not_found(doc) else []
+    source = "daemon"
     if not candidates:
+        source = "host"
         try:
             candidates = scan_host_usb()
         except Exception:  # noqa: BLE001 - a broken host scanner must not block filing
             candidates = []
     for dev in candidates:
         if dev.get("vendor_id") == vid and dev.get("product_id") == pid:
-            return dev
-    return {}
+            return dev, source
+    return {}, "flags"
 
 
 def gh_ready() -> bool:
@@ -134,7 +140,7 @@ def main() -> int:
 
     vid, pid = parse_vid_pid(args.vid_pid)
     vid_pid = f"{vid:04X}:{pid:04X}"
-    found = lookup_device(args.base, vid, pid)
+    found, source = lookup_device(args.base, vid, pid)
     vendor = args.vendor or found.get("manufacturer") or f"Unknown vendor {vid:04X}"
     model = args.model or found.get("product") or f"Unknown device {pid:04X}"
     fields = {"vendor": vendor, "model": model, "vid_pid": vid_pid, "platform": args.platform,
@@ -145,8 +151,7 @@ def main() -> int:
 
     if args.json:
         json.dump({"fields": fields, "url": url, "existing_issues": dupes, "gh_ready": gh_ready(),
-                   "source": "daemon" if found.get("bus_path") is None and found else ("host" if found else "flags")},
-                  sys.stdout, indent=1)
+                   "source": source}, sys.stdout, indent=1)
         print()
         return 0
 

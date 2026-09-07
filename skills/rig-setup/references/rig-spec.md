@@ -84,7 +84,9 @@ directly from their segment:
 ## Bridged hubs
 
 A hub reached through the OpenRGB bridge has the layout id
-`openrgb:<host>:<port>:<fingerprint>` and one generic slot per zone (`channel-1`,
+`openrgb:<host>:<port>:<identity>` (`openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43`; the
+fingerprint used for config keys is a different string, see below) and one generic slot
+per zone (`channel-1`,
 `channel-atx-1`, ...) with cumulative `led_start`. Fan and strip bindings work as on the
 native hub, so a `controllers` entry only needs the new `device` uuid and layout id.
 
@@ -126,17 +128,18 @@ that key (`--skip-zone-sizes` to opt out) so a reinstall or a server restart res
 hub. The key is the full fingerprint string as the driver mints it, the same form
 `controller_fps` uses: `bridge:openrgb:<host>:<port>:serial:<SERIAL>` with the serial in
 the case OpenRGB reports (upper for the Nollie), or `...:location:<path>` for devices
-without a serial. `hypercolor devices info <id>` prints it under device metadata, and
-lookup is case-insensitive:
+without a serial. It is not the layout id: `GET /devices/{id}` carries it as
+`bridge.fingerprint`, `hypercolor devices info <id>` prints it on daemons that ship the
+coverage routes, and the bridge matches the key case-insensitively:
 
 ```json
 "bridge": { "zone_sizes": { "bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43": { "Channel 1": 20, "Channel 2": 60, "Channel ATX 1": 20 } } }
 ```
 
-`apply` prefers the fingerprint the daemon reports for the matching controller
-(`GET /devices/{id}` metadata) over the spelling in the rig, so a key written as the
-device's layout id (`openrgb:127-0-0-1:6742:serial:...`) is also resolved when the device
-is on the daemon; the rig's own string is the fallback.
+`apply` prefers the `bridge.fingerprint` the daemon reports for the matching controller
+over the spelling in the rig, so a key written as the device's layout id
+(`openrgb:127-0-0-1:6742:serial:...`) is also resolved when the device is on the daemon;
+the rig's own string is the fallback.
 
 `plan` warns when a zone the layout targets is still at 0 LEDs on the daemon, because
 frames into an unsized zone succeed and light nothing.

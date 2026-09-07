@@ -13,7 +13,7 @@ Both modes are idempotent: rerun after every rig-spec edit.
 
 `plan --offline` needs no daemon: it validates the specs, resolves geometry, and
 renders the preview with template topology approximated from a saved catalog
-(`--templates FILE`, the body of GET /attachments/templates?limit=200). Zone LED
+(`--templates FILE`, the body of GET /attachments/templates, or its items). Zone LED
 windows are relative in that mode, so use it to check placement, not to apply.
 
 Bridged hubs (OpenRGB) expose one zone per channel and no multi-zone slot groups,
@@ -69,6 +69,27 @@ class Api:
         except SystemExit:
             return None
 
+    def list_all(self, path: str, page_size: int = 200) -> list[dict]:
+        """Every item of a paged list route, following `page.has_more` (the daemon caps limit at 200)."""
+        items: list[dict] = []
+        offset = 0
+        sep = "&" if "?" in path else "?"
+        while True:
+            data = self("GET", f"{path}{sep}limit={page_size}&offset={offset}")["data"]
+            if isinstance(data, list):
+                return data
+            items += data.get("items", [])
+            page = data.get("page") or {}
+            if not page.get("has_more") or not data.get("items"):
+                return items
+            offset += page.get("limit") or page_size
+
+    def try_list_all(self, path: str) -> list[dict] | None:
+        try:
+            return self.list_all(path)
+        except SystemExit:
+            return None
+
 
 # ── offline template catalog ─────────────────────────────────────────────────
 BRIDGE_PREFIX = "openrgb:"
@@ -84,11 +105,11 @@ def load_catalog(path: Path | None, api: Api | None) -> dict[str, dict]:
         items = doc.get("data", doc).get("items", doc) if isinstance(doc, dict) else doc
         return {t["id"]: t for t in items}
     if api is not None:
-        doc = api.try_get("/attachments/templates?limit=200")
-        if doc is not None:
-            return {t["id"]: t for t in doc["data"]["items"]}
+        items = api.try_list_all("/attachments/templates")
+        if items is not None:
+            return {t["id"]: t for t in items}
     raise SystemExit("offline mode needs a template catalog: save GET /attachments/templates?limit=200 "
-                     "to a file and pass --templates FILE (or leave the daemon reachable for that one read)")
+                     "(every page) to a file and pass --templates FILE, or leave the daemon reachable for that one read")
 
 
 def approximate_topology(summary: dict) -> dict:
@@ -583,10 +604,10 @@ def warn_unsized_bridge_zones(api: Api, rig: dict, zones: list[dict]) -> None:
 
     Only controllers with a daemon uuid can be checked (raw zones name devices by
     layout id alone), and a daemon that cannot answer is skipped, not failed."""
-    devices = api.try_get("/devices?limit=200")
+    devices = api.try_list_all("/devices")
     if devices is None:
         return
-    by_layout_id = {d["layout_device_id"]: d for d in devices["data"]["items"]}
+    by_layout_id = {d["layout_device_id"]: d for d in devices}
     seen: set[tuple[str, str]] = set()
     missing: set[str] = set()
     for z in zones:
@@ -609,12 +630,11 @@ def warn_unsized_bridge_zones(api: Api, rig: dict, zones: list[dict]) -> None:
 
 
 def device_fingerprint(detail: dict) -> str | None:
-    """The driver-minted fingerprint from a GET /devices/{id} document, wherever it sits.
+    """The driver-minted fingerprint from a GET /devices/{id} document.
 
-    Daemons expose it under device metadata (`hypercolor devices info` prints it);
-    the exact envelope has moved, so a few plausible homes are checked."""
-    for holder in (detail, detail.get("metadata") or {}, detail.get("discovery") or {},
-                   detail.get("bridge") or {}):
+    Bridged devices carry it as `bridge.fingerprint` (`hypercolor devices info` prints
+    it); older envelopes that kept it under metadata are read as a fallback."""
+    for holder in (detail.get("bridge") or {}, detail.get("metadata") or {}, detail.get("discovery") or {}):
         value = holder.get("fingerprint") if isinstance(holder, dict) else None
         if isinstance(value, str) and value:
             return value
@@ -625,10 +645,11 @@ def resolve_zone_size_keys(api: Api, rig: dict, sizes: dict[str, dict[str, int]]
     """Key the rig's zone_sizes by the fingerprint the daemon reports, when it can.
 
     The config key is the full fingerprint string the driver mints
-    (`bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43`). A rig may spell it in a
-    different case or use the controller's layout id instead; both resolve through
-    GET /devices/{id} for the bridged controllers the rig names. Anything that cannot be
-    matched is written as declared."""
+    (`bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43`, the bridge matches it
+    case-insensitively). A rig may spell it in a different case or use the controller's
+    layout id instead; both resolve through GET /devices/{id} `bridge.fingerprint` for the
+    bridged controllers the rig names. Anything that cannot be matched is written as
+    declared."""
     known: dict[str, str] = {}  # lower-cased rig key candidates -> daemon fingerprint
     for ctrl in rig.get("controllers", {}).values():
         lid = ctrl.get("layout_device_id", "")
@@ -678,7 +699,7 @@ def resolve_by_name(api: Api, collection: str, name: str, receipt_id: str | None
     The daemon keys both by id and never rejects duplicate names, so a bare first-match
     on name could update someone else's resource. Prefer the id recorded in receipt.json
     from an earlier apply; otherwise accept a name match only when it is unique."""
-    items = api("GET", f"/{collection}?limit=200")["data"]["items"]
+    items = api.list_all(f"/{collection}")
     if receipt_id and any(item["id"] == receipt_id for item in items):
         return receipt_id
     matches = [item["id"] for item in items if item["name"] == name]
@@ -724,7 +745,7 @@ def main() -> None:
         catalog = load_catalog(args.templates, api)
         print(f"  offline: {len(catalog)} catalog templates, {len(local)} rig/case templates, geometry only")
     else:
-        templates = {t["id"]: t for t in api("GET", "/attachments/templates?limit=200")["data"]["items"]}
+        templates = {t["id"]: t for t in api.list_all("/attachments/templates")}
         for tpl in wanted:
             if tpl["id"] not in templates:
                 created = api("POST", "/attachments/templates", tpl)["data"]
