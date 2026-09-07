@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use hypercolor_openrgb_host::{
-    BinaryKind, LOOPBACK_HOST, ManagedConfigDir, OpenRgbBinary, ProcessSpec, SERVER_LOG_LEVEL,
-    server_args, server_command,
+    BinaryKind, HostError, LOOPBACK_HOST, ManagedConfigDir, OpenRgbBinary, ProcessSpec,
+    SERVER_LOG_LEVEL, server_args, server_command,
 };
 
 fn config_dir() -> ManagedConfigDir {
@@ -18,7 +18,7 @@ fn native_server_command_has_exact_argument_order_and_loopback_host() {
         kind: BinaryKind::Native,
         version: Some("1.0rc3".to_owned()),
     };
-    let spec = server_command(&binary, &config_dir(), 6742);
+    let spec = server_command(&binary, &config_dir(), 6742).expect("utf-8 path");
     assert_eq!(spec.program, PathBuf::from("/usr/bin/openrgb"));
     assert_eq!(
         spec.args,
@@ -52,7 +52,7 @@ fn appimage_uses_the_same_arguments_as_native() {
         kind: BinaryKind::AppImage,
         version: None,
     };
-    let spec = server_command(&binary, &config_dir(), 6800);
+    let spec = server_command(&binary, &config_dir(), 6800).expect("utf-8 path");
     assert_eq!(spec.program, binary.path);
     assert_eq!(
         spec.args,
@@ -68,7 +68,7 @@ fn flatpak_runs_through_flatpak_with_filesystem_grant() {
         kind: BinaryKind::Flatpak,
         version: Some("1.0rc3".to_owned()),
     };
-    let spec = server_command(&binary, &config_dir(), 6742);
+    let spec = server_command(&binary, &config_dir(), 6742).expect("utf-8 path");
     assert_eq!(spec.program, PathBuf::from("/usr/bin/flatpak"));
     assert_eq!(spec.args[0], "run");
     assert_eq!(
@@ -89,7 +89,7 @@ fn process_spec_round_trips_through_serde() {
         kind: BinaryKind::Native,
         version: None,
     };
-    let spec = server_command(&binary, &config_dir(), 6742);
+    let spec = server_command(&binary, &config_dir(), 6742).expect("utf-8 path");
     let json = serde_json::to_string(&spec).expect("serialize");
     let back: ProcessSpec = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back, spec);
@@ -99,4 +99,52 @@ fn process_spec_round_trips_through_serde() {
     assert!(minimal.args.is_empty());
     assert!(minimal.env.is_empty());
     assert!(minimal.cwd.is_none());
+}
+
+#[test]
+fn flatpak_rejects_config_paths_with_colons() {
+    let binary = OpenRgbBinary {
+        path: PathBuf::from("/usr/bin/flatpak"),
+        kind: BinaryKind::Flatpak,
+        version: None,
+    };
+    let dir = ManagedConfigDir {
+        root: PathBuf::from("/home/bliss/odd:dir/openrgb"),
+    };
+    let error = server_command(&binary, &dir, 6742).expect_err("colon must be rejected");
+    assert!(matches!(
+        error,
+        HostError::UnsupportedConfigPath { reason, .. } if reason.contains(':')
+    ));
+
+    let native = OpenRgbBinary {
+        path: PathBuf::from("/usr/bin/openrgb"),
+        kind: BinaryKind::Native,
+        version: None,
+    };
+    assert!(
+        server_command(&native, &dir, 6742).is_ok(),
+        "native launches pass the path through untouched"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_config_paths_are_rejected() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let binary = OpenRgbBinary {
+        path: PathBuf::from("/usr/bin/openrgb"),
+        kind: BinaryKind::Native,
+        version: None,
+    };
+    let dir = ManagedConfigDir {
+        root: PathBuf::from(OsStr::from_bytes(b"/home/bliss/\xff\xfe/openrgb")),
+    };
+    let error = server_command(&binary, &dir, 6742).expect_err("non-UTF-8 must be rejected");
+    assert!(matches!(
+        error,
+        HostError::UnsupportedConfigPath { reason, .. } if reason.contains("UTF-8")
+    ));
 }
