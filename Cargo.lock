@@ -5266,6 +5266,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercolor-openrgb-host"
+version = "0.4.0"
+dependencies = [
+ "hypercolor-openrgb-sdk",
+ "hypercolor-persistence",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "hypercolor-openrgb-sdk"
 version = "0.4.0"
 dependencies = [
