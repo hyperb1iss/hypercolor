@@ -65,6 +65,8 @@ pub struct BlocksDeviceResponse {
     pub battery_charging: bool,
     pub grid_width: u32,
     pub grid_height: u32,
+    #[serde(default)]
+    pub key_count: u32,
     pub firmware_version: Option<String>,
 }
 
@@ -81,4 +83,41 @@ pub struct PongResponse {
     pub version: String,
     pub uptime_seconds: u64,
     pub device_count: u32,
+}
+
+/// Frame protocol selected from the daemon's advertised lighting capability.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum BlocksSurface {
+    Grid,
+    Keys,
+}
+
+impl BlocksSurface {
+    pub(super) fn from_device(dev: &BlocksDeviceResponse) -> Option<Self> {
+        match (
+            RoliBlockType::from_api(&dev.block_type),
+            dev.grid_width,
+            dev.grid_height,
+            dev.key_count,
+        ) {
+            (RoliBlockType::Lightpad | RoliBlockType::LightpadM, 15, 15, 0) => Some(Self::Grid),
+            (RoliBlockType::LumiKeys, 0, 0, 24) => Some(Self::Keys),
+            _ => None,
+        }
+    }
+
+    pub(super) fn metadata_value(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Keys => "keys",
+        }
+    }
+
+    pub(super) fn from_metadata(value: &str) -> Option<Self> {
+        match value {
+            "grid" => Some(Self::Grid),
+            "keys" => Some(Self::Keys),
+            _ => None,
+        }
+    }
 }
