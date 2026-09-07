@@ -40,7 +40,8 @@ use interaction::{
 };
 use overlays::{CanvasDepthBreadcrumb, CompoundBoundingBoxOutline};
 use render::{
-    ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_shape_style,
+    ZoneRenderData, ring_inner_style, rotated_cursor, upright_label_style, zone_position_style,
+    zone_shape_style,
 };
 
 /// Throttle the in-drag preview push to the daemon. Matches the existing
@@ -60,8 +61,9 @@ pub fn LayoutCanvas() -> impl IntoView {
     let hovered_zone_ids = editor.hovered_zone_ids;
     // When anything is focused (selected or hovered), the rest of the canvas
     // recedes so a dense layout reads clearly around the focus.
-    let has_focus = Signal::derive(move || {
-        !selected_zone_ids.get().is_empty() || !hovered_zone_ids.get().is_empty()
+    let has_focus = Memo::new(move |_| {
+        selected_zone_ids.with(|ids| !ids.is_empty())
+            || hovered_zone_ids.with(|ids| !ids.is_empty())
     });
     let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_compound_depth = editor.set_compound_depth;
@@ -87,6 +89,25 @@ pub fn LayoutCanvas() -> impl IntoView {
     // `StoredValue` handle itself stays `Copy + Send + Sync` so it can ride
     // along inside reactive `move ||` closures.
     let drag_runtime: StoredValue<Option<DragRuntime>, LocalStorage> = StoredValue::new_local(None);
+    let pending_pointer = StoredValue::new_local(None::<(i32, i32)>);
+
+    // Read layout once before the frame's writes, rather than forcing a
+    // layout read for every mouse event between animation frames.
+    let sample_pointer = move || {
+        let Some((x, y)) = pending_pointer.try_update_value(Option::take).flatten() else {
+            return;
+        };
+        let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
+            return;
+        };
+        if let Some(position) = pointer_to_normalized(&viewport, x, y) {
+            drag_runtime.update_value(|runtime| {
+                if let Some(runtime) = runtime {
+                    runtime.pending_mouse.set(Some(position));
+                }
+            });
+        }
+    };
 
     // Set when a drag or resize actually moved something, so the `click`
     // the browser synthesizes on release does not clear the selection.
@@ -103,6 +124,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     {
         let layout_signal = layout;
         let scheduler_inst = Scheduler::new(move |frame_info| {
+            sample_pointer();
             let painted_change = drag_runtime
                 .try_update_value(|opt| opt.as_mut().is_some_and(DragRuntime::step))
                 .unwrap_or(false);
@@ -269,9 +291,13 @@ pub fn LayoutCanvas() -> impl IntoView {
     // safe to call when no runtime is active.
     let finish_interaction = {
         move || {
+            sample_pointer();
             let Some(mut runtime) = drag_runtime.try_update_value(Option::take).flatten() else {
                 return;
             };
+            // A release can arrive before the scheduled frame. Commit the
+            // latest pointer, including short drags completed in one frame.
+            runtime.step();
             interacting_zone_id.set(None);
 
             if !runtime.moved.get() {
@@ -319,8 +345,18 @@ pub fn LayoutCanvas() -> impl IntoView {
             class="relative w-full h-full overflow-hidden"
             style="background: var(--color-surface-base)"
             on:mousedown=move |_| swallow_next_click.set_value(false)
-            on:mouseup=move |_| finish_for_mouseup()
-            on:mouseleave=move |_| finish_for_leave()
+            on:mouseup=move |ev| {
+                if drag_runtime.with_value(Option::is_some) {
+                    pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
+                }
+                finish_for_mouseup();
+            }
+            on:mouseleave=move |ev| {
+                if drag_runtime.with_value(Option::is_some) {
+                    pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
+                }
+                finish_for_leave();
+            }
             on:mousemove=move |ev| {
                 // Lightweight hot path: stash the latest pointer position
                 // and ask the RAF scheduler for a frame. All the real work
@@ -330,22 +366,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                 if !active {
                     return;
                 }
-                let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
-                    return;
-                };
-                let viewport_el: web_sys::HtmlElement = (*viewport).clone();
-                let Some(mouse_norm) = pointer_to_normalized(
-                    &viewport_el,
-                    ev.client_x(),
-                    ev.client_y(),
-                ) else {
-                    return;
-                };
-                drag_runtime.with_value(|opt| {
-                    if let Some(runtime) = opt.as_ref() {
-                        runtime.pending_mouse.set(Some(mouse_norm));
-                    }
-                });
+                pending_pointer.set_value(Some((ev.client_x(), ev.client_y())));
                 if let Some(scheduler) = scheduler_for_move.borrow().as_ref() {
                     scheduler.schedule();
                 }
@@ -418,9 +439,10 @@ pub fn LayoutCanvas() -> impl IntoView {
                     <div class="absolute inset-0 rounded-lg border border-edge-subtle/30 pointer-events-none" />
 
                     // Zone overlays — keyed on zone IDs sorted by display_order
-                    {move || {
-                        let ids = zone_ids.get();
-                        ids.into_iter().map(|zone_id| {
+                    <For
+                        each=move || zone_ids.get()
+                        key=|id| id.clone()
+                        children=move |zone_id| {
                             let zid = zone_id.clone();
                             let zid_select = zone_id.clone();
                             let zid_dblclick = zone_id.clone();
@@ -431,19 +453,15 @@ pub fn LayoutCanvas() -> impl IntoView {
                             let zid_resize_sw = zone_id.clone();
                             let zid_resize_se = zone_id.clone();
 
-                            // Derive per-zone position/style reactively from the layout signal.
-                            // Uses the indexed `zones_by_id` memo for O(1) lookup so this
-                            // closure no longer scans the full zone vec on every layout update.
-                            let zone_style = Signal::derive({
+                            // Resolve display metadata once per layout/device change. Hover
+                            // and selection reuse it across every style and label binding.
+                            let zone_style = Memo::new({
                                 let zid = zid.clone();
-                                move || {
-                                    let devices = devices_ctx
-                                        .devices_resource
-                                        .get()
-                                        .and_then(Result::ok)
-                                        .unwrap_or_default();
-                                    let attachment_profiles =
-                                        zone_display_ctx.attachment_profiles.get();
+                                move |_| devices_ctx.devices_resource.with(|devices| {
+                                    let devices = devices.as_ref()
+                                        .and_then(|result| result.as_ref().ok())
+                                        .map_or(&[][..], Vec::as_slice);
+                                    zone_display_ctx.attachment_profiles.with(|attachment_profiles| {
                                     zones_by_id.with(|map| {
                                         let zone = map.get(&zid)?;
                                         // A generic ARGB controller is just raw channels until
@@ -463,41 +481,17 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         {
                                             return None;
                                         }
-                                        let x_pct = zone.position.x * 100.0;
-                                        let y_pct = zone.position.y * 100.0;
-                                        let w_pct = zone.size.x * 100.0;
-                                        let h_pct = zone.size.y * 100.0;
                                         let rotation = zone.rotation.to_degrees();
-                                        let scale = zone.scale;
 
                                         let (primary, secondary) = device_accent_colors(&zone.device_id);
                                         let display = layout_utils::effective_zone_display(
                                             zone,
-                                            &devices,
-                                            &attachment_profiles,
+                                            devices,
+                                            attachment_profiles,
                                         );
-
-                                        // For Ring/Arc zones, omit explicit height and use
-                                        // aspect-ratio: 1 so the browser enforces a perfect
-                                        // circle regardless of canvas aspect ratio.
-                                        let is_circular = layout_geometry::is_circular_zone(
-                                            zone.shape.as_ref(),
-                                            &zone.topology,
-                                        );
-                                        let position_style = if is_circular {
-                                            format!(
-                                                "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; aspect-ratio: 1; \
-                                                 transform: translate(-50%, -50%) rotate({rotation:.1}deg) scale({scale:.3})"
-                                            )
-                                        } else {
-                                            format!(
-                                                "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
-                                                 transform: translate(-50%, -50%) rotate({rotation:.1}deg) scale({scale:.3})"
-                                            )
-                                        };
 
                                         Some(ZoneRenderData {
-                                            position_style,
+                                            position_style: zone_position_style(zone),
                                             label_style: upright_label_style(rotation),
                                             // The viewport clips, so a box hugging the top edge
                                             // shows its hover readout below itself instead.
@@ -509,48 +503,49 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             shape: zone.shape.clone(),
                                         })
                                     })
-                                }
+                                    })
+                                })
                             });
 
                             let is_selected = {
                                 let zid = zid.clone();
-                                Signal::derive(move || selected_zone_ids.with(|ids| ids.contains(&zid)))
+                                Memo::new(move |_| selected_zone_ids.with(|ids| ids.contains(&zid)))
                             };
 
                             let is_hovered = {
                                 let zid = zid.clone();
-                                Signal::derive(move || hovered_zone_ids.with(|ids| ids.contains(&zid)))
+                                Memo::new(move |_| hovered_zone_ids.with(|ids| ids.contains(&zid)))
                             };
 
                             let is_hidden = {
                                 let zid = zid.clone();
-                                Signal::derive(move || hidden_zones.get().contains(&zid))
+                                Memo::new(move |_| hidden_zones.with(|ids| ids.contains(&zid)))
                             };
 
                             let is_interacting = {
                                 let zid = zid.clone();
-                                Signal::derive(move || interacting_zone_id.with(|active| {
+                                Memo::new(move |_| interacting_zone_id.with(|active| {
                                     active.as_deref() == Some(&zid)
                                 }))
                             };
 
                             let is_primary = {
                                 let zid = zid.clone();
-                                Signal::derive(move || primary_zone_id.with(|primary| {
+                                Memo::new(move |_| primary_zone_id.with(|primary| {
                                     primary.as_deref() == Some(&zid)
                                 }))
                             };
 
                             let is_under_pointer = {
                                 let zid = zid.clone();
-                                Signal::derive(move || pointer_zone_id.with(|under| {
+                                Memo::new(move |_| pointer_zone_id.with(|under| {
                                     under.as_deref() == Some(&zid)
                                 }))
                             };
 
                             let stacking_z = {
                                 let zid = zid.clone();
-                                Signal::derive(move || {
+                                Memo::new(move |_| {
                                     let rank = stacking_rank.with(|ranks| ranks.get(&zid).copied().unwrap_or(0));
                                     stacking::z_index(stacking::Tier {
                                         primary: is_primary.get(),
@@ -561,6 +556,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                             };
                             let zid_enter = zid.clone();
                             let zid_leave = zid.clone();
+                            let zid_style = zid.clone();
 
                             view! {
                                 <div
@@ -574,6 +570,18 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let Some(zd) = zone_style.get() else {
                                             return "display: none".to_string();
                                         };
+                                        // Hover can restyle a compound member between drag
+                                        // frames. Keep the runtime's position until release
+                                        // transfers ownership back to the layout signal.
+                                        let position_style = drag_runtime.with_value(|runtime| {
+                                            let runtime = runtime.as_ref()?;
+                                            if !runtime.elements.contains_key(&zid_style) {
+                                                return None;
+                                            }
+                                            runtime.current_zones.iter()
+                                                .find(|zone| zone.id == zid_style)
+                                                .map(zone_position_style)
+                                        }).unwrap_or(zd.position_style);
                                         let hidden = is_hidden.get();
                                         let selected = is_selected.get();
                                         // Hover only lifts a box that is not already selected, so
@@ -629,8 +637,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             "opacity: 1".to_string()
                                         };
                                         format!(
-                                            "{}; {}; {}; {}; {}; z-index: {z}; backdrop-filter: blur(4px) saturate(120%); {}",
-                                            zd.position_style, border, bg, shadow, shape, visibility
+                                            "{}; {}; {}; {}; {}; z-index: {z}; {}",
+                                            position_style, border, bg, shadow, shape, visibility
                                         )
                                     }
                                     on:mouseenter=move |_| pointer_zone_id.set(Some(zid_enter.clone()))
@@ -1042,8 +1050,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     </div>
                                 </div>
                             }
-                        }).collect::<Vec<_>>()
-                    }}
+                        }
+                    />
 
                     <CompoundBoundingBoxOutline
                         layout=layout
