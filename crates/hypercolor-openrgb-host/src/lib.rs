@@ -9,10 +9,20 @@
 //! It follows the platform-crate pattern: every type is neutral and
 //! serializable on every target, and only the functions that touch the OS
 //! are gated behind `cfg(target_os)` inside this crate.
+//!
+//! Anything that spawns a process or opens a socket is `async` on tokio,
+//! matching the SDK client. Filesystem inspection and the pure builders
+//! (hints, partition, launch spec) are synchronous.
 
+mod detect;
 mod error;
 mod types;
-
+pub use detect::{
+    FLATPAK_APP_ID, SUBPROCESS_TIMEOUT, appimage_search_dirs, classify_binary, detect_binary,
+    executable_names, find_appimage_in, find_in_path, find_native_binary, flatpak_app_version,
+    is_executable_file, known_locations, parse_flatpak_info_version, parse_version_output,
+    read_version,
+};
 pub use error::{HostError, Result};
 pub use types::{
     BinaryKind, InstallHint, InstallMethod, ManagedConfigDir, OpenRgbBinary, PermissionCheck,
