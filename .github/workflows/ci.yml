@@ -130,6 +130,7 @@ jobs:
               - 'scripts/cargo-target-gc.sh'
               - 'scripts/check-macos-gpu-only.sh'
               - 'scripts/tests/cargo-cache-build-tests.sh'
+              - 'scripts/tests/cargo-cache-mode-tests.ps1'
               - 'scripts/tests/cargo-target-gc-tests.sh'
               - 'scripts/dist.sh'
               - 'scripts/verify-release-artifact.sh'
@@ -208,6 +209,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Test build cache contracts
+        run: node --test .github/actions/rust-build-cache/*.test.mjs
+
       - name: Actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
 
@@ -269,6 +273,12 @@ jobs:
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked ${{ env.RUST_SHARED_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   rust-check-macos:
     name: Rust macOS / ${{ matrix.label }}
@@ -424,7 +434,7 @@ jobs:
         run: >-
           ./scripts/cargo-cache-build.sh
           cargo nextest run --locked
-          -p hypercolor-daemon --no-default-features --features wgpu
+          -p hypercolor-daemon --no-default-features --features wgpu --lib
           -E 'test(/api::system::tests::(input_source_status|macos_)/)'
 
       - name: Build deployment and Sequoia availability fixtures
@@ -451,6 +461,12 @@ jobs:
             exit 1
           fi
           echo "Sequoia availability scan passed: Tahoe-only APIs are runtime-resolved"
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   # ── Generated Effects Artifact ────────────────────────────────
   generated-effects:
@@ -615,6 +631,12 @@ jobs:
           cargo test --doc --locked -p hypercolor-daemon --no-default-features
           --features builtin-drivers
 
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
   # Bare core Servo and daemon-default Servo stay as separate commands so
   # feature unification cannot hide CPU fallback coverage. They share one job,
   # target, and cache because the daemon graph contains the core graph.
@@ -652,7 +674,6 @@ jobs:
         with:
           shared-key: servo
           workspaces: . -> .cache/hypercolor/target/servo
-          cache-workspace-crates: "true"
           cache-directories: |
             .cache/hypercolor/mozbuild
             .cache/hypercolor/toolchain
@@ -728,6 +749,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
   # ── Rust Windows ───────────────────────────────────────────────
   # Every #[cfg(target_os = "windows")] assertion in the shared crates is only
   # a gate because this job exists. Windows previously ran in build-native-app
@@ -746,6 +773,9 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
     steps:
       - uses: actions/checkout@v6
+
+      - name: Test PowerShell cache modes
+        run: ./scripts/tests/cargo-cache-mode-tests.ps1
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -774,20 +804,20 @@ jobs:
 
       - name: Clippy shared crates
         run: >-
-          cargo clippy --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }} --all-targets
+          ./scripts/cargo-cache-build.ps1 cargo clippy --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }} --all-targets
           -- -D warnings
 
       - name: Clippy Windows capture fixtures
         run: >-
-          cargo clippy --locked -p hypercolor-core
+          ./scripts/cargo-cache-build.ps1 cargo clippy --locked -p hypercolor-core
           --features windows-capture-fixtures --all-targets -- -D warnings
 
       - name: Run shared crate tests
-        run: cargo nextest run --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}
+        run: ./scripts/cargo-cache-build.ps1 cargo nextest run --locked ${{ env.RUST_WINDOWS_WORKSPACE_ARGS }}
 
       - name: Run Windows capture and host input fixtures
         run: >-
-          cargo nextest run --locked --no-tests=fail -p hypercolor-core
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked --no-tests=fail -p hypercolor-core
           --features windows-capture-fixtures
           --lib --test windows_host_input_fixture_tests
           --test windows_capture_fixture_tests
@@ -797,14 +827,14 @@ jobs:
       - name: Run allocation contracts serially
         shell: pwsh
         run: |
-          cargo test --locked -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests -- --test-threads=1
+          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-core --no-default-features --features allocation-contract-tests --test alloc_contract_tests --test media_input_allocation_tests --test screen_cpu_fanout_allocation_tests --test spatial_area_reuse_tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
+          ./scripts/cargo-cache-build.ps1 cargo test --locked -p hypercolor-windows-input --test alloc_contract_tests -- --test-threads=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Clippy allocation contract
         run: >-
-          cargo clippy --locked -p hypercolor-core
+          ./scripts/cargo-cache-build.ps1 cargo clippy --locked -p hypercolor-core
           --no-default-features --features allocation-contract-tests
           --test alloc_contract_tests --test media_input_allocation_tests
           --test screen_cpu_fanout_allocation_tests
@@ -822,8 +852,14 @@ jobs:
 
       - name: Run daemon input and capture integration tests
         run: >-
-          cargo nextest run --locked -p hypercolor-daemon --no-default-features
+          ./scripts/cargo-cache-build.ps1 cargo nextest run --locked -p hypercolor-daemon --no-default-features
           --features builtin-drivers,persistence-test-hooks --test-threads=1
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   # ── Cargo Deny ─────────────────────────────────────────────────
   rust-deny:
@@ -961,10 +997,19 @@ jobs:
 
       - name: Verify WebSocket protocol manifest is current
         working-directory: .
-        run: cargo run -q -p hypercolor-daemon --bin hypercolor-ws-manifest -- --check
+        run: >-
+          ./scripts/cargo-cache-build.sh cargo run --locked -q
+          -p hypercolor-daemon --no-default-features
+          --bin hypercolor-ws-manifest -- --check
 
       - name: Verify generated WebSocket constants are current
         run: uv run python scripts/generate_ws_protocol.py --check
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   # ── Python Package ───────────────────────────────────────────────
   python-build:
@@ -1051,12 +1096,12 @@ jobs:
         with:
           key: ui
       - run: bun install --frozen-lockfile
-      - run: cargo test
+      - run: ../../scripts/cargo-cache-build.sh cargo test --locked
       - name: Install Trunk
         uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
         with:
           tool: trunk@0.21.14
-      - run: env -u NO_COLOR trunk build --release
+      - run: env -u NO_COLOR RUSTC_WRAPPER=sccache trunk build --release
 
       - name: Upload e2e UI build
         uses: actions/upload-artifact@v7
@@ -1065,6 +1110,12 @@ jobs:
           path: crates/hypercolor-ui/dist
           if-no-files-found: error
           retention-days: 1
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   # ── End-to-End (Playwright) ──────────────────────────────────
   e2e-build-cpu:
@@ -1122,6 +1173,12 @@ jobs:
           path: e2e-binaries
           if-no-files-found: error
           retention-days: 1
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   e2e-assemble:
     name: E2E Assemble / ${{ matrix.label }}
@@ -1340,7 +1397,7 @@ jobs:
         working-directory: crates/hypercolor-ui
         run: |
           bun install --frozen-lockfile
-          env -u NO_COLOR trunk build --release
+          env -u NO_COLOR RUSTC_WRAPPER=sccache trunk build --release
 
       - name: Build effects
         working-directory: sdk
@@ -1362,6 +1419,12 @@ jobs:
           name: web-assets
           path: staging/
           if-no-files-found: error
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   # ── Build Native App Installers ───────────────────────────────
   build-native-app:
@@ -1595,6 +1658,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
   # ── Build Release Tarballs ────────────────────────────────────
   build-release-smoke:
     name: Release Tarball Smoke (linux-amd64)
@@ -1701,6 +1770,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
+
   build-release:
     if: >-
       startsWith(github.ref, 'refs/tags/') ||
@@ -1717,11 +1792,8 @@ jobs:
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-    # This lane is cold on every run: it only fires on tag refs, and the cache
-    # action saves on main alone, so no release-* key is ever written. A cold
-    # release build of the Servo stack runs well over half an hour on the
-    # slowest target, and without a ceiling a wedged runner burns GitHub's
-    # six-hour default before the release reports anything at all.
+    # A full workflow_dispatch on the default branch warms these release
+    # shapes. Tags restore that trusted cache; they never publish cache state.
     timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     steps:
@@ -1897,6 +1969,12 @@ jobs:
           name: hypercolor-deb-${{ steps.version.outputs.version }}-${{ matrix.target }}
           path: dist/hypercolor_*.deb
           if-no-files-found: error
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save
 
   # ── Create GitHub Release ──────────────────────────────────────
   # Accepts workflow_dispatch as well as push: release.yml pushes tags
