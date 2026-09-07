@@ -163,8 +163,6 @@ pub(crate) fn keyed_disclosure(slot: RwSignal<Option<String>>, key: String) -> R
 
 #[component]
 pub fn StudioPage() -> impl IntoView {
-    let (layers_tick, set_layers_tick) = signal(0_u64);
-
     // The active scene is the app-wide shared resource — WS scene events
     // keep it fresh, so zone changes made from other pages, other
     // clients, or the CLI land here without a Studio-local refetch.
@@ -235,23 +233,50 @@ pub fn StudioPage() -> impl IntoView {
         }
     });
 
-    let layers_resource = api::daemon_resource(move || {
-        let _ = layers_tick.get();
-        let scene = active_scene.get();
+    let ws = expect_context::<WsContext>();
+    // The shared scene already contains each zone's layers and revision.
+    // Project its stack without fetching the same document again.
+    let layers_resource = LocalResource::new(move || {
         let zone_id = selected_surface_id.get();
+        let stack = active_scene.with(|scene| match (scene.as_ref(), zone_id.as_deref()) {
+            (_, Some(UNASSIGNED_SURFACE_ID)) => Ok(empty_layer_stack()),
+            (Some(scene), Some(zone_id)) => scene
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == zone_id)
+                .map(|zone| api::LayerStackResponse {
+                    items: zone.layers.clone(),
+                    revision: scene.revision,
+                })
+                .ok_or_else(|| {
+                    api::ApiError::Parse(format!("Zone {zone_id} is not present in the live scene"))
+                }),
+            _ => Ok(empty_layer_stack()),
+        });
+        // Control events intentionally leave the structural scene cache alone.
+        // On selection, recover fresh control values and an If-Match revision
+        // if the latest event invalidated that cache. Reading the hint untracked
+        // keeps slider-rate events from rebuilding the inspector.
+        let refresh_zone = zone_id.filter(|id| {
+            id != UNASSIGNED_SURFACE_ID
+                && active_scene.with_untracked(Option::is_some)
+                && ws.last_scene_event.with_untracked(|hint| {
+                    hint.as_ref().is_some_and(|hint| {
+                        hint.event_type == "zone_changed"
+                            && hint.zone_change_kind
+                                == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched)
+                    })
+                })
+        });
         async move {
-            match (scene, zone_id) {
-                // The Unassigned entry is not a surface — it has no layer
-                // stack, so it never hits the per-zone layer endpoint.
-                (_, Some(zone_id)) if zone_id == UNASSIGNED_SURFACE_ID => Ok(empty_layer_stack()),
-                (Some(_), Some(zone_id)) => api::list_layers(&zone_id).await,
-                _ => Ok(empty_layer_stack()),
+            match refresh_zone {
+                Some(zone_id) => api::list_layers(&zone_id).await,
+                None => stack,
             }
         }
     });
 
     let on_layers_mutated = Callback::new(move |()| {
-        set_layers_tick.update(|tick| *tick = tick.wrapping_add(1));
         zones_ctx.refresh.run(());
     });
     let refresh_scene = zones_ctx.refresh;
@@ -261,7 +286,6 @@ pub fn StudioPage() -> impl IntoView {
     // It refetches on selection, after every face write from this page,
     // and on any scene event (the daemon publishes zone_changed for
     // default-face writes too), so it never needs a timer.
-    let ws = expect_context::<WsContext>();
     let (face_tick, set_face_tick) = signal(0_u64);
     let selected_screen_device = Memo::new(move |_| {
         let selected = selected_surface_id.get()?;
