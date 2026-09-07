@@ -1,5 +1,13 @@
 //! Browser-neutral HTTP transport contract for daemon API calls.
 
+mod body;
+mod cancellation;
+mod stream;
+
+pub use body::{HttpBody, HttpBodySink, HttpBodySource};
+pub use cancellation::{HttpCancellation, HttpCancelled};
+pub use stream::{HttpStreamError, HttpStreamFuture, HttpStreamRequest, HttpStreamResponse};
+
 use std::future::Future;
 use std::pin::Pin;
 
@@ -67,4 +75,14 @@ pub type HttpTransportFuture<'a> =
 
 pub trait HttpTransport {
     fn send(&self, request: HttpRequest) -> HttpTransportFuture<'_>;
+
+    /// Open an incremental exchange. The default fails explicitly; buffered `send`
+    /// implementations never silently claim streaming support.
+    fn send_stream(&self, request: HttpStreamRequest) -> HttpStreamFuture<'_> {
+        let cancellation = request.body.cancellation();
+        HttpStreamFuture::new(cancellation, async move {
+            drop(request);
+            Err(HttpStreamError::Unsupported)
+        })
+    }
 }
