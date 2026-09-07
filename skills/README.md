@@ -9,7 +9,7 @@ The release bundle carries this directory as `share/hypercolor/skills`.
 | Skill | What it does |
 |---|---|
 | `hypercolor-control` | Inspects and drives a running daemon: effects, live controls, brightness, scenes and snapshots, installing built HTML effects. |
-| `rig-setup` | Turns a physical PC build into a spatial layout and scene: case research, device inventory, owner interview, generated bindings and layout, then a guided dial-in on the lit hardware. Ships reusable case specs under `rig-setup/references/cases/`. |
+| `rig-setup` | Turns a physical PC build into a spatial layout and scene: case research, device inventory, a coverage pass that settles who drives each device (native driver first, the OpenRGB bridge for the gap, a prefilled device-support request for the rest), owner interview, generated bindings and layout, then a guided dial-in on the lit hardware. Ships reusable case specs under `rig-setup/references/cases/`, two example rigs (native and bridged) under `rig-setup/references/rigs/`, and three scripts: `gen_layout.py` (specs to layout and scene), `coverage.py` (who drives what, with a host-USB fallback for older daemons), and `request_support.py` (prefilled GitHub issue URL, or files with `gh`). |
 
 Install into an agent host by pointing it at the skill directory, for example with the
 skills CLI (`npx skills add hyperb1iss/hypercolor --skill rig-setup`) or by copying the

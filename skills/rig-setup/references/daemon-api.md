@@ -8,8 +8,17 @@ Everything runs against a live daemon on `http://localhost:9420/api/v1` (overrid
 - **REST** for everything the generator does (attachments, layouts, scenes, identify).
   `curl` works; the generator uses plain `urllib`.
 - **`hypercolor` CLI** for the same reads when MCP is not connected: `hypercolor devices`,
-  `hypercolor layouts`, `hypercolor scenes`, `hypercolor status`, `hypercolor diagnose`.
-  Run `hypercolor --help` for the exact subcommand tree of the installed version.
+  `hypercolor layouts`, `hypercolor scenes`, `hypercolor status`, `hypercolor diagnose`,
+  and for the coverage phase `hypercolor devices coverage`, `hypercolor devices unclaimed`,
+  `hypercolor devices discover --target openrgb`, `hypercolor config set <key> <value>`,
+  and `hypercolor openrgb status | hints | partition | start | stop | resize`. Run
+  `hypercolor --help` for the exact subcommand tree of the installed version; older
+  daemons lack the `openrgb` verb and the two coverage reads, and `scripts/coverage.py`
+  covers that gap.
+- **MCP for the bridge**: the `openrgb_setup` prompt walks the whole ladder, the
+  `openrgb_status` tool returns what `hypercolor openrgb status` prints, and `diagnose`
+  carries the `openrgb` check (endpoint reachable, protocol version, controller count,
+  output-disabled routes with reasons).
 
 Responses are enveloped: `{ "data": ..., "meta": {...} }`.
 
@@ -25,6 +34,37 @@ Responses are enveloped: `{ "data": ..., "meta": {...} }`.
 Only devices with attachment slots (hubs, controllers, strimer bridges) take bindings.
 Everything else (keyboards, LCD receivers, RAM, onboard accents) is placed straight from
 its segments as a raw zone.
+
+## Coverage and the OpenRGB bridge
+
+| call | gives you |
+|---|---|
+| `GET /devices/coverage` | one row per physical device: `identity`, `native: {device_id, driver_id, state} \| null`, `bridge: {device_id, output_enabled, disabled_reason} \| null`, `unclaimed: bool`, `active: native \| bridge \| none \| conflict`. Rows join native devices, bridge routes, and the unclaimed store by serial, then SMBus bus plus address, then USB path |
+| `GET /devices/unclaimed` | `ListResponse` of `UnclaimedDevice { vendor_id, product_id, manufacturer, product, serial, bus_path, interface_classes, claimable_by }`; `claimable_by` names a native driver that knows the device but is disabled. USB only; SMBus has no enumerate-then-filter step |
+| `GET /devices` (bridged rows) | `origin.transport == "bridge"` with `origin.driver_id == "openrgb"`, layout id `openrgb:<host>:<port>:<fingerprint>`, and `bridge: { endpoint, controller_index, identity_confidence, detector_class, output_enabled, disabled_reason, protocol_version }` |
+| `GET /drivers` | every driver with `enabled`, `config_key`, and its `protocols[]` (`vendor_id`, `product_id` as integers); the coverage script diffs the host's USB list against this on daemons without the two routes above |
+| `GET /config/keys/drivers.openrgb.zone_sizes` | fingerprint → zone name → LED count, the only place hub zone sizes survive an OpenRGB restart |
+
+Facts that bite:
+
+- On a daemon that predates Spec 81, `/devices/coverage` and `/devices/unclaimed` answer
+  404 with `code: device_not_found` (the path matched `/devices/{id}`), not
+  `route_not_found`. Treat both codes as "route missing".
+- Bridged devices sit at `status: known` until the active layout targets them and connect
+  then. Identify works on them anyway through a temporary connect.
+- The conflict guard output-disables a bridge route whenever a renderable native device
+  shares its identity, with `disabled_reason = "native driver owns this device (<driver_id>)"`,
+  and publishes `DeviceStateChanged`. Handing a device to the bridge is
+  `PUT /devices/{id}` with `{"enabled": false}` on the native device.
+- Config writes take the bare value as the body: `PUT /config/keys/drivers.openrgb.enabled`
+  with `true`, `PUT /config/keys/drivers.openrgb.zone_sizes` with the whole map. The
+  response says whether the change went `live` or `requires_restart`. Driver sections may
+  read back as `{"redacted": true}`, so a read-merge-write of `zone_sizes` degrades to a
+  write of what you hold; keep every bridged hub's sizes in one rig spec.
+- `hypercolor devices discover --target openrgb` triggers a bridge-only discovery pass;
+  the daemon quiesces it while a native SMBus scan runs, and vice versa.
+- Events: `UnclaimedDevicesChanged { count }` on the default `events` topic when the
+  unclaimed store changes, so a UI or a long-lived agent refetches instead of polling.
 
 ## Attachments
 
