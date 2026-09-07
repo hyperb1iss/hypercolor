@@ -7,12 +7,19 @@
 pub mod client;
 pub mod commands;
 pub mod config;
+#[cfg(unix)]
+#[doc(hidden)]
+pub mod install;
+#[cfg(unix)]
+mod install_command;
 pub mod output;
 
 use std::future::Future;
 use std::pin::Pin;
 
 use anyhow::{Result, bail};
+#[cfg(unix)]
+use clap::Args;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use client::DaemonClient;
@@ -165,14 +172,14 @@ pub enum Commands {
     #[command(display_order = 14)]
     Audio(commands::audio::AudioArgs),
 
+    /// Explicit host-input and screen-capture permission actions
+    #[command(display_order = 15)]
+    Access(commands::access::AccessArgs),
+
     // ── Library ───────────────────────────────────────────────
     /// Favorites, presets, and playlists
     #[command(display_order = 20)]
     Library(commands::library::LibraryArgs),
-
-    /// Save and apply full system profiles
-    #[command(display_order = 21)]
-    Profiles(commands::profiles::ProfilesArgs),
 
     // ── Network ───────────────────────────────────────────────
     /// Daemon version, identity, and health
@@ -210,6 +217,52 @@ pub enum Commands {
     External(Vec<String>),
 }
 
+#[doc(hidden)]
+#[cfg(unix)]
+#[derive(Debug, Args)]
+pub struct InstallReleaseArgs {
+    #[arg(long, value_name = "ABSOLUTE_PATH")]
+    install_prefix: std::path::PathBuf,
+
+    #[arg(long, value_name = "ABSOLUTE_PATH")]
+    install_dir: std::path::PathBuf,
+
+    #[arg(long, value_parser = install_command::parse_manifest_digest)]
+    expected_manifest_sha256: install::UnitId,
+
+    #[arg(long)]
+    no_service: bool,
+}
+
+#[cfg(unix)]
+#[derive(Parser)]
+#[command(name = "hypercolor __install-release")]
+struct InstallReleaseInvocation {
+    #[command(flatten)]
+    args: InstallReleaseArgs,
+}
+
+#[cfg(unix)]
+fn parse_install_release_invocation<I, T>(
+    raw_args: I,
+) -> Option<std::result::Result<InstallReleaseArgs, clap::Error>>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString>,
+{
+    let mut raw_args = raw_args.into_iter().map(Into::into);
+    let executable = raw_args.next()?;
+    let command = raw_args.next()?;
+    if command != std::ffi::OsStr::new("__install-release") {
+        return None;
+    }
+
+    Some(
+        InstallReleaseInvocation::try_parse_from(std::iter::once(executable).chain(raw_args))
+            .map(|invocation| invocation.args),
+    )
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 pub async fn run() -> Result<()> {
@@ -217,6 +270,13 @@ pub async fn run() -> Result<()> {
 }
 
 pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()> {
+    #[cfg(unix)]
+    match parse_install_release_invocation(std::env::args_os()) {
+        Some(Ok(args)) => return install_command::execute(&args),
+        Some(Err(error)) => error.exit(),
+        None => {}
+    }
+
     let cli = Cli::from_arg_matches(
         &Cli::command()
             .before_help(output::painter::help_banner())
@@ -271,11 +331,11 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
         Commands::Drivers(args) => commands::drivers::execute(args, &client, &ctx).await,
         Commands::Effects(args) => commands::effects::execute(args, &client, &ctx).await,
         Commands::Scenes(args) => commands::scenes::execute(args, &client, &ctx).await,
-        Commands::Profiles(args) => commands::profiles::execute(args, &client, &ctx).await,
         Commands::Library(args) => commands::library::execute(args, &client, &ctx).await,
         Commands::Layouts(args) => commands::layouts::execute(args, &client, &ctx).await,
         Commands::Brightness(args) => commands::brightness::execute(args, &client, &ctx).await,
         Commands::Audio(args) => commands::audio::execute(args, &client, &ctx).await,
+        Commands::Access(args) => commands::access::execute(args, &client, &ctx).await,
         Commands::Server(args) => commands::server::execute(args, &client, &ctx).await,
         Commands::Config(args) => commands::config::execute(args, &client, &ctx).await,
         Commands::Service(args) => commands::service::execute(args, &ctx).await,
@@ -293,7 +353,7 @@ pub async fn run_with_extensions(extensions: &[&dyn CliExtension]) -> Result<()>
 
     if let Err(e) = result {
         ctx.error(&format!("{e:#}"));
-        std::process::exit(1);
+        std::process::exit(commands::status::exit_code_for_error(&e).unwrap_or(1));
     }
 
     Ok(())

@@ -1,14 +1,9 @@
-import { canvas, color, combo, num, toggle } from 'hypercolor'
+import { canvas, color, combo, hexToRgb, num, type Rgb, rgbToHsl, toggle } from 'hypercolor'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface Rgb {
-    r: number
-    g: number
-    b: number
-}
 interface ThemePalette {
     color1: string
     color2: string
@@ -57,29 +52,7 @@ const IX = [1, 0, -1, 0, 0, 1, 0, -1, -1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1]
 // Utilities
 // ---------------------------------------------------------------------------
 
-function hexToRgb(hex: string): Rgb {
-    const h = hex.replace('#', '')
-    const f = h.length === 3 ? `${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}` : h
-    const v = Number.parseInt(f, 16)
-    return { b: v & 255, g: (v >> 8) & 255, r: (v >> 16) & 255 }
-}
-
-function rgbToHsl(c: Rgb): [number, number, number] {
-    const r = c.r / 255
-    const g = c.g / 255
-    const b = c.b / 255
-    const max = Math.max(r, g, b)
-    const min = Math.min(r, g, b)
-    const d = max - min
-    const l = (max + min) * 0.5
-    if (d === 0) return [0, 0, l]
-    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
-    let h = 0
-    if (max === r) h = (g - b) / d + (g < b ? 6 : 0)
-    else if (max === g) h = (b - r) / d + 2
-    else h = (r - g) / d + 4
-    return [h * 60, s, l]
-}
+const BLACK: Rgb = { b: 0, g: 0, r: 0 }
 
 function hslCss(h: number, s: number, l: number): string {
     return `hsl(${h % 360}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`
@@ -331,7 +304,7 @@ export default canvas.stateful(
             // Background fill (with optional hue cycling)
             if (bgCycle) {
                 bgCycleHue = (bgCycleHue + cycleSpeed / 50) % 360
-                const [, s, l] = rgbToHsl(hexToRgb(bgColor))
+                const { s, l } = rgbToHsl(hexToRgb(bgColor, BLACK))
                 ctx.fillStyle = hslCss(bgCycleHue, s, l)
             } else {
                 ctx.fillStyle = bgColor
@@ -342,7 +315,7 @@ export default canvas.stateful(
             const palette = resolvePalette(theme, color1, color2, color3)
             const nextGlowKey = `${w}|${h}|${palette.color3}`
             if (!glowFill || glowKey !== nextGlowKey) {
-                const glowRgb = hexToRgb(palette.color3)
+                const glowRgb = hexToRgb(palette.color3, BLACK)
                 glowFill = ctx.createRadialGradient(w * 0.5, h * 0.65, 0, w * 0.5, h * 0.65, w * 0.55)
                 glowFill.addColorStop(0, `rgba(${glowRgb.r},${glowRgb.g},${glowRgb.b},0.07)`)
                 glowFill.addColorStop(1, 'rgba(0,0,0,0)')

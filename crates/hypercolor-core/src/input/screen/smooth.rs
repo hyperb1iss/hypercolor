@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crate::types::canvas::{SurfaceResourceError, linear_to_srgb_u8, srgb_u8_to_linear};
+use hypercolor_types::canvas::{SurfaceResourceError, linear_to_srgb_u8, srgb_u8_to_linear};
 
 use super::{CaptureTransferFunction, ScreenSceneCutPolicy, ScreenSmoothingPolicy};
 
@@ -48,21 +48,23 @@ impl PreparedTemporalSmoother {
         let max_samples = checked_sample_count(width, height)?;
         let requested_byte_len = match policy {
             ScreenSmoothingPolicy::Disabled => 0,
-            ScreenSmoothingPolicy::Exponential { .. } => u64::try_from(max_samples)
-                .ok()
-                .and_then(|count| {
-                    u64::try_from(std::mem::size_of::<[f32; 3]>())
-                        .ok()
-                        .and_then(|item_size| count.checked_mul(item_size))
-                })
-                .and_then(|bytes| bytes.checked_mul(2))
-                .ok_or(SurfaceResourceError::ByteLengthOverflow { width, height })?,
+            ScreenSmoothingPolicy::Frozen { .. } | ScreenSmoothingPolicy::Exponential { .. } => {
+                u64::try_from(max_samples)
+                    .ok()
+                    .and_then(|count| {
+                        u64::try_from(std::mem::size_of::<[f32; 3]>())
+                            .ok()
+                            .and_then(|item_size| count.checked_mul(item_size))
+                    })
+                    .and_then(|bytes| bytes.checked_mul(2))
+                    .ok_or(SurfaceResourceError::ByteLengthOverflow { width, height })?
+            }
         };
         let requested_byte_len_usize = usize::try_from(requested_byte_len)
             .map_err(|_| SurfaceResourceError::ByteLengthOverflow { width, height })?;
         let mut committed = Vec::new();
         let mut staged = Vec::new();
-        if matches!(policy, ScreenSmoothingPolicy::Exponential { .. }) {
+        if policy != ScreenSmoothingPolicy::Disabled {
             committed.try_reserve_exact(max_samples).map_err(|_| {
                 SurfaceResourceError::AllocationFailed {
                     width,
@@ -123,6 +125,8 @@ impl PreparedTemporalSmoother {
     /// Stage smoothing for one encoded RGB grid without committing history.
     ///
     /// `reset_history` is used when content cropping changes spatial identity.
+    /// `suppress_scene_cut_bypass` keeps smoothing active while a caller is
+    /// already blending between color transforms.
     /// Scene-cut distance is normalized to `0.0..=1.0` per channel in linear
     /// light. The exponential response derives directly from the configured
     /// time constant and capture timestamp delta.
@@ -139,6 +143,7 @@ impl PreparedTemporalSmoother {
         transfer: CaptureTransferFunction,
         elapsed: Duration,
         reset_history: bool,
+        suppress_scene_cut_bypass: bool,
     ) -> Result<(), PreparedTemporalSmoothingError> {
         if self.staged_shape.is_some() {
             return Err(PreparedTemporalSmoothingError::StagePending);
@@ -166,12 +171,13 @@ impl PreparedTemporalSmoother {
             });
         }
 
-        let ScreenSmoothingPolicy::Exponential {
-            time_constant,
-            scene_cut,
-        } = self.policy
-        else {
-            return Ok(());
+        let (time_constant, scene_cut) = match self.policy {
+            ScreenSmoothingPolicy::Disabled => return Ok(()),
+            ScreenSmoothingPolicy::Frozen { scene_cut } => (None, scene_cut),
+            ScreenSmoothingPolicy::Exponential {
+                time_constant,
+                scene_cut,
+            } => (Some(time_constant), scene_cut),
         };
         let shape = (width, height);
         self.staged.clear();
@@ -179,7 +185,8 @@ impl PreparedTemporalSmoother {
         let reset = reset_history
             || self.committed.len() != expected
             || self.committed_shape != Some(shape)
-            || scene_cut_detected(scene_cut, transfer, &self.committed, colors);
+            || !suppress_scene_cut_bypass
+                && scene_cut_detected(scene_cut, transfer, &self.committed, colors);
         if reset {
             self.staged.extend(
                 colors
@@ -190,7 +197,7 @@ impl PreparedTemporalSmoother {
             return Ok(());
         }
 
-        let alpha = time_constant_alpha(time_constant, elapsed);
+        let alpha = time_constant.map_or(0.0, |value| time_constant_alpha(value, elapsed));
         for (color, previous) in colors.iter_mut().zip(&self.committed) {
             let incoming = decode_rgb(*color, transfer);
             let next = [
@@ -290,7 +297,7 @@ fn scene_cut_detected(
         reason = "admitted sample counts are normalized only for a bounded color metric"
     )]
     let channel_count = (colors.len() * 3) as f32;
-    total / channel_count >= threshold.value().clamp(0.0, 1.0)
+    total / channel_count > threshold.value().clamp(0.0, 1.0)
 }
 
 fn decode_rgb(color: [u8; 3], transfer: CaptureTransferFunction) -> [f32; 3] {
@@ -475,7 +482,7 @@ impl TemporalSmoother {
         height: u32,
         elapsed: Duration,
     ) {
-        if self.stage_for_elapsed_grid(colors, width, height, elapsed, false) {
+        if self.stage_for_elapsed_grid(colors, width, height, elapsed, false, false) {
             self.commit_staged();
         }
     }
@@ -487,6 +494,7 @@ impl TemporalSmoother {
         height: u32,
         elapsed: Duration,
         reset_history: bool,
+        suppress_scene_cut_bypass: bool,
     ) -> bool {
         let Some(expected_len) = usize::try_from(width)
             .ok()
@@ -532,7 +540,7 @@ impl TemporalSmoother {
         let diff = self.frame_difference(colors);
 
         // Scene cut detected — snap to new colors immediately.
-        if diff > self.scene_cut_threshold {
+        if !suppress_scene_cut_bypass && diff > self.scene_cut_threshold {
             self.staged.extend(colors.iter().map(|color| {
                 [
                     srgb_u8_to_linear(color[0]) * 255.0,

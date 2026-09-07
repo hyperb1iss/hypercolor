@@ -9,7 +9,7 @@ use crate::icons::*;
 
 #[component]
 pub fn AboutSection() -> impl IntoView {
-    let status = LocalResource::new(api::fetch_status);
+    let status = api::daemon_resource(api::fetch_status);
 
     view! {
         <section id="section-about" class="pt-5 pb-3 space-y-0">

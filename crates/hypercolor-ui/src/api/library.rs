@@ -1,131 +1,60 @@
 //! Library API — presets and favorites.
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use super::{ApiResult, client};
 
-use super::client;
-
-// ── Preset Types ────────────────────────────────────────────────────────────
-
-/// Preset summary from `GET /api/v1/library/presets`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PresetSummary {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub effect_id: String,
-    #[serde(default)]
-    pub controls: HashMap<String, serde_json::Value>,
-    #[serde(default)]
-    pub tags: Vec<String>,
-    #[serde(default)]
-    pub created_at_ms: u64,
-    #[serde(default)]
-    pub updated_at_ms: u64,
-}
-
-/// Paginated preset list response.
-#[derive(Debug, Deserialize)]
-pub struct PresetListResponse {
-    pub items: Vec<PresetSummary>,
-}
-
-/// Request body for creating a preset.
-#[derive(Debug, Serialize)]
-pub struct CreatePresetRequest {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    pub effect: String,
-    pub controls: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
-}
-
-// ── Favorite Types ──────────────────────────────────────────────────────────
-
-/// Favorite entry from `GET /api/v1/library/favorites`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FavoriteSummary {
-    pub effect_id: String,
-    pub effect_name: String,
-    pub added_at_ms: u64,
-}
-
-/// Paginated favorites list response.
-#[derive(Debug, Deserialize)]
-pub struct FavoriteListResponse {
-    pub items: Vec<FavoriteSummary>,
-}
+// Wire contracts are shared with the daemon
+// (hypercolor-types::api::library) — drift is a compile error rather
+// than a runtime parse failure. `EffectPreset` is the daemon's stored
+// preset record, returned verbatim by the preset routes.
+pub use hypercolor_types::api::library::{
+    AddFavoriteRequest, FavoriteListResponse, FavoriteSummary, PresetListResponse,
+    SavePresetRequest,
+};
+pub use hypercolor_types::library::EffectPreset;
 
 // ── Preset Functions ────────────────────────────────────────────────────────
 
 /// Fetch all saved presets.
-pub async fn fetch_presets() -> Result<Vec<PresetSummary>, String> {
+pub async fn fetch_presets() -> ApiResult<Vec<EffectPreset>> {
     let list: PresetListResponse = client::fetch_json("/api/v1/library/presets").await?;
     Ok(list.items)
 }
 
 /// Create a new preset from current control values.
-pub async fn create_preset(req: &CreatePresetRequest) -> Result<PresetSummary, String> {
-    client::post_json("/api/v1/library/presets", req)
-        .await
-        .map_err(Into::into)
-}
-
-#[derive(Debug, Serialize)]
-struct ApplyPresetRequest<'a> {
-    render_group: &'a str,
-}
-
-/// Apply a saved preset by ID. `render_group` targets a specific zone;
-/// `None` keeps the daemon's legacy primary-zone semantics.
-pub async fn apply_preset(id: &str, render_group: Option<&str>) -> Result<(), String> {
-    let path = format!("/api/v1/library/presets/{id}/apply");
-    match render_group {
-        Some(zone) => {
-            client::post_json_discard(&path, &ApplyPresetRequest { render_group: zone }).await
-        }
-        None => client::post_empty(&path).await,
-    }
-    .map_err(Into::into)
+pub async fn create_preset(req: &SavePresetRequest) -> ApiResult<EffectPreset> {
+    client::post_json("/api/v1/library/presets", req).await
 }
 
 /// Update an existing preset (name, controls, etc.).
-pub async fn update_preset(id: &str, req: &CreatePresetRequest) -> Result<PresetSummary, String> {
-    client::put_json(&format!("/api/v1/library/presets/{id}"), req)
-        .await
-        .map_err(Into::into)
+pub async fn update_preset(id: &str, req: &SavePresetRequest) -> ApiResult<EffectPreset> {
+    client::put_json(&format!("/api/v1/library/presets/{id}"), req).await
 }
 
 /// Delete a preset by ID.
-pub async fn delete_preset(id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/library/presets/{id}"))
-        .await
-        .map_err(Into::into)
+pub async fn delete_preset(id: &str) -> ApiResult<()> {
+    client::delete_empty(&format!("/api/v1/library/presets/{id}")).await
 }
 
 // ── Favorite Functions ──────────────────────────────────────────────────────
 
 /// Fetch all favorited effect IDs.
-pub async fn fetch_favorites() -> Result<Vec<FavoriteSummary>, String> {
+pub async fn fetch_favorites() -> ApiResult<Vec<FavoriteSummary>> {
     let list: FavoriteListResponse = client::fetch_json("/api/v1/library/favorites").await?;
     Ok(list.items)
 }
 
 /// Add an effect to favorites.
-pub async fn add_favorite(effect_id: &str) -> Result<(), String> {
+pub async fn add_favorite(effect_id: &str) -> ApiResult<()> {
     client::post_json_discard(
         "/api/v1/library/favorites",
-        &serde_json::json!({ "effect": effect_id }),
+        &AddFavoriteRequest {
+            effect: effect_id.to_owned(),
+        },
     )
     .await
-    .map_err(Into::into)
 }
 
 /// Remove an effect from favorites.
-pub async fn remove_favorite(effect_id: &str) -> Result<(), String> {
-    client::delete_empty(&format!("/api/v1/library/favorites/{effect_id}"))
-        .await
-        .map_err(Into::into)
+pub async fn remove_favorite(effect_id: &str) -> ApiResult<()> {
+    client::delete_empty(&format!("/api/v1/library/favorites/{effect_id}")).await
 }

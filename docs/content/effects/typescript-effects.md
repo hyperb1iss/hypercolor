@@ -34,7 +34,7 @@ export default canvas(
 
 The `canvas()` call registers the effect as a side effect; the default export is a void value at runtime. The SDK reads the declaration, generates the controls UI, hooks up the render loop, and bundles the whole thing into one self-contained HTML artifact when you build. See [Creating effects](@/effects/creating-effects.md) for the scaffold-to-build loop and [Setup](@/effects/setup.md) for installing the SDK.
 
-{{ img(path="img/effects/fiberflies.webp", alt="Fiberflies, a stateful canvas effect: luminous neon particles drifting through warm darkness") }}
+{{< img path="img/effects/fiberflies.webp" alt="Fiberflies, a stateful canvas effect: luminous neon particles drifting through warm darkness" />}}
 
 ## The `canvas()` signature
 
@@ -64,9 +64,9 @@ type DrawFn = (
 - `time` is elapsed **seconds** since the page loaded, not milliseconds. The base effect passes `timestamp / 1000` into your draw function.
 - `controls` is the resolved map of current control values. The SDK handles speed normalization, palette resolution, and combobox mapping before your function sees it.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Every exported name in your effect must match `hypercolor` verbatim. The effect entry points are `canvas`, `canvas.stateful`, `effect` (GLSL, see [GLSL effects](@/effects/glsl-effects.md)), and `face` (display faces). There is no `createCanvasEffect` or `defineEffect`.
-{% end %}
+{% </callout> %}
 
 ## Stateless vs stateful
 
@@ -110,7 +110,7 @@ Use stateful when you need particles, history buffers, trail accumulators, color
 
 Each effect runs inside a `BaseEffect` that owns the canvas, the animation loop, and the control contract. The order is fixed and you never call these yourself:
 
-{% mermaid() %}
+{% <mermaid> %}
 flowchart LR
   A[initialize] --> B[initializeRenderer]
   B --> C[initializeControls]
@@ -120,7 +120,7 @@ flowchart LR
   F --> G[draw / render]
   G --> H[onFrame: poll controls]
   H --> E
-{% end %}
+{% </mermaid> %}
 
 For a stateful effect, `initializeRenderer` is where the factory runs and captures the returned draw function. Every frame the base effect first calls `syncCanvasSizeFromEngine`, which reads `window.engine.width` / `window.engine.height` and resizes the backing canvas to match, then invokes your draw function. Controls are re-polled every 0.1 seconds, or immediately when the daemon marks them dirty, so live control edits land within a frame or two without you wiring anything up.
 
@@ -224,9 +224,9 @@ export default canvas(
 );
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The auto-conversion only fires for `paletteControl()`, which sets the internal `palette: true` flag the resolver keys off. A plain `combo("Palette", [...])`, a bare string-array shorthand like `palette: ["A", "B"]`, or any other combobox leaves the value as the selected string. Recover the function with `createPaletteFn(name)` inside your draw, caching it across frames so you only rebuild on change.
-{% end %}
+{% </callout> %}
 
 ```typescript
 import { canvas, combo, createPaletteFn } from "hypercolor";
@@ -275,9 +275,9 @@ export default canvas(
 );
 ```
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 `{ audio: true }` is not cosmetic. If the build detects any audio access (`audio(`, `getAudioData(`, `ctx.audio`, `engine.audio`) but the option is missing, the build **fails** with an audio-reactivity validation error. Set it whenever you read audio.
-{% end %}
+{% </callout> %}
 
 Under no audio every field is zero or a sensible idle value. Don't gate behavior on strict equality with zero; clamp to a floor so the effect still reads in a quiet room:
 
@@ -314,7 +314,7 @@ drawGlowyThings(ctx);
 ctx.restore();
 ```
 
-{{ img(path="img/effects/lava-lamp.webp", alt="Lava Lamp, a stateful metaball effect: molten blobs merging in slow convection") }}
+{{< img path="img/effects/lava-lamp.webp" alt="Lava Lamp, a stateful metaball effect: molten blobs merging in slow convection" />}}
 
 ## Presets
 

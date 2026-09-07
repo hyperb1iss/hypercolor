@@ -13,10 +13,7 @@ name = "hypercolor-app"
 path = "src/main.rs"
 
 [lints.rust]
-# Win32 power-event message-pump (power_events::windows_impl) needs FFI
-# unsafe. Mirror the pattern from hypercolor-windows-pawnio /
-# hypercolor-windows-gpu-interop: allow at the crate level, deny
-# undocumented blocks at clippy.
+# The macOS webview secure-input release calls Objective-C runtime APIs.
 unsafe_code = "allow"
 
 [lints.clippy]
@@ -26,6 +23,7 @@ unwrap_used = "deny"
 [dependencies]
 hypercolor-core = { workspace = true }
 hypercolor-types = { workspace = true }
+hypercolor-macos-owner = { workspace = true }
 tauri = { version = "2", features = ["devtools", "tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
@@ -35,7 +33,6 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 futures-util = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
-toml = { workspace = true }
 tracing.workspace = true
 tracing-appender = "0.2.5"
 tracing-subscriber.workspace = true
@@ -43,7 +40,6 @@ anyhow.workspace = true
 url = "2.5.8"
 open = "5"
 chrono = { workspace = true }
-dirs = { workspace = true }
 image = { workspace = true, default-features = false, features = ["png"] }
 
 [build-dependencies]
@@ -57,6 +53,16 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_Power",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hypercolor-linux-session = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+hypercolor-macos-input = { workspace = true }
+notify = { workspace = true }
+objc2 = { workspace = true, features = ["std"] }
+security-framework = "3.7.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }

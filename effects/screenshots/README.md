@@ -41,7 +41,7 @@ effects/screenshots/
    HSV score combining mean saturation and luminance variance. Rank 1 is
    usually the pick.
 4. Install the picks as effect covers with `just sync-covers`, which downscales
-   rank-1 to a 640px WebP and writes `sdk/src/effects/<id>/cover.webp`. Pass
+   rank-1 to a 960px WebP and writes `sdk/src/effects/<id>/cover.webp`. Pass
    `--force` to replace covers that already exist.
 5. Rebuild (`just effects-build`) so the new covers embed, then commit the
    `cover.webp` files.
@@ -52,9 +52,10 @@ the capture tool is what ships.
 ## Sizing
 
 Covers embed in every built artifact and the daemon parses each one on a
-registry scan, so they are deliberately small: 640px wide WebP at q80, roughly
-2–60KB per effect. The build warns above 128KB and the parser refuses anything
-over 1MB. Full-resolution art for the documentation site lives in
+registry scan, so they are deliberately small: 960px wide WebP at q88, which
+lands between roughly 4KB and 130KB per effect, with the median near 29KB. The
+build warns above 256KB and the parser refuses anything over 1MB.
+Full-resolution art for the documentation site lives in
 `docs/static/img/effects/`.
 
 ## UI contract

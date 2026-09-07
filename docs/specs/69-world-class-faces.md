@@ -1,6 +1,12 @@
 # Spec 69: World-Class Display Faces
 
-**Status:** Draft
+**Status:** Partially implemented (status corrected 2026-08-25). Wave 0 shipped:
+`DisplayDescriptor` (`crates/hypercolor-types/src/display.rs`), `MediaState`
+(`crates/hypercolor-types/src/media.rs`), and the face SDK surface under
+`sdk/packages/core/src/faces/`. The wave 3 flagship faces `now-playing` and `spectrum`
+both exist under `sdk/src/faces/`. Later waves remain open; check the tree before
+treating any single wave as unbuilt. Section 4's aside about a store "persisted alongside
+profiles" is stale, because profiles folded into scenes.
 **Date:** 2026-06-09
 **Builds on:** Spec 42 (display faces pipeline), Spec 43 (face SDK)
 **Research:** `docs/research/faces/00-synthesis.md` (cross-model reviewed, all

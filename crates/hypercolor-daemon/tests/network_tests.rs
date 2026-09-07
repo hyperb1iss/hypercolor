@@ -1,48 +1,23 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::{BackendManager, UsbProtocolConfigStore};
+use hypercolor_core::device::BackendManager;
 use hypercolor_daemon::network;
 use hypercolor_driver_api::{
-    BackendInfo, DeviceBackend, DriverConfigView, DriverCredentialStore, DriverDescriptor,
-    DriverDiscoveryState, DriverHost, DriverModule, DriverPresentationProvider,
-    DriverProtocolCatalog, DriverRuntimeActions,
+    BackendInfo, DeviceBackend, DeviceBackendFactory, DriverConfigView, DriverCredentialStore,
+    DriverDescriptor, DriverDiscoveryState, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputBinding,
 };
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
-    DeviceClassHint, DeviceId, DeviceInfo, DriverModuleKind, DriverPresentation,
-    DriverProtocolDescriptor, DriverTransportKind,
+    DeviceClassHint, DeviceError, DeviceId, DriverModuleDescriptor, DriverModuleKind,
+    DriverPresentation, DriverProtocolDescriptor, DriverTransportDescriptor, DriverTransportKind,
 };
-
-#[test]
-fn host_transport_scanner_factory_handles_known_and_unknown_targets() {
-    let registry = DriverModuleRegistry::new();
-    let config = HypercolorConfig::default();
-
-    let usb = network::host_transport_scanner("usb", &registry, &config)
-        .expect("usb host scanner should be built");
-    assert_eq!(usb.name(), "USB HAL");
-
-    let smbus = network::host_transport_scanner("smbus", &registry, &config)
-        .expect("smbus host scanner should be built");
-    assert_eq!(smbus.name(), "SMBus HAL");
-
-    #[cfg(unix)]
-    {
-        let blocks = network::host_transport_scanner("blocks", &registry, &config)
-            .expect("blocks host scanner should be built");
-        assert_eq!(blocks.name(), "ROLI Blocks (blocksd)");
-    }
-
-    assert!(
-        network::host_transport_scanner("unknown", &registry, &config).is_none(),
-        "unknown host discovery targets should not build scanners"
-    );
-}
+use hypercolor_types::identity::BackendId;
 
 #[test]
 fn enabled_module_ids_honor_driver_config_entries() {
@@ -86,7 +61,10 @@ fn enabled_module_ids_can_filter_by_transport() {
     );
 
     assert!(!enabled.contains("hal-fixture-smbus"));
-    assert!(enabled.is_empty());
+    assert_eq!(
+        enabled,
+        BTreeSet::from(["smbus-output-provider".to_owned()])
+    );
 }
 
 #[test]
@@ -96,11 +74,35 @@ fn enabled_module_ids_for_usb_host_transports_excludes_smbus_modules() {
         &registry,
         &HypercolorConfig::default(),
         DriverModuleKind::Hal,
-        network::USB_HOST_DRIVER_TRANSPORTS,
+        &[
+            DriverTransportKind::Usb,
+            DriverTransportKind::Midi,
+            DriverTransportKind::Serial,
+        ],
     );
 
     assert!(enabled.contains("hal-fixture-usb"));
     assert!(!enabled.contains("hal-fixture-smbus"));
+}
+
+#[test]
+fn enabled_module_ids_for_transport_excludes_unavailable_modules() {
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(FixtureHalDriver {
+            descriptor: &HAL_SMBUS_DESCRIPTOR,
+            unavailable: true,
+        })
+        .expect("unavailable SMBus fixture module should register");
+
+    let enabled = network::enabled_module_ids_for_transport(
+        &registry,
+        &HypercolorConfig::default(),
+        DriverModuleKind::Hal,
+        &DriverTransportKind::Smbus,
+    );
+
+    assert!(enabled.is_empty());
 }
 
 #[test]
@@ -123,21 +125,22 @@ fn register_enabled_device_backends_skips_usb_when_no_usb_family_modules_are_ena
     let host = NullHost::new();
     let mut registry = DriverModuleRegistry::new();
     registry
+        .register(FixtureOutputProvider {
+            descriptor: &SMBUS_PROVIDER_DESCRIPTOR,
+            backend_id: "smbus",
+        })
+        .expect("SMBus output provider should register");
+    registry
         .register(FixtureHalDriver {
             descriptor: &HAL_SMBUS_DESCRIPTOR,
+            unavailable: false,
         })
         .expect("SMBus fixture module should register");
     let config = HypercolorConfig::default();
     let mut backend_manager = BackendManager::new();
 
-    network::register_enabled_device_backends(
-        &mut backend_manager,
-        &registry,
-        &host,
-        &config,
-        UsbProtocolConfigStore::new(),
-    )
-    .expect("backend registration should succeed");
+    network::register_enabled_device_backends(&mut backend_manager, &registry, &host, &config)
+        .expect("backend registration should succeed");
 
     let backend_ids = backend_manager.backend_ids();
     assert!(backend_ids.contains(&"smbus"));
@@ -149,21 +152,22 @@ fn register_enabled_device_backends_skips_smbus_when_only_usb_modules_are_enable
     let host = NullHost::new();
     let mut registry = DriverModuleRegistry::new();
     registry
+        .register(FixtureOutputProvider {
+            descriptor: &USB_PROVIDER_DESCRIPTOR,
+            backend_id: "usb",
+        })
+        .expect("USB output provider should register");
+    registry
         .register(FixtureHalDriver {
             descriptor: &HAL_USB_DESCRIPTOR,
+            unavailable: false,
         })
         .expect("USB fixture module should register");
     let config = HypercolorConfig::default();
     let mut backend_manager = BackendManager::new();
 
-    network::register_enabled_device_backends(
-        &mut backend_manager,
-        &registry,
-        &host,
-        &config,
-        UsbProtocolConfigStore::new(),
-    )
-    .expect("backend registration should succeed");
+    network::register_enabled_device_backends(&mut backend_manager, &registry, &host, &config)
+        .expect("backend registration should succeed");
 
     let backend_ids = backend_manager.backend_ids();
     assert!(backend_ids.contains(&"usb"));
@@ -186,26 +190,98 @@ static HAL_SMBUS_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
     false,
 );
 
+static USB_PROVIDER_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "usb-output-provider",
+    "USB Output Provider",
+    DriverTransportKind::Usb,
+    false,
+    false,
+);
+
+static SMBUS_PROVIDER_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "smbus-output-provider",
+    "SMBus Output Provider",
+    DriverTransportKind::Smbus,
+    false,
+    false,
+);
+
 struct FixtureHalDriver {
     descriptor: &'static DriverDescriptor,
+    unavailable: bool,
+}
+
+struct FixtureOutputProvider {
+    descriptor: &'static DriverDescriptor,
+    backend_id: &'static str,
+}
+
+impl DriverModule for FixtureOutputProvider {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        self.descriptor
+    }
+
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(self.backend_id).expect("valid fixture backend ID"),
+            factory: self,
+        }
+    }
+}
+
+impl DeviceBackendFactory for FixtureOutputProvider {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        Ok(Arc::new(TestBackend {
+            id: self.backend_id,
+        }))
+    }
 }
 
 impl DriverModule for FixtureHalDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         self.descriptor
     }
+
+    fn module_descriptor(&self) -> DriverModuleDescriptor {
+        let mut descriptor = self.descriptor.module_descriptor();
+        if self.unavailable {
+            descriptor.transports = vec![DriverTransportDescriptor::unsupported_platform(
+                self.descriptor.transport.clone(),
+                "macOS",
+            )];
+        }
+        descriptor
+    }
 }
 
 fn fixture_hal_registry() -> DriverModuleRegistry {
     let mut registry = DriverModuleRegistry::new();
     registry
+        .register(FixtureOutputProvider {
+            descriptor: &USB_PROVIDER_DESCRIPTOR,
+            backend_id: "usb",
+        })
+        .expect("USB output provider should register");
+    registry
+        .register(FixtureOutputProvider {
+            descriptor: &SMBUS_PROVIDER_DESCRIPTOR,
+            backend_id: "smbus",
+        })
+        .expect("SMBus output provider should register");
+    registry
         .register(FixtureHalDriver {
             descriptor: &HAL_USB_DESCRIPTOR,
+            unavailable: false,
         })
         .expect("USB fixture module should register");
     registry
         .register(FixtureHalDriver {
             descriptor: &HAL_SMBUS_DESCRIPTOR,
+            unavailable: false,
         })
         .expect("SMBus fixture module should register");
     registry
@@ -312,21 +388,28 @@ impl DeviceBackend for TestBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let _ = id;
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         let _ = id;
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         let _ = (id, colors);
         Ok(())
     }
@@ -347,22 +430,69 @@ impl DriverModule for ConfiglessDriver {
         &CONFIGLESS_DESCRIPTOR
     }
 
-    fn build_output_backend(
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new("external-backend").expect("valid test backend ID"),
+            factory: self,
+        }
+    }
+}
+
+impl DeviceBackendFactory for ConfiglessDriver {
+    fn build(
         &self,
         host: &dyn DriverHost,
         config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
         let _ = host;
         assert_eq!(config.driver_id, "external");
         assert!(config.enabled());
         assert!(config.entry.settings.is_empty());
-        Ok(Some(Box::new(TestBackend {
+        Ok(Arc::new(TestBackend {
             id: "external-backend",
-        })))
+        }))
+    }
+}
+
+struct UnavailableOutputDriver;
+
+static UNAVAILABLE_OUTPUT_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "unavailable-output",
+    "Unavailable Output",
+    DriverTransportKind::Network,
+    false,
+    false,
+);
+
+impl DriverModule for UnavailableOutputDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &UNAVAILABLE_OUTPUT_DESCRIPTOR
     }
 
-    fn has_output_backend(&self) -> bool {
-        true
+    fn module_descriptor(&self) -> DriverModuleDescriptor {
+        let mut descriptor = self.descriptor().module_descriptor();
+        descriptor.transports = vec![DriverTransportDescriptor::unsupported_platform(
+            DriverTransportKind::Network,
+            "fixture-os",
+        )];
+        descriptor
+    }
+
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new("unavailable-output").expect("valid unavailable backend ID"),
+            factory: self,
+        }
+    }
+}
+
+impl DeviceBackendFactory for UnavailableOutputDriver {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        _config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        panic!("unavailable drivers must not build output backends");
     }
 }
 
@@ -379,19 +509,6 @@ static CAPABILITY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
 impl DriverModule for CapabilityOnlyDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &CAPABILITY_ONLY_DESCRIPTOR
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        panic!("capability-only drivers should not build output backends");
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
     }
 }
 
@@ -432,19 +549,6 @@ impl DriverModule for ProtocolCatalogDriver {
         &PROTOCOL_CATALOG_DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
     fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {
         Some(self)
     }
@@ -476,19 +580,6 @@ impl DriverPresentationProvider for PresentationDriver {
 impl DriverModule for PresentationDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &PRESENTATION_DRIVER_DESCRIPTOR
-    }
-
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
     }
 
     fn presentation(&self) -> Option<&dyn DriverPresentationProvider> {
@@ -547,6 +638,26 @@ fn register_enabled_driver_output_backends_uses_default_config_for_configless_dr
     .expect("configless driver should register a backend");
 
     assert_eq!(backend_manager.backend_ids(), vec!["external-backend"]);
+}
+
+#[test]
+fn register_enabled_driver_output_backends_skips_unavailable_driver() {
+    let host = NullHost::new();
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(UnavailableOutputDriver)
+        .expect("unavailable driver should register");
+    let mut backend_manager = BackendManager::new();
+
+    network::register_enabled_driver_output_backends(
+        &mut backend_manager,
+        &registry,
+        &host,
+        &HypercolorConfig::default(),
+    )
+    .expect("unavailable driver should be skipped cleanly");
+
+    assert!(backend_manager.backend_ids().is_empty());
 }
 
 #[test]

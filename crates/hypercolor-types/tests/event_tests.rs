@@ -3,16 +3,18 @@
 use std::collections::HashMap;
 
 use hypercolor_types::asset::AssetId;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{ConnectionType, DeviceOrigin};
 use hypercolor_types::event::{
     AssetChangeKind, ChangeTrigger, ContextType, DisconnectReason, EffectDegradationState,
-    EffectRef, EffectStopReason, EventCategory, EventControlValue, EventPriority, FrameData,
-    FrameTiming, HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
-    SceneChangeReason, Severity, TimedInputEvent, TransitionRef, ZoneChangeKind, ZoneColors,
-    ZoneRef,
+    EffectRef, EffectStopReason, EventCategory, EventPriority, FrameData, FrameTiming,
+    HypercolorEvent, InputButtonState, InputEvent, LayerHealth, LayerStackChangeKind,
+    PointerScrollPhase, PointerScrollUnit, SceneChangeReason, Severity, TimedInputEvent,
+    TransitionRef, ZoneChangeKind, ZoneColors, ZoneRef,
 };
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::scene::{SceneId, SceneKind, SceneMutationMode, ZoneId, ZoneRole};
+use hypercolor_types::service::{ServiceConflict, ServiceIdentity, ServiceRecoveryRequired};
 use hypercolor_types::session::SessionEvent;
 
 fn fixture_origin() -> DeviceOrigin {
@@ -92,36 +94,23 @@ fn effect_events_have_effect_category() {
             trigger: ChangeTrigger::User,
             previous: None,
             transition: None,
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
         },
         HypercolorEvent::EffectStopped {
             effect: effect_ref,
             reason: EffectStopReason::Replaced,
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
         },
         HypercolorEvent::EffectControlChanged {
             effect_id: "rainbow".into(),
             control_id: "speed".into(),
-            old_value: EventControlValue::Number(0.5),
-            new_value: EventControlValue::Number(0.8),
+            old_value: ControlValue::Float(0.5),
+            new_value: ControlValue::Float(0.8),
+            zone_id: ZoneId::new(),
+            layer_id: SceneLayerId::new(),
             trigger: ChangeTrigger::Api,
-        },
-        HypercolorEvent::EffectLayerAdded {
-            layer_id: "l1".into(),
-            effect: EffectRef {
-                id: "fire".into(),
-                name: "Fire".into(),
-                engine: "wgpu".into(),
-            },
-            index: 0,
-            blend_mode: "add".into(),
-            opacity: 1.0,
-        },
-        HypercolorEvent::EffectLayerRemoved {
-            layer_id: "l1".into(),
-            effect_id: "fire".into(),
         },
         HypercolorEvent::EffectError {
             effect_id: "broken".into(),
@@ -130,8 +119,8 @@ fn effect_events_have_effect_category() {
         },
         HypercolorEvent::EffectDegraded {
             effect_id: "broken".into(),
-            group_id: Some(ZoneId::new()),
-            group_name: Some("Display Face".into()),
+            zone_id: Some(ZoneId::new()),
+            zone_name: Some("Display Face".into()),
             state: EffectDegradationState::Failed,
             reason: Some("shader compile failed".into()),
         },
@@ -147,43 +136,73 @@ fn effect_events_have_effect_category() {
 }
 
 #[test]
+fn effect_control_changed_requires_zone_and_layer_identity() {
+    let event = HypercolorEvent::EffectControlChanged {
+        effect_id: "rainbow".into(),
+        control_id: "speed".into(),
+        old_value: ControlValue::Float(0.5),
+        new_value: ControlValue::Float(0.8),
+        zone_id: ZoneId::new(),
+        layer_id: SceneLayerId::new(),
+        trigger: ChangeTrigger::Api,
+    };
+    let mut encoded = serde_json::to_value(event).expect("event should serialize");
+    let data = encoded["data"]
+        .as_object_mut()
+        .expect("event data should be an object");
+
+    let zone_id = data.remove("zone_id").expect("zone id should serialize");
+    assert!(
+        serde_json::from_value::<HypercolorEvent>(encoded.clone()).is_err(),
+        "a control event without zone identity must be refused"
+    );
+
+    encoded["data"]["zone_id"] = zone_id;
+    encoded["data"]
+        .as_object_mut()
+        .expect("event data should be an object")
+        .remove("layer_id");
+    assert!(
+        serde_json::from_value::<HypercolorEvent>(encoded).is_err(),
+        "a control event without layer identity must be refused"
+    );
+}
+
+#[test]
 fn scene_events_have_scene_category() {
     let events = vec![
         HypercolorEvent::SceneActivated {
             scene_id: "s1".into(),
             scene_name: "Gaming".into(),
             trigger_type: "manual".into(),
-            profile_id: "p1".into(),
         },
         HypercolorEvent::SceneTransitionStarted {
-            scene_id: "s1".into(),
-            from_profile: None,
-            to_profile: "p1".into(),
+            from_scene_id: None,
+            to_scene_id: "s1".into(),
             duration_ms: 500,
         },
         HypercolorEvent::SceneTransitionComplete {
             scene_id: "s1".into(),
-            profile_id: "p1".into(),
         },
         HypercolorEvent::SceneEnabled {
             scene_id: "s1".into(),
             enabled: true,
         },
-        HypercolorEvent::RenderGroupChanged {
+        HypercolorEvent::ZoneChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             role: ZoneRole::Primary,
             kind: ZoneChangeKind::Updated,
         },
         HypercolorEvent::LayerStackChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
-            layers_version: 2,
+            zone_id: ZoneId::new(),
+            revision: 2,
             kind: LayerStackChangeKind::Updated,
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::Active,
         },
@@ -275,19 +294,6 @@ fn system_events_have_system_category() {
             new_target: 30,
             measured: 59.8,
         },
-        HypercolorEvent::ProfileLoaded {
-            profile_id: "p1".into(),
-            profile_name: "Gaming".into(),
-            trigger: ChangeTrigger::User,
-        },
-        HypercolorEvent::ProfileSaved {
-            profile_id: "p1".into(),
-            profile_name: "Gaming".into(),
-            is_new: true,
-        },
-        HypercolorEvent::ProfileDeleted {
-            profile_id: "p1".into(),
-        },
         HypercolorEvent::ConfigChanged {
             key: "daemon.fps".into(),
             old_value: Some(serde_json::json!(60)),
@@ -306,6 +312,12 @@ fn system_events_have_system_category() {
         HypercolorEvent::DaemonShutdown {
             reason: "user".into(),
         },
+        HypercolorEvent::ServiceIdentityChanged {
+            identity: ServiceIdentity::APP_SIDECAR,
+            owner_epoch: 7,
+            conflict: None,
+            recovery_required: None,
+        },
         HypercolorEvent::BrightnessChanged {
             old: 100,
             new_value: 50,
@@ -313,6 +325,8 @@ fn system_events_have_system_category() {
         HypercolorEvent::Paused,
         HypercolorEvent::Resumed,
         HypercolorEvent::SessionChanged(SessionEvent::ScreenLocked),
+        HypercolorEvent::SessionChanged(SessionEvent::SessionInactive),
+        HypercolorEvent::SessionChanged(SessionEvent::SessionActive),
         HypercolorEvent::Error {
             code: "E001".into(),
             message: "out of memory".into(),
@@ -330,6 +344,41 @@ fn system_events_have_system_category() {
 }
 
 #[test]
+fn service_identity_event_round_trips_bounded_payload() {
+    let event = HypercolorEvent::ServiceIdentityChanged {
+        identity: ServiceIdentity::launchd_direct(),
+        owner_epoch: 42,
+        conflict: Some(ServiceConflict {
+            active: ServiceIdentity::launchd_direct(),
+            contender: ServiceIdentity::homebrew(),
+            observed_at_ms: 1_777,
+        }),
+        recovery_required: Some(ServiceRecoveryRequired {
+            requested: ServiceIdentity::APP_SIDECAR,
+            prior: ServiceIdentity::launchd_direct(),
+            phase: "rollback_start_requested".into(),
+        }),
+    };
+
+    let json = serde_json::to_value(&event).expect("serialize identity event");
+    assert_eq!(json["type"], "ServiceIdentityChanged");
+    assert_eq!(json["data"]["identity"]["run_mode"], "user_service");
+    assert_eq!(json["data"]["identity"]["manager"], "launchd");
+    assert_eq!(json["data"]["owner_epoch"], 42);
+    assert_eq!(json["data"]["conflict"]["contender"]["manager"], "homebrew");
+    assert_eq!(
+        json["data"]["recovery_required"]["phase"],
+        "rollback_start_requested"
+    );
+    assert_eq!(
+        serde_json::from_value::<HypercolorEvent>(json)
+            .expect("deserialize identity event")
+            .category(),
+        EventCategory::System
+    );
+}
+
+#[test]
 fn automation_events_have_automation_category() {
     let events = vec![
         HypercolorEvent::TriggerFired {
@@ -342,7 +391,6 @@ fn automation_events_have_automation_category() {
             scene_id: "s1".into(),
             scene_name: "Evening".into(),
             schedule_expr: "0 20 * * *".into(),
-            profile_id: "p2".into(),
         },
         HypercolorEvent::ContextChanged {
             context_type: ContextType::TimeOfDay,
@@ -418,11 +466,6 @@ fn input_events_have_input_category() {
                 repeat_count: 1,
             },
         },
-        HypercolorEvent::InputSourceChanged {
-            input_id: "mic1".into(),
-            input_type: "audio".into(),
-            enabled: true,
-        },
     ];
 
     for event in &events {
@@ -485,29 +528,34 @@ fn input_event_received_round_trips_through_json() {
 }
 
 #[test]
-fn input_event_received_accepts_prior_event_only_payload() {
-    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:legacy","key":"a","state":"repeated"}}}"#;
-    let restored: HypercolorEvent = serde_json::from_str(json).expect("deserialize legacy event");
-    let HypercolorEvent::InputEventReceived { event } = restored else {
-        panic!("expected input event");
+fn input_event_received_serializes_ordinary_repeat_count() {
+    let event = HypercolorEvent::InputEventReceived {
+        event: TimedInputEvent {
+            event: InputEvent::Key {
+                source_id: "host:keyboard".into(),
+                key: "a".into(),
+                state: InputButtonState::Pressed,
+            },
+            at_ms: 1,
+            seq: 2,
+            physical_code: None,
+            repeat_count: 1,
+        },
     };
 
-    assert_eq!(event.at_ms, 0);
-    assert_eq!(event.seq, 0);
-    assert_eq!(event.physical_code, None);
-    assert_eq!(event.repeat_count, 1);
-    assert!(matches!(
-        event.event,
-        InputEvent::Key {
-            state: InputButtonState::Repeated,
-            ..
-        }
-    ));
+    let value = serde_json::to_value(event).expect("serialize input event");
+    assert_eq!(value["data"]["repeat_count"], 1);
+}
+
+#[test]
+fn input_event_received_rejects_event_only_payload() {
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"}}}"#;
+    serde_json::from_str::<HypercolorEvent>(json).expect_err("timed input fields must be present");
 }
 
 #[test]
 fn input_event_received_rejects_zero_repeat_count() {
-    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"},"repeat_count":0}}"#;
+    let json = r#"{"type":"InputEventReceived","data":{"event":{"kind":"key","source_id":"host:test","key":"a","state":"repeated"},"at_ms":1,"seq":2,"repeat_count":0}}"#;
     let error = serde_json::from_str::<HypercolorEvent>(json)
         .expect_err("zero repeat multiplicity must be rejected");
 
@@ -577,14 +625,14 @@ fn high_priority_events() {
         },
         HypercolorEvent::EffectDegraded {
             effect_id: "broken".into(),
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
             state: EffectDegradationState::Failed,
             reason: Some("boom".into()),
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::Failed {
                 reason: "decoder_timeout".into(),
@@ -592,7 +640,7 @@ fn high_priority_events() {
         },
         HypercolorEvent::LayerHealthChanged {
             scene_id: SceneId::DEFAULT,
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             layer_id: SceneLayerId::new(),
             health: LayerHealth::AssetMissing,
         },
@@ -668,14 +716,13 @@ fn normal_priority_is_default() {
             trigger: ChangeTrigger::User,
             previous: None,
             transition: None,
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
         },
         HypercolorEvent::SceneActivated {
             scene_id: "s1".into(),
             scene_name: "Test".into(),
             trigger_type: "manual".into(),
-            profile_id: "p1".into(),
         },
         HypercolorEvent::Paused,
         HypercolorEvent::Resumed,
@@ -686,8 +733,8 @@ fn normal_priority_is_default() {
         },
         HypercolorEvent::EffectDegraded {
             effect_id: "recovered".into(),
-            group_id: None,
-            group_name: None,
+            zone_id: None,
+            zone_name: None,
             state: EffectDegradationState::Recovered,
             reason: None,
         },
@@ -764,6 +811,24 @@ fn serialize_session_changed_roundtrip() {
 }
 
 #[test]
+fn serialize_session_activity_roundtrip() {
+    for (event, expected_json) in [
+        (
+            SessionEvent::SessionInactive,
+            r#"{"event":"session_inactive"}"#,
+        ),
+        (SessionEvent::SessionActive, r#"{"event":"session_active"}"#),
+    ] {
+        let json = serde_json::to_string(&event).expect("serialize session activity");
+        let deserialized: SessionEvent =
+            serde_json::from_str(&json).expect("deserialize session activity");
+
+        assert_eq!(json, expected_json);
+        assert_eq!(deserialized, event);
+    }
+}
+
+#[test]
 fn serialize_device_discovered_roundtrip() {
     let event = HypercolorEvent::DeviceDiscovered {
         device_id: "fixture_device_001".into(),
@@ -814,8 +879,8 @@ fn serialize_effect_started_with_transition() {
             transition_type: "crossfade".into(),
             duration_ms: 1000,
         }),
-        group_id: Some(zone_id),
-        group_name: Some("Desk".into()),
+        zone_id: Some(zone_id),
+        zone_name: Some("Desk".into()),
     };
 
     let json = serde_json::to_string(&event).expect("serialize");
@@ -826,8 +891,8 @@ fn serialize_effect_started_with_transition() {
         trigger,
         previous,
         transition,
-        group_id,
-        group_name,
+        zone_id: deserialized_zone_id,
+        zone_name,
     } = deserialized
     {
         assert_eq!(effect.id, "rainbow_wave");
@@ -837,8 +902,8 @@ fn serialize_effect_started_with_transition() {
         let t = transition.expect("transition present");
         assert_eq!(t.transition_type, "crossfade");
         assert_eq!(t.duration_ms, 1000);
-        assert_eq!(group_id, Some(zone_id));
-        assert_eq!(group_name.as_deref(), Some("Desk"));
+        assert_eq!(deserialized_zone_id, Some(zone_id));
+        assert_eq!(zone_name.as_deref(), Some("Desk"));
     } else {
         panic!("Expected EffectStarted variant");
     }
@@ -846,7 +911,7 @@ fn serialize_effect_started_with_transition() {
 
 #[test]
 fn effect_started_without_zone_fields_still_parses() {
-    // Pre-multi-zone payloads omit group_id/group_name entirely; the
+    // Pre-multi-zone payloads omit zone_id/zone_name entirely; the
     // serde(default) keeps old recorded events and clients parseable.
     let json = r#"{
         "type": "EffectStarted",
@@ -859,13 +924,11 @@ fn effect_started_without_zone_fields_still_parses() {
     }"#;
     let deserialized: HypercolorEvent = serde_json::from_str(json).expect("deserialize");
     if let HypercolorEvent::EffectStarted {
-        group_id,
-        group_name,
-        ..
+        zone_id, zone_name, ..
     } = deserialized
     {
-        assert_eq!(group_id, None);
-        assert_eq!(group_name, None);
+        assert_eq!(zone_id, None);
+        assert_eq!(zone_name, None);
     } else {
         panic!("Expected EffectStarted variant");
     }
@@ -873,11 +936,11 @@ fn effect_started_without_zone_fields_still_parses() {
 
 #[test]
 fn serialize_effect_degraded_roundtrip() {
-    let group_id = ZoneId::new();
+    let zone_id = ZoneId::new();
     let event = HypercolorEvent::EffectDegraded {
         effect_id: "effect-1".into(),
-        group_id: Some(group_id),
-        group_name: Some("Display Face".into()),
+        zone_id: Some(zone_id),
+        zone_name: Some("Display Face".into()),
         state: EffectDegradationState::Failed,
         reason: Some("boom".into()),
     };
@@ -887,15 +950,15 @@ fn serialize_effect_degraded_roundtrip() {
 
     if let HypercolorEvent::EffectDegraded {
         effect_id,
-        group_id: deserialized_group_id,
-        group_name,
+        zone_id: deserialized_zone_id,
+        zone_name,
         state,
         reason,
     } = deserialized
     {
         assert_eq!(effect_id, "effect-1");
-        assert_eq!(deserialized_group_id, Some(group_id));
-        assert_eq!(group_name, Some("Display Face".into()));
+        assert_eq!(deserialized_zone_id, Some(zone_id));
+        assert_eq!(zone_name, Some("Display Face".into()));
         assert_eq!(state, EffectDegradationState::Failed);
         assert_eq!(reason, Some("boom".into()));
     } else {
@@ -1006,32 +1069,6 @@ fn serde_tagged_format() {
     assert_eq!(value["data"]["pid"], 42);
 }
 
-// ── ControlValue Tests ──────────────────────────────────────────────────
-
-#[test]
-fn control_value_number_roundtrip() {
-    let val = EventControlValue::Number(0.75);
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::Number(0.75));
-}
-
-#[test]
-fn control_value_boolean_roundtrip() {
-    let val = EventControlValue::Boolean(true);
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::Boolean(true));
-}
-
-#[test]
-fn control_value_string_roundtrip() {
-    let val = EventControlValue::String("rainbow".into());
-    let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, EventControlValue::String("rainbow".into()));
-}
-
 // ── FrameData Tests ─────────────────────────────────────────────────────
 
 #[test]
@@ -1110,7 +1147,6 @@ fn effect_stop_reason_serde() {
 fn change_trigger_serde() {
     let triggers = vec![
         ChangeTrigger::User,
-        ChangeTrigger::Profile,
         ChangeTrigger::Scene,
         ChangeTrigger::Api,
         ChangeTrigger::Cli,
@@ -1238,23 +1274,39 @@ fn mouse_input_events_round_trip_through_json() {
     let json = serde_json::to_string(&timed).expect("serialize timed event");
     let restored: TimedInputEvent = serde_json::from_str(&json).expect("deserialize timed event");
     assert_eq!(restored, timed);
-
-    let wheel = InputEvent::MouseWheel {
-        source_id: "host:/dev/input/event4".into(),
-        delta_hi_res: -240,
-    };
-    let json = serde_json::to_string(&wheel).expect("serialize wheel");
-    assert!(json.contains("\"kind\":\"mouse_wheel\""));
-    let restored: InputEvent = serde_json::from_str(&json).expect("deserialize wheel");
-    assert_eq!(restored, wheel);
-    assert_eq!(restored.source_id(), "host:/dev/input/event4");
 }
 
 #[test]
-fn timed_input_event_seq_defaults_to_zero_when_absent() {
-    let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5}"#;
-    let restored: TimedInputEvent = serde_json::from_str(json).expect("deserialize without seq");
-    assert_eq!(restored.seq, 0);
-    assert_eq!(restored.physical_code, None);
-    assert_eq!(restored.repeat_count, 1);
+fn pointer_scroll_round_trips_exact_q16_16_metadata() {
+    let scroll = InputEvent::PointerScroll {
+        source_id: "host:trackpad".into(),
+        delta_x_q16_16: -32_768,
+        delta_y_q16_16: 98_304,
+        unit: PointerScrollUnit::Pixels,
+        phase: PointerScrollPhase::Changed,
+        momentum_phase: PointerScrollPhase::Began,
+    };
+
+    let json = serde_json::to_value(&scroll).expect("serialize pointer scroll");
+    assert_eq!(json["kind"], "pointer_scroll");
+    assert_eq!(json["delta_x_q16_16"], -32_768);
+    assert_eq!(json["delta_y_q16_16"], 98_304);
+    assert_eq!(json["unit"], "pixels");
+    assert_eq!(json["phase"], "changed");
+    assert_eq!(json["momentum_phase"], "began");
+
+    let restored: InputEvent = serde_json::from_value(json).expect("deserialize pointer scroll");
+    assert_eq!(restored, scroll);
+    assert_eq!(restored.source_id(), "host:trackpad");
+}
+
+#[test]
+fn pointer_scroll_phase_defaults_to_none() {
+    assert_eq!(PointerScrollPhase::default(), PointerScrollPhase::None);
+}
+
+#[test]
+fn timed_input_event_rejects_an_absent_sequence() {
+    let json = r#"{"event":{"kind":"key","source_id":"s","key":"a","state":"pressed"},"at_ms":5,"repeat_count":1}"#;
+    serde_json::from_str::<TimedInputEvent>(json).expect_err("seq must be present");
 }

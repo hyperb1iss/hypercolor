@@ -511,14 +511,22 @@ fn render_loop_cannot_restart_after_stop() {
 fn render_loop_pause_and_resume() {
     let mut rl = RenderLoop::new(60);
     rl.start();
+    assert_eq!(rl.pause_generation(), 0);
 
     rl.pause();
     assert_eq!(rl.state(), RenderLoopState::Paused);
     assert!(!rl.is_running());
+    assert_eq!(rl.pause_generation(), 1);
+
+    rl.pause();
+    assert_eq!(rl.pause_generation(), 1);
 
     rl.resume();
     assert_eq!(rl.state(), RenderLoopState::Running);
     assert!(rl.is_running());
+
+    rl.pause();
+    assert_eq!(rl.pause_generation(), 2);
 }
 
 #[test]
@@ -664,6 +672,26 @@ fn render_loop_elapsed_grows_after_start() {
     rl.start();
     // Elapsed should be non-negative (may be zero on fast machines)
     assert!(rl.elapsed() >= Duration::ZERO);
+}
+
+#[test]
+fn render_loop_elapsed_excludes_every_pause_interval() {
+    let mut rl = RenderLoop::new(60);
+    rl.start();
+    std::thread::sleep(Duration::from_millis(10));
+
+    rl.pause();
+    let first_pause_elapsed = rl.elapsed();
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(rl.elapsed(), first_pause_elapsed);
+
+    rl.resume();
+    std::thread::sleep(Duration::from_millis(10));
+    rl.pause();
+    let second_pause_elapsed = rl.elapsed();
+    assert!(second_pause_elapsed > first_pause_elapsed);
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(rl.elapsed(), second_pause_elapsed);
 }
 
 #[test]

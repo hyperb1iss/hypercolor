@@ -11,8 +11,8 @@ use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::warn;
 
-use hypercolor_driver_api::{CredentialStore, MdnsBrowser};
-use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
+use hypercolor_driver_support::{CredentialStore, MdnsBrowser};
 use hypercolor_types::portable::PortableIdentityClaim;
 
 use super::fetch_device_info;
@@ -224,13 +224,9 @@ impl NanoleafScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for NanoleafScanner {
-    fn name(&self) -> &'static str {
-        "Nanoleaf"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+impl NanoleafScanner {
+    /// Discover configured and mDNS-visible Nanoleaf devices.
+    pub async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         Ok(self
             .scan_devices()
             .await?
@@ -306,10 +302,16 @@ async fn build_discovered_device(
     // re-claims when a live source next proves who it is.
     let claim = if serial_no.is_empty() {
         (candidate.device_id_is_identifier && !candidate.device_id.is_empty())
-            .then(|| PortableIdentityClaim::nanoleaf_serial(&candidate.device_id, candidate.ip))
+            .then(|| {
+                PortableIdentityClaim::driver_identifier(
+                    "nanoleaf",
+                    &candidate.device_id,
+                    candidate.ip,
+                )
+            })
             .flatten()
     } else {
-        PortableIdentityClaim::nanoleaf_serial(&serial_no, candidate.ip)
+        PortableIdentityClaim::driver_identifier("nanoleaf", &serial_no, candidate.ip)
     };
 
     let info = build_device_info(

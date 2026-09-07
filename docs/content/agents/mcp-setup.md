@@ -5,11 +5,11 @@ weight = 10
 template = "page.html"
 +++
 
-The Hypercolor daemon ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 16 tools, 5 resources, and 3 prompts over Streamable HTTP. This page gets it running and wired into your assistant. There is one thing to do before anything else: turn it on.
+The Hypercolor daemon ships a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 17 tools, 5 resources, and 3 prompts over Streamable HTTP. This page gets it running and wired into your assistant. There is one thing to do before anything else: turn it on.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The MCP server is **off by default**. Until you enable it in config, `http://127.0.0.1:9420/mcp` returns 404 and no client can connect. Enabling it is step one below.
-{% end %}
+{% </callout> %}
 
 ## Step 1: Enable the server 🔮
 
@@ -22,13 +22,13 @@ enabled = true
 
 That single flag is the difference between a live server and a 404. The remaining `[mcp]` keys all have sensible defaults, so `enabled = true` on its own is a complete configuration.
 
-| Key | Default | What it does |
-| --- | --- | --- |
-| `enabled` | `false` | Mounts the MCP router. Must be `true` to connect. |
-| `base_path` | `"/mcp"` | The mount path. Empty or `"/"` normalizes back to `/mcp`; a leading slash is added and trailing slashes are trimmed, so `base_path = "mcp"` still serves at `/mcp`. |
-| `stateful_mode` | `true` | Keeps per-session state across requests (the standard mode for conversational clients). |
-| `json_response` | `false` | When `false`, responses stream over SSE. Set `true` for minimal HTTP clients that want single-shot JSON. |
-| `sse_keep_alive_secs` | `15` | SSE keep-alive interval. Set to `0` to disable keep-alive pings. |
+| Key                   | Default  | What it does                                                                                                                                                        |
+| --------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`             | `false`  | Mounts the MCP router. Must be `true` to connect.                                                                                                                   |
+| `base_path`           | `"/mcp"` | The mount path. Empty or `"/"` normalizes back to `/mcp`; a leading slash is added and trailing slashes are trimmed, so `base_path = "mcp"` still serves at `/mcp`. |
+| `stateful_mode`       | `true`   | Keeps per-session state across requests (the standard mode for conversational clients).                                                                             |
+| `json_response`       | `false`  | When `false`, responses stream over SSE. Set `true` for minimal HTTP clients that want single-shot JSON.                                                            |
+| `sse_keep_alive_secs` | `15`     | SSE keep-alive interval. Set to `0` to disable keep-alive pings.                                                                                                    |
 
 Restart the daemon after editing config so the router picks up the change.
 
@@ -46,9 +46,9 @@ The transport is **Streamable HTTP** (an `rmcp` `StreamableHttpService`). There 
 
 Before configuring a client, confirm the daemon is running and the route is mounted.
 
-{% api_endpoint(method="GET", path="/health") %}
+{% <api_endpoint method="GET" path="/health"> %}
 Returns the daemon's health snapshot. A 200 here proves the daemon is up. Note that `/health` is a top-level route, not under `/api/v1`.
-{% end %}
+{% </api_endpoint> %}
 
 ```bash
 curl -s http://127.0.0.1:9420/health
@@ -126,9 +126,9 @@ Any MCP client that can speak Streamable HTTP connects with just the URL. Two da
 - If your client cannot consume SSE streams, set `json_response = true` in the `[mcp]` config so responses come back as single-shot JSON.
 - The default base path is `/mcp`. If you changed `base_path`, append your value to the daemon address instead.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The server advertises three capabilities to every client on connect: tools, resources, and prompts. It also ships operating instructions that tell the agent to read `get_status` or the `hypercolor://state` resource first, browse the catalog with `list_effects` before applying visuals, and prefer structured arguments over guessing. A well-behaved client surfaces all three primitives automatically.
-{% end %}
+{% </callout> %}
 
 ## Authentication
 
@@ -145,9 +145,9 @@ Tokens come from two environment variables read by the daemon at startup:
 - `HYPERCOLOR_API_KEY`: the control tier, allowed to mutate state.
 - `HYPERCOLOR_READ_API_KEY`: the optional read-only tier.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The `?token=` query-string fallback is accepted only on the `/api/v1/ws` WebSocket route, never on `/mcp`. Remote MCP clients must use the `Authorization: Bearer` header. Reaching a non-loopback daemon also requires that the client's address pass the daemon's network-access policy, so an exposed rig needs both a valid key and an allowed origin.
-{% end %}
+{% </callout> %}
 
 ## Remote rigs
 
@@ -161,20 +161,20 @@ Point the MCP URL at the discovered host and port (`http://<host>:9420/mcp`), bi
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-| --- | --- | --- |
-| `/mcp` returns 404 | `mcp.enabled` is still `false`, or the daemon was not restarted | Set `enabled = true` under `[mcp]` and restart the daemon. |
-| Connection works but no tools appear | Client connected to the wrong path | Confirm the URL ends in your `base_path` (default `/mcp`). |
-| 401 / 403 from a remote client | Non-loopback request without a valid key or allowed origin | Set `HYPERCOLOR_API_KEY` on the daemon and send `Authorization: Bearer <token>`; confirm the client address is allowed. |
-| Minimal HTTP client hangs on the response | Client cannot read the SSE stream | Set `json_response = true` in `[mcp]` for single-shot JSON. |
-| Claude Desktop cannot reach the URL | Classic config only launches stdio servers | Bridge with `mcp-remote` as shown above. |
+| Symptom                                   | Likely cause                                                    | Fix                                                                                                                     |
+| ----------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `/mcp` returns 404                        | `mcp.enabled` is still `false`, or the daemon was not restarted | Set `enabled = true` under `[mcp]` and restart the daemon.                                                              |
+| Connection works but no tools appear      | Client connected to the wrong path                              | Confirm the URL ends in your `base_path` (default `/mcp`).                                                              |
+| 401 / 403 from a remote client            | Non-loopback request without a valid key or allowed origin      | Set `HYPERCOLOR_API_KEY` on the daemon and send `Authorization: Bearer <token>`; confirm the client address is allowed. |
+| Minimal HTTP client hangs on the response | Client cannot read the SSE stream                               | Set `json_response = true` in `[mcp]` for single-shot JSON.                                                             |
+| Claude Desktop cannot reach the URL       | Classic config only launches stdio servers                      | Bridge with `mcp-remote` as shown above.                                                                                |
 
 ## Where to go next
 
 Once the server is connected, learn what it can do:
 
 - **[Agents & MCP](@/agents/_index.md)**: The three-primitive model and how MCP and the CLI complement each other.
-- **[Tools reference](@/agents/tools-reference.md)**: All 16 tools with arguments, defaults, enums, and worked calls.
+- **[Tools reference](@/agents/tools-reference.md)**: All 17 tools with arguments, defaults, enums, and worked calls.
 - **[Resources reference](@/agents/resources-reference.md)**: The 5 `hypercolor://` resources and their payload shapes.
 - **[Prompt templates](@/agents/prompt-templates.md)**: The 3 shipped prompts and when each fits.
 - **[CLI scripting for agents](@/agents/cli-scripting.md)**: Drive the daemon from a shell when an agent cannot speak MCP.

@@ -2,9 +2,19 @@
 
 > From install to "lights are working" in under 5 minutes.
 
-**Status:** Design Draft
+**Status:** Design draft. Discovery, adoption, hot-plug, and diagnostics shipped;
+the CLI surface and the onboarding wizard in this document did not.
 **Author:** Nova
 **Date:** 2026-03-01
+
+**Drift, checked 2026-08-25 at `7620eae44`:** the walkthroughs invoke
+`hypercolor setup`, `hypercolor permissions install|check|show|uninstall`,
+`hypercolor device add|test|stability`, and `hypercolor discover`. None of those
+verbs exist. Permission repair on macOS is `hypercolor access` with the three
+authorization subcommands in `crates/hypercolor-cli/src/commands/access.rs`;
+device work lives under the plural `hypercolor devices`; `hypercolor diagnose`
+is real. The architectural nouns still hold: `DiscoveryOrchestrator` and
+`DeviceBackend` both exist.
 
 ---
 

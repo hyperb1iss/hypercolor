@@ -24,16 +24,18 @@ use crate::api::zones::ZoneOutcome;
 use crate::app::{CapabilitiesContext, DisplaysContext, WsContext};
 use crate::components::display_preview_surface::DisplayPreviewSurface;
 use crate::components::layout_builder::{LayoutEditorContext, LayoutWorkspace, ZoneCanvasActions};
+use crate::components::mounting_select::MountingSelect;
 use crate::components::section_label::{LabelSize, LabelTone, label_class};
 use crate::components::silk_select::SilkSelect;
 use crate::display_preview_state::use_display_preview_subscription;
 use crate::display_utils::display_preview_shell_url;
 use crate::icons::*;
 use crate::toasts;
-use crate::ws::CanvasFrame;
-use crate::ws::messages::group_has_degraded_layer;
+use crate::ws::messages::zone_has_degraded_layer;
 
-use super::surface::{Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use super::surface::{
+    Surface, SurfaceKind, UNASSIGNED_SURFACE_ID, now_playing, surfaces_from_zones,
+};
 use super::zone_controls::unassigned_behavior_label;
 use super::{StudioContext, hidden_outputs_storage_key};
 
@@ -76,19 +78,46 @@ fn SurfaceStage() -> impl IntoView {
     // the matching boxes; the eye toggle dims them (it used to write a
     // `hidden_outputs` signal nothing consumed — a no-op control).
     Effect::new(move |_| {
-        editor
-            .set_selected_zone_ids
-            .set(studio.selected_output_ids.get());
+        let next = studio.selected_output_ids.get();
+        if editor
+            .selected_zone_ids
+            .with_untracked(|current| *current != next)
+        {
+            editor.set_selected_zone_ids.set(next);
+        }
+    });
+    // And back: a click on the canvas selects a device compound, so the
+    // rail highlights the same cards the canvas lifted. The equality guards
+    // on both directions are what stop the two effects ping-ponging.
+    Effect::new(move |_| {
+        let next = editor.selected_zone_ids.get();
+        if studio
+            .selected_output_ids
+            .with_untracked(|current| *current != next)
+        {
+            studio.selected_output_ids.set(next);
+        }
     });
     Effect::new(move |_| {
         editor
             .set_hovered_zone_ids
             .set(studio.hovered_output_ids.get());
     });
+    // Mirror the canvas's box-under-pointer out to the rail, so hovering
+    // a box softly highlights the card that owns it.
+    Effect::new(move |_| {
+        let next = editor.pointer_zone_id.get();
+        if studio
+            .pointer_output_id
+            .with_untracked(|current| *current != next)
+        {
+            studio.pointer_output_id.set(next);
+        }
+    });
     Effect::new(move |_| {
         let hidden = match (studio.active_scene.get(), studio.selected_surface_id.get()) {
             (Some(scene), Some(zone)) => {
-                let key = hidden_outputs_storage_key(&scene.id, &zone);
+                let key = hidden_outputs_storage_key(&scene.id.to_string(), &zone);
                 studio
                     .hidden_outputs
                     .with(|map| map.get(&key).cloned().unwrap_or_default())
@@ -101,7 +130,7 @@ fn SurfaceStage() -> impl IntoView {
     let selected_surface = Memo::new(move |_| {
         let id = studio.selected_surface_id.get()?;
         let scene = studio.active_scene.get()?;
-        surfaces_from_groups(&scene.groups)
+        surfaces_from_zones(&scene.zones)
             .into_iter()
             .find(|surface| surface.id == id)
     });
@@ -116,8 +145,9 @@ fn SurfaceStage() -> impl IntoView {
         else {
             return false;
         };
-        ws.layer_health
-            .with(|map| group_has_degraded_layer(map, &scene.id, &surface.id, &surface.layer_ids))
+        ws.layer_health.with(|map| {
+            zone_has_degraded_layer(map, &scene.id.to_string(), &surface.id, &surface.layer_ids)
+        })
     });
 
     // A Light keeps the canvas live, so it reserves the same preview
@@ -159,31 +189,12 @@ fn SurfaceStage() -> impl IntoView {
             .cloned()
     });
 
-    let screen_frame = RwSignal::new(None::<CanvasFrame>);
-    Effect::new(move |previous_device: Option<Option<String>>| {
-        let current_device = display_device.get();
-        if previous_device.as_ref() != Some(&current_device) {
-            screen_frame.set(None);
-        }
-        current_device
-    });
-    Effect::new(move |_| {
-        let frame = ws.display_preview_frame.get();
-        // The channel carries no device id, so accept a frame only when
-        // its resolution matches the selected screen. That rejects an
-        // in-flight frame from the previously selected screen; two
-        // identically sized screens still need daemon-side frame tagging
-        // to be fully distinguishable.
-        let belongs_to_target = match (&frame, selected_display.get()) {
-            (Some(frame), Some(display)) => {
-                frame.width == display.width && frame.height == display.height
-            }
-            (None, _) => true,
-            (Some(_), None) => false,
-        };
-        if belongs_to_target {
-            screen_frame.set(frame);
-        }
+    // Display preview frames are keyed by device, so the selected screen
+    // reads its own stream directly.
+    let screen_frame = Signal::derive(move || {
+        let device_id = display_device.get()?;
+        ws.display_preview_frames
+            .with(|frames| frames.get(&device_id).cloned())
     });
 
     // The display-preview stream carries no FPS, so the Screen caption is
@@ -194,6 +205,11 @@ fn SurfaceStage() -> impl IntoView {
             .map(|display| format!("{}×{}", display.width, display.height))
             .unwrap_or_else(|| "—".to_owned())
     });
+    // The screen's mount is a device setting, surfaced here so a panel
+    // installed upside down is fixed where its preview is visible.
+    let mount_device_id = Signal::derive(move || selected_display.get().map(|display| display.id));
+    let mount_rotation =
+        Signal::derive(move || selected_display.get().map(|display| display.rotation));
 
     view! {
         <div class="flex h-full flex-col bg-surface-sunken/20">
@@ -203,6 +219,11 @@ fn SurfaceStage() -> impl IntoView {
                     if is_screen.get() {
                         view! {
                             <div class="flex items-center gap-2">
+                                <MountingSelect
+                                    device_id=mount_device_id
+                                    rotation=mount_rotation
+                                    class="border border-edge-subtle/60 bg-surface-overlay/40 px-2.5 py-1 text-[11px] text-fg-secondary"
+                                />
                                 <span class=label_class(
                                     LabelSize::Micro,
                                     LabelTone::Default,
@@ -213,7 +234,7 @@ fn SurfaceStage() -> impl IntoView {
                                         .map(|display| {
                                             view! {
                                                 <a
-                                                    href=display_preview_shell_url(&display.id)
+                                                    href=crate::route_ui::route_href(&display_preview_shell_url(&display.id))
                                                     target="_blank"
                                                     rel="noopener"
                                                     class="rounded-md p-1 text-fg-tertiary transition-colors hover:text-fg-primary"
@@ -410,12 +431,19 @@ fn ZoneCanvasBar() -> impl IntoView {
 #[component]
 fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
-    let label = move || {
-        surface
+    // A Screen painting its stored default names that face; the pill
+    // says it is the display's default rather than a layer of this scene.
+    let playing = Memo::new(move |_| {
+        let surface = surface.get();
+        let default_face = studio
+            .screen_face
             .get()
-            .and_then(|surface| surface.top_layer)
-            .unwrap_or_else(|| "No layers".to_owned())
-    };
+            .filter(|face| face.live_scope == api::DisplayFaceScope::Default)
+            .map(|face| face.effect.name);
+        now_playing(surface.as_ref(), default_face.as_deref())
+    });
+    let label = move || playing.get().label;
+    let is_default_face = move || playing.get().is_default_face;
     view! {
         <button
             type="button"
@@ -432,6 +460,15 @@ fn NowPlayingChip(#[prop(into)] surface: Signal<Option<Surface>>) -> impl IntoVi
             <span class="max-w-[200px] truncate text-[12px] font-medium text-fg-secondary group-hover:text-fg-primary">
                 {label}
             </span>
+            <Show when=is_default_face>
+                <span
+                    class="rounded-full border px-1.5 py-px text-[9px] font-semibold uppercase tracking-[0.14em]"
+                    style="border-color: rgba(225, 53, 255, 0.35); color: rgba(225, 53, 255, 0.85)"
+                    title="The display's default face, shown in every scene without its own face layer"
+                >
+                    "Default"
+                </span>
+            </Show>
             <Icon
                 icon=LuChevronRight
                 width="12px"
@@ -503,7 +540,7 @@ fn UnassignedStage() -> impl IntoView {
             ("hold".to_owned(), "Hold last colors".to_owned()),
         ];
         if let Some(scene) = studio.active_scene.get() {
-            for surface in surfaces_from_groups(&scene.groups)
+            for surface in surfaces_from_zones(&scene.zones)
                 .into_iter()
                 .filter(|surface| surface.kind == SurfaceKind::Light)
             {
@@ -526,13 +563,7 @@ fn UnassignedStage() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            match api::zones::update_unassigned_behavior(
-                &scene.id,
-                &behavior,
-                Some(scene.groups_revision),
-            )
-            .await
-            {
+            match api::zones::update_unassigned_behavior(&behavior, scene.revision).await {
                 Ok(ZoneOutcome::Applied(_)) => {
                     toasts::toast_success("Unassigned-lights policy updated");
                     studio.refresh_scene.run(());
@@ -595,7 +626,7 @@ fn UnassignedStage() -> impl IntoView {
                         </div>
                     </div>
                     <div class="mt-3 text-[12px] leading-5 text-fg-tertiary/65">
-                        "Assign these outputs to a zone with the zone-assignment panel below the canvas."
+                        "Use the + on each device card in the rail to add it to a zone."
                     </div>
                 </div>
             </div>

@@ -59,16 +59,20 @@ fn daemon_actions_resolve_to_daemon_client_commands() {
         ActionTarget::DaemonCommand(TrayCommand::ApplyEffect("aurora".to_owned()))
     );
     assert_eq!(
-        actions::target_for_action(&MenuAction::ApplyProfile("movie".to_owned())),
-        ActionTarget::DaemonCommand(TrayCommand::ApplyProfile("movie".to_owned()))
+        actions::target_for_action(&MenuAction::ActivateScene("movie".to_owned())),
+        ActionTarget::DaemonCommand(TrayCommand::ActivateScene("movie".to_owned()))
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::SwitchServer(1)),
         ActionTarget::DaemonCommand(TrayCommand::SwitchServer(1))
     );
     assert_eq!(
-        actions::target_for_action(&MenuAction::TogglePause),
-        ActionTarget::DaemonCommand(TrayCommand::TogglePause)
+        actions::target_for_action(&MenuAction::SetPaused(true)),
+        ActionTarget::DaemonCommand(TrayCommand::SetPaused(true))
+    );
+    assert_eq!(
+        actions::target_for_action(&MenuAction::SetPaused(false)),
+        ActionTarget::DaemonCommand(TrayCommand::SetPaused(false))
     );
     assert_eq!(
         actions::target_for_action(&MenuAction::RefreshServers),

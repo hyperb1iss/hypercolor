@@ -532,6 +532,7 @@ fn trimmed_servo_preferences_leave_jit_enabled() {
 #[test]
 fn trimmed_servo_preferences_tighten_embedder_gc_policy() {
     let preferences = trimmed_servo_preferences();
+    assert!(!preferences.js_mem_gc_incremental_enabled);
     assert_eq!(preferences.js_mem_gc_empty_chunk_count_min, 0);
     assert_eq!(preferences.js_mem_gc_high_frequency_heap_growth_max, 150);
     assert_eq!(preferences.js_mem_gc_high_frequency_heap_growth_min, 120);

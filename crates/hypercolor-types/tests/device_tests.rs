@@ -1,12 +1,16 @@
 //! Tests for device identity, capabilities, and state types.
 
+use std::time::Duration;
+
+use hypercolor_color::DevicePixelLayout;
 use hypercolor_types::device::{
     ConnectionType, DRIVER_MODULE_API_SCHEMA_VERSION, DeviceCapabilities, DeviceClassHint,
     DeviceColorFormat, DeviceColorSpace, DeviceError, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin,
     DeviceState, DeviceTopologyHint, DeviceUserSettings, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverTransportKind, ZoneInfo,
-    ZoneLayoutHint,
+    DriverModuleDescriptor, DriverModuleKind, DriverPresentation, DriverTransportAvailability,
+    DriverTransportDescriptor, DriverTransportKind, FingerprintNamespace, SegmentInfo,
+    SegmentLayoutHint,
 };
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 use uuid::Uuid;
@@ -72,15 +76,15 @@ fn sample_device_info() -> DeviceInfo {
             "fixture-network",
             ConnectionType::Network,
         ),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Main".into(),
                 led_count: 60,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Accent".into(),
                 led_count: 30,
                 topology: DeviceTopologyHint::Ring { count: 30 },
@@ -121,6 +125,9 @@ fn device_info_exposes_driver_and_output_backend_separately() {
 fn device_info_serde_round_trip() {
     let info = sample_device_info();
     let json = serde_json::to_string_pretty(&info).expect("serialize");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("deserialize value");
+    assert!(value.get("segments").is_some());
+    assert!(value.get("zones").is_none());
     let back: DeviceInfo = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.name, "Test Strip");
     assert_eq!(back.total_led_count(), 90);
@@ -128,7 +135,7 @@ fn device_info_serde_round_trip() {
 }
 
 #[test]
-fn device_info_empty_zones_yields_zero_leds() {
+fn device_info_empty_segments_yields_zero_leds() {
     let info = DeviceInfo {
         id: DeviceId::new(),
         name: "Empty".into(),
@@ -137,7 +144,7 @@ fn device_info_empty_zones_yields_zero_leds() {
         model: None,
         connection_type: ConnectionType::Bridge,
         origin: DeviceOrigin::native("test", "test", ConnectionType::Bridge),
-        zones: vec![],
+        segments: vec![],
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
     };
@@ -189,6 +196,7 @@ fn user_settings_serde_round_trip() {
         name: Some("Desk Strip".into()),
         enabled: false,
         brightness: 0.42,
+        display_rotation: hypercolor_types::scene::DisplayRotation::Deg180,
     };
     let json = serde_json::to_string(&settings).expect("serialize");
     let back: DeviceUserSettings = serde_json::from_str(&json).expect("deserialize");
@@ -300,24 +308,29 @@ fn driver_capability_set_empty_has_no_capabilities() {
 }
 
 #[test]
-fn driver_capability_set_defaults_missing_controls_flag() {
-    let json = r#"{
-        "config": false,
-        "discovery": true,
-        "pairing": false,
-        "output_backend": true,
-        "protocol_catalog": false,
-        "runtime_cache": true,
-        "credentials": false,
-        "presentation": false
-    }"#;
+fn driver_capability_set_round_trips_and_requires_controls() {
+    let capabilities = DriverCapabilitySet {
+        discovery: true,
+        output_backend: true,
+        controls: true,
+        ..DriverCapabilitySet::empty()
+    };
+    let json = serde_json::to_value(capabilities).expect("serialize capabilities");
+    let roundtrip: DriverCapabilitySet =
+        serde_json::from_value(json.clone()).expect("deserialize capabilities");
+    assert_eq!(roundtrip, capabilities);
 
-    let capabilities: DriverCapabilitySet =
-        serde_json::from_str(json).expect("legacy capabilities should deserialize");
-
-    assert!(capabilities.discovery);
-    assert!(capabilities.output_backend);
-    assert!(!capabilities.controls);
+    let mut missing_controls = json;
+    missing_controls
+        .as_object_mut()
+        .expect("capabilities are an object")
+        .remove("controls");
+    let error = serde_json::from_value::<DriverCapabilitySet>(missing_controls)
+        .expect_err("controls is required");
+    assert!(
+        error.to_string().contains("missing field `controls`"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -428,7 +441,9 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
         display_name: "Fixture HAL".into(),
         vendor_name: Some("Fixture HAL".into()),
         module_kind: DriverModuleKind::Hal,
-        transports: vec![DriverTransportKind::Usb],
+        transports: vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Usb,
+        )],
         capabilities: DriverCapabilitySet {
             protocol_catalog: true,
             presentation: true,
@@ -443,6 +458,29 @@ fn driver_module_descriptor_round_trips_capabilities_and_transports() {
     let back: DriverModuleDescriptor = serde_json::from_str(&json).expect("deserialize");
 
     assert_eq!(back, descriptor);
+}
+
+#[test]
+fn driver_transport_descriptor_serializes_platform_availability() {
+    let transports = vec![
+        DriverTransportDescriptor::available(DriverTransportKind::Usb),
+        DriverTransportDescriptor::unsupported_platform(DriverTransportKind::Smbus, "macOS"),
+    ];
+
+    let json = serde_json::to_value(&transports).expect("transport inventory should serialize");
+
+    assert_eq!(json[0]["kind"], "usb");
+    assert_eq!(json[0]["availability"]["status"], "available");
+    assert_eq!(json[1]["kind"], "smbus");
+    assert_eq!(json[1]["availability"]["status"], "unsupported_platform");
+    assert_eq!(json[1]["availability"]["platform"], "macOS");
+    assert!(transports[0].is_available());
+    assert_eq!(
+        transports[1].availability,
+        DriverTransportAvailability::UnsupportedPlatform {
+            platform: "macOS".to_owned(),
+        }
+    );
 }
 
 // ── DeviceFamily ──────────────────────────────────────────────────────────
@@ -525,6 +563,26 @@ fn color_format_display() {
 }
 
 #[test]
+fn color_format_maps_to_pixel_layouts() {
+    assert_eq!(
+        DeviceColorFormat::Rgb.pixel_layout(),
+        Some(DevicePixelLayout::Rgb)
+    );
+    assert_eq!(
+        DeviceColorFormat::Grb.pixel_layout(),
+        Some(DevicePixelLayout::Grb)
+    );
+    assert_eq!(
+        DeviceColorFormat::Rbg.pixel_layout(),
+        Some(DevicePixelLayout::Rbg)
+    );
+    assert_eq!(
+        DeviceColorFormat::Rgbw.pixel_layout(),
+        Some(DevicePixelLayout::RgbwZeroWhite)
+    );
+}
+
+#[test]
 fn color_space_defaults_to_rgb() {
     assert_eq!(DeviceColorSpace::default(), DeviceColorSpace::Rgb);
 }
@@ -571,13 +629,9 @@ fn device_error_display_messages() {
     assert_eq!(err.to_string(), "device not found: Prism 8");
 
     let err = DeviceError::Timeout {
-        device: "LED Strip".into(),
-        operation: "push_frame".into(),
+        after: Duration::from_secs(2),
     };
-    assert_eq!(
-        err.to_string(),
-        "timeout communicating with LED Strip: push_frame"
-    );
+    assert_eq!(err.to_string(), "device operation timed out after 2s");
 
     let err = DeviceError::WriteError {
         device: "USB Controller".into(),
@@ -620,71 +674,124 @@ fn device_error_display_messages() {
         err.to_string(),
         "invalid device transition for Fixture Strip: Known -> Active"
     );
+
+    let err = DeviceError::Unsupported {
+        backend: "fixture-network".into(),
+        operation: "display output",
+    };
+    assert_eq!(
+        err.to_string(),
+        "backend fixture-network does not support display output"
+    );
+
+    let err = DeviceError::PermissionDenied {
+        device: "USB Controller".into(),
+        detail: "udev policy rejected access".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "permission denied for USB Controller: udev policy rejected access"
+    );
 }
 
 #[test]
-fn device_error_is_recoverable() {
-    assert!(
+fn device_error_recoverability_is_typed() {
+    use hypercolor_types::device::ErrorRecoverability;
+
+    assert_eq!(
         DeviceError::ConnectionFailed {
             device: String::new(),
             reason: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::WriteError {
             device: String::new(),
             detail: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::Timeout {
-            device: String::new(),
-            operation: String::new()
+            after: Duration::from_secs(1),
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Retry
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::ProtocolError {
             device: String::new(),
             detail: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
-        !DeviceError::NotFound {
+    assert_eq!(
+        DeviceError::NotFound {
             device: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Permanent
     );
 
-    assert!(
+    assert_eq!(
         DeviceError::Disconnected {
             device: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Reconnect
     );
 
-    assert!(
-        !DeviceError::InvalidHandle {
+    assert_eq!(
+        DeviceError::InvalidHandle {
             handle_id: 1,
             backend: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Permanent
     );
 
-    assert!(
-        !DeviceError::InvalidTransition {
+    assert_eq!(
+        DeviceError::InvalidTransition {
             device: String::new(),
             from: String::new(),
             to: String::new()
         }
-        .is_recoverable()
+        .recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    assert_eq!(
+        DeviceError::NotAdopted {
+            device_id: DeviceId::new()
+        }
+        .recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    assert_eq!(
+        DeviceError::Unsupported {
+            backend: "fixture-network".into(),
+            operation: "display output"
+        }
+        .recoverability(),
+        ErrorRecoverability::Permanent
+    );
+
+    assert_eq!(
+        DeviceError::PermissionDenied {
+            device: String::new(),
+            detail: String::new(),
+        }
+        .recoverability(),
+        ErrorRecoverability::Permanent
     );
 }
 
@@ -764,8 +871,8 @@ fn device_identifier_fingerprint_usb_serial() {
     };
     // Serial takes precedence over path
     assert_eq!(
-        id.fingerprint(),
-        DeviceFingerprint("usb:16d5:1f01:SN001".into())
+        id.fingerprint("test-driver").as_str(),
+        "usb:test-driver:16d5:1f01:SN001"
     );
 }
 
@@ -778,8 +885,8 @@ fn device_identifier_fingerprint_usb_path_fallback() {
         usb_path: Some("usb-0000:00:14.0-2".into()),
     };
     assert_eq!(
-        id.fingerprint(),
-        DeviceFingerprint("usb:16d5:1f01:usb-0000:00:14.0-2".into())
+        id.fingerprint("test-driver").as_str(),
+        "usb:test-driver:16d5:1f01:usb-0000:00:14.0-2"
     );
 }
 
@@ -790,8 +897,8 @@ fn device_identifier_fingerprint_smbus() {
         address: 0x40,
     };
     assert_eq!(
-        id.fingerprint(),
-        DeviceFingerprint("smbus:/dev/i2c-9:40".into())
+        id.fingerprint("test-driver").as_str(),
+        "smbus:test-driver:/dev/i2c-9:40"
     );
 }
 
@@ -804,8 +911,8 @@ fn device_identifier_fingerprint_network() {
     };
     // IP is transient — fingerprint uses only MAC
     assert_eq!(
-        id.fingerprint(),
-        DeviceFingerprint("net:a4:cf:12:34:ab:cd".into())
+        id.fingerprint("test-driver").as_str(),
+        "net:test-driver:a4:cf:12:34:ab:cd"
     );
 }
 
@@ -816,8 +923,8 @@ fn device_identifier_fingerprint_bridge() {
         device_serial: "ABC1234".into(),
     };
     assert_eq!(
-        id.fingerprint(),
-        DeviceFingerprint("bridge:openlinkhub:ABC1234".into())
+        id.fingerprint("test-driver").as_str(),
+        "bridge:test-driver:openlinkhub:ABC1234"
     );
 }
 
@@ -910,13 +1017,13 @@ fn device_handle_serde_round_trip() {
 
 #[test]
 fn device_fingerprint_display() {
-    let fp = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".into());
-    assert_eq!(fp.to_string(), "net:aa:bb:cc:dd:ee:ff");
+    let fp = DeviceFingerprint::mint(FingerprintNamespace::Net, "test", "aa:bb:cc:dd:ee:ff");
+    assert_eq!(fp.to_string(), "net:test:aa:bb:cc:dd:ee:ff");
 }
 
 #[test]
 fn device_fingerprint_stable_device_id_is_deterministic() {
-    let fp = DeviceFingerprint("usb:1532:0276:7-3.2".into());
+    let fp = DeviceFingerprint::mint(FingerprintNamespace::Usb, "razer", "1532:0276:7-3.2");
     let first = fp.stable_device_id();
     let second = fp.stable_device_id();
     assert_eq!(first, second);
@@ -924,24 +1031,26 @@ fn device_fingerprint_stable_device_id_is_deterministic() {
 
 #[test]
 fn device_fingerprint_stable_device_id_differs_for_distinct_fingerprints() {
-    let left = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".into()).stable_device_id();
-    let right = DeviceFingerprint("net:11:22:33:44:55:66".into()).stable_device_id();
+    let left = DeviceFingerprint::mint(FingerprintNamespace::Net, "test", "aa:bb:cc:dd:ee:ff")
+        .stable_device_id();
+    let right = DeviceFingerprint::mint(FingerprintNamespace::Net, "test", "11:22:33:44:55:66")
+        .stable_device_id();
     assert_ne!(left, right);
 }
 
-// ── ZoneInfo ──────────────────────────────────────────────────────────────
+// ── SegmentInfo ───────────────────────────────────────────────────────────
 
 #[test]
-fn zone_info_serde_round_trip() {
-    let zone = ZoneInfo {
+fn segment_info_serde_round_trip() {
+    let segment = SegmentInfo {
         name: "Main Strip".into(),
         led_count: 144,
         topology: DeviceTopologyHint::Strip,
         color_format: DeviceColorFormat::Rgb,
         layout_hint: None,
     };
-    let json = serde_json::to_string(&zone).expect("serialize");
-    let back: ZoneInfo = serde_json::from_str(&json).expect("deserialize");
+    let json = serde_json::to_string(&segment).expect("serialize");
+    let back: SegmentInfo = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.name, "Main Strip");
     assert_eq!(back.led_count, 144);
     assert_eq!(back.topology, DeviceTopologyHint::Strip);
@@ -949,8 +1058,8 @@ fn zone_info_serde_round_trip() {
 }
 
 #[test]
-fn zone_layout_hint_custom_grid_builds_normalized_positions() {
-    let hint = ZoneLayoutHint::custom_grid(3, 2, &[(0, 0), (1, 1), (2, 1)])
+fn segment_layout_hint_custom_grid_builds_normalized_positions() {
+    let hint = SegmentLayoutHint::custom_grid(3, 2, &[(0, 0), (1, 1), (2, 1)])
         .with_size(NormalizedPosition::new(0.2, 0.1))
         .with_shape(ZoneShape::Rectangle)
         .co_located();
@@ -969,8 +1078,8 @@ fn zone_layout_hint_custom_grid_builds_normalized_positions() {
 }
 
 #[test]
-fn zone_layout_hint_custom_grid_preserves_coordinates_above_u16() {
-    let hint = ZoneLayoutHint::custom_grid(100_001, 2, &[(0, 0), (50_000, 1), (100_000, 1)]);
+fn segment_layout_hint_custom_grid_preserves_coordinates_above_u16() {
+    let hint = SegmentLayoutHint::custom_grid(100_001, 2, &[(0, 0), (50_000, 1), (100_000, 1)]);
     let positions = match hint.topology {
         Some(LedTopology::Custom { positions }) => positions,
         other => panic!("expected custom topology, got {other:?}"),
@@ -983,15 +1092,15 @@ fn zone_layout_hint_custom_grid_preserves_coordinates_above_u16() {
 }
 
 #[test]
-fn zone_info_matrix_topology() {
-    let zone = ZoneInfo {
+fn segment_info_matrix_topology() {
+    let segment = SegmentInfo {
         name: "Panel".into(),
         led_count: 256,
         topology: DeviceTopologyHint::Matrix { rows: 16, cols: 16 },
         color_format: DeviceColorFormat::Rgbw,
         layout_hint: None,
     };
-    if let DeviceTopologyHint::Matrix { rows, cols } = zone.topology {
+    if let DeviceTopologyHint::Matrix { rows, cols } = segment.topology {
         assert_eq!(rows, 16);
         assert_eq!(cols, 16);
     } else {

@@ -71,13 +71,13 @@ fi
 
 # macOS launchd
 if [[ -f "${LAUNCHD_PLIST}" ]]; then
-  info "Unloading launchd service"
-  launchctl unload "${LAUNCHD_PLIST}" 2>/dev/null || true
+  info "Booting out launchd service"
+  launchctl bootout "gui/$(id -u)/tech.hyperbliss.hypercolor" 2>/dev/null || true
   rm -f "${LAUNCHD_PLIST}"
 fi
 
 # ── Remove Binaries ──────────────────────────────────────────
-for bin in hypercolor-daemon hypercolor hyper hypercolor-app hypercolor-tray hypercolor-tui hypercolor-open; do
+for bin in hypercolor-daemon hypercolor hyper hypercolor-app hypercolor-tui hypercolor-open; do
   if [[ -f "${BIN_DIR}/${bin}" ]]; then
     info "Removing ${BIN_DIR}/${bin}"
     rm -f "${BIN_DIR}/${bin}"

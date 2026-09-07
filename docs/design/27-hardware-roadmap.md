@@ -1,5 +1,19 @@
 # 27 — Hardware Support Roadmap
 
+**Status:** Roadmap. The vendor priorities and protocol notes are still useful;
+every device count below is stale and none of them should be quoted.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** the generated compatibility matrix
+in `data/compat/compatibility.json` is the only authority for these numbers, and
+it disagrees with every count in this document. It records 414 tracked devices
+across 32 vendors, of which 179 ship with a working driver across 12 driver
+families (not 13). Per driver, supported counts are Razer 70 (this doc says
+111), Corsair 49 (says 14), Nollie 20 (says 4), QMK 11 (says 10), ASUS 10,
+Lian Li 9 (says 10), Govee 4, PrismRGB 2 (says 4), and one each for Push 2,
+Nanoleaf, Hue, and WLED. Dygma is the family that dropped out: its two devices
+are now status `blocked`, with zero supported. Regenerate with `just compat`
+and read `data/compat/README-hardware.md` rather than editing these tables.
+
 ## Current State
 
 Hypercolor supports **~160 devices** across 13 driver families spanning USB and network:

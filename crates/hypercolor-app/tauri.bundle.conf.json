@@ -1,4 +1,7 @@
 {
+  "build": {
+    "frontendDist": "../../target/bundle-stage/ui"
+  },
   "bundle": {
     "externalBin": [
       "../../target/bundle-stage/binaries/hypercolor-daemon",

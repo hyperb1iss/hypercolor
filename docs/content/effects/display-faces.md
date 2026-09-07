@@ -19,11 +19,11 @@ spectrum, neon-clock, pulse-temp, sensor-grid, silkcircuit-hud) plus a
 shared atmosphere and component kit. Read those for finished,
 gate-passing examples.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The SDK is published to npm as `hypercolor`. New effect
 and face workspaces pull it from the registry by default. See
 [Setup & workspace](@/effects/setup.md) for the install path.
-{% end %}
+{% </callout> %}
 
 ## The face contract
 
@@ -87,11 +87,11 @@ otherwise `wide` when `aspect >= 2.0`, `tall` when `aspect <= 0.5`, else
 `side = floor(min(w, h) / √2)`. On a 480×480 round LCD that is **339×339
 centered**.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Design inside the safe area on round displays. Anything outside the
 inscribed square is physically cut off by the bezel, even though your
 canvas extends to the full 480×480.
-{% end %}
+{% </callout> %}
 
 ## The displays that gate every face
 
@@ -146,11 +146,11 @@ Every accessor is safe-defaulted: no player means
 `data.media.available()` is `false`, not a crash; `data.net` zeros when
 no source is injected.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Always design the absent state. An idle card, a breathing glyph, a calm
 fallback, never a blank screen. The daemon may render your face before
 any data source is live, and on hardware with no sensors at all.
-{% end %}
+{% </callout> %}
 
 ## Motion that works at 15-30 fps
 
@@ -188,13 +188,13 @@ switching ornament density between a square face and a wide strip. Keep
 device class, circular safe areas, and exact geometry driven by
 `ctx.display`, since aspect ratio alone does not carry those contracts.
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 Never structure a layout with CSS grid. Children render stacked
 full-width with no error and no warning. Use flexbox for everything.
 Canvas gradients throw on malformed colors, so pass hex or `rgba()`
 strings; the SDK's `withAlpha` is hex-only, so handle `hsl()` yourself if
 you generate it.
-{% end %}
+{% </callout> %}
 
 ## The dev loop
 
@@ -213,7 +213,7 @@ The quality gate: a face ships when it looks intentional on *both*
 canonical displays, round and strip, with live data and in its idle
 state. Screenshot both, every time.
 
-{{ img(path="img/ui/ui-displays.webp", alt="Live face simulator previews on the Devices page") }}
+{{< img path="img/ui/ui-displays.webp" alt="Live face simulator previews on the Devices page" />}}
 
 ## Controls and presets
 
@@ -247,14 +247,14 @@ is path-derived, so existing display assignments follow the update.
 Assigning a built face to a display is a separate step on the daemon's
 display API.
 
-{% api_endpoint(method="PUT", path="/api/v1/displays/{id}/face") %}
+{% <api_endpoint method="PUT" path="/api/v1/displays/{id}/face"> %}
 Assign or clear an HTML face on a display device. The `scope` field is
 `"default"` (the default) or `"scene"`. A `default` assignment persists
 across scene switches; a `scene` assignment writes the active scene's
 display zone, which always wins over the stored default while that scene
 is active. See the [REST reference](@/api/rest.md) for the request body
 and the envelope.
-{% end %}
+{% </api_endpoint> %}
 
 The same operation is exposed to AI agents as the MCP `set_display_face`
 tool, with the same `default` / `scene` scope parity, in the Agents &
@@ -262,14 +262,14 @@ MCP section.
 
 ## How a face becomes pixels
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     A[face.html assigned to display] --> B[Servo session at native resolution]
     B --> C[daemon injects window.hypercolor.display]
     C --> D[per-frame update fn draws DOM and canvas]
     D --> E[GPU display finalize: blend with lighting scene]
     E --> F[display device]
-{% end %}
+{% </mermaid> %}
 
 Each face gets its own Servo session rendering at the panel's native
 resolution, so there are no scaling hacks. The finalize pass blends the

@@ -31,7 +31,7 @@ just setup
 just verify
 ```
 
-`just verify` is the primary gate: it runs `oss-boundary-check-strict`, `fmt-check`, `lint`, and `test` in that order. It must pass before every commit.
+`just verify` is the primary gate: it runs `oss-boundary-check-strict`, `api-doc-route-check`, `macos-gpu-only-check`, `build-wrapper-test`, `cargo-gc-test`, `fmt-check`, `lint`, `test`, and `alloc-contracts`, in that order. It must pass before every commit.
 
 ### Surface-specific gates
 
@@ -48,9 +48,9 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 | Dependencies or licenses | `just deny` |
 | OpenAPI schema | `just python-generate-check` |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `cargo check --workspace` does NOT cover `hypercolor-ui`. That crate is excluded from the Cargo workspace and must be checked separately with `just ui-test` or `just ui-build`.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -69,7 +69,7 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 | `just lint-fix` | Auto-fix Clippy suggestions |
 | `just fmt` | Rustfmt across the workspace |
 | `just fmt-check` | Format check without modifying |
-| `just verify` | oss-boundary-check + fmt-check + lint + test |
+| `just verify` | The full gate chain: boundary, API-route, macOS GPU, build-wrapper, cargo-gc, fmt, lint, test, alloc |
 
 ### Running locally
 
@@ -78,11 +78,11 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 | `just daemon` | Daemon on `:9420` (preview profile, debug logging) |
 | `just daemon-servo` | Daemon with Servo HTML effect rendering enabled |
 | `just tui` | TUI client (starts a daemon if none is running) |
-| `just tray` | System tray applet |
+| `just app` | Unified desktop app with system tray |
 | `just cli` | The `hypercolor` CLI |
 | `just dev` | Daemon (Servo) and UI dev server together |
 | `just ui-dev` | Leptos dev server on `:9430`, proxies API to `:9420` |
-| `just sdk-dev` | TypeScript SDK dev server with HMR |
+| `just sdk-dev` | Watch-rebuild of the SDK packages on change |
 
 ---
 
@@ -92,7 +92,7 @@ Run the narrowest gate that covers what you changed. Do not skip the gate for "s
 
 - **Edition 2024**, Rust 1.94 or later.
 - **Clippy pedantic** enforced at deny level. See `Cargo.toml` for the explicit allow-list.
-- **`unsafe` is forbidden** workspace-wide. The two audited exceptions are `hypercolor-linux-gpu-interop` and `hypercolor-windows-pawnio`, which operate at the OS/GPU boundary.
+- **`unsafe` is forbidden** workspace-wide. The audited exceptions are the platform-interop crates that make OS, GPU, or driver calls: `hypercolor-app`, `hypercolor-platform-fs`, `hypercolor-pipewire-interop`, `hypercolor-linux-gpu-interop`, `hypercolor-linux-session`, the five `hypercolor-macos-*` crates (capture, gpu-interop, input, media, session), and the six `hypercolor-windows-*` crates (capture, gpu-interop, helper, input, pawnio, session). Each of those also denies `clippy::undocumented_unsafe_blocks`, so every `unsafe` block carries a safety comment. Run `rg -l 'unsafe_code' crates/*/Cargo.toml` for the live set; nothing outside it may opt out.
 - **`unwrap()` is forbidden.** Use `?`, `.ok()`, `expect("clear reason")`, or handle the error explicitly.
 - **`thiserror`** for library error types; **`anyhow`** for application (binary) errors.
 - **`tracing`** for all logging. Never `println!` in library code.
@@ -131,9 +131,7 @@ Lighting Node Core and LINK hub enumeration. Color frames use the
 direct-mode pipeline with per-channel RGB packing.
 ```
 
-Scopes map to crate short-names (drop the `hypercolor-` prefix):
-
-`types`, `core`, `hal`, `linux-gpu-interop`, `windows-pawnio`, `driver-api`, `driver-builtin`, `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network`, `daemon`, `cli`, `tui`, `tray`, `app`, `leptos-ext`, `leptos-ext-macros`, `ui`
+Scopes are crate short-names with the `hypercolor-` prefix dropped, so `hypercolor-driver-hue` is `driver-hue` and `hypercolor-windows-pawnio` is `windows-pawnio`. Run `ls crates/` for the current set rather than working from a list that ages.
 
 Use `sdk` for TypeScript SDK changes, `docs` for documentation, `data` for device database changes.
 
@@ -145,7 +143,7 @@ Subject lines: imperative mood, 76 characters or fewer, no trailing period. Body
 
 The dependency graph has hard rules. Violating them produces circular dependencies that break the workspace.
 
-- **`hypercolor-types`** depends on nothing. All shared vocabulary types live here.
+- **`hypercolor-types`** depends on `hypercolor-color` plus foundational external crates. Cross-crate domain vocabulary lives here; the color kernel remains in `hypercolor-color`.
 - **`hypercolor-hal`** depends on `types` only. It must never depend on `core`.
 - **`hypercolor-core`** depends on `types` and `hal`. Engine logic and traits live here.
 - **`hypercolor-daemon`** is the binary; it depends on `core`, `driver-api`, `network`, and `driver-builtin`. Nothing imports it.
@@ -157,7 +155,7 @@ If a type is needed in more than one crate, it belongs in `hypercolor-types`.
 
 ## Agent skills 🔮
 
-Domain-specific authoring knowledge lives in `.agents/skills/`. Each skill's `SKILL.md` is the primary reference for its domain; the `references/` subdirectory holds deeper detail.
+Domain-specific authoring knowledge lives in `.agents/skills/`. Each skill's `SKILL.md` is the primary reference for its domain; the `references/` subdirectory holds deeper detail. Skills meant for people running Hypercolor rather than developing it (`hypercolor-control`, `rig-setup`) live in the top-level `skills/` directory, ship in the release bundle, and are symlinked from `.agents/skills/` so they stay discoverable in a checkout.
 
 | Skill | When to use it |
 |---|---|
@@ -222,13 +220,13 @@ Write the spec, get review, then implement against it.
 
 See [Adding an effect](@/contributing/adding-an-effect.md) for the full walkthrough. The short version:
 
-**TypeScript SDK effects** live in `sdk/src/effects/` and build to self-contained HTML files via `just effect-build NAME`. They run inside Servo's renderer and can use the full HTML canvas API, WebGL2, and the `HypercolorSDK` runtime. Browse existing effects in `sdk/src/effects/` for patterns before writing from scratch. See [Effects](@/effects/_index.md) for the SDK API reference and dev workflow.
+**TypeScript SDK effects** live in `sdk/src/effects/` and build to self-contained HTML files via `just effect-build NAME`. They run inside Servo's renderer and can use the full HTML canvas API, WebGL2, and the `hypercolor` SDK runtime, which the daemon injects as `window.engine`. Browse existing effects in `sdk/src/effects/` for patterns before writing from scratch. See [Effects](@/effects/_index.md) for the SDK API reference and dev workflow.
 
 **Native Rust effects** implement `EffectRenderer` and register via `register_builtin_effects()` in `crates/hypercolor-core/src/effect/builtin/mod.rs`. Adding an effect means creating a new submodule in that directory, implementing `EffectRenderer`, and adding a `metadata()` constructor that returns `EffectMetadata`. Native effects produce `Canvas` frames entirely in Rust and run at roughly 1 ms per frame without Servo overhead, making them the right choice for performance-critical or audio-reactive work.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 There is no GPU shader lane for native Rust effects. `EffectSource::Shader` is not a runnable path. GLSL effects run as WebGL2 inside Servo, not as compiled wgpu shaders. Frame GPU/wgpu texture import is infrastructure for Servo frame delivery, not a general shader pipeline. If you want a GLSL effect, write it as a WebGL2 SDK effect.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -250,6 +248,6 @@ Driver modules are organized by silicon or OEM family, not by brand. Rebranded S
 4. Open a PR with a description that explains what changed and why. Link any relevant spec.
 5. Respond to review feedback. Do not squash until a maintainer asks.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The device compatibility matrix (`docs/content/hardware/compatibility.md`) is generated output. Regenerate it with `just compat` after editing `data/drivers/vendors/*.toml`. Never hand-edit the rows between the BEGIN/END markers.
-{% end %}
+{% </callout> %}

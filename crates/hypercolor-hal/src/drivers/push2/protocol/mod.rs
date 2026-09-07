@@ -1,5 +1,7 @@
 //! Ableton Push 2 MIDI + display protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 mod display;
 mod led_palette;
 
@@ -13,9 +15,10 @@ use hypercolor_types::device::{
 };
 use tracing::warn;
 
+use crate::display::DisplayEncodeError;
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 const PUSH2_RGB_LED_COUNT: usize = 92;
@@ -183,6 +186,7 @@ impl Protocol for Push2Protocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         });
         commands.push(primary_command(
             push2_sysex(PUSH2_CMD_SET_MIDI_MODE, &[PUSH2_MIDI_MODE_USER]),
@@ -332,28 +336,11 @@ impl Protocol for Push2Protocol {
         })
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        let mut commands = Vec::new();
-        self.encode_display_frame_into(jpeg_data, &mut commands)?;
-        Some(commands)
-    }
-
-    fn encode_display_frame_into(
-        &self,
-        jpeg_data: &[u8],
-        commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        self.display_encoder
-            .lock()
-            .expect("Push 2 display encoder lock should not be poisoned")
-            .encode_display_frame_from_jpeg(jpeg_data, commands)
-    }
-
     fn encode_display_payload_into(
         &self,
         payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
+    ) -> Result<(), DisplayEncodeError> {
         let mut encoder = self
             .display_encoder
             .lock()
@@ -371,64 +358,65 @@ impl Protocol for Push2Protocol {
         }
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         vec![
-            ProtocolZone {
+            SegmentInfo {
                 name: "Pads".to_owned(),
                 led_count: 64,
                 topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Buttons Above".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Buttons Below".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Scene Launch".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Transport".to_owned(),
                 led_count: 4,
                 topology: DeviceTopologyHint::Custom,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "White Buttons".to_owned(),
                 led_count: u32::try_from(PUSH2_WHITE_BUTTON_COUNT).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Touch Strip".to_owned(),
                 led_count: 31,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ProtocolZone {
+            SegmentInfo {
                 name: "Display".to_owned(),
                 led_count: 0,
                 topology: DeviceTopologyHint::Display {
                     width: 960,
                     height: 160,
                     circular: false,
+                    format: DisplayFrameFormat::Rgb,
                 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
@@ -465,6 +453,7 @@ fn primary_command(data: Vec<u8>, expects_response: bool) -> ProtocolCommand {
         response_delay: Duration::ZERO,
         post_delay: Duration::ZERO,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }
 }
 
@@ -475,6 +464,7 @@ fn primary_command_slice(data: &[u8], expects_response: bool) -> ProtocolCommand
         response_delay: Duration::ZERO,
         post_delay: Duration::ZERO,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }
 }
 

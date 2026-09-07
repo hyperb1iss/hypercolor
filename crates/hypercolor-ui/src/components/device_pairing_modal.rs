@@ -100,8 +100,8 @@ pub fn DevicePairingModal(
                         }
                     },
                     Err(error) => {
-                        set_stage.set(PairingStage::Error(error.clone()));
-                        toasts::toast_error(&error);
+                        set_stage.set(PairingStage::Error(error.to_string()));
+                        toasts::toast_error(&error.to_string());
                     }
                 }
             });
@@ -348,7 +348,7 @@ pub fn ForgetCredentialsModal(
                         on_forgot.run(device_id);
                     }
                     Err(error) => {
-                        toasts::toast_error(&error);
+                        toasts::toast_error(&error.to_string());
                         set_submitting.set(false);
                     }
                 }

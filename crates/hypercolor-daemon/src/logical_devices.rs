@@ -5,16 +5,19 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use hypercolor_types::device::DeviceId;
 
+use crate::domain::device_binding::{DeviceBindingRemaps, MigrationPersistence};
 use crate::persistence::{
-    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, PersistenceError,
-    serialize_json_pretty,
+    AdmittedAtomicWrite, AtomicFileWriter, AtomicWriteOutcome, AtomicWriteReservation,
+    PersistenceError, serialize_json_pretty,
 };
 
 /// Logical-device snapshot reserved at its owning mutation boundary.
@@ -23,8 +26,41 @@ pub struct LogicalDeviceSave {
     write: AdmittedAtomicWrite,
 }
 
+#[derive(Clone)]
+pub(crate) struct LogicalDeviceStoreAuthority {
+    entries: Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    path: PathBuf,
+}
+
+pub(crate) struct LogicalDeviceBindingMigration {
+    source: HashMap<String, LogicalDevice>,
+    candidate: HashMap<String, LogicalDevice>,
+    write: AtomicWriteReservation,
+    payload: Vec<u8>,
+    migrated: usize,
+}
+
+pub(crate) struct AdmittedLogicalDeviceBindingMigration {
+    source: HashMap<String, LogicalDevice>,
+    candidate: HashMap<String, LogicalDevice>,
+    write: AdmittedAtomicWrite,
+    migrated: usize,
+}
+
+pub(crate) struct PersistedLogicalDeviceBindingMigration {
+    source: HashMap<String, LogicalDevice>,
+    candidate: HashMap<String, LogicalDevice>,
+    migrated: usize,
+}
+
+pub(crate) struct LogicalDeviceBindingPublication {
+    entries: OwnedRwLockWriteGuard<HashMap<String, LogicalDevice>>,
+    candidate: Option<HashMap<String, LogicalDevice>>,
+    migrated: usize,
+}
+
 /// One logical device mapped onto a physical device LED range.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogicalDevice {
     /// Stable logical device ID used by layout zones (`Output.device_id`).
     pub id: String,
@@ -46,6 +82,106 @@ pub struct LogicalDevice {
 
     /// Whether this is the built-in full-device mapping or a user segment.
     pub kind: LogicalDeviceKind,
+}
+
+impl LogicalDeviceStoreAuthority {
+    pub(crate) fn new(entries: Arc<RwLock<HashMap<String, LogicalDevice>>>, path: PathBuf) -> Self {
+        Self { entries, path }
+    }
+
+    pub(crate) async fn prepare_binding_migration(
+        &self,
+        remaps: &DeviceBindingRemaps,
+    ) -> anyhow::Result<Option<LogicalDeviceBindingMigration>> {
+        let source = self.entries.read().await.clone();
+        let mut candidate = source.clone();
+        let mut migrated = 0;
+        for entry in candidate.values_mut() {
+            if let Some(canonical) = remaps.physical_device_ids.get(&entry.physical_device_id) {
+                entry.physical_device_id = *canonical;
+                migrated += 1;
+            }
+        }
+        for (legacy, canonical) in &remaps.layout_device_ids {
+            let has_exact_physical_remap = source.get(legacy).is_some_and(|entry| {
+                remaps
+                    .physical_device_ids
+                    .contains_key(&entry.physical_device_id)
+            });
+            if !has_exact_physical_remap {
+                continue;
+            }
+            let Some(mut entry) = candidate.remove(legacy) else {
+                continue;
+            };
+            entry.id.clone_from(canonical);
+            candidate.entry(canonical.clone()).or_insert(entry);
+            migrated += 1;
+        }
+        if migrated == 0 {
+            return Ok(None);
+        }
+        let payload = serialize_segments(&candidate)?;
+        let writer = AtomicFileWriter::new(&self.path)?;
+        Ok(Some(LogicalDeviceBindingMigration {
+            source,
+            candidate,
+            write: writer.reserve(),
+            payload,
+            migrated,
+        }))
+    }
+
+    pub(crate) async fn prepare_binding_publication(
+        &self,
+        migration: PersistedLogicalDeviceBindingMigration,
+    ) -> anyhow::Result<LogicalDeviceBindingPublication> {
+        let entries = Arc::clone(&self.entries).write_owned().await;
+        anyhow::ensure!(
+            *entries == migration.source,
+            "device binding migration was superseded by newer logical devices"
+        );
+        Ok(LogicalDeviceBindingPublication {
+            entries,
+            candidate: Some(migration.candidate),
+            migrated: migration.migrated,
+        })
+    }
+}
+
+impl LogicalDeviceBindingMigration {
+    pub(crate) fn admit(self) -> AdmittedLogicalDeviceBindingMigration {
+        AdmittedLogicalDeviceBindingMigration {
+            source: self.source,
+            candidate: self.candidate,
+            write: self.write.admit(self.payload),
+            migrated: self.migrated,
+        }
+    }
+}
+
+impl AdmittedLogicalDeviceBindingMigration {
+    pub(crate) fn persist(self) -> (PersistedLogicalDeviceBindingMigration, MigrationPersistence) {
+        let persistence = MigrationPersistence::from_commit(self.write.commit_stage_aware());
+        (
+            PersistedLogicalDeviceBindingMigration {
+                source: self.source,
+                candidate: self.candidate,
+                migrated: self.migrated,
+            },
+            persistence,
+        )
+    }
+}
+
+impl LogicalDeviceBindingPublication {
+    pub(crate) fn publish(&mut self) -> usize {
+        *self.entries = self
+            .candidate
+            .take()
+            .expect("logical binding migration must publish exactly once");
+        self.migrated
+    }
 }
 
 impl LogicalDevice {
@@ -130,162 +266,6 @@ pub fn list_for_physical(
     items
 }
 
-/// Find the default logical-device ID for a physical controller.
-#[must_use]
-pub fn default_id_for_physical(
-    store: &HashMap<String, LogicalDevice>,
-    physical_device_id: DeviceId,
-) -> Option<String> {
-    store
-        .values()
-        .find(|entry| {
-            entry.physical_device_id == physical_device_id
-                && entry.kind == LogicalDeviceKind::Default
-        })
-        .map(|entry| entry.id.clone())
-}
-
-/// Ensure the default logical entry is enabled iff there are no enabled segments.
-pub fn reconcile_default_enabled(
-    store: &mut HashMap<String, LogicalDevice>,
-    physical_device_id: DeviceId,
-) {
-    let has_enabled_segments = store.values().any(|entry| {
-        entry.physical_device_id == physical_device_id
-            && entry.kind == LogicalDeviceKind::Segment
-            && entry.enabled
-    });
-
-    if let Some(default) = store.values_mut().find(|entry| {
-        entry.physical_device_id == physical_device_id && entry.kind == LogicalDeviceKind::Default
-    }) {
-        default.enabled = !has_enabled_segments;
-    }
-}
-
-/// Validate one logical device range against the physical LED count and peers.
-///
-/// Overlapping enabled segment ranges are rejected.
-pub fn validate_entry(
-    store: &HashMap<String, LogicalDevice>,
-    candidate: &LogicalDevice,
-    physical_led_count: u32,
-    ignore_id: Option<&str>,
-) -> Result<(), String> {
-    if candidate.led_count == 0 {
-        return Err("led_count must be greater than 0".to_owned());
-    }
-
-    let end = candidate.led_end_exclusive();
-    if end > physical_led_count {
-        return Err(format!(
-            "logical range [{}, {}) exceeds physical LED count {}",
-            candidate.led_start, end, physical_led_count
-        ));
-    }
-
-    if !candidate.enabled {
-        return Ok(());
-    }
-
-    if candidate.kind == LogicalDeviceKind::Default {
-        let has_enabled_segments = store.values().any(|entry| {
-            entry.physical_device_id == candidate.physical_device_id
-                && entry.kind == LogicalDeviceKind::Segment
-                && entry.enabled
-        });
-        if has_enabled_segments {
-            return Err(
-                "default logical device cannot be enabled while segment logical devices are enabled"
-                    .to_owned(),
-            );
-        }
-        return Ok(());
-    }
-
-    let overlaps = store.values().any(|entry| {
-        if entry.physical_device_id != candidate.physical_device_id {
-            return false;
-        }
-        if entry.kind != LogicalDeviceKind::Segment || !entry.enabled {
-            return false;
-        }
-        if let Some(ignore) = ignore_id
-            && entry.id == ignore
-        {
-            return false;
-        }
-
-        let entry_end = entry.led_end_exclusive();
-        candidate.led_start < entry_end && entry.led_start < end
-    });
-
-    if overlaps {
-        return Err(
-            "logical segment overlaps another enabled segment on this physical device".to_owned(),
-        );
-    }
-
-    Ok(())
-}
-
-/// Generate a stable logical ID scoped under a physical layout prefix.
-#[must_use]
-pub fn allocate_segment_id(
-    store: &HashMap<String, LogicalDevice>,
-    physical_layout_id: &str,
-    raw_name: &str,
-) -> String {
-    let slug = sanitize_component(raw_name);
-    let base = format!("{physical_layout_id}:{slug}");
-    if !store.contains_key(&base) {
-        return base;
-    }
-
-    let mut n = 2_u32;
-    loop {
-        let candidate = format!("{base}-{n}");
-        if !store.contains_key(&candidate) {
-            return candidate;
-        }
-        n = n.saturating_add(1);
-    }
-}
-
-fn sanitize_component(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut prev_was_dash = false;
-
-    for ch in input.trim().chars() {
-        let mapped = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            ch.to_ascii_lowercase()
-        } else {
-            '-'
-        };
-
-        if mapped == '-' {
-            if prev_was_dash {
-                continue;
-            }
-            prev_was_dash = true;
-            out.push(mapped);
-        } else {
-            prev_was_dash = false;
-            out.push(mapped);
-        }
-    }
-
-    if out.ends_with('-') {
-        out.pop();
-    }
-
-    if out.is_empty() {
-        "segment".to_owned()
-    } else {
-        out
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct PersistedLogicalDevice {
     id: String,
@@ -332,33 +312,21 @@ pub fn load_segments(path: &Path) -> anyhow::Result<HashMap<String, LogicalDevic
     Ok(out)
 }
 
-/// Persist user-defined logical segment devices to disk.
+/// Reserve a logical-device snapshot before releasing its mutation lock.
 ///
 /// Default logical devices are ephemeral and are not persisted.
-pub fn save_segments(path: &Path, store: &HashMap<String, LogicalDevice>) -> anyhow::Result<()> {
-    let pending = reserve_save_segments(path, store)?;
-    save_reserved_segments(pending).map(|_| ())
-}
-
-/// Reserve a logical-device snapshot before releasing its mutation lock.
 pub fn reserve_save_segments(
     path: &Path,
     store: &HashMap<String, LogicalDevice>,
 ) -> anyhow::Result<LogicalDeviceSave> {
     let writer = AtomicFileWriter::new(path)?;
-    reserve_save_segments_with(&writer, store)
+    let payload = serialize_segments(store)?;
+    Ok(LogicalDeviceSave {
+        write: writer.reserve().admit(payload),
+    })
 }
 
-/// Initialize a logical-device writer before its owning mutation begins.
-pub fn writer(path: &Path) -> Result<AtomicFileWriter, PersistenceError> {
-    AtomicFileWriter::new(path)
-}
-
-/// Serialize and admit logical segments while their mutation lock is held.
-pub fn reserve_save_segments_with(
-    writer: &AtomicFileWriter,
-    store: &HashMap<String, LogicalDevice>,
-) -> anyhow::Result<LogicalDeviceSave> {
+fn serialize_segments(store: &HashMap<String, LogicalDevice>) -> anyhow::Result<Vec<u8>> {
     let mut entries: Vec<LogicalDevice> = store
         .values()
         .filter(|entry| entry.kind == LogicalDeviceKind::Segment)
@@ -367,9 +335,7 @@ pub fn reserve_save_segments_with(
     entries.sort_by(|left, right| left.id.cmp(&right.id));
     let payload =
         serialize_json_pretty(&entries).context("failed to serialize logical device store")?;
-    Ok(LogicalDeviceSave {
-        write: writer.reserve().admit(payload),
-    })
+    Ok(payload)
 }
 
 /// Commit a previously reserved logical-device snapshot.
@@ -389,10 +355,16 @@ pub fn kick_pending(path: &Path) -> Result<(), PersistenceError> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use tempfile::TempDir;
+    use tokio::sync::RwLock;
 
-    use super::{LogicalDevice, LogicalDeviceKind, load_segments, save_segments};
+    use super::{
+        LogicalDevice, LogicalDeviceKind, LogicalDeviceStoreAuthority, load_segments,
+        reserve_save_segments, save_reserved_segments,
+    };
+    use crate::domain::device_binding::DeviceBindingRemaps;
     use crate::logical_devices::ensure_default_logical_device;
     use hypercolor_types::device::DeviceId;
 
@@ -424,6 +396,47 @@ mod tests {
         assert_eq!(canonical.id, "driver:new-id");
         assert_eq!(canonical.kind, LogicalDeviceKind::Default);
         assert!(!store.contains_key("driver:old-id"));
+    }
+
+    #[tokio::test]
+    async fn layout_only_remap_leaves_physical_logical_entry_untouched() {
+        let dir = TempDir::new().expect("tempdir");
+        let physical_device_id = DeviceId::new();
+        let legacy_id = "razer:1532:0099:001-6-4-4";
+        let entries = Arc::new(RwLock::new(HashMap::from([(
+            legacy_id.to_owned(),
+            LogicalDevice {
+                id: legacy_id.to_owned(),
+                physical_device_id,
+                name: "Imported Razer segment".to_owned(),
+                led_start: 0,
+                led_count: 16,
+                enabled: true,
+                kind: LogicalDeviceKind::Segment,
+            },
+        )])));
+        let authority = LogicalDeviceStoreAuthority::new(
+            Arc::clone(&entries),
+            dir.path().join("logical-devices.json"),
+        );
+        let remaps = DeviceBindingRemaps {
+            layout_device_ids: HashMap::from([(
+                legacy_id.to_owned(),
+                "razer:1532:0099:pci-root".to_owned(),
+            )]),
+            ..DeviceBindingRemaps::default()
+        };
+
+        assert!(
+            authority
+                .prepare_binding_migration(&remaps)
+                .await
+                .expect("prepare logical device migration")
+                .is_none()
+        );
+        let entries = entries.read().await;
+        assert_eq!(entries[legacy_id].physical_device_id, physical_device_id);
+        assert!(!entries.contains_key("razer:1532:0099:pci-root"));
     }
 
     #[test]
@@ -458,7 +471,9 @@ mod tests {
             },
         );
 
-        save_segments(&path, &store).expect("save logical device store");
+        let pending =
+            reserve_save_segments(&path, &store).expect("reserve logical device snapshot");
+        save_reserved_segments(pending).expect("save logical device store");
         let loaded = load_segments(&path).expect("load logical device store");
 
         assert!(loaded.contains_key("driver:canonical:left"));

@@ -1,4 +1,4 @@
-import { canvas, combo, num, toggle } from 'hypercolor'
+import { canvas, clamp, combo, hexToRgb, num, toggle } from 'hypercolor'
 
 type Silhouette = 'flat' | 'stepped' | 'spire' | 'dome'
 
@@ -207,27 +207,15 @@ const PALETTES: Record<(typeof COLOR_MODES)[number], PaletteSet> = {
     },
 }
 
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
-
 function hash(value: number): number {
     const seeded = Math.sin(value * 127.1 + 311.7) * 43758.5453123
     return seeded - Math.floor(seeded)
 }
 
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-    const normalized = hex.replace('#', '')
-    const full =
-        normalized.length === 3
-            ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
-            : normalized
-    const value = Number.parseInt(full, 16)
-    return { b: value & 255, g: (value >> 8) & 255, r: (value >> 16) & 255 }
-}
+const BLACK = { b: 0, g: 0, r: 0 }
 
 function hexToRgba(hex: string, alpha: number): string {
-    const color = hexToRgb(hex)
+    const color = hexToRgb(hex, BLACK)
     return `rgba(${color.r}, ${color.g}, ${color.b}, ${clamp(alpha, 0, 1).toFixed(3)})`
 }
 

@@ -68,6 +68,7 @@ describe('BaseEffect host-driven capture loop', () => {
         const host = {
             __hypercolorCaptureMode: true,
             __hypercolorHostDrivenAnimation: true,
+            engine: { time: 4.25 },
             performance: { now: () => 1234 },
         }
 
@@ -82,15 +83,18 @@ describe('BaseEffect host-driven capture loop', () => {
             effect.begin()
 
             expect(rafCalls).toBe(0)
-            expect(effect.renders).toEqual([1.234])
+            expect(effect.renders).toEqual([4.25])
             expect(effect.updates).toBe(1)
             expect(Reflect.get(host, 'currentAnimationFrame')).toBeUndefined()
 
             const renderHostFrame = Reflect.get(host, '__hypercolorRenderHostFrame')
             expect(typeof renderHostFrame).toBe('function')
             ;(renderHostFrame as () => void)()
-            expect(effect.renders).toEqual([1.234, 1.234])
-            expect(effect.updates).toBe(1)
+            expect(effect.renders).toEqual([4.25, 4.25])
+            host.engine.time = 4.5
+            ;(renderHostFrame as () => void)()
+            expect(effect.renders).toEqual([4.25, 4.25, 4.5])
+            expect(effect.updates).toBe(2)
 
             effect.end()
             expect(Reflect.get(host, '__hypercolorRenderHostFrame')).toBeUndefined()
@@ -109,6 +113,7 @@ describe('BaseEffect host-driven capture loop', () => {
         const host = {
             __hypercolorCaptureMode: false,
             __hypercolorHostDrivenAnimation: false,
+            engine: { time: 99 },
             performance: { now: () => 1234 },
         }
 
@@ -136,6 +141,39 @@ describe('BaseEffect host-driven capture loop', () => {
         }
     })
 
+    test('RAF-driven capture uses the advancing host clock', () => {
+        const originalWindow = Reflect.get(globalThis, 'window')
+        const originalRaf = Reflect.get(globalThis, 'requestAnimationFrame')
+        let rafCallback: ((timestamp: number) => void) | undefined
+        const host = {
+            __hypercolorCaptureMode: true,
+            __hypercolorHostDrivenAnimation: false,
+            engine: { time: 4.25 },
+            performance: { now: () => 1234 },
+        }
+
+        Reflect.set(globalThis, 'window', host)
+        Reflect.set(globalThis, 'requestAnimationFrame', (callback: (timestamp: number) => void) => {
+            rafCallback = callback
+            return 7
+        })
+
+        try {
+            const effect = new TestEffect({ id: 'test', name: 'Test' })
+            effect.begin()
+
+            rafCallback?.(2500)
+            expect(effect.renders).toEqual([4.25])
+
+            host.engine.time = 4.5
+            rafCallback?.(3000)
+            expect(effect.renders).toEqual([4.25, 4.5])
+        } finally {
+            restoreGlobal('window', originalWindow)
+            restoreGlobal('requestAnimationFrame', originalRaf)
+        }
+    })
+
     test('late host marker cancels a pending raf before host render', () => {
         const originalWindow = Reflect.get(globalThis, 'window')
         const originalRaf = Reflect.get(globalThis, 'requestAnimationFrame')
@@ -145,6 +183,7 @@ describe('BaseEffect host-driven capture loop', () => {
         const host = {
             __hypercolorCaptureMode: false,
             __hypercolorHostDrivenAnimation: false,
+            engine: { time: 6.75 },
             performance: { now: () => 1234 },
         }
 
@@ -168,10 +207,10 @@ describe('BaseEffect host-driven capture loop', () => {
 
             expect(canceledFrames).toEqual([7])
             expect(Reflect.get(host, 'currentAnimationFrame')).toBeUndefined()
-            expect(effect.renders).toEqual([1.234])
+            expect(effect.renders).toEqual([6.75])
 
             rafCallback?.(2500)
-            expect(effect.renders).toEqual([1.234])
+            expect(effect.renders).toEqual([6.75])
         } finally {
             restoreGlobal('window', originalWindow)
             restoreGlobal('requestAnimationFrame', originalRaf)

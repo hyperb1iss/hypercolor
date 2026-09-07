@@ -16,11 +16,11 @@
     "devDependencies": {
         "@biomejs/biome": "^2.4.6",
         "hypercolor": __SDK_PACKAGE_SPEC_JSON__,
-        "bun-types": "^1.3.12",
+        "bun-types": "^1.4.0",
         "typescript": "^5.9.3"
     },
     "engines": {
-        "bun": ">=1.2.0",
+        "bun": ">=1.4.0",
         "node": ">=24.0.0"
     }
 }

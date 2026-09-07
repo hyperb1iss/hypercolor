@@ -2,6 +2,21 @@
 
 > One command to turn a source checkout into a usable local Hypercolor install.
 
+**Status:** Decision, shipped. `scripts/install.sh` exists and implements the
+whole V1 scope. Read the script, not this document, for the current layout.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** three statements are now false.
+The "Packaging Constraints" section says `hypercolor-desktop` builds as its own
+binary; there is no `hypercolor-desktop` anywhere in the tree, the desktop shell
+is `hypercolor-app`. The same section says the installer "should not ship the
+Tauri shell"; `scripts/install.sh` builds and installs `hypercolor-app` today.
+`Type=notify` watchdog integration is listed under "Current Non-Goals" but
+shipped: `packaging/systemd/user/hypercolor.service` declares `Type=notify` and
+`hypercolor-linux-session` sends the readiness notification. Distribution beyond
+the source bootstrap also landed and is covered by design 25 and design 46:
+`scripts/install-release.sh`, `packaging/homebrew`, `packaging/aur`,
+`packaging/launchd`, and the Windows and macOS installer scripts.
+
 ## Problem
 
 Hypercolor currently has pieces of an install story, but not one real path:

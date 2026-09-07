@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 const FRAME_HISTORY_CAPACITY: usize = 120;
+const LATENCY_BUCKET_WIDTH_US: u32 = 100;
+const LATENCY_BUCKET_COUNT: usize = 4096;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum CompositorBackendKind {
@@ -93,6 +95,7 @@ pub(crate) struct FrameTimeline {
 )]
 pub(crate) struct LatestFrameMetrics {
     pub timestamp_ms: u32,
+    pub input_sampled: bool,
     pub input_us: u32,
     /// Time finalizing the *previous* frame's deferred GPU zone readback,
     /// which runs before composition starts. Reported separately because it
@@ -117,7 +120,7 @@ pub(crate) struct LatestFrameMetrics {
     pub postprocess_us: u32,
     pub publish_us: u32,
     pub publish_frame_data_us: u32,
-    pub publish_group_canvas_us: u32,
+    pub publish_zone_canvas_us: u32,
     pub publish_preview_us: u32,
     pub publish_events_us: u32,
     pub overhead_us: u32,
@@ -149,25 +152,21 @@ pub(crate) struct LatestFrameMetrics {
     pub devices_written: u32,
     pub total_leds: u32,
     pub logical_layer_count: u32,
-    pub render_group_count: u32,
+    pub render_zone_count: u32,
     pub scene_active: bool,
     pub scene_transition_active: bool,
-    pub render_surface_slot_count: u32,
-    pub render_surface_free_slots: u32,
-    pub render_surface_published_slots: u32,
-    pub render_surface_dequeued_slots: u32,
     /// Cumulative count of scene-surface-pool dequeues that had to allocate a
     /// fresh canvas because every slot was still shared downstream AND
     /// the pool was already at its growth cap. A rising value signals
     /// the cap is too low for current subscriber fan-out.
     pub scene_pool_saturation_reallocs: u64,
-    /// Same as above but summed across per-group direct-canvas pools.
+    /// Same as above but summed across per-zone direct-canvas pools.
     pub direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size.
     /// Non-zero values are benign — the pool converged on its working
     /// set. A steadily climbing value could indicate an Arc leak.
     pub scene_pool_grown_slots: u32,
-    /// Same as above but summed across per-group direct-canvas pools.
+    /// Same as above but summed across per-zone direct-canvas pools.
     pub direct_pool_grown_slots: u32,
     pub scene_pool_slot_count: u32,
     pub scene_pool_max_slots: u32,
@@ -271,9 +270,116 @@ pub(crate) struct PerformanceSnapshot {
     pub latest_frame: Option<LatestFrameMetrics>,
     pub frame_count: u32,
     pub frame_time: FrameTimeSummary,
+    pub input_time: FrameTimeSummary,
+    pub input_time_sample_count: u64,
     pub delivered_fps: f64,
     pub pacing: PacingSummary,
     pub effect_health: EffectHealthSummary,
+    pub full_frame_copy_count_total: u64,
+    pub full_frame_copy_frames_total: u64,
+    pub full_frame_copy_bytes_total: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LatencyHistogramBucketSnapshot {
+    pub bucket_index: u32,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LatencyHistogramSnapshot {
+    pub bucket_width_us: u32,
+    pub overflow_bucket_index: u32,
+    pub buckets: Vec<LatencyHistogramBucketSnapshot>,
+}
+
+#[derive(Debug)]
+struct LatencyHistogram {
+    buckets: Box<[u64]>,
+    samples: u64,
+    total_us: u64,
+    max_us: u32,
+}
+
+impl Default for LatencyHistogram {
+    fn default() -> Self {
+        Self {
+            buckets: vec![0; LATENCY_BUCKET_COUNT + 1].into_boxed_slice(),
+            samples: 0,
+            total_us: 0,
+            max_us: 0,
+        }
+    }
+}
+
+impl LatencyHistogram {
+    fn record(&mut self, sample_us: u32) {
+        let bucket_upper_bound = if sample_us == 0 {
+            0
+        } else {
+            sample_us
+                .saturating_sub(1)
+                .checked_div(LATENCY_BUCKET_WIDTH_US)
+                .unwrap_or_default()
+                .saturating_add(1)
+        };
+        let bucket = usize::try_from(bucket_upper_bound)
+            .unwrap_or(usize::MAX)
+            .min(LATENCY_BUCKET_COUNT);
+        self.buckets[bucket] = self.buckets[bucket].saturating_add(1);
+        self.samples = self.samples.saturating_add(1);
+        self.total_us = self.total_us.saturating_add(u64::from(sample_us));
+        self.max_us = self.max_us.max(sample_us);
+    }
+
+    fn summary(&self) -> FrameTimeSummary {
+        if self.samples == 0 {
+            return FrameTimeSummary::default();
+        }
+        let average_us = self.total_us.saturating_add(self.samples / 2) / self.samples;
+        FrameTimeSummary {
+            avg_ms: micros_to_ms(average_us),
+            p95_ms: micros_to_ms(u64::from(self.percentile_upper_bound_us(95))),
+            p99_ms: micros_to_ms(u64::from(self.percentile_upper_bound_us(99))),
+            max_ms: micros_to_ms(u64::from(self.max_us)),
+        }
+    }
+
+    fn percentile_upper_bound_us(&self, percentile: u64) -> u32 {
+        let rank = self.samples.saturating_mul(percentile).saturating_add(99) / 100;
+        let mut observed = 0_u64;
+        for (index, count) in self.buckets.iter().copied().enumerate() {
+            observed = observed.saturating_add(count);
+            if observed >= rank {
+                if index == LATENCY_BUCKET_COUNT {
+                    return self.max_us;
+                }
+                return u32::try_from(index)
+                    .unwrap_or(u32::MAX)
+                    .saturating_mul(LATENCY_BUCKET_WIDTH_US)
+                    .min(self.max_us);
+            }
+        }
+        self.max_us
+    }
+
+    fn snapshot(&self) -> LatencyHistogramSnapshot {
+        LatencyHistogramSnapshot {
+            bucket_width_us: LATENCY_BUCKET_WIDTH_US,
+            overflow_bucket_index: u32::try_from(LATENCY_BUCKET_COUNT).unwrap_or(u32::MAX),
+            buckets: self
+                .buckets
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, count)| *count > 0)
+                .map(|(bucket_index, count)| LatencyHistogramBucketSnapshot {
+                    bucket_index: u32::try_from(bucket_index).unwrap_or(u32::MAX),
+                    count,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Rolling performance tracker updated by the render thread.
@@ -287,8 +393,12 @@ pub struct PerformanceTracker {
     wake_delay_us: VecDeque<u32>,
     push_us: VecDeque<u32>,
     publish_us: VecDeque<u32>,
+    input_time: LatencyHistogram,
     pacing_history: VecDeque<FramePacingSample>,
     effect_health: EffectHealthSummary,
+    full_frame_copy_count_total: u64,
+    full_frame_copy_frames_total: u64,
+    full_frame_copy_bytes_total: u64,
 }
 
 impl PerformanceTracker {
@@ -306,6 +416,9 @@ impl PerformanceTracker {
         self.wake_delay_us.push_back(metrics.wake_late_us);
         self.push_us.push_back(metrics.push_us);
         self.publish_us.push_back(metrics.publish_us);
+        if metrics.input_sampled {
+            self.input_time.record(metrics.input_us);
+        }
         self.pacing_history.push_back(FramePacingSample {
             inputs: metrics.reused_inputs,
             canvas: metrics.reused_canvas,
@@ -333,6 +446,15 @@ impl PerformanceTracker {
                 .producer_gpu_readback_failures_total
                 .saturating_add(1);
         }
+        if metrics.full_frame_copy_count > 0 {
+            self.full_frame_copy_frames_total = self.full_frame_copy_frames_total.saturating_add(1);
+        }
+        self.full_frame_copy_count_total = self
+            .full_frame_copy_count_total
+            .saturating_add(u64::from(metrics.full_frame_copy_count));
+        self.full_frame_copy_bytes_total = self
+            .full_frame_copy_bytes_total
+            .saturating_add(u64::from(metrics.full_frame_copy_bytes));
 
         if self.frame_times_us.len() > FRAME_HISTORY_CAPACITY {
             let _ = self.frame_times_us.pop_front();
@@ -377,6 +499,8 @@ impl PerformanceTracker {
             latest_frame: self.latest_frame,
             frame_count: u32::try_from(self.frame_times_us.len()).unwrap_or(u32::MAX),
             frame_time: summarize_frame_times(&self.frame_times_us),
+            input_time: self.input_time.summary(),
+            input_time_sample_count: self.input_time.samples,
             delivered_fps: delivered_fps(
                 &self.frame_intervals_us,
                 self.last_frame_recorded_at
@@ -390,7 +514,14 @@ impl PerformanceTracker {
                 &self.pacing_history,
             ),
             effect_health: self.effect_health,
+            full_frame_copy_count_total: self.full_frame_copy_count_total,
+            full_frame_copy_frames_total: self.full_frame_copy_frames_total,
+            full_frame_copy_bytes_total: self.full_frame_copy_bytes_total,
         }
+    }
+
+    pub(crate) fn input_time_histogram_snapshot(&self) -> LatencyHistogramSnapshot {
+        self.input_time.snapshot()
     }
 
     /// Record one deduplicated effect-render failure observed by the daemon.
@@ -709,4 +840,218 @@ fn delivered_fps(
 
 fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RenderHealthCounts {
+    pub(crate) servo: ServoEffectHealthCounts,
+    pub(crate) pipeline: RenderPipelineHealthCounts,
+}
+
+#[cfg(feature = "servo")]
+pub(crate) type ServoEffectHealthCounts = hypercolor_core::effect::ServoTelemetrySnapshot;
+
+#[cfg(not(feature = "servo"))]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ServoEffectHealthCounts {
+    pub(crate) soft_stalls_total: u64,
+    pub(crate) breaker_opens_total: u64,
+    pub(crate) session_creates_total: u64,
+    pub(crate) session_create_failures_total: u64,
+    pub(crate) session_create_wait_total_us: u64,
+    pub(crate) session_create_wait_max_us: u64,
+    pub(crate) page_loads_total: u64,
+    pub(crate) page_load_failures_total: u64,
+    pub(crate) page_load_wait_total_us: u64,
+    pub(crate) page_load_wait_max_us: u64,
+    pub(crate) renderer_loads_total: u64,
+    pub(crate) renderer_load_failures_total: u64,
+    pub(crate) renderer_load_wait_total_us: u64,
+    pub(crate) renderer_load_wait_max_us: u64,
+    pub(crate) detached_destroys_total: u64,
+    pub(crate) detached_destroy_failures_total: u64,
+    pub(crate) destroy_wait_total_us: u64,
+    pub(crate) destroy_wait_max_us: u64,
+    pub(crate) render_requests_total: u64,
+    pub(crate) render_queue_wait_total_us: u64,
+    pub(crate) render_queue_wait_max_us: u64,
+    pub(crate) render_scene_requests_total: u64,
+    pub(crate) render_scene_queue_wait_total_us: u64,
+    pub(crate) render_scene_queue_wait_max_us: u64,
+    pub(crate) render_display_requests_total: u64,
+    pub(crate) render_display_queue_wait_total_us: u64,
+    pub(crate) render_display_queue_wait_max_us: u64,
+    pub(crate) render_queue_depth: u64,
+    pub(crate) render_queue_depth_max: u64,
+    pub(crate) render_superseded_total: u64,
+    pub(crate) render_pending_age_max_us: u64,
+    pub(crate) render_cpu_frames_total: u64,
+    pub(crate) render_cached_frames_total: u64,
+    pub(crate) render_gpu_frames_total: u64,
+    pub(crate) render_gpu_import_failures_total: u64,
+    pub(crate) render_gpu_import_fallbacks_total: u64,
+    pub(crate) render_gpu_import_fallback_reason: Option<&'static str>,
+    pub(crate) render_gpu_import_windows_sync_mode: Option<&'static str>,
+    pub(crate) render_gpu_import_stale_frame_total: u64,
+    pub(crate) render_gpu_import_adapter_mismatch_total: u64,
+    pub(crate) render_gpu_import_slot_count: u64,
+    pub(crate) render_gpu_import_pending_slots: u64,
+    pub(crate) render_gpu_import_pending_slots_max: u64,
+    pub(crate) render_gpu_import_completed_slots: u64,
+    pub(crate) render_gpu_import_available_slots: u64,
+    pub(crate) render_gpu_import_available_slots_min: u64,
+    pub(crate) render_gpu_import_oldest_pending_age_max_us: u64,
+    pub(crate) render_gpu_import_blit_total_us: u64,
+    pub(crate) render_gpu_import_blit_max_us: u64,
+    pub(crate) render_gpu_import_sync_total_us: u64,
+    pub(crate) render_gpu_import_sync_max_us: u64,
+    pub(crate) render_gpu_import_total_us: u64,
+    pub(crate) render_gpu_import_max_us: u64,
+    pub(crate) render_evaluate_scripts_total_us: u64,
+    pub(crate) render_evaluate_scripts_max_us: u64,
+    pub(crate) render_event_loop_total_us: u64,
+    pub(crate) render_event_loop_max_us: u64,
+    pub(crate) render_paint_total_us: u64,
+    pub(crate) render_paint_max_us: u64,
+    pub(crate) render_readback_total_us: u64,
+    pub(crate) render_readback_max_us: u64,
+    pub(crate) render_frame_total_us: u64,
+    pub(crate) render_frame_max_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RenderPipelineHealthCounts {
+    pub(crate) cpu_producer_frames: u64,
+    pub(crate) gpu_producer_frames: u64,
+    pub(crate) gpu_cpu_materialization_blocked_total: u64,
+    pub(crate) skipped_gpu_source_uploads: u64,
+    pub(crate) media_texture_allocations_total: u64,
+    pub(crate) media_texture_upload_bytes_total: u64,
+    pub(crate) display_finalize_rgba_attempts_total: u64,
+    pub(crate) display_finalize_yuv_attempts_total: u64,
+    pub(crate) display_finalize_successes_total: u64,
+    pub(crate) display_finalize_misses_total: u64,
+    pub(crate) display_finalize_latches_total: u64,
+    pub(crate) display_finalize_blocking_wait_total_us: u64,
+    pub(crate) display_finalize_blocking_wait_max_us: u64,
+    pub(crate) display_finalize_surface_reallocs_total: u64,
+}
+
+pub(crate) fn render_health_counts() -> RenderHealthCounts {
+    RenderHealthCounts {
+        servo: servo_effect_health_counts(),
+        pipeline: render_pipeline_health_counts(),
+    }
+}
+
+#[cfg(feature = "servo")]
+fn servo_effect_health_counts() -> ServoEffectHealthCounts {
+    hypercolor_core::effect::servo_telemetry_snapshot()
+}
+
+#[cfg(not(feature = "servo"))]
+fn servo_effect_health_counts() -> ServoEffectHealthCounts {
+    ServoEffectHealthCounts::default()
+}
+
+#[cfg(feature = "wgpu")]
+fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
+    let producer = crate::render_thread::producer_frame_counts();
+    let gpu = crate::render_thread::sparkleflinger::gpu::gpu_sparkleflinger_telemetry_snapshot();
+    RenderPipelineHealthCounts {
+        cpu_producer_frames: producer.cpu_frames,
+        gpu_producer_frames: producer.gpu_frames,
+        gpu_cpu_materialization_blocked_total: producer.gpu_cpu_materialization_blocked,
+        skipped_gpu_source_uploads: gpu.source_upload_skipped_total,
+        media_texture_allocations_total: gpu.media_texture_allocations_total,
+        media_texture_upload_bytes_total: gpu.media_texture_upload_bytes_total,
+        display_finalize_rgba_attempts_total: gpu.display_finalize_rgba_attempts_total,
+        display_finalize_yuv_attempts_total: gpu.display_finalize_yuv_attempts_total,
+        display_finalize_successes_total: gpu.display_finalize_successes_total,
+        display_finalize_misses_total: gpu.display_finalize_misses_total,
+        display_finalize_latches_total: gpu.display_finalize_latches_total,
+        display_finalize_blocking_wait_total_us: gpu.display_finalize_blocking_wait_total_us,
+        display_finalize_blocking_wait_max_us: gpu.display_finalize_blocking_wait_max_us,
+        display_finalize_surface_reallocs_total: gpu.display_finalize_surface_reallocs_total,
+    }
+}
+
+#[cfg(not(feature = "wgpu"))]
+fn render_pipeline_health_counts() -> RenderPipelineHealthCounts {
+    let producer = crate::render_thread::producer_frame_counts();
+    RenderPipelineHealthCounts {
+        cpu_producer_frames: producer.cpu_frames,
+        gpu_producer_frames: producer.gpu_frames,
+        gpu_cpu_materialization_blocked_total: producer.gpu_cpu_materialization_blocked,
+        ..RenderPipelineHealthCounts::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LatencyHistogram, LatestFrameMetrics, PerformanceTracker};
+
+    #[test]
+    fn input_latency_histogram_reports_session_percentiles() {
+        let mut histogram = LatencyHistogram::default();
+        for sample in 1..=100_u32 {
+            histogram.record(sample.saturating_mul(100));
+        }
+
+        let summary = histogram.summary();
+        assert_eq!(summary.avg_ms, 5.05);
+        assert_eq!(summary.p95_ms, 9.5);
+        assert_eq!(summary.p99_ms, 9.9);
+        assert_eq!(summary.max_ms, 10.0);
+    }
+
+    #[test]
+    fn input_latency_percentiles_never_exceed_the_observed_maximum() {
+        let mut histogram = LatencyHistogram::default();
+        histogram.record(1);
+
+        let summary = histogram.summary();
+        assert_eq!(summary.p95_ms, 0.001);
+        assert_eq!(summary.p99_ms, 0.001);
+        assert_eq!(summary.max_ms, 0.001);
+    }
+
+    #[test]
+    fn performance_snapshot_retains_input_and_full_frame_copy_contracts() {
+        let mut tracker = PerformanceTracker::default();
+        tracker.record_frame(&LatestFrameMetrics {
+            input_sampled: true,
+            input_us: 740,
+            full_frame_copy_count: 2,
+            full_frame_copy_bytes: 4096,
+            ..LatestFrameMetrics::default()
+        });
+        tracker.record_frame(&LatestFrameMetrics {
+            input_sampled: true,
+            input_us: 980,
+            ..LatestFrameMetrics::default()
+        });
+        tracker.record_frame(&LatestFrameMetrics::default());
+        tracker.clear_frame_timings();
+
+        let snapshot = tracker.snapshot();
+        let histogram = tracker.input_time_histogram_snapshot();
+        assert_eq!(snapshot.frame_count, 0);
+        assert_eq!(snapshot.input_time.p95_ms, 0.98);
+        assert_eq!(snapshot.input_time.p99_ms, 0.98);
+        assert_eq!(snapshot.input_time_sample_count, 2);
+        assert_eq!(snapshot.full_frame_copy_count_total, 2);
+        assert_eq!(snapshot.full_frame_copy_frames_total, 1);
+        assert_eq!(snapshot.full_frame_copy_bytes_total, 4096);
+        assert_eq!(histogram.bucket_width_us, 100);
+        assert_eq!(histogram.overflow_bucket_index, 4096);
+        assert_eq!(
+            histogram
+                .buckets
+                .iter()
+                .map(|bucket| (bucket.bucket_index, bucket.count))
+                .collect::<Vec<_>>(),
+            vec![(8, 1), (10, 1)]
+        );
+    }
 }

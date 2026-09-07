@@ -74,6 +74,14 @@ pub struct DeviceMetrics {
     pub last_transport_completed_sequence: u64,
     #[serde(default)]
     pub last_transport_failed_sequence: u64,
+    #[serde(default)]
+    pub display_queue_generation: Option<u64>,
+    #[serde(default)]
+    pub display_transport_started: u64,
+    #[serde(default)]
+    pub display_transport_completed: u64,
+    #[serde(default)]
+    pub display_transport_failed: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -277,6 +285,10 @@ fn build_device_metrics(
         last_transport_started_sequence: stats.last_transport_started_sequence,
         last_transport_completed_sequence: stats.last_transport_completed_sequence,
         last_transport_failed_sequence: stats.last_transport_failed_sequence,
+        display_queue_generation: stats.display_queue_generation,
+        display_transport_started: stats.display_transport_started,
+        display_transport_completed: stats.display_transport_completed,
+        display_transport_failed: stats.display_transport_failed,
     }
 }
 

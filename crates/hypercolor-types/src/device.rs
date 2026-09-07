@@ -7,68 +7,31 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::net::IpAddr;
-use std::str::FromStr;
+use std::time::Duration;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hypercolor_color::DevicePixelLayout;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::scene::DisplayRotation;
 use crate::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 
 // ── DeviceId ──────────────────────────────────────────────────────────────
 
-/// Opaque, globally unique device identifier.
-///
-/// Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
-/// database keys, map keys, and log correlation IDs.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
-pub struct DeviceId(pub Uuid);
-
-impl DeviceId {
-    /// Generate a fresh identifier (`UUIDv7` -- time-ordered).
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-
-    /// Wrap an existing UUID.
-    #[must_use]
-    pub fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-
-    /// The inner UUID value.
-    #[must_use]
-    pub fn as_uuid(&self) -> Uuid {
-        self.0
-    }
-}
+crate::identity::uuid_id!(
+    /// Opaque, globally unique device identifier.
+    ///
+    /// Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
+    /// database keys, map keys, and log correlation IDs.
+    DeviceId
+);
 
 impl Default for DeviceId {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl fmt::Debug for DeviceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DeviceId({})", self.0)
-    }
-}
-
-impl fmt::Display for DeviceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl FromStr for DeviceId {
-    type Err = uuid::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Uuid::parse_str(s).map(Self)
     }
 }
 
@@ -79,7 +42,7 @@ impl FromStr for DeviceId {
 /// Populated during discovery and enriched during connection. Serialized to
 /// TOML for the device registry and transmitted to frontends via the event
 /// bus.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceInfo {
     /// Stable unique identifier.
     pub id: DeviceId,
@@ -103,8 +66,8 @@ pub struct DeviceInfo {
     /// Driver ownership and output routing metadata.
     pub origin: DeviceOrigin,
 
-    /// Zones within this device, each with its own LED topology.
-    pub zones: Vec<ZoneInfo>,
+    /// Segments within this device, each with its own LED topology.
+    pub segments: Vec<SegmentInfo>,
 
     /// Firmware version string, if known.
     pub firmware_version: Option<String>,
@@ -114,10 +77,10 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    /// Total LED count across all zones.
+    /// Total LED count across all segments.
     #[must_use]
     pub fn total_led_count(&self) -> u32 {
-        self.zones.iter().map(|z| z.led_count).sum()
+        self.segments.iter().map(|segment| segment.led_count).sum()
     }
 
     /// Driver module that owns this device's semantics.
@@ -149,6 +112,12 @@ pub struct DeviceFeatures {
 
     /// Supports scroll acceleration toggle.
     pub scroll_acceleration: bool,
+
+    /// Largest encoded display frame the device's wire format can carry,
+    /// in bytes. The host's encoder steps quality down to fit it and drops
+    /// a frame it cannot fit rather than truncating it.
+    #[serde(default)]
+    pub max_display_frame_len: Option<usize>,
 }
 
 /// Generic scroll wheel operating mode.
@@ -184,20 +153,23 @@ pub struct DeviceCapabilities {
     pub supports_brightness: bool,
 
     /// Whether the device exposes a pixel display surface.
+    ///
+    /// A summary of the device's `Display` segment, rewritten by the host at
+    /// adoption through [`DeviceInfo::sync_display_capabilities`]; the
+    /// segment is authoritative.
     pub has_display: bool,
 
-    /// Display resolution in pixels, when applicable.
+    /// Display resolution in pixels, when applicable. Derived like
+    /// `has_display`.
     pub display_resolution: Option<(u32, u32)>,
 
     /// Maximum sustainable frame rate (0 = unknown / unlimited).
     pub max_fps: u32,
 
     /// Native color model expected by the device/backend.
-    #[serde(default)]
     pub color_space: DeviceColorSpace,
 
     /// Optional non-lighting device features.
-    #[serde(default)]
     pub features: DeviceFeatures,
 }
 
@@ -230,6 +202,12 @@ pub struct DeviceUserSettings {
 
     /// User-selected device brightness scalar.
     pub brightness: f32,
+
+    /// How a display-capable device's panel is mounted. Everything drawn
+    /// on the panel turns to match, so a screen installed upside down or
+    /// on its side reads upright. Ignored for devices without a display.
+    #[serde(default, skip_serializing_if = "DisplayRotation::is_upright")]
+    pub display_rotation: DisplayRotation,
 }
 
 impl Default for DeviceUserSettings {
@@ -238,56 +216,57 @@ impl Default for DeviceUserSettings {
             name: None,
             enabled: true,
             brightness: 1.0,
+            display_rotation: DisplayRotation::default(),
         }
     }
 }
 
-// ── ZoneInfo ──────────────────────────────────────────────────────────────
+// ── SegmentInfo ───────────────────────────────────────────────────────────
 
-/// A single zone within a device.
+/// A single hardware segment within a device.
 ///
-/// Each zone maps to a contiguous range of LEDs with a specific topology.
-/// The spatial layout engine positions zones on the canvas independently.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZoneInfo {
-    /// Zone name (e.g., "Channel 1", "ATX Strimer", "Keyboard Backlight").
+/// Each segment maps to a contiguous range of LEDs with a specific topology.
+/// The spatial layout engine positions segments on the canvas independently.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SegmentInfo {
+    /// Segment name (e.g., "Channel 1", "ATX Strimer", "Keyboard Backlight").
     pub name: String,
 
-    /// Number of LEDs in this zone.
+    /// Number of LEDs in this segment.
     pub led_count: u32,
 
     /// Physical arrangement of LEDs.
     pub topology: DeviceTopologyHint,
 
-    /// Wire-level color format for this zone.
+    /// Wire-level color format for this segment.
     pub color_format: DeviceColorFormat,
 
     /// Optional device-declared spatial presentation hint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout_hint: Option<ZoneLayoutHint>,
+    pub layout_hint: Option<SegmentLayoutHint>,
 }
 
 /// Device-declared spatial hint used when auto-generating or repairing layouts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ZoneLayoutHint {
+pub struct SegmentLayoutHint {
     /// Rich topology to use instead of deriving one from [`DeviceTopologyHint`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<LedTopology>,
 
-    /// Preferred zone size in normalized canvas coordinates.
+    /// Preferred segment size in normalized canvas coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<NormalizedPosition>,
 
-    /// Preferred editor shape for this zone.
+    /// Preferred editor shape for this segment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<ZoneShape>,
 
-    /// Place this zone at the same center as sibling zones.
+    /// Place this segment at the same center as sibling segments.
     #[serde(default)]
     pub co_located: bool,
 }
 
-impl ZoneLayoutHint {
+impl SegmentLayoutHint {
     /// Build a custom topology from integer grid coordinates.
     #[must_use]
     pub fn custom_grid(width: u32, height: u32, coordinates: &[(u32, u32)]) -> Self {
@@ -381,6 +360,9 @@ pub enum DeviceTopologyHint {
         height: u32,
         /// Whether the panel is circular.
         circular: bool,
+        /// Payload format the device takes for a frame.
+        #[serde(default)]
+        format: DisplayFrameFormat,
     },
 
     /// Arbitrary positions defined in the spatial layout.
@@ -411,7 +393,8 @@ pub enum ConnectionType {
 // ── Driver Metadata ──────────────────────────────────────────────────────
 
 /// High-level module category used for driver registry introspection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DriverModuleKind {
     /// Driver owns network discovery, pairing, and output.
@@ -431,10 +414,11 @@ pub enum DriverModuleKind {
 }
 
 /// Current schema version for value-shaped driver module descriptors.
-pub const DRIVER_MODULE_API_SCHEMA_VERSION: u32 = 2;
+pub const DRIVER_MODULE_API_SCHEMA_VERSION: u32 = 3;
 
 /// API-facing transport category for a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DriverTransportKind {
     /// IP network transport.
@@ -511,8 +495,63 @@ impl From<ConnectionType> for DriverTransportKind {
     }
 }
 
+/// Whether a driver transport can run on the current platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DriverTransportAvailability {
+    /// A runtime backend exists on the current platform.
+    Available,
+
+    /// No runtime backend exists on the current platform.
+    UnsupportedPlatform {
+        /// Human-readable operating-system name.
+        platform: String,
+    },
+}
+
+/// One transport category advertised by a driver module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DriverTransportDescriptor {
+    /// Transport category used for routing and presentation.
+    pub kind: DriverTransportKind,
+
+    /// Runtime availability on the current platform.
+    pub availability: DriverTransportAvailability,
+}
+
+impl DriverTransportDescriptor {
+    /// Describe a transport with a runtime backend on the current platform.
+    #[must_use]
+    pub const fn available(kind: DriverTransportKind) -> Self {
+        Self {
+            kind,
+            availability: DriverTransportAvailability::Available,
+        }
+    }
+
+    /// Describe a transport without a runtime backend on the current platform.
+    #[must_use]
+    pub fn unsupported_platform(kind: DriverTransportKind, platform: impl Into<String>) -> Self {
+        Self {
+            kind,
+            availability: DriverTransportAvailability::UnsupportedPlatform {
+                platform: platform.into(),
+            },
+        }
+    }
+
+    /// Whether a runtime backend exists on the current platform.
+    #[must_use]
+    pub const fn is_available(&self) -> bool {
+        matches!(self.availability, DriverTransportAvailability::Available)
+    }
+}
+
 /// Capability flags exposed by a driver module.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverCapabilitySet {
     /// Exposes driver-scoped configuration.
     pub config: bool,
@@ -539,7 +578,6 @@ pub struct DriverCapabilitySet {
     pub presentation: bool,
 
     /// Exposes typed dynamic control surfaces.
-    #[serde(default)]
     pub controls: bool,
 }
 
@@ -562,7 +600,8 @@ impl DriverCapabilitySet {
 }
 
 /// Presentation hint for devices owned by a driver module.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceClassHint {
     /// Keyboard-like device.
@@ -591,7 +630,8 @@ pub enum DeviceClassHint {
 }
 
 /// API and UI presentation metadata for a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverPresentation {
     /// Human-readable driver label.
     pub label: String,
@@ -618,7 +658,8 @@ pub struct DriverPresentation {
 }
 
 /// Stable module descriptor for native and future Wasm driver registries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverModuleDescriptor {
     /// Stable driver identifier.
     pub id: String,
@@ -633,8 +674,8 @@ pub struct DriverModuleDescriptor {
     /// High-level module category.
     pub module_kind: DriverModuleKind,
 
-    /// Transport categories used by this driver.
-    pub transports: Vec<DriverTransportKind>,
+    /// Transport categories used by this driver and their platform support.
+    pub transports: Vec<DriverTransportDescriptor>,
 
     /// Driver capabilities.
     pub capabilities: DriverCapabilitySet,
@@ -650,7 +691,8 @@ pub struct DriverModuleDescriptor {
 }
 
 /// Protocol descriptor contributed by a driver module.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DriverProtocolDescriptor {
     /// Driver module that owns this protocol.
     pub driver_id: String,
@@ -688,7 +730,8 @@ pub struct DriverProtocolDescriptor {
 }
 
 /// Origin metadata that separates device ownership from output routing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceOrigin {
     /// Driver module that owns discovery, semantics, and presentation.
     pub driver_id: String,
@@ -814,6 +857,7 @@ fn sanitize_family_id(value: &str) -> String {
 /// Transitions are enforced by `DeviceStateMachine` in `hypercolor-core`.
 /// This enum is the serializable snapshot used by frontends and persistence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum DeviceState {
     /// Discovered but not yet connected.
     Known,
@@ -859,14 +903,10 @@ impl fmt::Display for DeviceState {
 
 // ── DeviceColorFormat ─────────────────────────────────────────────────────
 
-/// Wire-level color format used by a device zone.
+/// Wire-level color format used by a device segment.
 ///
 /// Backends apply the conversion in `push_frame` before writing bytes to
 /// the transport.
-///
-/// This is the *device-side* format hint (2 variants). For the richer
-/// canvas-level color format (including `RgbW16`), see
-/// [`canvas::ColorFormat`](crate::canvas::ColorFormat).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceColorFormat {
     /// Standard RGB byte order (WLED, Prism S, Prism Mini).
@@ -880,9 +920,22 @@ pub enum DeviceColorFormat {
 
     /// Red-Blue-Green channel order.
     Rbg,
+}
 
-    /// JPEG-compressed pixel data.
-    Jpeg,
+impl DeviceColorFormat {
+    /// The channel layout a device of this format consumes.
+    ///
+    /// `None` for [`Self::Jpeg`], which carries compressed frames rather
+    /// than per-pixel channel bytes and so has no layout to encode into.
+    #[must_use]
+    pub const fn pixel_layout(self) -> Option<DevicePixelLayout> {
+        match self {
+            Self::Rgb => Some(DevicePixelLayout::Rgb),
+            Self::Rgbw => Some(DevicePixelLayout::RgbwZeroWhite),
+            Self::Grb => Some(DevicePixelLayout::Grb),
+            Self::Rbg => Some(DevicePixelLayout::Rbg),
+        }
+    }
 }
 
 impl fmt::Display for DeviceColorFormat {
@@ -892,33 +945,79 @@ impl fmt::Display for DeviceColorFormat {
             Self::Rgbw => write!(f, "RGBW"),
             Self::Grb => write!(f, "GRB"),
             Self::Rbg => write!(f, "RBG"),
-            Self::Jpeg => write!(f, "JPEG"),
         }
     }
 }
 
 /// Pixel payload format for display-capable devices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayFrameFormat {
     /// JPEG-compressed image bytes.
+    #[default]
     Jpeg,
 
     /// Raw RGB byte triplets, row-major.
     Rgb,
 }
 
-impl DisplayFrameFormat {
-    /// Convert a display zone color format into a payload format.
+/// The pixel surface a display segment declares: the one place a device's
+/// display geometry and payload format live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DisplaySurface {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Whether the panel is circular.
+    pub circular: bool,
+    /// Payload format the device takes for a frame.
+    pub format: DisplayFrameFormat,
+}
+
+impl DeviceTopologyHint {
+    /// The display surface this hint declares, if it is a display.
     #[must_use]
-    pub const fn from_device_color_format(format: DeviceColorFormat) -> Self {
-        match format {
-            DeviceColorFormat::Rgb => Self::Rgb,
-            DeviceColorFormat::Rgbw
-            | DeviceColorFormat::Grb
-            | DeviceColorFormat::Rbg
-            | DeviceColorFormat::Jpeg => Self::Jpeg,
+    pub const fn display_surface(&self) -> Option<DisplaySurface> {
+        match *self {
+            Self::Display {
+                width,
+                height,
+                circular,
+                format,
+            } => Some(DisplaySurface {
+                width,
+                height,
+                circular,
+                format,
+            }),
+            _ => None,
         }
+    }
+}
+
+impl DeviceInfo {
+    /// The device's display surface, from its first `Display` segment.
+    ///
+    /// The segment is the single source of truth for display geometry and
+    /// format; [`DeviceCapabilities::has_display`] and
+    /// [`DeviceCapabilities::display_resolution`] are summaries derived from
+    /// it by [`DeviceInfo::sync_display_capabilities`].
+    #[must_use]
+    pub fn display_surface(&self) -> Option<DisplaySurface> {
+        self.segments
+            .iter()
+            .find_map(|segment| segment.topology.display_surface())
+    }
+
+    /// Rewrite the display capability summary from the display segment, so a
+    /// driver that declared one without the other cannot leave the two
+    /// disagreeing.
+    pub fn sync_display_capabilities(&mut self) {
+        let surface = self.display_surface();
+        self.capabilities.has_display = surface.is_some();
+        self.capabilities.display_resolution =
+            surface.map(|surface| (surface.width, surface.height));
     }
 }
 
@@ -942,6 +1041,20 @@ pub struct DisplayFramePayload<'a> {
     pub height: u32,
     /// Pixel or compressed image bytes.
     pub data: &'a [u8],
+}
+
+impl<'a> DisplayFramePayload<'a> {
+    /// A JPEG payload. The image carries its own dimensions, so the
+    /// geometry fields are zero.
+    #[must_use]
+    pub const fn jpeg(data: &'a [u8]) -> Self {
+        Self {
+            format: DisplayFrameFormat::Jpeg,
+            width: 0,
+            height: 0,
+            data,
+        }
+    }
 }
 
 /// Owned display frame payload.
@@ -995,10 +1108,22 @@ pub enum DeviceColorSpace {
 
 // ── DeviceError ───────────────────────────────────────────────────────────
 
+/// Recovery action recommended by a typed driver-boundary error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorRecoverability {
+    /// Retry the same operation without rebuilding the connection.
+    Retry,
+    /// Reconnect or rebuild the device session before retrying.
+    Reconnect,
+    /// Do not retry without a configuration or capability change.
+    Permanent,
+}
+
 /// Errors from the device backend layer.
 ///
 /// All variants are `Send + Sync` for use across async boundaries.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DeviceError {
     /// Connection attempt failed.
     #[error("connection to {device} failed: {reason}")]
@@ -1019,12 +1144,17 @@ pub enum DeviceError {
     },
 
     /// Operation timed out.
-    #[error("timeout communicating with {device}: {operation}")]
+    #[error("device operation timed out after {after:?}")]
     Timeout {
-        /// Device display name or identifier.
-        device: String,
-        /// What was being attempted.
-        operation: String,
+        /// Elapsed deadline.
+        after: Duration,
+    },
+
+    /// The backend has not adopted this discovered device.
+    #[error("device has not been adopted by an output backend: {device_id}")]
+    NotAdopted {
+        /// Device missing from backend-owned inventory.
+        device_id: DeviceId,
     },
 
     /// Device not found during connection attempt.
@@ -1050,6 +1180,15 @@ pub enum DeviceError {
         device: String,
     },
 
+    /// The host denied access to the device transport.
+    #[error("permission denied for {device}: {detail}")]
+    PermissionDenied {
+        /// Device display name or identifier.
+        device: String,
+        /// Operating system policy or access failure detail.
+        detail: String,
+    },
+
     /// Connection handle is stale or unknown.
     #[error("invalid handle {handle_id} for backend {backend}")]
     InvalidHandle {
@@ -1069,21 +1208,58 @@ pub enum DeviceError {
         /// Requested next state name.
         to: String,
     },
+
+    /// The backend does not implement the requested operation.
+    #[error("backend {backend} does not support {operation}")]
+    Unsupported {
+        /// Stable backend identifier.
+        backend: String,
+        /// Human-readable operation name.
+        operation: &'static str,
+    },
 }
 
 impl DeviceError {
-    /// Whether this error indicates the device is gone and reconnection
-    /// should be attempted.
+    /// Build a typed connection failure from a concrete transport error.
+    pub fn connection(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::ConnectionFailed {
+            device: device.to_string(),
+            reason: error.to_string(),
+        }
+    }
+
+    /// Build a typed write failure from a concrete transport error.
+    pub fn write(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::WriteError {
+            device: device.to_string(),
+            detail: error.to_string(),
+        }
+    }
+
+    /// Build a typed protocol failure from a concrete protocol error.
+    pub fn protocol(device: impl ToString, error: impl std::fmt::Display) -> Self {
+        Self::ProtocolError {
+            device: device.to_string(),
+            detail: error.to_string(),
+        }
+    }
+
+    /// Classify the recovery action for this failure.
     #[must_use]
-    pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
+    pub const fn recoverability(&self) -> ErrorRecoverability {
+        match self {
+            Self::Timeout { .. } => ErrorRecoverability::Retry,
             Self::ConnectionFailed { .. }
-                | Self::WriteError { .. }
-                | Self::Timeout { .. }
-                | Self::ProtocolError { .. }
-                | Self::Disconnected { .. }
-        )
+            | Self::WriteError { .. }
+            | Self::ProtocolError { .. }
+            | Self::Disconnected { .. } => ErrorRecoverability::Reconnect,
+            Self::NotAdopted { .. }
+            | Self::NotFound { .. }
+            | Self::PermissionDenied { .. }
+            | Self::InvalidHandle { .. }
+            | Self::InvalidTransition { .. }
+            | Self::Unsupported { .. } => ErrorRecoverability::Permanent,
+        }
     }
 }
 
@@ -1171,7 +1347,7 @@ impl DeviceIdentifier {
 
     /// Compute a stable fingerprint for deduplication.
     #[must_use]
-    pub fn fingerprint(&self) -> DeviceFingerprint {
+    pub fn fingerprint(&self, driver: &str) -> DeviceFingerprint {
         match self {
             Self::UsbHid {
                 vendor_id,
@@ -1183,19 +1359,31 @@ impl DeviceIdentifier {
                     .as_deref()
                     .or(usb_path.as_deref())
                     .unwrap_or("unknown");
-                DeviceFingerprint(format!("usb:{vendor_id:04x}:{product_id:04x}:{key}"))
+                DeviceFingerprint::mint(
+                    FingerprintNamespace::Usb,
+                    driver,
+                    &format!("{vendor_id:04x}:{product_id:04x}:{key}"),
+                )
             }
-            Self::SmBus { bus_path, address } => {
-                DeviceFingerprint(format!("smbus:{bus_path}:{address:02x}"))
-            }
-            Self::Network { mac_address, .. } => {
-                DeviceFingerprint(format!("net:{}", mac_address.to_lowercase()))
-            }
+            Self::SmBus { bus_path, address } => DeviceFingerprint::mint(
+                FingerprintNamespace::SmBus,
+                driver,
+                &format!("{bus_path}:{address:02x}"),
+            ),
+            Self::Network { mac_address, .. } => DeviceFingerprint::mint(
+                FingerprintNamespace::Net,
+                driver,
+                &mac_address.to_lowercase(),
+            ),
             Self::Bridge {
                 service,
                 device_serial,
                 ..
-            } => DeviceFingerprint(format!("bridge:{service}:{device_serial}")),
+            } => DeviceFingerprint::mint(
+                FingerprintNamespace::Bridge,
+                driver,
+                &format!("{service}:{device_serial}"),
+            ),
         }
     }
 }
@@ -1262,10 +1450,67 @@ impl fmt::Display for DeviceHandle {
 ///
 /// Two devices with the same fingerprint are considered the same physical
 /// hardware.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub enum FingerprintNamespace {
+    /// USB and USB-HID attachment identity.
+    Usb,
+    /// SMBus or I2C bus attachment identity.
+    SmBus,
+    /// Local or routable network identity.
+    Net,
+    /// Vendor cloud inventory identity.
+    Cloud,
+    /// Out-of-process bridge identity.
+    Bridge,
+}
+
+impl FingerprintNamespace {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Usb => "usb",
+            Self::SmBus => "smbus",
+            Self::Net => "net",
+            Self::Cloud => "cloud",
+            Self::Bridge => "bridge",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceFingerprint(pub String);
+#[serde(transparent)]
+pub struct DeviceFingerprint(String);
 
 impl DeviceFingerprint {
+    /// Mint a canonical driver-qualified device fingerprint.
+    #[must_use]
+    pub fn mint(namespace: FingerprintNamespace, driver: &str, key: &str) -> Self {
+        let driver = driver.trim().to_ascii_lowercase();
+        assert!(
+            !driver.is_empty() && !driver.contains(':'),
+            "fingerprint driver must be a non-empty colon-free identifier"
+        );
+        assert!(!key.is_empty(), "fingerprint key must not be empty");
+        Self(format!("{}:{driver}:{key}", namespace.as_str()))
+    }
+
+    /// Rehydrate an already-persisted fingerprint without changing its bytes.
+    #[must_use]
+    pub fn from_persisted(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Borrow the encoded fingerprint.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume this fingerprint and return its encoded form.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+
     /// Derive a deterministic [`DeviceId`] from this fingerprint.
     ///
     /// This keeps scanner and backend-side discovery aligned on a stable ID

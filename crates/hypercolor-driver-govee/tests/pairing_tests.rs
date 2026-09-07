@@ -4,12 +4,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    DeviceAuthState, DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule,
-    DriverRuntimeActions, PairDeviceRequest, PairDeviceStatus, PairingFlowKind, TrackedDeviceCtx,
+    DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverModule, DriverRuntimeActions,
+    TrackedDeviceCtx,
 };
-use hypercolor_driver_govee::{GoveeDriverModule, GoveeLanDevice, build_device_info};
-use hypercolor_types::config::GoveeConfig;
+use hypercolor_driver_govee::{GoveeConfig, GoveeDriverModule, GoveeLanDevice, build_device_info};
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::pairing::{
+    DeviceAuthState, PairDeviceRequest, PairDeviceStatus, PairingFlowKind,
+};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -92,6 +94,7 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
     let open = pairing
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
     assert_eq!(open.state, DeviceAuthState::Open);
     assert!(open.can_pair);
@@ -112,6 +115,7 @@ async fn auth_summary_and_clear_credentials_use_account_key() {
     let configured = pairing
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
     assert_eq!(configured.state, DeviceAuthState::Configured);
     assert!(!configured.can_pair);
@@ -151,6 +155,7 @@ async fn auth_summary_requires_pairing_for_cloud_only_inventory() {
         .expect("Govee factory should expose pairing")
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
 
     assert_eq!(summary.state, DeviceAuthState::Required);
@@ -181,6 +186,7 @@ async fn auth_summary_does_not_offer_pairing_for_lan_only_sku() {
         .expect("Govee factory should expose pairing")
         .auth_summary(&host, &context)
         .await
+        .expect("credential lookup should succeed")
         .expect("Govee should report auth summary");
 
     assert_eq!(summary.state, DeviceAuthState::Open);

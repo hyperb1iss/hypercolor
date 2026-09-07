@@ -292,6 +292,13 @@ fn restore_surface_fill(
                 ScreenLetterboxFill::Solid([red, green, blue, alpha]) => match pixel_format {
                     CapturePixelFormat::Rgba8 => [red, green, blue, alpha],
                     CapturePixelFormat::Bgra8 => [blue, green, red, alpha],
+                    CapturePixelFormat::Argb2101010
+                    | CapturePixelFormat::Rgba16Float
+                    | CapturePixelFormat::Yuv420VideoRange
+                    | CapturePixelFormat::Yuv420FullRange
+                    | CapturePixelFormat::Yuv44410BiPlanar => {
+                        unreachable!("native source formats cannot back reduced CPU surfaces")
+                    }
                 },
                 ScreenLetterboxFill::EdgeExtend => {
                     let edge_x =
@@ -355,6 +362,13 @@ fn read_surface_rgb(pixel: &[u8], pixel_format: CapturePixelFormat) -> [u8; 3] {
     match pixel_format {
         CapturePixelFormat::Rgba8 => [pixel[0], pixel[1], pixel[2]],
         CapturePixelFormat::Bgra8 => [pixel[2], pixel[1], pixel[0]],
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            unreachable!("native source formats cannot back reduced CPU surfaces")
+        }
     }
 }
 
@@ -365,6 +379,13 @@ fn write_surface_rgb(pixel: &mut [u8], pixel_format: CapturePixelFormat, color: 
             pixel[0] = color[2];
             pixel[1] = color[1];
             pixel[2] = color[0];
+        }
+        CapturePixelFormat::Argb2101010
+        | CapturePixelFormat::Rgba16Float
+        | CapturePixelFormat::Yuv420VideoRange
+        | CapturePixelFormat::Yuv420FullRange
+        | CapturePixelFormat::Yuv44410BiPlanar => {
+            unreachable!("native source formats cannot back reduced CPU surfaces")
         }
     }
 }
@@ -510,6 +531,7 @@ impl PreparedCpuSurfaceMaterializer {
         physical_descriptor: &ScreenPhysicalReductionDescriptor,
         physical_pixels: &[u8],
         captured_at: Instant,
+        suppress_scene_cut_bypass: bool,
         publication: &mut PreparedScreenPublication,
     ) -> Result<(), CpuSurfaceMaterializationError> {
         self.validate_generation(plan_generation)?;
@@ -601,6 +623,7 @@ impl PreparedCpuSurfaceMaterializer {
                 elapsed,
                 self.committed_bars
                     .is_some_and(|committed| committed != bars),
+                suppress_scene_cut_bypass,
             )?;
             for (pixel, color) in output
                 .chunks_exact_mut(BYTES_PER_PIXEL)
@@ -1002,6 +1025,7 @@ impl PreparedCpuZoneMaterializer {
         physical_descriptor: &ScreenPhysicalReductionDescriptor,
         physical_pixels: &[u8],
         captured_at: Instant,
+        suppress_scene_cut_bypass: bool,
         publication: &mut PreparedScreenPublication,
     ) -> Result<StagedCpuZonePublication, CpuZoneMaterializationError> {
         self.validate_generation(plan_generation)?;
@@ -1054,6 +1078,7 @@ impl PreparedCpuZoneMaterializer {
                 self.transfer,
                 elapsed,
                 reset_history,
+                suppress_scene_cut_bypass,
             )?;
         self.apply_tuning(&mut output[..color_count]);
         output[color_count..].fill([0, 0, 0]);
@@ -1320,6 +1345,13 @@ impl PreparedCpuZoneMaterializer {
         match self.pixel_format {
             CapturePixelFormat::Rgba8 => [pixels[offset], pixels[offset + 1], pixels[offset + 2]],
             CapturePixelFormat::Bgra8 => [pixels[offset + 2], pixels[offset + 1], pixels[offset]],
+            CapturePixelFormat::Argb2101010
+            | CapturePixelFormat::Rgba16Float
+            | CapturePixelFormat::Yuv420VideoRange
+            | CapturePixelFormat::Yuv420FullRange
+            | CapturePixelFormat::Yuv44410BiPlanar => {
+                unreachable!("native source formats cannot back reduced CPU surfaces")
+            }
         }
     }
 

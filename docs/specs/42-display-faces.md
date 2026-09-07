@@ -8,11 +8,21 @@
 > same `<meta>` property system. No new rendering framework, no separate
 > browser process — just more WebViews in the same Servo instance.
 
-**Status:** Draft (v1, aligned with Spec 48 scene/display split)
+**Status:** Implemented (status corrected 2026-08-25). `GET/PUT/DELETE
+/api/v1/displays/{id}/face`, `PATCH .../face/controls`, and `PATCH .../face/composition`
+are all live, and `DisplayFaceTarget` ships in `crates/hypercolor-types/src/scene.rs`.
+Spec 69 carries the later face work.
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-04-12
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
-**Depends on:** Render Groups (27), Display Output (10 §display), SparkleFlinger (design/30)
+**Depends on:** Multi-Zone Scenes (64) for the shipped zone model; SparkleFlinger (design/30)
+
+> **Vocabulary note (2026-08-25):** the summary above and the body call a face "an effect
+> assigned to a display device's RenderGroup". `RenderGroup` is a retired term that a
+> workspace guard test now rejects. The shipped noun is `Zone`. Spec 27, which this
+> header used to depend on, is historical; Spec 64 owns the live model.
 **Related:** `docs/archive/2026-03-render-pipeline-modernization-plan.md` (archived plan),
 Virtual Display Simulator (41)
 
@@ -817,7 +827,7 @@ GET    /api/v1/effects                          — List all effects (faces incl
 GET    /api/v1/effects?category=display         — Filter to face effects
 GET    /api/v1/effects/{id}                     — Full metadata + controls
 POST   /api/v1/effects/{id}/apply               — Apply effect (works for faces too)
-PATCH  /api/v1/effects/current/controls          — Update live controls
+PATCH  /api/v1/effects/active/controls          — Update live controls
 POST   /api/v1/effects/rescan                    — Re-discover effects
 ```
 

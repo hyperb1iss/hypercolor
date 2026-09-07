@@ -6,9 +6,13 @@
 pub mod fuzzy;
 pub mod prompts;
 pub mod resources;
+pub mod selector;
 pub mod tools;
 
+mod control_payload;
 mod device_payload;
+mod payload;
+mod results;
 
 use std::future::ready;
 use std::sync::Arc;
@@ -34,7 +38,7 @@ use rmcp::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
 
 /// Build the MCP HTTP router mounted at the configured base path.
 #[allow(
@@ -66,7 +70,7 @@ fn http_config(config: &McpConfig) -> StreamableHttpServerConfig {
     http
 }
 
-fn normalize_base_path(path: &str) -> String {
+pub(crate) fn normalize_base_path(path: &str) -> String {
     let trimmed = path.trim();
     if trimmed.is_empty() || trimmed == "/" {
         return "/mcp".to_owned();
@@ -117,7 +121,7 @@ impl ServerHandler for HypercolorMcpServer {
                 Implementation::new("hypercolor", env!("CARGO_PKG_VERSION"))
                     .with_title("Hypercolor RGB Lighting Controller")
                     .with_description(
-                        "AI-powered RGB lighting control for Linux with effects, devices, layouts, profiles, scenes, and diagnostics.",
+                        "AI-powered RGB lighting control for Linux with effects, devices, layouts, scenes, and diagnostics.",
                     )
                     .with_website_url("https://github.com/hyperb1iss/hypercolor"),
             )
@@ -158,10 +162,7 @@ impl ServerHandler for HypercolorMcpServer {
                 .await
             {
                 Ok(payload) => Ok(CallToolResult::structured(payload)),
-                Err(error) => Ok(CallToolResult::structured_error(json!({
-                    "code": error.error_code(),
-                    "message": error.to_string()
-                }))),
+                Err(error) => Ok(CallToolResult::structured_error(tool_error_payload(&error))),
             }
         }
     }
@@ -245,6 +246,17 @@ impl ServerHandler for HypercolorMcpServer {
     }
 }
 
+fn tool_error_payload(error: &tools::ToolError) -> Value {
+    let mut payload = serde_json::Map::from_iter([
+        ("code".to_owned(), json!(error.error_code())),
+        ("message".to_owned(), json!(error.to_string())),
+    ]);
+    if let Some(details) = error.details() {
+        payload.insert("details".to_owned(), details);
+    }
+    Value::Object(payload)
+}
+
 fn tool_to_mcp(tool: &tools::ToolDefinition) -> Tool {
     Tool::new_with_raw(
         tool.name.clone(),
@@ -256,7 +268,7 @@ fn tool_to_mcp(tool: &tools::ToolDefinition) -> Tool {
     .with_annotations(
         ToolAnnotations::new()
             .read_only(tool.read_only)
-            .destructive(false)
+            .destructive(tool.destructive)
             .idempotent(tool.idempotent)
             .open_world(false),
     )

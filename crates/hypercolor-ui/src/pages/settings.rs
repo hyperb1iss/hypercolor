@@ -48,8 +48,8 @@ fn settings_section_targets(extension_ids: &[&'static str]) -> Vec<web_sys::Elem
 #[component]
 pub fn SettingsPage() -> impl IntoView {
     let config_ctx = expect_context::<ConfigContext>();
-    let devices_resource = LocalResource::new(api::fetch_audio_devices);
-    let drivers_resource = LocalResource::new(api::fetch_drivers);
+    let devices_resource = api::daemon_resource(api::fetch_audio_devices);
+    let drivers_resource = api::daemon_resource(api::fetch_drivers);
     let config = config_ctx.config;
     let set_config = config_ctx.set_config;
     let (active_section, set_active_section) = signal("audio".to_string());
@@ -156,20 +156,24 @@ pub fn SettingsPage() -> impl IntoView {
                     .lock()
                     .expect("config apply tracker lock poisoned")
                     .finish_if_current(&key, generation);
-                if is_current {
-                    if let Some(previous) = previous {
-                        set_config.update(|cfg| {
-                            if let Some(cfg) = cfg {
-                                apply_config_key(cfg, &key, &previous);
-                            }
-                        });
-                    }
+                if is_current && let Some(previous) = previous {
+                    set_config.update(|cfg| {
+                        if let Some(cfg) = cfg {
+                            apply_config_key(cfg, &key, &previous);
+                        }
+                    });
                 }
             } else {
                 config_applies
                     .lock()
                     .expect("config apply tracker lock poisoned")
                     .finish_if_current(&key, generation);
+                // Driver entries are masked on the generic config read,
+                // so the inventory is what tells this page whether a
+                // driver is enabled — re-read it after writing one.
+                if key.starts_with("drivers.") {
+                    drivers_resource.refetch();
+                }
             }
         });
     });
@@ -325,7 +329,7 @@ pub fn SettingsPage() -> impl IntoView {
                                 >
                                     <span
                                         class="w-4 h-4 flex items-center justify-center shrink-0"
-                                        class=("text-electric-yellow", is_active)
+                                        class=("text-status-warning", is_active)
                                     >
                                         <Icon icon=tab.icon width="14px" height="14px" />
                                     </span>

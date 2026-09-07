@@ -113,7 +113,7 @@ export default canvas.stateful(
             const fallbackBass = 0.08 + (0.5 + 0.5 * Math.sin(time * 0.84)) * 0.1
             const fallbackPulse = Math.max(0, Math.sin(time * 1.2)) ** 8 * 0.2
 
-            const levelTarget = Math.max(data.levelShort, data.level * 0.88, fallbackLevel)
+            const levelTarget = Math.max(data.levelShort, data.levelLinear * 0.88, fallbackLevel)
             const bassTarget = Math.max(data.bassEnv, data.bass * 0.92, fallbackBass)
             const pulseTarget = clamp01(
                 Math.max(data.beatPulse, data.onsetPulse * 0.8, data.spectralFlux * 0.32, fallbackPulse),

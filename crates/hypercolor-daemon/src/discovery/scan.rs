@@ -2,60 +2,24 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
-use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::{
-    DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction, TransportScanner,
-};
-use hypercolor_driver_api::{
-    DiscoveryRequest, DriverConfigView, DriverDiscoveredDevice, DriverModule,
-};
+use hypercolor_core::device::{DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction};
+use hypercolor_driver_api::{DiscoveryRequest, DriverConfigView, DriverError};
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
+use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
-use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use super::auto_layout::sync_active_layout_for_renderable_devices;
 use super::device_helpers::{
     apply_persisted_device_settings, desired_connect_behavior, device_log_label,
     device_ref_for_tracked, lifecycle_policy_for_device_info, sync_registry_state,
 };
 use super::lifecycle::execute_lifecycle_actions;
-use super::{DiscoveryRuntime, DiscoveryScannerResult, DiscoveryTarget, DiscoveryTargetScanner};
+use super::{DiscoveryRuntime, DiscoveryScanResult, DiscoveryScannerResult, DiscoveryTarget};
 use crate::network::{self, DaemonDriverHost};
 
 use hypercolor_core::device::ScannerScanReport;
-
-/// Detailed discovery scan result for reverse-engineering workflows.
-#[derive(Debug, Clone, Serialize)]
-pub struct DiscoveryScanResult {
-    /// Public discovery target identifiers that were scanned.
-    pub targets: Vec<String>,
-
-    /// Effective timeout used for the scan.
-    pub timeout_ms: u64,
-
-    /// Newly discovered devices.
-    pub new_devices: Vec<DeviceRef>,
-
-    /// Previously known devices observed again.
-    pub reappeared_devices: Vec<DeviceRef>,
-
-    /// Device IDs that were not observed in this scan.
-    pub vanished_devices: Vec<String>,
-
-    /// Total known devices in the registry after merge.
-    pub total_known: usize,
-
-    /// End-to-end scan duration.
-    pub duration_ms: u64,
-
-    /// Per-scanner diagnostics.
-    pub scanners: Vec<DiscoveryScannerResult>,
-}
 
 /// Execute a discovery scan only when no other scan currently owns the
 /// shared in-progress slot.
@@ -95,64 +59,162 @@ pub async fn execute_discovery_scan_if_idle(
     )
 }
 
-struct DriverModuleScanner {
-    driver: Arc<dyn DriverModule>,
-    driver_id: String,
-    config: DriverConfigEntry,
-    host: Arc<DaemonDriverHost>,
-    request: DiscoveryRequest,
+/// Execute a scan now when idle, or merge it into the next background scan.
+pub async fn execute_discovery_scan_or_enqueue(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+) -> Option<DiscoveryScanResult> {
+    enqueue_pending_scan(&runtime, targets, timeout, config);
+    if runtime
+        .in_progress
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return None;
+    }
+
+    let pending = take_pending_scan(&runtime, &driver_host)
+        .expect("discovery owner should find the request it just enqueued");
+    Some(
+        execute_discovery_scan(
+            runtime,
+            driver_registry,
+            driver_host,
+            pending.config,
+            pending.targets,
+            pending.timeout,
+        )
+        .await,
+    )
 }
 
-impl DriverModuleScanner {
-    fn new(
-        driver: Arc<dyn DriverModule>,
-        driver_id: String,
-        config: DriverConfigEntry,
-        host: Arc<DaemonDriverHost>,
-        request: DiscoveryRequest,
-    ) -> Self {
-        Self {
-            driver,
-            driver_id,
-            config,
-            host,
-            request,
+/// Merge a background discovery request and ensure a worker owns it.
+pub fn schedule_discovery_scan(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+) {
+    if targets.is_empty() {
+        return;
+    }
+    enqueue_pending_scan(&runtime, targets, timeout, config);
+    spawn_pending_scan_if_idle(runtime, driver_registry, driver_host);
+}
+
+fn enqueue_pending_scan(
+    runtime: &DiscoveryRuntime,
+    targets: Vec<DiscoveryTarget>,
+    timeout: Duration,
+    config: Arc<HypercolorConfig>,
+) {
+    let mut pending = runtime
+        .pending_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    pending.merge(targets, timeout, config);
+}
+
+fn take_pending_scan(
+    runtime: &DiscoveryRuntime,
+    driver_host: &DaemonDriverHost,
+) -> Option<super::PendingDiscoveryScan> {
+    let mut pending = runtime
+        .pending_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut scan = pending.take()?;
+    if let Some(config) = driver_host.current_config_snapshot() {
+        scan.config = config;
+    }
+    Some(scan)
+}
+
+fn has_pending_scan(runtime: &DiscoveryRuntime) -> bool {
+    !runtime
+        .pending_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_empty()
+}
+
+fn spawn_pending_scan_if_idle(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+) {
+    if runtime
+        .in_progress
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return;
+    }
+
+    let Some(pending) = take_pending_scan(&runtime, &driver_host) else {
+        runtime
+            .in_progress
+            .store(false, std::sync::atomic::Ordering::Release);
+        if has_pending_scan(&runtime) {
+            spawn_pending_scan_if_idle(runtime, driver_registry, driver_host);
         }
-    }
+        return;
+    };
+
+    let task_spawner = runtime.task_spawner.clone();
+    task_spawner.spawn(async move {
+        let result = execute_discovery_scan(
+            runtime,
+            driver_registry,
+            driver_host,
+            pending.config,
+            pending.targets,
+            pending.timeout,
+        )
+        .await;
+        debug!(
+            found = result.new_devices.len() + result.reappeared_devices.len(),
+            vanished = result.vanished_devices.len(),
+            duration_ms = result.duration_ms,
+            "Queued discovery scan finished"
+        );
+    });
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for DriverModuleScanner {
-    fn name(&self) -> &str {
-        self.driver.descriptor().display_name
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        let Some(capability) = self.driver.discovery() else {
-            return Ok(Vec::new());
-        };
-        let config = DriverConfigView {
-            driver_id: &self.driver_id,
-            entry: &self.config,
-        };
-        let result = capability
-            .discover(self.host.as_ref(), &self.request, config)
-            .await?;
-        Ok(result
-            .devices
-            .into_iter()
-            .map(driver_discovered_to_device)
-            .collect())
-    }
+struct DiscoveryFlagGuard {
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverModuleRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
 }
 
-fn driver_discovered_to_device(device: DriverDiscoveredDevice) -> DiscoveredDevice {
-    DiscoveredDevice {
-        fingerprint: device.fingerprint,
-        connect_behavior: device.connect_behavior,
-        info: device.info,
-        metadata: device.metadata,
-        claim: device.claim,
+impl Drop for DiscoveryFlagGuard {
+    fn drop(&mut self) {
+        self.runtime
+            .in_progress
+            .store(false, std::sync::atomic::Ordering::Release);
+        if has_pending_scan(&self.runtime) {
+            spawn_pending_scan_if_idle(
+                self.runtime.clone(),
+                Arc::clone(&self.driver_registry),
+                Arc::clone(&self.driver_host),
+            );
+        }
     }
 }
 
@@ -169,8 +231,10 @@ pub async fn execute_discovery_scan(
     targets: Vec<DiscoveryTarget>,
     timeout: Duration,
 ) -> DiscoveryScanResult {
-    let _flag_guard = super::DiscoveryFlagGuard {
-        flag: Arc::clone(&runtime.in_progress),
+    let _flag_guard = DiscoveryFlagGuard {
+        runtime: runtime.clone(),
+        driver_registry: Arc::clone(&driver_registry),
+        driver_host: Arc::clone(&driver_host),
     };
     let target_names = super::target_names(&targets);
     let transient_miss_targets = targets
@@ -211,45 +275,55 @@ pub async fn execute_discovery_scan(
     }
 
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
+    let enabled_driver_ids = Arc::new(network::enabled_driver_module_ids(
+        &driver_registry,
+        &config,
+    ));
+    let registered_driver_ids = Arc::new(driver_registry.ids().into_iter().collect::<HashSet<_>>());
     for target in &targets {
-        match target.scanner() {
-            DiscoveryTargetScanner::DriverModule => {
-                let driver_id = target.as_str().to_owned();
-                let Some(driver) = driver_registry.get(&driver_id) else {
-                    warn!(driver_id, "skipping unknown discovery driver");
-                    continue;
-                };
-                if driver.discovery().is_none() {
-                    warn!(driver_id, "skipping driver without discovery capability");
-                    continue;
-                }
-                let driver_config = network::driver_config_entry(&config, &driver_id);
-                orchestrator.add_scanner(Box::new(DriverModuleScanner::new(
-                    driver,
-                    driver_id,
-                    driver_config,
-                    Arc::clone(&driver_host),
-                    DiscoveryRequest {
-                        timeout,
-                        mdns_enabled: config.discovery.mdns_enabled,
-                    },
-                )));
-            }
-            DiscoveryTargetScanner::HostTransport => {
-                let target_id = target.as_str();
-                let Some(scanner) =
-                    network::host_transport_scanner(target_id, driver_registry.as_ref(), &config)
-                else {
-                    warn!(target_id, "skipping unknown host discovery target");
-                    continue;
-                };
-                orchestrator.add_scanner(scanner);
-            }
+        let driver_id = target.as_str().to_owned();
+        let Some(driver) = driver_registry.get(&driver_id) else {
+            warn!(driver_id, "skipping unknown discovery driver");
+            continue;
+        };
+        if driver.discovery().is_none() {
+            warn!(driver_id, "skipping driver without discovery capability");
+            continue;
         }
+        let display_name = driver.descriptor().display_name.to_owned();
+        let driver_config = network::driver_config_entry(&config, &driver_id);
+        let host = Arc::clone(&driver_host);
+        let request = DiscoveryRequest {
+            timeout,
+            mdns_enabled: config.discovery.mdns_enabled,
+        };
+        let enabled_driver_ids = Arc::clone(&enabled_driver_ids);
+        let registered_driver_ids = Arc::clone(&registered_driver_ids);
+        orchestrator.add_source(display_name, async move {
+            let Some(capability) = driver.discovery() else {
+                return Ok::<_, DriverError>(Vec::new());
+            };
+            let mut devices = capability
+                .discover(
+                    host.as_ref(),
+                    &request,
+                    DriverConfigView {
+                        driver_id: &driver_id,
+                        entry: &driver_config,
+                    },
+                )
+                .await?;
+            devices.retain(|device| {
+                let device_driver_id = device.info.driver_id();
+                !registered_driver_ids.contains(device_driver_id)
+                    || enabled_driver_ids.contains(device_driver_id)
+            });
+            Ok(devices)
+        });
     }
 
-    if orchestrator.scanner_count() == 0 {
-        warn!("Discovery scan requested with zero active scanners");
+    if orchestrator.source_count() == 0 {
+        warn!("Discovery scan requested with zero active sources");
         runtime
             .event_bus
             .publish(HypercolorEvent::DeviceDiscoveryCompleted {
@@ -410,18 +484,57 @@ pub async fn execute_discovery_scan(
         "Discovery sweep finished"
     );
 
-    sync_active_layout_for_renderable_devices(&runtime, None).await;
+    let complete_sweep = super::resolve_targets(None, &config, &driver_registry)
+        .is_ok_and(|expected| complete_target_set(&targets, &expected));
+    let bindings_migrated = if complete_sweep && !scan_had_errors {
+        match Box::pin(runtime.binding_migration.reconcile_complete_sweep(
+            &runtime.device_registry,
+            &runtime.lifecycle_manager,
+            &seen_ids,
+        ))
+        .await
+        {
+            Ok(report) if report.mappings > 0 => {
+                info!(
+                    mappings = report.mappings,
+                    references = report.references,
+                    "Reconciled persisted cross-host device bindings"
+                );
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                warn!(
+                    %error,
+                    "Failed to reconcile persisted cross-host device bindings"
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if bindings_migrated {
+        reconcile_migrated_device_connections(&runtime, &seen_ids).await;
+    }
+
+    runtime
+        .layout
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
     {
         let mut manager = runtime.backend_manager.lock().await;
         manager.enable_unmapped_layout_warnings();
     }
 
-    let alias_path = ConfigManager::data_dir().join(crate::device_aliases::DEVICE_ALIASES_FILE);
-    if let Err(error) =
-        crate::device_aliases::sync_from_registry(&alias_path, &runtime.device_registry).await
+    if let Err(error) = crate::device_aliases::sync_from_registry(
+        &runtime.device_aliases_path,
+        &runtime.device_registry,
+    )
+    .await
     {
         warn!(
-            path = %alias_path.display(),
+            path = %runtime.device_aliases_path.display(),
             %error,
             "Failed to persist the device alias overlay after discovery"
         );
@@ -437,6 +550,10 @@ pub async fn execute_discovery_scan(
         duration_ms,
         scanners: map_scanner_reports(&report.scanner_reports),
     }
+}
+
+fn complete_target_set(requested: &[DiscoveryTarget], expected: &[DiscoveryTarget]) -> bool {
+    requested.len() == expected.len() && requested.iter().all(|target| expected.contains(target))
 }
 
 async fn retain_transient_target_devices(
@@ -667,6 +784,54 @@ async fn should_run_lifecycle_actions_in_background(
     false
 }
 
+async fn reconcile_migrated_device_connections(
+    runtime: &DiscoveryRuntime,
+    seen_ids: &HashSet<DeviceId>,
+) {
+    let mut device_ids = seen_ids.iter().copied().collect::<Vec<_>>();
+    device_ids.sort_by_key(DeviceId::as_uuid);
+
+    for device_id in device_ids {
+        let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+            continue;
+        };
+        let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+        let connect_behavior = desired_connect_behavior(
+            runtime,
+            device_id,
+            &tracked.info,
+            fingerprint.as_ref(),
+            tracked.connect_behavior,
+            tracked.user_settings.enabled,
+        )
+        .await;
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.on_discovered_with_behavior(
+                device_id,
+                &tracked.info,
+                fingerprint.as_ref(),
+                connect_behavior,
+            )
+        };
+        if actions.is_empty() {
+            continue;
+        }
+
+        debug!(
+            device = %tracked.info.name,
+            device_id = %device_id,
+            "reconciling device connectivity after binding migration"
+        );
+        if should_run_lifecycle_actions_in_background(runtime, &tracked.info, &actions).await {
+            spawn_lifecycle_actions_in_background(runtime, device_id, actions);
+        } else {
+            execute_lifecycle_actions(runtime.clone(), actions).await;
+            sync_registry_state(runtime, device_id).await;
+        }
+    }
+}
+
 fn spawn_lifecycle_actions_in_background(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
@@ -694,4 +859,20 @@ fn map_scanner_reports(reports: &[ScannerScanReport]) -> Vec<DiscoveryScannerRes
             error: report.error.clone(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DiscoveryTarget, complete_target_set};
+
+    #[test]
+    fn binding_migration_refuses_partial_discovery_target_sets() {
+        let expected = vec![DiscoveryTarget::usb(), DiscoveryTarget::smbus()];
+
+        assert!(!complete_target_set(&[DiscoveryTarget::usb()], &expected));
+        assert!(complete_target_set(
+            &[DiscoveryTarget::smbus(), DiscoveryTarget::usb()],
+            &expected
+        ));
+    }
 }

@@ -8,23 +8,30 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use hypercolor_core::config::paths;
+use hypercolor_core::config::{paths, servers};
 use hypercolor_core::device::discover_servers;
+use hypercolor_types::api::ApiResponse;
+use hypercolor_types::api::effects::{EffectListResponse, EffectSummary};
+use hypercolor_types::api::output::{OutputPowerMode, OutputResource};
+use hypercolor_types::api::scene::SceneDocument;
+use hypercolor_types::api::scenes::{SceneListResponse, SceneSummary};
+use hypercolor_types::api::system::{SystemResource, SystemStatus};
+use hypercolor_types::scene::{ZoneId, ZoneRole};
 use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use crate::state::{
-    ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, EffectSummary,
-    ProfileInfo, ProfileListResponse, ProfileSummary, ServerEntry, ServerResponse, StateUpdate,
-    StatusResponse, TrayCommand, WsEventMessage, WsHello,
+    AppState, DaemonMessage, EffectInfo, SceneInfo, ServerEntry, StateUpdate, TrayCommand,
+    WsEventMessage, WsHello,
 };
 
 /// Interval between reconnection attempts when the daemon is unreachable.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_HOST: &str = "localhost";
 const DEFAULT_PORT: u16 = 9420;
 
@@ -92,6 +99,18 @@ impl DaemonClient {
 
     /// Attempt to connect to the daemon and watch for events.
     async fn connect_and_watch(&mut self) -> anyhow::Result<bool> {
+        let (ws_stream, _) = connect_async(&self.ws_url).await?;
+        let (mut ws_write, mut ws_read) = ws_stream.split();
+
+        let subscribe_msg = serde_json::json!({
+            "type": "subscribe",
+            "topics": [{ "topic": "events" }]
+        });
+        ws_write
+            .send(Message::Text(subscribe_msg.to_string().into()))
+            .await?;
+        wait_for_subscription_ack(&mut ws_read, SUBSCRIPTION_TIMEOUT).await?;
+
         let state = self.fetch_initial_state().await?;
         if let (Some(expected_id), Some(server)) = (&self.active_server_id, &state.server_identity)
             && expected_id != &server.instance_id
@@ -109,17 +128,6 @@ impl DaemonClient {
         }
         let _ = self.tx.send(DaemonMessage::Connected(state));
 
-        let (ws_stream, _) = connect_async(&self.ws_url).await?;
-        let (mut ws_write, mut ws_read) = ws_stream.split();
-
-        let subscribe_msg = serde_json::json!({
-            "type": "subscribe",
-            "channels": ["events"]
-        });
-        ws_write
-            .send(Message::Text(subscribe_msg.to_string().into()))
-            .await?;
-
         info!("Connected to daemon WebSocket");
 
         loop {
@@ -127,7 +135,7 @@ impl DaemonClient {
                 ws_msg = ws_read.next() => {
                     match ws_msg {
                         Some(Ok(Message::Text(text))) => {
-                            self.handle_ws_message(&text).await;
+                            self.handle_ws_message(&text).await?;
                         }
                         Some(Ok(Message::Ping(payload))) => {
                             let _ = ws_write.send(Message::Pong(payload)).await;
@@ -159,21 +167,15 @@ impl DaemonClient {
 
     /// Fetch initial state from the daemon REST API.
     async fn fetch_initial_state(&self) -> anyhow::Result<AppState> {
-        let server_url = format!("{}/api/v1/server", self.base_url);
-        let server_resp: ApiEnvelope<ServerResponse> = self
-            .auth_request(self.http.get(&server_url))
-            .send()
-            .await?
-            .json()
-            .await?;
-        let server = server_resp
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in server response"))?;
-
-        let status = self.fetch_status().await?;
+        let system = self.fetch_system().await?;
+        let server = system.identity;
+        let status = system
+            .status
+            .ok_or_else(|| anyhow::anyhow!("System status requires daemon read access"))?;
+        let power = self.fetch_output().await?;
 
         let effects_url = format!("{}/api/v1/effects", self.base_url);
-        let effects_resp: ApiEnvelope<EffectListResponse> = self
+        let effects_resp: ApiResponse<EffectListResponse> = self
             .auth_request(self.http.get(&effects_url))
             .send()
             .await?
@@ -181,30 +183,27 @@ impl DaemonClient {
             .await?;
         let effects: Vec<EffectInfo> = effects_resp
             .data
-            .map(|list| {
-                list.items
-                    .into_iter()
-                    .map(|item: EffectSummary| EffectInfo {
-                        id: item.id,
-                        name: item.name,
-                    })
-                    .collect()
+            .items
+            .into_iter()
+            .map(|item: EffectSummary| EffectInfo {
+                id: item.id,
+                name: item.name,
             })
-            .unwrap_or_default();
+            .collect();
 
-        let profiles_url = format!("{}/api/v1/profiles", self.base_url);
-        let profiles: Vec<ProfileInfo> =
-            match self.auth_request(self.http.get(&profiles_url)).send().await {
+        let scenes_url = format!("{}/api/v1/scenes", self.base_url);
+        let scenes: Vec<SceneInfo> =
+            match self.auth_request(self.http.get(&scenes_url)).send().await {
                 Ok(response) => {
-                    let profile_resp: Result<ApiEnvelope<ProfileListResponse>, _> =
+                    let scene_resp: Result<ApiResponse<SceneListResponse>, _> =
                         response.json().await;
-                    profile_resp
+                    scene_resp
                         .ok()
-                        .and_then(|envelope| envelope.data)
                         .map(|list| {
-                            list.items
+                            list.data
+                                .items
                                 .into_iter()
-                                .map(|item: ProfileSummary| ProfileInfo {
+                                .map(|item: SceneSummary| SceneInfo {
                                     id: item.id,
                                     name: item.name,
                                 })
@@ -213,12 +212,12 @@ impl DaemonClient {
                         .unwrap_or_default()
                 }
                 Err(error) => {
-                    debug!("Failed to fetch profiles: {error}");
+                    debug!("Failed to fetch scenes: {error}");
                     Vec::new()
                 }
             };
 
-        let current_effect = status.active_effect.and_then(|name| {
+        let active_effect = status.active_effect.and_then(|name| {
             effects
                 .iter()
                 .find(|effect| effect.name == name)
@@ -240,38 +239,81 @@ impl DaemonClient {
         Ok(AppState {
             connected: true,
             running: status.running,
-            paused: false,
+            paused: power.power == OutputPowerMode::Paused,
             brightness: status.global_brightness,
-            current_effect,
+            active_effect,
             active_scene_name: status.active_scene,
             scene_snapshot_locked: status.active_scene_snapshot_locked,
             device_count: status.device_count,
             effects,
-            profiles,
+            scenes,
             server_identity: Some(server_identity.clone()),
             servers: self.known_servers.clone(),
             active_server: self.find_server_index(&server_identity.instance_id),
         })
     }
 
-    async fn fetch_status(&self) -> anyhow::Result<StatusResponse> {
-        let status_url = format!("{}/api/v1/status", self.base_url);
-        let status_resp: ApiEnvelope<StatusResponse> = self
-            .auth_request(self.http.get(&status_url))
+    async fn fetch_status(&self) -> anyhow::Result<SystemStatus> {
+        self.fetch_system()
+            .await?
+            .status
+            .ok_or_else(|| anyhow::anyhow!("System status requires daemon read access"))
+    }
+
+    async fn fetch_system(&self) -> anyhow::Result<SystemResource> {
+        let url = format!("{}/api/v1/system", self.base_url);
+        let response: ApiResponse<SystemResource> = self
+            .auth_request(self.http.get(&url))
             .send()
             .await?
             .json()
             .await?;
-        status_resp
-            .data
-            .ok_or_else(|| anyhow::anyhow!("Missing data in status response"))
+        Ok(response.data)
+    }
+
+    async fn fetch_output(&self) -> anyhow::Result<OutputResource> {
+        let url = format!("{}/api/v1/output", self.base_url);
+        let response: ApiResponse<OutputResource> = self
+            .auth_request(self.http.get(&url))
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(response.data)
+    }
+
+    async fn fetch_primary_zone_id(&self) -> anyhow::Result<Option<ZoneId>> {
+        let url = format!("{}/api/v1/scene", self.base_url);
+        let response: ApiResponse<SceneDocument> = self
+            .auth_request(self.http.get(&url))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let scene = response.data;
+        Ok(scene
+            .zones
+            .into_iter()
+            .find(|zone| zone.role == ZoneRole::Primary)
+            .map(|zone| zone.id))
+    }
+
+    async fn event_targets_primary_zone(&self, message: &WsEventMessage) -> bool {
+        match self.fetch_primary_zone_id().await {
+            Ok(Some(zone_id)) => message.targets_zone(&zone_id),
+            Ok(None) => false,
+            Err(error) => {
+                debug!("Failed to resolve primary zone for lifecycle event: {error}");
+                false
+            }
+        }
     }
 
     /// Parse a WebSocket text message and send a state update if relevant.
-    async fn handle_ws_message(&self, text: &str) {
+    async fn handle_ws_message(&self, text: &str) -> anyhow::Result<()> {
         let Ok(msg) = serde_json::from_str::<WsEventMessage>(text) else {
             debug!("Ignoring unparseable WS message");
-            return;
+            return Ok(());
         };
 
         if msg.msg_type == "hello"
@@ -280,27 +322,23 @@ impl DaemonClient {
         {
             let _ = self
                 .tx
-                .send(DaemonMessage::StateUpdate(StateUpdate::BrightnessChanged(
-                    state.brightness,
-                )));
-            if state.paused {
-                let _ = self
-                    .tx
-                    .send(DaemonMessage::StateUpdate(StateUpdate::Paused));
-            }
-            if let Some(effect) = state.effect {
-                let _ = self
-                    .tx
-                    .send(DaemonMessage::StateUpdate(StateUpdate::EffectChanged {
-                        id: effect.id,
-                        name: effect.name,
-                    }));
-            }
-            return;
+                .send(DaemonMessage::StateUpdate(StateUpdate::Snapshot {
+                    running: state.running,
+                    paused: state.paused,
+                    brightness: state.brightness,
+                    device_count: state.device_count,
+                }));
+            return Ok(());
         }
 
         if msg.msg_type != "event" {
-            return;
+            return Ok(());
+        }
+
+        if msg.requires_full_resync() {
+            let state = self.fetch_initial_state().await?;
+            let _ = self.tx.send(DaemonMessage::Connected(state));
+            return Ok(());
         }
 
         let update = match msg.event.as_str() {
@@ -334,16 +372,23 @@ impl DaemonClient {
                     },
                 }
             }
-            "effect_started" => {
+            "effect_started" if self.event_targets_primary_zone(&msg).await => {
                 let effect_data = &msg.data["effect"];
                 let id = effect_data["id"].as_str().unwrap_or_default().to_owned();
                 let name = effect_data["name"].as_str().unwrap_or_default().to_owned();
                 if id.is_empty() && name.is_empty() {
-                    return;
+                    return Ok(());
                 }
                 Some(StateUpdate::EffectChanged { id, name })
             }
-            "effect_stopped" => Some(StateUpdate::EffectStopped),
+            "effect_started" => None,
+            "effect_stopped"
+                if msg.is_destructive_effect_stop()
+                    && self.event_targets_primary_zone(&msg).await =>
+            {
+                Some(StateUpdate::EffectStopped)
+            }
+            "effect_stopped" => None,
             "brightness_changed" => {
                 let new_value = msg.data["new_value"].as_u64().unwrap_or(0);
                 #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
@@ -358,6 +403,7 @@ impl DaemonClient {
         if let Some(update) = update {
             let _ = self.tx.send(DaemonMessage::StateUpdate(update));
         }
+        Ok(())
     }
 
     /// Handle a command from the tray UI thread.
@@ -376,32 +422,32 @@ impl DaemonClient {
                 }
                 false
             }
-            TrayCommand::ApplyProfile(id) => {
-                let url = format!("{}/api/v1/profiles/{}/apply", self.base_url, id);
+            TrayCommand::ActivateScene(id) => {
+                let url = format!("{}/api/v1/scenes/{}/activate", self.base_url, id);
                 if let Err(error) = self
-                    .send_command(self.auth_request(self.http.post(&url)), "apply profile")
+                    .send_command(self.auth_request(self.http.post(&url)), "activate scene")
                     .await
                 {
-                    error!("Failed to apply profile {id}: {error}");
+                    error!("Failed to activate scene {id}: {error}");
                 }
                 false
             }
             TrayCommand::StopEffect => {
-                let url = format!("{}/api/v1/effects/stop", self.base_url);
+                let url = format!("{}/api/v1/scene/clear", self.base_url);
                 if let Err(error) = self
-                    .send_command(self.auth_request(self.http.post(&url)), "stop effect")
+                    .send_command(self.auth_request(self.http.post(&url)), "clear scene")
                     .await
                 {
-                    error!("Failed to stop effect: {error}");
+                    error!("Failed to clear scene: {error}");
                 }
                 false
             }
             TrayCommand::SetBrightness(value) => {
-                let url = format!("{}/api/v1/settings/brightness", self.base_url);
-                let body = serde_json::json!({ "brightness": value });
+                let url = format!("{}/api/v1/output", self.base_url);
+                let body = serde_json::json!({ "brightness": f32::from(value) / 100.0 });
                 if let Err(error) = self
                     .send_command(
-                        self.auth_request(self.http.put(&url)).json(&body),
+                        self.auth_request(self.http.patch(&url)).json(&body),
                         "set brightness",
                     )
                     .await
@@ -410,8 +456,19 @@ impl DaemonClient {
                 }
                 false
             }
-            TrayCommand::TogglePause => {
-                warn!("Pause/resume toggle not yet implemented in daemon API");
+            TrayCommand::SetPaused(paused) => {
+                let url = format!("{}/api/v1/output", self.base_url);
+                let state = if paused { "paused" } else { "running" };
+                let body = serde_json::json!({ "power": state });
+                if let Err(error) = self
+                    .send_command(
+                        self.auth_request(self.http.patch(&url)).json(&body),
+                        "set output power",
+                    )
+                    .await
+                {
+                    error!("Failed to set output power to {state}: {error}");
+                }
                 false
             }
             TrayCommand::OpenWebUi => {
@@ -527,18 +584,47 @@ impl DaemonClient {
     }
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
-struct StoredServersFile {
-    #[serde(default)]
-    servers: Vec<StoredServerConfig>,
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum SubscriptionAdmission {
+    Subscribed,
+    Error {
+        message: Option<String>,
+    },
+    #[serde(other)]
+    Other,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct StoredServerConfig {
-    instance_id: String,
-    api_key: String,
-    host: Option<IpAddr>,
-    port: Option<u16>,
+async fn wait_for_subscription_ack<S>(read: &mut S, timeout: Duration) -> anyhow::Result<()>
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    tokio::time::timeout(timeout, async {
+        loop {
+            match read.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let Ok(message) = serde_json::from_str::<SubscriptionAdmission>(&text) else {
+                        continue;
+                    };
+                    match message {
+                        SubscriptionAdmission::Subscribed => return Ok(()),
+                        SubscriptionAdmission::Error { message } => {
+                            let detail = message.as_deref().unwrap_or("subscription rejected");
+                            anyhow::bail!("daemon rejected event subscription: {detail}");
+                        }
+                        SubscriptionAdmission::Other => {}
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None => {
+                    anyhow::bail!("WebSocket closed before subscription acknowledgment");
+                }
+                Some(Err(error)) => return Err(error.into()),
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("event subscription acknowledgment timed out"))?
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,27 +636,20 @@ pub struct StoredServerApiKey {
 }
 
 impl StoredServerApiKey {
-    fn from_config(config: StoredServerConfig) -> Option<Self> {
-        let instance_id = config.instance_id.trim();
-        let api_key = config.api_key.trim();
-        let (Some(host), Some(port)) = (config.host, config.port) else {
+    fn from_credential(credential: servers::StoredServerCredential) -> Option<Self> {
+        let Some((host, port)) = credential.endpoint() else {
             warn!(
-                instance_id,
+                instance_id = credential.instance_id(),
                 "Ignoring servers.toml entry without a host/port binding; re-authenticate this daemon"
             );
             return None;
         };
-
-        if instance_id.is_empty() || api_key.is_empty() {
-            None
-        } else {
-            Some(Self {
-                instance_id: instance_id.to_owned(),
-                host,
-                port,
-                api_key: api_key.to_owned(),
-            })
-        }
+        Some(Self {
+            instance_id: credential.instance_id().to_owned(),
+            host,
+            port,
+            api_key: credential.api_key().to_owned(),
+        })
     }
 
     fn matches_server(&self, server: &DiscoveredServer) -> bool {
@@ -582,18 +661,13 @@ impl StoredServerApiKey {
 
 fn load_server_api_keys() -> Vec<StoredServerApiKey> {
     let path = paths::config_dir().join("servers.toml");
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return Vec::new();
-    };
-
-    match toml::from_str::<StoredServersFile>(&contents) {
-        Ok(file) => file
-            .servers
+    match servers::load_server_credentials(&path) {
+        Ok(credentials) => credentials
             .into_iter()
-            .filter_map(StoredServerApiKey::from_config)
+            .filter_map(StoredServerApiKey::from_credential)
             .collect(),
         Err(error) => {
-            debug!(path = %path.display(), %error, "Failed to parse tray server config");
+            debug!(path = %path.display(), %error, "Failed to load stored server credentials");
             Vec::new()
         }
     }
@@ -637,5 +711,50 @@ fn percent_encode(input: &str) -> String {
 fn open_web_ui(base_url: &str) {
     if let Err(error) = open::that(base_url) {
         error!("Failed to open web UI: {error}");
+    }
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use std::time::Duration;
+
+    use futures_util::stream;
+    use tokio_tungstenite::tungstenite::{Error, Message};
+
+    use super::wait_for_subscription_ack;
+
+    #[tokio::test]
+    async fn subscription_rejection_fails_connection_admission() {
+        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
+            r#"{"type":"error","message":"forbidden"}"#.into(),
+        ))]);
+
+        let error = wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
+            .await
+            .expect_err("subscription rejection must fail admission");
+
+        assert!(error.to_string().contains("forbidden"));
+    }
+
+    #[tokio::test]
+    async fn subscribed_ack_admits_authoritative_rest_reconciliation() {
+        let mut messages = stream::iter([Ok::<_, Error>(Message::Text(
+            r#"{"type":"subscribed","topics":[{"topic":"events"}]}"#.into(),
+        ))]);
+
+        wait_for_subscription_ack(&mut messages, Duration::from_secs(1))
+            .await
+            .expect("typed acknowledgment should admit REST reconciliation");
+    }
+
+    #[tokio::test]
+    async fn subscription_timeout_fails_connection_admission() {
+        let mut messages = stream::pending::<Result<Message, Error>>();
+
+        let error = wait_for_subscription_ack(&mut messages, Duration::ZERO)
+            .await
+            .expect_err("missing acknowledgment must fail admission");
+
+        assert!(error.to_string().contains("timed out"));
     }
 }

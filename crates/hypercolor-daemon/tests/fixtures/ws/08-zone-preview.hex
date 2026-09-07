@@ -1,0 +1,18 @@
+# hypercolor websocket golden fixture
+# fixture: 08-zone-preview
+# tag: 0x08 (ZONE_PREVIEW_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::ZonePreviewFrame::try_encode
+# input: 2x2 rgb, fixed scene and zone uuids
+# total-bytes: 58
+# stored-bytes: 58
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+08                                              # tag (zone preview)
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+01 23 45 67 89 ab cd ef 10 32 54 76 98 ba dc fe # scene_id uuid bytes
+fe dc ba 98 76 54 32 10 ef cd ab 89 67 45 23 01 # zone_id uuid bytes
+02 00                                           # width u16le
+02 00                                           # height u16le
+00                                              # format u8
+50 57 5e 65 6c 73 7a 81 88 8f 96 9d             # payload

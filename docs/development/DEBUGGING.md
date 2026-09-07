@@ -38,12 +38,18 @@ hypercolor diagnose [OPTIONS]
 
 ### Flags
 
-| Flag              | Type       | Description                                                                                         |
-| ----------------- | ---------- | --------------------------------------------------------------------------------------------------- |
-| `--check <CHECK>` | repeatable | Run specific check(s) only. Values: `daemon`, `devices`, `audio`, `render`, `config`, `permissions` |
-| `--report <PATH>` | path       | Write full diagnostic JSON to a file (for bug reports)                                              |
-| `--system`        | bool       | Include verbose system info (GPU, kernel, audio version)                                            |
-| `--format <FMT>`  | enum       | Output format: `table` (default), `plain`, `json`                                                   |
+| Flag              | Type       | Description                                                                                    |
+| ----------------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `--check <CHECK>` | repeatable | Run specific check(s) only. Values: `daemon`, `render`, `devices`, `config`, `input`, `memory` |
+| `--report <PATH>` | path       | Write full diagnostic JSON to a file (for bug reports)                                         |
+| `--system`        | bool       | Include verbose system info (GPU, kernel, audio version)                                       |
+| `--format <FMT>`  | enum       | Output format: `table` (default), `plain`, `json`                                              |
+
+Those six names are the safe default set
+(`crates/hypercolor-daemon/src/domain/diagnostics.rs`). The protected
+`macos_screen_parity` check runs only when asked for by name. Anything else is
+not an error: the daemon answers with a `warning` row whose detail reads
+`unknown check`, so a typo produces a misleading pass rather than a failure.
 
 ### Examples
 
@@ -108,12 +114,15 @@ Continuously scans for devices and reacts to USB hotplug events.
 
 | Flag                  | Type            | Default     | Description                                          |
 | --------------------- | --------------- | ----------- | ---------------------------------------------------- |
-| `--backends <LIST>`   | comma-separated | `usb,smbus` | Backends to scan: `usb`, `smbus`, `wled`             |
+| `--targets <LIST>`    | comma-separated | `usb,smbus` | Targets to scan: `usb`, `smbus`, `wled`              |
 | `--interval-secs <N>` | u64             | `5`         | Periodic scan interval                               |
 | `--duration-secs <N>` | u64             | ∞           | Auto-stop after N seconds                            |
 | `--no-hotplug`        | bool            | `false`     | Disable USB hotplug-triggered rescans                |
 | `--timeout-ms <N>`    | u64             | `10000`     | Network scanner timeout (WLED)                       |
 | `--log-level <LVL>`   | string          | `info`      | Log level: `trace`, `debug`, `info`, `warn`, `error` |
+
+A target is any driver-module id that supports discovery. Passing one that does
+not exist, or one whose driver has no discovery, aborts with the supported list.
 
 ### Examples
 
@@ -124,11 +133,11 @@ cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
 
 # Scan only USB, stop after 30 seconds
 cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  detect --backends usb --duration-secs 30
+  detect --targets usb --duration-secs 30
 
 # Include WLED network discovery with 5s timeout
 cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  detect --backends usb,smbus,wled --timeout-ms 5000
+  detect --targets usb,smbus,wled --timeout-ms 5000
 
 # Disable hotplug, periodic scans only
 cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
@@ -138,23 +147,23 @@ cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
 ### Output
 
 ```
-[14:32:05.123] starting debug detection loop backends=[Usb, SmBus] interval_secs=5 timeout_ms=10000 hotplug=true
+[14:32:05.123] starting debug detection loop targets=[DebugTarget("usb"), DebugTarget("smbus")] interval_secs=5 timeout_ms=10000 hotplug=true
 [14:32:05.456] scan trigger=initial new=3 reappeared=0 vanished=0 total=3 duration_ms=332
-  scanner=UsbScanner status=ok discovered=2 duration_ms=120
-  scanner=SmBusScanner status=ok discovered=1 duration_ms=331
-  + Razer BlackWidow V4 Pro [a1b2c3d4] backend_hint=usb
-  + Razer DeathAdder V3 Pro [e5f6a7b8] backend_hint=usb
-  + ASUS Aura Motherboard [c9d0e1f2] backend_hint=smbus
+  scanner=USB Transport status=ok discovered=2 duration_ms=120
+  scanner=SMBus Transport status=ok discovered=1 duration_ms=331
+  + Razer BlackWidow V4 Pro [a1b2c3d4] driver=razer route=usb transport=usb
+  + Razer DeathAdder V3 Pro [e5f6a7b8] driver=razer route=usb transport=usb
+  + ASUS Aura Motherboard [c9d0e1f2] driver=asus route=smbus transport=smbus
 [14:32:10.789] hotplug arrived 1532:0272 Razer Huntsman V3 Pro
 [14:32:11.012] scan trigger=usb-hotplug new=1 reappeared=0 vanished=0 total=4 duration_ms=223
-  + Razer Huntsman V3 Pro [3a4b5c6d] backend_hint=usb
+  + Razer Huntsman V3 Pro [3a4b5c6d] driver=razer route=usb transport=usb
 [14:32:15.456] hotplug removed 1532:0272
 ```
 
 ### What It Reports
 
 - **Per-scanner status:** ok/error, discovered count, scan duration
-- **New devices:** `+` prefix with name, ID, backend hint
+- **New devices:** `+` prefix with name, ID, owning driver, output route, transport
 - **Reappeared devices:** `~` prefix (previously vanished, now back)
 - **Vanished devices:** `-` prefix (previously seen, now gone)
 - **Hotplug events:** Real-time USB arrival/removal with VID:PID
@@ -181,8 +190,9 @@ API envelope.
 }
 ```
 
-Both fields are optional. Omitting `checks` runs all four default checks.
-Setting `system: true` adds uptime information.
+Both fields are optional. Omitting `checks` runs the six safe default checks:
+`daemon`, `render`, `devices`, `config`, `input`, and `memory`. Setting
+`system: true` adds uptime information.
 
 #### Response
 
@@ -224,18 +234,35 @@ Setting `system: true` adds uptime information.
     "passed": 5,
     "warnings": 0,
     "failed": 0
+  },
+  "snapshot": {
+    "input": { "sources": [], "source_graph_generation": 0 },
+    "render": {
+      "latest_frame": null,
+      "recent_window": { "frames": 0 }
+    },
+    "usb": {},
+    "display_output": {},
+    "device_output": { "items": [] }
   }
 }
 ```
 
+The snapshot above is abridged. Live responses include frame freshness,
+render-window timing, USB actor timing, display encode metrics, and per-device
+output queues.
+
 #### Available Checks
 
-| Check     | Category | What It Tests                                       |
-| --------- | -------- | --------------------------------------------------- |
-| `daemon`  | system   | Daemon version and running status                   |
-| `render`  | render   | Render loop state and performance tier              |
-| `devices` | devices  | Device registry count                               |
-| `config`  | config   | Config manager availability (vs default/test state) |
+| Check                 | Category | What It Tests                                       |
+| --------------------- | -------- | --------------------------------------------------- |
+| `daemon`              | system   | Daemon version and running status                   |
+| `render`              | render   | Render loop state and performance tier              |
+| `devices`             | devices  | Device registry count                               |
+| `config`              | config   | Config manager availability (vs default/test state) |
+| `input`               | input    | Capture source health and actionable failures       |
+| `memory`              | memory   | Servo process memory reporting                      |
+| `macos_screen_parity` | input    | Protected macOS screenshot parity capture           |
 
 #### Status Values
 
@@ -257,35 +284,9 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose \
 
 ---
 
-## Device Debug Endpoints
+## Device identification
 
 **Source:** `crates/hypercolor-daemon/src/api/devices/`
-
-### `GET /api/v1/devices/debug/queues`
-
-Inspect the backend output frame queue state. Shows pending frames, drop
-counts, and last write timing for each device backend.
-
-```bash
-curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
-```
-
-Returns the result of `BackendManager::debug_snapshot()`. The exact shape
-depends on the backend manager implementation, but exposes per-device queue
-depth and throughput information.
-
-### `GET /api/v1/devices/debug/routing`
-
-Inspect how layout zones map to physical device backends. Shows the routing
-table the render pipeline uses to dispatch LED frames.
-
-```bash
-curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
-```
-
-Returns the result of `BackendManager::routing_snapshot()`: which layout
-device IDs route to which physical backends, with segment ranges and zone
-mappings.
 
 ### `POST /api/v1/devices/{id}/identify`
 
@@ -317,28 +318,31 @@ curl -s -X POST http://localhost:9420/api/v1/devices/abc123/identify \
 Bidirectional WebSocket for real-time event streaming, binary frame data,
 performance metrics, and REST-equivalent command execution.
 
-### Channels
+### Topics
 
-| Channel    | Default      | Description                     | Config Options                                |
-| ---------- | ------------ | ------------------------------- | --------------------------------------------- |
-| `events`   | subscribed   | System events and state changes | none                                          |
-| `frames`   | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `format` (binary/json), `zones` |
-| `spectrum` | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)         |
-| `canvas`   | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba)             |
-| `metrics`  | unsubscribed | Performance metrics snapshots   | `interval_ms` (100-10000)                     |
+A few of the fifteen; the full list lives in `protocol/websocket-v1.json`.
+
+| Topic             | Key       | Default      | Description                     | Config Options                         |
+| ----------------- | --------- | ------------ | ------------------------------- | -------------------------------------- |
+| `events`          | —         | subscribed   | System events and state changes | none                                   |
+| `frames`          | —         | unsubscribed | Per-zone LED color frames       | `fps` (1-60), `zones`                  |
+| `spectrum`        | —         | unsubscribed | Audio spectrum data             | `fps` (1-60), `bins` (8/16/32/64/128)  |
+| `canvas`          | —         | unsubscribed | Rendered effect canvas pixels   | `fps` (1-60), `format` (rgb/rgba/jpeg) |
+| `metrics`         | —         | unsubscribed | Performance metrics snapshots   | `fps` (0.1-10)                         |
+| `display_preview` | device id | unsubscribed | One display's JPEG output       | `fps` (1-30)                           |
 
 ### Client → Server Messages
 
-**Subscribe:**
+**Subscribe:** each entry names a topic, its key when the topic is keyed, and
+that subscription's config patch.
 
 ```json
 {
   "type": "subscribe",
-  "channels": ["frames", "metrics"],
-  "config": {
-    "frames": { "fps": 30, "format": "binary", "zones": ["all"] },
-    "metrics": { "interval_ms": 500 }
-  }
+  "topics": [
+    { "topic": "frames", "config": { "fps": 30, "zones": ["all"] } },
+    { "topic": "metrics", "config": { "fps": 2 } }
+  ]
 }
 ```
 
@@ -347,7 +351,7 @@ performance metrics, and REST-equivalent command execution.
 ```json
 {
   "type": "unsubscribe",
-  "channels": ["frames"]
+  "topics": [{ "topic": "frames" }]
 }
 ```
 
@@ -375,9 +379,8 @@ performance metrics, and REST-equivalent command execution.
     "running": true,
     "paused": false,
     "brightness": 80,
-    "fps": { "target": 60, "actual": 59.8 },
-    "effect": { "id": "borealis-01", "name": "Borealis" },
-    "profile": { "id": "default", "name": "Default" },
+    "fps": { "target": 60, "capacity": 59.8, "delivered": 59.8 },
+    "scene": { "id": "scene-01", "name": "Main", "snapshot_locked": false },
     "layout": { "id": "main", "name": "Main Setup" },
     "device_count": 5,
     "total_leds": 1200
@@ -393,6 +396,10 @@ performance metrics, and REST-equivalent command execution.
   "subscriptions": ["events"]
 }
 ```
+
+`capabilities` is abridged here. The daemon advertises every topic name plus
+`commands`, `canvas_format_jpeg`, `interactive_previews`, `wide_preview_frames`,
+and `preview_chunking`; `protocol/websocket-v1.json` carries the current list.
 
 **Event:**
 
@@ -412,7 +419,13 @@ performance metrics, and REST-equivalent command execution.
   "type": "metrics",
   "timestamp": "2026-03-08T10:30:45.123Z",
   "data": {
-    "fps": { "target": 60, "actual": 59.8, "dropped": 0 },
+    "fps": {
+      "target": 60,
+      "ceiling": 60,
+      "capacity": 59.8,
+      "delivered": 59.8,
+      "dropped": 0
+    },
     "frame_time": {
       "avg_ms": 16.8,
       "p95_ms": 18.2,
@@ -437,14 +450,20 @@ performance metrics, and REST-equivalent command execution.
 }
 ```
 
+The sample above is abridged. A live `metrics` payload also carries
+`input_latency`, `pacing`, `effect_health`, `timeline`, `render_surfaces`,
+`preview`, `display_output`, and `copies`, and both `stages` and `websocket`
+have more fields than shown. The full shape lives in
+`crates/hypercolor-daemon/src/api/ws/protocol.rs`.
+
 **Backpressure:**
 
 ```json
 {
   "type": "backpressure",
   "dropped_frames": 12,
-  "channel": "frames",
-  "recommendation": "Reduce fps or enable selective frame filtering",
+  "topic": "frames",
+  "recommendation": "reduce_fps",
   "suggested_fps": 15
 }
 ```
@@ -454,7 +473,7 @@ performance metrics, and REST-equivalent command execution.
 ```json
 {
   "type": "error",
-  "code": "invalid_config",
+  "code": "validation_error",
   "message": "Invalid configuration for config.frames.fps: expected 1..=60",
   "details": { "field": "config.frames.fps", "reason": "expected 1..=60" }
 }
@@ -487,8 +506,8 @@ performance metrics, and REST-equivalent command execution.
 # Connect and see the hello message
 websocat ws://localhost:9420/api/v1/ws
 
-# Subscribe to metrics every 500ms
-echo '{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":500}}}' | \
+# Subscribe to metrics twice a second
+echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":2}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 ```
 
@@ -498,69 +517,74 @@ echo '{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_
 
 **Source:** `crates/hypercolor-daemon/src/mcp/tools/`
 
-Hypercolor exposes 16 MCP tools for AI assistant integration. These give agents
+Hypercolor exposes 17 MCP tools for AI assistant integration. These give agents
 programmatic control over the lighting system.
 
 ### Tool Inventory
 
-| Tool               | Read-Only | Description                                                        |
-| ------------------ | --------- | ------------------------------------------------------------------ |
-| `set_effect`       | no        | Apply a lighting effect (supports fuzzy/natural language matching) |
-| `list_effects`     | yes       | Browse the effect library with category/audio filters              |
-| `stop_effect`      | no        | Stop the current effect                                            |
-| `set_color`        | no        | Set a static color on devices                                      |
-| `get_devices`      | yes       | List connected devices                                             |
-| `set_brightness`   | no        | Set brightness (0-100)                                             |
-| `get_status`       | yes       | Current daemon state snapshot                                      |
-| `activate_scene`   | no        | Activate a saved scene                                             |
-| `list_scenes`      | yes       | List available scenes                                              |
-| `create_scene`     | no        | Create a new scene from current state                              |
-| `get_audio_state`  | yes       | Audio input and spectrum data                                      |
-| `set_profile`      | no        | Switch device profile                                              |
-| `get_layout`       | yes       | Current layout mapping                                             |
-| `get_sensor_data`  | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)         |
-| `set_display_face` | no        | Assign or clear an HTML display-face effect on a display device    |
-| **`diagnose`**     | **yes**   | **System/device diagnostics**                                      |
+| Tool               | Read-Only | Description                                                     |
+| ------------------ | --------- | --------------------------------------------------------------- |
+| `set_effect`       | no        | Apply a deterministically selected lighting effect              |
+| `list_effects`     | yes       | Browse the effect library with category/audio filters           |
+| `set_color`        | no        | Set a static color on devices                                   |
+| `set_output_power` | no        | Pause or resume output without discarding scene state           |
+| `clear_zone`       | no        | Clear one or every non-display zone                             |
+| `adjust_controls`  | no        | Patch typed controls and clear bindings on one live layer       |
+| `get_devices`      | yes       | List connected devices                                          |
+| `set_brightness`   | no        | Set brightness (0-100)                                          |
+| `get_status`       | yes       | Current daemon state snapshot                                   |
+| `activate_scene`   | no        | Activate a saved scene                                          |
+| `list_scenes`      | yes       | List available scenes                                           |
+| `create_scene`     | no        | Create a new scene with a seeded Primary zone                   |
+| `get_audio_state`  | yes       | Audio input and spectrum data                                   |
+| `get_layout`       | yes       | Current layout mapping                                          |
+| `get_sensor_data`  | yes       | System telemetry snapshot (CPU, GPU, memory, temperatures)      |
+| `set_display_face` | no        | Assign or clear an HTML display-face effect on a display device |
+| **`diagnose`**     | **yes**   | **Canonical safe system diagnostics**                           |
 
 ### `diagnose` Tool (Detail)
 
-The most relevant tool for debugging. Runs targeted diagnostics on the system
-or a specific device.
+The most relevant tool for debugging. Runs the canonical safe diagnostic pass
+through the same collector as REST.
 
 **Input:**
 
 ```json
-{
-  "device_id": "optional-device-id",
-  "checks": [
-    "connectivity",
-    "latency",
-    "frame_delivery",
-    "color_accuracy",
-    "protocol",
-    "all"
-  ]
-}
+{}
 ```
 
 **Output:**
 
 ```json
 {
-  "overall_status": "healthy",
-  "findings": [
-    { "severity": "info", "message": "All 5 devices connected and responding" },
-    { "severity": "info", "message": "Frame delivery rate: 59.8/60 fps" }
+  "checks": [
+    {
+      "category": "devices",
+      "name": "output_queues",
+      "status": "pass",
+      "detail": "queues=5, lagging=0, dropped_total=0, errors_total=0"
+    }
   ],
-  "metrics": {
-    "fps": 59.8,
-    "frame_drop_rate": 0.0,
-    "avg_latency_ms": 16.8,
-    "device_error_count": 0,
-    "uptime_seconds": 3600
+  "summary": {
+    "passed": 9,
+    "warnings": 0,
+    "failed": 0
+  },
+  "snapshot": {
+    "input": {},
+    "render": {},
+    "usb": {},
+    "display_output": {},
+    "device_output": { "items": [] }
   }
 }
 ```
+
+The MCP schema is a closed empty object. It rejects `checks`, `device_id`,
+`system`, and every other argument. MCP always runs `daemon`, `render`,
+`devices`, `config`, `input`, and `memory`, forces `system: false`, and never
+exposes the protected `macos_screen_parity` check. REST remains the surface for
+authorized custom check selection.
 
 ### `get_status` Tool
 
@@ -568,8 +592,9 @@ Quick system state snapshot, useful as a first check before deeper
 diagnostics.
 
 **Output includes:** running state, paused state, brightness, FPS
-(target/actual), active effect, active profile, layout, device count, total
-LEDs.
+(target/capacity/delivered/actual), active effect, effect and scene counts,
+device summary, input health, uptime, and version. The exact same builder serves
+`hypercolor://state`, so the empty tool call and resource are equal.
 
 ---
 
@@ -797,22 +822,33 @@ discovery, connection, and frame writing with full call tracking.
 
 ```rust
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
-use hypercolor_types::spatial::LedTopology;
+use hypercolor_types::spatial::{Corner, LedTopology, StripDirection};
 
 let backend = MockDeviceBackend::new()
     .with_device(&MockDeviceConfig {
         name: "Test Keyboard".into(),
         led_count: 150,
-        topology: LedTopology::Matrix { rows: 6, cols: 25 },
+        topology: LedTopology::Matrix {
+            width: 25,
+            height: 6,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
         id: None, // auto-generated
     })
     .with_device(&MockDeviceConfig {
         name: "Test Strip".into(),
         led_count: 60,
-        topology: LedTopology::Strip { count: 60 },
+        topology: LedTopology::Strip {
+            count: 60,
+            direction: StripDirection::LeftToRight,
+        },
         id: None,
     });
 ```
+
+Working reference: `crates/hypercolor-core/tests/mock_integration_tests.rs`
+builds strip, matrix, and ring configs the same way.
 
 ### Call Tracking
 
@@ -821,23 +857,27 @@ Every method call is recorded for test assertions:
 ```rust
 pub enum MockCall {
     Info,
-    Discover,
+    Adopt(DeviceId),
     Connect(DeviceId),
     Disconnect(DeviceId),
     WriteColors { device_id: DeviceId, led_count: usize },
 }
 
 // After operations:
-assert_eq!(backend.calls().len(), 3);
-assert!(matches!(backend.calls()[0], MockCall::Discover));
+let calls = backend.calls();
+assert_eq!(calls[0], MockCall::Adopt(device_id));
+assert_eq!(calls[1], MockCall::Connect(device_id));
 ```
+
+Discovery is not a backend call. A device reaches the backend through
+`adopt_device`, which is what `MockCall::Adopt` records.
 
 ### Inspection API
 
 ```rust
-backend.calls()             // &[MockCall]: ordered call log
+backend.calls()             // Vec<MockCall>: ordered call log
 backend.write_count()       // u64: total write_colors calls
-backend.last_colors(&id)    // Option<&Vec<[u8; 3]>>: last frame data
+backend.last_colors(&id)    // Option<Vec<[u8; 3]>>: last frame data
 backend.is_connected(&id)   // bool: connection state
 backend.device_infos()      // &[DeviceInfo]: configured devices
 ```
@@ -857,28 +897,42 @@ backend.fail_write = true;
 assert!(backend.write_colors(&id, &colors).await.is_err());
 ```
 
-### Mock Transport Scanner
+### Mock Discovery Source
 
-For testing the discovery layer:
+For testing the discovery layer. The source is named at construction and takes
+the same `MockDeviceConfig` the backend does, minting a `DiscoveredDevice` per
+entry:
 
 ```rust
-use hypercolor_core::device::mock::MockTransportScanner;
+use hypercolor_core::device::mock::{MockDeviceConfig, MockDiscoverySource};
 
-let scanner = MockTransportScanner::new(vec![
-    // pre-built DiscoveredDevice instances
-]);
+let source = MockDiscoverySource::new("mock-usb")
+    .with_device(&config);
+
+// `should_fail` makes scan() return an error, for failure-path tests.
+let mut failing = MockDiscoverySource::new("mock-usb");
+failing.should_fail = true;
 ```
+
+Register it with the orchestrator through `source.name()` and `source.scan()`;
+`crates/hypercolor-core/tests/mock_integration_tests.rs` has the wiring.
 
 ### Mock Effect Renderer
 
-For testing the effect → color pipeline:
+For testing the effect → color pipeline. `new` takes the render mode, and the
+three convenience constructors cover the common cases:
 
 ```rust
-use hypercolor_core::device::mock::MockEffectRenderer;
+use hypercolor_core::device::mock::{MockEffectRenderer, MockRenderMode};
 
-let renderer = MockEffectRenderer::new();
-// Renders canvas to RGB colors for testing
+let renderer = MockEffectRenderer::new(MockRenderMode::Solid([255, 0, 0, 255]));
+let renderer = MockEffectRenderer::solid(255, 0, 0);
+let renderer = MockEffectRenderer::rainbow();
+let renderer = MockEffectRenderer::audio_reactive(0, 128, 255);
 ```
+
+`MockEffectRenderer::sample_metadata(name)` returns an `EffectMetadata` suitable
+for `init`.
 
 ---
 
@@ -910,8 +964,9 @@ just test
 # Test a specific crate
 just test-crate hypercolor-hal
 
-# Run a specific test by name
-just test-one razer_protocol
+# Run a specific test by name. The filter matches test FUNCTION names, not
+# file names, so a file-name guess matches nothing and still exits 0.
+just test-one razer_report_crc
 
 # Run clippy
 just lint
@@ -993,13 +1048,13 @@ lsusb | grep -i "razer\|corsair\|asus"
 # 2. Run the debug discovery tool with trace logging
 RUST_LOG=hypercolor_hal=trace,hypercolor_core::device=debug \
   cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  --log-level trace detect --backends usb,smbus
+  --log-level trace detect --targets usb,smbus
 
 # 3. Check udev permissions
 ls -la /dev/hidraw*
 
 # 4. Check the device database knows this VID:PID
-just test-one database_tests
+just test-one lookup_returns
 ```
 
 ### "Device detected but not responding"
@@ -1013,24 +1068,18 @@ curl -s -X POST http://localhost:9420/api/v1/diagnose \
   -H "Content-Type: application/json" \
   -d '{"checks": ["devices"]}' | jq .
 
-# 3. Check the output queue state
-curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
-
-# 4. Look for CRC mismatches or protocol errors in logs
+# 3. Look for CRC mismatches or protocol errors in logs
 RUST_LOG=hypercolor_core::device::usb_backend=debug just daemon 2>&1 | grep -i "crc\|error\|mismatch\|timeout"
 ```
 
 ### "Colors look wrong"
 
 ```bash
-# 1. Check routing: are zones mapped to the right backends?
-curl -s http://localhost:9420/api/v1/devices/debug/routing | jq .
-
-# 2. Monitor frame data via WebSocket
-echo '{"type":"subscribe","channels":["frames"],"config":{"frames":{"fps":1,"format":"json"}}}' | \
+# 1. Monitor frame data via WebSocket
+echo '{"type":"subscribe","topics":[{"topic":"frames","config":{"fps":1,"zones":["all"]}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 
-# 3. Trace the render pipeline stages
+# 2. Trace the render pipeline stages
 RUST_LOG=hypercolor_daemon::render_thread=trace just daemon
 ```
 
@@ -1038,7 +1087,7 @@ RUST_LOG=hypercolor_daemon::render_thread=trace just daemon
 
 ```bash
 # 1. Subscribe to metrics via WebSocket
-echo '{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_ms":500}}}' | \
+echo '{"type":"subscribe","topics":[{"topic":"metrics","config":{"fps":2}}]}' | \
   websocat ws://localhost:9420/api/v1/ws
 
 # 2. Check per-stage timing breakdown in metrics output
@@ -1046,8 +1095,8 @@ echo '{"type":"subscribe","channels":["metrics"],"config":{"metrics":{"interval_
 
 # 3. Check for backpressure warnings in WebSocket stream
 
-# 4. Identify slow backends
-curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
+# 4. Correlate slow backends in daemon trace logs
+RUST_LOG=hypercolor_daemon::display_output=trace just daemon
 ```
 
 ### "New driver development"
@@ -1056,7 +1105,7 @@ curl -s http://localhost:9420/api/v1/devices/debug/queues | jq .
 # 1. Start with device discovery to confirm detection
 RUST_LOG=hypercolor_core::device=debug \
   cargo run -p hypercolor-daemon --bin hypercolor-debug -- \
-  --log-level debug detect --backends usb
+  --log-level debug detect --targets usb
 
 # 2. Capture packets from the transport layer at trace level
 RUST_LOG=hypercolor_hal::transport=trace just daemon
@@ -1065,8 +1114,8 @@ RUST_LOG=hypercolor_hal::transport=trace just daemon
 just test-crate hypercolor-hal
 
 # 4. Use mock backend for pipeline integration testing
-just test-one mock_integration
+just test-one full_pipeline
 
 # 5. Verify device database entries
-just test-one database_tests
+just test-one lookup_returns
 ```

@@ -1,17 +1,18 @@
 //! Pure Nollie protocol encoder/decoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use hypercolor_color::{DevicePixelLayout, Rgb};
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
 };
 use tracing::warn;
 
-use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-};
+use crate::protocol::{Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus};
 
 pub(super) const GEN1_LEDS_PER_PACKET: usize = 21;
 pub(super) const LEGACY_LEDS_PER_PACKET: usize = 20;
@@ -524,7 +525,7 @@ impl Protocol for NollieProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         match self.model {
             NollieModel::Nollie1 => gen1_zones(CHANNELS_NOLLIE_1, LEDS_NOLLIE_1, self.model),
             NollieModel::Nollie8 | NollieModel::Prism8 => {
@@ -602,7 +603,7 @@ impl Protocol for NollieProtocol {
     }
 }
 
-fn gen1_zones(channels: usize, leds_per_channel: usize, model: NollieModel) -> Vec<ProtocolZone> {
+fn gen1_zones(channels: usize, leds_per_channel: usize, model: NollieModel) -> Vec<SegmentInfo> {
     numbered_zones(1, channels, leds_per_channel, model)
 }
 
@@ -611,9 +612,9 @@ fn numbered_zones(
     channels: usize,
     leds_per_channel: usize,
     model: NollieModel,
-) -> Vec<ProtocolZone> {
+) -> Vec<SegmentInfo> {
     (0..channels)
-        .map(|index| ProtocolZone {
+        .map(|index| SegmentInfo {
             name: format!("Channel {}", index + first_channel),
             led_count: u32::try_from(leds_per_channel).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Strip,
@@ -623,7 +624,7 @@ fn numbered_zones(
         .collect()
 }
 
-fn legacy_l_channels(model: NollieModel) -> Vec<ProtocolZone> {
+fn legacy_l_channels(model: NollieModel) -> Vec<SegmentInfo> {
     const LABELS: [&str; 8] = [
         "Channel 6",
         "Channel 5",
@@ -637,7 +638,7 @@ fn legacy_l_channels(model: NollieModel) -> Vec<ProtocolZone> {
 
     LABELS
         .iter()
-        .map(|label| ProtocolZone {
+        .map(|label| SegmentInfo {
             name: (*label).to_owned(),
             led_count: u32::try_from(LEDS_NOLLIE_LEGACY_8).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Strip,
@@ -647,7 +648,7 @@ fn legacy_l_channels(model: NollieModel) -> Vec<ProtocolZone> {
         .collect()
 }
 
-fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
+fn nollie32_zones(config: Nollie32Config) -> Vec<SegmentInfo> {
     let mut zones = gen1_zones(
         CHANNELS_NOLLIE_32_MAIN,
         LEDS_GEN2_CHANNEL,
@@ -657,7 +658,7 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
     );
 
     if config.atx_cable_present {
-        zones.push(ProtocolZone {
+        zones.push(SegmentInfo {
             name: "ATX Strimer".to_owned(),
             led_count: u32::try_from(LEDS_ATX_STRIMER).unwrap_or(u32::MAX),
             topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
@@ -667,7 +668,7 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
     }
 
     if let Some(topology) = config.gpu_cable_type.topology() {
-        zones.push(ProtocolZone {
+        zones.push(SegmentInfo {
             name: "GPU Strimer".to_owned(),
             led_count: u32::try_from(config.gpu_cable_type.led_count()).unwrap_or(u32::MAX),
             topology,
@@ -681,15 +682,19 @@ fn nollie32_zones(config: Nollie32Config) -> Vec<ProtocolZone> {
 
 #[must_use]
 pub(super) fn encode_color(color: [u8; 3], scale: f32, format: DeviceColorFormat) -> [u8; 3] {
-    let rs = scale_channel(color[0], scale);
-    let gs = scale_channel(color[1], scale);
-    let bs = scale_channel(color[2], scale);
+    // Every Nollie packet carries fixed three-byte pixels, so the RGBW
+    // format's four-channel layout and JPEG's absent one both fall back to
+    // RGB order, which is what this driver has always written for them.
+    let layout = format
+        .pixel_layout()
+        .filter(|layout| layout.channel_count() == 3)
+        .unwrap_or(DevicePixelLayout::Rgb);
+    let [red, green, blue, _] = Rgb::new(color[0], color[1], color[2])
+        .scale(scale)
+        .encode(layout)
+        .bytes;
 
-    match format {
-        DeviceColorFormat::Grb => [gs, rs, bs],
-        DeviceColorFormat::Rbg => [rs, bs, gs],
-        DeviceColorFormat::Rgb | DeviceColorFormat::Rgbw | DeviceColorFormat::Jpeg => [rs, gs, bs],
-    }
+    [red, green, blue]
 }
 
 #[must_use]
@@ -705,14 +710,6 @@ pub(super) fn command_from_packet(
         response_delay,
         post_delay,
         transfer_type: crate::protocol::TransferType::Primary,
+        ..Default::default()
     }
-}
-
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn scale_channel(value: u8, scale: f32) -> u8 {
-    (f32::from(value) * scale).round().clamp(0.0, 255.0) as u8
 }

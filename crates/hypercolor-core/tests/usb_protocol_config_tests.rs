@@ -4,7 +4,7 @@ use hypercolor_hal::protocol_config::ProtocolRuntimeConfig;
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot, DeviceComponentProfile};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 
 fn prism_s_info() -> DeviceInfo {
@@ -17,15 +17,15 @@ fn prism_s_info() -> DeviceInfo {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
             .with_protocol_id("prismrgb/prism-s"),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "ATX Strimer".to_owned(),
                 led_count: 120,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "GPU Strimer".to_owned(),
                 led_count: 162,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
@@ -48,8 +48,8 @@ fn nollie32_info() -> DeviceInfo {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
             .with_protocol_id("nollie/nollie-32"),
-        zones: (1..=20)
-            .map(|index| ZoneInfo {
+        segments: (1..=20)
+            .map(|index| SegmentInfo {
                 name: format!("Channel {index}"),
                 led_count: 256,
                 topology: DeviceTopologyHint::Strip,

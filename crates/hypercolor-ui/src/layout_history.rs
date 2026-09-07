@@ -6,14 +6,14 @@ use crate::compound_selection::CompoundDepth;
 
 const MAX_HISTORY_DEPTH: usize = 100;
 
-pub type RemovedZoneCache = HashMap<(String, Option<String>), Output>;
+pub type RemovedOutputCache = HashMap<(String, Option<String>), Output>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutEditorSnapshot {
     pub zones: Vec<Output>,
     pub selected_zone_ids: HashSet<String>,
     pub compound_depth: CompoundDepth,
-    pub removed_zone_cache: RemovedZoneCache,
+    pub removed_zone_cache: RemovedOutputCache,
 }
 
 #[derive(Clone, Debug, Default)]

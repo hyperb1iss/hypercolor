@@ -1,4 +1,4 @@
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
 
 use super::super::ComposedFrameSet;
 use crate::performance::CompositorBackendKind;

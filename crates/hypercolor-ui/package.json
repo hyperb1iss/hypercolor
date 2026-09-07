@@ -1,6 +1,7 @@
 {
   "name": "hypercolor-ui",
   "version": "1.0.0",
+  "packageManager": "bun@1.4.0",
   "description": "",
   "main": "tailwind.config.js",
   "scripts": {

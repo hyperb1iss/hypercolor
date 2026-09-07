@@ -8,10 +8,10 @@
 //!
 //! The mount surface pins:
 //!
-//! - **Surface identity** — `active_scene` + `selected_group_id` name the
-//!   `(scene id, group id)` pair every mutation is addressed to. The panel
+//! - **Surface identity:** `active_scene` + `selected_zone_id` name the
+//!   `(scene id, zone id)` pair every mutation is addressed to. The panel
 //!   never displays the ids.
-//! - **`layers_version`** — read from `layers_resource`; threaded as the
+//! - **Scene revision** — read from `layers_resource`; threaded as the
 //!   `If-Match` precondition on every mutation. A stale write is reported
 //!   and the stack refetched, never silently lost.
 //! - **Add-layer picker** — Add-layer opens [`picker::AddLayerPicker`],
@@ -27,12 +27,13 @@
 
 mod controls;
 mod picker;
-mod row;
+pub mod row;
 pub mod source;
 
 use std::collections::HashMap;
 
 use hypercolor_types::layer::{LayerAdjust, LayerTransform, SceneLayer};
+use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -54,20 +55,20 @@ use source::{
 /// mount contract.
 #[component]
 pub fn LayerPanel(
-    #[prop(into)] active_scene: Signal<Option<api::ActiveSceneResponse>>,
-    selected_group_id: ReadSignal<Option<String>>,
-    set_selected_group_id: WriteSignal<Option<String>>,
+    #[prop(into)] active_scene: Signal<Option<api::SceneDocument>>,
+    selected_zone_id: ReadSignal<Option<String>>,
+    set_selected_zone_id: WriteSignal<Option<String>>,
     /// Surface name supplied by a host that owns surface selection
     /// elsewhere (the Studio zone tree). When present the panel shows it
-    /// in the header and drops its own redundant group selector.
+    /// in the header and drops its own redundant zone selector.
     #[prop(optional, into)]
     surface_label: MaybeProp<String>,
-    layers_resource: LocalResource<Result<api::LayerStackResponse, String>>,
+    layers_resource: LocalResource<api::ApiResult<api::LayerStackResponse>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     // Content selection is owned here, not driven by the host page — the
     // asset list backs both media-name resolution and the picker's Media tab.
-    let assets_resource = LocalResource::new(|| async { api::list_assets().await });
+    let assets_resource = api::daemon_resource(|| async { api::list_assets().await });
     let assets = Signal::derive(move || {
         assets_resource
             .get()
@@ -79,12 +80,12 @@ pub fn LayerPanel(
         assets
             .get()
             .into_iter()
-            .map(|asset| (asset.id, asset.name))
+            .map(|asset| (asset.id.to_string(), asset.name))
             .collect::<HashMap<String, String>>()
     });
     // Effect ids on a layer are UUIDs; resolve them to registry names so
     // a layer row reads "Effect Aurora", never "Effect <uuid>".
-    let effects_resource = LocalResource::new(api::fetch_effects);
+    let effects_resource = api::daemon_resource(api::fetch_effects);
     let effect_names = Memo::new(move |_| {
         effects_resource
             .get()
@@ -97,11 +98,11 @@ pub fn LayerPanel(
             })
             .unwrap_or_default()
     });
-    let layers_version = Signal::derive(move || {
+    let scene_revision = Signal::derive(move || {
         layers_resource
             .get()
             .and_then(Result::ok)
-            .map(|stack| stack.layers_version)
+            .map(|stack| stack.revision)
     });
 
     // Per-layer runtime health streams in over the WebSocket, independent
@@ -112,14 +113,14 @@ pub fn LayerPanel(
 
     let (show_picker, set_show_picker) = signal(false);
 
-    let group_options = Signal::derive(move || {
+    let zone_options = Signal::derive(move || {
         active_scene
             .get()
             .map(|scene| {
                 scene
-                    .groups
+                    .zones
                     .into_iter()
-                    .map(|group| (group.id.to_string(), group.name))
+                    .map(|zone| (zone.id.to_string(), zone.name))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default()
@@ -129,17 +130,17 @@ pub fn LayerPanel(
     let scopes = Signal::derive(move || {
         active_scene
             .get()
-            .map(|scene| available_add_layer_scopes(&scene.groups))
+            .map(|scene| available_add_layer_scopes(&scene.zones))
             .unwrap_or_default()
     });
-    let selected_group_role = Signal::derive(move || {
-        let selected = selected_group_id.get()?;
+    let selected_zone_role = Signal::derive(move || {
+        let selected = selected_zone_id.get()?;
         active_scene
             .get()?
-            .groups
+            .zones
             .into_iter()
-            .find(|group| group.id.to_string() == selected)
-            .map(|group| group.role)
+            .find(|zone| zone.id.to_string() == selected)
+            .map(|zone| zone.role)
     });
 
     let add_layer = Callback::new(move |(draft, scope): (NewLayerDraft, AddLayerScope)| {
@@ -148,16 +149,16 @@ pub fn LayerPanel(
             toasts::toast_error("No active scene is available");
             return;
         };
-        let Some(group_id) = selected_group_id.get_untracked() else {
+        let Some(zone_id) = selected_zone_id.get_untracked() else {
             toasts::toast_error("No surface is selected");
             return;
         };
-        let targets = resolve_add_layer_targets(scope, &scene.groups, &group_id);
+        let targets = resolve_add_layer_targets(scope, &scene.zones, &zone_id);
         if targets.is_empty() {
             toasts::toast_error("No target surfaces for that scope");
             return;
         }
-        let expected_version = layers_version.get_untracked();
+        let expected_revision = scene_revision.get_untracked();
         let existing_layer_count = layers_resource
             .get_untracked()
             .and_then(Result::ok)
@@ -166,27 +167,27 @@ pub fn LayerPanel(
         let request = api::CreateLayerRequest {
             name: draft.name,
             source: draft.source,
-            blend,
-            opacity: 1.0,
-            transform: LayerTransform::default(),
-            adjust: LayerAdjust::default(),
-            bindings: Vec::new(),
-            enabled: true,
+            blend: Some(blend),
+            opacity: Some(1.0),
+            transform: Some(LayerTransform::default()),
+            adjust: Some(LayerAdjust::default()),
+            bindings: None,
+            enabled: None,
         };
         leptos::task::spawn_local(async move {
             let mut applied = 0_usize;
             let mut failed = 0_usize;
-            for target in &targets {
-                // `If-Match` guards the surface on screen; bulk targets are
-                // not being watched, so they add unconditionally.
-                let version = if *target == group_id {
-                    expected_version
-                } else {
-                    None
-                };
-                match api::create_layer(&scene.id, target, &request, version).await {
-                    Ok(api::LayerStackOutcome::Applied(_)) => applied += 1,
-                    Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => failed += 1,
+            let mut revision = expected_revision;
+            for (index, target) in targets.iter().enumerate() {
+                match api::create_layer(target, &request, revision).await {
+                    Ok(api::LayerStackOutcome::Applied(stack)) => {
+                        applied += 1;
+                        revision = Some(stack.revision);
+                    }
+                    Ok(api::LayerStackOutcome::Stale { .. }) | Err(_) => {
+                        failed += targets.len() - index;
+                        break;
+                    }
                 }
             }
             on_layers_mutated.run(());
@@ -223,12 +224,12 @@ pub fn LayerPanel(
             <div class="space-y-4 px-4 py-4">
                 <Show when=move || surface_label.get().is_none()>
                     <SilkSelect
-                        value=Signal::derive(move || selected_group_id.get().unwrap_or_default())
-                        options=group_options
+                        value=Signal::derive(move || selected_zone_id.get().unwrap_or_default())
+                        options=zone_options
                         on_change=Callback::new(move |id: String| {
-                            set_selected_group_id.set((!id.is_empty()).then_some(id));
+                            set_selected_zone_id.set((!id.is_empty()).then_some(id));
                         })
-                        placeholder="Select group"
+                        placeholder="Select zone"
                         class="border border-edge-subtle bg-surface-sunken/55 px-3 py-2 text-xs text-fg-primary"
                         label_class="font-medium"
                     />
@@ -237,7 +238,7 @@ pub fn LayerPanel(
                 <button
                     type="button"
                     class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-accent-muted/30 bg-accent/10 px-3 py-2 text-xs font-semibold text-accent transition-colors hover:bg-accent/15 btn-press disabled:cursor-not-allowed disabled:opacity-45"
-                    disabled=move || selected_group_id.get().is_none()
+                    disabled=move || selected_zone_id.get().is_none()
                     on:click=move |_| {
                         // The asset list is decoupled from any host page's
                         // refresh tick, so refresh it on demand — otherwise a
@@ -255,14 +256,24 @@ pub fn LayerPanel(
                         None => view! { <LayerLoadingSkeleton /> }.into_any(),
                         Some(Err(error)) => view! {
                             <div class="rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-3 text-xs text-status-error">
-                                {error}
+                                {error.to_string()}
                             </div>
                         }.into_any(),
-                        Some(Ok(stack)) if stack.items.is_empty() => view! {
-                            <div class="rounded-lg border border-edge-subtle bg-surface-sunken/45 px-3 py-8 text-center text-xs text-fg-tertiary">
-                                "No layers in this group"
-                            </div>
-                        }.into_any(),
+                        Some(Ok(stack)) if stack.items.is_empty() => {
+                            // A screen may still be painting its stored
+                            // default face; only the scene's own stack is
+                            // empty, and the card above the panel says so.
+                            let copy = if selected_zone_role.get() == Some(ZoneRole::Display) {
+                                "No scene layers on this screen"
+                            } else {
+                                "No layers in this zone"
+                            };
+                            view! {
+                                <div class="rounded-lg border border-edge-subtle bg-surface-sunken/45 px-3 py-8 text-center text-xs text-fg-tertiary">
+                                    {copy}
+                                </div>
+                            }.into_any()
+                        }
                         Some(Ok(stack)) => {
                             // `try_get`: Suspense can re-poll this closure after
                             // the panel instance owning these memos is disposed
@@ -273,9 +284,12 @@ pub fn LayerPanel(
                             else {
                                 return view! { <LayerLoadingSkeleton /> }.into_any();
                             };
-                            let scene_id = active_scene.get().map(|scene| scene.id).unwrap_or_default();
-                            let group_id = selected_group_id.get().unwrap_or_default();
-                            let version = stack.layers_version;
+                            let scene_id = active_scene
+                                .get()
+                                .map(|scene| scene.id.to_string())
+                                .unwrap_or_default();
+                            let zone_id = selected_zone_id.get().unwrap_or_default();
+                            let revision = stack.revision;
                             let total = stack.items.len();
                             let mut rows = stack
                                 .items
@@ -298,7 +312,7 @@ pub fn LayerPanel(
                                     {rows.into_iter().map(|(stack_index, layer)| {
                                         let row_health_key = layer_health_key(
                                             &scene_id,
-                                            &group_id,
+                                            &zone_id,
                                             &layer.id.to_string(),
                                         );
                                         let row_health = Signal::derive(move || {
@@ -306,13 +320,12 @@ pub fn LayerPanel(
                                         });
                                         view! {
                                             <LayerRow
-                                                scene_id=scene_id.clone()
-                                                group_id=group_id.clone()
+                                                zone_id=zone_id.clone()
                                                 layer=layer
                                                 stack_index=stack_index
                                                 total_layers=total
                                                 stack=stack.items.clone()
-                                                layers_version=version
+                                                revision=revision
                                                 media_names=names.clone()
                                                 effect_names=effect_name_map.clone()
                                                 health=row_health
@@ -336,7 +349,7 @@ pub fn LayerPanel(
                 <AddLayerPicker
                     assets=assets
                     scopes=scopes
-                    selected_surface_role=selected_group_role
+                    selected_surface_role=selected_zone_role
                     on_pick=add_layer
                     on_cancel=Callback::new(move |()| set_show_picker.set(false))
                 />
@@ -358,24 +371,15 @@ fn LayerLoadingSkeleton() -> impl IntoView {
 
 /// Push a single-field layer update, guarded by the `If-Match` precondition.
 fn update_layer(
-    scene_id: String,
-    group_id: String,
+    zone_id: String,
     layer: SceneLayer,
-    layers_version: u64,
+    revision: u64,
     on_layers_mutated: Callback<()>,
 ) {
     let layer_id = layer.id.to_string();
-    let request = api::UpdateLayerRequest::from(&layer);
+    let request = api::update_request_from_layer(&layer);
     leptos::task::spawn_local(async move {
-        match api::update_layer(
-            &scene_id,
-            &group_id,
-            &layer_id,
-            &request,
-            Some(layers_version),
-        )
-        .await
-        {
+        match api::update_layer(&zone_id, &layer_id, &request, Some(revision)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());
@@ -387,15 +391,9 @@ fn update_layer(
 }
 
 /// Remove a layer, guarded by the `If-Match` precondition.
-fn delete_layer(
-    scene_id: String,
-    group_id: String,
-    layer_id: String,
-    layers_version: u64,
-    on_layers_mutated: Callback<()>,
-) {
+fn delete_layer(zone_id: String, layer_id: String, revision: u64, on_layers_mutated: Callback<()>) {
     leptos::task::spawn_local(async move {
-        match api::delete_layer(&scene_id, &group_id, &layer_id, Some(layers_version)).await {
+        match api::delete_layer(&zone_id, &layer_id, Some(revision)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => {
                 on_layers_mutated.run(());
                 toasts::toast_success("Layer removed");
@@ -411,12 +409,11 @@ fn delete_layer(
 
 /// Swap a layer with its neighbor, guarded by the `If-Match` precondition.
 fn reorder_layer(
-    scene_id: String,
-    group_id: String,
+    zone_id: String,
     stack: Vec<SceneLayer>,
     index: usize,
     delta: isize,
-    layers_version: u64,
+    revision: u64,
     on_layers_mutated: Callback<()>,
 ) {
     let Some(target) = index.checked_add_signed(delta) else {
@@ -429,7 +426,7 @@ fn reorder_layer(
     let mut layer_ids = stack.iter().map(|layer| layer.id).collect::<Vec<_>>();
     layer_ids.swap(index, target);
     leptos::task::spawn_local(async move {
-        match api::reorder_layers(&scene_id, &group_id, layer_ids, Some(layers_version)).await {
+        match api::reorder_layers(&zone_id, layer_ids, Some(revision)).await {
             Ok(api::LayerStackOutcome::Applied(_)) => on_layers_mutated.run(()),
             Ok(api::LayerStackOutcome::Stale { .. }) => {
                 on_layers_mutated.run(());

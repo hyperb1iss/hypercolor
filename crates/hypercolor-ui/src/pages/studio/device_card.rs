@@ -13,10 +13,9 @@ use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
 use hypercolor_types::scene::ZoneRole;
-use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::zones::ZoneOutcome;
-use crate::api::{self, DeviceSummary, ZoneTopologySummary};
+use crate::api::{self, DeviceSummary, SegmentTopologySummary};
 use crate::channel_names;
 use crate::components::device_card::{
     brand_colors, brand_label, brand_vendor, classify_brand, classify_device, device_class_icon,
@@ -27,9 +26,9 @@ use crate::layout_utils;
 use crate::toasts;
 use crate::vendors::{VendorMark, VendorMarkSize};
 
-use super::device_grouping::ZoneDeviceRow;
+use super::device_assignment::ZoneDeviceRow;
 use super::zone_add_device::{assign_device_to_zone, zone_display_name};
-use super::{StudioContext, hidden_outputs_storage_key};
+use super::{StudioContext, hidden_outputs_storage_key, zone_id_from_storage_key};
 
 /// How a device card behaves, which decides its trailing actions and
 /// whether it carries an in-zone layout (hidden state, per-output toggles).
@@ -176,19 +175,17 @@ pub fn StudioDeviceCard(
         None => led_label(row.led_count),
     };
 
-    // Snapshot the current zone's layout once — used both to resolve
-    // each channel's output id and to gather the bulk-hide id set.
-    // The Unassigned bucket has no layout (its devices are by
-    // definition placed in no zone), so the snapshot is `None` there.
+    // Project the current zone's placements once to resolve channel ids and
+    // gather the bulk-hide id set. The Unassigned bucket has no placements.
     let placed = mode == CardMode::Placed;
-    let layout_snapshot: Option<SpatialLayout> = if placed {
+    let zone_outputs = if placed {
         studio.active_scene.with_untracked(|scene| {
             scene.as_ref().and_then(|scene| {
                 scene
-                    .groups
+                    .zones
                     .iter()
-                    .find(|group| group.id.to_string() == select)
-                    .map(|group| group.layout.clone())
+                    .find(|zone| zone.id.to_string() == select)
+                    .map(api::zone_outputs)
             })
         })
     } else {
@@ -199,15 +196,14 @@ pub fn StudioDeviceCard(
             studio.active_scene.with_untracked(|scene| {
                 scene
                     .as_ref()
-                    .map(|scene| hidden_outputs_storage_key(&scene.id, &select))
+                    .map(|scene| hidden_outputs_storage_key(&scene.id.to_string(), &select))
             })
         })
         .flatten();
-    let device_output_ids: Vec<String> = layout_snapshot
+    let device_output_ids: Vec<String> = zone_outputs
         .as_ref()
-        .map(|layout| {
-            layout
-                .zones
+        .map(|outputs| {
+            outputs
                 .iter()
                 .filter(|output| output.device_id == device.layout_device_id)
                 .map(|output| output.id.clone())
@@ -215,19 +211,24 @@ pub fn StudioDeviceCard(
         })
         .unwrap_or_default();
 
-    let total_components = device.zones.len();
+    let total_components = device.segments.len();
     let component_rows: Vec<ComponentRow> = device
-        .zones
+        .segments
         .iter()
         .map(|channel| {
             let display_name =
                 channel_names::effective_channel_name(&device.id, &channel.id, &channel.name);
-            let output_id = layout_snapshot.as_ref().and_then(|layout| {
-                layout_utils::representative_zone_id_for_device_slot(
-                    layout,
-                    &device.layout_device_id,
-                    Some(channel.name.as_str()),
-                )
+            let output_id = zone_outputs.as_ref().and_then(|outputs| {
+                outputs
+                    .iter()
+                    .find(|output| {
+                        output.device_id == device.layout_device_id
+                            && layout_utils::channel_name_matches_slot_alias(
+                                output.zone_name.as_deref(),
+                                Some(channel.name.as_str()),
+                            )
+                    })
+                    .map(|output| output.id.clone())
             });
             ComponentRow {
                 name: display_name.clone(),
@@ -278,13 +279,18 @@ pub fn StudioDeviceCard(
     // inline below the body and is toggled by the action cluster's kebab.
     // Capture what it needs before `select` and `device_output_ids` move
     // into `card_actions`.
-    let ops_open = RwSignal::new(false);
+    let ops_open = super::keyed_disclosure(
+        studio.rail_disclosure,
+        format!("device-menu::{select}::{row_device_id}"),
+    );
     let menu_select = select.clone();
     let menu_physical_id = device.id.clone();
     let menu_output_ids = device_output_ids.clone();
     // An Available card carries the device record so its add action can
     // mint outputs and assign them into the zone.
-    let add_device = matches!(mode, CardMode::Available).then(|| device.clone());
+    let add_device =
+        matches!(mode, CardMode::Available | CardMode::Unassigned).then(|| device.clone());
+    let unassigned_add_device = matches!(mode, CardMode::Unassigned).then(|| device.clone());
 
     // The device's outputs in this zone drive the canvas highlight: clicking
     // selects them, hovering previews them. Empty for an unplaced (Available)
@@ -292,11 +298,23 @@ pub fn StudioDeviceCard(
     let click_outputs = device_output_ids.clone();
     let enter_outputs = device_output_ids.clone();
     let sel_check_ids = device_output_ids.clone();
+    release_hover_on_unmount(studio, device_output_ids.clone());
     let is_card_selected = Signal::derive(move || {
         !sel_check_ids.is_empty()
             && studio
                 .selected_output_ids
                 .with(|sel| sel_check_ids.iter().all(|id| sel.contains(id)))
+    });
+    // Canvas hover, mirrored back: the pointer resting on one of this
+    // device's boxes softly lights the card, the counterpart of rail
+    // hover lifting the box.
+    let pointer_check_ids = device_output_ids.clone();
+    let is_under_canvas_pointer = Memo::new(move |_| {
+        studio.pointer_output_id.with(|under| {
+            under
+                .as_ref()
+                .is_some_and(|id| pointer_check_ids.contains(id))
+        })
     });
     let card_outline_style = move || {
         if is_card_selected.get() {
@@ -315,21 +333,32 @@ pub fn StudioDeviceCard(
         >
             // A flat low-alpha hover wash — clean and bandless, no scale,
             // no brightness pump. Replaces card-hover, which squished the
-            // whole card on click and pumped a janky radial glow.
-            <div class="pointer-events-none absolute inset-0 bg-white/0 transition-colors duration-150 group-hover/card:bg-white/[0.03]" />
+            // whole card on click and pumped a janky radial glow. The same
+            // wash answers the canvas: pointing at a box lights its card.
+            <div
+                class="pointer-events-none absolute inset-0 bg-white/0 transition-colors duration-150 group-hover/card:bg-white/[0.03]"
+                class=("bg-white/[0.04]", move || is_under_canvas_pointer.get())
+            />
             <div class="flex items-stretch">
                 <button
                     type="button"
                     class="flex min-w-0 flex-1 items-stretch gap-2.5 px-2.5 py-2 text-left"
                     on:click=move |_| {
+                        // A display with no boxes in this zone lives on its
+                        // Screen surface; one with boxes is selected here like
+                        // any other card, so the eye and channel rows beneath
+                        // it keep acting on the zone that stays on the Stage.
                         if is_display
+                            && click_outputs.is_empty()
                             && let Some(screen_id) =
                                 screen_surface_id_for_device(studio, &click_device_id)
                         {
                             studio.selected_surface_id.set(Some(screen_id));
                             return;
                         }
-                        studio.selected_surface_id.set(Some(select_body.clone()));
+                        if studio.selected_surface_id.get_untracked().as_deref() != Some(select_body.as_str()) {
+                            studio.selected_surface_id.set(Some(select_body.clone()));
+                        }
                         studio.selected_output_ids.set(click_outputs.iter().cloned().collect());
                     }
                     on:mouseenter=move |_| {
@@ -412,6 +441,14 @@ pub fn StudioDeviceCard(
                         </div>
                     }
                 })}
+            {unassigned_add_device
+                .map(move |device| {
+                    view! {
+                        <div class=("hidden", move || !ops_open.get())>
+                            {unassigned_add_menu(studio, ops_open, device)}
+                        </div>
+                    }
+                })}
             {show_components
                 .then(move || {
                     let scene_key = scene_key.clone();
@@ -453,7 +490,7 @@ struct CardActionsArgs {
 /// `mode`: a placed device gets a kebab that opens the inline operations
 /// menu (identify / move / remove), an available device gets identify plus
 /// a one-tap add into the zone, and an Unassigned-bucket row gets identify
-/// only.
+/// plus a zone picker, since a multi-zone scene has to be told where.
 fn card_actions(args: CardActionsArgs) -> impl IntoView {
     let CardActionsArgs {
         studio,
@@ -592,7 +629,79 @@ fn card_actions(args: CardActionsArgs) -> impl IntoView {
                             .into_any()
                         })
                 }
-                CardMode::Unassigned => None,
+                // An Unassigned-bucket row opens a zone picker: the scene is
+                // multi-zone here, so "add" has to say where.
+                CardMode::Unassigned => add_device.map(|_| {
+                    view! {
+                        <button
+                            type="button"
+                            class="btn-press flex h-6 w-6 items-center justify-center rounded-md transition-colors"
+                            class=("bg-surface-hover/40", move || ops_open.get())
+                            style="color: rgba(80, 250, 123, 0.78)"
+                            title="Add to a zone"
+                            on:click=move |ev: web_sys::MouseEvent| {
+                                ev.stop_propagation();
+                                ops_open.update(|open| *open = !*open);
+                            }
+                        >
+                            <Icon icon=LuPlus width="13px" height="13px" />
+                        </button>
+                    }
+                    .into_any()
+                }),
+            }}
+        </div>
+    }
+}
+
+/// The Unassigned-bucket card's picker: one row per LED zone, each a
+/// single click that mints the device's outputs into that zone.
+fn unassigned_add_menu(
+    studio: StudioContext,
+    ops_open: RwSignal<bool>,
+    device: DeviceSummary,
+) -> impl IntoView {
+    let device = StoredValue::new(device);
+    let zone_options = Memo::new(move |_| {
+        studio.active_scene.with(|scene| {
+            scene
+                .as_ref()
+                .map(|scene| {
+                    scene
+                        .zones
+                        .iter()
+                        .filter(|group| group.role != ZoneRole::Display)
+                        .map(|group| (group.id.to_string(), zone_display_name(group)))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+    });
+    let row = "btn-press flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left \
+               text-[11px] transition-colors";
+    view! {
+        <div class="space-y-0.5 border-t border-edge-subtle/45 bg-surface-sunken/60 px-1.5 py-1.5">
+            {move || {
+                zone_options
+                    .get()
+                    .into_iter()
+                    .map(|(zone_id, zone_name)| {
+                        view! {
+                            <button
+                                type="button"
+                                class=format!("{row} text-fg-secondary hover:bg-surface-hover/40")
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    ev.stop_propagation();
+                                    ops_open.set(false);
+                                    assign_device_to_zone(studio, device.get_value(), zone_id.clone());
+                                }
+                            >
+                                <Icon icon=LuPlus width="12px" height="12px" />
+                                <span>{format!("Add to {zone_name}")}</span>
+                            </button>
+                        }
+                    })
+                    .collect_view()
             }}
         </div>
     }
@@ -625,11 +734,11 @@ fn card_ops_menu(
                 .as_ref()
                 .map(|scene| {
                     scene
-                        .groups
+                        .zones
                         .iter()
-                        .filter(|group| group.role != ZoneRole::Display)
-                        .filter(|group| group.id.to_string() != current.get_value())
-                        .map(|group| (group.id.to_string(), zone_display_name(group)))
+                        .filter(|zone| zone.role != ZoneRole::Display)
+                        .filter(|zone| zone.id.to_string() != current.get_value())
+                        .map(|zone| (zone.id.to_string(), zone_display_name(zone)))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
@@ -709,18 +818,9 @@ fn move_outputs_to_zone(studio: StudioContext, target_zone_id: String, output_id
         .into_iter()
         .map(|id| api::zones::OutputAssignment::Existing { id })
         .collect::<Vec<_>>();
-    let scene_id = scene.id.clone();
-    let revision = scene.groups_revision;
+    let revision = scene.revision;
     spawn_local(async move {
-        match api::zones::assign_devices(
-            &scene_id,
-            &target_zone_id,
-            assignments,
-            false,
-            Some(revision),
-        )
-        .await
-        {
+        match api::zones::assign_devices(&target_zone_id, assignments, false, revision).await {
             Ok(ZoneOutcome::Applied(_)) => {
                 let suffix = if count == 1 { "" } else { "s" };
                 toasts::toast_success(&format!("Moved {count} output{suffix}"));
@@ -811,8 +911,22 @@ fn component_row_view(
     // (Unassigned bucket, unplaced segment) just reads as a label.
     let interactive = output_id.is_some();
     let click_output = output_id.clone();
+    let key_output = output_id.clone();
     let enter_output = output_id.clone();
     let row_selected_id = output_id.clone();
+    // The row's zone is the scene_key's zone half; a click from a card
+    // expanded under another zone brings that zone onto the Stage first.
+    let row_zone_id = scene_key.as_deref().and_then(zone_id_from_storage_key);
+    let key_zone_id = row_zone_id.clone();
+    release_hover_on_unmount(studio, output_id.iter().cloned().collect());
+    let pointer_row_id = output_id.clone();
+    let is_row_under_canvas_pointer = Memo::new(move |_| {
+        pointer_row_id.as_ref().is_some_and(|id| {
+            studio
+                .pointer_output_id
+                .with(|under| under.as_deref() == Some(id.as_str()))
+        })
+    });
     let is_row_selected = Signal::derive(move || {
         row_selected_id
             .as_ref()
@@ -821,13 +935,24 @@ fn component_row_view(
 
     view! {
         <div
-            class="flex items-center gap-2 rounded px-1 py-1 transition-colors"
+            class="flex items-center gap-2 rounded px-1 py-1 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
             class=("cursor-pointer", move || interactive)
             class=("bg-accent/12", move || is_row_selected.get())
+            class=("bg-surface-hover/30", move || is_row_under_canvas_pointer.get())
             class=("hover:bg-surface-hover/30", move || interactive)
+            role=interactive.then_some("button")
+            tabindex=interactive.then_some("0")
             on:click=move |_| {
                 if let Some(id) = click_output.clone() {
-                    studio.selected_output_ids.set(HashSet::from([id]));
+                    select_output_in_zone(studio, row_zone_id.as_deref(), id);
+                }
+            }
+            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                if matches!(ev.key().as_str(), "Enter" | " ")
+                    && let Some(id) = key_output.clone()
+                {
+                    ev.prevent_default();
+                    select_output_in_zone(studio, key_zone_id.as_deref(), id);
                 }
             }
             on:mouseenter=move |_| {
@@ -974,7 +1099,7 @@ fn identify_device_now(device_id: &str, set_identifying: WriteSignal<bool>) {
 }
 
 /// Unassign every output this device has in `zone_id`. The removals run in
-/// sequence because each one bumps `groups_revision`; threading the new
+/// sequence because each one bumps the scene revision; threading the new
 /// revision into the next call lets a multi-output controller leave the
 /// zone in a single user action.
 fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: String) {
@@ -983,28 +1108,24 @@ fn remove_device_from_zone(studio: StudioContext, zone_id: String, device_id: St
         return;
     };
     let output_ids: Vec<String> = scene
-        .groups
+        .zones
         .iter()
-        .find(|group| group.id.to_string() == zone_id)
-        .map(|group| {
-            group
-                .layout
-                .zones
+        .find(|zone| zone.id.to_string() == zone_id)
+        .map(|zone| {
+            zone.members
                 .iter()
-                .filter(|output| output.device_id == device_id)
-                .map(|output| output.id.clone())
+                .filter(|member| member.device_id == device_id)
+                .map(|member| member.id.to_string())
                 .collect()
         })
         .unwrap_or_default();
     if output_ids.is_empty() {
         return;
     }
-    let scene_id = scene.id.clone();
-    let mut revision = scene.groups_revision;
+    let mut revision = scene.revision;
     spawn_local(async move {
         for output_id in output_ids {
-            match api::zones::unassign_device(&scene_id, &zone_id, &output_id, Some(revision)).await
-            {
+            match api::zones::unassign_device(&zone_id, &output_id, revision).await {
                 Ok(ZoneOutcome::Applied(next)) => revision = next,
                 Ok(ZoneOutcome::Stale { .. }) => {
                     toasts::toast_error("Scene changed elsewhere — reloaded, try again");
@@ -1037,15 +1158,15 @@ fn group_digits(value: u64) -> String {
     out
 }
 
-/// A device's display resolution in pixels, from the first zone the
-/// daemon tags with a `Display` topology hint — `None` for an ordinary
-/// LED device, whose zones are strips, rings, and matrices.
+/// A device's display resolution in pixels, from the first segment the
+/// daemon tags with a `Display` topology hint. Ordinary LED segments are
+/// strips, rings, and matrices.
 fn display_resolution(device: &DeviceSummary) -> Option<(u32, u32)> {
     device
-        .zones
+        .segments
         .iter()
         .find_map(|zone| match zone.topology_hint {
-            Some(ZoneTopologySummary::Display { width, height, .. }) => Some((width, height)),
+            Some(SegmentTopologySummary::Display { width, height, .. }) => Some((width, height)),
             _ => None,
         })
 }
@@ -1100,20 +1221,70 @@ fn transport_label(transport: &str) -> Option<&'static str> {
 /// The Screen surface backed by a physical display device, if the active
 /// scene carries one. Looked up at click time so the redirect always
 /// follows the current scene.
+/// Select one output on the canvas, bringing its zone onto the Stage
+/// first when the row was clicked under a zone that is not the current
+/// surface. The surface switch clears the selection, so the output is
+/// selected after it.
+fn select_output_in_zone(studio: StudioContext, zone_id: Option<&str>, output_id: String) {
+    match zone_id {
+        Some(zone_id) => select_outputs_in_zone(studio, zone_id, HashSet::from([output_id])),
+        None => studio.selected_output_ids.set(HashSet::from([output_id])),
+    }
+}
+
+/// Select outputs on the canvas, bringing their zone onto the Stage first
+/// when it is not the current surface. The switch's effects (which clear
+/// the selection and reload the canvas) run after the calling handler, so
+/// the outputs land a frame later, and only if nothing newer claimed the
+/// selection in between.
+fn select_outputs_in_zone(studio: StudioContext, zone_id: &str, outputs: HashSet<String>) {
+    if studio.selected_surface_id.get_untracked().as_deref() != Some(zone_id) {
+        studio.selected_surface_id.set(Some(zone_id.to_owned()));
+        request_animation_frame(move || {
+            let untouched = studio
+                .selected_output_ids
+                .try_with_untracked(HashSet::is_empty)
+                .unwrap_or(false);
+            if untouched {
+                studio.selected_output_ids.try_set(outputs);
+            }
+        });
+        return;
+    }
+    studio.selected_output_ids.set(outputs);
+}
+
+/// A hovered card or row can unmount without a `mouseleave` (collapse,
+/// search, scene refresh); drop its hover so the canvas does not stay
+/// dimmed around a phantom highlight.
+fn release_hover_on_unmount(studio: StudioContext, outputs: Vec<String>) {
+    on_cleanup(move || {
+        let held = studio
+            .hovered_output_ids
+            .try_with_untracked(|hovered| {
+                !hovered.is_empty() && outputs.iter().any(|id| hovered.contains(id))
+            })
+            .unwrap_or(false);
+        if held {
+            studio.hovered_output_ids.try_set(HashSet::new());
+        }
+    });
+}
+
 fn screen_surface_id_for_device(studio: StudioContext, device_id: &str) -> Option<String> {
     studio.active_scene.with_untracked(|scene| {
         scene.as_ref().and_then(|scene| {
             scene
-                .groups
+                .zones
                 .iter()
-                .find(|group| {
-                    group.role == ZoneRole::Display
-                        && group
+                .find(|zone| {
+                    zone.role == ZoneRole::Display
+                        && zone
                             .display_target
                             .as_ref()
                             .is_some_and(|target| target.device_id.to_string() == device_id)
                 })
-                .map(|group| group.id.to_string())
+                .map(|zone| zone.id.to_string())
         })
     })
 }

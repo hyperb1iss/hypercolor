@@ -270,16 +270,20 @@ function parseDuration(value: string): number {
 }
 
 async function fetchStatus(daemon: string): Promise<JsonObject> {
-    const response = await fetch(`${daemon}/api/v1/status`)
+    const response = await fetch(`${daemon}/api/v1/system`)
     if (!response.ok) {
-        throw new Error(`status request failed: HTTP ${response.status}`)
+        throw new Error(`system request failed: HTTP ${response.status}`)
     }
     const payload = (await response.json()) as JsonObject
-    const data = payload.data
-    if (!isObject(data)) {
-        throw new Error("status response did not contain an object data payload")
+    const resource = payload.data
+    if (!isObject(resource)) {
+        throw new Error("system response did not contain an object data payload")
     }
-    return data
+    const status = resource.status
+    if (!isObject(status)) {
+        throw new Error("system response did not contain an object status payload")
+    }
+    return status
 }
 
 async function observe(config: Config): Promise<StatusSample[]> {

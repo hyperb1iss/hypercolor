@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 
 // ── Persistence ─────────────────────────────────────────────────────────
 
+/// File name for the TUI config within the Hypercolor config directory.
+const CONFIG_FILE_NAME: &str = "tui.toml";
+
 /// Persistent TUI preferences stored at `~/.config/hypercolor/tui.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TuiConfig {
@@ -44,14 +47,30 @@ fn default_show_donate() -> bool {
 }
 
 /// Locate the TUI config file path.
+///
+/// `HYPERCOLOR_TUI_CONFIG` overrides the location outright; otherwise the file
+/// lands in the shared Hypercolor config directory.
+///
+/// # Panics
+///
+/// Panics when no platform config directory exists and no override is set.
+/// Guessing a relative location here would scatter config into whatever
+/// directory the TUI happened to launch from.
 pub fn config_path() -> PathBuf {
     if let Ok(path) = std::env::var("HYPERCOLOR_TUI_CONFIG") {
         return PathBuf::from(path);
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("hypercolor")
-        .join("tui.toml")
+    resolve_config_path(Some(hypercolor_core::config::paths::config_dir()))
+        .expect("the shared config resolver always yields a directory")
+}
+
+/// Place the TUI config file inside a resolved platform config directory.
+///
+/// Split out from [`config_path`] because the environment-driven half cannot be
+/// exercised from a test: edition 2024 makes `std::env::set_var` unsafe and
+/// this crate forbids unsafe code.
+fn resolve_config_path(config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    Some(config_dir?.join(CONFIG_FILE_NAME))
 }
 
 /// Load the TUI config from disk, returning defaults if missing.
@@ -138,5 +157,46 @@ impl ThemePicker {
 
         frame.render_widget(Clear, modal_area);
         frame.render_stateful_widget(ThemeSelector::new(), modal_area, &mut self.state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{config_path, resolve_config_path};
+
+    #[test]
+    fn unresolvable_config_dir_yields_no_path() {
+        assert_eq!(resolve_config_path(None), None);
+    }
+
+    #[test]
+    fn resolved_path_nests_under_the_platform_config_dir() {
+        let resolved = resolve_config_path(Some(PathBuf::from("/xdg-config/hypercolor")))
+            .expect("a resolved config dir yields a path");
+        assert!(resolved.starts_with("/xdg-config"));
+        assert!(resolved.ends_with("hypercolor/tui.toml"));
+    }
+
+    #[test]
+    fn resolved_path_is_absolute_and_tilde_free() {
+        // The env override is caller-owned and cannot be cleared from a test:
+        // edition 2024 makes `std::env::set_var` unsafe and this crate forbids
+        // unsafe code.
+        if std::env::var_os("HYPERCOLOR_TUI_CONFIG").is_some() {
+            return;
+        }
+        let path = config_path();
+        assert!(
+            path.is_absolute(),
+            "resolved {} is not absolute",
+            path.display()
+        );
+        assert!(
+            !path.components().any(|part| part.as_os_str() == "~"),
+            "resolved {} contains a literal tilde component",
+            path.display()
+        );
     }
 }

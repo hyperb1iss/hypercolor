@@ -4,13 +4,14 @@
 //! arithmetic free of Windows types: the subtle conversions get covered by
 //! Linux CI rather than only by whoever last built on a Windows machine.
 
+use hypercolor_types::host_input::HostPointerButton;
+use hypercolor_windows_input::RawKeyPrefix;
 use hypercolor_windows_input::decode::{
     AbsoluteSpace, CanonicalKeyReport, KEYBOARD_OVERRUN_MAKE_CODE, KeyCanonicalizer, KeyReport,
-    MotionKind, RecordStep, ScreenRect, WHEEL_DELTA, button_edges, classify_key,
-    is_horizontal_wheel, motion_kind, next_record, normalize_absolute, unknown_key_name,
-    wheel_delta,
+    MotionKind, RecordStep, SCROLL_Q16_16_SCALE, ScreenRect, WHEEL_DELTA, button_edges,
+    classify_key, motion_kind, next_record, normalize_absolute, scroll_delta_q16_16,
+    unknown_key_name,
 };
-use hypercolor_windows_input::{RawButton, RawKeyPrefix};
 
 const RI_KEY_BREAK: u16 = 1;
 const RI_KEY_E0: u16 = 2;
@@ -320,15 +321,15 @@ fn overrun_does_not_change_the_next_records_prefix() {
 fn single_button_edges_decode() {
     assert_eq!(
         button_edges(RI_MOUSE_LEFT_DOWN),
-        vec![(RawButton::Left, true)]
+        vec![(HostPointerButton::left(), true)]
     );
     assert_eq!(
         button_edges(RI_MOUSE_LEFT_UP),
-        vec![(RawButton::Left, false)]
+        vec![(HostPointerButton::left(), false)]
     );
     assert_eq!(
         button_edges(RI_MOUSE_MIDDLE_DOWN),
-        vec![(RawButton::Middle, true)]
+        vec![(HostPointerButton::middle(), true)]
     );
 }
 
@@ -336,14 +337,14 @@ fn single_button_edges_decode() {
 fn extra_buttons_use_the_evdev_names() {
     assert_eq!(
         button_edges(RI_MOUSE_BUTTON_4_DOWN),
-        vec![(RawButton::Side, true)]
+        vec![(HostPointerButton::side(), true)]
     );
     assert_eq!(
         button_edges(RI_MOUSE_BUTTON_5_UP),
-        vec![(RawButton::Extra, false)]
+        vec![(HostPointerButton::extra(), false)]
     );
-    assert_eq!(RawButton::Side.canonical_name(), "side");
-    assert_eq!(RawButton::Extra.canonical_name(), "extra");
+    assert_eq!(HostPointerButton::side().as_str(), "side");
+    assert_eq!(HostPointerButton::extra().as_str(), "extra");
 }
 
 #[test]
@@ -353,7 +354,10 @@ fn a_click_faster_than_the_report_interval_yields_both_edges_in_order() {
     // a shockwave effect is built for.
     assert_eq!(
         button_edges(RI_MOUSE_LEFT_DOWN | RI_MOUSE_LEFT_UP),
-        vec![(RawButton::Left, true), (RawButton::Left, false)]
+        vec![
+            (HostPointerButton::left(), true),
+            (HostPointerButton::left(), false)
+        ]
     );
 }
 
@@ -368,7 +372,10 @@ fn unrelated_flag_bits_produce_no_button_edges() {
 #[test]
 fn scroll_up_is_one_positive_notch() {
     let data = u16::try_from(WHEEL_DELTA).expect("WHEEL_DELTA fits a u16");
-    assert_eq!(wheel_delta(RI_MOUSE_WHEEL, data), Some(WHEEL_DELTA));
+    assert_eq!(
+        scroll_delta_q16_16(RI_MOUSE_WHEEL, data),
+        Some((0, i64::from(WHEEL_DELTA) * SCROLL_Q16_16_SCALE))
+    );
 }
 
 #[test]
@@ -376,29 +383,45 @@ fn scroll_down_reinterprets_the_u16_as_signed() {
     // usButtonData is declared u16 but carries a signed value: widening it
     // directly yields 65416 instead of -120, and every downward scroll would
     // read as a huge upward one.
-    assert_eq!(wheel_delta(RI_MOUSE_WHEEL, 0xFF88), Some(-WHEEL_DELTA));
+    assert_eq!(
+        scroll_delta_q16_16(RI_MOUSE_WHEEL, 0xFF88),
+        Some((0, -i64::from(WHEEL_DELTA) * SCROLL_Q16_16_SCALE))
+    );
 }
 
 #[test]
 fn sub_notch_hi_res_values_pass_through_unscaled() {
     // 1/120-notch units are already evdev's REL_WHEEL_HI_RES unit, so a
     // high-resolution wheel needs no conversion in either direction.
-    assert_eq!(wheel_delta(RI_MOUSE_WHEEL, 30), Some(30));
-    assert_eq!(wheel_delta(RI_MOUSE_WHEEL, 0xFFE2), Some(-30));
+    assert_eq!(
+        scroll_delta_q16_16(RI_MOUSE_WHEEL, 30),
+        Some((0, 30 * SCROLL_Q16_16_SCALE))
+    );
+    assert_eq!(
+        scroll_delta_q16_16(RI_MOUSE_WHEEL, 0xFFE2),
+        Some((0, -30 * SCROLL_Q16_16_SCALE))
+    );
 }
 
 #[test]
-fn horizontal_wheel_is_dropped_not_folded_into_vertical() {
-    // The shared event contract has no axis. Reporting horizontal scroll
-    // through the vertical channel would be a silent lie to every effect.
-    assert_eq!(wheel_delta(RI_MOUSE_HWHEEL, 120), None);
-    assert!(is_horizontal_wheel(RI_MOUSE_HWHEEL));
-    assert!(!is_horizontal_wheel(RI_MOUSE_WHEEL));
+fn horizontal_wheel_keeps_its_axis() {
+    assert_eq!(
+        scroll_delta_q16_16(RI_MOUSE_HWHEEL, 120),
+        Some((120 * SCROLL_Q16_16_SCALE, 0))
+    );
 }
 
 #[test]
 fn a_report_with_no_wheel_flag_has_no_wheel() {
-    assert_eq!(wheel_delta(RI_MOUSE_LEFT_DOWN, 120), None);
+    assert_eq!(scroll_delta_q16_16(RI_MOUSE_LEFT_DOWN, 120), None);
+}
+
+#[test]
+fn malformed_dual_axis_report_uses_one_vertical_value() {
+    assert_eq!(
+        scroll_delta_q16_16(RI_MOUSE_WHEEL | RI_MOUSE_HWHEEL, 120),
+        Some((0, 120 * SCROLL_Q16_16_SCALE))
+    );
 }
 
 // ── Motion ─────────────────────────────────────────────────────────────────

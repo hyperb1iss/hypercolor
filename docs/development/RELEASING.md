@@ -10,7 +10,8 @@ AI-generated notes, and registry publishes.
 2. Enter the version without the leading `v` (e.g. `0.3.0` or `0.3.0-rc.1`).
 3. Leave **dry run** checked for the first pass. Review the
    `release-preview-v<version>` artifact (release notes + changelog).
-4. Re-run with dry run unchecked to ship.
+4. Complete the signed macOS acceptance checkpoint below.
+5. Re-run with dry run unchecked to ship.
 
 What the Release workflow does, in order:
 
@@ -37,11 +38,44 @@ What the Release workflow does, in order:
    with `GITHUB_TOKEN` never fire `on: push` workflows; the tag-lane jobs
    in ci.yml accept `workflow_dispatch` for exactly this reason.
 
-The CI tag lane then builds all platform artifacts, creates the GitHub
-Release with the committed notes, publishes `hypercolor` +
+The CI tag lane then builds the Linux and Windows artifacts, creates the
+GitHub Release with the committed notes, publishes `hypercolor` +
 `create-hypercolor` to npm (with provenance; prereleases go to the `next`
 dist-tag), publishes the Python client to PyPI (stable only), and updates
-the Homebrew tap and AUR metadata (stable only).
+the AUR metadata (stable only).
+
+Public CI ships no macOS artifacts and does not update the Homebrew tap:
+macOS binaries require Developer ID signing that repository runners cannot
+perform, so signed macOS artifacts are produced and attached through the
+signed acceptance checkpoint below, and tap updates are manual until a
+signing-capable release lane exists.
+
+## Signed macOS acceptance checkpoint
+
+Spec 76 acceptance is a manual release checkpoint until the physical-hardware
+harness is automated. Before shipping a release that includes macOS screen
+capture or host input changes, run the signed packaged release candidate on
+the required Apple Silicon and Intel hardware and retain one acceptance bundle
+covering:
+
+- the signed TCC owner matrix and selected capability topology, including the
+  broker decision;
+- keyboard, pointer, SDR, HDR, picker, lifecycle, and teardown acceptance for
+  the rows supported by each machine;
+- the Section 19 latency, cadence, zero-copy, byte-reconciliation, and
+  30-minute results, plus the Section 18.5 four-hour combined soak; and
+- one Metal 4 qualification and adoption artifact for every active device that
+  exposes the required facilities.
+
+Record the immutable artifact location and checksum in the release checklist.
+CI fixtures, unsigned local runs, and a successful build do not replace this
+evidence. If the signed bundle does not exist or any required row fails, stop
+after the dry run. The repository does not currently contain a completed
+physical-acceptance bundle.
+
+The native and standalone artifact jobs also wait for the Python OpenAPI and
+WebSocket drift checks. GitHub Release creation cannot run unless both checks
+and both artifact lanes succeed.
 
 ## Required configuration
 
@@ -50,7 +84,7 @@ the Homebrew tap and AUR metadata (stable only).
 | `ANTHROPIC_API_KEY` | repo secret | git-iris release notes + changelog (required) |
 | npm trusted publishers | npmjs.com package settings | `publish-npm` uses OIDC (no token, automatic provenance); register repo `hyperb1iss/hypercolor`, workflow `ci.yml` on **both** `hypercolor` and `create-hypercolor` |
 | PyPI trusted publisher | pypi.org project settings | `publish-pypi` uses OIDC; register repo `hyperb1iss/hypercolor`, workflow `ci.yml` |
-| `HOMEBREW_TAP_TOKEN` | repo secret | tap pushes (already configured) |
+| `HOMEBREW_TAP_TOKEN` | repo secret | currently unused; retained for the future signing-capable tap lane |
 | `GIT_IRIS_MODEL` | repo variable, optional | override git-iris's default Anthropic model |
 
 ## Version alignment

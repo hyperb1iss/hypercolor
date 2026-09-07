@@ -6,16 +6,16 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.edge_behavior_type_0 import EdgeBehaviorType0
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
-    from ..models.edge_behavior import EdgeBehavior
+    from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
     from ..models.output import Output
     from ..models.sampling_mode_type_0 import SamplingModeType0
     from ..models.sampling_mode_type_1 import SamplingModeType1
     from ..models.sampling_mode_type_2 import SamplingModeType2
     from ..models.sampling_mode_type_3 import SamplingModeType3
-    from ..models.space_definition import SpaceDefinition
 
 
 T = TypeVar("T", bound="SpatialLayout")
@@ -36,12 +36,11 @@ class SpatialLayout:
             name (str): Human-readable name (e.g., "Bliss's PC Case", "Full Room").
             version (int): Schema version for forward-compatible migrations.
             zones (list[Output]): All device zones in this layout, ordered by rendering priority.
-            default_edge_behavior (EdgeBehavior | Unset): Edge behavior for out-of-bounds LED positions.
+            default_edge_behavior (EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset): Edge behavior for out-of-bounds LED
+                positions.
             default_sampling_mode (SamplingModeType0 | SamplingModeType1 | SamplingModeType2 | SamplingModeType3 | Unset):
                 Sampling algorithm for canvas-to-LED color extraction.
             description (None | str | Unset): Optional description for the layout editor UI.
-            spaces (list[SpaceDefinition] | None | Unset): Space hierarchy for multi-room layouts.
-                `None` means all zones live in a flat canvas (device/desk scale).
     """
 
     canvas_height: int
@@ -50,7 +49,7 @@ class SpatialLayout:
     name: str
     version: int
     zones: list[Output]
-    default_edge_behavior: EdgeBehavior | Unset = UNSET
+    default_edge_behavior: EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset = UNSET
     default_sampling_mode: (
         SamplingModeType0
         | SamplingModeType1
@@ -59,7 +58,6 @@ class SpatialLayout:
         | Unset
     ) = UNSET
     description: None | str | Unset = UNSET
-    spaces: list[SpaceDefinition] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -82,8 +80,12 @@ class SpatialLayout:
             zones_item = zones_item_data.to_dict()
             zones.append(zones_item)
 
-        default_edge_behavior: dict[str, Any] | Unset = UNSET
-        if not isinstance(self.default_edge_behavior, Unset):
+        default_edge_behavior: dict[str, Any] | str | Unset
+        if isinstance(self.default_edge_behavior, Unset):
+            default_edge_behavior = UNSET
+        elif isinstance(self.default_edge_behavior, EdgeBehaviorType0):
+            default_edge_behavior = self.default_edge_behavior.value
+        else:
             default_edge_behavior = self.default_edge_behavior.to_dict()
 
         default_sampling_mode: dict[str, Any] | Unset
@@ -104,18 +106,6 @@ class SpatialLayout:
         else:
             description = self.description
 
-        spaces: list[dict[str, Any]] | None | Unset
-        if isinstance(self.spaces, Unset):
-            spaces = UNSET
-        elif isinstance(self.spaces, list):
-            spaces = []
-            for spaces_type_0_item_data in self.spaces:
-                spaces_type_0_item = spaces_type_0_item_data.to_dict()
-                spaces.append(spaces_type_0_item)
-
-        else:
-            spaces = self.spaces
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -134,20 +124,17 @@ class SpatialLayout:
             field_dict["default_sampling_mode"] = default_sampling_mode
         if description is not UNSET:
             field_dict["description"] = description
-        if spaces is not UNSET:
-            field_dict["spaces"] = spaces
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.edge_behavior import EdgeBehavior
+        from ..models.edge_behavior_fade_to_black import EdgeBehaviorFadeToBlack
         from ..models.output import Output
         from ..models.sampling_mode_type_0 import SamplingModeType0
         from ..models.sampling_mode_type_1 import SamplingModeType1
         from ..models.sampling_mode_type_2 import SamplingModeType2
         from ..models.sampling_mode_type_3 import SamplingModeType3
-        from ..models.space_definition import SpaceDefinition
 
         d = dict(src_dict)
         canvas_height = d.pop("canvas_height")
@@ -167,12 +154,30 @@ class SpatialLayout:
 
             zones.append(zones_item)
 
-        _default_edge_behavior = d.pop("default_edge_behavior", UNSET)
-        default_edge_behavior: EdgeBehavior | Unset
-        if isinstance(_default_edge_behavior, Unset):
-            default_edge_behavior = UNSET
-        else:
-            default_edge_behavior = EdgeBehavior.from_dict(_default_edge_behavior)
+        def _parse_default_edge_behavior(
+            data: object,
+        ) -> EdgeBehaviorFadeToBlack | EdgeBehaviorType0 | Unset:
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                componentsschemas_edge_behavior_type_0 = EdgeBehaviorType0(data)
+
+                return componentsschemas_edge_behavior_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            if not isinstance(data, dict):
+                raise TypeError()
+            componentsschemas_edge_behavior_type_1 = EdgeBehaviorFadeToBlack.from_dict(
+                data
+            )
+
+            return componentsschemas_edge_behavior_type_1
+
+        default_edge_behavior = _parse_default_edge_behavior(
+            d.pop("default_edge_behavior", UNSET)
+        )
 
         def _parse_default_sampling_mode(
             data: object,
@@ -234,30 +239,6 @@ class SpatialLayout:
 
         description = _parse_description(d.pop("description", UNSET))
 
-        def _parse_spaces(data: object) -> list[SpaceDefinition] | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, list):
-                    raise TypeError()
-                spaces_type_0 = []
-                _spaces_type_0 = data
-                for spaces_type_0_item_data in _spaces_type_0:
-                    spaces_type_0_item = SpaceDefinition.from_dict(
-                        spaces_type_0_item_data
-                    )
-
-                    spaces_type_0.append(spaces_type_0_item)
-
-                return spaces_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(list[SpaceDefinition] | None | Unset, data)
-
-        spaces = _parse_spaces(d.pop("spaces", UNSET))
-
         spatial_layout = cls(
             canvas_height=canvas_height,
             canvas_width=canvas_width,
@@ -268,7 +249,6 @@ class SpatialLayout:
             default_edge_behavior=default_edge_behavior,
             default_sampling_mode=default_sampling_mode,
             description=description,
-            spaces=spaces,
         )
 
         spatial_layout.additional_properties = d

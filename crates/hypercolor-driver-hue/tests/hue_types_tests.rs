@@ -56,6 +56,6 @@ fn build_device_info_prefers_area_and_light_names_for_hue() {
     );
 
     assert_eq!(info.name, "Movie Time");
-    assert_eq!(info.zones[0].name, "Left Lamp");
-    assert_eq!(info.zones[1].name, "Right Lamp");
+    assert_eq!(info.segments[0].name, "Left Lamp");
+    assert_eq!(info.segments[1].name, "Right Lamp");
 }

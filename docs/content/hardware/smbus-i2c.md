@@ -4,13 +4,11 @@ description = "ASUS Aura lighting over SMBus on Linux and Windows: /dev/i2c-* ac
 weight = 30
 +++
 
-# SMBus / I²C ⚡
-
 ASUS Aura motherboard headers, GPU lighting zones, and RGB DRAM all communicate over SMBus, a low-speed I²C-compatible serial bus built into the platform chipset. Linux exposes each adapter as a `/dev/i2c-*` character device. Hypercolor opens those nodes directly and speaks the ENE indirect-register protocol that ASUS Aura controllers expect.
 
 On Linux the setup requires two things that USB devices do not: the `i2c-dev` kernel module must be loaded, and the udev rules must be installed. Once those are in place, discovery is automatic. Both prerequisites are Linux-only; the [Windows section](#windows-and-macos) below covers the PawnIO path.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ---
 
@@ -67,9 +65,9 @@ just udev-install
 
 This copies the rules file to `/etc/udev/rules.d/`, reloads udev, and triggers a re-evaluation for existing nodes. If you have already run `just udev-install` for USB device access, the SMBus rule is already installed; both USB and SMBus rules live in the same file.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 I²C bus nodes are on-chip and cannot be replugged, so a udev trigger is sufficient, no reboot required. If permissions are still denied after running `just udev-install`, log out and back in so `systemd-logind` can replay the session ACL.
-{% end %}
+{% </callout> %}
 
 ### 3. ACPI resource override (some boards)
 
@@ -127,9 +125,9 @@ ASUS solves this with a **remap hub at address `0x77`**. When the hub is present
 
 If the hub is absent, Hypercolor falls back to probing the known address pool directly (`0x70`-`0x76`, `0x78`-`0x7F`, `0x4F`, `0x66`, `0x67`, `0x39`-`0x3D`) and discovers whatever is already reachable.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 DRAM lighting requires the remap hub at `0x77`. If another tool holds the hub or the bus during startup, Hypercolor cannot program the slot mappings and may miss some or all DRAM sticks. Stop Aura Sync and OpenRGB before starting the Hypercolor daemon.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -201,13 +199,13 @@ ls /dev/i2c-*
 If nothing appears, load the module (`sudo modprobe i2c-dev`) and restart the daemon. If nodes exist but discovery finds nothing, enable debug logging:
 
 ```bash
-RUST_LOG=hypercolor_hal=debug hypercolor daemon
+RUST_LOG=hypercolor_hal=debug just daemon
 ```
 
 Look for `discovered ASUS Aura SMBus controller` (success) or `skipping ASUS Aura … probe on incompatible i2c adapter` (PCI ID not matched). To see the per-bus skip lines, use `trace` level:
 
 ```bash
-RUST_LOG=hypercolor_hal=trace hypercolor daemon
+RUST_LOG=hypercolor_hal=trace just daemon
 ```
 
 **Permission denied**
@@ -250,7 +248,7 @@ If discovery logs `ASUS Aura SMBus firmware probe rejected candidate` and shows 
 | Reload udev | `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=i2c-dev` |
 | Discover devices | `hypercolor devices discover --target smbus` |
 | List all devices | `hypercolor devices list` |
-| Debug logging | `RUST_LOG=hypercolor_hal=debug hypercolor daemon` |
+| Debug logging | `RUST_LOG=hypercolor_hal=debug just daemon` |
 
 ---
 

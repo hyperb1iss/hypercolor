@@ -10,8 +10,9 @@
 
 use anyhow::{Result, bail};
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::display::DisplayDescriptor;
-use hypercolor_types::effect::{ControlKind, ControlValue, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{ControlKind, EffectMetadata, EffectSource};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -245,8 +246,12 @@ impl EffectRenderer for ServoRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        self.controls.insert(name.to_owned(), value.clone());
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            self.controls
+                .insert(control_id.as_str().to_owned(), value.clone());
+        }
+        Ok(())
     }
 
     fn set_display_descriptor(&mut self, descriptor: Option<DisplayDescriptor>) {
@@ -316,17 +321,6 @@ impl Default for ServoRenderer {
     }
 }
 
-fn effect_uses_sensor_data(metadata: &EffectMetadata) -> bool {
-    metadata.tags.iter().any(|tag| {
-        tag.eq_ignore_ascii_case("sensor")
-            || tag.eq_ignore_ascii_case("sensors")
-            || tag.eq_ignore_ascii_case("system-monitor")
-    }) || metadata
-        .controls
-        .iter()
-        .any(|control| matches!(control.kind, ControlKind::Sensor))
-}
-
 fn scoped_sensor_control_ids(metadata: &EffectMetadata) -> Vec<String> {
     let has_broad_sensor_tag = metadata.tags.iter().any(|tag| {
         tag.eq_ignore_ascii_case("sensor")
@@ -366,8 +360,8 @@ fn effect_has_tag(metadata: &EffectMetadata, name: &str) -> bool {
 
 fn host_driven_animation(metadata: &EffectMetadata) -> bool {
     matches!(metadata.source, EffectSource::Html { .. })
-        && !effect_has_tag(metadata, "webgl")
-        && !effect_has_tag(metadata, "canvas2d")
+        && (cfg!(target_os = "macos")
+            || (!effect_has_tag(metadata, "webgl") && !effect_has_tag(metadata, "canvas2d")))
 }
 
 #[cfg(feature = "servo-gpu-import")]

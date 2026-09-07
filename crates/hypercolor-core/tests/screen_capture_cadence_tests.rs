@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use hypercolor_core::input::InputSource;
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::consumer::{
     CaptureCadence, CaptureCadenceError, CaptureConfig, MAX_REPRESENTABLE_CAPTURE_FPS,
     ScreenAnalysisAdmissionError, ScreenCaptureInput,
 };

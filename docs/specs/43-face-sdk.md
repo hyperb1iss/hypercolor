@@ -5,7 +5,9 @@
 > declarative API that mirrors the existing `effect()` / `canvas()`
 > pattern. Faces build to standalone HTML via the same esbuild pipeline.
 
-**Status:** Draft (v1)
+**Status:** Implemented (status corrected 2026-08-25). The declarative `face()` API
+ships at `sdk/packages/core/src/faces/face-fn.ts`, with seven starter faces under
+`sdk/src/faces/`.
 **Author:** Nova
 **Date:** 2026-04-12
 **Packages:** `hypercolor` (extends existing)

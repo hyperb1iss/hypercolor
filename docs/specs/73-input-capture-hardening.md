@@ -1,8 +1,12 @@
 # Spec 73: Input and Capture Hardening
 
-Status: APPROVED (Claude cross-model review PASS, round 6; T11 amendment PASS,
-round 5 plus final delta); arbitrary-resolution amendment PASS, round 2 plus
-final delta
+Status: Approved and substantially landed (status corrected 2026-08-25). The target
+contracts are in the tree: `SourceStatus`
+(`crates/hypercolor-core/src/input/status.rs`), `CaptureFrame<S>`
+(`crates/hypercolor-core/src/input/screen/frame.rs`), and the acceptance procedure at
+`docs/development/LINUX_CAPTURE_ACCEPTANCE.md`. Original review record: Claude
+cross-model review PASS round 6; T11 amendment PASS round 5 plus final delta;
+arbitrary-resolution amendment PASS round 2 plus final delta.
 Author: Nova
 Date: 2026-07-26
 Depends on: spec 14, spec 71, spec 72
@@ -860,10 +864,11 @@ Verify:
 - Fault-injection tests cover readiness timeout, late readiness, panic/exit after
   readiness, partial graph startup, repeated stop, and replacement.
 - No test can observe a worker publishing after its source was removed.
-- Every production `InputSource` implementation (audio, browser, evdev,
-  interaction, media, net, generic screen, Wayland screen, Windows screen, and
-  Windows host) publishes a T01 status handle and cannot report live after its
-  worker exits.
+- Every production `InputSource` implementation (audio, evdev, interaction,
+  media, net, generic screen, Wayland screen, Windows screen, and Windows host)
+  publishes a T01 status handle and cannot report live after its worker exits.
+- Browser child health is registry-owned and exposed only through exact child
+  route diagnostics; browser children do not enter the sampled manager graph.
 
 #### T07 - Canonicalize host events and bound browser/evdev ingestion
 
@@ -1051,18 +1056,17 @@ Implementation:
   daemon `merge` plus preview `browser` for one minor version; a freshly created
   config uses the new defaults. All three variants remain valid for both consumer
   classes.
-- Keep one manager-owned `BrowserInputSource`, but make it own an immutable,
-  lock-free connection registry instead of publishing only a union. An interactive
-  WebSocket attach creates a unique browser slot addressed by structured
-  `(server_connection_incarnation, client_preview_id)` identity. Its opaque source
-  incarnation is distinct from manager-local slot ids and from its diagnostic
-  string. Attach/detach must not mutate the manager's top-level source graph or put
-  `InputManager` on the WebSocket injection path.
-- Stop publishing a destructive union as the browser source's routable data plane.
-  The top-level source remains the registry lifecycle/status owner; addressable
-  child slots carry held state, motion, and independent bounded event histories.
-  Any compatibility aggregate is derived non-destructively with its own cursors
-  and can never drain or starve a child consumer.
+- Keep one immutable, lock-free browser connection registry outside the sampled
+  manager graph. An interactive WebSocket attach creates a unique browser child
+  slot addressed by structured `(server_connection_incarnation,
+  client_preview_id)` identity. Its opaque source incarnation is distinct from
+  manager-local slot ids and from its diagnostic string. Attach/detach never
+  mutates the manager's source graph or puts `InputManager` on the WebSocket
+  injection path.
+- Publish only addressable child slots. Each child carries coherent held state,
+  motion, an independent bounded event history, and the registry's always-live
+  health handle. There is no browser union, aggregate fallback, or sampled
+  browser owner.
 - Resolve source sets exactly: `host` selects every eligible non-browser
   interaction slot; preview `browser` selects only that preview's child;
   preview `merge` selects host plus that child. Daemon `browser` selects only an
@@ -1665,6 +1669,16 @@ Verify:
 - Default Servo and non-Servo builds resolve ScreenCast to the same semantic
   consumer and output equivalent samples.
 - Native interactive fixture exercises state plus timed batch.
+
+Status on 2026-08-22: landed with design 72 C4. Renderers receive the
+exact publication as `Option<&Arc<ScreenBranchPublication>>`; Servo keeps
+the Arc across coalesced frames without copying pixels; LightScript reads
+zone publications cell for cell and projects surface publications onto
+its grid as a documented box average, so the 8x6 substitute is gone.
+Repeat-key multiplicity and the ScreenCast registration identity landed
+earlier. The macOS production path still publishes GPU-resident work
+only, so CPU renderers on macOS read an absent screen until a GPU
+readback or a CPU branch exists there.
 
 #### T20 - Bound media enrichment and make providers resilient
 

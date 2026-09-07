@@ -1,6 +1,10 @@
 # Spec 74: PipeWire Metadata, D4 Transforms, and Topology Truth
 
-Status: draft, revision 2 after skeptic review (REWORK verdict addressed).
+Status: Landed (status corrected 2026-08-25); text below is revision 2 after skeptic
+review. Both headline demands are in the tree: the 8-state D4 `CaptureRotation`
+(`crates/hypercolor-core/src/input/screen/frame.rs`) and the
+`spa_meta_videotransform` read
+(`crates/hypercolor-pipewire-interop/src/linux/buffer.rs`).
 Executes the remaining core of spec 73 T17 on the foundation the
 2026-08-02 first-light session proved live: compositor-real format
 negotiation, native-extent adoption, and session-stamped restore tokens
@@ -237,7 +241,7 @@ requires a refactor this wave budgets explicitly:
   retires and re-prepares exact branches and publishes correctly-sized
   frames on all branches within a bounded number of frames; crop
   metadata from a synthetic PipeWire source samples the exact region.
-- Per-reason drop counters visible in `/api/v1/status`.
+- Per-reason drop counters visible in `/api/v1/system` status data.
 - `just verify` green including the new crate; cargo-deny clean.
 
 ## Out of scope

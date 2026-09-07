@@ -1,13 +1,16 @@
 //! Screen Cast renderer — maps the latest captured screen frame onto the effect canvas.
 //!
-//! The renderer consumes a downscaled screen snapshot from the input pipeline,
-//! applies a normalized crop rect, and fits that region into the output canvas.
+//! The renderer consumes the exact CPU surface publication leased for the
+//! effect, applies a normalized crop rect, and fits that region into the
+//! output canvas. GPU-resident publications carry no CPU pixels, so the
+//! canvas stays black until a CPU surface is published.
 
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::Canvas;
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PreviewSource,
 };
 use hypercolor_types::viewport::{FitMode, ViewportRect};
 
@@ -49,13 +52,9 @@ impl EffectRenderer for ScreenCastRenderer {
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> anyhow::Result<()> {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         canvas.clear();
-        let Some(screen) = input.screen else {
+        let Some(source) = input.screen.and_then(|screen| screen.surface_canvas()) else {
             return Ok(());
         };
-        let Some(source_surface) = screen.canvas_downscale.as_ref() else {
-            return Ok(());
-        };
-        let source = Canvas::from_published_surface(source_surface);
 
         sample_viewport(
             canvas,
@@ -68,27 +67,30 @@ impl EffectRenderer for ScreenCastRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "viewport" => {
-                if let ControlValue::Rect(rect) = value {
-                    self.viewport = rect.clamp();
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "viewport" => {
+                    if let ControlValue::Rect(rect) = value {
+                        self.viewport =
+                            ViewportRect::new(rect.x, rect.y, rect.width, rect.height).clamp();
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "fit_mode" => {
-                if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
-                    self.fit_mode = parse_fit_mode(mode);
+                "fit_mode" => {
+                    if let ControlValue::Enum(mode) | ControlValue::Text(mode) = value {
+                        self.fit_mode = parse_fit_mode(mode);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 

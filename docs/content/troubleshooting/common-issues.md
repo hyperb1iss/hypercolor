@@ -123,9 +123,9 @@ systemctl --user restart hypercolor
 systemctl --user status hypercolor
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Linger requires systemd 230 or later, which is standard on any distribution shipping systemd since 2016. If `loginctl enable-linger` returns an error, confirm that `systemd-logind` is running: `systemctl status systemd-logind`.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -143,9 +143,9 @@ Specifically affected:
 - **D-Bus session bus.** The session bus socket lives at `$XDG_RUNTIME_DIR/bus`. Desktop notifications and MPRIS media-player control will not connect.
 - **Screen capture.** `xdg-desktop-portal` (which manages PipeWire screen sharing) depends on the runtime directory.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The daemon does not log a warning when `XDG_RUNTIME_DIR` is missing. Silent static effects on a server install with no errors in the log is the tell. Check the runtime directory first.
-{% end %}
+{% </callout> %}
 
 **Diagnose:**
 

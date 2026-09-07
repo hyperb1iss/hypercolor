@@ -30,6 +30,7 @@ fn options_with(
         include_media,
         include_net,
         include_lighting,
+        emit_frame_timing: false,
         render_host_frame: false,
         selected_sensor_labels: None,
     }

@@ -23,7 +23,6 @@ class LatestFrameStatus:
         compositor_backend (str):
         coordination_overhead_ms (float):
         cpu_readback_skipped (bool):
-        cpu_sampling_late_readback (bool): Deprecated v1 compatibility field. Always `false`.
         device_output_ms (float):
         devices_written (int):
         effect_rendering_ms (float):
@@ -42,7 +41,6 @@ class LatestFrameStatus:
         gpu_zone_sampling (bool):
         input_sampling_ms (float):
         jitter_ms (float):
-        led_sampling_readback (bool): Deprecated v1 compatibility alias. Always `false`.
         logical_layer_count (int):
         output_brightness_bits (int):
         output_brightness_generation (int):
@@ -63,10 +61,10 @@ class LatestFrameStatus:
         publication_full_frame_copy_kb (float):
         publish_events_ms (float):
         publish_frame_data_ms (float):
-        publish_group_canvas_ms (float):
         publish_preview_ms (float):
-        render_group_count (int):
+        publish_zone_canvas_ms (float):
         render_surfaces (RenderSurfaceStatus):
+        render_zone_count (int):
         scene_canvas_forced_surface (bool):
         spatial_sampling_ms (float):
         total_leds (int):
@@ -80,7 +78,6 @@ class LatestFrameStatus:
     compositor_backend: str
     coordination_overhead_ms: float
     cpu_readback_skipped: bool
-    cpu_sampling_late_readback: bool
     device_output_ms: float
     devices_written: int
     effect_rendering_ms: float
@@ -99,7 +96,6 @@ class LatestFrameStatus:
     gpu_zone_sampling: bool
     input_sampling_ms: float
     jitter_ms: float
-    led_sampling_readback: bool
     logical_layer_count: int
     output_brightness_bits: int
     output_brightness_generation: int
@@ -120,10 +116,10 @@ class LatestFrameStatus:
     publication_full_frame_copy_kb: float
     publish_events_ms: float
     publish_frame_data_ms: float
-    publish_group_canvas_ms: float
     publish_preview_ms: float
-    render_group_count: int
+    publish_zone_canvas_ms: float
     render_surfaces: RenderSurfaceStatus
+    render_zone_count: int
     scene_canvas_forced_surface: bool
     spatial_sampling_ms: float
     total_leds: int
@@ -141,8 +137,6 @@ class LatestFrameStatus:
         coordination_overhead_ms = self.coordination_overhead_ms
 
         cpu_readback_skipped = self.cpu_readback_skipped
-
-        cpu_sampling_late_readback = self.cpu_sampling_late_readback
 
         device_output_ms = self.device_output_ms
 
@@ -179,8 +173,6 @@ class LatestFrameStatus:
         input_sampling_ms = self.input_sampling_ms
 
         jitter_ms = self.jitter_ms
-
-        led_sampling_readback = self.led_sampling_readback
 
         logical_layer_count = self.logical_layer_count
 
@@ -224,13 +216,13 @@ class LatestFrameStatus:
 
         publish_frame_data_ms = self.publish_frame_data_ms
 
-        publish_group_canvas_ms = self.publish_group_canvas_ms
-
         publish_preview_ms = self.publish_preview_ms
 
-        render_group_count = self.render_group_count
+        publish_zone_canvas_ms = self.publish_zone_canvas_ms
 
         render_surfaces = self.render_surfaces.to_dict()
+
+        render_zone_count = self.render_zone_count
 
         scene_canvas_forced_surface = self.scene_canvas_forced_surface
 
@@ -262,7 +254,6 @@ class LatestFrameStatus:
                 "compositor_backend": compositor_backend,
                 "coordination_overhead_ms": coordination_overhead_ms,
                 "cpu_readback_skipped": cpu_readback_skipped,
-                "cpu_sampling_late_readback": cpu_sampling_late_readback,
                 "device_output_ms": device_output_ms,
                 "devices_written": devices_written,
                 "effect_rendering_ms": effect_rendering_ms,
@@ -281,7 +272,6 @@ class LatestFrameStatus:
                 "gpu_zone_sampling": gpu_zone_sampling,
                 "input_sampling_ms": input_sampling_ms,
                 "jitter_ms": jitter_ms,
-                "led_sampling_readback": led_sampling_readback,
                 "logical_layer_count": logical_layer_count,
                 "output_brightness_bits": output_brightness_bits,
                 "output_brightness_generation": output_brightness_generation,
@@ -302,10 +292,10 @@ class LatestFrameStatus:
                 "publication_full_frame_copy_kb": publication_full_frame_copy_kb,
                 "publish_events_ms": publish_events_ms,
                 "publish_frame_data_ms": publish_frame_data_ms,
-                "publish_group_canvas_ms": publish_group_canvas_ms,
                 "publish_preview_ms": publish_preview_ms,
-                "render_group_count": render_group_count,
+                "publish_zone_canvas_ms": publish_zone_canvas_ms,
                 "render_surfaces": render_surfaces,
+                "render_zone_count": render_zone_count,
                 "scene_canvas_forced_surface": scene_canvas_forced_surface,
                 "spatial_sampling_ms": spatial_sampling_ms,
                 "total_leds": total_leds,
@@ -336,8 +326,6 @@ class LatestFrameStatus:
         coordination_overhead_ms = d.pop("coordination_overhead_ms")
 
         cpu_readback_skipped = d.pop("cpu_readback_skipped")
-
-        cpu_sampling_late_readback = d.pop("cpu_sampling_late_readback")
 
         device_output_ms = d.pop("device_output_ms")
 
@@ -374,8 +362,6 @@ class LatestFrameStatus:
         input_sampling_ms = d.pop("input_sampling_ms")
 
         jitter_ms = d.pop("jitter_ms")
-
-        led_sampling_readback = d.pop("led_sampling_readback")
 
         logical_layer_count = d.pop("logical_layer_count")
 
@@ -419,13 +405,13 @@ class LatestFrameStatus:
 
         publish_frame_data_ms = d.pop("publish_frame_data_ms")
 
-        publish_group_canvas_ms = d.pop("publish_group_canvas_ms")
-
         publish_preview_ms = d.pop("publish_preview_ms")
 
-        render_group_count = d.pop("render_group_count")
+        publish_zone_canvas_ms = d.pop("publish_zone_canvas_ms")
 
         render_surfaces = RenderSurfaceStatus.from_dict(d.pop("render_surfaces"))
+
+        render_zone_count = d.pop("render_zone_count")
 
         scene_canvas_forced_surface = d.pop("scene_canvas_forced_surface")
 
@@ -466,7 +452,6 @@ class LatestFrameStatus:
             compositor_backend=compositor_backend,
             coordination_overhead_ms=coordination_overhead_ms,
             cpu_readback_skipped=cpu_readback_skipped,
-            cpu_sampling_late_readback=cpu_sampling_late_readback,
             device_output_ms=device_output_ms,
             devices_written=devices_written,
             effect_rendering_ms=effect_rendering_ms,
@@ -485,7 +470,6 @@ class LatestFrameStatus:
             gpu_zone_sampling=gpu_zone_sampling,
             input_sampling_ms=input_sampling_ms,
             jitter_ms=jitter_ms,
-            led_sampling_readback=led_sampling_readback,
             logical_layer_count=logical_layer_count,
             output_brightness_bits=output_brightness_bits,
             output_brightness_generation=output_brightness_generation,
@@ -506,10 +490,10 @@ class LatestFrameStatus:
             publication_full_frame_copy_kb=publication_full_frame_copy_kb,
             publish_events_ms=publish_events_ms,
             publish_frame_data_ms=publish_frame_data_ms,
-            publish_group_canvas_ms=publish_group_canvas_ms,
             publish_preview_ms=publish_preview_ms,
-            render_group_count=render_group_count,
+            publish_zone_canvas_ms=publish_zone_canvas_ms,
             render_surfaces=render_surfaces,
+            render_zone_count=render_zone_count,
             scene_canvas_forced_surface=scene_canvas_forced_surface,
             spatial_sampling_ms=spatial_sampling_ms,
             total_leds=total_leds,

@@ -6,7 +6,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
@@ -19,15 +18,14 @@ use tracing::warn;
 use super::index::{
     AssetEvent, AssetIndex, AssetScanStatus, AssetWarning, INDEX_VERSION, MediaAssetRecord,
 };
+use crate::persistence::{AtomicFileWriter, PersistenceError, serialize_json_pretty};
 
 const OBJECTS_DIR: &str = "objects";
 const THUMBNAILS_DIR: &str = "thumbnails";
 const INDEX_FILE: &str = "index.json";
-const INDEX_TMP_FILE: &str = "index.json.tmp";
 const THUMBNAIL_SIZE: u32 = 256;
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const BYTES_PER_GIB: u64 = 1024 * BYTES_PER_MIB;
-static INDEX_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Default asset library policy limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +232,18 @@ pub enum AssetLibraryError {
     },
     #[error("failed to serialize asset index: {0}")]
     SerializeIndex(#[source] serde_json::Error),
+    #[error("failed to prepare asset index persistence at {path}: {source}")]
+    PrepareIndexPersistence {
+        path: PathBuf,
+        #[source]
+        source: PersistenceError,
+    },
+    #[error("failed to persist asset index {path}: {source}")]
+    PersistIndex {
+        path: PathBuf,
+        #[source]
+        source: PersistenceError,
+    },
     #[error("failed to decode asset image: {0}")]
     DecodeImage(#[source] image::ImageError),
     #[error("failed to encode asset thumbnail {path}: {source}")]
@@ -251,6 +261,7 @@ pub struct AssetLibrary {
     objects_dir: PathBuf,
     thumbnails_dir: PathBuf,
     index_path: PathBuf,
+    index_writer: AtomicFileWriter,
     index: AssetIndex,
     limits: AssetLibraryLimits,
     stream_url_policy: StreamUrlPolicy,
@@ -297,12 +308,19 @@ impl AssetLibrary {
         set_private_dir_permissions(&root);
 
         let index = load_index(&index_path)?.unwrap_or_default();
+        let index_writer = AtomicFileWriter::new(&index_path).map_err(|source| {
+            AssetLibraryError::PrepareIndexPersistence {
+                path: index_path.clone(),
+                source,
+            }
+        })?;
 
         let mut library = Self {
             root,
             objects_dir,
             thumbnails_dir,
             index_path,
+            index_writer,
             index,
             limits,
             stream_url_policy,
@@ -731,14 +749,13 @@ impl AssetLibrary {
 
     fn persist_index(&self) -> Result<(), AssetLibraryError> {
         let bytes =
-            serde_json::to_vec_pretty(&self.index).map_err(AssetLibraryError::SerializeIndex)?;
-        let tmp_path = index_tmp_path(&self.root);
-        write_file_synced(&tmp_path, &bytes)?;
-        fs::rename(&tmp_path, &self.index_path).map_err(|source| AssetLibraryError::Replace {
-            path: self.index_path.clone(),
-            source,
-        })?;
-        sync_dir(&self.root)?;
+            serialize_json_pretty(&self.index).map_err(AssetLibraryError::SerializeIndex)?;
+        self.index_writer
+            .write(&bytes)
+            .map_err(|source| AssetLibraryError::PersistIndex {
+                path: self.index_path.clone(),
+                source,
+            })?;
         Ok(())
     }
 
@@ -1157,15 +1174,6 @@ fn create_dir(path: &Path) -> Result<(), AssetLibraryError> {
         path: path.to_path_buf(),
         source,
     })
-}
-
-fn index_tmp_path(root: &Path) -> PathBuf {
-    let sequence = INDEX_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    root.join(format!(
-        "{INDEX_TMP_FILE}.{}.{}",
-        std::process::id(),
-        sequence
-    ))
 }
 
 fn write_file_synced(path: &Path, bytes: &[u8]) -> Result<(), AssetLibraryError> {

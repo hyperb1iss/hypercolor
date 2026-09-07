@@ -17,7 +17,8 @@ T = TypeVar("T", bound="DriverConfigResponse")
 
 @_attrs_define
 class DriverConfigResponse:
-    """
+    """Response for `GET /api/v1/drivers/{id}/config`.
+
     Attributes:
         config_key (str):
         configurable (bool):

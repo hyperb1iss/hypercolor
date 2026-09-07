@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use hypercolor_leptos_ext::events::document as browser_document;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 use crate::control_value_json::hex_to_rgba_json;
 

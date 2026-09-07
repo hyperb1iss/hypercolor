@@ -5,10 +5,9 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, RgbaF32};
-use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
+use hypercolor_types::effect::{ControlDefinition, EffectCategory, EffectMetadata, EffectSource};
 
 use super::common::{builtin_effect_id, color_control, dropdown_control, slider_control};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
@@ -129,8 +128,8 @@ impl EffectRenderer for SolidColorRenderer {
         prepare_target_canvas(canvas, input.canvas_width, input.canvas_height);
         let width = input.canvas_width.max(1) as f32;
         let height = input.canvas_height.max(1) as f32;
-        let primary = RgbaF32::new(self.color[0], self.color[1], self.color[2], self.color[3]);
-        let secondary = RgbaF32::new(
+        let primary = LinearRgba::new(self.color[0], self.color[1], self.color[2], self.color[3]);
+        let secondary = LinearRgba::new(
             self.secondary_color[0],
             self.secondary_color[1],
             self.secondary_color[2],
@@ -142,7 +141,7 @@ impl EffectRenderer for SolidColorRenderer {
             pixel.r *= self.brightness;
             pixel.g *= self.brightness;
             pixel.b *= self.brightness;
-            canvas.fill(pixel.to_srgba());
+            canvas.fill(pixel.to_encoded());
             return Ok(());
         }
 
@@ -160,59 +159,61 @@ impl EffectRenderer for SolidColorRenderer {
             for (x, pixel_bytes) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
                 let nx = (x as f32 + 0.5) / width;
                 let mix = self.pattern_mix(nx, ny, width, height);
-                let mut pixel = RgbaF32::lerp(&primary, &secondary, mix);
+                let mut pixel = primary.lerp(secondary, mix);
                 pixel.r *= self.brightness;
                 pixel.g *= self.brightness;
                 pixel.b *= self.brightness;
-                let rgba = pixel.to_srgb_u8();
-                pixel_bytes.copy_from_slice(&rgba);
+                let rgba = pixel.to_encoded();
+                pixel_bytes.copy_from_slice(&[rgba.r, rgba.g, rgba.b, rgba.a]);
             }
         }
 
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color" => {
-                if let ControlValue::Color(c) = value {
-                    self.color = *c;
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "secondary_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.secondary_color = *c;
+                "secondary_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.secondary_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "pattern" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.pattern = SolidPattern::from_str(choice);
+                "pattern" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.pattern = SolidPattern::from_str(choice);
+                    }
                 }
-            }
-            "position" => {
-                if let Some(v) = value.as_f32() {
-                    self.position = v.clamp(0.0, 1.0);
+                "position" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.position = value.clamp(0.0, 1.0);
+                    }
                 }
-            }
-            "softness" => {
-                if let Some(v) = value.as_f32() {
-                    self.softness = v.clamp(0.0, 0.5);
+                "softness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.softness = value.clamp(0.0, 0.5);
+                    }
                 }
-            }
-            "scale" => {
-                if let Some(v) = value.as_f32() {
-                    self.scale = v.max(1.0);
+                "scale" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.scale = value.max(1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 

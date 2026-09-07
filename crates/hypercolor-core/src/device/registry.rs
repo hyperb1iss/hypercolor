@@ -8,14 +8,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
-use super::{DiscoveredDevice, DiscoveryConnectBehavior};
-use crate::types::device::{
+use hypercolor_types::device::{
     ConnectionType, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
+    FingerprintNamespace,
 };
-use crate::types::portable::{PortableDeviceKey, PortableIdentityClaim};
+use hypercolor_types::portable::{PortableDeviceKey, PortableIdentityClaim};
+use hypercolor_types::scene::DisplayRotation;
 
 // ── TrackedDevice ────────────────────────────────────────────────────────
 
@@ -146,7 +148,11 @@ impl DeviceRegistry {
     /// updated in place and the existing `DeviceId` is returned. Otherwise a
     /// new entry is created.
     pub async fn add(&self, info: DeviceInfo) -> DeviceId {
-        let fallback_fingerprint = DeviceFingerprint(info.id.as_uuid().to_string());
+        let fallback_fingerprint = DeviceFingerprint::mint(
+            FingerprintNamespace::Bridge,
+            "registry",
+            &info.id.as_uuid().to_string(),
+        );
         self.add_with_fingerprint(info, fallback_fingerprint).await
     }
 
@@ -210,24 +216,49 @@ impl DeviceRegistry {
                 let mut updated_info = info;
                 // Keep the canonical registry ID stable across rediscovery.
                 updated_info.id = existing_id;
-                preserve_renderable_device_shape(&mut updated_info, &entry.info, &entry.state);
+                preserve_resolved_device_shape(&mut updated_info, &entry.info);
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
-                debug!(
-                    device_id = %existing_id,
-                    name = %updated_info.name,
-                    "Updating existing device in registry"
-                );
-                entry.info = updated_info;
-                entry.connect_behavior = connect_behavior;
-                bump_device_revision(entry);
-                inner
-                    .id_to_fingerprint
-                    .insert(existing_id, fingerprint.clone());
-                if !metadata.is_empty() {
-                    inner.metadata_by_id.insert(existing_id, metadata);
+                let entry_changed =
+                    entry.info != updated_info || entry.connect_behavior != connect_behavior;
+                let fingerprint_changed =
+                    inner.id_to_fingerprint.get(&existing_id) != Some(&fingerprint);
+                let metadata_changed = !metadata.is_empty()
+                    && inner.metadata_by_id.get(&existing_id) != Some(&metadata);
+                let claim_changed = claim
+                    .as_ref()
+                    .is_some_and(|claim| inner.claims_by_id.get(&existing_id) != Some(claim));
+
+                if entry_changed || fingerprint_changed || metadata_changed || claim_changed {
+                    let updated_name = updated_info.name.clone();
+                    {
+                        let entry = inner
+                            .devices
+                            .get_mut(&existing_id)
+                            .expect("existing device was resolved above");
+                        entry.info = updated_info;
+                        entry.connect_behavior = connect_behavior;
+                        bump_device_revision(entry);
+                    }
+                    inner
+                        .id_to_fingerprint
+                        .insert(existing_id, fingerprint.clone());
+                    if !metadata.is_empty() {
+                        inner.metadata_by_id.insert(existing_id, metadata);
+                    }
+                    store_portable_claim(&mut inner, existing_id, claim);
+                    self.bump_generation();
+                    debug!(
+                        device_id = %existing_id,
+                        name = %updated_name,
+                        "Updated existing device in registry"
+                    );
+                } else {
+                    trace!(
+                        device_id = %existing_id,
+                        name = %updated_info.name,
+                        "Observed unchanged device in registry"
+                    );
                 }
-                store_portable_claim(&mut inner, existing_id, claim);
-                self.bump_generation();
                 return existing_id;
             }
 
@@ -248,7 +279,7 @@ impl DeviceRegistry {
             if let Some(entry) = inner.devices.get_mut(&existing_id) {
                 let mut updated_info = info;
                 updated_info.id = existing_id;
-                preserve_renderable_device_shape(&mut updated_info, &entry.info, &entry.state);
+                preserve_resolved_device_shape(&mut updated_info, &entry.info);
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
                 debug!(
                     device_id = %existing_id,
@@ -320,7 +351,11 @@ impl DeviceRegistry {
             if let Some(fingerprint) = inner.id_to_fingerprint.remove(id) {
                 inner.fingerprints.remove(&fingerprint);
             } else {
-                let fallback = DeviceFingerprint(id.as_uuid().to_string());
+                let fallback = DeviceFingerprint::mint(
+                    FingerprintNamespace::Bridge,
+                    "registry",
+                    &id.as_uuid().to_string(),
+                );
                 inner.fingerprints.remove(&fallback);
             }
             inner.fingerprints.retain(|_, mapped_id| mapped_id != id);
@@ -405,6 +440,8 @@ impl DeviceRegistry {
     /// - `enabled`: persisted user preference for whether the device should
     ///   participate in rendering
     /// - `brightness`: per-device output scale (`0.0..=1.0`)
+    /// - `display_rotation`: how a display-capable device's panel is
+    ///   mounted; everything drawn on it turns to match
     ///
     /// Returns the updated device snapshot, or `None` if the device ID is
     /// unknown.
@@ -414,6 +451,7 @@ impl DeviceRegistry {
         name: Option<String>,
         enabled: Option<bool>,
         brightness: Option<f32>,
+        display_rotation: Option<DisplayRotation>,
     ) -> Option<TrackedDevice> {
         let mut inner = self.inner.write().await;
         let entry = inner.devices.get_mut(id)?;
@@ -431,6 +469,10 @@ impl DeviceRegistry {
             entry.user_settings.brightness = brightness.clamp(0.0, 1.0);
         }
 
+        if let Some(display_rotation) = display_rotation {
+            entry.user_settings.display_rotation = display_rotation;
+        }
+
         bump_device_revision(entry);
         self.bump_generation();
         Some(entry.clone())
@@ -445,8 +487,14 @@ impl DeviceRegistry {
         let mut inner = self.inner.write().await;
         let entry = inner.devices.get_mut(id)?;
 
+        let mut updated_info = entry.info.clone();
+        apply_user_settings_to_info(&mut updated_info, &settings);
+        if entry.user_settings == settings && entry.info == updated_info {
+            return Some(entry.clone());
+        }
+
         entry.user_settings = settings;
-        apply_user_settings_to_info(&mut entry.info, &entry.user_settings);
+        entry.info = updated_info;
 
         bump_device_revision(entry);
         self.bump_generation();
@@ -792,8 +840,8 @@ fn resolve_portable_fingerprint(
 
     debug!(
         key = %claim.key(),
-        raw_fingerprint = %fingerprint.0,
-        pinned_fingerprint = %pinned.0,
+        raw_fingerprint = %fingerprint.as_str(),
+        pinned_fingerprint = %pinned.as_str(),
         "Portable key resolved a re-attached device to its pinned identity"
     );
     pinned
@@ -888,19 +936,16 @@ fn smbus_dram_identity(
     })
 }
 
-fn preserve_renderable_device_shape(
-    incoming: &mut DeviceInfo,
-    existing: &DeviceInfo,
-    state: &DeviceState,
-) {
-    if !state.is_renderable() {
-        return;
-    }
-
-    let incoming_has_shape = !incoming.zones.is_empty()
+/// A rescan describes a device from its descriptor, which for a hub or a
+/// radio carries no segments; the shape the device reported on its last
+/// connect is the better answer in every state, so a shapeless rediscovery
+/// never erases it. Dropping it would make the device look brand new on
+/// every scan and reconnect it just to learn what it already told us.
+fn preserve_resolved_device_shape(incoming: &mut DeviceInfo, existing: &DeviceInfo) {
+    let incoming_has_shape = !incoming.segments.is_empty()
         || incoming.capabilities.led_count > 0
         || incoming.capabilities.has_display;
-    let existing_has_shape = !existing.zones.is_empty()
+    let existing_has_shape = !existing.segments.is_empty()
         || existing.capabilities.led_count > 0
         || existing.capabilities.has_display;
 
@@ -908,6 +953,6 @@ fn preserve_renderable_device_shape(
         return;
     }
 
-    incoming.zones.clone_from(&existing.zones);
+    incoming.segments.clone_from(&existing.segments);
     incoming.capabilities = existing.capabilities;
 }

@@ -12,13 +12,15 @@ use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 
 use hypercolor_core::device::{
-    BackendInfo, DeviceBackend, DevicePlugin, DeviceRegistry, DeviceStateMachine, DiscoveredDevice,
-    DiscoveryConnectBehavior, DiscoveryOrchestrator, ReconnectPolicy, TransportScanner,
+    DeviceRegistry, DeviceStateMachine, DiscoveryOrchestrator, ReconnectPolicy,
+};
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
-    DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
+    DeviceOrigin, DeviceState, DeviceTopologyHint, DeviceUserSettings, SegmentInfo,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -33,7 +35,7 @@ fn mock_device_info(name: &str) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("test", "test", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Zone 1".to_owned(),
             led_count: 30,
             topology: DeviceTopologyHint::Strip,
@@ -55,7 +57,7 @@ fn asus_dram_device_info(address: u16) -> DeviceInfo {
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
             .with_protocol_id("asus/aura-smbus"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
@@ -89,9 +91,6 @@ fn asus_dram_metadata(address: u16) -> HashMap<String, String> {
 
 /// A mock device backend that tracks calls for test assertions.
 struct MockBackend {
-    /// Devices this backend will "discover".
-    discoverable: Vec<DeviceInfo>,
-
     /// Set of currently connected device IDs.
     connected: Arc<Mutex<Vec<DeviceId>>>,
 
@@ -109,9 +108,8 @@ struct MockBackend {
 }
 
 impl MockBackend {
-    fn new(discoverable: Vec<DeviceInfo>) -> Self {
+    fn new(_devices: Vec<DeviceInfo>) -> Self {
         Self {
-            discoverable,
             connected: Arc::new(Mutex::new(Vec::new())),
             write_count: Arc::new(AtomicU32::new(0)),
             last_colors: Arc::new(Mutex::new(HashMap::new())),
@@ -131,41 +129,48 @@ impl DeviceBackend for MockBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(self.discoverable.clone())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if self.fail_connect.load(Ordering::Relaxed) {
-            bail!("mock connect failure for device {id}");
+            return Err(DeviceError::connection(id, "mock connect failure"));
         }
 
         let mut connected = self.connected.lock().await;
         if connected.contains(id) {
-            bail!("device {id} is already connected");
+            return Err(DeviceError::connection(id, "device is already connected"));
         }
         connected.push(*id);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         let mut connected = self.connected.lock().await;
         if let Some(pos) = connected.iter().position(|d| d == id) {
             connected.remove(pos);
             Ok(())
         } else {
-            bail!("device {id} is not connected");
+            Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            })
         }
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if self.fail_write.load(Ordering::Relaxed) {
-            bail!("mock write failure for device {id}");
+            return Err(DeviceError::write(id, "mock write failure"));
         }
 
         let connected = self.connected.lock().await;
         if !connected.contains(id) {
-            bail!("cannot write to disconnected device {id}");
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         drop(connected);
 
@@ -174,20 +179,6 @@ impl DeviceBackend for MockBackend {
         let mut last = self.last_colors.lock().await;
         last.insert(*id, colors.to_vec());
         Ok(())
-    }
-}
-
-// ── Mock Plugin ──────────────────────────────────────────────────────────
-
-struct MockPlugin;
-
-impl DevicePlugin for MockPlugin {
-    fn name(&self) -> &'static str {
-        "Mock Plugin"
-    }
-
-    fn build(&self) -> Box<dyn DeviceBackend> {
-        Box::new(MockBackend::new(vec![mock_device_info("Plugin Device")]))
     }
 }
 
@@ -217,13 +208,12 @@ impl MockScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for MockScanner {
+impl MockScanner {
     fn name(&self) -> &str {
         &self.name
     }
 
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+    fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
         if self.should_fail {
             bail!("mock scanner '{name}' failed", name = self.name);
         }
@@ -248,22 +238,31 @@ impl DelayedScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for DelayedScanner {
+impl DelayedScanner {
     fn name(&self) -> &str {
         &self.name
     }
 
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+    async fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
         tokio::time::sleep(self.delay).await;
         Ok(self.devices.clone())
     }
 }
 
+fn add_mock_source(orchestrator: &mut DiscoveryOrchestrator, source: MockScanner) {
+    let name = source.name().to_owned();
+    orchestrator.add_source(name, async move { source.scan() });
+}
+
+fn add_delayed_source(orchestrator: &mut DiscoveryOrchestrator, source: DelayedScanner) {
+    let name = source.name().to_owned();
+    orchestrator.add_source(name, async move { source.scan().await });
+}
+
 /// Build a [`DiscoveredDevice`] for scanner tests.
 fn mock_discovered(name: &str, fingerprint: &str) -> DiscoveredDevice {
     DiscoveredDevice {
-        fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+        fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: mock_device_info(name),
         metadata: HashMap::new(),
@@ -283,22 +282,10 @@ async fn backend_info_returns_metadata() {
 }
 
 #[tokio::test]
-async fn backend_discover_returns_devices() {
-    let d1 = mock_device_info("LED Strip A");
-    let d2 = mock_device_info("LED Strip B");
-    let mut backend = MockBackend::new(vec![d1.clone(), d2.clone()]);
-
-    let discovered = backend.discover().await.expect("discover should succeed");
-    assert_eq!(discovered.len(), 2);
-    assert_eq!(discovered[0].name, "LED Strip A");
-    assert_eq!(discovered[1].name, "LED Strip B");
-}
-
-#[tokio::test]
 async fn backend_connect_and_disconnect() {
     let device = mock_device_info("Test Device");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     // Connect
     backend.connect(&id).await.expect("connect should succeed");
@@ -323,7 +310,7 @@ async fn backend_connect_and_disconnect() {
 async fn backend_double_connect_fails() {
     let device = mock_device_info("Test Device");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.connect(&id).await.expect("first connect succeeds");
     let result = backend.connect(&id).await;
@@ -332,7 +319,7 @@ async fn backend_double_connect_fails() {
 
 #[tokio::test]
 async fn backend_disconnect_unknown_fails() {
-    let mut backend = MockBackend::new(vec![]);
+    let backend = MockBackend::new(vec![]);
     let unknown_id = DeviceId::new();
 
     let result = backend.disconnect(&unknown_id).await;
@@ -343,7 +330,7 @@ async fn backend_disconnect_unknown_fails() {
 async fn backend_write_colors_succeeds() {
     let device = mock_device_info("RGB Strip");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.connect(&id).await.expect("connect succeeds");
 
@@ -363,7 +350,7 @@ async fn backend_write_colors_succeeds() {
 
 #[tokio::test]
 async fn backend_write_to_disconnected_fails() {
-    let mut backend = MockBackend::new(vec![]);
+    let backend = MockBackend::new(vec![]);
     let id = DeviceId::new();
 
     let colors: Vec<[u8; 3]> = vec![[0, 255, 0]; 10];
@@ -378,7 +365,7 @@ async fn backend_write_to_disconnected_fails() {
 async fn backend_connect_failure_propagates() {
     let device = mock_device_info("Flaky Device");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.fail_connect.store(true, Ordering::Relaxed);
     let result = backend.connect(&id).await;
@@ -392,7 +379,7 @@ async fn backend_connect_failure_propagates() {
 async fn backend_write_failure_propagates() {
     let device = mock_device_info("Unreliable Strip");
     let id = device.id;
-    let mut backend = MockBackend::new(vec![device]);
+    let backend = MockBackend::new(vec![device]);
 
     backend.connect(&id).await.expect("connect succeeds");
     backend.fail_write.store(true, Ordering::Relaxed);
@@ -400,26 +387,6 @@ async fn backend_write_failure_propagates() {
     let colors: Vec<[u8; 3]> = vec![[0, 0, 255]; 30];
     let result = backend.write_colors(&id, &colors).await;
     assert!(result.is_err(), "write should fail when fail_write is set");
-}
-
-// ── DevicePlugin trait tests ─────────────────────────────────────────────
-
-#[tokio::test]
-async fn plugin_lifecycle() {
-    let plugin = MockPlugin;
-
-    assert_eq!(plugin.name(), "Mock Plugin");
-    plugin.ready().expect("ready should succeed");
-
-    let mut backend = plugin.build();
-    let info = backend.info();
-    assert_eq!(info.id, "mock");
-
-    let discovered = backend.discover().await.expect("discover succeeds");
-    assert_eq!(discovered.len(), 1);
-    assert_eq!(discovered[0].name, "Plugin Device");
-
-    plugin.teardown();
 }
 
 // ── DeviceRegistry tests ─────────────────────────────────────────────────
@@ -461,7 +428,7 @@ async fn registry_add_returns_existing_id() {
 #[tokio::test]
 async fn registry_add_with_fingerprint_reuses_existing_device() {
     let registry = DeviceRegistry::new();
-    let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned());
 
     let first = mock_device_info("Desk Strip");
     let first_id = registry
@@ -494,7 +461,7 @@ fn discovered_with_mac(
     use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
 
     DiscoveredDevice {
-        fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+        fingerprint: DeviceFingerprint::from_persisted(fingerprint.to_owned()),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: mock_device_info(name),
         metadata: HashMap::new(),
@@ -530,7 +497,7 @@ async fn registry_pin_rebinds_claimed_device_to_its_first_fingerprint() {
     assert_eq!(registry.len().await, 1);
     assert_eq!(
         registry.fingerprint_for_id(&first_id).await,
-        Some(DeviceFingerprint("net:wled:old".to_owned())),
+        Some(DeviceFingerprint::from_persisted("net:wled:old".to_owned())),
         "the pinned fingerprint is the durable identity"
     );
 }
@@ -547,7 +514,10 @@ async fn registry_seeded_pin_restores_identity_across_restart() {
     let registry = DeviceRegistry::new();
     registry
         .seed_portable_identity(
-            HashMap::from([(key, DeviceFingerprint("net:wled:original".to_owned()))]),
+            HashMap::from([(
+                key,
+                DeviceFingerprint::from_persisted("net:wled:original".to_owned()),
+            )]),
             HashSet::new(),
         )
         .await;
@@ -562,7 +532,9 @@ async fn registry_seeded_pin_restores_identity_across_restart() {
 
     assert_eq!(
         registry.fingerprint_for_id(&id).await,
-        Some(DeviceFingerprint("net:wled:original".to_owned())),
+        Some(DeviceFingerprint::from_persisted(
+            "net:wled:original".to_owned()
+        )),
         "a re-attached claimed device adopts the identity its layouts reference"
     );
 }
@@ -591,7 +563,7 @@ async fn registry_quarantines_key_claimed_by_two_present_units() {
     assert_eq!(collisions[0].existing_device, first_id);
     assert_eq!(
         collisions[0].incoming_fingerprint,
-        DeviceFingerprint("net:wled:unit-b".to_owned())
+        DeviceFingerprint::from_persisted("net:wled:unit-b".to_owned())
     );
     assert!(
         registry
@@ -610,7 +582,9 @@ async fn registry_quarantines_key_claimed_by_two_present_units() {
     assert_ne!(third_id, second_id);
     assert_eq!(
         registry.fingerprint_for_id(&third_id).await,
-        Some(DeviceFingerprint("net:wled:unit-c".to_owned()))
+        Some(DeviceFingerprint::from_persisted(
+            "net:wled:unit-c".to_owned()
+        ))
     );
 }
 
@@ -657,6 +631,7 @@ async fn registry_rebind_inherits_identity_and_settings_from_replaced_device() {
             Some("Bliss Shelf".to_owned()),
             Some(false),
             Some(0.4),
+            None,
         )
         .await
         .expect("predecessor exists");
@@ -672,14 +647,19 @@ async fn registry_rebind_inherits_identity_and_settings_from_replaced_device() {
         .await;
 
     let rebound = registry
-        .rebind_portable_identity(&new_id, DeviceFingerprint("net:wled:dead".to_owned()))
+        .rebind_portable_identity(
+            &new_id,
+            DeviceFingerprint::from_persisted("net:wled:dead".to_owned()),
+        )
         .await
         .expect("rebind succeeds");
 
     assert_eq!(registry.len().await, 1, "the predecessor entry is retired");
     assert_eq!(
         registry.fingerprint_for_id(&new_id).await,
-        Some(DeviceFingerprint("net:wled:dead".to_owned())),
+        Some(DeviceFingerprint::from_persisted(
+            "net:wled:dead".to_owned()
+        )),
         "the replacement inherits the identity its layouts reference"
     );
     assert_eq!(rebound.user_settings.name.as_deref(), Some("Bliss Shelf"));
@@ -711,7 +691,10 @@ async fn registry_rebind_inherits_identity_and_settings_from_replaced_device() {
     registry.set_state(&active_id, DeviceState::Connected).await;
     assert_eq!(
         registry
-            .rebind_portable_identity(&new_id, DeviceFingerprint("net:wled:active".to_owned()))
+            .rebind_portable_identity(
+                &new_id,
+                DeviceFingerprint::from_persisted("net:wled:active".to_owned())
+            )
             .await
             .expect_err("active holders refuse"),
         PortableRebindError::TargetActive
@@ -721,7 +704,10 @@ async fn registry_rebind_inherits_identity_and_settings_from_replaced_device() {
     let claimless_id = registry.add(claimless).await;
     assert_eq!(
         registry
-            .rebind_portable_identity(&claimless_id, DeviceFingerprint("net:wled:dead".to_owned()))
+            .rebind_portable_identity(
+                &claimless_id,
+                DeviceFingerprint::from_persisted("net:wled:dead".to_owned())
+            )
             .await
             .expect_err("claimless devices refuse"),
         PortableRebindError::Unclaimed
@@ -738,7 +724,10 @@ async fn orchestrator_quarantines_same_fingerprint_units_sharing_a_key() {
 
     let unit_a = discovered_with_shared_key("Unit A", "net:wled:cloned", 40);
     let unit_b = discovered_with_shared_key("Unit B", "net:wled:cloned", 41);
-    orchestrator.add_scanner(Box::new(MockScanner::new("wled", vec![unit_a, unit_b])));
+    add_mock_source(
+        &mut orchestrator,
+        MockScanner::new("wled", vec![unit_a, unit_b]),
+    );
 
     orchestrator.full_scan().await;
 
@@ -746,7 +735,7 @@ async fn orchestrator_quarantines_same_fingerprint_units_sharing_a_key() {
     assert_eq!(collisions.len(), 1, "the merge must not swallow the proof");
     assert_eq!(
         collisions[0].existing_fingerprint,
-        DeviceFingerprint("net:wled:cloned".to_owned())
+        DeviceFingerprint::from_persisted("net:wled:cloned".to_owned())
     );
     assert!(
         registry
@@ -764,7 +753,7 @@ async fn registry_rebind_unknown_device_reports_unknown_not_unclaimed() {
     let result = registry
         .rebind_portable_identity(
             &DeviceId::new(),
-            DeviceFingerprint("net:wled:anything".to_owned()),
+            DeviceFingerprint::from_persisted("net:wled:anything".to_owned()),
         )
         .await;
 
@@ -797,14 +786,14 @@ async fn registry_claimless_rescan_preserves_recorded_claim() {
 async fn registry_reuses_renderable_asus_dram_when_smbus_address_changes() {
     let registry = DeviceRegistry::new();
     let first = asus_dram_device_info(0x71);
-    let first_fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:71".to_owned());
+    let first_fingerprint = DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:71".to_owned());
     let first_id = registry
         .add_with_fingerprint_and_metadata(first, first_fingerprint, asus_dram_metadata(0x71))
         .await;
     assert!(registry.set_state(&first_id, DeviceState::Connected).await);
 
     let second = asus_dram_device_info(0x73);
-    let second_fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:73".to_owned());
+    let second_fingerprint = DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:73".to_owned());
     let second_id = registry
         .add_with_fingerprint_and_metadata(
             second,
@@ -833,7 +822,7 @@ async fn registry_keeps_asus_dram_address_change_separate_when_ambiguous() {
         let id = registry
             .add_with_fingerprint_and_metadata(
                 info,
-                DeviceFingerprint(format!("smbus:/dev/i2c-9:{address:02x}")),
+                DeviceFingerprint::from_persisted(format!("smbus:/dev/i2c-9:{address:02x}")),
                 asus_dram_metadata(address),
             )
             .await;
@@ -848,7 +837,7 @@ async fn registry_keeps_asus_dram_address_change_separate_when_ambiguous() {
     let returned_id = registry
         .add_with_fingerprint_and_metadata(
             discovered,
-            DeviceFingerprint("smbus:/dev/i2c-9:73".to_owned()),
+            DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:73".to_owned()),
             asus_dram_metadata(0x73),
         )
         .await;
@@ -861,7 +850,7 @@ async fn registry_keeps_asus_dram_address_change_separate_when_ambiguous() {
 async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_rediscovery_is_blank()
  {
     let registry = DeviceRegistry::new();
-    let fingerprint = DeviceFingerprint("usb:1b1c:0c3f:corsair-hub".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:1b1c:0c3f:corsair-hub".to_owned());
 
     let connected = DeviceInfo {
         id: DeviceId::new(),
@@ -871,15 +860,15 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         model: Some("icue_link_system_hub".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "iCUE LINK H-Series AIO".to_owned(),
                 led_count: 20,
                 topology: DeviceTopologyHint::Ring { count: 20 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "iCUE LINK Cooler Pump LCD".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
@@ -916,7 +905,7 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         model: Some("icue_link_system_hub".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: Vec::new(),
+        segments: Vec::new(),
         firmware_version: Some("2.2.0".to_owned()),
         capabilities: DeviceCapabilities::default(),
     };
@@ -932,11 +921,100 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
         .await
         .expect("device should still exist");
     assert_eq!(tracked.info.name, "Corsair Hub (rediscovered)");
-    assert_eq!(tracked.info.zones.len(), 2);
+    assert_eq!(tracked.info.segments.len(), 2);
     assert_eq!(tracked.info.total_led_count(), 44);
     assert_eq!(tracked.info.capabilities.led_count, 44);
     assert_eq!(tracked.info.capabilities.max_fps, 30);
     assert_eq!(tracked.state, DeviceState::Connected);
+}
+
+#[tokio::test]
+async fn registry_add_with_fingerprint_preserves_resolved_shape_of_a_known_device_when_rediscovery_is_blank()
+ {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint::from_persisted("usb:1b1c:0c3f:corsair-hub".to_owned());
+
+    let connected = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Corsair Hub".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::new_static("corsair", "Corsair"),
+        model: Some("icue_link_system_hub".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+        segments: vec![
+            SegmentInfo {
+                name: "iCUE LINK H-Series AIO".to_owned(),
+                led_count: 20,
+                topology: DeviceTopologyHint::Ring { count: 20 },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            },
+            SegmentInfo {
+                name: "iCUE LINK Cooler Pump LCD".to_owned(),
+                led_count: 24,
+                topology: DeviceTopologyHint::Ring { count: 24 },
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            },
+        ],
+        firmware_version: Some("2.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 44,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+
+    let device_id = registry
+        .add_with_fingerprint(connected, fingerprint.clone())
+        .await;
+    // Connected once, then deferred by the layout: the hub still knows
+    // its own shape, and a rescan from the bare descriptor must not
+    // erase it or the hub would look brand new and reconnect every scan.
+    assert!(
+        registry.set_state(&device_id, DeviceState::Connected).await,
+        "device state should update"
+    );
+    assert!(
+        registry.set_state(&device_id, DeviceState::Known).await,
+        "device state should update"
+    );
+
+    let rediscovered = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Corsair Hub (rediscovered)".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::new_static("corsair", "Corsair"),
+        model: Some("icue_link_system_hub".to_owned()),
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
+        segments: Vec::new(),
+        firmware_version: Some("2.2.0".to_owned()),
+        capabilities: DeviceCapabilities::default(),
+    };
+
+    let rediscovered_id = registry
+        .add_with_fingerprint(rediscovered, fingerprint)
+        .await;
+
+    assert_eq!(rediscovered_id, device_id);
+
+    let tracked = registry
+        .get(&device_id)
+        .await
+        .expect("device should still exist");
+    assert_eq!(tracked.info.name, "Corsair Hub (rediscovered)");
+    assert_eq!(tracked.info.segments.len(), 2);
+    assert_eq!(tracked.info.total_led_count(), 44);
+    assert_eq!(tracked.info.capabilities.led_count, 44);
+    assert_eq!(tracked.info.capabilities.max_fps, 30);
+    assert_eq!(tracked.state, DeviceState::Known);
 }
 
 #[tokio::test]
@@ -958,7 +1036,7 @@ async fn registry_generation_advances_on_mutation() {
     );
 
     registry
-        .update_user_settings(&id, None, None, Some(0.5))
+        .update_user_settings(&id, None, None, Some(0.5), None)
         .await
         .expect("device should exist");
     let after_settings = registry.generation();
@@ -978,9 +1056,51 @@ async fn registry_generation_advances_on_mutation() {
 }
 
 #[tokio::test]
+async fn registry_identical_rediscovery_preserves_generation_and_device_revision() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint::from_persisted("usb:stable-device".to_owned());
+    let original = mock_device_info("Stable Device");
+    let device_id = registry
+        .add_with_fingerprint(original.clone(), fingerprint.clone())
+        .await;
+    let settings = DeviceUserSettings {
+        name: Some("Desk Glow".to_owned()),
+        enabled: true,
+        brightness: 0.6,
+        display_rotation: hypercolor_types::scene::DisplayRotation::default(),
+    };
+    registry
+        .replace_user_settings(&device_id, settings)
+        .await
+        .expect("device settings should update");
+
+    let generation = registry.generation();
+    let revision = registry
+        .get(&device_id)
+        .await
+        .expect("device should exist")
+        .revision;
+    let mut rediscovered = original;
+    rediscovered.id = DeviceId::new();
+
+    let rediscovered_id = registry
+        .add_with_fingerprint(rediscovered, fingerprint)
+        .await;
+    let tracked = registry
+        .get(&device_id)
+        .await
+        .expect("device should still exist");
+
+    assert_eq!(rediscovered_id, device_id);
+    assert_eq!(registry.generation(), generation);
+    assert_eq!(tracked.revision, revision);
+    assert_eq!(tracked.info.name, "Desk Glow");
+}
+
+#[tokio::test]
 async fn registry_fingerprint_lookup_round_trips_device_id() {
     let registry = DeviceRegistry::new();
-    let fingerprint = DeviceFingerprint("net:12:34:56:78:9a:bc".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:12:34:56:78:9a:bc".to_owned());
     let info = mock_device_info("Roundtrip Device");
 
     let id = registry
@@ -999,7 +1119,7 @@ async fn registry_fingerprint_lookup_round_trips_device_id() {
 #[tokio::test]
 async fn registry_preserves_scanner_metadata() {
     let registry = DeviceRegistry::new();
-    let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned());
     let info = mock_device_info("Metadata Device");
     let mut metadata = HashMap::new();
     metadata.insert("ip".to_owned(), "192.168.1.42".to_owned());
@@ -1110,15 +1230,15 @@ async fn registry_update_info_preserves_id_and_state() {
         model: Some("iCUE LINK".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("test", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Pump Ring".to_owned(),
                 led_count: 24,
                 topology: DeviceTopologyHint::Ring { count: 24 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Radiator Fans".to_owned(),
                 led_count: 102,
                 topology: DeviceTopologyHint::Strip,
@@ -1150,7 +1270,7 @@ async fn registry_update_info_preserves_id_and_state() {
     let tracked = registry.get(&id).await.expect("device should exist");
     assert_eq!(tracked.info.id, id);
     assert_eq!(tracked.info.vendor, "Corsair");
-    assert_eq!(tracked.info.zones.len(), 2);
+    assert_eq!(tracked.info.segments.len(), 2);
     assert_eq!(tracked.info.capabilities.led_count, 126);
     assert_eq!(tracked.state, DeviceState::Connected);
 }
@@ -1187,7 +1307,13 @@ async fn registry_update_user_settings_tracks_name_enabled_and_brightness_withou
     registry.add(info).await;
 
     let updated = registry
-        .update_user_settings(&id, Some("Desk Glow".to_owned()), Some(false), Some(0.35))
+        .update_user_settings(
+            &id,
+            Some("Desk Glow".to_owned()),
+            Some(false),
+            Some(0.35),
+            None,
+        )
         .await
         .expect("device should update");
 
@@ -1212,6 +1338,7 @@ async fn registry_replace_user_settings_reapplies_name_override_on_metadata_refr
                 name: Some("Override Name".to_owned()),
                 enabled: true,
                 brightness: 0.6,
+                display_rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .await
@@ -1227,6 +1354,39 @@ async fn registry_replace_user_settings_reapplies_name_override_on_metadata_refr
     assert_eq!(updated.info.name, "Override Name");
     assert_eq!(updated.user_settings.name.as_deref(), Some("Override Name"));
     assert!((updated.user_settings.brightness - 0.6).abs() < f32::EPSILON);
+}
+
+#[tokio::test]
+async fn registry_identical_user_settings_preserve_generation_and_device_revision() {
+    let registry = DeviceRegistry::new();
+    let original = mock_device_info("Original Name");
+    let device_id = original.id;
+    registry.add(original).await;
+    let settings = DeviceUserSettings {
+        name: Some("Override Name".to_owned()),
+        enabled: true,
+        brightness: 0.6,
+        display_rotation: hypercolor_types::scene::DisplayRotation::default(),
+    };
+    registry
+        .replace_user_settings(&device_id, settings.clone())
+        .await
+        .expect("settings should update");
+    let generation = registry.generation();
+    let revision = registry
+        .get(&device_id)
+        .await
+        .expect("device should exist")
+        .revision;
+
+    let tracked = registry
+        .replace_user_settings(&device_id, settings)
+        .await
+        .expect("device should still exist");
+
+    assert_eq!(registry.generation(), generation);
+    assert_eq!(tracked.revision, revision);
+    assert_eq!(tracked.info.name, "Override Name");
 }
 
 #[tokio::test]
@@ -1551,7 +1711,7 @@ fn state_machine_invalid_transitions_return_device_error() {
 #[tokio::test]
 async fn orchestrator_full_scan_empty() {
     let registry = DeviceRegistry::new();
-    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    let orchestrator = DiscoveryOrchestrator::new(registry);
 
     let report = orchestrator.full_scan().await;
     assert_eq!(report.new_devices.len(), 0);
@@ -1565,12 +1725,12 @@ async fn orchestrator_registers_scanners() {
     let registry = DeviceRegistry::new();
     let mut orchestrator = DiscoveryOrchestrator::new(registry);
 
-    assert_eq!(orchestrator.scanner_count(), 0);
+    assert_eq!(orchestrator.source_count(), 0);
 
-    orchestrator.add_scanner(Box::new(MockScanner::new("USB", vec![])));
-    orchestrator.add_scanner(Box::new(MockScanner::new("mDNS", vec![])));
+    add_mock_source(&mut orchestrator, MockScanner::new("USB", vec![]));
+    add_mock_source(&mut orchestrator, MockScanner::new("mDNS", vec![]));
 
-    assert_eq!(orchestrator.scanner_count(), 2);
+    assert_eq!(orchestrator.source_count(), 2);
 }
 
 #[tokio::test]
@@ -1581,7 +1741,7 @@ async fn orchestrator_discovers_new_devices() {
     let d1 = mock_discovered("WLED Kitchen", "net:aa:bb:cc:dd:ee:01");
     let d2 = mock_discovered("WLED Bedroom", "net:aa:bb:cc:dd:ee:02");
 
-    orchestrator.add_scanner(Box::new(MockScanner::new("mDNS", vec![d1, d2])));
+    add_mock_source(&mut orchestrator, MockScanner::new("mDNS", vec![d1, d2]));
 
     let report = orchestrator.full_scan().await;
     assert_eq!(report.new_devices.len(), 2);
@@ -1597,8 +1757,8 @@ async fn orchestrator_deduplicates_across_scanners() {
     let d1 = mock_discovered("WLED Strip (mDNS)", "net:aa:bb:cc:dd:ee:ff");
     let d2 = mock_discovered("WLED Strip (UDP)", "net:aa:bb:cc:dd:ee:ff");
 
-    orchestrator.add_scanner(Box::new(MockScanner::new("mDNS", vec![d1])));
-    orchestrator.add_scanner(Box::new(MockScanner::new("UDP", vec![d2])));
+    add_mock_source(&mut orchestrator, MockScanner::new("mDNS", vec![d1]));
+    add_mock_source(&mut orchestrator, MockScanner::new("UDP", vec![d2]));
 
     let report = orchestrator.full_scan().await;
 
@@ -1613,11 +1773,11 @@ async fn orchestrator_handles_scanner_failure_gracefully() {
 
     let good_device = mock_discovered("Healthy Device", "net:11:22:33:44:55:66");
 
-    orchestrator.add_scanner(Box::new(MockScanner::failing("Broken Scanner")));
-    orchestrator.add_scanner(Box::new(MockScanner::new(
-        "Good Scanner",
-        vec![good_device],
-    )));
+    add_mock_source(&mut orchestrator, MockScanner::failing("Broken Scanner"));
+    add_mock_source(
+        &mut orchestrator,
+        MockScanner::new("Good Scanner", vec![good_device]),
+    );
 
     let report = orchestrator.full_scan().await;
 
@@ -1639,16 +1799,22 @@ async fn orchestrator_scans_transports_in_parallel() {
     let mut orchestrator = DiscoveryOrchestrator::new(registry);
 
     let delay = Duration::from_millis(220);
-    orchestrator.add_scanner(Box::new(DelayedScanner::new(
-        "Scanner A",
-        delay,
-        vec![mock_discovered("A", "net:parallel:a")],
-    )));
-    orchestrator.add_scanner(Box::new(DelayedScanner::new(
-        "Scanner B",
-        delay,
-        vec![mock_discovered("B", "net:parallel:b")],
-    )));
+    add_delayed_source(
+        &mut orchestrator,
+        DelayedScanner::new(
+            "Scanner A",
+            delay,
+            vec![mock_discovered("A", "net:parallel:a")],
+        ),
+    );
+    add_delayed_source(
+        &mut orchestrator,
+        DelayedScanner::new(
+            "Scanner B",
+            delay,
+            vec![mock_discovered("B", "net:parallel:b")],
+        ),
+    );
 
     let started = Instant::now();
     let report = orchestrator.full_scan().await;
@@ -1669,16 +1835,22 @@ async fn orchestrator_reports_progress_as_scanners_finish() {
     let fast_delay = Duration::from_millis(40);
     let slow_delay = Duration::from_millis(220);
 
-    orchestrator.add_scanner(Box::new(DelayedScanner::new(
-        "Fast",
-        fast_delay,
-        vec![mock_discovered("Fast Device", "net:progress:fast")],
-    )));
-    orchestrator.add_scanner(Box::new(DelayedScanner::new(
-        "Slow",
-        slow_delay,
-        vec![mock_discovered("Slow Device", "net:progress:slow")],
-    )));
+    add_delayed_source(
+        &mut orchestrator,
+        DelayedScanner::new(
+            "Fast",
+            fast_delay,
+            vec![mock_discovered("Fast Device", "net:progress:fast")],
+        ),
+    );
+    add_delayed_source(
+        &mut orchestrator,
+        DelayedScanner::new(
+            "Slow",
+            slow_delay,
+            vec![mock_discovered("Slow Device", "net:progress:slow")],
+        ),
+    );
 
     let started = Instant::now();
     let progress_for_callback = Arc::clone(&progress);
@@ -1716,7 +1888,7 @@ async fn orchestrator_reports_progress_as_scanners_finish() {
 #[tokio::test]
 async fn orchestrator_tracks_reappeared_devices() {
     let registry = DeviceRegistry::new();
-    let fingerprint = DeviceFingerprint("net:re:ap:pe:ar:ed".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:re:ap:pe:ar:ed".to_owned());
 
     // Pre-populate the registry with a known device
     let existing = mock_device_info("Known Device");
@@ -1735,7 +1907,10 @@ async fn orchestrator_tracks_reappeared_devices() {
         claim: None,
     };
 
-    orchestrator.add_scanner(Box::new(MockScanner::new("mDNS", vec![rediscovered])));
+    add_mock_source(
+        &mut orchestrator,
+        MockScanner::new("mDNS", vec![rediscovered]),
+    );
 
     let report = orchestrator.full_scan().await;
     assert_eq!(report.reappeared_devices.len(), 1);
@@ -1748,8 +1923,8 @@ async fn orchestrator_tracks_reappeared_devices() {
 async fn orchestrator_tracks_vanished_devices() {
     let registry = DeviceRegistry::new();
 
-    let keep_fingerprint = DeviceFingerprint("net:keep:device".to_owned());
-    let vanished_fingerprint = DeviceFingerprint("net:gone:device".to_owned());
+    let keep_fingerprint = DeviceFingerprint::from_persisted("net:keep:device".to_owned());
+    let vanished_fingerprint = DeviceFingerprint::from_persisted("net:gone:device".to_owned());
 
     let keep = mock_device_info("Keep");
     let vanished = mock_device_info("Gone");
@@ -1762,16 +1937,19 @@ async fn orchestrator_tracks_vanished_devices() {
         .await;
 
     let mut orchestrator = DiscoveryOrchestrator::new(registry);
-    orchestrator.add_scanner(Box::new(MockScanner::new(
-        "mDNS",
-        vec![DiscoveredDevice {
-            fingerprint: keep_fingerprint,
-            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
-            info: keep,
-            metadata: HashMap::new(),
-            claim: None,
-        }],
-    )));
+    add_mock_source(
+        &mut orchestrator,
+        MockScanner::new(
+            "mDNS",
+            vec![DiscoveredDevice {
+                fingerprint: keep_fingerprint,
+                connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+                info: keep,
+                metadata: HashMap::new(),
+                claim: None,
+            }],
+        ),
+    );
 
     let report = orchestrator.full_scan().await;
     assert_eq!(report.reappeared_devices, vec![keep_id]);
@@ -1781,7 +1959,7 @@ async fn orchestrator_tracks_vanished_devices() {
 #[tokio::test]
 async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_id() {
     let registry = DeviceRegistry::new();
-    let fingerprint = DeviceFingerprint("net:stable:id".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:stable:id".to_owned());
 
     let existing = mock_device_info("Stable");
     let existing_id = registry
@@ -1792,16 +1970,19 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
     rediscovered.id = DeviceId::new(); // scanner emits a fresh ID
 
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
-    orchestrator.add_scanner(Box::new(MockScanner::new(
-        "mDNS",
-        vec![DiscoveredDevice {
-            fingerprint,
-            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
-            info: rediscovered,
-            metadata: HashMap::new(),
-            claim: None,
-        }],
-    )));
+    add_mock_source(
+        &mut orchestrator,
+        MockScanner::new(
+            "mDNS",
+            vec![DiscoveredDevice {
+                fingerprint,
+                connect_behavior: DiscoveryConnectBehavior::AutoConnect,
+                info: rediscovered,
+                metadata: HashMap::new(),
+                claim: None,
+            }],
+        ),
+    );
 
     let report = orchestrator.full_scan().await;
     assert_eq!(report.reappeared_devices, vec![existing_id]);
@@ -1811,15 +1992,4 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
         .await
         .expect("stable registry entry should remain");
     assert_eq!(tracked.info.id, existing_id);
-}
-
-#[tokio::test]
-async fn orchestrator_provides_registry_access() {
-    let registry = DeviceRegistry::new();
-    registry.add(mock_device_info("Pre-existing")).await;
-
-    let orchestrator = DiscoveryOrchestrator::new(registry);
-
-    let count = orchestrator.registry().len().await;
-    assert_eq!(count, 1);
 }

@@ -269,9 +269,9 @@ later decode and shape those bytes for hardware-specific brightness or gamma.
 ### 6.4 Canvas resize parity
 
 GPU sampling must match CPU output when runtime canvas dimensions differ from
-the dimensions stored in a prepared plan. `SceneTransaction::ResizeCanvas`
-lands at a frame boundary, but stale prepared dimensions can still appear during
-transition or fallback paths.
+the dimensions stored in a prepared plan. A canvas resize is prepared and
+committed at a frame boundary, but stale prepared dimensions can still appear
+during transition or fallback paths.
 
 A parity test should prepare a layout at one canvas size, sample a live canvas
 at another size through both CPU and GPU paths, and assert the results stay

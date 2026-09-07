@@ -32,9 +32,3 @@ thiserror = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-service = "0.8.0"
-windows-sys = { version = "0.61.2", features = [
-  "Win32_Foundation",
-  "Win32_Security",
-  "Win32_Security_Authorization",
-  "Win32_Storage_FileSystem",
-] }

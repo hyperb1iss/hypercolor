@@ -1,16 +1,18 @@
+use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use hypercolor_driver_api::{
-    ControlApplyTarget, DeviceAuthState, DiscoveryRequest, DriverControlProvider,
-    DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice, DriverDiscoveryState,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverProtocolCatalog,
-    DriverRuntimeActions, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
-    PairingFieldDescriptor, PairingFlowKind, ValidatedControlChanges, support,
+    ControlApplyTarget, DiscoveryRequest, DriverConfigView, DriverControlProvider,
+    DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverProtocolCatalog, DriverRuntimeActions, OutputCadence,
+    ValidatedControlChanges,
 };
 use hypercolor_driver_api::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText, SecretRef};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ControlActionResult, ControlActionStatus, ControlChange,
     ControlSurfaceDocument, ControlSurfaceScope, ControlValueMap,
@@ -18,8 +20,153 @@ use hypercolor_types::controls::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceClassHint, DeviceColorFormat, DeviceFamily,
     DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
-    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind, ZoneInfo,
+    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportDescriptor,
+    DriverTransportKind, FingerprintNamespace, SegmentInfo,
 };
+use hypercolor_types::pairing::{
+    DeviceAuthState, PairDeviceRequest, PairDeviceStatus, PairingDescriptor,
+    PairingFieldDescriptor, PairingFlowKind,
+};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+struct CanonicalDriverConfig {
+    protocol: String,
+    hosts: Vec<IpAddr>,
+    credential: String,
+    duration_ms: u64,
+    color: [u8; 4],
+    nested: BTreeMap<String, bool>,
+}
+
+#[test]
+fn driver_config_view_projects_tagged_control_values_without_flattening_storage() {
+    let controls = BTreeMap::from([
+        ("protocol".to_owned(), ControlValue::Enum("ddp".to_owned())),
+        (
+            "hosts".to_owned(),
+            ControlValue::List(vec![ControlValue::Ip(
+                IpText::new("::FFFF:1.2.3.4").expect("valid fixture IP"),
+            )]),
+        ),
+        (
+            "credential".to_owned(),
+            ControlValue::SecretRef(SecretRef::new("credential:wled:token")),
+        ),
+        (
+            "duration_ms".to_owned(),
+            ControlValue::Duration(Duration::from_millis(1_250)),
+        ),
+        (
+            "color".to_owned(),
+            ControlValue::ColorRgba(hypercolor_types::canvas::Rgba::new(1, 2, 3, 4)),
+        ),
+        (
+            "nested".to_owned(),
+            ControlValue::Map(BTreeMap::from([(
+                "enabled".to_owned(),
+                ControlValue::Bool(true),
+            )])),
+        ),
+    ]);
+    let entry = DriverConfigEntry::enabled(
+        controls
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    serde_json::to_value(value).expect("canonical value should serialize"),
+                )
+            })
+            .collect(),
+    );
+
+    let parsed = DriverConfigView {
+        driver_id: "fixture",
+        entry: &entry,
+    }
+    .parse_settings::<CanonicalDriverConfig>()
+    .expect("tagged controls should project into private driver config");
+
+    assert_eq!(parsed.protocol, "ddp");
+    assert_eq!(
+        parsed.hosts,
+        vec!["::ffff:1.2.3.4".parse::<IpAddr>().expect("IP")]
+    );
+    assert_eq!(parsed.credential, "credential:wled:token");
+    assert_eq!(parsed.duration_ms, 1_250);
+    assert_eq!(parsed.color, [1, 2, 3, 4]);
+    assert_eq!(
+        parsed.nested,
+        BTreeMap::from([("enabled".to_owned(), true)])
+    );
+
+    let roundtrip = entry
+        .settings
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.clone(),
+                serde_json::from_value(value.clone()).expect("tagged control should deserialize"),
+            )
+        })
+        .collect::<BTreeMap<_, ControlValue>>();
+    assert_eq!(roundtrip, controls);
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct RawDriverConfig {
+    hosts: Vec<IpAddr>,
+    descriptor: serde_json::Value,
+}
+
+#[test]
+fn driver_config_view_keeps_raw_arrays_and_untagged_objects() {
+    let descriptor = serde_json::json!({ "kind": "network", "name": "fixture" });
+    let entry = DriverConfigEntry::enabled(BTreeMap::from([
+        (
+            "hosts".to_owned(),
+            serde_json::json!(["192.168.1.50", "2001:db8::1"]),
+        ),
+        ("descriptor".to_owned(), descriptor.clone()),
+    ]));
+
+    let parsed = DriverConfigView {
+        driver_id: "fixture",
+        entry: &entry,
+    }
+    .parse_settings::<RawDriverConfig>()
+    .expect("raw driver config should bypass canonical projection");
+
+    assert_eq!(
+        parsed.hosts,
+        vec![
+            "192.168.1.50".parse::<IpAddr>().expect("IPv4"),
+            "2001:db8::1".parse::<IpAddr>().expect("IPv6"),
+        ]
+    );
+    assert_eq!(parsed.descriptor, descriptor);
+}
+
+#[test]
+fn output_cadence_tracks_optional_maximum_frame_silence() {
+    let cadence = OutputCadence::from_fps(50).with_max_frame_silence(Duration::from_millis(1_250));
+
+    assert_eq!(cadence.target_fps(), 50);
+    assert_eq!(
+        cadence.max_frame_silence(),
+        Some(Duration::from_millis(1_250))
+    );
+    assert_eq!(cadence.max_frame_silence_ms(), Some(1_250));
+}
+
+#[test]
+fn zero_maximum_frame_silence_disables_cached_payload_replay() {
+    let cadence = OutputCadence::from_fps(60).with_max_frame_silence(Duration::ZERO);
+
+    assert_eq!(cadence.max_frame_silence(), None);
+    assert_eq!(cadence.max_frame_silence_ms(), None);
+}
 
 #[test]
 fn driver_descriptor_constructor_sets_expected_flags() {
@@ -53,7 +200,12 @@ fn driver_descriptor_converts_to_module_descriptor() {
     assert_eq!(module.id, "fixture-network");
     assert_eq!(module.display_name, "Fixture Network");
     assert_eq!(module.module_kind, DriverModuleKind::Network);
-    assert_eq!(module.transports, vec![DriverTransportKind::Network]);
+    assert_eq!(
+        module.transports,
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Network
+        )]
+    );
     assert!(module.capabilities.discovery);
     assert!(module.capabilities.pairing);
     assert!(module.capabilities.output_backend);
@@ -102,7 +254,10 @@ fn driver_descriptor_maps_non_network_transports() {
         let module = descriptor.module_descriptor();
 
         assert_eq!(module.module_kind, module_kind);
-        assert_eq!(module.transports, vec![transport_kind]);
+        assert_eq!(
+            module.transports,
+            vec![DriverTransportDescriptor::available(transport_kind)]
+        );
     }
 }
 
@@ -507,7 +662,7 @@ fn discovered_device_payload_keeps_connect_behavior() {
             "fixture-backend",
             ConnectionType::Network,
         ),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -526,9 +681,9 @@ fn discovered_device_payload_keeps_connect_behavior() {
             features: DeviceFeatures::default(),
         },
     };
-    let discovered = DriverDiscoveredDevice {
+    let discovered = DiscoveredDevice {
         info,
-        fingerprint: DeviceFingerprint("fixture:desk-strip".to_owned()),
+        fingerprint: DeviceFingerprint::mint(FingerprintNamespace::Net, "fixture", "desk-strip"),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.50".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
         claim: None,
@@ -542,7 +697,7 @@ fn discovered_device_payload_keeps_connect_behavior() {
 }
 
 #[test]
-fn discovered_device_converts_from_core_payload() {
+fn discovered_device_is_the_canonical_driver_payload() {
     let info = DeviceInfo {
         id: DeviceId::new(),
         name: "Bridge".to_owned(),
@@ -555,7 +710,7 @@ fn discovered_device_converts_from_core_payload() {
             "fixture-bridge-backend",
             ConnectionType::Network,
         ),
-        zones: Vec::new(),
+        segments: Vec::new(),
         firmware_version: Some("1.0".to_owned()),
         capabilities: DeviceCapabilities {
             led_count: 0,
@@ -568,16 +723,16 @@ fn discovered_device_converts_from_core_payload() {
             features: DeviceFeatures::default(),
         },
     };
-    let discovered = DriverDiscoveredDevice::from(DiscoveredDevice {
+    let discovered = DiscoveredDevice {
         info,
-        fingerprint: DeviceFingerprint("net:fixture:bridge".to_owned()),
+        fingerprint: DeviceFingerprint::mint(FingerprintNamespace::Net, "fixture", "bridge"),
         metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.8".to_owned())]),
         connect_behavior: DiscoveryConnectBehavior::Deferred,
         claim: None,
-    });
+    };
 
     assert_eq!(discovered.metadata.get("ip"), Some(&"10.0.0.8".to_owned()));
-    assert_eq!(discovered.fingerprint.0, "net:fixture:bridge");
+    assert_eq!(discovered.fingerprint.as_str(), "net:fixture:bridge");
 }
 
 #[test]
@@ -600,32 +755,4 @@ fn pair_device_status_serde_uses_snake_case() {
     let auth_state =
         serde_json::to_value(DeviceAuthState::Configured).expect("state should serialize");
     assert_eq!(auth_state, serde_json::json!("configured"));
-}
-
-#[test]
-fn support_helpers_parse_metadata_and_dedupe_keys() {
-    let metadata = std::collections::HashMap::from([
-        ("ip".to_owned(), "10.0.0.42".to_owned()),
-        ("name".to_owned(), " Desk Strip ".to_owned()),
-    ]);
-    let mut keys = vec!["fixture:ip:10.0.0.42".to_owned()];
-
-    assert_eq!(
-        support::network_ip_from_metadata(Some(&metadata))
-            .expect("ip should parse")
-            .to_string(),
-        "10.0.0.42"
-    );
-    assert_eq!(
-        support::metadata_value(Some(&metadata), "name"),
-        Some("Desk Strip")
-    );
-
-    support::push_lookup_key(&mut keys, "fixture:ip:10.0.0.42".to_owned());
-    support::push_lookup_key(&mut keys, "fixture:desk".to_owned());
-
-    assert_eq!(
-        keys,
-        vec!["fixture:ip:10.0.0.42".to_owned(), "fixture:desk".to_owned()]
-    );
 }

@@ -7,6 +7,8 @@ use hypercolor_tui::state::{
     ControlDefinition, ControlValue, EffectSummary, PreviewSource, SimulatedDisplaySummary,
 };
 use hypercolor_tui::views::EffectBrowserView;
+use hypercolor_types::api::effects::EffectSourceKind;
+use hypercolor_types::effect::EffectCategory;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -30,8 +32,8 @@ fn sample_effect() -> EffectSummary {
         name: "Rainbow Wave".to_string(),
         description: String::new(),
         author: String::new(),
-        category: String::new(),
-        source: "native".to_string(),
+        category: EffectCategory::Ambient,
+        source: EffectSourceKind::Native,
         audio_reactive: false,
         tags: Vec::new(),
         controls: Vec::new(),
@@ -45,7 +47,7 @@ fn toggle_effect() -> EffectSummary {
             id: "sparkle".to_string(),
             name: "Sparkle".to_string(),
             control_type: "toggle".to_string(),
-            default_value: ControlValue::Boolean(false),
+            default_value: ControlValue::Bool(false),
             min: None,
             max: None,
             step: None,
@@ -64,7 +66,9 @@ fn preview_pane_cycles_between_canvas_and_simulator_sources() {
         .expect("effects should update");
     view.update(&Action::SimulatedDisplaysUpdated(Arc::new(vec![
         SimulatedDisplaySummary {
-            id: "sim-1".to_string(),
+            id: "0198c5b6-5100-7000-8000-00000000a001"
+                .parse()
+                .expect("simulator id"),
             name: "Desk Preview".to_string(),
             width: 480,
             height: 480,
@@ -82,13 +86,13 @@ fn preview_pane_cycles_between_canvas_and_simulator_sources() {
         .expect("right should be handled");
     match next {
         Some(Action::SetPreviewSource(PreviewSource::Simulator(id))) => {
-            assert_eq!(id, "sim-1");
+            assert_eq!(id, "0198c5b6-5100-7000-8000-00000000a001");
         }
         other => panic!("expected simulator preview selection, got {other:?}"),
     }
 
     view.update(&Action::SetPreviewSource(PreviewSource::Simulator(
-        "sim-1".to_string(),
+        "0198c5b6-5100-7000-8000-00000000a001".to_string(),
     )))
     .expect("preview source should update");
 
@@ -118,7 +122,7 @@ fn mouse_click_on_toggle_control_updates_value() {
         .expect("mouse event should be handled");
 
     match action {
-        Some(Action::UpdateControl(id, ControlValue::Boolean(true))) => {
+        Some(Action::UpdateControl(id, ControlValue::Bool(true))) => {
             assert_eq!(id, "sparkle");
         }
         other => panic!("expected toggle control update, got {other:?}"),

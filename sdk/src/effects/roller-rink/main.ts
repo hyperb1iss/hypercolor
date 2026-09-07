@@ -1,4 +1,15 @@
-import { canvas, color, combo, num, scaleContext } from 'hypercolor'
+import {
+    canvas,
+    clamp,
+    color,
+    combo,
+    hslToRgb,
+    num,
+    hexToRgb as parseHexColor,
+    rgbToHex,
+    rgbToHsl,
+    scaleContext,
+} from 'hypercolor'
 
 const ROLLER_DESIGN_BASIS = { height: 200, width: 320 } as const
 
@@ -10,12 +21,6 @@ interface RGB {
     r: number
     g: number
     b: number
-}
-
-interface HSL {
-    h: number
-    s: number
-    l: number
 }
 
 interface Palette {
@@ -99,10 +104,6 @@ const THEME_PALETTES: Record<Exclude<ThemeName, 'Custom'>, Palette> = {
     },
 }
 
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
-
 function lerp(start: number, end: number, amount: number): number {
     return start + (end - start) * clamp(amount, 0, 1)
 }
@@ -117,31 +118,10 @@ function hash(value: number): number {
     return s - Math.floor(s)
 }
 
+const WHITE: RGB = { b: 255, g: 255, r: 255 }
+
 function hexToRgb(hex: string): RGB {
-    const normalized = hex.trim().replace('#', '')
-    const expanded =
-        normalized.length === 3
-            ? normalized
-                  .split('')
-                  .map((char) => `${char}${char}`)
-                  .join('')
-            : normalized
-
-    if (!/^[0-9a-fA-F]{6}$/.test(expanded)) {
-        return { b: 255, g: 255, r: 255 }
-    }
-
-    const value = Number.parseInt(expanded, 16)
-    return {
-        b: value & 255,
-        g: (value >> 8) & 255,
-        r: (value >> 16) & 255,
-    }
-}
-
-function rgbToHex(rgb: RGB): string {
-    const channel = (value: number) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0')
-    return `#${channel(rgb.r)}${channel(rgb.g)}${channel(rgb.b)}`
+    return parseHexColor(hex.trim(), WHITE)
 }
 
 function mixRgb(a: RGB, b: RGB, amount: number): RGB {
@@ -157,75 +137,6 @@ function mixHex(a: string, b: string, amount: number): string {
     return rgbToHex(mixRgb(hexToRgb(a), hexToRgb(b), amount))
 }
 
-function rgbToHsl(rgb: RGB): HSL {
-    const r = rgb.r / 255
-    const g = rgb.g / 255
-    const b = rgb.b / 255
-
-    const cmin = Math.min(r, g, b)
-    const cmax = Math.max(r, g, b)
-    const delta = cmax - cmin
-
-    let h = 0
-    if (delta !== 0) {
-        if (cmax === r) h = ((g - b) / delta) % 6
-        else if (cmax === g) h = (b - r) / delta + 2
-        else h = (r - g) / delta + 4
-        h = Math.round(h * 60)
-        if (h < 0) h += 360
-    }
-
-    const l = (cmax + cmin) / 2
-    const s = delta === 0 ? 0 : delta / (1 - Math.abs(2 * l - 1))
-
-    return {
-        h,
-        l: l * 100,
-        s: s * 100,
-    }
-}
-
-function hslToRgb(hsl: HSL): RGB {
-    const h = wrap(hsl.h, 360)
-    const s = clamp(hsl.s, 0, 100) / 100
-    const l = clamp(hsl.l, 0, 100) / 100
-
-    const chroma = (1 - Math.abs(2 * l - 1)) * s
-    const huePrime = h / 60
-    const second = chroma * (1 - Math.abs((huePrime % 2) - 1))
-
-    let r = 0
-    let g = 0
-    let b = 0
-
-    if (huePrime >= 0 && huePrime < 1) {
-        r = chroma
-        g = second
-    } else if (huePrime < 2) {
-        r = second
-        g = chroma
-    } else if (huePrime < 3) {
-        g = chroma
-        b = second
-    } else if (huePrime < 4) {
-        g = second
-        b = chroma
-    } else if (huePrime < 5) {
-        r = second
-        b = chroma
-    } else {
-        r = chroma
-        b = second
-    }
-
-    const match = l - chroma / 2
-    return {
-        b: (b + match) * 255,
-        g: (g + match) * 255,
-        r: (r + match) * 255,
-    }
-}
-
 function ledSafeHue(hue: number): number {
     const wrapped = wrap(hue, 360)
     if (wrapped >= 30 && wrapped < 90) {
@@ -237,13 +148,10 @@ function ledSafeHue(hue: number): number {
 
 function shiftHexHue(hex: string, degrees: number): string {
     const hsl = rgbToHsl(hexToRgb(hex))
-    return rgbToHex({
-        ...hslToRgb({
-            h: ledSafeHue(hsl.h + degrees),
-            l: hsl.l,
-            s: hsl.s,
-        }),
-    })
+    // ledSafeHue steps discontinuously at 30 degrees, so a sub-degree hue
+    // difference either side of it swings the result by tens of levels.
+    // Whole degrees in keeps the palette off that knife edge.
+    return rgbToHex(hslToRgb(ledSafeHue(Math.round(hsl.h) + degrees), hsl.s, hsl.l))
 }
 
 function rgba(hex: string, alpha: number): string {

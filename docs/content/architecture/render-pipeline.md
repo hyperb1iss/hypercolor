@@ -6,7 +6,7 @@ weight = 10
 
 Every frame Hypercolor renders flows through the same pipeline on a dedicated OS thread. Understanding the pipeline is the foundation for writing performant effects, tuning layouts, and contributing to the engine.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard" />}}
 
 ## Pipeline overview
 
@@ -18,8 +18,8 @@ InputManager::sample_all()       - collect audio, screen, sensor data
 render active scene groups       - Servo / native / media producers
 SparkleFlinger::compose()        - canonical scene canvas
 sample LED output                - spatial sampler → ZoneColors
-publish scene/display canvases   - watch streams on HypercolorBus
 BackendManager::write_frame()    - staged hardware output
+publish scene/display canvases   - watch streams on HypercolorBus
 RenderLoop::frame_complete()     - pressure metrics + tier adaptation
 sleep_until(next_deadline)       - pace to target FPS
 ```
@@ -42,7 +42,7 @@ Stage timing targets (at 60 fps, 16.6 ms total budget):
 - `frame_number`: monotonically increasing `u64` starting at 0.
 - `audio: &AudioData`: always present; `AudioData::silence()` when no source is active.
 - `interaction: &InteractionData`: keyboard and mouse state for interactive HTML effects.
-- `screen: Option<&ScreenData>`: latest screen-capture snapshot (absent when capture is off).
+- `screen: Option<&Arc<ScreenBranchPublication>>`: latest screen publication, shared by reference count so queueing renderers retain it without copying pixels. GPU-resident publications carry no CPU pixels and read as absent to CPU renderers.
 - `sensors: &SystemSnapshot`: CPU, temperature, and network telemetry.
 - `sources: FrameDataSources`: media (MPRIS), network stats refreshed at 1 Hz, and lighting state for display faces.
 - `canvas_width` and `canvas_height`: current canvas dimensions (default **640×480**, configurable via `daemon.canvas_width` / `daemon.canvas_height`).
@@ -53,7 +53,7 @@ One broken source never crashes the render loop; `InputSource` implementations a
 
 Each active zone holds a `Box<dyn EffectRenderer>` behind the engine's `Mutex` (the trait is `Send` but not `Sync`: Servo's renderer is inherently single-threaded). The render thread calls each producer's `render_into` method, which writes pixels into a caller-owned `Canvas`.
 
-`SparkleFlinger::compose()` takes the per-producer canvases and blends them into a single canonical scene canvas. The compositor uses a **latch-per-producer** model: it latches the newest completed surface from each producer and blends them in layer order. Producers run at their own cadences; the compositor never blocks waiting for a slow producer; it uses whatever the last committed frame was. Blend modes (`Normal`, `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, `Difference`) are applied in premultiplied linear-light sRGB.
+`SparkleFlinger::compose()` takes the per-producer canvases and blends them into a single canonical scene canvas. The compositor uses a **latch-per-producer** model: it latches the newest completed surface from each producer and blends them in layer order. Producers run at their own cadences; the compositor never blocks waiting for a slow producer; it uses whatever the last committed frame was. Layer blend modes are defined by `BlendMode` in `hypercolor-types/src/layer.rs`: `Replace`, `Alpha` (the default), `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, `Difference`, `Tint`, and `LumaReveal`. The eight alpha-composable ones map into the per-pixel kernel `PixelBlendMode` in `hypercolor-color/src/blend.rs` and are applied in premultiplied linear-light sRGB; `Replace`, `Tint`, and `LumaReveal` are handled by the compositor rather than the pixel kernel.
 
 ### The Canvas
 
@@ -68,7 +68,7 @@ canvas.sample(nx, ny, SamplingMethod::Bilinear); // normalized coords
 canvas.as_rgba_bytes_mut()                        // direct buffer access
 ```
 
-Canvas resize is a frame-boundary operation dispatched via `SceneTransaction::ResizeCanvas`. Spatial coordinates are normalized so effects require no change when the canvas is resized.
+Canvas resize is a frame-boundary operation. Spatial coordinates are normalized so effects require no change when the canvas is resized.
 
 ### Renderer backends
 
@@ -168,7 +168,7 @@ fps_controller.maybe_transition();
 
 Two operations trigger mid-run reconfigurations without stalling the render thread:
 
-- **`SceneTransaction::ResizeCanvas`** changes `canvas_width` / `canvas_height` at the next frame boundary. Effects are resolution-independent so no effect code changes are needed.
+- **Canvas resize** changes `canvas_width` / `canvas_height` at the next frame boundary. The frame executor detects the new dimensions at the top of a frame, calls `RenderPipeline::prepare_canvas_resize`, and commits the prepared surfaces with `commit_canvas_resize`. Effects are resolution-independent so no effect code changes are needed.
 - **`SpatialEngine::update_layout()`** recomputes all topology-derived LED positions after the user edits zone geometry in the layout editor.
 
 Both operations are queued and applied at safe frame boundaries.
@@ -178,9 +178,9 @@ Both operations are queued and applied at safe frame boundaries.
 Pixel data flows through two color spaces across the pipeline:
 
 1. **Canvas storage**: `Rgba` (`u8`, sRGB gamma-encoded). Effects write sRGB byte values using `Canvas::set_pixel`, `Canvas::fill`, or direct buffer access.
-2. **Spatial sampling**: samples decode to linear-light `RgbaF32` via the precomputed LUT, blend in linear space, then re-encode to `Rgb` (`u8`) for device output via `linear_to_srgb_u8`.
+2. **Spatial sampling**: samples decode to linear-light `LinearRgba` via the precomputed LUT, blend in linear space, then re-encode to `Rgb` (`u8`) for device output via `linear_to_srgb_u8`.
 
-The canvas pixel type is `Rgba` (sRGB u8); the float intermediate is `RgbaF32` (linear sRGB, `[0.0, 1.0]` per channel). The engine also exposes `Oklab` and `Oklch` types for perceptually uniform interpolation in native effects. See [@/effects/color-science.md](@/effects/color-science.md) for the color science reference.
+The canvas pixel type is `Rgba` (sRGB u8); the float intermediate is `LinearRgba` (linear sRGB, `[0.0, 1.0]` per channel). The engine also exposes `Oklab` and `Oklch` types for perceptually uniform interpolation in native effects. See [@/effects/color-science.md](@/effects/color-science.md) for the color science reference.
 
 ## Related pages
 

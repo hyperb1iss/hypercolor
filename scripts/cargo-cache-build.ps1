@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $CommandArgs = @($args | ForEach-Object { [string] $_ })
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+$CallerDir = Get-Location
 Set-Location $RepoRoot
 
 function Add-PathPrefix {
@@ -105,9 +106,8 @@ function Initialize-HypercolorCargoCache {
     # lock), while identical compiles hit one bounded cache under the shared
     # cache root. sccache and incremental compilation are mutually exclusive
     # (sccache 0.17 hard-errors on either the env var or -Cincremental), so
-    # the wrapper picks per command: codegen-heavy tree ops go through
-    # sccache; metadata-only ops (check/clippy) keep incremental because
-    # sccache cannot cache --emit=metadata units at all.
+    # local commands keep incremental artifacts; CI codegen uses sccache.
+    # Metadata-only ops (check/clippy) cannot use the compiler cache.
     $cargoSubcommand = ''
     if ($CommandArgs.Count -gt 1 -and $CommandArgs[0] -match 'cargo(\.exe)?$') {
         for ($i = 1; $i -lt $CommandArgs.Count; $i += 1) {
@@ -117,12 +117,13 @@ function Initialize-HypercolorCargoCache {
             }
         }
     }
-    # `run` stays incremental: it is the edit-run iteration loop, and a
-    # measured edit-rebuild of hypercolor-core is ~45s non-incremental vs
-    # ~11s incremental. Whole-tree ops win with sccache instead.
+    # Local build/test/run commands share incremental artifacts. Fresh CI
+    # checkouts and explicit non-incremental builds reuse the compiler cache.
     $sccacheSubcommands = @('build', 'test', 'bench', 'nextest')
     $forceSccache = $env:HYPERCOLOR_FORCE_SCCACHE -in @('1', 'true', 'TRUE')
-    $wantsSccache = $forceSccache -or $usesReleaseLikeProfile -or ($cargoSubcommand -in $sccacheSubcommands)
+    $cacheBuild = ($env:CI -in @('1', 'true', 'TRUE')) -or ($env:CARGO_INCREMENTAL -eq '0')
+    $wantsSccache = $forceSccache -or $usesReleaseLikeProfile -or
+        ($cacheBuild -and ($cargoSubcommand -in $sccacheSubcommands))
 
     $sccache = Get-Command sccache.exe -ErrorAction SilentlyContinue
     $disableSccache = ($env:HYPERCOLOR_NO_SCCACHE -in @('1', 'true', 'TRUE')) -or
@@ -221,4 +222,5 @@ Enter-HypercolorVsDevShell
 Assert-HypercolorRustToolchain
 Initialize-HypercolorNativeTools
 Initialize-HypercolorCargoCache
+Set-Location $CallerDir
 Invoke-HypercolorCargoCommand

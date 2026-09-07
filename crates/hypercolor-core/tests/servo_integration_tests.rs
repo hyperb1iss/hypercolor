@@ -5,17 +5,19 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::Duration;
 
-#[path = "support/effect_engine.rs"]
-mod effect_engine;
+#[path = "support/frame_state.rs"]
+mod frame_state;
 
-use hypercolor_core::effect::{load_html_effect_file, parse_html_effect_metadata};
+use hypercolor_core::effect::{
+    EffectRenderer, create_renderer_for_metadata, load_html_effect_file, parse_html_effect_metadata,
+};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use tempfile::tempdir;
 use uuid::Uuid;
 
-use effect_engine::EffectEngine;
+use frame_state::TestFrameState;
 
 const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const AUDIO_TEST_FRAMES: usize = 120;
@@ -57,22 +59,25 @@ fn html_metadata(path: PathBuf) -> EffectMetadata {
     }
 }
 
+fn initialize_renderer(metadata: &EffectMetadata) -> (Box<dyn EffectRenderer>, TestFrameState) {
+    let mut renderer = create_renderer_for_metadata(metadata)
+        .expect("servo metadata should select an HTML renderer");
+    let frame_state = TestFrameState::new(320, 200);
+    frame_state
+        .initialize(renderer.as_mut(), metadata)
+        .expect("servo renderer should initialize");
+    (renderer, frame_state)
+}
+
 fn render_frames(path: &Path, frame_count: usize) -> Vec<Canvas> {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate_metadata(html_metadata(path.to_path_buf()))
-        .unwrap_or_else(|error| {
-            panic!(
-                "servo activation should succeed for {}: {error}",
-                path.display()
-            )
-        });
+    let metadata = html_metadata(path.to_path_buf());
+    let (mut renderer, mut frame_state) = initialize_renderer(&metadata);
 
     (0..frame_count)
         .map(|_| {
-            let frame = engine
-                .tick(FRAME_DT_SECONDS, &AudioData::silence())
-                .expect("servo tick should produce a frame");
+            let frame = frame_state
+                .render(renderer.as_mut(), FRAME_DT_SECONDS, &AudioData::silence())
+                .expect("servo renderer should produce a frame");
             thread::sleep(Duration::from_millis(16));
             frame
         })
@@ -104,17 +109,14 @@ fn bundled_html_metadata(relative: &str) -> EffectMetadata {
 }
 
 fn render_audio_sequence(metadata: EffectMetadata, sequence: &[AudioData]) -> Vec<Canvas> {
-    let mut engine = EffectEngine::new();
-    engine
-        .activate_metadata(metadata)
-        .expect("servo activation should succeed for audio-reactive effect");
+    let (mut renderer, mut frame_state) = initialize_renderer(&metadata);
 
     sequence
         .iter()
         .map(|audio| {
-            let frame = engine
-                .tick(FRAME_DT_SECONDS, audio)
-                .expect("servo tick should produce a frame");
+            let frame = frame_state
+                .render(renderer.as_mut(), FRAME_DT_SECONDS, audio)
+                .expect("servo renderer should produce a frame");
             thread::sleep(Duration::from_millis(16));
             frame
         })
@@ -442,10 +444,11 @@ fn servo_renderer_smoke_activates_generated_webgl_effect_sample() {
 #[test]
 #[ignore = "manual macOS recovery check for fatal WebGL worker retirement"]
 fn servo_renderer_recovers_after_fatal_webgl_activation_failure() {
-    let mut engine = EffectEngine::new();
-    let first = engine.activate_metadata(html_metadata(PathBuf::from(
-        "custom/cellular-automaton.html",
-    )));
+    let first_metadata = html_metadata(PathBuf::from("custom/cellular-automaton.html"));
+    let mut first_renderer = create_renderer_for_metadata(&first_metadata)
+        .expect("failing metadata should still select an HTML renderer");
+    let frame_state = TestFrameState::new(320, 200);
+    let first = frame_state.initialize(first_renderer.as_mut(), &first_metadata);
 
     let Err(first_error) = first else {
         return;
@@ -457,9 +460,12 @@ fn servo_renderer_recovers_after_fatal_webgl_activation_failure() {
         return;
     }
 
-    engine
-        .activate_metadata(html_metadata(PathBuf::from("hypercolor/arc-storm.html")))
-        .expect("Arc Storm should activate with a fresh Servo worker after retirement");
+    let recovery_metadata = html_metadata(PathBuf::from("hypercolor/arc-storm.html"));
+    let mut recovery_renderer = create_renderer_for_metadata(&recovery_metadata)
+        .expect("recovery metadata should select an HTML renderer");
+    frame_state
+        .initialize(recovery_renderer.as_mut(), &recovery_metadata)
+        .expect("Arc Storm should initialize with a fresh Servo worker after retirement");
 }
 
 #[test]
@@ -503,27 +509,36 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);
     )
     .expect("second html write should work");
 
-    let mut engine = EffectEngine::new();
-    engine
-        .activate_metadata(html_metadata(first_path))
-        .expect("first servo activation should succeed");
-
-    let first_frame = engine
-        .tick(FRAME_DT_SECONDS, &AudioData::silence())
-        .expect("first servo tick should produce a frame");
+    let first_metadata = html_metadata(first_path);
+    let (mut first_renderer, mut frame_state) = initialize_renderer(&first_metadata);
+    let first_frame = frame_state
+        .render(
+            first_renderer.as_mut(),
+            FRAME_DT_SECONDS,
+            &AudioData::silence(),
+        )
+        .expect("first servo renderer should produce a frame");
     assert_dimensions(&first_frame);
     assert!(
         frame_contains_red_pixel(&first_frame),
         "expected the first effect to render a red frame"
     );
 
-    engine
-        .activate_metadata(html_metadata(second_path))
-        .expect("second servo activation should succeed after reusing the worker");
+    first_renderer.destroy();
+    let second_metadata = html_metadata(second_path);
+    let mut second_renderer = create_renderer_for_metadata(&second_metadata)
+        .expect("second metadata should select an HTML renderer");
+    frame_state
+        .initialize(second_renderer.as_mut(), &second_metadata)
+        .expect("second servo renderer should initialize after reusing the worker");
 
-    let second_frame = engine
-        .tick(FRAME_DT_SECONDS, &AudioData::silence())
-        .expect("second servo tick should produce a frame");
+    let second_frame = frame_state
+        .render(
+            second_renderer.as_mut(),
+            FRAME_DT_SECONDS,
+            &AudioData::silence(),
+        )
+        .expect("second servo renderer should produce a frame");
     assert_dimensions(&second_frame);
     assert!(
         frame_contains_green_pixel(&second_frame),

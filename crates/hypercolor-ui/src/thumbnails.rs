@@ -11,7 +11,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use gloo_net::http::{Method, RequestBuilder};
 use hypercolor_leptos_ext::canvas::{context_2d, create_canvas, image_data_rgba, set_canvas_size};
 use hypercolor_leptos_ext::prelude::{console_warn_with_value, now_ms, spawn_timeout};
 use leptos::prelude::*;
@@ -231,26 +230,18 @@ fn encode_frame_to_webp(frame: &CanvasFrame) -> Result<String, JsValue> {
 /// Keyed by effect id so the daemon owns cover resolution — it decides between
 /// a curated override and the cover the effect ships inline.
 pub fn effect_cover_url(effect_id: &str) -> String {
-    format!("/api/v1/effects/{effect_id}/cover")
+    crate::api::client::daemon_url(&format!("/api/v1/effects/{effect_id}/cover"))
+        .unwrap_or_default()
 }
 
 /// Kick off a HEAD probe for an effect's cover and update `probe_cache` with
 /// the result. Idempotent — callers should check for an existing entry before
 /// spawning.
 fn spawn_curated_probe(effect_id: String, probe_cache: StoredValue<HashMap<String, CuratedProbe>>) {
-    let url = effect_cover_url(&effect_id);
+    let route = format!("/api/v1/effects/{effect_id}/cover");
     wasm_bindgen_futures::spawn_local(async move {
-        let request = match RequestBuilder::new(&url).method(Method::HEAD).build() {
-            Ok(req) => req,
-            Err(_) => {
-                probe_cache.update_value(|cache| {
-                    cache.insert(effect_id, CuratedProbe::Absent);
-                });
-                return;
-            }
-        };
-        let state = match request.send().await {
-            Ok(response) if response.status() == 200 => CuratedProbe::Present,
+        let state = match crate::api::client::head_status(&route).await {
+            Ok(200) => CuratedProbe::Present,
             _ => CuratedProbe::Absent,
         };
         probe_cache.update_value(|cache| {

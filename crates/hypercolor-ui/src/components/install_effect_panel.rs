@@ -190,12 +190,12 @@ pub fn InstallEffectPanel() -> impl IntoView {
                                             </div>
                                             <div
                                                 class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-medium"
-                                                class=("bg-error-red/12", has_errors)
-                                                class=("text-error-red", has_errors)
-                                                class=("border-error-red/25", has_errors)
-                                                class=("bg-success-green/12", !has_errors)
-                                                class=("text-success-green", !has_errors)
-                                                class=("border-success-green/25", !has_errors)
+                                                class=("bg-status-error/12", has_errors)
+                                                class=("text-status-error", has_errors)
+                                                class=("border-status-error/25", has_errors)
+                                                class=("bg-status-success/12", !has_errors)
+                                                class=("text-status-success", !has_errors)
+                                                class=("border-status-success/25", !has_errors)
                                             >
                                                 <Icon icon=if has_errors { LuTriangleAlert } else { LuCircleCheck } width="12px" height="12px" />
                                                 {if has_errors { "Needs fixes" } else { "Ready" }}
@@ -223,8 +223,8 @@ pub fn InstallEffectPanel() -> impl IntoView {
                                     </div>
 
                                     {(!preview_for_errors.errors.is_empty()).then(|| view! {
-                                        <div class="rounded-xl border border-error-red/30 bg-error-red/8 px-4 py-3">
-                                            <div class="mb-2 flex items-center gap-2 text-xs font-medium text-error-red">
+                                        <div class="rounded-xl border border-status-error/30 bg-status-error/8 px-4 py-3">
+                                            <div class="mb-2 flex items-center gap-2 text-xs font-medium text-status-error">
                                                 <Icon icon=LuTriangleAlert width="14px" height="14px" />
                                                 "Validation errors"
                                             </div>
@@ -271,9 +271,9 @@ pub fn InstallEffectPanel() -> impl IntoView {
                         <button
                             type="button"
                             class="inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition-all duration-200"
-                            class=("bg-electric-purple/85", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
+                            class=("bg-accent/85", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
                             class=("text-white", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
-                            class=("hover:bg-electric-purple", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
+                            class=("hover:bg-accent", move || preview.get().is_some_and(|preview| preview.errors.is_empty()) && !is_uploading.get())
                             class=("cursor-not-allowed", move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get())
                             class=("bg-surface-sunken", move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get())
                             class=("text-fg-tertiary", move || preview.get().is_none_or(|preview| !preview.errors.is_empty()) || is_uploading.get())

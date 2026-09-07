@@ -9,13 +9,13 @@ Layers are how a single zone shows more than one thing at once. Each zone owns a
 
 You edit the stack in the **Layer Stack** panel. It opens from the Stage by clicking the now-playing chip, which slides the composition panel over the canvas. Studio, the Media page, and any future surface all mount the exact same editor, so the controls never drift between places.
 
-{{ img(path="img/ui/studio.webp", alt="Studio composition workspace with the layer stack panel") }}
+{{< img path="img/ui/studio.webp" alt="Studio composition workspace with the layer stack panel" />}}
 
 This page covers adding layers, the 11 blend modes, opacity, the transform and color adjustments, reordering, the runtime health pill, and the add-to scopes that let one layer land on several zones at once.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 A **scene** is your whole-rig configuration and a **zone** is a flexible partition of that rig. The layer stack belongs to one zone. Switching zones in the left rail swaps which stack you are editing. See [Zones](@/studio/zones.md) for the zone model.
-{% end %}
+{% </callout> %}
 
 ## The layer stack at a glance
 
@@ -28,7 +28,7 @@ Each layer is a card. From top to bottom a card carries:
 - The source icon, the layer title, and the runtime health pill.
 - The source kind in small caps: **Effect**, **Media**, **Screen capture**, **Web page**, or **Color**.
 - Reorder arrows (only in a multi-layer stack) and a delete button.
-- An **On / Off** enable toggle and the **blend mode** dropdown.
+- The **blend mode** dropdown.
 - An **Opacity** slider.
 - The source's own controls: an effect's live parameters, or a media clip's playback.
 - A collapsed **Transform & Color** disclosure.
@@ -37,7 +37,7 @@ Each layer is a card. From top to bottom a card carries:
 
 Click **Add layer** to open the picker. It has two tabs, **Effect** and **Media**, plus an optional **Add to** scope selector.
 
-{{ img(path="img/ui/effects.webp", alt="Studio effects gallery, the kind of catalog the Effect tab draws from") }}
+{{< img path="img/ui/effects.webp" alt="Studio effects gallery, the kind of catalog the Effect tab draws from" />}}
 
 ### Effect and face layers
 
@@ -49,9 +49,9 @@ When the selected surface is a **Screen** (a display-face zone), the tab relabel
 
 The **Media** tab shows your uploaded assets as a grid. Search filters by filename or MIME type. Click a tile and it is added immediately as a media layer, with no separate confirm step. If the grid is empty, upload from the Media library first; the picker refreshes its asset list every time you open it, so a file you just uploaded shows up without reloading the page.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 A new **Effect** layer added onto a non-empty stack defaults to the **Screen** blend mode, so it lights up over what is already there instead of hiding it. The very first layer, and every media layer, starts on **Alpha**.
-{% end %}
+{% </callout> %}
 
 ## Blend modes
 
@@ -100,11 +100,9 @@ The remaining sliders fine-tune the layer:
 
 Every adjustment saves the moment you release the slider, guarded so a write never clobbers a change made elsewhere (see [optimistic concurrency](#how-edits-are-saved) below).
 
-## Reordering, enabling, and removing
+## Reordering and removing
 
 In a stack of more than one layer, each card shows **up** and **down** arrows. The up arrow moves a layer toward the top of the visual stack (later in compositing); the down arrow moves it toward the bottom. The arrow disables itself at the ends of the stack. A single-layer stack hides the arrows entirely, since there is nowhere to move.
-
-The **On / Off** toggle disables a layer without deleting it. A disabled layer keeps all its settings but contributes nothing to the composite, so you can audition the stack with and without it.
 
 The **trash** button removes a layer for good and pops a confirmation toast.
 
@@ -133,17 +131,24 @@ By default a new layer lands on the one zone you are editing. In a **multi-zone*
 
 The scope selector only appears when there is genuinely more than one place to send a layer. In a single-zone scene it stays hidden, and a scope that would target nothing (for example **All screens** in a scene with no screens) is dropped from the list.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 When you add a layer to multiple zones at once, the change is guarded against conflicts only for the zone currently on screen; the other zones receive the layer unconditionally. If a bulk add partially fails, the toast tells you how many zones got the layer and how many did not.
-{% end %}
+{% </callout> %}
 
 A **Selected surfaces** scope, adding to an arbitrary multi-select of zones, is planned but not yet shipped. It rides a surface multi-select that is still on the roadmap.
 
 ## How edits are saved
 
-Every change to the stack, whether adding, removing, reordering, toggling, or retuning a slider, is a guarded write against the daemon. The panel sends the stack's current version as an `If-Match` precondition. If someone else (another client, the CLI, an agent) changed the same stack first, the write is rejected as stale rather than silently overwriting their work; the panel reloads the stack, tells you it reloaded, and you reapply your change. Nothing is lost.
+Every structural stack change sends the live scene document's current
+`revision` as an `If-Match` precondition. If another client changes the scene
+first, the write is rejected as stale rather than silently overwriting their
+work. The panel reloads the document and asks you to reapply the change.
+Control-value patches are unguarded and apply in commit order against the real
+layer id.
 
-This is the same optimistic-concurrency model the rest of Studio uses. For the developer-level detail on `layers_version`, `If-Match`, and the stale-outcome flow, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).
+This is the same one-revision concurrency model the rest of Studio uses. For
+the developer-level detail on `SceneDocument.revision`, `If-Match`, and the
+stale-outcome flow, see [Zone API and concurrency](@/studio/zone-api-and-concurrency.md).
 
 ## Where to go next
 

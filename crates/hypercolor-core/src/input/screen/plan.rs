@@ -15,8 +15,8 @@ use super::reducer::branch_requires_materialization;
 use super::{
     CaptureSourceId, ResolvedScreenBranchDemand, ResolvedScreenPublicationDescriptor,
     ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteLease,
-    ScreenByteReservation, ScreenPhysicalReductionDescriptor, ScreenPublicationExecutor,
-    ScreenPublicationKind, ScreenPublicationResidency,
+    ScreenByteReservation, ScreenConsumerBranchId, ScreenPhysicalReductionDescriptor,
+    ScreenPublicationExecutor, ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const TARGET_PIXEL_BYTES: u64 = 4;
@@ -38,6 +38,22 @@ impl ScreenPlanGeneration {
             .checked_add(1)
             .map(Self)
             .ok_or(ScreenPlanError::GenerationExhausted)
+    }
+}
+
+/// Revision of one consumer registration's exact branch route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScreenConsumerBranchRevision(u64);
+
+impl ScreenConsumerBranchRevision {
+    /// Plan generation where this registration last changed exact branches.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    const fn from_generation(generation: ScreenPlanGeneration) -> Self {
+        Self(generation.get())
     }
 }
 
@@ -106,6 +122,34 @@ impl ScreenPlanTransactionId {
 pub struct ScreenBranchDemand {
     descriptor: ResolvedScreenPublicationDescriptor,
     requested_hz: NonZeroU32,
+}
+
+/// One registration-to-canonical-branch route in a committed plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenConsumerBranchRoute {
+    consumer_branch_id: ScreenConsumerBranchId,
+    revision: ScreenConsumerBranchRevision,
+    branch_index: usize,
+}
+
+impl ScreenConsumerBranchRoute {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Revision of this registration's exact descriptor route.
+    #[must_use]
+    pub const fn revision(self) -> ScreenConsumerBranchRevision {
+        self.revision
+    }
+
+    /// Canonical branch index in the same committed plan.
+    #[must_use]
+    pub const fn branch_index(self) -> usize {
+        self.branch_index
+    }
 }
 
 impl ScreenBranchDemand {
@@ -211,47 +255,6 @@ impl ScreenSourcePlanDelta {
     }
 }
 
-/// Ordinary compatibility outputs selected from the canonical branch plan.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScreenCompatibilitySelection {
-    surface: ResolvedScreenPublicationDescriptor,
-    zones: Option<ResolvedScreenPublicationDescriptor>,
-}
-
-impl ScreenCompatibilitySelection {
-    /// Select one ordinary surface and an optional ordinary zones branch.
-    ///
-    /// # Errors
-    ///
-    /// Rejects descriptors whose kinds do not match their compatibility role.
-    pub fn try_new(
-        surface: ResolvedScreenPublicationDescriptor,
-        zones: Option<ResolvedScreenPublicationDescriptor>,
-    ) -> Result<Self, ScreenPlanError> {
-        if !matches!(surface.kind(), ScreenPublicationKind::Surface) {
-            return Err(ScreenPlanError::CompatibilitySurfaceKindMismatch);
-        }
-        if zones.as_ref().is_some_and(|descriptor| {
-            !matches!(descriptor.kind(), ScreenPublicationKind::Zones { .. })
-        }) {
-            return Err(ScreenPlanError::CompatibilityZonesKindMismatch);
-        }
-        Ok(Self { surface, zones })
-    }
-
-    /// Exact ordinary surface descriptor.
-    #[must_use]
-    pub const fn surface(&self) -> &ResolvedScreenPublicationDescriptor {
-        &self.surface
-    }
-
-    /// Optional exact ordinary zones descriptor.
-    #[must_use]
-    pub const fn zones(&self) -> Option<&ResolvedScreenPublicationDescriptor> {
-        self.zones.as_ref()
-    }
-}
-
 /// Immutable, deterministic screen-publication plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenCapturePlan {
@@ -259,8 +262,7 @@ pub struct ScreenCapturePlan {
     demand_revision: InputPublicationDemandRevision,
     branches: Arc<Vec<ScreenBranchDemand>>,
     physical_reductions: Arc<Vec<ScreenPhysicalReductionDemand>>,
-    compatibility_surface: Option<usize>,
-    compatibility_zones: Option<usize>,
+    consumer_routes: Arc<Vec<ScreenConsumerBranchRoute>>,
 }
 
 impl ScreenCapturePlan {
@@ -288,24 +290,22 @@ impl ScreenCapturePlan {
         self.physical_reductions.as_slice()
     }
 
-    /// Index of the ordinary branch selected by the compatibility mirror.
+    /// ID-sorted routes from consumer registrations to canonical branches.
     #[must_use]
-    pub const fn compatibility_branch_index(&self) -> Option<usize> {
-        self.compatibility_surface
+    pub fn consumer_routes(&self) -> &[ScreenConsumerBranchRoute] {
+        self.consumer_routes.as_slice()
     }
 
-    /// Ordinary branch selected by the compatibility mirror.
+    /// Route owned by one consumer registration.
     #[must_use]
-    pub fn compatibility_branch(&self) -> Option<&ScreenBranchDemand> {
-        self.compatibility_surface
-            .and_then(|index| self.branches.get(index))
-    }
-
-    /// Optional ordinary zones branch paired with the compatibility surface.
-    #[must_use]
-    pub fn compatibility_zones_branch(&self) -> Option<&ScreenBranchDemand> {
-        self.compatibility_zones
-            .and_then(|index| self.branches.get(index))
+    pub fn consumer_route(
+        &self,
+        consumer_branch_id: ScreenConsumerBranchId,
+    ) -> Option<ScreenConsumerBranchRoute> {
+        self.consumer_routes
+            .binary_search_by_key(&consumer_branch_id, |route| route.consumer_branch_id)
+            .ok()
+            .and_then(|index| self.consumer_routes.get(index).copied())
     }
 
     fn contains_descriptor(&self, descriptor: &ResolvedScreenPublicationDescriptor) -> bool {
@@ -328,8 +328,7 @@ impl Default for ScreenCapturePlan {
             demand_revision: InputPublicationDemandRevision::default(),
             branches: Arc::new(Vec::new()),
             physical_reductions: Arc::new(Vec::new()),
-            compatibility_surface: None,
-            compatibility_zones: None,
+            consumer_routes: Arc::new(Vec::new()),
         }
     }
 }
@@ -529,6 +528,7 @@ pub struct ScreenExactResource {
     resource: ScreenResourceKind,
     bytes: u64,
     native_binding: Option<ScreenNativeResourceBindingKey>,
+    native_shared_binding: Option<ScreenNativeSharedResourceBindingKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -550,6 +550,44 @@ impl ScreenNativeResourceBindingKey {
 
     pub(crate) const fn target_id(&self) -> NonZeroU64 {
         self.target_id
+    }
+
+    pub(crate) const fn descriptor(&self) -> &Arc<ResolvedScreenPublicationDescriptor> {
+        &self.descriptor
+    }
+
+    pub(crate) fn matches(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> bool {
+        self.target_id == target_id && self.descriptor.as_ref() == descriptor
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScreenNativeSharedResourceBindingKey {
+    target_id: NonZeroU64,
+    descriptor: Arc<ScreenPhysicalReductionDescriptor>,
+}
+
+impl ScreenNativeSharedResourceBindingKey {
+    pub(crate) fn new(
+        target_id: NonZeroU64,
+        descriptor: Arc<ScreenPhysicalReductionDescriptor>,
+    ) -> Self {
+        Self {
+            target_id,
+            descriptor,
+        }
+    }
+
+    pub(crate) fn matches(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ScreenPhysicalReductionDescriptor,
+    ) -> bool {
+        self.target_id == target_id && self.descriptor.as_ref() == descriptor
     }
 }
 
@@ -600,6 +638,7 @@ impl ScreenExactResource {
             resource,
             bytes,
             native_binding: None,
+            native_shared_binding: None,
         })
     }
 
@@ -616,6 +655,22 @@ impl ScreenExactResource {
             bytes,
         )?;
         resource.native_binding = Some(native_binding);
+        Ok(resource)
+    }
+
+    pub(crate) fn try_new_native_shared_target(
+        name: impl Into<Arc<str>>,
+        accounting_scope: impl Into<Arc<str>>,
+        bytes: u64,
+        native_shared_binding: ScreenNativeSharedResourceBindingKey,
+    ) -> Result<Self, ScreenPlanError> {
+        let mut resource = Self::try_new_scoped(
+            name,
+            accounting_scope,
+            ScreenResourceKind::WorkerAdditional,
+            bytes,
+        )?;
+        resource.native_shared_binding = Some(native_shared_binding);
         Ok(resource)
     }
 
@@ -646,6 +701,12 @@ impl ScreenExactResource {
     pub(crate) const fn native_binding(&self) -> Option<&ScreenNativeResourceBindingKey> {
         self.native_binding.as_ref()
     }
+
+    pub(crate) const fn native_shared_binding(
+        &self,
+    ) -> Option<&ScreenNativeSharedResourceBindingKey> {
+        self.native_shared_binding.as_ref()
+    }
 }
 
 #[derive(Debug)]
@@ -656,6 +717,7 @@ struct ScreenResourceLifetimeInner {
     transaction_id: ScreenPlanTransactionId,
     worker_nonce: NonZeroU64,
     allocation_nonce: NonZeroU64,
+    finalization: Arc<Mutex<()>>,
     resource: ScreenExactResource,
     retirement_charge: Arc<ScreenRetirementCharge>,
     admission_lease: OnceLock<ScreenByteLease>,
@@ -708,6 +770,38 @@ impl ScreenResourceLifetime {
             && self.inner.demand_revision == other.inner.demand_revision
             && self.inner.transaction_id == other.inner.transaction_id
             && self.inner.worker_nonce == other.inner.worker_nonce
+            && Arc::ptr_eq(&self.inner.finalization, &other.inner.finalization)
+    }
+
+    pub(crate) fn belongs_to_binding(&self, binding: &ScreenWorkerBinding) -> bool {
+        self.inner.source_id == *binding.source_id()
+            && self.inner.plan_generation == binding.plan_generation()
+            && self.inner.demand_revision == binding.demand_revision()
+            && self.inner.transaction_id == binding.transaction_id()
+            && self.inner.worker_nonce == binding.worker_nonce()
+            && Arc::ptr_eq(&self.inner.finalization, &binding.inner.finalization)
+    }
+
+    pub(crate) fn matches_native_target(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+    ) -> bool {
+        self.inner
+            .resource
+            .native_binding()
+            .is_some_and(|binding| binding.matches(target_id, descriptor))
+    }
+
+    pub(crate) fn matches_native_shared_target(
+        &self,
+        target_id: NonZeroU64,
+        descriptor: &ScreenPhysicalReductionDescriptor,
+    ) -> bool {
+        self.inner
+            .resource
+            .native_shared_binding()
+            .is_some_and(|binding| binding.matches(target_id, descriptor))
     }
 
     pub(crate) fn is_final_owner(&self) -> bool {
@@ -1123,6 +1217,7 @@ impl ScreenWorkerPreparationTicket {
                 transaction_id: self.transaction_id,
                 worker_nonce: self.worker_nonce,
                 allocation_nonce,
+                finalization: Arc::clone(&self.finalization),
                 resource: resource.clone(),
                 retirement_charge: Arc::new(ScreenRetirementCharge::new(
                     Arc::clone(&self.pending_retired_bytes),
@@ -1241,7 +1336,9 @@ impl ScreenWorkerPreparationTicket {
                     .ok()
                     .map(|index| &exact_ledger.resources()[index]);
                 if resource.is_none_or(|resource| {
-                    resource.native_binding().is_none() || resource.bytes() != claim.lease.bytes()
+                    (resource.native_binding().is_none()
+                        && resource.native_shared_binding().is_none())
+                        || resource.bytes() != claim.lease.bytes()
                 }) {
                     return Err(ScreenPlanError::ExternalAdmissionMismatch {
                         name: Arc::clone(&claim.resource_name),
@@ -2103,7 +2200,6 @@ impl ScreenPlanBuilder {
     pub fn prepare(
         &mut self,
         demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-        compatibility: Option<&ScreenCompatibilitySelection>,
         demand_revision: InputPublicationDemandRevision,
         graph_generation: ScreenInputGraphGeneration,
         capacity: ScreenAdmissionCapacity,
@@ -2123,8 +2219,7 @@ impl ScreenPlanBuilder {
             NonZeroU64::new(self.next_transaction_id)
                 .ok_or(ScreenPlanError::TransactionIdentityExhausted)?,
         );
-        let candidate =
-            canonicalize_candidate(base_state.plan(), demands, compatibility, demand_revision)?;
+        let candidate = canonicalize_candidate(base_state.plan(), demands, demand_revision)?;
         let admission = admit_candidate(
             base_state.plan(),
             &candidate,
@@ -2309,15 +2404,6 @@ pub enum ScreenPlanError {
     /// A worker ticket exhausted its non-zero allocation identity space.
     #[error("screen publication resource lifetime nonce exhausted")]
     ResourceLifetimeNonceExhausted,
-    /// The compatibility mirror did not name an ordinary candidate branch.
-    #[error("compatibility mirror descriptor is absent from the candidate plan")]
-    CompatibilityBranchMissing,
-    /// Compatibility surface selection named a non-surface branch.
-    #[error("compatibility surface selection must name an ordinary Surface branch")]
-    CompatibilitySurfaceKindMismatch,
-    /// Compatibility zones selection named a non-zones branch.
-    #[error("compatibility zones selection must name an ordinary Zones branch")]
-    CompatibilityZonesKindMismatch,
     /// A candidate predates the committed demand revision.
     #[error(
         "input publication demand revision regressed: committed {committed:?}, candidate {candidate:?}"
@@ -2327,6 +2413,12 @@ pub enum ScreenPlanError {
         committed: InputPublicationDemandRevision,
         /// Rejected candidate revision.
         candidate: InputPublicationDemandRevision,
+    },
+    /// One consumer registration identity named more than one exact demand.
+    #[error("screen consumer branch identity {consumer_branch_id:?} is duplicated")]
+    DuplicateConsumerBranchId {
+        /// Duplicated stable consumer identity.
+        consumer_branch_id: ScreenConsumerBranchId,
     },
     /// Checked descriptor resource arithmetic exceeded `u64`.
     #[error(
@@ -3183,7 +3275,6 @@ fn push_required_minimum(
 fn canonicalize_candidate(
     current: &ScreenCapturePlan,
     demands: impl IntoIterator<Item = ResolvedScreenBranchDemand>,
-    compatibility: Option<&ScreenCompatibilitySelection>,
     demand_revision: InputPublicationDemandRevision,
 ) -> Result<ScreenCapturePlan, ScreenPlanError> {
     let mut resolved = Vec::new();
@@ -3191,56 +3282,74 @@ fn canonicalize_candidate(
         reserve_one(&mut resolved)?;
         resolved.push(demand);
     }
-    resolved.sort_unstable_by(|left, right| left.descriptor().cmp(right.descriptor()));
+    resolved.sort_unstable_by(|left, right| {
+        left.descriptor()
+            .cmp(right.descriptor())
+            .then_with(|| left.consumer_branch_id().cmp(&right.consumer_branch_id()))
+    });
 
     let mut branches: Vec<ScreenBranchDemand> = Vec::new();
+    let mut route_targets = Vec::new();
     for demand in resolved {
-        let (descriptor, requested_hz) = demand.into_parts();
-        if let Some(previous) = branches.last_mut()
+        let (consumer_branch_id, descriptor, requested_hz) = demand.into_parts();
+        let branch_index = if let Some(previous) = branches.last_mut()
             && previous.descriptor == descriptor
         {
             previous.requested_hz = previous.requested_hz.max(requested_hz);
-            continue;
-        }
-        reserve_one(&mut branches)?;
-        branches.push(ScreenBranchDemand {
-            descriptor,
-            requested_hz,
-        });
+            branches.len() - 1
+        } else {
+            reserve_one(&mut branches)?;
+            branches.push(ScreenBranchDemand {
+                descriptor,
+                requested_hz,
+            });
+            branches.len() - 1
+        };
+        reserve_one(&mut route_targets)?;
+        route_targets.push((consumer_branch_id, branch_index));
+    }
+    route_targets.sort_unstable_by_key(|(consumer_branch_id, _)| *consumer_branch_id);
+    if let Some(consumer_branch_id) = route_targets
+        .windows(2)
+        .find_map(|routes| (routes[0].0 == routes[1].0).then_some(routes[0].0))
+    {
+        return Err(ScreenPlanError::DuplicateConsumerBranchId { consumer_branch_id });
     }
 
-    let compatibility_surface = compatibility
-        .map(|selection| {
-            branches
-                .binary_search_by(|branch| branch.descriptor.cmp(selection.surface()))
-                .map_err(|_| ScreenPlanError::CompatibilityBranchMissing)
-        })
-        .transpose()?;
-    let compatibility_zones = compatibility
-        .and_then(ScreenCompatibilitySelection::zones)
-        .map(|descriptor| {
-            branches
-                .binary_search_by(|branch| branch.descriptor.cmp(descriptor))
-                .map_err(|_| ScreenPlanError::CompatibilityBranchMissing)
-        })
-        .transpose()?;
     let physical_reductions = group_physical_reductions(&branches)?;
 
-    let changed = current.branches.as_slice() != branches.as_slice()
-        || current.compatibility_surface != compatibility_surface
-        || current.compatibility_zones != compatibility_zones;
+    let changed = current.branches.as_slice() != branches.as_slice();
     let generation = if changed {
         current.generation.next()?
     } else {
         current.generation
     };
+    let mut consumer_routes = Vec::new();
+    consumer_routes
+        .try_reserve_exact(route_targets.len())
+        .map_err(|_| ScreenPlanError::AllocationFailed)?;
+    for (consumer_branch_id, branch_index) in route_targets {
+        let revision = current
+            .consumer_route(consumer_branch_id)
+            .filter(|route| {
+                current.branches[route.branch_index].descriptor == branches[branch_index].descriptor
+            })
+            .map_or_else(
+                || ScreenConsumerBranchRevision::from_generation(generation),
+                ScreenConsumerBranchRoute::revision,
+            );
+        consumer_routes.push(ScreenConsumerBranchRoute {
+            consumer_branch_id,
+            revision,
+            branch_index,
+        });
+    }
     Ok(ScreenCapturePlan {
         generation,
         demand_revision,
         branches: Arc::new(branches),
         physical_reductions: Arc::new(physical_reductions),
-        compatibility_surface,
-        compatibility_zones,
+        consumer_routes: Arc::new(consumer_routes),
     })
 }
 

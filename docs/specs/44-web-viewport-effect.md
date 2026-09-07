@@ -5,7 +5,12 @@
 > extends cleanly to future viewport-style effects. Reuses the existing
 > Servo rendering path and the existing region-picker UI patterns.
 
-**Status:** Implemented — `WebViewportRenderer` fully implemented in `hypercolor-core`
+**Status:** Implemented. `WebViewportRenderer` ships in `hypercolor-core`. The route
+examples in this document are not; treat every endpoint below as historical, and read
+the "profile loader" and "profile migration" tasks as library and scene migration, since
+profiles folded into scenes.
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Author:** Nova
 **Date:** 2026-04-12
 **Packages:** `hypercolor-types`, `hypercolor-core`, `hypercolor-ui`, `hypercolor`
@@ -887,7 +892,7 @@ UI WsContext.web_viewport_canvas_frame signal
   ↓
 ViewportPicker → CanvasPreview (live page)
   ↓ rect overlay drawn on top
-User drags rect → on_change → PATCH /api/v1/effects/current/controls
+User drags rect → on_change → PATCH /api/v1/effects/active/controls
   ↓
 WebViewportRenderer::set_control("viewport", rect)
   ↓ sample_viewport uses the new rect next frame

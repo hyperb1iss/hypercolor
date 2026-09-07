@@ -6,12 +6,12 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crate::types::device::{
+use hypercolor_driver_api::DiscoveryConnectBehavior;
+use hypercolor_types::device::{
     DeviceError, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
     DeviceState,
 };
 
-use super::DiscoveryConnectBehavior;
 use super::state_machine::{DeviceStateMachine, ReconnectPolicy};
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;
@@ -582,7 +582,7 @@ impl DeviceLifecycleManager {
         let Some(fingerprint) = fingerprint else {
             return Self::layout_device_id(device_info);
         };
-        let value = fingerprint.0.to_ascii_lowercase();
+        let value = fingerprint.as_str().to_ascii_lowercase();
 
         if let Some(value) = value.strip_prefix("net:") {
             let owner_prefix = format!("{owner}:");
@@ -592,11 +592,23 @@ impl DeviceLifecycleManager {
             return format!("{owner}:{value}");
         }
 
+        if let Some(value) = value.strip_prefix("bridge:") {
+            let owner_prefix = format!("{owner}:");
+            if let Some(driver_scoped_value) = value.strip_prefix(&owner_prefix) {
+                return format!("{owner}:{}", sanitize_component(driver_scoped_value));
+            }
+            return Self::layout_device_id(device_info);
+        }
+
         if let Some(value) = value.strip_prefix("usb:") {
+            let owner_prefix = format!("{owner}:");
+            let value = value.strip_prefix(&owner_prefix).unwrap_or(value);
             return format!("{owner}:{}", sanitize_component(value));
         }
 
         if let Some(value) = value.strip_prefix("smbus:") {
+            let owner_prefix = format!("{owner}:");
+            let value = value.strip_prefix(&owner_prefix).unwrap_or(value);
             return format!("{owner}:{}", sanitize_component(value));
         }
 
@@ -624,8 +636,10 @@ impl DeviceLifecycleManager {
     ) -> DeviceIdentifier {
         let backend_id = device_info.output_backend_id();
         if let Some(fingerprint) = fingerprint {
-            let value = fingerprint.0.clone();
+            let value = fingerprint.as_str().to_owned();
+            let owner_prefix = format!("{}:", Self::layout_owner_id(device_info));
             if let Some(rest) = value.strip_prefix("smbus:") {
+                let rest = rest.strip_prefix(&owner_prefix).unwrap_or(rest);
                 let (bus_path, address) = rest.rsplit_once(':').map_or((rest, 0), |(bus, raw)| {
                     let address = u16::from_str_radix(raw, 16).unwrap_or(0);
                     (bus, address)
@@ -636,6 +650,7 @@ impl DeviceLifecycleManager {
                 };
             }
             if let Some(rest) = value.strip_prefix("usb:") {
+                let rest = rest.strip_prefix(&owner_prefix).unwrap_or(rest);
                 let mut parts = rest.splitn(3, ':');
                 if let (Some(raw_vendor), Some(raw_product), Some(identity_key)) =
                     (parts.next(), parts.next(), parts.next())
@@ -663,7 +678,6 @@ impl DeviceLifecycleManager {
                 };
             }
             if let Some(rest) = value.strip_prefix("net:") {
-                let owner_prefix = format!("{}:", Self::layout_owner_id(device_info));
                 let mdns_hostname = rest
                     .strip_prefix(&owner_prefix)
                     .map(ToOwned::to_owned)
@@ -723,10 +737,10 @@ fn sanitize_component(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{DeviceLifecycleManager, LifecycleAction, ReconnectPolicy};
-    use crate::types::device::{
+    use hypercolor_types::device::{
         ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
         DeviceId, DeviceIdentifier, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-        ZoneInfo,
+        FingerprintNamespace, SegmentInfo,
     };
     use std::time::Duration;
 
@@ -740,7 +754,7 @@ mod tests {
             model: None,
             connection_type: ConnectionType::Network,
             origin: DeviceOrigin::native(driver_id, "output-backend", ConnectionType::Network),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Main".to_owned(),
                 led_count: 16,
                 topology: DeviceTopologyHint::Strip,
@@ -762,7 +776,9 @@ mod tests {
         let actions = lifecycle.on_discovered(
             info.id,
             &info,
-            Some(&DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned())),
+            Some(&DeviceFingerprint::from_persisted(
+                "net:aa:bb:cc:dd:ee:ff".to_owned(),
+            )),
         );
 
         assert_eq!(actions.len(), 1);
@@ -850,7 +866,9 @@ mod tests {
         lifecycle.on_discovered(
             info.id,
             &info,
-            Some(&DeviceFingerprint("net:office-node".to_owned())),
+            Some(&DeviceFingerprint::from_persisted(
+                "net:office-node".to_owned(),
+            )),
         );
         lifecycle
             .on_connected(info.id)
@@ -985,7 +1003,8 @@ mod tests {
             "Scoped Network Device",
             DeviceFamily::new_static("scoped-driver", "Scoped Driver"),
         );
-        let fingerprint = DeviceFingerprint("net:scoped-driver:bridge.local".to_owned());
+        let fingerprint =
+            DeviceFingerprint::from_persisted("net:scoped-driver:bridge.local".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
@@ -999,12 +1018,55 @@ mod tests {
             "Unscoped Network Device",
             DeviceFamily::new_static("net-driver", "Network Driver"),
         );
-        let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "net-driver:aa:bb:cc:dd:ee:ff");
+    }
+
+    #[test]
+    fn driver_scoped_bridge_fingerprints_use_portable_identity() {
+        let info = device_info(
+            "Renamable Bridge Device",
+            DeviceFamily::new_static("simulator", "Simulator"),
+        );
+        let fingerprint = DeviceFingerprint::from_persisted(
+            "bridge:simulator:01987654-3210-7abc-8def-0123456789ab".to_owned(),
+        );
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "simulator:01987654-3210-7abc-8def-0123456789ab");
+    }
+
+    #[test]
+    fn mismatched_bridge_fingerprints_keep_the_name_derived_layout_id() {
+        let info = device_info(
+            "Renamable Bridge Device",
+            DeviceFamily::new_static("simulator", "Simulator"),
+        );
+        let fingerprint = DeviceFingerprint::from_persisted("bridge:blocksd:LPMJW6".to_owned());
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "simulator:renamable-bridge-device");
+    }
+
+    #[test]
+    fn registry_bridge_fingerprints_keep_the_name_derived_layout_id() {
+        let info = device_info("Matrix Panel", DeviceFamily::new_static("wled", "WLED"));
+        let fingerprint = DeviceFingerprint::from_persisted(
+            "bridge:registry:01987654-3210-7abc-8def-0123456789ab".to_owned(),
+        );
+
+        let layout_id =
+            DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
+
+        assert_eq!(layout_id, "wled:matrix-panel");
     }
 
     #[test]
@@ -1015,12 +1077,122 @@ mod tests {
         );
         info.connection_type = ConnectionType::Usb;
         info.origin = DeviceOrigin::native("usb-driver", "usb", ConnectionType::Usb);
-        let fingerprint = DeviceFingerprint("usb:/dev/hidraw2".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("usb:/dev/hidraw2".to_owned());
 
         let layout_id =
             DeviceLifecycleManager::canonical_layout_device_id(&info, Some(&fingerprint));
 
         assert_eq!(layout_id, "usb-driver:dev-hidraw2");
+    }
+
+    #[test]
+    fn driver_scoped_usb_fingerprints_preserve_legacy_layout_ids() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "Razer Huntsman V2",
+            DeviceFamily::new_static("razer", "Razer"),
+        );
+        info.connection_type = ConnectionType::Usb;
+        info.origin = DeviceOrigin::native("razer", "usb", ConnectionType::Usb);
+        let fingerprint =
+            DeviceFingerprint::mint(FingerprintNamespace::Usb, "razer", "1532:026c:001-6-4-2");
+
+        let actions = lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+
+        assert!(matches!(
+            actions.as_slice(),
+            [LifecycleAction::Connect {
+                backend_id,
+                layout_device_id,
+                ..
+            }] if backend_id == "usb" && layout_device_id == "razer:1532:026c:001-6-4-2"
+        ));
+
+        lifecycle
+            .on_connected(info.id)
+            .expect("driver-scoped USB connect transition should work");
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected driver-scoped USB device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::UsbHid {
+                vendor_id: 0x1532,
+                product_id: 0x026c,
+                serial: Some(serial),
+                usb_path: None,
+            } if serial == "001-6-4-2"
+        ));
+    }
+
+    #[test]
+    fn driver_scoped_smbus_fingerprints_preserve_legacy_layout_ids() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "ASUS Aura DRAM (SMBus 0x71)",
+            DeviceFamily::new_static("asus", "ASUS"),
+        );
+        info.connection_type = ConnectionType::SmBus;
+        info.origin = DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus);
+        let fingerprint =
+            DeviceFingerprint::mint(FingerprintNamespace::SmBus, "asus", "/dev/i2c-9:71");
+
+        let actions = lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+
+        assert!(matches!(
+            actions.as_slice(),
+            [LifecycleAction::Connect {
+                backend_id,
+                layout_device_id,
+                ..
+            }] if backend_id == "smbus" && layout_device_id == "asus:dev-i2c-9:71"
+        ));
+
+        lifecycle
+            .on_connected(info.id)
+            .expect("driver-scoped SMBus connect transition should work");
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected driver-scoped SMBus device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::SmBus { bus_path, address }
+                if bus_path == "/dev/i2c-9" && *address == 0x71
+        ));
+    }
+
+    #[test]
+    fn unscoped_smbus_fingerprints_build_smbus_connection_handles() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let mut info = device_info(
+            "ASUS Aura DRAM (SMBus 0x71)",
+            DeviceFamily::new_static("asus", "ASUS"),
+        );
+        info.connection_type = ConnectionType::SmBus;
+        info.origin = DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus);
+        let fingerprint = DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:71".to_owned());
+
+        lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
+        lifecycle
+            .on_connected(info.id)
+            .expect("unscoped SMBus connect transition should work");
+        let handle = lifecycle
+            .devices
+            .get(&info.id)
+            .and_then(|managed| managed.state_machine.handle())
+            .expect("connected unscoped SMBus device should have a handle");
+
+        assert!(matches!(
+            handle.device_id(),
+            DeviceIdentifier::SmBus { bus_path, address }
+                if bus_path == "/dev/i2c-9" && *address == 0x71
+        ));
     }
 
     #[test]
@@ -1032,7 +1204,7 @@ mod tests {
         );
         info.connection_type = ConnectionType::Usb;
         info.origin = DeviceOrigin::native("usb-driver", "usb", ConnectionType::Usb);
-        let fingerprint = DeviceFingerprint("usb:1532:0099:001-6-4-4".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("usb:1532:0099:001-6-4-4".to_owned());
 
         lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
         lifecycle
@@ -1066,7 +1238,7 @@ mod tests {
         );
         info.connection_type = ConnectionType::Bridge;
         info.origin = DeviceOrigin::native("bridge-driver", "blocks", ConnectionType::Bridge);
-        let fingerprint = DeviceFingerprint("bridge:blocksd:LPMJW6".to_owned());
+        let fingerprint = DeviceFingerprint::from_persisted("bridge:blocksd:LPMJW6".to_owned());
 
         lifecycle.on_discovered(info.id, &info, Some(&fingerprint));
         lifecycle

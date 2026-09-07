@@ -82,6 +82,20 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
 /// category filtering.
 pub fn register_builtin_effects(registry: &mut EffectRegistry) {
     for metadata in builtin_metadata() {
+        let mut preset_ids = std::collections::HashSet::new();
+        if let Some(duplicate_id) = metadata
+            .presets
+            .iter()
+            .map(|preset| preset.id)
+            .find(|preset_id| !preset_ids.insert(*preset_id))
+        {
+            tracing::error!(
+                effect = %metadata.id,
+                preset_id = %duplicate_id,
+                "Skipping built-in effect with duplicate preset id"
+            );
+            continue;
+        }
         let source_path = metadata.source.path().to_path_buf();
         let entry = EffectEntry {
             metadata,
@@ -116,7 +130,6 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
     }
 }
 
-#[cfg(feature = "servo")]
 #[must_use]
 pub(crate) fn builtin_effect_stable_id(name: &str) -> hypercolor_types::effect::EffectId {
     common::builtin_effect_id(name)

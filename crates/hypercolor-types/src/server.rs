@@ -6,10 +6,10 @@
 use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// Stable identity exposed by each Hypercolor daemon instance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct ServerIdentity {
     pub instance_id: String,
     pub instance_name: String,

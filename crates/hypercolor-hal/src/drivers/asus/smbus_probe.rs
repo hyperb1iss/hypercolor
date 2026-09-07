@@ -2,12 +2,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-use std::sync::Once;
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use hypercolor_types::device::{
-    ConnectionType, DeviceFamily, DeviceIdentifier, DeviceOrigin, SMBUS_OUTPUT_BACKEND_ID, ZoneInfo,
+    ConnectionType, DeviceFamily, DeviceIdentifier, DeviceOrigin, SMBUS_OUTPUT_BACKEND_ID,
 };
 use hypercolor_types::device::{DeviceFingerprint, DeviceInfo};
 use thiserror::Error;
@@ -15,9 +13,9 @@ use thiserror::Error;
 use crate::drivers::asus::smbus::AuraSmBusProtocol;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::drivers::asus::smbus::{encode_ene_transaction, ene_dram_remap_sequence};
-use crate::protocol::{Protocol, ProtocolError};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use crate::protocol::{ProtocolZone, ResponseStatus};
+use crate::protocol::ResponseStatus;
+use crate::protocol::{Protocol, ProtocolError};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
 
@@ -28,13 +26,14 @@ use tracing::warn;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use tracing::{debug, trace};
 
+use crate::transport::TransportError;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+use crate::transport::{TransportIntent, TransportPlatform, resolve_transport};
+
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::transport::Transport;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::transport::smbus::SmBusTransport;
-
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-static SMBUS_UNAVAILABLE_WARN_ONCE: Once = Once::new();
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 const ASUS_MOTHERBOARD_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
@@ -86,6 +85,8 @@ pub enum AuraSmBusProbeError {
     ReadDeviceRoot(#[source] std::io::Error),
     #[error("ASUS Aura SMBus protocol error: {0}")]
     Protocol(#[from] ProtocolError),
+    #[error(transparent)]
+    Transport(#[from] TransportError),
     #[error("DRAM remap address 0x{address:02X} exceeds u8 range")]
     DramRemapAddress { address: u16 },
     #[error("DRAM slot index {slot_index} exceeds u8 range")]
@@ -264,7 +265,7 @@ pub async fn probe_asus_smbus_devices_system() -> Result<Vec<SmBusProbe>> {
 )]
 pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
     let _ = dev_root;
-    Ok(Vec::new())
+    unsupported_smbus_platform()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -273,17 +274,22 @@ pub async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmB
     reason = "the scanner uses one async probe interface across supported and excluded platforms"
 )]
 pub async fn probe_asus_smbus_devices_system() -> Result<Vec<SmBusProbe>> {
-    SMBUS_UNAVAILABLE_WARN_ONCE.call_once(|| {
-        tracing::warn!(
-            "ASUS Aura SMBus discovery is only implemented on Linux and Windows; RGB RAM and SMBus motherboard controllers will not be discovered"
-        );
-    });
-    Ok(Vec::new())
+    unsupported_smbus_platform()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn unsupported_smbus_platform() -> Result<Vec<SmBusProbe>> {
+    resolve_transport(
+        TransportIntent::I2cSmBus { address: 0x40 },
+        TransportPlatform::CURRENT,
+    )
+    .map(|_| Vec::new())
+    .map_err(Into::into)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
-    let hub_present = bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS);
+    let hub_present = bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS).await;
     if hub_present {
         debug!(
             bus_path,
@@ -298,7 +304,7 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
         );
     }
 
-    let occupied_addresses = probe_occupied_dram_addresses(bus_path);
+    let occupied_addresses = probe_occupied_dram_addresses(bus_path).await;
     trace!(
         bus_path,
         occupied_addresses = ?occupied_addresses,
@@ -314,7 +320,7 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
         let mut next_address_index = 0_usize;
 
         for slot_index in 0..ASUS_DRAM_REMAP_SLOT_COUNT {
-            if !bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
+            if !bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS).await {
                 break;
             }
 
@@ -529,7 +535,7 @@ async fn probe_with_transport(
         bus_path: bus_path.to_owned(),
         address,
     };
-    let fingerprint = identifier.fingerprint();
+    let fingerprint = identifier.fingerprint("asus");
     let firmware_name = protocol.firmware_name();
     let info = build_device_info(
         controller_kind,
@@ -647,22 +653,28 @@ pub fn resolve_parent_pci_id_from_sysfs_path(path: &Path) -> Option<(u16, u16)> 
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn probe_occupied_dram_addresses(bus_path: &str) -> HashSet<u16> {
-    ASUS_DRAM_SMBUS_ADDRESSES
-        .iter()
-        .copied()
-        .filter(|&address| bus_address_quick_responds(bus_path, address))
-        .collect()
+async fn probe_occupied_dram_addresses(bus_path: &str) -> HashSet<u16> {
+    let mut occupied_addresses = HashSet::new();
+    for &address in ASUS_DRAM_SMBUS_ADDRESSES {
+        if bus_address_quick_responds(bus_path, address).await {
+            occupied_addresses.insert(address);
+        }
+    }
+    occupied_addresses
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn bus_address_responds(bus_path: &str, address: u16) -> bool {
-    SmBusTransport::probe_presence(bus_path, address).unwrap_or(false)
+async fn bus_address_responds(bus_path: &str, address: u16) -> bool {
+    SmBusTransport::probe_presence(bus_path, address)
+        .await
+        .unwrap_or(false)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn bus_address_quick_responds(bus_path: &str, address: u16) -> bool {
-    SmBusTransport::probe_quick_write(bus_path, address).unwrap_or(false)
+async fn bus_address_quick_responds(bus_path: &str, address: u16) -> bool {
+    SmBusTransport::probe_quick_write(bus_path, address)
+        .await
+        .unwrap_or(false)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -706,11 +718,7 @@ fn build_device_info(
     address: u16,
     device_id: hypercolor_types::device::DeviceId,
 ) -> DeviceInfo {
-    let zones = protocol
-        .zones()
-        .into_iter()
-        .map(protocol_zone_to_zone_info)
-        .collect::<Vec<_>>();
+    let segments = protocol.zones();
 
     DeviceInfo {
         id: device_id,
@@ -724,19 +732,8 @@ fn build_device_info(
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", SMBUS_OUTPUT_BACKEND_ID, ConnectionType::SmBus)
             .with_protocol_id(ASUS_AURA_SMBUS_PROTOCOL_ID),
-        zones,
+        segments,
         firmware_version: firmware_name,
         capabilities: protocol.capabilities(),
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn protocol_zone_to_zone_info(zone: ProtocolZone) -> ZoneInfo {
-    ZoneInfo {
-        name: zone.name,
-        led_count: zone.led_count,
-        topology: zone.topology,
-        color_format: zone.color_format,
-        layout_hint: zone.layout_hint,
     }
 }

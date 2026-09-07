@@ -10,25 +10,30 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DiscoveryConnectBehavior,
-    LifecycleAction,
-};
+use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, LifecycleAction};
 use hypercolor_core::input::{
-    InputData, InputManager, InputSource, SourceIssue, SourceKind, SourceState, SourceStatusHandle,
-    SourceStatusReporter,
+    InputData, InputManager, InputSource, InteractionSource, InteractionSourceRole,
+    ManagedSourceKey, ManagedSourceRole, SourceIssue, SourceKind, SourceRoleBinding, SourceState,
+    SourceStatusHandle, SourceStatusReporter, SourceSwapTarget,
 };
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, DiscoveryConnectBehavior};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
+    DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
 };
 use tokio::sync::Mutex;
+
+fn register_test_source(manager: &mut InputManager, source: ManagedSourceRole) {
+    manager
+        .add_source(source)
+        .expect("lifecycle fixture source should match its declared role");
+}
 
 // ── LED color pipeline helpers (mirrors prepare_output_for_leds) ────────────
 
@@ -272,6 +277,16 @@ impl InputSource for FaultInputSource {
     }
 }
 
+impl SourceRoleBinding for FaultInputSource {
+    type Role = InteractionSourceRole;
+}
+
+impl InteractionSource for FaultInputSource {}
+
+fn managed_fault_source(source: FaultInputSource) -> ManagedSourceRole {
+    ManagedSourceRole::interaction(Box::new(source))
+}
+
 fn wait_for_worker_exit(probe: &InputLifecycleProbe) {
     probe.exit_now.store(true, Ordering::SeqCst);
     std::thread::sleep(Duration::from_millis(25));
@@ -287,7 +302,7 @@ fn readiness_timeout_self_rolls_back_and_late_ready_is_fenced() {
     );
     let status = source.status.handle();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, managed_fault_source(source));
 
     assert!(manager.start_all().is_err());
     assert_eq!(probe.stops.load(Ordering::SeqCst), 0);
@@ -305,7 +320,7 @@ fn worker_exit_and_panic_transition_status_before_sampling_data() {
         let source = FaultInputSource::new("post_ready_exit", fault, Arc::clone(&probe));
         let status = source.status.handle();
         let mut manager = InputManager::new();
-        manager.add_source(Box::new(source));
+        register_test_source(&mut manager, managed_fault_source(source));
         manager.start_all().expect("fault worker reaches readiness");
 
         wait_for_worker_exit(&probe);
@@ -325,16 +340,22 @@ fn partial_graph_startup_stops_every_source_that_entered_starting() {
     let first = Arc::new(InputLifecycleProbe::default());
     let failing = Arc::new(InputLifecycleProbe::default());
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FaultInputSource::new(
-        "first",
-        InputWorkerFault::Stable,
-        Arc::clone(&first),
-    )));
-    manager.add_source(Box::new(FaultInputSource::new(
-        "failing",
-        InputWorkerFault::FailStart,
-        Arc::clone(&failing),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_fault_source(FaultInputSource::new(
+            "first",
+            InputWorkerFault::Stable,
+            Arc::clone(&first),
+        )),
+    );
+    register_test_source(
+        &mut manager,
+        managed_fault_source(FaultInputSource::new(
+            "failing",
+            InputWorkerFault::FailStart,
+            Arc::clone(&failing),
+        )),
+    );
 
     assert!(manager.start_all().is_err());
     assert_eq!(first.stops.load(Ordering::SeqCst), 1);
@@ -345,11 +366,14 @@ fn partial_graph_startup_stops_every_source_that_entered_starting() {
 fn repeated_stop_is_idempotent_for_worker_ownership() {
     let probe = Arc::new(InputLifecycleProbe::default());
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(FaultInputSource::new(
-        "repeat_stop",
-        InputWorkerFault::Stable,
-        Arc::clone(&probe),
-    )));
+    register_test_source(
+        &mut manager,
+        managed_fault_source(FaultInputSource::new(
+            "repeat_stop",
+            InputWorkerFault::Stable,
+            Arc::clone(&probe),
+        )),
+    );
     manager.start_all().expect("fault worker starts");
 
     manager.stop_all();
@@ -363,20 +387,28 @@ fn replacement_stops_worker_and_fences_every_late_publication() {
     let source = FaultInputSource::new("replaced", InputWorkerFault::Stable, Arc::clone(&probe));
     let status = source.status.handle();
     let mut manager = InputManager::new();
-    manager.add_source(Box::new(source));
+    register_test_source(&mut manager, managed_fault_source(source));
     manager.start_all().expect("source starts");
     let accepted_before = probe.accepted_publications.load(Ordering::SeqCst);
 
-    let Ok(retired) = manager.replace_source(
-        0,
-        Box::new(FaultInputSource::new(
-            "replacement",
-            InputWorkerFault::Stable,
-            Arc::new(InputLifecycleProbe::default()),
-        )),
-    ) else {
-        panic!("registered source is replaced");
-    };
+    let plan = manager
+        .plan_source_swap(
+            ManagedSourceKey::Interaction,
+            SourceSwapTarget::Present { running: false },
+        )
+        .expect("registered source has one exact replacement target");
+    let mut replacement = Some(managed_fault_source(FaultInputSource::new(
+        "replacement",
+        InputWorkerFault::Stable,
+        Arc::new(InputLifecycleProbe::default()),
+    )));
+    let mut prepared = plan
+        .prepare(&mut replacement)
+        .expect("replacement binds to the planned role");
+    let retirement = manager
+        .commit_source_swap(&mut prepared)
+        .expect("replacement graph fences remain current");
+    retirement.retire();
     std::thread::sleep(Duration::from_millis(20));
 
     assert!(status.snapshot().retired);
@@ -385,7 +417,6 @@ fn replacement_stops_worker_and_fences_every_late_publication() {
         probe.accepted_publications.load(Ordering::SeqCst),
         accepted_before
     );
-    drop(retired);
 }
 
 #[allow(clippy::similar_names)]
@@ -427,7 +458,7 @@ fn apply_led_perceptual_compensation(mut color: [f32; 3]) -> [f32; 3] {
 
 struct RecordingBackend {
     expected_device_id: DeviceId,
-    connected: bool,
+    connected: AtomicBool,
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     fail_connect_attempts: Arc<AtomicUsize>,
 }
@@ -440,7 +471,7 @@ impl RecordingBackend {
     ) -> Self {
         Self {
             expected_device_id,
-            connected: false,
+            connected: AtomicBool::new(false),
             writes,
             fail_connect_attempts,
         }
@@ -457,43 +488,53 @@ impl DeviceBackend for RecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![device_info(
-            self.expected_device_id,
-            "Lifecycle Device",
-        )])
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
         let remaining = self.fail_connect_attempts.load(Ordering::Relaxed);
         if remaining > 0 {
             self.fail_connect_attempts.fetch_sub(1, Ordering::Relaxed);
-            bail!("simulated connect failure");
+            return Err(DeviceError::connection(id, "simulated connect failure"));
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
-        if !self.connected {
-            bail!("disconnect called while not connected");
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
-        if !self.connected {
-            bail!("write while disconnected");
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
         self.writes.lock().await.push(colors.to_vec());
         Ok(())
@@ -509,7 +550,7 @@ fn device_info(id: DeviceId, name: &str) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 4,
             topology: DeviceTopologyHint::Strip,
@@ -563,7 +604,6 @@ fn make_layout(layout_device_id: &str) -> SpatialLayout {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -639,13 +679,15 @@ async fn lifecycle_discovery_connect_and_frame_write() {
 
     let backend = RecordingBackend::new(device_id, Arc::clone(&writes), fail_connect_attempts);
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let mut lifecycle = DeviceLifecycleManager::new();
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:desk-strip".to_owned(),
+        )),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;
 
@@ -658,7 +700,7 @@ async fn lifecycle_discovery_connect_and_frame_write() {
         zone_id: "zone_main".into(),
         colors: vec![[255, 0, 128]; 4],
     }];
-    let stats = manager.write_frame(&frame, &layout).await;
+    let stats = manager.write_frame(&frame, &layout);
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 4);
     assert!(stats.errors.is_empty());
@@ -675,7 +717,7 @@ fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Studio Strip");
-    let fingerprint = DeviceFingerprint("net:wled:wled-studio.local".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:wled:wled-studio.local".to_owned());
 
     let deferred_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -708,7 +750,7 @@ fn repeated_auto_discovery_suppresses_duplicate_connect_while_in_flight() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     let first_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -759,7 +801,7 @@ fn rediscovered_known_device_can_retry_stale_in_flight_connect() {
         DeviceLifecycleManager::new().with_connect_in_flight_stale_after(Duration::ZERO);
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     let first_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -844,7 +886,7 @@ fn rediscovered_reconnecting_device_connects_without_waiting_for_retry_timer() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Push 2");
-    let fingerprint = DeviceFingerprint("usb:2982:1967:001-12".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("usb:2982:1967:001-12".to_owned());
 
     lifecycle.on_discovered_with_behavior(
         device_id,
@@ -897,7 +939,7 @@ fn deferred_discovery_disconnects_connected_device() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let device_id = DeviceId::new();
     let info = device_info(device_id, "Desk Strip");
-    let fingerprint = DeviceFingerprint("mock:desk-strip".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("mock:desk-strip".to_owned());
 
     let initial_actions = lifecycle.on_discovered_with_behavior(
         device_id,
@@ -985,12 +1027,16 @@ fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         first_id,
         &first,
-        Some(&DeviceFingerprint("usb:16d0:1294:1-3.3".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "usb:16d0:1294:1-3.3".to_owned(),
+        )),
     );
     let _ = lifecycle.on_discovered(
         second_id,
         &second,
-        Some(&DeviceFingerprint("usb:16d0:1294:1-3.4".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "usb:16d0:1294:1-3.4".to_owned(),
+        )),
     );
 
     assert_eq!(
@@ -1012,7 +1058,9 @@ fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
     let _ = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "smbus:/dev/i2c-9:40".to_owned(),
+        )),
     );
 
     assert_eq!(
@@ -1030,7 +1078,9 @@ fn runtime_deactivate_disconnects_without_disabling_the_device() {
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:desk-strip".to_owned(),
+        )),
     );
     assert!(
         actions
@@ -1080,13 +1130,15 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         Arc::clone(&fail_connect_attempts),
     );
     let mut manager = BackendManager::new();
-    manager.register_backend(Box::new(backend));
+    manager.register_backend(Arc::new(backend));
 
     let mut lifecycle = DeviceLifecycleManager::new();
     let actions = lifecycle.on_discovered(
         device_id,
         &info,
-        Some(&DeviceFingerprint("mock:case-fan".to_owned())),
+        Some(&DeviceFingerprint::from_persisted(
+            "mock:case-fan".to_owned(),
+        )),
     );
     apply_lifecycle_actions(&mut manager, &mut lifecycle, actions).await;
 
@@ -1100,7 +1152,7 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         zone_id: "zone_main".into(),
         colors: vec![[10, 20, 30]; 4],
     }];
-    manager.write_frame(&first_frame, &layout).await;
+    manager.write_frame(&first_frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     // Simulate one reconnect failure before eventual recovery.
@@ -1115,7 +1167,7 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         zone_id: "zone_main".into(),
         colors: vec![[220, 120, 20]; 4],
     }];
-    manager.write_frame(&second_frame, &layout).await;
+    manager.write_frame(&second_frame, &layout);
     tokio::time::sleep(Duration::from_millis(40)).await;
 
     let writes = writes.lock().await.clone();

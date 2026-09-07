@@ -60,6 +60,7 @@ impl OpenRgbClient {
             .await
             .map_err(|_| OpenRgbError::Timeout {
                 operation: "connect",
+                after: config.connect_timeout,
             })??;
         stream.set_nodelay(true)?;
         let mut client = Self {
@@ -267,7 +268,10 @@ impl OpenRgbClient {
         let bytes = encode_client_packet(device_index, packet_id, payload)?;
         timeout(self.config.write_timeout, self.stream.write_all(&bytes))
             .await
-            .map_err(|_| OpenRgbError::Timeout { operation: "write" })??;
+            .map_err(|_| OpenRgbError::Timeout {
+                operation: "write",
+                after: self.config.write_timeout,
+            })??;
         Ok(())
     }
 
@@ -297,7 +301,10 @@ impl OpenRgbClient {
             let mut buf = [0_u8; 4096];
             let read = timeout(self.config.read_timeout, self.stream.read(&mut buf))
                 .await
-                .map_err(|_| OpenRgbError::Timeout { operation: "read" })??;
+                .map_err(|_| OpenRgbError::Timeout {
+                    operation: "read",
+                    after: self.config.read_timeout,
+                })??;
             if read == 0 {
                 return Err(OpenRgbError::ConnectionClosed);
             }

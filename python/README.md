@@ -86,12 +86,12 @@ from hypercolor import HypercolorClient
 async def main() -> None:
     async with HypercolorClient() as client:
         effects = await client.get_effects()
-        aurora = next(effect for effect in effects if effect.name == "Aurora")
+        borealis = next(effect for effect in effects if effect.name == "Borealis")
 
         await client.apply_effect(
-            aurora.id,
-            controls={"speed": 72, "palette": "silkcircuit"},
-            transition={"type": "fade", "duration_ms": 400},
+            borealis.id,
+            controls={"speed": 5, "palette": "SilkCircuit"},
+            transition="cut",
         )
 
 
@@ -100,8 +100,8 @@ asyncio.run(main())
 
 ## Control Surfaces
 
-Control surfaces are dynamic device and driver settings. The generated OpenAPI
-models stay private; the public client accepts normal Python values.
+Control surfaces are dynamic device and driver settings. Request helpers accept
+normal Python values and return the canonical API resource contracts.
 
 ```python
 import asyncio
@@ -114,16 +114,15 @@ async def main() -> None:
         surface = await client.get_device_controls("keyboard")
 
         await client.set_control_values(
-            surface.id,
+            surface.surface_id,
             {
                 "enabled": True,
-                "brightness": 88,
+                "brightness": 0.88,
             },
-            expected_revision=surface.revision,
         )
 
         await client.invoke_control_action(
-            surface.id,
+            surface.surface_id,
             "identify",
             {"duration_ms": 750},
         )

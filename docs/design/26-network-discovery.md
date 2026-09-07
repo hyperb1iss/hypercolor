@@ -1,16 +1,29 @@
 # 26 — Multi-Server Network Discovery & Remote Access
 
+> **API status:** Historical design snapshot. The unified `/api/v1/system`
+> resource and the route inventory in
+> [Spec 78](../specs/78-api-resource-model.md) supersede the endpoint examples
+> in this document.
+
+**Status:** Shipped. Verified 2026-08-25 at `7620eae44`: mDNS advertisement lives
+in `crates/hypercolor-daemon/src/mdns.rs`, the `[network]` config section is
+`NetworkConfig` on the root config, API key authentication is in the daemon's
+security middleware, server identity rides `/api/v1/system` and the WebSocket
+hello, and client-side discovery is the `hypercolor servers` CLI command. The
+`GET /api/v1/server` endpoint this document specifies was retired by the Spec 78
+resource model, which is what the API status banner above covers.
+
 ## Overview
 
 Enable Hypercolor daemons to advertise themselves on the local network via
-mDNS/DNS-SD, and allow the tray applet and CLI to discover and connect to
-any instance — not just localhost. Extend existing security middleware with
+mDNS/DNS-SD, and allow the desktop app and CLI to discover and connect to
+any instance, not just localhost. Extend existing security middleware with
 network-scoped API key authentication for remote access.
 
 ## Goals
 
 1. Daemon publishes `_hypercolor._tcp.local.` mDNS service record on startup
-2. Tray applet discovers all Hypercolor instances on the network and lets the
+2. Desktop app discovers all Hypercolor instances on the network and lets the
    user switch between them
 3. CLI can discover instances via `hypercolor servers` and connect to any by name/host
 4. Remote access works when daemon binds to `0.0.0.0` (opt-in via config)
@@ -180,7 +193,7 @@ endpoints (`/api/v1/config*`) must redact the following fields in responses:
 > won't expose it. But if env var values are ever surfaced in a debug/status
 > endpoint, they must be redacted.
 
-**Rejected requests** use the existing `ApiError::unauthorized()` envelope:
+**Rejected requests** use the standard `DomainError::unauthorized()` envelope:
 
 ```json
 {
@@ -247,7 +260,7 @@ Returns server identity wrapped in the standard `ApiResponse` envelope:
 ### WebSocket hello — add `server` field (additive)
 
 New `server` field is additive; existing clients with permissive deserializers
-(including the tray applet's `WsHello` struct) will ignore unknown fields.
+(including the desktop app's WebSocket hello decoder) will ignore unknown fields.
 
 ```json
 {
@@ -371,9 +384,9 @@ the same `ServerIdentity` fields. Additive change — no existing fields removed
 > Named `hypercolor servers discover` to avoid confusion with existing
 > `hypercolor devices discover` (which scans for LED hardware, not daemon instances).
 
-#### Task 10: Multi-server tray applet
+#### Task 10: Multi-server app tray
 
-**Files:** `crates/hypercolor-tray/src/daemon.rs`, `crates/hypercolor-tray/src/state.rs`, `crates/hypercolor-tray/src/menu.rs`
+**Files:** `crates/hypercolor-app/src/daemon_client.rs`, `crates/hypercolor-app/src/state.rs`, `crates/hypercolor-app/src/tray/menu.rs`
 
 - Add `servers: Vec<DiscoveredServer>`, `active_server: Option<usize>` to `AppState`
 - Add `TrayCommand::SwitchServer(usize)` and `TrayCommand::RefreshServers`
@@ -389,7 +402,7 @@ the same `ServerIdentity` fields. Additive change — no existing fields removed
   reconnect loop), and re-fetches state from the new server
 - API key: read from `<config_dir>/hypercolor/servers.toml` (platform-resolved),
   show "Key required" label if server needs auth and no key is stored
-- Verify: `cargo check -p hypercolor-tray`, manual test with multiple daemons
+- Verify: `cargo check -p hypercolor-app`, manual test with multiple daemons
 
 ### Wave 4: Tests & Docs
 
@@ -406,20 +419,20 @@ the same `ServerIdentity` fields. Additive change — no existing fields removed
 **Files:** `crates/hypercolor-daemon/tests/auth_tests.rs`
 
 - Test: no key configured -> all requests pass
-- Test: key configured -> missing key returns 401 with `ApiError` envelope
+- Test: key configured -> missing key returns 401 with the canonical error envelope
 - Test: key configured -> correct key returns 200
 - Test: exempt endpoints (`/health`, `/api/v1/server`) pass without key
 - Test: `?token=` query param works (NOT `?api_key=`)
 - Verify: `cargo test -p hypercolor-daemon auth`
 
-#### Task 13: Update tray state tests
+#### Task 13: Update app tray state tests
 
-**Files:** `crates/hypercolor-tray/tests/state_tests.rs`
+**Files:** `crates/hypercolor-app/tests/state_tests.rs`
 
 - Test server identity deserialization in WS hello (additive field, backward compat)
 - Test server list management and `SwitchServer` command
 - Test `servers.toml` loading from platform config dir
-- Verify: `cargo test -p hypercolor-tray`
+- Verify: `cargo test -p hypercolor-app`
 
 ---
 

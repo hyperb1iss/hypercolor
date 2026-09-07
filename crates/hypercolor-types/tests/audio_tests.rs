@@ -1,6 +1,7 @@
 use hypercolor_types::audio::{
     AudioData, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
 };
+use hypercolor_types::config::AudioConfig;
 
 // ─── AudioData::silence ───────────────────────────────────────────────
 
@@ -231,4 +232,59 @@ fn source_type_json_round_trip() {
             serde_json::from_str(&json).expect("deserialize AudioSourceType");
         assert_eq!(variant, &restored);
     }
+}
+
+// ─── AudioConfig projection ───────────────────────────────────────────
+
+#[test]
+fn pipeline_projection_maps_device_names_to_sources() {
+    let cases = [
+        ("default", AudioSourceType::SystemMonitor),
+        ("  Default ", AudioSourceType::SystemMonitor),
+        ("microphone", AudioSourceType::Microphone),
+        ("none", AudioSourceType::None),
+        (
+            "alsa_output.monitor",
+            AudioSourceType::Named("alsa_output.monitor".into()),
+        ),
+    ];
+
+    for (device, expected) in cases {
+        let config = AudioConfig {
+            device: device.to_owned(),
+            ..AudioConfig::default()
+        };
+        assert_eq!(AudioPipelineConfig::from(&config).source, expected);
+    }
+}
+
+#[test]
+fn pipeline_projection_silences_a_disabled_section() {
+    let config = AudioConfig {
+        enabled: false,
+        device: "microphone".to_owned(),
+        ..AudioConfig::default()
+    };
+
+    assert_eq!(
+        AudioPipelineConfig::from(&config).source,
+        AudioSourceType::None
+    );
+}
+
+#[test]
+fn pipeline_projection_clamps_tuning_into_pipeline_ranges() {
+    let config = AudioConfig {
+        smoothing: 4.0,
+        noise_gate: 0.0,
+        beat_sensitivity: 0.0,
+        ..AudioConfig::default()
+    };
+
+    let pipeline = AudioPipelineConfig::from(&config);
+
+    assert!((pipeline.smoothing - 1.0).abs() < f32::EPSILON);
+    assert!((pipeline.noise_floor - (-120.0)).abs() < 0.001);
+    assert!((pipeline.beat_sensitivity - 0.01).abs() < f32::EPSILON);
+    assert!((pipeline.gain - 1.0).abs() < f32::EPSILON);
 }

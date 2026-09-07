@@ -118,6 +118,8 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7

@@ -20,7 +20,7 @@ fn main() {
     {
         use std::time::{Duration, Instant};
 
-        use hypercolor_core::input::screen::{CaptureConfig, ScreenCaptureInput};
+        use hypercolor_core::input::screen::consumer::{CaptureConfig, ScreenCaptureInput};
         use hypercolor_core::input::{InputData, InputSource};
         use hypercolor_windows_capture::DesktopDuplicator;
 
@@ -70,7 +70,7 @@ fn main() {
             };
 
             let descriptor = surface.descriptor();
-            let canvas = hypercolor_core::types::canvas::Canvas::from_published_surface(surface);
+            let canvas = hypercolor_types::canvas::Canvas::from_published_surface(surface);
             let bytes = canvas.as_rgba_bytes().to_vec();
             println!(
                 "canvas_downscale: {}x{} ({} bytes), source was {}x{}",

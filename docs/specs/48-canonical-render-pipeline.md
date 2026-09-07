@@ -7,6 +7,17 @@
 **Supersedes:** Spec 45 as the canonical render-pipeline target
 **Related:** Specs 36, 42, 47; `docs/design/13-performance.md`
 
+> **Vocabulary warning (2026-08-25):** this spec is written throughout in the retired
+> "render group" vocabulary. Those terms are now banned in shared crates and the SDK,
+> and a workspace test enforces it:
+> `shared_crates_and_sdk_keep_zone_vocabulary_canonical`
+> (`crates/hypercolor-daemon/tests/internal_api_surface_tests.rs`, mirrored in
+> `crates/hypercolor-core/tests/bus_tests.rs`) fails on `render_group`, `RenderGroup`,
+> `render_groups`, `groups_revision`, `active_groups`, `route_for_group`, and others.
+> The shipped noun is **zone**. Code written from this document's naming will fail
+> `just test` on the first run. The pipeline architecture it describes is broadly
+> current; only the vocabulary is retired.
+
 ---
 
 ## 1. Overview

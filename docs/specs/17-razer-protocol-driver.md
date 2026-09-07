@@ -2,7 +2,9 @@
 
 > Native USB HID driver for Razer Chroma peripherals. Byte-level packet formats, protocol generation dispatch, matrix addressing, and clean-room integration with the HAL.
 
-**Status:** Draft
+**Status:** Implemented (status corrected 2026-08-25). The 90-byte report, protocol
+dispatch, CRC, and device catalog all ship in
+`crates/hypercolor-hal/src/drivers/razer/`.
 **Crate:** `hypercolor-hal`
 **Module path:** `hypercolor_hal::drivers::razer`
 **Author:** Nova

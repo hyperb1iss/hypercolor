@@ -4,18 +4,16 @@ description = "Remove Hypercolor cleanly: stop the daemon, remove binaries, udev
 weight = 160
 +++
 
-# Uninstall & reset
-
 Hypercolor touches several system integration points on install: binaries, a
 systemd user service or launchd agent, udev rules, desktop autostart, and a few
 data directories. A clean uninstall needs to reach all of them. This page walks
 through the process for each install method and platform.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 If you want to keep your lighting setup and reinstall a newer version, run the
 installer again: it is idempotent and will overwrite the binaries and service
 unit without touching your configuration.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -104,12 +102,15 @@ sets up), run:
 Optional flags:
 
 ```
---system    Also remove udev rules (/etc/udev/rules.d/99-hypercolor.rules)
-            and i2c-dev module persistence (/etc/modules-load.d/i2c-dev.conf).
+--system    Also remove both udev rules files (99-hypercolor.rules and
+            70-hypercolor-input.rules in /etc/udev/rules.d/) and i2c-dev
+            module persistence (/etc/modules-load.d/i2c-dev.conf).
             Both require sudo.
 
 --purge     Implies --system; also deletes ~/.config/hypercolor and
-            ~/.cache/hypercolor.
+            ~/.cache/hypercolor. It leaves ~/.local/share/hypercolor and
+            ~/.local/state/hypercolor in place; remove those by hand if
+            you want a full wipe (see "Remove configuration and cache").
 ```
 
 Full purge example:
@@ -144,7 +145,6 @@ rm -f ~/.config/systemd/user/hypercolor.service
 rm -f ~/.local/bin/hypercolor \
        ~/.local/bin/hypercolor-daemon \
        ~/.local/bin/hypercolor-app \
-       ~/.local/bin/hypercolor-tray \
        ~/.local/bin/hypercolor-tui \
        ~/.local/bin/hypercolor-open
 ```
@@ -291,7 +291,6 @@ The launchd label is `tech.hyperbliss.hypercolor`. Logs are written to
 rm -f ~/.local/bin/hypercolor \
        ~/.local/bin/hypercolor-daemon \
        ~/.local/bin/hypercolor-app \
-       ~/.local/bin/hypercolor-tray \
        ~/.local/bin/hypercolor-tui \
        ~/.local/bin/hypercolor-open
 ```
@@ -308,22 +307,23 @@ rm -rf ~/Library/Logs/hypercolor
 ## Remove configuration and cache
 
 Both install scripts preserve config by default to protect your lighting setup,
-profiles, and scenes. When you are ready to wipe it:
+connection profiles, and scenes. When you are ready to wipe it:
 
 | Platform | Directory | Contents |
 |---|---|---|
 | Linux | `~/.config/hypercolor/` | `hypercolor.toml`, `cli.toml` connection profiles |
 | Linux | `~/.local/share/hypercolor/` | Bundled UI, effects, logs, first-run marker |
+| Linux | `~/.local/state/hypercolor/` | Runtime session, device identity, and output state |
 | Linux | `~/.cache/hypercolor/` | Servo runtime cache, transient state |
 | Windows | `%APPDATA%\hypercolor\` | `hypercolor.toml`, `cli.toml` connection profiles |
 | Windows | `%LOCALAPPDATA%\hypercolor\` | Bundled UI, effects, logs, first-run marker |
-| macOS | `~/Library/Application Support/hypercolor/` | Config, profiles |
+| macOS | `~/Library/Application Support/hypercolor/` | Config, scenes, effects, logs |
 | macOS | `~/Library/Logs/hypercolor/` | Daemon log output |
 
 Linux purge:
 
 ```bash
-rm -rf ~/.config/hypercolor ~/.local/share/hypercolor ~/.cache/hypercolor
+rm -rf ~/.config/hypercolor ~/.local/share/hypercolor ~/.local/state/hypercolor ~/.cache/hypercolor
 ```
 
 macOS purge:

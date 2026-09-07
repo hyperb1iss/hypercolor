@@ -13,8 +13,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use hypercolor_leptos_ext::ws::registry::CanvasFormat;
+
 use super::preview_encode::{PreviewJpegEncoder, PreviewRawEncoder};
-use super::protocol::CanvasFormat;
 use super::relays::PreviewOutboundSender;
 use crate::interactive_preview::InteractivePreviewFrame;
 use crate::preview_runtime::PreviewPixelFormat;

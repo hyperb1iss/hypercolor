@@ -24,7 +24,7 @@ export default canvas(
             default: 'Horizontal',
             group: 'Motion',
         }),
-        speed: num('Speed', [-100, 100], 48, { group: 'Motion' }),
+        speed: num('Speed', [-100, 100], 48, { group: 'Motion', normalize: 'none' }),
         density: num('Band Density', [20, 220], 100, { group: 'Shape' }),
         saturation: num('Saturation', [0, 100], 100, { group: 'Colors' }),
         brightness: num('Brightness', [0, 100], 75, { group: 'Output' }),

@@ -1,21 +1,43 @@
 //! Device API contracts — `/api/v1/devices/*`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
-use crate::api::common::Pagination;
+use crate::api::envelope::ListResponse;
+use crate::attachment::{ComponentBinding, ComponentSlot, ComponentSuggestedZone};
 use crate::device::{DeviceOrigin, DriverPresentation};
-use crate::pairing::DeviceAuthSummary;
+use crate::event::DeviceRef;
+use crate::pairing::{DeviceAuthSummary, PairDeviceStatus};
+use crate::scene::DisplayRotation;
 
-/// Response for `GET /api/v1/devices`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct DeviceListResponse {
-    pub items: Vec<DeviceSummary>,
-    pub pagination: Pagination,
+/// Query parameters for `GET /api/v1/devices`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema, utoipa::IntoParams))]
+pub struct ListDevicesQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
+    /// Free-text filter over device name and model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+    /// Comma-separated summary expansions. The only supported value is
+    /// `attachments`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include: Option<String>,
 }
 
+/// Response for `GET /api/v1/devices`.
+pub type DeviceListResponse = ListResponse<DeviceSummary>;
+
 /// One device in the list/detail responses.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceSummary {
     pub id: String,
     pub layout_device_id: String,
@@ -24,6 +46,9 @@ pub struct DeviceSummary {
     pub presentation: DriverPresentation,
     pub status: String,
     pub brightness: u8,
+    /// How the panel is mounted; present only for display-capable devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rotation: Option<DisplayRotation>,
     #[serde(default)]
     pub firmware_version: Option<String>,
     #[serde(default)]
@@ -32,11 +57,14 @@ pub struct DeviceSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<DeviceAuthSummary>,
     #[serde(default)]
-    pub zones: Vec<ZoneSummary>,
+    pub segments: Vec<SegmentSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<DeviceComponentsResponse>,
 }
 
 /// Transport details for one device.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceConnectionSummary {
     #[serde(default)]
     pub transport: String,
@@ -50,21 +78,23 @@ pub struct DeviceConnectionSummary {
     pub hostname: Option<String>,
 }
 
-/// One LED zone of a device (hardware topology, not scene render groups).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
-pub struct ZoneSummary {
+/// One LED segment of a device (hardware topology, not scene render zones).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SegmentSummary {
     pub id: String,
     pub name: String,
     pub led_count: u32,
     pub topology: String,
     #[serde(default)]
-    pub topology_hint: Option<ZoneTopologySummary>,
+    pub topology_hint: Option<SegmentTopologySummary>,
 }
 
-/// Structured topology hint for a device zone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// Structured topology hint for a device segment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ZoneTopologySummary {
+pub enum SegmentTopologySummary {
     Strip,
     Matrix {
         rows: u32,
@@ -83,7 +113,8 @@ pub enum ZoneTopologySummary {
 }
 
 /// Request body for `PATCH /api/v1/devices/{id}`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct UpdateDeviceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -91,10 +122,25 @@ pub struct UpdateDeviceRequest {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness: Option<u8>,
+    /// How the panel is mounted; accepted only for display-capable devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rotation: Option<DisplayRotation>,
+}
+
+/// Response for `DELETE /api/v1/devices/{id}`.
+///
+/// `id` echoes the resolved device id, which may differ from the name or
+/// prefix the caller addressed the device by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DeleteDeviceResponse {
+    pub id: String,
+    pub removed: bool,
 }
 
 /// Request body for `POST /api/v1/devices/{id}/identify`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct IdentifyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
@@ -102,56 +148,229 @@ pub struct IdentifyRequest {
     pub color: Option<String>,
 }
 
-/// Response for `GET /api/v1/devices/bindings`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct DeviceBindingsResponse {
-    /// Layout bindings that no attached device currently resolves.
-    pub unresolved: Vec<UnresolvedBindingSummary>,
-    /// Attached devices no layout binding references, offered for re-bind.
-    pub candidates: Vec<RebindCandidateSummary>,
-}
-
-/// One layout binding with no attached device behind it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct UnresolvedBindingSummary {
-    /// The layout binding id the zones reference.
-    pub layout_device_id: String,
-    /// The layouts whose zones reference it.
-    pub layout_ids: Vec<String>,
-    /// Whether a recorded identity exists for this binding, which is what
-    /// a durable re-bind needs to inherit.
-    pub rebindable: bool,
-}
-
-/// One attached device offered as a re-bind target.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct RebindCandidateSummary {
+/// Response for `POST /api/v1/devices/{id}/identify`.
+///
+/// The blink runs in the background, so the response only acknowledges
+/// that it started and echoes the parameters actually used. `color` is
+/// `null` when the caller sent no color and the daemon used its default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct IdentifyDeviceResponse {
     pub device_id: String,
-    pub name: String,
-    /// The layout binding id this device currently derives.
-    pub layout_device_id: String,
-    pub status: String,
-    /// The device's portable key. Only claimed devices can inherit a
-    /// binding durably; a claimless candidate re-binds by layout edit.
+    pub identifying: bool,
+    pub duration_ms: u64,
+    pub color: Option<String>,
+}
+
+/// Response for `POST /api/v1/devices/{id}/segments/{segment}/identify`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct IdentifySegmentResponse {
+    pub device_id: String,
+    pub segment: String,
+    pub segment_name: String,
+    pub identifying: bool,
+    pub duration_ms: u64,
+    pub color: Option<String>,
+}
+
+/// Request body for
+/// `POST /api/v1/devices/{id}/attachments/{slot}/identify`.
+///
+/// Carries the base identify parameters plus the selectors that narrow
+/// the blink to one attached component instance.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct IdentifyAttachmentRequest {
+    #[serde(flatten)]
+    pub base: IdentifyRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portable_key: Option<String>,
+    pub binding_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<u32>,
 }
 
-/// Request body for `POST /api/v1/devices/rebind`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct RebindDeviceRequest {
-    /// The orphaned layout binding to inherit.
-    pub layout_device_id: String,
-    /// The attached, claimed device that should inherit it.
+/// Response for
+/// `POST /api/v1/devices/{id}/attachments/{slot}/identify`.
+///
+/// `instance` is `null` when the request blinked every instance of the
+/// binding rather than one of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct IdentifyAttachmentResponse {
     pub device_id: String,
+    pub slot_id: String,
+    pub binding_index: usize,
+    pub instance: Option<u32>,
+    pub identifying: bool,
+    pub duration_ms: u64,
+    pub color: Option<String>,
 }
 
-/// Response for `POST /api/v1/devices/rebind`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct RebindDeviceResponse {
+/// Request body for `PUT /api/v1/devices/{id}/attachments`.
+///
+/// The binding list replaces the device's attachments wholesale.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct UpdateAttachmentsRequest {
+    #[serde(default)]
+    pub bindings: Vec<ComponentBinding>,
+    /// Validate and resolve the profile without applying any side effects.
+    #[serde(default)]
+    pub validate_only: bool,
+}
+
+/// Response for `GET /api/v1/devices/{id}/attachments`.
+///
+/// `slots` are the controller's physical attachment points, `bindings`
+/// what is attached to them, and `suggested_zones` the layout zones the
+/// attachments imply.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DeviceComponentsResponse {
     pub device_id: String,
-    /// The layout binding id the device now resolves to.
-    pub layout_device_id: String,
-    /// The portable key that was re-pinned to the inherited identity.
-    pub portable_key: String,
+    pub device_name: String,
+    #[serde(default)]
+    pub slots: Vec<ComponentSlot>,
+    #[serde(default)]
+    pub bindings: Vec<ComponentBindingSummary>,
+    #[serde(default)]
+    pub suggested_zones: Vec<ComponentSuggestedZone>,
+}
+
+/// Response for `PUT /api/v1/devices/{id}/attachments`.
+///
+/// Same body as the GET plus `needs_layout_update`, which reports that
+/// the active layout targets this device and no longer matches the LED
+/// ranges the new bindings describe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DeviceComponentsUpdateResponse {
+    pub device_id: String,
+    pub device_name: String,
+    #[serde(default)]
+    pub slots: Vec<ComponentSlot>,
+    #[serde(default)]
+    pub bindings: Vec<ComponentBindingSummary>,
+    #[serde(default)]
+    pub suggested_zones: Vec<ComponentSuggestedZone>,
+    pub needs_layout_update: bool,
+}
+
+/// One resolved attachment binding, with the template it instantiates and
+/// the LED range it occupies on the controller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct ComponentBindingSummary {
+    pub slot_id: String,
+    pub template_id: String,
+    pub template_name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub enabled: bool,
+    pub instances: u32,
+    pub led_offset: u32,
+    pub effective_led_count: u32,
+}
+
+/// Response for `DELETE /api/v1/devices/{id}/attachments`.
+///
+/// `deleted` is false when the device had no stored profile to remove,
+/// which is a success rather than a 404.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DeleteAttachmentsResponse {
+    pub device_id: String,
+    pub deleted: bool,
+}
+
+/// Optional body for `POST /api/v1/devices/discover`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DiscoverRequest {
+    /// Discovery targets to scan; omitted scans every enabled target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Block until the scan finishes instead of returning a scan id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<bool>,
+}
+
+/// Per-scanner diagnostics from a completed discovery scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DiscoveryScannerResult {
+    pub scanner: String,
+    pub duration_ms: u64,
+    pub discovered: usize,
+    pub status: String,
+    pub error: Option<String>,
+}
+
+/// Detailed result from a completed discovery scan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DiscoveryScanResult {
+    pub targets: Vec<String>,
+    pub timeout_ms: u64,
+    pub new_devices: Vec<DeviceRef>,
+    pub reappeared_devices: Vec<DeviceRef>,
+    pub vanished_devices: Vec<String>,
+    pub total_known: usize,
+    pub duration_ms: u64,
+    pub scanners: Vec<DiscoveryScannerResult>,
+}
+
+/// Response from `POST /api/v1/devices/discover`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DiscoverResponse {
+    /// Immediate acknowledgement for an asynchronous discovery scan.
+    #[cfg_attr(feature = "schema", schema(title = "DiscoveryScanningResponse"))]
+    Scanning {
+        scan_id: String,
+        targets: Vec<String>,
+        timeout_ms: u64,
+    },
+    /// Completed response for a synchronous discovery scan.
+    #[cfg_attr(feature = "schema", schema(title = "DiscoveryCompletedResponse"))]
+    Completed {
+        scan_id: String,
+        result: DiscoveryScanResult,
+    },
+}
+
+/// Response for `POST /api/v1/devices/{id}/pair`.
+///
+/// `device` carries the device's refreshed summary when pairing changed
+/// its state enough to be worth re-rendering, and is omitted otherwise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct PairDeviceResponse {
+    #[cfg_attr(feature = "schema", schema(value_type = String))]
+    pub status: PairDeviceStatus,
+    pub message: String,
+    /// Whether the device was connected and started rendering as part of
+    /// the pairing.
+    #[serde(default)]
+    pub activated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceSummary>,
+}
+
+/// Response for `DELETE /api/v1/devices/{id}/pair`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct DeletePairingResponse {
+    #[serde(default)]
+    pub status: String,
+    pub message: String,
+    /// Whether forgetting the credentials also dropped a live connection.
+    #[serde(default)]
+    pub disconnected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceSummary>,
 }

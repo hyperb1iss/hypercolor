@@ -9,8 +9,9 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, linear_to_srgb_u8};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{
@@ -443,72 +444,74 @@ impl EffectRenderer for CalibrationRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "pattern" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.pattern = CalibrationPattern::from_str(choice);
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "pattern" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.pattern = CalibrationPattern::from_str(choice);
+                    }
                 }
-            }
-            "direction" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.direction = CalibrationDirection::from_str(choice);
+                "direction" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.direction = CalibrationDirection::from_str(choice);
+                    }
                 }
-            }
-            "primary_color" => {
-                if let ControlValue::Color(color) = value {
-                    self.primary_color = *color;
+                "primary_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.primary_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "secondary_color" => {
-                if let ControlValue::Color(color) = value {
-                    self.secondary_color = *color;
+                "secondary_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.secondary_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "accent_color" => {
-                if let ControlValue::Color(color) = value {
-                    self.accent_color = *color;
+                "accent_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.accent_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "background_color" => {
-                if let ControlValue::Color(color) = value {
-                    self.background_color = *color;
+                "background_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.background_color = [color.r, color.g, color.b, color.a];
+                    }
                 }
-            }
-            "speed" => {
-                if let Some(speed) = value.as_f32() {
-                    self.speed = speed.clamp(0.0, 100.0);
+                "speed" => {
+                    if let Some(speed) = value.as_effect_f32() {
+                        self.speed = speed.clamp(0.0, 100.0);
+                    }
                 }
-            }
-            "size" => {
-                if let Some(size) = value.as_f32() {
-                    self.size = size.clamp(1.0, 100.0);
+                "size" => {
+                    if let Some(size) = value.as_effect_f32() {
+                        self.size = size.clamp(1.0, 100.0);
+                    }
                 }
-            }
-            "softness" => {
-                if let Some(softness) = value.as_f32() {
-                    self.softness = softness.clamp(0.0, 100.0);
+                "softness" => {
+                    if let Some(softness) = value.as_effect_f32() {
+                        self.softness = softness.clamp(0.0, 100.0);
+                    }
                 }
-            }
-            "show_grid" => {
-                if let ControlValue::Boolean(show_grid) = value {
-                    self.show_grid = *show_grid;
+                "show_grid" => {
+                    if let ControlValue::Bool(show_grid) = value {
+                        self.show_grid = *show_grid;
+                    }
                 }
-            }
-            "grid_scale" => {
-                if let Some(grid_scale) = value.as_f32() {
-                    self.grid_scale = grid_scale.clamp(2.0, 16.0);
+                "grid_scale" => {
+                    if let Some(grid_scale) = value.as_effect_f32() {
+                        self.grid_scale = grid_scale.clamp(2.0, 16.0);
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(brightness) = value.as_f32() {
-                    self.brightness = brightness.clamp(0.0, 1.0);
+                "brightness" => {
+                    if let Some(brightness) = value.as_effect_f32() {
+                        self.brightness = brightness.clamp(0.0, 1.0);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {}
 }
 
@@ -763,7 +766,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(18.0)),
                 ("size", ControlValue::Float(20.0)),
                 ("softness", ControlValue::Float(12.0)),
-                ("show_grid", ControlValue::Boolean(false)),
+                ("show_grid", ControlValue::Bool(false)),
             ],
         ),
         preset_with_desc(
@@ -775,7 +778,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(18.0)),
                 ("size", ControlValue::Float(20.0)),
                 ("softness", ControlValue::Float(12.0)),
-                ("show_grid", ControlValue::Boolean(false)),
+                ("show_grid", ControlValue::Bool(false)),
             ],
         ),
         preset_with_desc(
@@ -787,7 +790,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(16.0)),
                 ("softness", ControlValue::Float(10.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),
@@ -803,7 +806,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(22.0)),
                 ("size", ControlValue::Float(14.0)),
                 ("softness", ControlValue::Float(16.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(10.0)),
             ],
         ),
@@ -838,7 +841,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(44.0)),
                 ("softness", ControlValue::Float(20.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),
@@ -851,7 +854,7 @@ fn presets() -> Vec<PresetTemplate> {
                 ("speed", ControlValue::Float(16.0)),
                 ("size", ControlValue::Float(44.0)),
                 ("softness", ControlValue::Float(20.0)),
-                ("show_grid", ControlValue::Boolean(true)),
+                ("show_grid", ControlValue::Bool(true)),
                 ("grid_scale", ControlValue::Float(8.0)),
             ],
         ),

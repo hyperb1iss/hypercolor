@@ -1,7 +1,8 @@
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use std::ffi::{CStr, c_void};
-use std::sync::Arc;
-
 use thiserror::Error;
+
+use crate::{ImportedEffectFrame, ImportedFrameFormat};
 
 /// Result type for Linux GPU interop operations.
 pub type Result<T> = std::result::Result<T, LinuxGpuInteropError>;
@@ -23,6 +24,13 @@ pub enum LinuxGpuInteropError {
         height: u32,
     },
 
+    /// The neutral frame format is not supported by the Linux import path.
+    #[error("unsupported Linux import frame format {format:?}")]
+    UnsupportedFrameFormat {
+        /// Requested frame format.
+        format: ImportedFrameFormat,
+    },
+
     /// Every pooled import slot is still referenced by downstream GPU work.
     #[error("all {slot_count} GPU import slots are still in use")]
     ImportSlotsExhausted {
@@ -31,28 +39,13 @@ pub enum LinuxGpuInteropError {
     },
 }
 
-/// Pixel format shared by the GL source and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ImportedFrameFormat {
-    /// 8-bit normalized RGBA.
-    Rgba8Unorm,
-}
-
-impl ImportedFrameFormat {
-    /// Returns the matching wgpu texture format.
-    #[must_use]
-    pub const fn wgpu_format(self) -> wgpu::TextureFormat {
+impl GpuFrameImportError for LinuxGpuInteropError {
+    fn fallback_reason(&self) -> GpuFrameImportFallbackReason {
         match self {
-            Self::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-        }
-    }
-
-    /// Returns the matching GL internal format.
-    #[must_use]
-    pub const fn gl_internal_format(self) -> u32 {
-        match self {
-            Self::Rgba8Unorm => glow::RGBA8,
+            Self::UnsupportedPlatform => GpuFrameImportFallbackReason::UnsupportedPlatform,
+            Self::InvalidDimensions { .. } => GpuFrameImportFallbackReason::InvalidDimensions,
+            Self::UnsupportedFrameFormat { .. } => GpuFrameImportFallbackReason::Other,
+            Self::ImportSlotsExhausted { .. } => GpuFrameImportFallbackReason::ImportSlotsExhausted,
         }
     }
 }
@@ -73,6 +66,8 @@ impl LinuxGlFramebufferImportDescriptor {
     pub const fn new(width: u32, height: u32, format: ImportedFrameFormat) -> Result<Self> {
         if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
             Err(LinuxGpuInteropError::InvalidDimensions { width, height })
+        } else if !matches!(format, ImportedFrameFormat::Rgba8Unorm) {
+            Err(LinuxGpuInteropError::UnsupportedFrameFormat { format })
         } else {
             Ok(Self {
                 width,
@@ -81,36 +76,6 @@ impl LinuxGlFramebufferImportDescriptor {
             })
         }
     }
-}
-
-/// GPU-resident Servo effect frame imported into Hypercolor's wgpu device.
-#[derive(Debug, Clone)]
-pub struct ImportedEffectFrame {
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// Frame pixel format.
-    pub format: ImportedFrameFormat,
-    /// Monotonic storage identity for cache comparisons.
-    pub storage_id: u64,
-    /// Imported wgpu texture.
-    pub texture: Arc<wgpu::Texture>,
-    /// Default view over `texture`.
-    pub view: Arc<wgpu::TextureView>,
-    /// Import timing counters for observability.
-    pub timings: ImportedFrameTimings,
-}
-
-/// Timing counters captured while importing a GL framebuffer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ImportedFrameTimings {
-    /// Time spent issuing the GL framebuffer blit.
-    pub blit_us: u64,
-    /// Time spent in the conservative GL synchronization wait.
-    pub sync_us: u64,
-    /// Total import time, including backend allocation and wgpu wrapping.
-    pub total_us: u64,
 }
 
 /// Reusable importer for repeatedly copying one GL framebuffer into wgpu.

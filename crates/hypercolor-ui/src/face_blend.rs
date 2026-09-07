@@ -8,12 +8,12 @@
 //! is exercisable from `tests/` via a `#[path]` include, mirroring
 //! `label_utils.rs`.
 
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 
 /// One face blend mode as the UI presents it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FaceBlendOption {
-    pub mode: DisplayFaceBlendMode,
+    pub mode: BlendMode,
     pub label: &'static str,
     pub blurb: &'static str,
 }
@@ -22,63 +22,63 @@ pub struct FaceBlendOption {
 #[derive(Clone, Copy)]
 pub struct FaceBlendPreset {
     pub label: &'static str,
-    pub mode: DisplayFaceBlendMode,
+    pub mode: BlendMode,
     pub opacity: f32,
 }
 
 pub const FACE_BLEND_OPTIONS: [FaceBlendOption; 11] = [
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Replace,
+        mode: BlendMode::Replace,
         label: "Replace",
         blurb: "Render the face on its own. Transparent regions stay empty instead of pulling in the live effect.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Alpha,
+        mode: BlendMode::Alpha,
         label: "Cutout",
         blurb: "Use face transparency as a clean reveal into the live effect layer.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Tint,
+        mode: BlendMode::Tint,
         label: "Effect Tint",
         blurb: "Let the effect provide the living color while the face behaves like tinted material.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::LumaReveal,
+        mode: BlendMode::LumaReveal,
         label: "Luma Reveal",
         blurb: "Drive bright face details from the effect while darker panels stay anchored to the face artwork.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Screen,
+        mode: BlendMode::Screen,
         label: "Screen",
         blurb: "Fuse face highlights with the effect for luminous neon glass.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Add,
+        mode: BlendMode::Add,
         label: "Add",
         blurb: "Push both layers together for hotter, flashier glow.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Multiply,
+        mode: BlendMode::Multiply,
         label: "Multiply",
         blurb: "Turn the face into tinted glass that darkens and colors the effect.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Overlay,
+        mode: BlendMode::Overlay,
         label: "Overlay",
         blurb: "Blend contrast-rich UI material that pops without flattening the effect.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::SoftLight,
+        mode: BlendMode::SoftLight,
         label: "Soft Light",
         blurb: "Keep the effect alive under a softer satin face treatment.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::ColorDodge,
+        mode: BlendMode::ColorDodge,
         label: "Color Dodge",
         blurb: "Turn bright face areas into intense reactive highlights.",
     },
     FaceBlendOption {
-        mode: DisplayFaceBlendMode::Difference,
+        mode: BlendMode::Difference,
         label: "Difference",
         blurb: "Create reactive inversions for wilder holographic looks.",
     },
@@ -87,32 +87,32 @@ pub const FACE_BLEND_OPTIONS: [FaceBlendOption; 11] = [
 pub const FACE_BLEND_PRESETS: [FaceBlendPreset; 6] = [
     FaceBlendPreset {
         label: "Clean Reveal",
-        mode: DisplayFaceBlendMode::Alpha,
+        mode: BlendMode::Alpha,
         opacity: 0.78,
     },
     FaceBlendPreset {
         label: "Neon Glass",
-        mode: DisplayFaceBlendMode::Screen,
+        mode: BlendMode::Screen,
         opacity: 0.88,
     },
     FaceBlendPreset {
         label: "Signal Mask",
-        mode: DisplayFaceBlendMode::LumaReveal,
+        mode: BlendMode::LumaReveal,
         opacity: 1.0,
     },
     FaceBlendPreset {
         label: "Tinted HUD",
-        mode: DisplayFaceBlendMode::Tint,
+        mode: BlendMode::Tint,
         opacity: 0.92,
     },
     FaceBlendPreset {
         label: "Smoked Panel",
-        mode: DisplayFaceBlendMode::Multiply,
+        mode: BlendMode::Multiply,
         opacity: 0.84,
     },
     FaceBlendPreset {
         label: "Hot Bloom",
-        mode: DisplayFaceBlendMode::Add,
+        mode: BlendMode::Add,
         opacity: 0.54,
     },
 ];
@@ -121,7 +121,7 @@ pub const FACE_BLEND_PRESETS: [FaceBlendPreset; 6] = [
 /// option (Replace) for a mode the table somehow misses, so the UI
 /// always has a label to show.
 #[must_use]
-pub fn face_blend_option(mode: DisplayFaceBlendMode) -> FaceBlendOption {
+pub fn face_blend_option(mode: BlendMode) -> FaceBlendOption {
     FACE_BLEND_OPTIONS
         .iter()
         .copied()
@@ -131,30 +131,30 @@ pub fn face_blend_option(mode: DisplayFaceBlendMode) -> FaceBlendOption {
 
 /// Snake-case wire token for a face blend mode — the serde encoding.
 #[must_use]
-pub fn face_blend_value(mode: DisplayFaceBlendMode) -> &'static str {
+pub fn face_blend_value(mode: BlendMode) -> &'static str {
     match mode {
-        DisplayFaceBlendMode::Replace => "replace",
-        DisplayFaceBlendMode::Alpha => "alpha",
-        DisplayFaceBlendMode::Tint => "tint",
-        DisplayFaceBlendMode::LumaReveal => "luma_reveal",
-        DisplayFaceBlendMode::Add => "add",
-        DisplayFaceBlendMode::Screen => "screen",
-        DisplayFaceBlendMode::Multiply => "multiply",
-        DisplayFaceBlendMode::Overlay => "overlay",
-        DisplayFaceBlendMode::SoftLight => "soft_light",
-        DisplayFaceBlendMode::ColorDodge => "color_dodge",
-        DisplayFaceBlendMode::Difference => "difference",
+        BlendMode::Replace => "replace",
+        BlendMode::Alpha => "alpha",
+        BlendMode::Tint => "tint",
+        BlendMode::LumaReveal => "luma_reveal",
+        BlendMode::Add => "add",
+        BlendMode::Screen => "screen",
+        BlendMode::Multiply => "multiply",
+        BlendMode::Overlay => "overlay",
+        BlendMode::SoftLight => "soft_light",
+        BlendMode::ColorDodge => "color_dodge",
+        BlendMode::Difference => "difference",
     }
 }
 
 /// Parse a wire token back to a blend mode, defaulting to the blended
 /// composition for an unknown value.
 #[must_use]
-pub fn parse_face_blend(value: &str) -> DisplayFaceBlendMode {
+pub fn parse_face_blend(value: &str) -> BlendMode {
     FACE_BLEND_OPTIONS
         .iter()
         .find(|option| face_blend_value(option.mode) == value)
-        .map_or(DisplayFaceBlendMode::Alpha, |option| option.mode)
+        .map_or(BlendMode::Alpha, |option| option.mode)
 }
 
 /// `(value, label)` options for a `SilkSelect` dropdown, in table order.

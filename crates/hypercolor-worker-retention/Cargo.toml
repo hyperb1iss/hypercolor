@@ -1,0 +1,15 @@
+[package]
+name = "hypercolor-worker-retention"
+description = "Process-wide cleanup for Hypercolor workers that outlive bounded shutdown"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+
+[lints]
+workspace = true

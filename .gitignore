@@ -66,6 +66,8 @@ crates/hypercolor-ui/.dist-dev/
 
 # Zola docs build output
 docs/public/
+# Syntax theme stylesheets: zola regenerates these into static/ every build
+docs/static/giallo-*.css
 
 # Next.js marketing site
 site/.next/

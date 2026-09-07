@@ -105,6 +105,15 @@ pub struct RenderLoop {
     /// Current lifecycle state.
     state: RenderLoopState,
 
+    /// Increments whenever a live render loop enters the paused state.
+    pause_generation: u64,
+
+    /// Wall-clock instant when the current pause began.
+    paused_at: Option<Instant>,
+
+    /// Total wall-clock time excluded from render elapsed time.
+    paused_duration: Duration,
+
     /// Monotonically increasing frame counter.
     frame_number: u64,
 
@@ -128,6 +137,9 @@ impl RenderLoop {
             fps_controller,
             running: Arc::new(AtomicBool::new(false)),
             state: RenderLoopState::Created,
+            pause_generation: 0,
+            paused_at: None,
+            paused_duration: Duration::ZERO,
             frame_number: 0,
             start_time: None,
         }
@@ -141,6 +153,9 @@ impl RenderLoop {
             fps_controller: FpsController::with_config(tier, config),
             running: Arc::new(AtomicBool::new(false)),
             state: RenderLoopState::Created,
+            pause_generation: 0,
+            paused_at: None,
+            paused_duration: Duration::ZERO,
             frame_number: 0,
             start_time: None,
         }
@@ -155,6 +170,8 @@ impl RenderLoop {
         self.running.store(true, Ordering::Release);
         self.state = RenderLoopState::Running;
         self.start_time = Some(Instant::now());
+        self.paused_at = None;
+        self.paused_duration = Duration::ZERO;
         info!(tier = %self.fps_controller.tier(), "Render loop started");
     }
 
@@ -178,10 +195,18 @@ impl RenderLoop {
         self.state
     }
 
+    /// Returns the number of completed transitions into the paused state.
+    #[must_use]
+    pub fn pause_generation(&self) -> u64 {
+        self.pause_generation
+    }
+
     /// Pause rendering. Devices hold the last frame.
     pub fn pause(&mut self) {
         if self.state == RenderLoopState::Running {
             self.state = RenderLoopState::Paused;
+            self.pause_generation = self.pause_generation.wrapping_add(1);
+            self.paused_at = Some(Instant::now());
             debug!("Render loop paused");
         }
     }
@@ -189,6 +214,9 @@ impl RenderLoop {
     /// Resume from paused state.
     pub fn resume(&mut self) {
         if self.state == RenderLoopState::Paused {
+            if let Some(paused_at) = self.paused_at.take() {
+                self.paused_duration += paused_at.elapsed();
+            }
             self.state = RenderLoopState::Running;
             debug!("Render loop resumed");
         }
@@ -264,10 +292,14 @@ impl RenderLoop {
         self.frame_number
     }
 
-    /// Elapsed time since the loop was started.
+    /// Active render time since the loop was started.
     #[must_use]
     pub fn elapsed(&self) -> Duration {
-        self.start_time.map_or(Duration::ZERO, |t| t.elapsed())
+        self.start_time.map_or(Duration::ZERO, |started_at| {
+            let now = self.paused_at.unwrap_or_else(Instant::now);
+            now.duration_since(started_at)
+                .saturating_sub(self.paused_duration)
+        })
     }
 
     /// Reference to the FPS controller for direct inspection or config changes.
@@ -311,6 +343,9 @@ impl std::fmt::Debug for RenderLoop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenderLoop")
             .field("state", &self.state)
+            .field("pause_generation", &self.pause_generation)
+            .field("paused_at", &self.paused_at)
+            .field("paused_duration", &self.paused_duration)
             .field("frame_number", &self.frame_number)
             .field("running", &self.running.load(Ordering::Relaxed))
             .field("start_time", &self.start_time)

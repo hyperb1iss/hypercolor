@@ -5,48 +5,36 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
-use serde::{Deserialize, Serialize};
 
-use crate::api::AppState;
-use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope;
+use crate::app_state::AppState;
+use crate::domain::{DomainError, ResourceKind};
 
 use super::unix_epoch_ms;
 
-// ── Request / Response Types ────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct FavoriteSummary {
-    pub effect_id: String,
-    pub effect_name: String,
-    pub added_at_ms: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct FavoriteListResponse {
-    pub items: Vec<FavoriteSummary>,
-    pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddFavoriteRequest {
-    pub effect: String,
-}
+// Wire contracts live in hypercolor-types::api::library — shared with
+// the web UI and the TUI.
+pub use hypercolor_types::api::library::{
+    AddFavoriteRequest, AddFavoriteResponse, DeleteFavoriteResponse, FavoriteListResponse,
+    FavoriteSummary,
+};
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/library/favorites` — list favorited effects.
 pub async fn list_favorites(State(state): State<Arc<AppState>>) -> Response {
-    let favorites = state.library_store.list_favorites().await;
+    let favorites = state.library_store().list_favorites().await;
 
-    let registry = state.effect_registry.read().await;
-    let effect_names: HashMap<_, _> = registry
-        .iter()
-        .map(|(_, entry)| (entry.metadata.id, entry.metadata.name.clone()))
+    let effect_names: HashMap<_, _> = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
+        .into_iter()
+        .map(|metadata| (metadata.id, metadata.name))
         .collect();
-    drop(registry);
 
     let items: Vec<FavoriteSummary> = favorites
         .iter()
@@ -61,14 +49,10 @@ pub async fn list_favorites(State(state): State<Arc<AppState>>) -> Response {
         .collect();
 
     let total = items.len();
-    ApiResponse::ok(FavoriteListResponse {
+    envelope::ok(FavoriteListResponse {
         items,
-        pagination: crate::api::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("favorite count fits in u64"),
+        page: None,
     })
 }
 
@@ -77,27 +61,24 @@ pub async fn add_favorite(
     State(state): State<Arc<AppState>>,
     Json(body): Json<AddFavoriteRequest>,
 ) -> Response {
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &body.effect) else {
-            return ApiError::not_found(format!("Effect not found: {}", body.effect));
-        };
-        effect
+    let _admission = state.domains.effects.admit_current().await;
+    let Some(effect) = state.domains.effects.resolve_metadata(&body.effect).await else {
+        return DomainError::not_found(ResourceKind::Effect, &body.effect).into_response();
     };
 
     let existing = state
-        .library_store
+        .library_store()
         .list_favorites()
         .await
         .iter()
         .any(|favorite| favorite.effect_id == effect.id);
     let favorite = state
-        .library_store
+        .library_store()
         .upsert_favorite(effect.id, unix_epoch_ms())
         .await;
     let favorite = match favorite {
         Ok(favorite) => favorite,
-        Err(error) => return super::store_error_to_response(&error),
+        Err(error) => return super::store_error(&error).into_response(),
     };
     state
         .event_bus
@@ -107,35 +88,32 @@ pub async fn add_favorite(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "favorite": FavoriteSummary {
+    envelope::ok(AddFavoriteResponse {
+        favorite: FavoriteSummary {
             effect_id: favorite.effect_id.to_string(),
             effect_name: effect.name,
             added_at_ms: favorite.added_at_ms,
         },
-        "created": !existing,
-    }))
+        created: !existing,
+    })
 }
 
-/// `DELETE /api/v1/library/favorites/:effect` — remove a favorite by effect id/name.
+/// `DELETE /api/v1/library/favorites/{effect}` — remove a favorite by effect id/name.
 pub async fn remove_favorite(
     State(state): State<Arc<AppState>>,
     Path(effect): Path<String>,
 ) -> Response {
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, &effect) else {
-            return ApiError::not_found("Favorite effect not found");
-        };
-        effect
+    let _admission = state.domains.effects.admit_current().await;
+    let Some(effect) = state.domains.effects.resolve_metadata(&effect).await else {
+        return DomainError::not_found(ResourceKind::Favorite, &effect).into_response();
     };
 
-    let removed = match state.library_store.remove_favorite(effect.id).await {
+    let removed = match state.library_store().remove_favorite(effect.id).await {
         Ok(removed) => removed,
-        Err(error) => return super::store_error_to_response(&error),
+        Err(error) => return super::store_error(&error).into_response(),
     };
     if !removed {
-        return ApiError::not_found("Favorite effect not found");
+        return DomainError::not_found(ResourceKind::Favorite, effect.id).into_response();
     }
     state
         .event_bus
@@ -145,8 +123,8 @@ pub async fn remove_favorite(
             kind: LibraryChangeKind::Removed,
         });
 
-    ApiResponse::ok(serde_json::json!({
-        "effect_id": effect.id.to_string(),
-        "deleted": true,
-    }))
+    envelope::ok(DeleteFavoriteResponse {
+        effect_id: effect.id.to_string(),
+        deleted: true,
+    })
 }

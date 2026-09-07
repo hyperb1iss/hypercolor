@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use hypercolor_core::types::canvas::BYTES_PER_PIXEL;
+use hypercolor_types::canvas::BYTES_PER_PIXEL;
 use thiserror::Error;
 
 use super::source::write_rgba_texture;
@@ -412,8 +412,7 @@ fn gpu_texture_frame(texture: &ScreenUploadTexture, content_generation: u64) -> 
         texture: texture.texture.texture.clone(),
         view: texture.texture.view.clone(),
         immutable_lease: None,
-        #[cfg(target_os = "windows")]
-        windows_screen_lease: None,
+        native_screen_lease: None,
     }
 }
 

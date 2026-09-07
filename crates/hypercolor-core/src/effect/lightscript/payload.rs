@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
-use hypercolor_types::effect::ControlValue;
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
 use hypercolor_types::sensor::{SensorReading, SensorUnit};
 use serde::Serialize;
 
-use crate::input::{InteractionData, ScreenData};
+use crate::input::screen::consumer::ScreenBranchPayload;
+use crate::input::{InteractionData, ScreenBranchPublication};
+use hypercolor_types::canvas::Canvas;
 
 use super::{
     DEFAULT_ZONE_HEIGHT, DEFAULT_ZONE_SAMPLES, DEFAULT_ZONE_WIDTH, keyboard_lookup_keys,
@@ -32,7 +33,7 @@ pub(super) struct LightScriptFramePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) lighting: Option<LightScriptLightingPayload>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub(super) controls: BTreeMap<String, LightScriptControlValue>,
+    pub(super) controls: BTreeMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) input_availability: Option<LightScriptInputAvailabilityPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -47,9 +48,8 @@ impl LightScriptFramePayload {
     }
 
     #[cfg(feature = "servo")]
-    pub(super) fn is_host_frame_only(&self) -> bool {
-        self.render_host_frame
-            && self.audio.is_none()
+    pub(super) fn is_timing_only(&self) -> bool {
+        self.audio.is_none()
             && self.screen.is_none()
             && self.sensors.is_none()
             && self.media.is_none()
@@ -161,7 +161,16 @@ impl LightScriptInteractionPayload {
                 nx: sanitize_norm(interaction.mouse.norm_x),
                 ny: sanitize_norm(interaction.mouse.norm_y),
                 mode: pointer_mode_name(interaction.mouse.mode),
-                wheel: interaction.batch.wheel_hi_res,
+                scroll: LightScriptScrollPayload {
+                    line120_x: crate::input::q16_16_to_f64(
+                        interaction.batch.scroll.line120_x_q16_16,
+                    ),
+                    line120_y: crate::input::q16_16_to_f64(
+                        interaction.batch.scroll.line120_y_q16_16,
+                    ),
+                    pixel_x: crate::input::q16_16_to_f64(interaction.batch.scroll.pixel_x_q16_16),
+                    pixel_y: crate::input::q16_16_to_f64(interaction.batch.scroll.pixel_y_q16_16),
+                },
                 velocity: if motion_per_sec.is_finite() {
                     motion_per_sec
                 } else {
@@ -194,13 +203,21 @@ pub(super) struct LightScriptMousePayload {
     pub(super) nx: f32,
     pub(super) ny: f32,
     pub(super) mode: &'static str,
-    #[serde(skip_serializing_if = "is_zero_i32")]
-    pub(super) wheel: i32,
+    pub(super) scroll: LightScriptScrollPayload,
     pub(super) velocity: f32,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LightScriptScrollPayload {
+    pub(super) line120_x: f64,
+    pub(super) line120_y: f64,
+    pub(super) pixel_x: f64,
+    pub(super) pixel_y: f64,
+}
+
 /// One ordered input edge for the frame, flattened for JS ergonomics.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct LightScriptInputEventPayload {
     pub(super) kind: &'static str,
@@ -212,7 +229,15 @@ pub(super) struct LightScriptInputEventPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) state: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) delta: Option<i32>,
+    pub(super) delta_x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) delta_y: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) unit: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) phase: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) momentum_phase: Option<&'static str>,
     pub(super) at_ms: u64,
     pub(super) seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -224,62 +249,79 @@ impl LightScriptInputEventPayload {
     fn from_timed(timed: &hypercolor_types::event::TimedInputEvent) -> Option<Self> {
         use hypercolor_types::event::InputEvent;
 
-        let (kind, source, key, button, state, delta) = match &timed.event {
-            InputEvent::Key {
-                source_id,
-                key,
-                state,
-            } => (
-                "key",
-                source_id.clone(),
-                Some(key.clone()),
-                None,
-                Some(button_state_name(*state)),
-                None,
-            ),
-            InputEvent::MouseButton {
-                source_id,
-                button,
-                state,
-            } => (
-                "button",
-                source_id.clone(),
-                None,
-                Some(button.clone()),
-                Some(button_state_name(*state)),
-                None,
-            ),
-            InputEvent::MouseWheel {
-                source_id,
-                delta_hi_res,
-            } => (
-                "wheel",
-                source_id.clone(),
-                None,
-                None,
-                None,
-                Some(*delta_hi_res),
-            ),
+        let mut payload = Self {
+            kind: "",
+            source: timed.event.source_id().to_owned(),
+            key: None,
+            button: None,
+            state: None,
+            delta_x: None,
+            delta_y: None,
+            unit: None,
+            phase: None,
+            momentum_phase: None,
+            at_ms: timed.at_ms,
+            seq: timed.seq,
+            physical_code: timed.physical_code.clone(),
+            repeat_count: timed.repeat_count,
+        };
+
+        match &timed.event {
+            InputEvent::Key { key, state, .. } => {
+                payload.kind = "key";
+                payload.key = Some(key.clone());
+                payload.state = Some(button_state_name(*state));
+            }
+            InputEvent::MouseButton { button, state, .. } => {
+                payload.kind = "button";
+                payload.button = Some(button.clone());
+                payload.state = Some(button_state_name(*state));
+            }
+            InputEvent::PointerScroll {
+                delta_x_q16_16,
+                delta_y_q16_16,
+                unit,
+                phase,
+                momentum_phase,
+                ..
+            } => {
+                payload.kind = "scroll";
+                payload.delta_x = Some(crate::input::q16_16_to_f64(*delta_x_q16_16));
+                payload.delta_y = Some(crate::input::q16_16_to_f64(*delta_y_q16_16));
+                payload.unit = Some(pointer_scroll_unit_name(*unit));
+                payload.phase = Some(pointer_scroll_phase_name(*phase));
+                payload.momentum_phase = Some(pointer_scroll_phase_name(*momentum_phase));
+            }
             // MIDI edges stay on the event bus; they are not part of the
             // effect-facing interaction contract yet.
             InputEvent::MidiNote { .. }
             | InputEvent::MidiControlChange { .. }
             | InputEvent::MidiPitchBend { .. }
             | InputEvent::MidiRealtime { .. } => return None,
-        };
+        }
 
-        Some(Self {
-            kind,
-            source,
-            key,
-            button,
-            state,
-            delta,
-            at_ms: timed.at_ms,
-            seq: timed.seq,
-            physical_code: timed.physical_code.clone(),
-            repeat_count: timed.repeat_count,
-        })
+        Some(payload)
+    }
+}
+
+fn pointer_scroll_unit_name(unit: hypercolor_types::event::PointerScrollUnit) -> &'static str {
+    match unit {
+        hypercolor_types::event::PointerScrollUnit::Line120 => "line120",
+        hypercolor_types::event::PointerScrollUnit::Pixels => "pixels",
+    }
+}
+
+fn pointer_scroll_phase_name(phase: hypercolor_types::event::PointerScrollPhase) -> &'static str {
+    use hypercolor_types::event::PointerScrollPhase;
+
+    match phase {
+        PointerScrollPhase::None => "none",
+        PointerScrollPhase::MayBegin => "may_begin",
+        PointerScrollPhase::Began => "began",
+        PointerScrollPhase::Changed => "changed",
+        PointerScrollPhase::Stationary => "stationary",
+        PointerScrollPhase::Ended => "ended",
+        PointerScrollPhase::Cancelled => "cancelled",
     }
 }
 
@@ -305,10 +347,6 @@ fn sanitize_norm(value: f32) -> f32 {
     } else {
         0.0
     }
-}
-
-fn is_zero_i32(value: &i32) -> bool {
-    *value == 0
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -478,36 +516,51 @@ pub(super) struct LightScriptScreenPayload {
 }
 
 impl LightScriptScreenPayload {
-    pub(super) fn from_screen(screen: Option<&ScreenData>) -> Self {
+    /// Project the exact screen publication onto the LightScript HSL grid.
+    ///
+    /// Zone publications map one cell per published zone. Surface
+    /// publications are box-averaged into the default LightScript grid
+    /// (`DEFAULT_ZONE_WIDTH` by `DEFAULT_ZONE_HEIGHT`), which is the
+    /// documented projection of the processed surface rather than a
+    /// substitute grid. GPU-resident publications carry no CPU pixels and
+    /// read as a dark grid.
+    pub(super) fn from_screen(screen: Option<&ScreenBranchPublication>) -> Self {
         let Some(screen) = screen else {
-            return Self {
-                grid_width: DEFAULT_ZONE_WIDTH as u32,
-                grid_height: DEFAULT_ZONE_HEIGHT as u32,
-                hue: vec![0_i16; DEFAULT_ZONE_SAMPLES],
-                saturation: vec![0_i8; DEFAULT_ZONE_SAMPLES],
-                lightness: vec![0_i8; DEFAULT_ZONE_SAMPLES],
-            };
+            return Self::dark();
         };
+        match screen.payload() {
+            ScreenBranchPayload::Zones(zones) => {
+                Self::from_rgb_grid(zones.columns().get(), zones.rows().get(), zones.colors())
+            }
+            ScreenBranchPayload::Surface(surface) => surface
+                .to_rgba_canvas()
+                .map_or_else(Self::dark, |canvas| Self::from_surface_canvas(&canvas)),
+            ScreenBranchPayload::GpuSurface(_) | ScreenBranchPayload::NativeWork(_) => Self::dark(),
+        }
+    }
 
-        let grid_width = screen.grid_width.max(1);
-        let grid_height = screen.grid_height.max(1);
+    fn dark() -> Self {
+        Self {
+            grid_width: DEFAULT_ZONE_WIDTH as u32,
+            grid_height: DEFAULT_ZONE_HEIGHT as u32,
+            hue: vec![0_i16; DEFAULT_ZONE_SAMPLES],
+            saturation: vec![0_i8; DEFAULT_ZONE_SAMPLES],
+            lightness: vec![0_i8; DEFAULT_ZONE_SAMPLES],
+        }
+    }
+
+    fn from_rgb_grid(grid_width: u32, grid_height: u32, colors: &[[u8; 3]]) -> Self {
         let sample_count = usize::try_from(grid_width.saturating_mul(grid_height)).unwrap_or(0);
         let mut hue = Vec::with_capacity(sample_count);
         let mut saturation = Vec::with_capacity(sample_count);
         let mut lightness = Vec::with_capacity(sample_count);
-
         for index in 0..sample_count {
-            let rgb = screen
-                .zone_colors
-                .get(index)
-                .and_then(|zone| zone.colors.first().copied())
-                .unwrap_or([0, 0, 0]);
+            let rgb = colors.get(index).copied().unwrap_or([0, 0, 0]);
             let (h, s, l) = rgb_to_hsl(rgb[0], rgb[1], rgb[2]);
             hue.push(h);
             saturation.push(s);
             lightness.push(l);
         }
-
         Self {
             grid_width,
             grid_height,
@@ -516,69 +569,50 @@ impl LightScriptScreenPayload {
             lightness,
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
-pub(super) enum LightScriptControlValue {
-    Float(f32),
-    Integer(i32),
-    Boolean(bool),
-    Text(String),
-    Gradient(Vec<LightScriptGradientStop>),
-    Rect(LightScriptRect),
-}
-
-impl LightScriptControlValue {
-    pub(super) fn from_control_value(value: &ControlValue) -> Self {
-        match value {
-            ControlValue::Float(value) => Self::Float(sanitize_f32(*value)),
-            ControlValue::Integer(value) => Self::Integer(*value),
-            ControlValue::Boolean(value) => Self::Boolean(*value),
-            ControlValue::Color([red, green, blue, _alpha]) => Self::Text(format!(
-                "#{:02x}{:02x}{:02x}",
-                color_byte(*red),
-                color_byte(*green),
-                color_byte(*blue)
-            )),
-            ControlValue::Gradient(stops) => Self::Gradient(
-                stops
-                    .iter()
-                    .map(|stop| LightScriptGradientStop {
-                        pos: sanitize_f32(stop.position),
-                        color: stop.color.map(sanitize_f32),
-                    })
-                    .collect(),
-            ),
-            ControlValue::Enum(value) | ControlValue::Text(value) => Self::Text(value.clone()),
-            ControlValue::Rect(rect) => Self::Rect(LightScriptRect {
-                x: sanitize_f32(rect.x),
-                y: sanitize_f32(rect.y),
-                width: sanitize_f32(rect.width),
-                height: sanitize_f32(rect.height),
-            }),
+    fn from_surface_canvas(canvas: &Canvas) -> Self {
+        let width = canvas.width();
+        let height = canvas.height();
+        if width == 0 || height == 0 {
+            return Self::dark();
         }
+        let grid_width = DEFAULT_ZONE_WIDTH as u32;
+        let grid_height = DEFAULT_ZONE_HEIGHT as u32;
+        let pixels = canvas.as_rgba_bytes();
+        let mut colors = Vec::with_capacity(DEFAULT_ZONE_SAMPLES);
+        for row in 0..grid_height {
+            let y0 = cell_start(row, grid_height, height);
+            let y1 = cell_start(row + 1, grid_height, height).max(y0 + 1);
+            for col in 0..grid_width {
+                let x0 = cell_start(col, grid_width, width);
+                let x1 = cell_start(col + 1, grid_width, width).max(x0 + 1);
+                let mut sum = [0_u64; 3];
+                let mut count = 0_u64;
+                for y in y0..y1.min(height) {
+                    let row_offset =
+                        usize::try_from(y).unwrap_or(0) * usize::try_from(width).unwrap_or(0) * 4;
+                    for x in x0..x1.min(width) {
+                        let offset = row_offset + usize::try_from(x).unwrap_or(0) * 4;
+                        if let Some(pixel) = pixels.get(offset..offset + 3) {
+                            sum[0] += u64::from(pixel[0]);
+                            sum[1] += u64::from(pixel[1]);
+                            sum[2] += u64::from(pixel[2]);
+                            count += 1;
+                        }
+                    }
+                }
+                let average = |channel: u64| u8::try_from(channel / count.max(1)).unwrap_or(255);
+                colors.push([average(sum[0]), average(sum[1]), average(sum[2])]);
+            }
+        }
+        Self::from_rgb_grid(grid_width, grid_height, &colors)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub(super) struct LightScriptGradientStop {
-    pub(super) pos: f32,
-    pub(super) color: [f32; 4],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub(super) struct LightScriptRect {
-    pub(super) x: f32,
-    pub(super) y: f32,
-    pub(super) width: f32,
-    pub(super) height: f32,
-}
-
-fn color_byte(value: f32) -> u8 {
-    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-    let scaled = (sanitize_f32(value).clamp(0.0, 1.0) * 255.0).round() as u16;
-    u8::try_from(scaled).unwrap_or(u8::MAX)
+/// First source pixel covered by grid cell `index` along an axis.
+fn cell_start(index: u32, cells: u32, source: u32) -> u32 {
+    u32::try_from((u64::from(index) * u64::from(source)) / u64::from(cells.max(1)))
+        .unwrap_or(source)
 }
 
 fn default_sensor_range(reading: &SensorReading) -> (f32, f32) {
@@ -620,10 +654,7 @@ mod tests {
     #[test]
     fn frame_payload_serializes_stable_json_shape() {
         let mut controls = BTreeMap::new();
-        controls.insert(
-            "frontColor".to_owned(),
-            LightScriptControlValue::Text("#00ffcc".to_owned()),
-        );
+        controls.insert("frontColor".to_owned(), serde_json::json!("#00ffcc"));
         let payload = LightScriptFramePayload {
             timing: LightScriptTimingPayload {
                 time_secs: 1.5,
@@ -720,7 +751,7 @@ mod tests {
                     nx: 0.25,
                     ny: 0.75,
                     mode: "virtual",
-                    wheel: 120,
+                    scroll: LightScriptScrollPayload::default(),
                     velocity: 0.5,
                 },
                 events: Vec::new(),
@@ -788,24 +819,6 @@ mod tests {
     }
 
     #[test]
-    fn control_values_serialize_as_lightscript_globals() {
-        assert_eq!(
-            serde_json::to_value(LightScriptControlValue::from_control_value(
-                &ControlValue::Color([0.0, 0.5, 1.0, 1.0]),
-            ))
-            .expect("color should serialize"),
-            serde_json::json!("#0080ff")
-        );
-        assert_eq!(
-            serde_json::to_value(LightScriptControlValue::from_control_value(
-                &ControlValue::Float(f32::NAN),
-            ))
-            .expect("float should serialize"),
-            serde_json::json!(0.0)
-        );
-    }
-
-    #[test]
     fn interaction_payload_uses_lookup_key_arrays() {
         let payload = LightScriptInteractionPayload::from_interaction(
             &InteractionData {
@@ -846,16 +859,23 @@ mod tests {
 #[cfg(test)]
 mod interaction_payload_v2_tests {
     use super::*;
-    use crate::input::{InteractionData, MotionAggregate, PointerMode};
-    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+    use crate::input::{InteractionData, MotionAggregate, PointerMode, ScrollAggregate};
+    use hypercolor_types::event::{
+        InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+    };
 
     #[test]
-    fn interaction_payload_carries_events_wheel_and_velocity() {
+    fn interaction_payload_carries_exact_scroll_events_and_velocity() {
         let mut interaction = InteractionData::default();
         interaction.mouse.norm_x = 0.5;
         interaction.mouse.norm_y = 2.0; // clamped
         interaction.mouse.mode = PointerMode::Virtual;
-        interaction.batch.wheel_hi_res = -240;
+        interaction.batch.scroll = ScrollAggregate {
+            line120_x_q16_16: 32_768,
+            line120_y_q16_16: -131_072,
+            pixel_x_q16_16: 98_304,
+            pixel_y_q16_16: -16_384,
+        };
         interaction.batch.motion = MotionAggregate {
             dx: 0.1,
             dy: 0.0,
@@ -875,13 +895,17 @@ mod interaction_payload_v2_tests {
                 repeat_count: 3,
             },
             TimedInputEvent {
-                event: InputEvent::MouseWheel {
+                event: InputEvent::PointerScroll {
                     source_id: "ptr".into(),
-                    delta_hi_res: -240,
+                    delta_x_q16_16: 32_768,
+                    delta_y_q16_16: -16_384,
+                    unit: PointerScrollUnit::Pixels,
+                    phase: PointerScrollPhase::Changed,
+                    momentum_phase: PointerScrollPhase::Began,
                 },
-                at_ms: 105,
+                at_ms: 104,
                 seq: 10,
-                physical_code: None,
+                physical_code: Some("macos:scroll".into()),
                 repeat_count: 1,
             },
             TimedInputEvent {
@@ -890,7 +914,7 @@ mod interaction_payload_v2_tests {
                     message: hypercolor_types::event::MidiRealtimeMessage::Clock,
                 },
                 at_ms: 106,
-                seq: 11,
+                seq: 12,
                 physical_code: Some("midi:realtime:clock".into()),
                 repeat_count: 1,
             },
@@ -902,7 +926,10 @@ mod interaction_payload_v2_tests {
         assert_eq!(value["mouse"]["nx"], serde_json::json!(0.5));
         assert_eq!(value["mouse"]["ny"], serde_json::json!(1.0));
         assert_eq!(value["mouse"]["mode"], serde_json::json!("virtual"));
-        assert_eq!(value["mouse"]["wheel"], serde_json::json!(-240));
+        assert_eq!(value["mouse"]["scroll"]["line120X"], 0.5);
+        assert_eq!(value["mouse"]["scroll"]["line120Y"], -2.0);
+        assert_eq!(value["mouse"]["scroll"]["pixelX"], 1.5);
+        assert_eq!(value["mouse"]["scroll"]["pixelY"], -0.25);
         assert!(value["mouse"]["velocity"].as_f64().expect("velocity") > 8.9);
         assert_eq!(value["dropped"], serde_json::json!(2));
 
@@ -915,8 +942,12 @@ mod interaction_payload_v2_tests {
         assert_eq!(events[0]["state"], serde_json::json!("pressed"));
         assert_eq!(events[0]["atMs"], serde_json::json!(100));
         assert_eq!(events[0]["seq"], serde_json::json!(9));
-        assert_eq!(events[1]["kind"], serde_json::json!("wheel"));
-        assert_eq!(events[1]["delta"], serde_json::json!(-240));
+        assert_eq!(events[1]["kind"], serde_json::json!("scroll"));
+        assert_eq!(events[1]["deltaX"], 0.5);
+        assert_eq!(events[1]["deltaY"], -0.25);
+        assert_eq!(events[1]["unit"], "pixels");
+        assert_eq!(events[1]["phase"], "changed");
+        assert_eq!(events[1]["momentumPhase"], "began");
     }
 
     #[test]
@@ -926,7 +957,6 @@ mod interaction_payload_v2_tests {
         let value = serde_json::to_value(&payload).expect("payload serializes");
         assert!(value.get("events").is_none());
         assert!(value.get("dropped").is_none());
-        assert!(value["mouse"].get("wheel").is_none());
         assert_eq!(value["mouse"]["mode"], serde_json::json!("none"));
     }
 }

@@ -1,6 +1,8 @@
 //! Mapping from raw session events to sleep and wake actions.
 
-use crate::types::session::{
+use hypercolor_color::Rgb;
+
+use hypercolor_types::session::{
     OffOutputBehavior, SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
 };
 
@@ -25,14 +27,16 @@ impl SleepPolicy {
     #[must_use]
     pub fn sleep_action(&self, event: &SessionEvent) -> Option<SleepAction> {
         match event {
-            SessionEvent::ScreenLocked => Some(sleep_action_from_behavior(
-                self.config.off_output_behavior,
-                &self.config.off_output_color,
-                self.config.on_screen_lock,
-                self.config.screen_lock_brightness,
-                &self.config.screen_lock_scene,
-                self.config.screen_lock_fade_ms,
-            )),
+            SessionEvent::ScreenLocked | SessionEvent::SessionInactive => {
+                Some(sleep_action_from_behavior(
+                    self.config.off_output_behavior,
+                    &self.config.off_output_color,
+                    self.config.on_screen_lock,
+                    self.config.screen_lock_brightness,
+                    &self.config.screen_lock_scene,
+                    self.config.screen_lock_fade_ms,
+                ))
+            }
             SessionEvent::Suspending => Some(sleep_action_from_behavior(
                 self.config.off_output_behavior,
                 &self.config.off_output_color,
@@ -71,6 +75,7 @@ impl SleepPolicy {
                 }
             }
             SessionEvent::ScreenUnlocked
+            | SessionEvent::SessionActive
             | SessionEvent::Resumed
             | SessionEvent::IdleExited
             | SessionEvent::LidOpened => None,
@@ -81,9 +86,11 @@ impl SleepPolicy {
     #[must_use]
     pub fn wake_action(&self, event: &SessionEvent) -> Option<WakeAction> {
         match event {
-            SessionEvent::ScreenUnlocked => Some(WakeAction::Restore {
-                fade_ms: self.config.screen_unlock_fade_ms,
-            }),
+            SessionEvent::ScreenUnlocked | SessionEvent::SessionActive => {
+                Some(WakeAction::Restore {
+                    fade_ms: self.config.screen_unlock_fade_ms,
+                })
+            }
             SessionEvent::Resumed => Some(WakeAction::Restore {
                 fade_ms: self.config.resume_fade_ms,
             }),
@@ -97,6 +104,7 @@ impl SleepPolicy {
                 fade_ms: self.config.lid_open_fade_ms,
             }),
             SessionEvent::ScreenLocked
+            | SessionEvent::SessionInactive
             | SessionEvent::Suspending
             | SessionEvent::IdleEntered { .. }
             | SessionEvent::LidClosed => None,
@@ -138,37 +146,9 @@ fn sleep_action_from_behavior(
 
 #[must_use]
 pub fn parse_static_color(raw: &str) -> [u8; 3] {
-    let trimmed = raw.trim();
-    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
-    match hex.len() {
-        3 => {
-            let bytes = hex.as_bytes();
-            [
-                parse_nibble(bytes[0]).map_or(0, |value| (value << 4) | value),
-                parse_nibble(bytes[1]).map_or(0, |value| (value << 4) | value),
-                parse_nibble(bytes[2]).map_or(0, |value| (value << 4) | value),
-            ]
-        }
-        6 => [
-            parse_byte(&hex[0..2]).unwrap_or(0),
-            parse_byte(&hex[2..4]).unwrap_or(0),
-            parse_byte(&hex[4..6]).unwrap_or(0),
-        ],
-        _ => [0, 0, 0],
-    }
-}
-
-fn parse_byte(raw: &str) -> Option<u8> {
-    u8::from_str_radix(raw, 16).ok()
-}
-
-fn parse_nibble(raw: u8) -> Option<u8> {
-    match raw {
-        b'0'..=b'9' => Some(raw - b'0'),
-        b'a'..=b'f' => Some(raw - b'a' + 10),
-        b'A'..=b'F' => Some(raw - b'A' + 10),
-        _ => None,
-    }
+    // A configured color that will not parse has always resolved to black
+    // rather than refusing the sleep action.
+    Rgb::from_hex(raw.trim()).map_or([0, 0, 0], |color| [color.r, color.g, color.b])
 }
 
 #[cfg(test)]
@@ -176,7 +156,7 @@ mod tests {
     use std::time::Duration;
 
     use super::SleepPolicy;
-    use crate::types::session::{
+    use hypercolor_types::session::{
         OffOutputBehavior, SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
     };
 
@@ -195,6 +175,29 @@ mod tests {
         assert_eq!(
             policy.wake_action(&SessionEvent::ScreenUnlocked),
             Some(WakeAction::Restore { fade_ms: 500 })
+        );
+    }
+
+    #[test]
+    fn session_activity_uses_the_configured_lock_policy_without_claiming_a_lock() {
+        let policy = SleepPolicy::new(SessionConfig {
+            on_screen_lock: SleepBehavior::Dim,
+            screen_lock_brightness: 0.25,
+            screen_lock_fade_ms: 1_234,
+            screen_unlock_fade_ms: 432,
+            ..SessionConfig::default()
+        });
+
+        assert_eq!(
+            policy.sleep_action(&SessionEvent::SessionInactive),
+            Some(SleepAction::Dim {
+                brightness: 0.25,
+                fade_ms: 1_234,
+            })
+        );
+        assert_eq!(
+            policy.wake_action(&SessionEvent::SessionActive),
+            Some(WakeAction::Restore { fade_ms: 432 })
         );
     }
 

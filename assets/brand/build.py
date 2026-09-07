@@ -28,6 +28,14 @@ MASK = BRAND / "mask"
 DERIVED = BRAND / "derived"
 APP_ICON_DIR = REPO_ROOT / "crates" / "hypercolor-app" / "icons"
 
+APP_ICON_ASSETS = (
+    "32x32.png",
+    "128x128.png",
+    "128x128@2x.png",
+    "icon.png",
+    "icon.icns",
+    "icon.ico",
+)
 INSTALLER_APP_ASSETS = ("installer.ico", "nsis-header.bmp", "nsis-sidebar.bmp")
 
 AI_PETAL_SOURCES = {
@@ -637,8 +645,14 @@ def build_app_icons() -> None:
         format="ICO",
         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
+    master_icon.save(out / "icon.icns", format="ICNS")
+
+    APP_ICON_DIR.mkdir(parents=True, exist_ok=True)
+    for asset in APP_ICON_ASSETS:
+        shutil.copy2(out / asset, APP_ICON_DIR / asset)
 
     print(f"  → app-icon: {len(list(out.glob('*')))} files")
+    print(f"  → Tauri app icons: {len(APP_ICON_ASSETS)} files")
 
 
 def build_tray() -> None:
@@ -886,6 +900,14 @@ def build_derived() -> None:
 
 def main() -> None:
     stage = sys.argv[1] if len(sys.argv) > 1 else "all"
+
+    if stage == "app-icon":
+        if not MASTER.exists():
+            raise SystemExit(f"missing master/ — run a full build first ({MASTER})")
+        print("rebuilding app icons from master/")
+        build_app_icons()
+        print("\n✦ done.")
+        return
 
     # `installer` rebuilds only the Windows installer art from the checked-in
     # masters — no source/ needed, and it won't churn unrelated derived assets.

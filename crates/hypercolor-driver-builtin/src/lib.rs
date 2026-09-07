@@ -5,14 +5,16 @@
 
 #[cfg(feature = "hal")]
 mod hal;
+#[cfg(feature = "hal")]
+mod transport;
 
 use std::sync::Arc;
 
 use anyhow::Result;
-use hypercolor_driver_api::CredentialStore;
+#[cfg(feature = "hal")]
+use hypercolor_core::device::UsbProtocolConfigStore;
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
-#[cfg(feature = "govee")]
-use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::config::HypercolorConfig;
 
 #[cfg(feature = "govee")]
@@ -35,9 +37,16 @@ use hypercolor_driver_wled::WledDriverModule;
 pub fn build_driver_module_registry(
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
+    #[cfg(feature = "hal")] usb_protocol_configs: UsbProtocolConfigStore,
 ) -> Result<DriverModuleRegistry> {
     let mut registry = DriverModuleRegistry::new();
-    register_driver_modules(&mut registry, config, credential_store)?;
+    register_driver_modules(
+        &mut registry,
+        config,
+        credential_store,
+        #[cfg(feature = "hal")]
+        usb_protocol_configs,
+    )?;
     Ok(registry)
 }
 
@@ -50,6 +59,7 @@ pub fn register_driver_modules(
     registry: &mut DriverModuleRegistry,
     config: &HypercolorConfig,
     credential_store: Arc<CredentialStore>,
+    #[cfg(feature = "hal")] usb_protocol_configs: UsbProtocolConfigStore,
 ) -> Result<()> {
     #[cfg(not(any(
         feature = "wled",
@@ -60,37 +70,45 @@ pub fn register_driver_modules(
         feature = "hal"
     )))]
     let _ = registry;
-    #[cfg(not(any(feature = "wled", feature = "hue", feature = "nanoleaf")))]
+    #[cfg(not(all(feature = "hal", unix)))]
     let _ = config;
 
     #[cfg(feature = "wled")]
-    registry.register(WledDriverModule::new(config.discovery.mdns_enabled))?;
+    registry.register(WledDriverModule::new())?;
     #[cfg(not(any(feature = "govee", feature = "hue", feature = "nanoleaf")))]
     let _ = &credential_store;
 
     #[cfg(feature = "govee")]
-    registry.register(GoveeDriverModule::with_credential_store(
-        GoveeConfig::default(),
-        Arc::clone(&credential_store),
-    ))?;
+    registry.register(GoveeDriverModule::with_credential_store(Arc::clone(
+        &credential_store,
+    )))?;
 
     #[cfg(feature = "hue")]
-    registry.register(HueDriverModule::new(
-        Arc::clone(&credential_store),
-        config.discovery.mdns_enabled,
-    ))?;
+    registry.register(HueDriverModule::new(Arc::clone(&credential_store)))?;
 
     #[cfg(feature = "nanoleaf")]
-    registry.register(NanoleafDriverModule::new(
-        credential_store,
-        config.discovery.mdns_enabled,
-    ))?;
+    registry.register(NanoleafDriverModule::new(Arc::clone(&credential_store)))?;
 
     #[cfg(feature = "openrgb")]
     registry.register(OpenRgbDriverModule)?;
 
     #[cfg(feature = "hal")]
     {
+        registry.register(transport::UsbTransportDriverModule::new(
+            usb_protocol_configs,
+        ))?;
+        registry.register(transport::SmBusTransportDriverModule)?;
+        #[cfg(unix)]
+        {
+            let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
+                hypercolor_core::device::BlocksBackend::default_socket_path,
+                std::path::PathBuf::from,
+            );
+            registry.register(transport::BlocksTransportDriverModule::new(
+                socket_path,
+                config.discovery.blocks_scan,
+            ))?;
+        }
         for driver in hal::hal_catalog_driver_modules() {
             registry.register(driver)?;
         }

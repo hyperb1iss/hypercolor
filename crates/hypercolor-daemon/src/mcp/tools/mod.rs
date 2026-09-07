@@ -1,17 +1,24 @@
 //! MCP tool definitions — the daemon tools exposed to AI assistants.
 //!
 //! Each tool is a `ToolDefinition` with a JSON Schema input spec. Tool execution
-//! is handled by `execute_tool`, which dispatches to the appropriate handler in
-//! a per-cluster submodule.
+//! is handled by `execute_tool_with_state`, which dispatches to the appropriate
+//! handler in a per-cluster submodule.
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use jsonschema::error::ValidationErrorKind;
+use serde::Serialize;
 use serde_json::{Value, json};
+use utoipa::ToSchema;
 
-use crate::api::AppState;
+use crate::app_state::AppState;
+use crate::domain::DomainError;
+use crate::mcp::selector::SelectorError;
 
 mod devices;
 mod displays;
 mod effects;
-mod library;
 mod scenes;
 mod system;
 
@@ -30,6 +37,16 @@ pub struct ToolDefinition {
     pub output_schema: Value,
     /// Whether this tool only reads state (never modifies).
     pub read_only: bool,
+    /// Whether this tool may overwrite state a caller cannot recover.
+    ///
+    /// A tool is destructive when running it discards something the
+    /// client did not supply and cannot get back: the running effect's
+    /// live control values, a scene's whole layer tree, a display's
+    /// assigned face. A reversible value write (brightness, output
+    /// power) or a pure creation (a new scene) is additive, not
+    /// destructive. Meaningful only when [`Self::read_only`] is false;
+    /// read-only tools declare `false`.
+    pub destructive: bool,
     /// Whether repeated calls with the same input produce the same result.
     pub idempotent: bool,
 }
@@ -39,7 +56,9 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         effects::build_set_effect(),
         effects::build_list_effects(),
-        effects::build_stop_effect(),
+        system::build_set_output_power(),
+        scenes::build_clear_zone(),
+        scenes::build_adjust_controls(),
         effects::build_set_color(),
         devices::build_get_devices(),
         devices::build_set_brightness(),
@@ -50,39 +69,376 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         system::build_get_audio_state(),
         system::build_get_sensor_data(),
         displays::build_set_display_face(),
-        library::build_set_profile(),
         system::build_get_layout(),
         system::build_diagnose(),
     ]
 }
 
-pub(super) fn default_output_schema() -> Value {
-    json!({
-        "type": "object",
-        "description": "Structured JSON result returned by this tool. Field-level schemas are intentionally broad for now and should be tightened as the MCP surface stabilizes."
-    })
+struct InputContract {
+    schema: Value,
+    validator: jsonschema::Validator,
 }
 
-/// Execute a tool by name with the given arguments. Returns the result as JSON.
-pub fn execute_tool(name: &str, params: &Value) -> Result<Value, ToolError> {
-    match name {
-        "set_effect" => effects::handle_set_effect(params),
-        "list_effects" => effects::handle_list_effects(params),
-        "stop_effect" => effects::handle_stop_effect(params),
-        "set_color" => effects::handle_set_color(params),
-        "get_devices" => devices::handle_get_devices(params),
-        "set_brightness" => devices::handle_set_brightness(params),
-        "get_status" => system::handle_get_status(params),
-        "activate_scene" => scenes::handle_activate_scene(params),
-        "list_scenes" => scenes::handle_list_scenes(params),
-        "create_scene" => scenes::handle_create_scene(params),
-        "get_audio_state" => system::handle_get_audio_state(params),
-        "get_sensor_data" => system::handle_get_sensor_data(params),
-        "set_display_face" => displays::handle_set_display_face(params),
-        "set_profile" => library::handle_set_profile(params),
-        "get_layout" => system::handle_get_layout(params),
-        "diagnose" => system::handle_diagnose(params),
-        _ => Err(ToolError::NotFound(name.to_owned())),
+static INPUT_CONTRACTS: LazyLock<Result<HashMap<String, InputContract>, String>> =
+    LazyLock::new(|| {
+        build_tool_definitions()
+            .into_iter()
+            .map(|tool| {
+                jsonschema::validator_for(&tool.input_schema)
+                    .map(|validator| {
+                        (
+                            tool.name.clone(),
+                            InputContract {
+                                schema: tool.input_schema,
+                                validator,
+                            },
+                        )
+                    })
+                    .map_err(|error| format!("invalid input schema for {}: {error}", tool.name))
+            })
+            .collect()
+    });
+
+static OUTPUT_CONTRACTS: LazyLock<Result<HashMap<String, jsonschema::Validator>, String>> =
+    LazyLock::new(|| {
+        build_tool_definitions()
+            .into_iter()
+            .map(|tool| {
+                jsonschema::validator_for(&tool.output_schema)
+                    .map(|validator| (tool.name.clone(), validator))
+                    .map_err(|error| format!("invalid output schema for {}: {error}", tool.name))
+            })
+            .collect()
+    });
+
+fn validate_params(name: &str, params: &Value) -> Result<Value, ToolError> {
+    let contracts = INPUT_CONTRACTS
+        .as_ref()
+        .map_err(|error| ToolError::Internal(error.clone()))?;
+    let Some(contract) = contracts.get(name) else {
+        return Ok(params.clone());
+    };
+    if let Some(param) = undeclared_parameter(&contract.schema, params, "") {
+        return Err(ToolError::InvalidParam {
+            reason: format!("{name} does not accept a '{param}' argument"),
+            param,
+        });
+    }
+    let errors = contract.validator.iter_errors(params).collect::<Vec<_>>();
+    if let Some(error) = errors
+        .iter()
+        .find(|error| {
+            matches!(
+                error.kind(),
+                ValidationErrorKind::AdditionalProperties { .. }
+            )
+        })
+        .or_else(|| errors.first())
+    {
+        return Err(tool_validation_error(name, error));
+    }
+
+    let mut normalized = params.clone();
+    normalize_integer_values(&contract.schema, &mut normalized, "")?;
+    Ok(normalized)
+}
+
+fn tool_validation_error(name: &str, error: &jsonschema::ValidationError<'_>) -> ToolError {
+    match error.kind() {
+        ValidationErrorKind::Required { property } => {
+            let pointer = error.instance_path().to_string();
+            let parent = parameter_path(&pointer);
+            let property = property.as_str().unwrap_or("arguments");
+            let param = parent.map_or_else(
+                || property.to_owned(),
+                |parent| format!("{parent}.{property}"),
+            );
+            ToolError::MissingParam(param)
+        }
+        ValidationErrorKind::AdditionalProperties { unexpected } => {
+            let property = unexpected
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "arguments".to_owned());
+            let pointer = error.instance_path().to_string();
+            let parent = parameter_path(&pointer);
+            let param =
+                parent.map_or_else(|| property.clone(), |parent| format!("{parent}.{property}"));
+            ToolError::InvalidParam {
+                reason: format!("{name} does not accept a '{param}' argument"),
+                param,
+            }
+        }
+        _ => {
+            let pointer = error.instance_path().to_string();
+            let param = parameter_path(&pointer).unwrap_or_else(|| "arguments".to_owned());
+            ToolError::InvalidParam {
+                param,
+                reason: error.masked().to_string(),
+            }
+        }
+    }
+}
+
+fn parameter_path(pointer: &str) -> Option<String> {
+    pointer
+        .strip_prefix('/')
+        .filter(|path| !path.is_empty())
+        .map(|path| path.replace('/', "."))
+}
+
+fn undeclared_parameter(schema: &Value, instance: &Value, parameter: &str) -> Option<String> {
+    if let Some(object) = instance.as_object() {
+        let properties = schema["properties"].as_object();
+        if schema["additionalProperties"] == Value::Bool(false) {
+            for name in object.keys() {
+                if !properties.is_some_and(|properties| properties.contains_key(name)) {
+                    return Some(if parameter.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{parameter}.{name}")
+                    });
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (name, child_schema) in properties {
+                let Some(child) = object.get(name) else {
+                    continue;
+                };
+                let child_parameter = if parameter.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{parameter}.{name}")
+                };
+                if let Some(param) = undeclared_parameter(child_schema, child, &child_parameter) {
+                    return Some(param);
+                }
+            }
+        }
+    }
+
+    if let (Some(item_schema), Some(items)) = (schema.get("items"), instance.as_array()) {
+        for (index, item) in items.iter().enumerate() {
+            let item_parameter = if parameter.is_empty() {
+                index.to_string()
+            } else {
+                format!("{parameter}.{index}")
+            };
+            if let Some(param) = undeclared_parameter(item_schema, item, &item_parameter) {
+                return Some(param);
+            }
+        }
+    }
+
+    None
+}
+
+/// Preserve JSON Schema's mathematical integer semantics for Serde readers.
+///
+/// Values such as `50.0` satisfy an `integer` schema, but Serde retains their
+/// floating representation and `as_u64` rejects them. Normalizing only the
+/// schema-approved integer nodes prevents handlers from silently substituting
+/// defaults for valid calls.
+fn normalize_integer_values(
+    schema: &Value,
+    instance: &mut Value,
+    parameter: &str,
+) -> Result<(), ToolError> {
+    if schema["type"] == "integer" {
+        let Value::Number(number) = instance else {
+            return Ok(());
+        };
+        if number.as_i64().is_some() || number.as_u64().is_some() {
+            return Ok(());
+        }
+
+        let value = number.as_f64().ok_or_else(|| ToolError::InvalidParam {
+            param: parameter.to_owned(),
+            reason: "integer cannot be represented by the daemon".into(),
+        })?;
+        let normalized = if (0.0..18_446_744_073_709_551_616.0).contains(&value) {
+            serde_json::Number::from(value as u64)
+        } else if (-9_223_372_036_854_775_808.0..0.0).contains(&value) {
+            serde_json::Number::from(value as i64)
+        } else {
+            return Err(ToolError::InvalidParam {
+                param: parameter.to_owned(),
+                reason: "integer is outside the daemon's supported range".into(),
+            });
+        };
+        *instance = Value::Number(normalized);
+        return Ok(());
+    }
+
+    if let (Some(properties), Some(instance)) =
+        (schema["properties"].as_object(), instance.as_object_mut())
+    {
+        for (name, child_schema) in properties {
+            let Some(child) = instance.get_mut(name) else {
+                continue;
+            };
+            let child_parameter = if parameter.is_empty() {
+                name.clone()
+            } else {
+                format!("{parameter}.{name}")
+            };
+            normalize_integer_values(child_schema, child, &child_parameter)?;
+        }
+    }
+
+    if let (Some(item_schema), Some(items)) = (schema.get("items"), instance.as_array_mut()) {
+        for (index, item) in items.iter_mut().enumerate() {
+            let item_parameter = if parameter.is_empty() {
+                index.to_string()
+            } else {
+                format!("{parameter}.{index}")
+            };
+            normalize_integer_values(item_schema, item, &item_parameter)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn output_schema<T: ToSchema>() -> Value {
+    let mut definitions = Vec::new();
+    T::schemas(&mut definitions);
+
+    let mut root = serde_json::to_value(T::schema())
+        .expect("utoipa output schemas should serialize to JSON values");
+    rewrite_schema_refs(&mut root);
+
+    let mut definitions: serde_json::Map<String, Value> = definitions
+        .into_iter()
+        .map(|(name, schema)| {
+            let mut schema = serde_json::to_value(schema)
+                .expect("utoipa referenced schemas should serialize to JSON values");
+            rewrite_schema_refs(&mut schema);
+            (name, schema)
+        })
+        .collect();
+
+    let open_definitions = definitions.clone();
+    merge_flattened_objects(&mut root, &open_definitions);
+    for schema in definitions.values_mut() {
+        merge_flattened_objects(schema, &open_definitions);
+    }
+
+    close_typed_objects(&mut root);
+    for schema in definitions.values_mut() {
+        close_typed_objects(schema);
+    }
+
+    if !definitions.is_empty() {
+        root.as_object_mut()
+            .expect("MCP output schemas must have an object root")
+            .insert("$defs".to_owned(), Value::Object(definitions));
+    }
+
+    root
+}
+
+/// Fold `allOf` object branches into one object so the closed-object
+/// rule below can hold. `#[serde(flatten)]` renders as `allOf` over the
+/// flattened type and the remaining fields; closing each branch on its
+/// own would reject the other branch's keys.
+fn merge_flattened_objects(schema: &mut Value, definitions: &serde_json::Map<String, Value>) {
+    match schema {
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                merge_flattened_objects(value, definitions);
+            }
+            let Some(Value::Array(branches)) = object.get("allOf") else {
+                return;
+            };
+            let mut properties = serde_json::Map::new();
+            let mut required = Vec::new();
+            for branch in branches {
+                let resolved = resolve_definition(branch, definitions);
+                let Some(branch) = resolved.as_object() else {
+                    return;
+                };
+                if !branch.contains_key("properties") {
+                    return;
+                }
+                if let Some(Value::Object(fields)) = branch.get("properties") {
+                    properties.extend(fields.clone());
+                }
+                if let Some(Value::Array(names)) = branch.get("required") {
+                    required.extend(names.iter().cloned());
+                }
+            }
+            object.remove("allOf");
+            object.insert("type".to_owned(), Value::String("object".to_owned()));
+            object.insert("properties".to_owned(), Value::Object(properties));
+            if !required.is_empty() {
+                object.insert("required".to_owned(), Value::Array(required));
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                merge_flattened_objects(item, definitions);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resolve_definition<'a>(
+    schema: &'a Value,
+    definitions: &'a serde_json::Map<String, Value>,
+) -> &'a Value {
+    schema
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix("#/$defs/"))
+        .and_then(|name| definitions.get(name))
+        .unwrap_or(schema)
+}
+
+pub(super) fn serialize_result<T: Serialize>(result: T) -> Result<Value, ToolError> {
+    serde_json::to_value(result).map_err(|error| ToolError::Internal(error.to_string()))
+}
+
+fn rewrite_schema_refs(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            if let Some(reference) = object.get_mut("$ref")
+                && let Some(value) = reference.as_str()
+                && let Some(name) = value.strip_prefix("#/components/schemas/")
+            {
+                *reference = Value::String(format!("#/$defs/{name}"));
+            }
+            for value in object.values_mut() {
+                rewrite_schema_refs(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                rewrite_schema_refs(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn close_typed_objects(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            if object.contains_key("properties") && !object.contains_key("additionalProperties") {
+                object.insert("additionalProperties".to_owned(), Value::Bool(false));
+            }
+            for value in object.values_mut() {
+                close_typed_objects(value);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                close_typed_objects(item);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -92,25 +448,45 @@ pub async fn execute_tool_with_state(
     params: &Value,
     state: &AppState,
 ) -> Result<Value, ToolError> {
-    match name {
-        "set_effect" => effects::handle_set_effect_with_state(params, state).await,
-        "list_effects" => effects::handle_list_effects_with_state(params, state).await,
-        "stop_effect" => effects::handle_stop_effect_with_state(params, state).await,
-        "set_color" => effects::handle_set_color_with_state(params, state).await,
-        "get_devices" => devices::handle_get_devices_with_state(params, state).await,
-        "set_brightness" => devices::handle_set_brightness_with_state(params, state).await,
+    let params = validate_params(name, params)?;
+    let result = match name {
+        "set_effect" => effects::handle_set_effect_with_state(&params, state).await,
+        "list_effects" => effects::handle_list_effects_with_state(&params, state).await,
+        "set_output_power" => system::handle_set_output_power_with_state(&params, state).await,
+        "clear_zone" => scenes::handle_clear_zone_with_state(&params, state).await,
+        "adjust_controls" => scenes::handle_adjust_controls_with_state(&params, state).await,
+        "set_color" => effects::handle_set_color_with_state(&params, state).await,
+        "get_devices" => devices::handle_get_devices_with_state(&params, state).await,
+        "set_brightness" => devices::handle_set_brightness_with_state(&params, state).await,
         "get_status" => system::handle_get_status_with_state(state).await,
-        "activate_scene" => scenes::handle_activate_scene_with_state(params, state).await,
-        "list_scenes" => scenes::handle_list_scenes_with_state(params, state).await,
-        "create_scene" => scenes::handle_create_scene_with_state(params, state).await,
-        "get_audio_state" => Ok(system::handle_get_audio_state_with_state(state)),
-        "get_sensor_data" => system::handle_get_sensor_data_with_state(params, state).await,
-        "set_display_face" => displays::handle_set_display_face_with_state(params, state).await,
-        "set_profile" => library::handle_set_profile_with_state(params, state).await,
+        "activate_scene" => scenes::handle_activate_scene_with_state(&params, state).await,
+        "list_scenes" => scenes::handle_list_scenes_with_state(&params, state).await,
+        "create_scene" => scenes::handle_create_scene_with_state(&params, state).await,
+        "get_audio_state" => system::handle_get_audio_state_with_state(state),
+        "get_sensor_data" => system::handle_get_sensor_data_with_state(&params, state),
+        "set_display_face" => displays::handle_set_display_face_with_state(&params, state).await,
         "get_layout" => system::handle_get_layout_with_state(state).await,
-        "diagnose" => system::handle_diagnose_with_state(params, state).await,
+        "diagnose" => system::handle_diagnose_with_state(&params, state).await,
         _ => Err(ToolError::NotFound(name.to_owned())),
+    }?;
+    validate_result(name, &result)?;
+    Ok(result)
+}
+
+fn validate_result(name: &str, result: &Value) -> Result<(), ToolError> {
+    let contracts = OUTPUT_CONTRACTS
+        .as_ref()
+        .map_err(|error| ToolError::Internal(error.clone()))?;
+    let Some(contract) = contracts.get(name) else {
+        return Ok(());
+    };
+    if let Some(error) = contract.iter_errors(result).next() {
+        tracing::error!(tool = name, %error, "MCP result violated its schema");
+        return Err(ToolError::Internal(format!(
+            "{name} produced a result outside its declared schema"
+        )));
     }
+    Ok(())
 }
 
 /// Errors that can occur during tool execution.
@@ -130,6 +506,14 @@ pub enum ToolError {
         /// What was wrong with it.
         reason: String,
     },
+    /// A human-friendly resource selector did not resolve uniquely.
+    #[error("invalid parameter '{param}': {source}")]
+    InvalidSelector {
+        /// Parameter name.
+        param: String,
+        /// Structured selector failure.
+        source: SelectorError,
+    },
     /// Current daemon state rejects the requested mutation.
     #[error("operation conflict: {0}")]
     Conflict(String),
@@ -143,9 +527,79 @@ impl ToolError {
     pub const fn error_code(&self) -> i64 {
         match self {
             Self::NotFound(_) => -32601, // Method not found
-            Self::MissingParam(_) | Self::InvalidParam { .. } => -32602, // Invalid params
+            Self::MissingParam(_) | Self::InvalidParam { .. } | Self::InvalidSelector { .. } => {
+                -32602
+            } // Invalid params
             Self::Conflict(_) => -32000, // Server error / state conflict
             Self::Internal(_) => -32603, // Internal error
+        }
+    }
+
+    /// Build an invalid-parameter error from the shared selector policy.
+    pub fn selector(param: impl Into<String>, source: SelectorError) -> Self {
+        Self::InvalidSelector {
+            param: param.into(),
+            source,
+        }
+    }
+
+    /// Structured details rendered alongside the MCP error code and message.
+    #[must_use]
+    pub fn details(&self) -> Option<Value> {
+        match self {
+            Self::MissingParam(parameter) => Some(json!({ "parameter": parameter })),
+            Self::InvalidParam { param, .. } => Some(json!({ "parameter": param })),
+            Self::InvalidSelector { param, source } => Some(json!({
+                "kind": source.kind(),
+                "parameter": param,
+                "query": source.query(),
+                "candidates": source.candidates(),
+            })),
+            Self::NotFound(_) | Self::Conflict(_) | Self::Internal(_) => None,
+        }
+    }
+}
+
+impl From<DomainError> for ToolError {
+    fn from(error: DomainError) -> Self {
+        match error {
+            DomainError::NotFound { kind, id } => Self::InvalidParam {
+                param: kind.to_string(),
+                reason: format!("not found: {id}"),
+            },
+            DomainError::Validation { message, field, .. } => Self::InvalidParam {
+                param: field.unwrap_or_else(|| "request".to_owned()),
+                reason: message,
+            },
+            DomainError::Malformed { message } => Self::InvalidParam {
+                param: "request".to_owned(),
+                reason: message,
+            },
+            error @ DomainError::ControlBound { .. } => Self::Conflict(error.to_string()),
+            DomainError::Conflict { message, .. }
+            | DomainError::Unauthorized { message }
+            | DomainError::Forbidden { message, .. }
+            | DomainError::UnsupportedMediaType { message }
+            | DomainError::RateLimited { message, .. }
+            | DomainError::ServiceUnavailable { message, .. } => Self::Conflict(message),
+            DomainError::PayloadTooLarge { limit_bytes } => Self::InvalidParam {
+                param: "payload".to_owned(),
+                reason: format!("exceeds the {limit_bytes} byte limit"),
+            },
+            DomainError::PreconditionFailed {
+                resource,
+                expected,
+                current,
+            } => Self::Conflict(format!(
+                "{resource} version mismatch: expected {expected}, current {current}"
+            )),
+            DomainError::DeviceUnavailable { device_id, reason } => {
+                Self::Conflict(format!("device {device_id} unavailable: {reason}"))
+            }
+            DomainError::Internal(error) => {
+                tracing::error!(chain = format!("{error:#}"), "domain internal error (mcp)");
+                Self::Internal("internal error".to_owned())
+            }
         }
     }
 }
@@ -154,34 +608,46 @@ pub(super) async fn find_effect_metadata(
     state: &AppState,
     primary_name: &str,
     fallback_name: &str,
-) -> Option<hypercolor_types::effect::EffectMetadata> {
-    let registry = state.effect_registry.read().await;
-    registry
-        .iter()
-        .map(|(_, entry)| entry.metadata.clone())
+) -> Option<crate::domain::effect::ResolvedEffect> {
+    state
+        .domains
+        .effects
+        .all_for_mutation()
+        .await
+        .into_iter()
         .find(|metadata| {
             metadata.name.eq_ignore_ascii_case(primary_name)
                 || metadata.name.eq_ignore_ascii_case(fallback_name)
         })
 }
 
-/// Convert a 0.0–1.0 brightness float to a 0–100 percentage.
-pub(crate) fn brightness_percent(brightness: f32) -> u8 {
-    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
-    if scaled <= 0.0 {
-        0
-    } else if scaled >= 100.0 {
-        100
-    } else {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::as_conversions
-        )]
-        let result = scaled as u8;
-        result
-    }
+pub(super) async fn resolve_effect_selector(
+    state: &AppState,
+    parameter: &str,
+    query: &str,
+) -> Result<crate::domain::effect::ResolvedEffect, ToolError> {
+    let candidates = state
+        .domains
+        .effects
+        .all_for_mutation()
+        .await
+        .into_iter()
+        .map(|metadata| {
+            crate::mcp::selector::SelectorCandidate::named(
+                metadata.id.to_string(),
+                metadata.name.clone(),
+                metadata,
+            )
+        })
+        .collect();
+    crate::mcp::selector::resolve(query, candidates)
+        .map_err(|error| ToolError::selector(parameter, error))
 }
+
+/// Convert a 0.0–1.0 brightness float to a 0–100 percentage. The
+/// output service owns the conversion; MCP re-exports it so the two
+/// surfaces cannot drift.
+pub(crate) use crate::domain::output::brightness_percent;
 
 /// Compute theoretical render capacity, capped at the target tier rate.
 ///
@@ -197,4 +663,31 @@ pub(crate) fn render_capacity_fps(stats: &hypercolor_core::engine::RenderLoopSta
     #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
     let target = stats.tier.fps() as f32;
     throughput.min(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolError;
+    use crate::domain::{DomainError, ResourceKind};
+
+    #[test]
+    fn domain_error_projection_keeps_mcp_codes_sane() {
+        let not_found: ToolError = DomainError::NotFound {
+            kind: ResourceKind::Effect,
+            id: "fx".to_owned(),
+        }
+        .into();
+        assert_eq!(not_found.error_code(), -32602);
+
+        let conflict: ToolError = DomainError::conflict("busy").into();
+        assert_eq!(conflict.error_code(), -32000);
+
+        let precondition: ToolError = DomainError::PreconditionFailed {
+            resource: ResourceKind::Scene,
+            expected: 1,
+            current: 2,
+        }
+        .into();
+        assert_eq!(precondition.error_code(), -32000);
+    }
 }

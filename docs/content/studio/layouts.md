@@ -9,24 +9,24 @@ A layout tells the engine where each light sits on the canvas. The effect paints
 
 This is the single most common "my effect runs but nothing lights up" cause. If a zone glows in the live preview yet your hardware is black, the fix is almost always here: drag the device's outputs onto the canvas and hit Save.
 
-{% callout(type="info", title="Where the editor lives") %}
-In Studio, the layout editor **is** the Stage for a Light. Select a Light zone in the left tree and the canvas fills the center, with the live effect rendering under the device boxes. There is no Preview/Layout toggle. The standalone `/layout` page edits a separate, legacy layouts library and is being retired. Treat the Studio Stage as the canonical place to build a zone's layout.
-{% end %}
+{% <callout type="info" title="Where the editor lives"> %}
+In Studio, the layout editor **is** the Stage for a Light. Select a Light zone in the left tree and the canvas fills the center, with the live effect rendering under the device boxes. There is no Preview/Layout toggle. The Studio Stage is the canonical place to build a zone's layout.
+{% </callout> %}
 
-{{ img(path="img/ui/studio.webp", alt="Studio with the spatial layout editor filling the Stage") }}
+{{< img path="img/ui/studio.webp" alt="Studio with the spatial layout editor filling the Stage" />}}
 
 ## The model in one picture
 
 A scene has one shared canvas. Each zone partitions it and owns a layout that places its outputs on that canvas.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
     Scene["Scene (one active)"] --> Zone["Zone (a canvas partition)"]
     Zone --> Layout["Layout: the zone's output placements"]
     Layout --> O1["Output (device segment)"]
     Layout --> O2["Output (device segment)"]
     Layout --> O3["Output (device segment)"]
-{% end %}
+{% </mermaid> %}
 
 An **output** is one addressable run on a device: a fan, a strip segment, a keyboard. The canvas uses normalized coordinates from `0.0` to `1.0`, so a layout is resolution-independent: an output centered at `x = 0.5` stays centered whatever the canvas pixel size. The scene's canvas defaults to 640×480 and is tunable daemon-wide via `daemon.canvas_width` and `daemon.canvas_height`.
 
@@ -34,13 +34,11 @@ A device output lives in exactly one zone's layout at a time. Adding it to anoth
 
 ## Placing outputs on the canvas
 
-In Studio, every output assigned to the selected Light zone already appears on its canvas. Use the device-grouping controls (covered in [Device grouping](@/studio/device-grouping.md)) to add a device's outputs to the zone, and they show up as draggable boxes.
+In Studio, every output assigned to the selected Light zone already appears on its canvas. Use the device-assignment controls (covered in [Device assignment](@/studio/device-assignment.md)) to add a device's outputs to the zone, and they show up as draggable boxes.
 
-On the standalone `/layout` page, a device palette runs down the left side and you drag devices onto the canvas. The Studio Stage hides that permanent palette to keep the canvas as the hero, but the same editor drives both.
-
-{% callout(type="warning", title="Generic ARGB channels need a component first") %}
+{% <callout type="warning" title="Generic ARGB channels need a component first"> %}
 An unattached generic ARGB controller channel does not draw on the canvas until you attach a component (a strip, a fan, an LED area) to it. The channel is just raw wiring until then. Fixed devices like keyboards and AIO coolers always render, because they have meaningful LEDs without any component setup.
-{% end %}
+{% </callout> %}
 
 ## Moving, resizing, rotating
 
@@ -91,9 +89,9 @@ The Stage header carries the canvas controls.
 - **Save** writes the layout to the zone. The Save button doubles as the dirty indicator: it glows green when you have unsaved changes and dims when the layout is clean.
 - **Revert** discards every change since the last save and restores the canvas to its saved state.
 
-{% callout(type="warning", title="Edits are not live until you save") %}
+{% <callout type="warning" title="Edits are not live until you save"> %}
 Dragging an output pushes a live preview to the daemon so you can see the result on your hardware immediately, but that preview is temporary. The placement is not persisted to the zone until you hit Save. If you switch zones or close Studio with the Save button still glowing, your arrangement is lost. Revert is the safety net while you experiment; Save is the commit.
-{% end %}
+{% </callout> %}
 
 If someone changes the same scene from another client or the CLI while you are editing, a save can come back stale. Studio reloads the scene and asks you to try again rather than clobbering the other change. Your in-flight edits to placement survive an unrelated refetch, so a device assigned elsewhere does not wipe the box you are dragging.
 
@@ -101,18 +99,18 @@ If someone changes the same scene from another client or the CLI while you are e
 
 To make the dark-LED failure concrete, here is the full chain from effect to photons:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
     FX["Effect paints canvas"] --> SAMP["Sampler reads one pixel per LED"]
     SAMP --> OUT["Output's canvas position"]
     OUT --> HW["LEDs light up"]
-{% end %}
+{% </mermaid> %}
 
 If the output is not on the canvas, the sampler has no position to read for it, so it sends nothing, so the LED stays dark. The effect is rendering perfectly the whole time. The break is the missing placement. Drop the output on the canvas, Save, and the chain completes.
 
 ## Where to go next
 
 - [Zones](@/studio/zones.md): how a zone partitions the canvas and why each one owns a layout.
-- [Device grouping](@/studio/device-grouping.md): adding device outputs to a zone so they appear on its canvas.
+- [Device assignment](@/studio/device-assignment.md): adding device outputs to a zone so they appear on its canvas.
 - [Layers](@/studio/layers.md): stacking the effects, faces, and media that paint the canvas you are mapping onto.
 - [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): building a second zone and splitting outputs across zones end to end.

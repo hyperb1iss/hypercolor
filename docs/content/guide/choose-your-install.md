@@ -4,17 +4,15 @@ description = "Pick the right Hypercolor install path for your OS and skill leve
 weight = 20
 +++
 
-# Choose your install
-
 Not every install path is right for every person. This page routes you to the correct one before you spend time on the wrong steps.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Linux, Windows, and macOS are all supported install platforms. Linux
-additionally gets udev, systemd, and session integration (idle dim, lock and
-suspend behavior). Platform limits to know up front: macOS has no screen
-capture and no SMBus motherboard/DRAM RGB, and session integration is
-Linux-only today.
-{% end %}
+additionally gets udev rules and a systemd user service. macOS supports screen
+capture and native host input, but it has no SMBus motherboard/DRAM RGB path.
+Screen-lock and suspend behavior works on all three platforms; the idle-dimming
+and laptop-lid settings are accepted but nothing emits those events yet.
+{% </callout> %}
 
 ## Decide in 30 seconds
 
@@ -30,12 +28,12 @@ If you are not sure whether you are a developer, you are not a developer. Start 
 
 ---
 
-## Prebuilt one-liner (Linux) {#prebuilt-linux}
+## Prebuilt one-liner (Linux) {% raw %}{#prebuilt-linux}{% endraw %}
 
 The fastest path on Linux. Downloads the latest release binaries from GitHub,
-installs them to `~/.local/bin`, sets up the systemd user service, and prompts
-before installing udev rules for USB device access or persisting the `i2c-dev`
-kernel module for SMBus RGB hardware.
+verifies them, installs them to `~/.local/bin`, and sets up the systemd user
+service. It never asks for `sudo`, so the udev rules and the `i2c-dev` kernel
+module are left to you.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
@@ -43,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 
 No Rust toolchain required. The script is idempotent, so it is safe to re-run to upgrade.
 
-**Supported platforms:** Linux x86_64, Linux aarch64, and macOS Apple Silicon (arm64). Intel Macs use the [DMG](#macos-dmg) instead.
+**Supported platforms:** Linux x86_64 and aarch64, and macOS on both Apple Silicon (arm64) and Intel (x86_64). The [DMG](#macos-dmg) is the friendlier macOS path if you would rather not use a shell one-liner.
 
 ### Installer options
 
@@ -51,34 +49,34 @@ Pass flags after `--` to control the install:
 
 ```bash
 # Pin any tagged release
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.2.1
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.4.0
 
 # Skip service setup (useful for custom init systems)
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --no-service
 
-# Apply the sudo-backed system hooks without prompting
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --yes
+# Skip the uninstall confirmation prompt
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --uninstall --yes
 
 # Remove Hypercolor
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --uninstall
 ```
 
-You can also set `HYPERCOLOR_INSTALL_PREFIX` to override the install root (default: `~/.local`).
+On macOS you can set `HYPERCOLOR_INSTALL_PREFIX` and `HYPERCOLOR_INSTALL_DIR` to move the install root. On Linux the prefix is fixed at `~/.local` and the binary directory at `~/.local/bin`; the script refuses anything else so the systemd unit's `%h/.local/bin/hypercolor-daemon` path always resolves.
 
 ### What the installer does
 
 1. Detects your architecture and downloads the matching release tarball from GitHub.
 2. Verifies the SHA256 checksum before extracting.
-3. Installs `hypercolor-daemon` and `hypercolor` to `~/.local/bin`.
+3. Installs `hypercolor`, `hypercolor-daemon`, `hypercolor-app`, `hypercolor-tui`, and `hypercolor-open` to `~/.local/bin`.
 4. Installs the systemd **user** service to `~/.config/systemd/user/hypercolor.service` and enables it.
-5. Prompts to copy the udev rules (`99-hypercolor.rules` for USB access, `70-hypercolor-input.rules` for input capture) to `/etc/udev/rules.d/` (requires `sudo`) and reloads udev if approved.
-6. When system hooks are approved, loads `i2c-dev` immediately and persists it via `/etc/modules-load.d/i2c-dev.conf` (requires `sudo`).
+
+The release tarball carries the udev rules and the `i2c-dev` modules-load config, but the one-liner never applies them, because it never asks for `sudo`. To get USB device access and SMBus RGB working, run `just udev-install` from a checkout, or install the `.deb` or the AUR package, which place both for you.
 
 After the installer finishes, see [First launch](@/guide/first-launch.md) to open the UI for the first time.
 
 ---
 
-## Windows installer {#windows-installer}
+## Windows installer {% raw %}{#windows-installer}{% endraw %}
 
 Download the installer from the [download page](@/download.md) and run it. The
 install is per-machine and asks for administrator elevation (UAC). The same
@@ -92,23 +90,38 @@ USB-HID lighting (Razer, Corsair, Lian Li, and others) and network devices (Hue,
 
 ---
 
-## macOS {#macos-dmg}
+## macOS {% raw %}{#macos-dmg}{% endraw %}
 
 ### DMG
 
-Download `Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg`
-(Intel) from the [download page](@/download.md), drag the app into
-`/Applications`, and launch. Minimum macOS 11 (Big Sur).
+When a release includes an accepted macOS build, download
+`Hypercolor-<version>-arm64.dmg` (Apple Silicon) or `-x86_64.dmg` (Intel) from
+the [download page](@/download.md), drag the app into `/Applications`, and
+launch. Minimum macOS 15.2 (Sequoia).
 
-{% callout(type="warning") %}
-Current builds are ad-hoc signed but not notarized, so Gatekeeper will block the app on first launch. Right-click the app and choose **Open** to confirm.
-{% end %}
+{% <callout type="info"> %}
+Public CI does not publish unsigned macOS packages. macOS artifacts are
+promoted manually only after Developer ID signing, notarization, and the signed
+physical acceptance checkpoint pass.
+{% </callout> %}
 
-macOS supports audio-reactive effects (see [Audio setup](@/guide/audio-setup.md) for the loopback-device requirement) but has no screen capture, so screen-reactive effects are unavailable there.
+The native ScreenCaptureKit, host-input, HDR, and multi-owner implementations
+are present, but they are not release-qualified until the signed macOS physical
+acceptance matrix ships with the release provenance. Development builds do not
+establish durable TCC grants or hardware support claims. Screen Recording is
+requested only after an explicit local capture action. Audio-reactive effects
+still need the loopback setup described in [Audio setup](@/guide/audio-setup.md).
 
-### Homebrew {#homebrew}
+The pending qualification matrix covers the app sidecar, direct launchd,
+Homebrew service, and standalone daemon as distinct TCC identities. It also
+covers Apple Silicon HDR, Intel SDR, and Tahoe paired-reference diagnostics.
+Until those signed receipts pass, use the packaged app sidecar for protected
+macOS sources and treat the other topologies as experimental.
 
-The tap carries both a cask and a formula, and CI updates both automatically on each tagged release:
+### Homebrew {% raw %}{#homebrew}{% endraw %}
+
+The tap carries both a cask and a formula. Maintainers update both manually
+after the matching signed artifacts pass acceptance:
 
 ```bash
 # Desktop app (both Mac architectures)
@@ -118,11 +131,15 @@ brew install --cask hyperb1iss/tap/hypercolor-app
 brew install hyperb1iss/tap/hypercolor
 ```
 
-The formula covers macOS arm64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
+The formula covers macOS arm64 and x86_64 plus Linux amd64 and arm64; the cask is the full desktop app for either Mac architecture.
+
+The formula selects the Homebrew service topology when managed with
+`brew services`. Install the cask when protected macOS permissions or the
+system screen picker require the app UI.
 
 ---
 
-## AUR (Arch Linux) {#aur}
+## AUR (Arch Linux) {% raw %}{#aur}{% endraw %}
 
 The `hypercolor-bin` package is live on the AUR and updates automatically on every tagged release:
 
@@ -134,7 +151,7 @@ The AUR package installs the prebuilt binaries, sets up the systemd user service
 
 ---
 
-## Build from source {#build-from-source}
+## Build from source {% raw %}{#build-from-source}{% endraw %}
 
 Building from source is the right path for contributors, packagers, and people who need a custom build (e.g., with Servo HTML effect rendering enabled). It is not necessary for end users.
 
@@ -157,9 +174,9 @@ just install
 
 Full system dependency lists and optional flags (`--minimal`, `--no-system`, `--with-servo`) are in the [Installation reference](@/guide/installation.md).
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The `just setup` and `just install` path uses the same install layout as the prebuilt one-liner. Both land in `~/.local` with the same systemd unit and udev rules; the only difference is that source builds compile everything on your machine.
-{% end %}
+{% </callout> %}
 
 ---
 

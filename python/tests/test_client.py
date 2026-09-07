@@ -3,42 +3,37 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
+from pathlib import Path
+from typing import cast
 
 import httpx
 import msgspec
 import pytest
 import respx
 
-from hypercolor.client import HypercolorClient, _normalize_payload
+from hypercolor._generated.types import Unset
+from hypercolor.client import HypercolorClient
 from hypercolor.exceptions import (
+    HypercolorApiError,
+    HypercolorAuthenticationError,
     HypercolorConnectionError,
     HypercolorNotFoundError,
-    HypercolorValidationError,
 )
-from hypercolor.models.control import ControlSurface
-from hypercolor.models.driver import Driver
-from hypercolor.models.effect import ActiveEffect, ControlDefinition, Effect
+from hypercolor.models import (
+    BlendMode,
+    ControlActionStatus,
+    ControlSurfaceDocument,
+    DeviceComponentsResponse,
+    DiscoveryCompletedResponse,
+    DiscoveryScanningResponse,
+    DriverSummary,
+    EffectDetailResponse,
+    EffectPresetOrigin,
+    OutputPowerMode,
+)
 
-
-def test_normalize_payload_bridges_dropdown_labels_to_options() -> None:
-    """Dropdown choices ship under `labels`; expose them as model `options`."""
-    control = {
-        "id": "palette",
-        "name": "Palette",
-        "control_type": "dropdown",
-        "kind": "combobox",
-        "default_value": {"enum": "Sunset"},
-        "labels": ["Sunset", "Ocean"],
-    }
-
-    normalized = _normalize_payload(control)
-
-    assert normalized["options"] == ["Sunset", "Ocean"]
-    assert normalized["type"] == "select"
-    assert normalized["label"] == "Palette"
-    # And the choices survive conversion into the typed model the client returns.
-    definition = msgspec.convert(normalized, ControlDefinition)
-    assert definition.options == ["Sunset", "Ocean"]
+_SYSTEM_STATUS_FIXTURE = Path(__file__).with_name("fixtures") / "system_status.json"
 
 
 def _envelope(data: object) -> bytes:
@@ -52,6 +47,12 @@ def _envelope(data: object) -> bytes:
             },
         }
     )
+
+
+def _system_status_payload() -> dict[str, object]:
+    payload = json.loads(_SYSTEM_STATUS_FIXTURE.read_text())
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _error(message: str, code: str = "not_found") -> bytes:
@@ -84,6 +85,109 @@ def _control_surface(
     }
 
 
+def _applied_zone(effect_id: str = "aurora") -> dict[str, object]:
+    return {
+        "id": "0193d2c0-0000-7000-8000-000000000001",
+        "name": "Primary",
+        "role": "primary",
+        "enabled": True,
+        "brightness": 1.0,
+        "color": None,
+        "display_target": None,
+        "members": [],
+        "layout": None,
+        "layers": [
+            {
+                "id": "0193d2c0-0000-7000-8000-000000000002",
+                "source": {
+                    "type": "effect",
+                    "effect_id": effect_id,
+                    "controls": {"effectSpeed": {"kind": "int", "value": 70}},
+                    "control_bindings": {},
+                    "preset_id": None,
+                },
+                "blend": "replace",
+                "opacity": 1.0,
+                "transform": {
+                    "anchor": {"x": 0.5, "y": 0.5},
+                    "scale": [1.0, 1.0],
+                    "rotation": 0.0,
+                    "fit": "cover",
+                },
+                "adjust": {
+                    "brightness": 1.0,
+                    "saturation": 1.0,
+                    "hue_shift": 0.0,
+                    "tint": [1.0, 1.0, 1.0, 1.0],
+                    "tint_strength": 0.0,
+                    "contrast": 0.0,
+                },
+                "enabled": True,
+            }
+        ],
+    }
+
+
+def _device_with_attachments() -> dict[str, object]:
+    return {
+        "id": "controller",
+        "layout_device_id": "controller",
+        "name": "Controller",
+        "origin": {"driver_id": "hid", "backend_id": "hid", "transport": "usb"},
+        "presentation": {"label": "HID"},
+        "status": "connected",
+        "brightness": 100,
+        "total_leds": 60,
+        "segments": [],
+        "attachments": {
+            "device_id": "controller",
+            "device_name": "Controller",
+            "slots": [
+                {
+                    "id": "channel-1",
+                    "name": "Channel 1",
+                    "led_start": 0,
+                    "led_count": 60,
+                    "suggested_categories": ["Strip"],
+                    "allowed_templates": ["strip-60"],
+                    "allow_custom": True,
+                }
+            ],
+            "bindings": [
+                {
+                    "slot_id": "channel-1",
+                    "template_id": "strip-60",
+                    "template_name": "60 LED Strip",
+                    "name": None,
+                    "enabled": True,
+                    "instances": 1,
+                    "led_offset": 0,
+                    "effective_led_count": 60,
+                }
+            ],
+            "suggested_zones": [
+                {
+                    "slot_id": "channel-1",
+                    "template_id": "strip-60",
+                    "template_name": "60 LED Strip",
+                    "name": "Channel 1",
+                    "instance": 0,
+                    "led_start": 0,
+                    "led_count": 60,
+                    "category": "Strip",
+                    "default_size": {"width": 0.25, "height": 0.25},
+                    "topology": {
+                        "type": "strip",
+                        "count": 60,
+                        "direction": "left_to_right",
+                    },
+                    "led_mapping": None,
+                }
+            ],
+        },
+    }
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_devices(client: HypercolorClient) -> None:
@@ -97,12 +201,17 @@ async def test_get_devices(client: HypercolorClient) -> None:
                             "id": "keyboard",
                             "layout_device_id": "keyboard",
                             "name": "Keyboard",
-                            "backend": "hid",
+                            "origin": {
+                                "driver_id": "hid",
+                                "backend_id": "hid",
+                                "transport": "usb",
+                            },
+                            "presentation": {"label": "HID"},
                             "status": "connected",
                             "brightness": 88,
                             "firmware_version": None,
                             "total_leds": 104,
-                            "zones": [
+                            "segments": [
                                 {
                                     "id": "main",
                                     "name": "Main",
@@ -111,12 +220,11 @@ async def test_get_devices(client: HypercolorClient) -> None:
                                     "topology_hint": {"type": "matrix", "rows": 6, "cols": 18},
                                 }
                             ],
-                            "connection_label": "USB HID",
-                            "network_ip": None,
-                            "network_hostname": None,
+                            "connection": {"transport": "usb", "label": "USB HID"},
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
+                    "page": {"offset": 0, "limit": 50, "has_more": False},
                 }
             ),
         )
@@ -127,7 +235,7 @@ async def test_get_devices(client: HypercolorClient) -> None:
     assert route.called
     assert len(devices) == 1
     assert devices[0].name == "Keyboard"
-    assert devices[0].enabled is True
+    assert devices[0].status == "connected"
     assert devices[0].brightness == 88
 
 
@@ -166,7 +274,7 @@ async def test_get_devices_accepts_origin_connection_shape(
                                 "hostname": "wled-studio.local",
                             },
                             "total_leds": 275,
-                            "zones": [
+                            "segments": [
                                 {
                                     "id": "zone_0",
                                     "name": "Main",
@@ -177,7 +285,8 @@ async def test_get_devices_accepts_origin_connection_shape(
                             ],
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
+                    "page": {"offset": 0, "limit": 50, "has_more": False},
                 }
             ),
         )
@@ -186,14 +295,16 @@ async def test_get_devices_accepts_origin_connection_shape(
     devices = await client.get_devices()
 
     assert route.called
-    assert devices[0].backend == "wled"
-    assert devices[0].network_ip == "10.4.22.169"
-    assert devices[0].connection_label == "wled-studio.local"
+    assert devices[0].origin.backend_id == "wled"
+    connection = devices[0].connection
+    assert not isinstance(connection, Unset)
+    assert connection.ip == "10.4.22.169"
+    assert connection.endpoint == "wled-studio.local"
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_get_devices_maps_backend_alias_to_backend_id(
+async def test_get_devices_sends_canonical_backend_id_filter(
     client: HypercolorClient,
 ) -> None:
     route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
@@ -202,20 +313,150 @@ async def test_get_devices_maps_backend_alias_to_backend_id(
             content=_envelope(
                 {
                     "items": [],
-                    "pagination": {"offset": 0, "limit": 50, "total": 0, "has_more": False},
+                    "total": 0,
+                    "page": {"offset": 0, "limit": 50, "has_more": False},
                 }
             ),
         )
     )
 
-    devices = await client.get_devices(backend="hid", driver="razer")
+    devices = await client.get_devices(backend_id="hid", driver="razer")
 
     assert route.called
     params = route.calls[0].request.url.params
     assert params["backend_id"] == "hid"
     assert params["driver"] == "razer"
-    assert "backend" not in params
     assert devices == []
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_devices_preserves_included_attachments(client: HypercolorClient) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [_device_with_attachments()],
+                    "total": 1,
+                    "page": {
+                        "offset": 0,
+                        "limit": 50,
+                        "has_more": False,
+                    },
+                }
+            ),
+        )
+    )
+
+    devices = await client.get_devices(include="attachments")
+
+    assert route.calls[0].request.url.params["include"] == "attachments"
+    attachments = devices[0].attachments
+    assert isinstance(attachments, DeviceComponentsResponse)
+    assert not isinstance(attachments.slots, Unset)
+    assert attachments.slots[0].allowed_templates == ["strip-60"]
+    assert not isinstance(attachments.bindings, Unset)
+    assert attachments.bindings[0].effective_led_count == 60
+    assert not isinstance(attachments.suggested_zones, Unset)
+    assert attachments.suggested_zones[0].topology.to_dict() == {
+        "type": "strip",
+        "count": 60,
+        "direction": "left_to_right",
+    }
+
+
+def _device_page(offset: int, names: list[str], has_more: bool) -> dict[str, object]:
+    return {
+        "items": [
+            {
+                "id": name,
+                "layout_device_id": name,
+                "name": name,
+                "origin": {
+                    "driver_id": "wled",
+                    "backend_id": "wled",
+                    "transport": "network",
+                },
+                "presentation": {"label": "WLED"},
+                "status": "connected",
+                "brightness": 100,
+                "total_leds": 30,
+                "segments": [],
+            }
+            for name in names
+        ],
+        "total": 3,
+        "page": {"offset": offset, "limit": 200, "has_more": has_more},
+    }
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_devices_requests_the_ceiling_and_follows_has_more(
+    client: HypercolorClient,
+) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        side_effect=[
+            httpx.Response(200, content=_envelope(_device_page(0, ["desk", "shelf"], True))),
+            httpx.Response(200, content=_envelope(_device_page(2, ["ceiling"], False))),
+        ]
+    )
+
+    devices = await client.get_devices()
+
+    assert [device.id for device in devices] == ["desk", "shelf", "ceiling"]
+    assert route.calls[0].request.url.params["limit"] == "200"
+    assert route.calls[0].request.url.params["offset"] == "0"
+    assert route.calls[1].request.url.params["offset"] == "2"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_devices_honours_an_explicit_page_request(
+    client: HypercolorClient,
+) -> None:
+    route = respx.get("http://hyperia.test:9420/api/v1/devices").mock(
+        return_value=httpx.Response(200, content=_envelope(_device_page(0, ["desk"], True)))
+    )
+
+    devices = await client.get_devices(limit=1)
+
+    assert len(route.calls) == 1
+    assert route.calls[0].request.url.params["limit"] == "1"
+    assert [device.id for device in devices] == ["desk"]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_layouts_follows_pagination(client: HypercolorClient) -> None:
+    def layout_page(offset: int, ids: list[str], has_more: bool) -> dict[str, object]:
+        return {
+            "items": [
+                {
+                    "id": layout_id,
+                    "name": layout_id,
+                    "canvas_width": 640,
+                    "canvas_height": 480,
+                    "zone_count": 2,
+                }
+                for layout_id in ids
+            ],
+            "total": 3,
+            "page": {"offset": offset, "limit": 200, "has_more": has_more},
+        }
+
+    route = respx.get("http://hyperia.test:9420/api/v1/layouts").mock(
+        side_effect=[
+            httpx.Response(200, content=_envelope(layout_page(0, ["desk", "rack"], True))),
+            httpx.Response(200, content=_envelope(layout_page(2, ["shelf"], False))),
+        ]
+    )
+
+    layouts = await client.get_layouts()
+
+    assert [layout.id for layout in layouts] == ["desk", "rack", "shelf"]
+    assert route.calls[1].request.url.params["offset"] == "2"
 
 
 @respx.mock
@@ -229,12 +470,17 @@ async def test_get_device_quotes_generated_path_parameters(client: HypercolorCli
                     "id": "keyboard/main",
                     "layout_device_id": "keyboard",
                     "name": "Keyboard",
-                    "backend": "hid",
+                    "origin": {
+                        "driver_id": "hid",
+                        "backend_id": "hid",
+                        "transport": "usb",
+                    },
+                    "presentation": {"label": "HID"},
                     "status": "connected",
                     "brightness": 88,
                     "firmware_version": None,
                     "total_leds": 104,
-                    "zones": [
+                    "segments": [
                         {
                             "id": "main",
                             "name": "Main",
@@ -243,9 +489,7 @@ async def test_get_device_quotes_generated_path_parameters(client: HypercolorCli
                             "topology_hint": {"type": "matrix", "rows": 6, "cols": 18},
                         }
                     ],
-                    "connection_label": "USB HID",
-                    "network_ip": None,
-                    "network_hostname": None,
+                    "connection": {"transport": "usb", "label": "USB HID"},
                 }
             ),
         )
@@ -271,7 +515,12 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
                                 "id": "nollie",
                                 "display_name": "Nollie",
                                 "module_kind": "hal",
-                                "transports": ["usb"],
+                                "transports": [
+                                    {
+                                        "kind": "usb",
+                                        "availability": {"status": "available"},
+                                    }
+                                ],
                                 "capabilities": {
                                     "config": False,
                                     "discovery": True,
@@ -283,7 +532,7 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
                                     "presentation": True,
                                     "controls": False,
                                 },
-                                "api_schema_version": 1,
+                                "api_schema_version": 3,
                                 "config_version": 1,
                                 "default_enabled": True,
                             },
@@ -312,147 +561,25 @@ async def test_get_drivers_decodes_protocol_catalog(client: HypercolorClient) ->
     drivers = await client.get_drivers()
 
     assert route.called
-    assert isinstance(drivers[0], Driver)
-    assert drivers[0].presentation is not None
+    assert isinstance(drivers[0], DriverSummary)
+    assert drivers[0].descriptor.api_schema_version == 3
+    assert drivers[0].descriptor.transports[0].to_dict() == {
+        "availability": {"status": "available"},
+        "kind": "usb",
+    }
     assert drivers[0].presentation.label == "Nollie"
-    assert drivers[0].protocols[0].protocol_id == "nollie_8"
+    protocols = drivers[0].protocols
+    assert not isinstance(protocols, Unset)
+    assert protocols[0].protocol_id == "nollie_8"
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_get_active_effect_returns_none_on_404(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
-        return_value=httpx.Response(
-            404,
-            content=msgspec.json.encode(
-                {
-                    "error": {
-                        "code": "not_found",
-                        "message": "No effect is active",
-                        "details": {},
-                    },
-                    "meta": {
-                        "api_version": "1.0",
-                        "request_id": "req_404",
-                        "timestamp": "2026-03-08T00:00:00Z",
-                    },
-                }
-            ),
-        )
-    )
-
-    assert await client.get_active_effect() is None
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_returns_none_on_idle_payload(
-    client: HypercolorClient,
-) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "id": None,
-                    "name": None,
-                    "state": "idle",
-                    "controls": [],
-                    "control_values": {},
-                }
-            ),
-        )
-    )
-
-    assert await client.get_active_effect() is None
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_decodes_live_state(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "id": "aurora",
-                    "name": "Aurora",
-                    "state": "running",
-                    "controls": [
-                        {
-                            "id": "speed",
-                            "name": "Speed",
-                            "control_type": "slider",
-                            "min": 0,
-                            "max": 100,
-                            "step": 1,
-                            "default_value": {"integer": 40},
-                        }
-                    ],
-                    "control_values": {"speed": {"integer": 72}},
-                    "active_preset_id": None,
-                    "cover_image_url": "/api/v1/effects/aurora/cover",
-                }
-            ),
-        )
-    )
-
-    effect = await client.get_active_effect()
-
-    assert isinstance(effect, ActiveEffect)
-    assert effect.state == "running"
-    assert effect.control_values["speed"] == 72
-    assert effect.controls[0].label == "Speed"
-    assert effect.controls[0].type == "number"
-    assert effect.controls[0].default == 40
-    assert effect.cover_image_url == "/api/v1/effects/aurora/cover"
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_active_effect_cover_image_url_is_absolute(client: HypercolorClient) -> None:
-    assert (
-        client.active_effect_cover_image_url()
-        == "http://hyperia.test:9420/api/v1/effects/active/cover"
-    )
+async def test_effect_cover_image_url_is_absolute(client: HypercolorClient) -> None:
     assert (
         client.effect_cover_image_url("aurora/main")
         == "http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/cover"
     )
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_cover_image_returns_binary_payload(
-    client: HypercolorClient,
-) -> None:
-    image = b"RIFFhypercolor-webp"
-    respx.get("http://hyperia.test:9420/api/v1/effects/active/cover").mock(
-        return_value=httpx.Response(
-            200,
-            content=image,
-            headers={"content-type": "image/webp"},
-        )
-    )
-
-    cover = await client.get_active_effect_cover_image()
-
-    assert cover is not None
-    assert cover.data == image
-    assert cover.content_type == "image/webp"
-    assert cover.url == "http://hyperia.test:9420/api/v1/effects/active/cover"
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_get_active_effect_cover_image_returns_none_on_404(
-    client: HypercolorClient,
-) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/effects/active/cover").mock(
-        return_value=httpx.Response(404, content=_error("No effect is active")),
-    )
-
-    assert await client.get_active_effect_cover_image() is None
 
 
 @respx.mock
@@ -463,27 +590,29 @@ async def test_apply_effect(client: HypercolorClient) -> None:
             200,
             content=_envelope(
                 {
-                    "effect": {"id": "aurora/main", "name": "Aurora"},
-                    "applied_controls": {"effectSpeed": 70},
-                    "layout": {
-                        "associated_layout_id": "desk",
-                        "resolved": True,
-                        "applied": True,
-                    },
-                    "transition": {"type": "cut", "duration_ms": 0},
+                    "zone": _applied_zone("aurora/main"),
+                    "transition": {"type": "cut"},
+                    "output": {"applied": True},
                 }
             ),
         )
     )
 
-    result = await client.apply_effect("aurora/main", controls={"effectSpeed": 70})
+    result = await client.apply_effect(
+        "aurora/main",
+        controls={"effectSpeed": 70},
+        transition="cut",
+        if_match=7,
+    )
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {"controls": {"effectSpeed": 70}}
-    assert result.effect.name == "Aurora"
-    assert result.applied_controls["effectSpeed"] == 70
-    assert result.layout is not None
-    assert result.layout["associated_layout_id"] == "desk"
+    assert json.loads(route.calls[0].request.content) == {
+        "controls": {"effectSpeed": {"kind": "int", "value": 70}},
+        "transition": {"type": "cut"},
+    }
+    assert route.calls[0].request.headers["if-match"] == '"7"'
+    assert result.zone.layers[0].source["effect_id"] == "aurora/main"
+    assert result.output.applied is True
 
 
 @respx.mock
@@ -494,10 +623,9 @@ async def test_apply_effect_omits_empty_body(client: HypercolorClient) -> None:
             200,
             content=_envelope(
                 {
-                    "effect": {"id": "aurora", "name": "Aurora"},
-                    "applied_controls": {},
-                    "layout": {"resolved": False, "applied": False},
-                    "transition": {"type": "cut", "duration_ms": 0},
+                    "zone": _applied_zone(),
+                    "transition": {"type": "cut"},
+                    "output": {"applied": True},
                 }
             ),
         )
@@ -508,7 +636,77 @@ async def test_apply_effect_omits_empty_body(client: HypercolorClient) -> None:
     assert route.called
     assert route.calls[0].request.content == b""
     assert "content-type" not in route.calls[0].request.headers
-    assert result.effect.id == "aurora"
+    assert result.zone.layers[0].source["effect_id"] == "aurora"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_effect_preset_stack_lists_and_applies_both_origins(
+    client: HypercolorClient,
+) -> None:
+    list_route = respx.get("http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/presets").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "items": [
+                        {
+                            "id": "bundled-calm",
+                            "name": "Calm",
+                            "description": None,
+                            "effect_id": "aurora/main",
+                            "controls": {"speed": {"kind": "float", "value": 0.4}},
+                            "tags": [],
+                            "origin": "bundled",
+                            "editable": False,
+                        },
+                        {
+                            "id": "saved-bright",
+                            "name": "Bright",
+                            "description": "Custom",
+                            "effect_id": "aurora/main",
+                            "controls": {"speed": {"kind": "float", "value": 0.8}},
+                            "tags": ["custom"],
+                            "origin": "saved",
+                            "editable": True,
+                        },
+                    ],
+                    "total": 2,
+                }
+            ),
+        )
+    )
+    apply_route = respx.post(
+        "http://hyperia.test:9420/api/v1/effects/aurora%2Fmain/presets/bundled-calm/apply"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "zone": _applied_zone("aurora/main"),
+                    "transition": {"type": "cut"},
+                    "output": {"applied": True},
+                }
+            ),
+        )
+    )
+
+    presets = await client.get_effect_presets("aurora/main")
+    result = await client.apply_effect_preset(
+        "aurora/main",
+        "bundled-calm",
+        zone="zone-left",
+        if_match=9,
+    )
+
+    assert list_route.called
+    assert presets[0].origin is EffectPresetOrigin.BUNDLED
+    assert presets[0].editable is False
+    assert presets[1].origin is EffectPresetOrigin.SAVED
+    assert presets[1].editable is True
+    assert json.loads(apply_route.calls[0].request.content) == {"zone": "zone-left"}
+    assert apply_route.calls[0].request.headers["if-match"] == '"9"'
+    assert result.zone.layers[0].source["effect_id"] == "aurora/main"
 
 
 @respx.mock
@@ -521,7 +719,6 @@ async def test_upload_effect_uses_install_endpoint(client: HypercolorClient) -> 
                 {
                     "id": "user:neon",
                     "name": "Neon",
-                    "source": "user",
                     "path": "/effects/neon.html",
                     "controls": 2,
                     "presets": 1,
@@ -541,21 +738,22 @@ async def test_upload_effect_uses_install_endpoint(client: HypercolorClient) -> 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_set_brightness_uses_generated_route_with_body(
+async def test_set_brightness_patches_the_output_resource(
     client: HypercolorClient,
 ) -> None:
-    route = respx.put("http://hyperia.test:9420/api/v1/settings/brightness").mock(
+    route = respx.patch("http://hyperia.test:9420/api/v1/output").mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"brightness": 42}),
+            content=_envelope({"power": "running", "brightness": 0.42}),
         )
     )
 
-    result = await client.set_brightness(42)
+    result = await client.set_brightness(0.42)
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {"brightness": 42}
-    assert result.brightness == 42
+    assert json.loads(route.calls[0].request.content) == {"brightness": 0.42}
+    assert result.brightness == 0.42
+    assert result.power == OutputPowerMode.RUNNING
 
 
 @respx.mock
@@ -592,7 +790,14 @@ async def test_discover_devices_omits_empty_body(client: HypercolorClient) -> No
     route = respx.post("http://hyperia.test:9420/api/v1/devices/discover").mock(
         return_value=httpx.Response(
             200,
-            content=_envelope({"scan_id": "scan_1", "status": "running"}),
+            content=_envelope(
+                {
+                    "scan_id": "scan_1",
+                    "status": "scanning",
+                    "targets": ["wled"],
+                    "timeout_ms": 3000,
+                }
+            ),
         )
     )
 
@@ -600,56 +805,144 @@ async def test_discover_devices_omits_empty_body(client: HypercolorClient) -> No
 
     assert route.called
     assert route.calls[0].request.content == b""
+    assert isinstance(result, DiscoveryScanningResponse)
     assert result.scan_id == "scan_1"
+    assert result.targets == ["wled"]
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_stop_effect_uses_generated_route(client: HypercolorClient) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/effects/stop").mock(
-        return_value=httpx.Response(
-            200,
-            content=_envelope({"stopped": True}),
-        )
-    )
-
-    result = await client.stop_effect()
-
-    assert route.called
-    assert result.stopped is True
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_apply_profile_quotes_generated_path_parameters(
+async def test_discover_devices_sends_canonical_targets_and_wait(
     client: HypercolorClient,
 ) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/profiles/movie%2Fnight/apply").mock(
+    route = respx.post("http://hyperia.test:9420/api/v1/devices/discover").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
                 {
-                    "profile": {
-                        "id": "movie/night",
-                        "name": "Movie Night",
+                    "scan_id": "scan_2",
+                    "status": "completed",
+                    "result": {
+                        "targets": ["wled"],
+                        "timeout_ms": 3000,
+                        "new_devices": [
+                            {
+                                "id": "wled-studio",
+                                "name": "WLED Studio",
+                                "led_count": 275,
+                                "origin": {
+                                    "driver_id": "wled",
+                                    "backend_id": "wled",
+                                    "transport": "network",
+                                },
+                            }
+                        ],
+                        "reappeared_devices": [],
+                        "vanished_devices": [],
+                        "total_known": 1,
+                        "duration_ms": 812,
+                        "scanners": [
+                            {
+                                "scanner": "wled",
+                                "duration_ms": 800,
+                                "discovered": 1,
+                                "status": "ok",
+                            }
+                        ],
                     },
-                    "applied": True,
-                    "transition": {"type": "fade", "duration_ms": 500},
                 }
             ),
         )
     )
 
-    result = await client.apply_profile(
-        "movie/night",
-        transition={"type": "fade", "duration_ms": 500},
-    )
+    result = await client.discover_devices(targets=["wled"], timeout_ms=3000, wait=True)
 
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
-        "transition": {"type": "fade", "duration_ms": 500}
+        "targets": ["wled"],
+        "timeout_ms": 3000,
+        "wait": True,
     }
-    assert result.profile.id == "movie/night"
+    assert isinstance(result, DiscoveryCompletedResponse)
+    assert result.result.total_known == 1
+    assert result.result.new_devices[0].id == "wled-studio"
+    assert result.result.scanners[0].scanner == "wled"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_discover_devices_rejects_an_unknown_status(client: HypercolorClient) -> None:
+    respx.post("http://hyperia.test:9420/api/v1/devices/discover").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope({"scan_id": "scan_3", "status": "running"}),
+        )
+    )
+
+    with pytest.raises(HypercolorApiError, match="discovery response status"):
+        await client.discover_devices()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_pause_and_resume_preserve_effect_state(client: HypercolorClient) -> None:
+    route = respx.patch("http://hyperia.test:9420/api/v1/output").mock(
+        side_effect=[
+            httpx.Response(200, content=_envelope({"power": "paused", "brightness": 1.0})),
+            httpx.Response(200, content=_envelope({"power": "running", "brightness": 1.0})),
+        ]
+    )
+
+    paused = await client.pause_rendering()
+
+    assert paused.power == OutputPowerMode.PAUSED
+    assert route.calls[0].request.content == b'{"power":"paused"}'
+
+    running = await client.resume_rendering()
+
+    assert running.power == OutputPowerMode.RUNNING
+    assert route.calls[1].request.content == b'{"power":"running"}'
+
+
+@pytest.mark.asyncio
+async def test_set_output_refuses_a_patch_that_sets_nothing(
+    client: HypercolorClient,
+) -> None:
+    # The daemon answers 422 for an empty patch; the client refuses to
+    # spend the round trip.
+    with pytest.raises(ValueError, match="power, brightness, or both"):
+        await client.set_output()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_activate_scene_quotes_generated_path_parameters(
+    client: HypercolorClient,
+) -> None:
+    route = respx.post("http://hyperia.test:9420/api/v1/scenes/movie%2Fnight/activate").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "scene": {
+                        "id": "movie/night",
+                        "name": "Movie Night",
+                    },
+                    "activated": True,
+                    "layout": {"layout_id": "layout-a", "applied": True},
+                    "brightness": {"applied": False},
+                }
+            ),
+        )
+    )
+
+    result = await client.activate_scene("movie/night", transition_ms=250)
+
+    assert route.called
+    assert route.calls[0].request.content == b'{"transition_ms":250}'
+    assert result.scene.id == "movie/night"
+    assert result.layout.layout_id == "layout-a"
+    assert result.brightness.applied is False
 
 
 @respx.mock
@@ -681,52 +974,39 @@ async def test_get_effect_raises_not_found(client: HypercolorClient) -> None:
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_update_controls_wraps_controls_payload(client: HypercolorClient) -> None:
-    route = respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
+async def test_patch_layer_controls_addresses_real_layer(client: HypercolorClient) -> None:
+    zone = "0193d2c0-0000-7000-8000-000000000001"
+    layer = "0193d2c0-0000-7000-8000-000000000002"
+    route = respx.patch(
+        f"http://hyperia.test:9420/api/v1/scene/zones/{zone}/layers/{layer}/controls"
+    ).mock(
         return_value=httpx.Response(
             200,
-            content=_envelope(
-                {
-                    "effect": "Aurora",
-                    "applied": {"speed": 80},
-                    "rejected": [],
-                }
-            ),
+            content=_envelope(_applied_zone()),
         )
     )
 
-    result = await client.update_controls({"speed": 80})
+    result = await client.patch_layer_controls(
+        zone,
+        layer,
+        {"speed": 80, "tint": "#8040ff"},
+        clear_bindings=["speed"],
+    )
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {"controls": {"speed": 80}}
-    assert result.applied["speed"] == 80
-
-
-@respx.mock
-@pytest.mark.asyncio
-async def test_update_controls_raises_validation_error(client: HypercolorClient) -> None:
-    respx.patch("http://hyperia.test:9420/api/v1/effects/current/controls").mock(
-        return_value=httpx.Response(
-            422,
-            content=msgspec.json.encode(
-                {
-                    "error": {
-                        "code": "validation_error",
-                        "message": "Bad control value",
-                        "details": {"control": "effectSpeed"},
-                    },
-                    "meta": {
-                        "api_version": "1.0",
-                        "request_id": "req_bad",
-                        "timestamp": "2026-03-08T00:00:00Z",
-                    },
-                }
-            ),
-        )
+    request = json.loads(route.calls[0].request.content)
+    assert request["values"]["speed"] == {"kind": "int", "value": 80}
+    assert request["clear_bindings"] == ["speed"]
+    assert request["values"]["tint"]["kind"] == "color_linear"
+    assert request["values"]["tint"]["value"] == pytest.approx(
+        {
+            "r": 0.21586050011389926,
+            "g": 0.05126945837404324,
+            "b": 1.0,
+            "a": 1.0,
+        }
     )
-
-    with pytest.raises(HypercolorValidationError):
-        await client.update_controls({"effectSpeed": 200})
+    assert str(result.layers[0].id) == layer
 
 
 @respx.mock
@@ -753,8 +1033,8 @@ async def test_get_control_surfaces_uses_pythonic_filters(client: HypercolorClie
     assert route.called
     assert route.calls[0].request.url.params["device_id"] == "keyboard/main"
     assert route.calls[0].request.url.params["include_driver"] == "true"
-    assert isinstance(surfaces[0], ControlSurface)
-    assert surfaces[0].id == "device:keyboard"
+    assert isinstance(surfaces[0], ControlSurfaceDocument)
+    assert surfaces[0].surface_id == "device:keyboard"
 
 
 @respx.mock
@@ -768,7 +1048,7 @@ async def test_get_device_controls_quotes_generated_path_parameters(
             content=_envelope(
                 _control_surface(
                     "device:keyboard/main",
-                    {"brightness": {"kind": "integer", "value": 88}},
+                    {"brightness": {"kind": "int", "value": 88}},
                 )
             ),
         )
@@ -777,8 +1057,8 @@ async def test_get_device_controls_quotes_generated_path_parameters(
     surface = await client.get_device_controls("keyboard/main")
 
     assert route.called
-    assert surface.id == "device:keyboard/main"
-    assert surface.values["brightness"] == 88
+    assert surface.surface_id == "device:keyboard/main"
+    assert surface.values["brightness"] == {"kind": "int", "value": 88}
 
 
 @respx.mock
@@ -797,7 +1077,7 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
                     "accepted": [],
                     "rejected": [],
                     "impacts": [],
-                    "values": {"brightness": {"kind": "integer", "value": 88}},
+                    "values": {"brightness": {"kind": "int", "value": 88}},
                 }
             ),
         )
@@ -806,20 +1086,17 @@ async def test_set_control_values_converts_python_values(client: HypercolorClien
     result = await client.set_control_values(
         "device:keyboard",
         {"brightness": 88, "enabled": True},
-        expected_revision=4,
     )
 
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
-        "surface_id": "device:keyboard",
-        "changes": [
-            {"field_id": "brightness", "value": {"kind": "integer", "value": 88}},
-            {"field_id": "enabled", "value": {"kind": "bool", "value": True}},
-        ],
-        "expected_revision": 4,
+        "values": {
+            "brightness": {"kind": "int", "value": 88},
+            "enabled": {"kind": "bool", "value": True},
+        }
     }
     assert result.revision == 5
-    assert result.values["brightness"] == 88
+    assert result.values["brightness"] == {"kind": "int", "value": 88}
 
 
 @respx.mock
@@ -836,7 +1113,7 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
                     "action_id": "identify",
                     "status": "completed",
                     "revision": 5,
-                    "result": {"kind": "string", "value": "Identifying keyboard"},
+                    "result": {"kind": "text", "value": "Identifying keyboard"},
                 }
             ),
         )
@@ -845,18 +1122,150 @@ async def test_invoke_control_action_converts_input(client: HypercolorClient) ->
     result = await client.invoke_control_action(
         "device:keyboard",
         "identify",
-        {"duration_ms": 750, "color": {"kind": "color_rgb", "value": [128, 255, 234]}},
+        {
+            "duration": timedelta(milliseconds=750),
+            "attempt": 2,
+            "label": "keyboard",
+            "options": {"force": True},
+            "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+            "mac": {"kind": "mac", "value": "aabb.ccdd.eeff"},
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "attempt": 3,
+                    "flags": {"kind": "list", "value": [True, "safe"]},
+                },
+            },
+        },
     )
 
     assert route.called
     assert json.loads(route.calls[0].request.content) == {
         "input": {
-            "duration_ms": {"kind": "integer", "value": 750},
-            "color": {"kind": "color_rgb", "value": [128, 255, 234]},
+            "duration": {"kind": "duration", "value": 750},
+            "attempt": {"kind": "int", "value": 2},
+            "label": {"kind": "text", "value": "keyboard"},
+            "options": {
+                "kind": "map",
+                "value": {"force": {"kind": "bool", "value": True}},
+            },
+            "color": {
+                "kind": "color_rgb",
+                "value": {"r": 128, "g": 255, "b": 234},
+            },
+            "mac": {"kind": "mac", "value": "aabb.ccdd.eeff"},
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "attempt": {"kind": "int", "value": 3},
+                    "flags": {
+                        "kind": "list",
+                        "value": [
+                            {"kind": "bool", "value": True},
+                            {"kind": "text", "value": "safe"},
+                        ],
+                    },
+                },
+            },
         }
     }
-    assert result.status == "completed"
-    assert result.result == "Identifying keyboard"
+    assert result.status == ControlActionStatus.COMPLETED
+    assert not isinstance(result.result, (Unset, type(None)))
+    assert result.result.to_dict() == {"kind": "text", "value": "Identifying keyboard"}
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        {"kind": "bool"},
+        {"kind": "null", "value": None},
+        {"kind": "text", "value": "ok", "extra": True},
+        {"kind": "future", "value": 1},
+        {"kind": "color_rgb", "value": {"r": 1, "g": 2}},
+        {"kind": "map", "value": {"nested": {"kind": "int"}}},
+    ],
+)
+@pytest.mark.asyncio
+async def test_set_control_values_rejects_malformed_canonical_envelopes(
+    client: HypercolorClient,
+    malformed: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        await client.set_control_values("device:keyboard", {"bad": malformed})
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_plain_maps_with_business_kind_fields_remain_maps(
+    client: HypercolorClient,
+) -> None:
+    route = respx.patch(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/values"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "previous_revision": 3,
+                    "revision": 4,
+                    "accepted": [],
+                    "rejected": [],
+                    "impacts": [],
+                    "values": {},
+                }
+            ),
+        )
+    )
+
+    await client.set_control_values(
+        "device:keyboard",
+        {"transport": {"kind": "network", "name": "fixture"}},
+    )
+
+    assert json.loads(route.calls[0].request.content)["values"]["transport"] == {
+        "kind": "map",
+        "value": {
+            "kind": {"kind": "text", "value": "network"},
+            "name": {"kind": "text", "value": "fixture"},
+        },
+    }
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_bare_lists_remain_lists_in_action_input(client: HypercolorClient) -> None:
+    route = respx.post(
+        "http://hyperia.test:9420/api/v1/control-surfaces/device%3Akeyboard/actions/test"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "surface_id": "device:keyboard",
+                    "action_id": "test",
+                    "status": "completed",
+                    "revision": 5,
+                }
+            ),
+        )
+    )
+
+    await client.invoke_control_action(
+        "device:keyboard",
+        "test",
+        {"channels": [0.1, 0.2, 0.3, 1.0]},
+    )
+
+    assert json.loads(route.calls[0].request.content)["input"]["channels"] == {
+        "kind": "list",
+        "value": [
+            {"kind": "float", "value": 0.1},
+            {"kind": "float", "value": 0.2},
+            {"kind": "float", "value": 0.3},
+            {"kind": "float", "value": 1.0},
+        ],
+    }
 
 
 @respx.mock
@@ -870,7 +1279,11 @@ async def test_health(client: HypercolorClient) -> None:
                     "status": "healthy",
                     "version": "0.1.0",
                     "uptime_seconds": 42,
-                    "checks": {"render_loop": "ok"},
+                    "checks": {
+                        "render_loop": "ok",
+                        "device_backends": "ok",
+                        "event_bus": "ok",
+                    },
                 }
             ),
         )
@@ -879,41 +1292,84 @@ async def test_health(client: HypercolorClient) -> None:
     health = await client.health()
 
     assert health.status == "healthy"
-    assert health.checks["render_loop"] == "ok"
+    assert health.checks.render_loop == "ok"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_health_rejects_an_incomplete_projection(client: HypercolorClient) -> None:
+    respx.get("http://hyperia.test:9420/health").mock(
+        return_value=httpx.Response(200, json={"status": "healthy"})
+    )
+
+    with pytest.raises(HypercolorApiError, match="Malformed Hypercolor health response"):
+        await client.health()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_health_rejects_wrong_primitive_types(client: HypercolorClient) -> None:
+    respx.get("http://hyperia.test:9420/health").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "status": 7,
+                "version": [],
+                "uptime_seconds": "42",
+                "checks": {
+                    "render_loop": 1,
+                    "device_backends": 2,
+                    "event_bus": 3,
+                },
+            },
+        )
+    )
+
+    with pytest.raises(HypercolorApiError, match="Malformed Hypercolor health response"):
+        await client.health()
 
 
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_status_uses_current_daemon_shape(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/status").mock(
+    status_payload = _system_status_payload()
+    status_payload.update(
+        {
+            "running": True,
+            "version": "0.1.0",
+            "config_path": "/var/lib/hypercolor/hypercolor.toml",
+            "data_dir": "/var/lib/hypercolor/data",
+            "cache_dir": "/var/cache/hypercolor",
+            "uptime_seconds": 42,
+            "device_count": 2,
+            "effect_count": 9,
+            "scene_count": 3,
+            "active_effect": "Aurora",
+            "global_brightness": 65,
+            "audio_available": True,
+            "capture_available": False,
+            "event_bus_subscribers": 4,
+        }
+    )
+    render_loop_value = status_payload["render_loop"]
+    assert isinstance(render_loop_value, dict)
+    render_loop = cast("dict[str, object]", render_loop_value)
+    render_loop["state"] = "running"
+    render_loop["fps_tier"] = "high"
+    render_loop["total_frames"] = 1024
+    respx.get("http://hyperia.test:9420/api/v1/system").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
                 {
-                    "running": True,
-                    "version": "0.1.0",
-                    "server": {
+                    "identity": {
                         "instance_id": "srv_1",
                         "instance_name": "Hyperia",
                         "version": "0.1.0",
+                        "device_count": 2,
+                        "auth_required": True,
                     },
-                    "config_path": "/var/lib/hypercolor/hypercolor.toml",
-                    "data_dir": "/var/lib/hypercolor/data",
-                    "cache_dir": "/var/cache/hypercolor",
-                    "uptime_seconds": 42,
-                    "device_count": 2,
-                    "effect_count": 9,
-                    "scene_count": 3,
-                    "active_effect": "Aurora",
-                    "global_brightness": 65,
-                    "audio_available": True,
-                    "capture_available": False,
-                    "render_loop": {
-                        "state": "running",
-                        "fps_tier": "high",
-                        "total_frames": 1024,
-                    },
-                    "event_bus_subscribers": 4,
+                    "status": status_payload,
                 }
             ),
         )
@@ -922,9 +1378,132 @@ async def test_get_status_uses_current_daemon_shape(client: HypercolorClient) ->
     status = await client.get_status()
 
     assert status.global_brightness == 65
-    assert status.brightness == 65
-    assert status.paused is False
+    assert status.render_loop.state == "running"
     assert status.active_effect == "Aurora"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_status_rejects_an_incomplete_projection(client: HypercolorClient) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/system").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "identity": {
+                        "instance_id": "srv_1",
+                        "instance_name": "Hyperia",
+                        "version": "0.1.0",
+                        "device_count": 2,
+                        "auth_required": True,
+                    },
+                    "status": {"running": True},
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorApiError, match="Malformed Hypercolor system status"):
+        await client.get_status()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_status_rejects_wrong_primitive_types(client: HypercolorClient) -> None:
+    status_payload = _system_status_payload()
+    status_payload["running"] = "yes"
+    respx.get("http://hyperia.test:9420/api/v1/system").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "identity": {
+                        "instance_id": "srv_1",
+                        "instance_name": "Hyperia",
+                        "version": "0.1.0",
+                        "device_count": 2,
+                        "auth_required": True,
+                    },
+                    "status": status_payload,
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorApiError, match="Malformed Hypercolor system status"):
+        await client.get_status()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_status_rejects_wrong_nested_primitive_types(
+    client: HypercolorClient,
+) -> None:
+    status_payload = _system_status_payload()
+    render_loop_value = status_payload["render_loop"]
+    assert isinstance(render_loop_value, dict)
+    render_loop = cast("dict[str, object]", render_loop_value)
+    render_loop["target_fps"] = "60"
+    respx.get("http://hyperia.test:9420/api/v1/system").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "identity": {
+                        "instance_id": "srv_1",
+                        "instance_name": "Hyperia",
+                        "version": "0.1.0",
+                        "device_count": 2,
+                        "auth_required": True,
+                    },
+                    "status": status_payload,
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorApiError, match="Malformed Hypercolor system status"):
+        await client.get_status()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_get_status_requires_authenticated_system_projection(
+    client: HypercolorClient,
+) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/system").mock(
+        return_value=httpx.Response(
+            200,
+            content=_envelope(
+                {
+                    "identity": {
+                        "instance_id": "srv_1",
+                        "instance_name": "Hyperia",
+                        "version": "0.1.0",
+                        "device_count": 2,
+                        "auth_required": True,
+                    }
+                }
+            ),
+        )
+    )
+
+    with pytest.raises(HypercolorAuthenticationError):
+        await client.get_status()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_response_envelope_requires_metadata(client: HypercolorClient) -> None:
+    respx.get("http://hyperia.test:9420/api/v1/output").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": {"power": "running", "brightness": 1.0}},
+        )
+    )
+
+    with pytest.raises(HypercolorApiError, match="Unexpected Hypercolor response envelope"):
+        await client.get_output()
 
 
 @pytest.mark.asyncio
@@ -957,10 +1536,11 @@ async def test_injected_httpx_client_uses_absolute_url_and_request_auth() -> Non
                             "category": "ambient",
                             "source": "native",
                             "runnable": True,
+                            "tags": [],
                             "version": "1.0.0",
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
                 }
             ),
         )
@@ -994,17 +1574,17 @@ async def test_library_helpers(client: HypercolorClient) -> None:
                 {
                     "items": [
                         {
-                            "id": "preset-a",
+                            "id": "11111111-1111-4111-8111-111111111111",
                             "name": "Aurora Soft",
                             "description": None,
-                            "effect_id": "aurora",
-                            "controls": {"speed": 32},
+                            "effect_id": "33333333-3333-4333-8333-333333333333",
+                            "controls": {"speed": {"kind": "int", "value": 32}},
                             "tags": ["soft"],
                             "created_at_ms": 1,
                             "updated_at_ms": 2,
                         }
                     ],
-                    "pagination": {"offset": 0, "limit": 50, "total": 1, "has_more": False},
+                    "total": 1,
                 }
             ),
         )
@@ -1014,11 +1594,11 @@ async def test_library_helpers(client: HypercolorClient) -> None:
             201,
             content=_envelope(
                 {
-                    "id": "preset-b",
+                    "id": "22222222-2222-4222-8222-222222222222",
                     "name": "Aurora Bright",
                     "description": "glow",
-                    "effect_id": "aurora",
-                    "controls": {"speed": 64},
+                    "effect_id": "33333333-3333-4333-8333-333333333333",
+                    "controls": {"speed": {"kind": "int", "value": 64}},
                     "tags": ["bright"],
                     "created_at_ms": 3,
                     "updated_at_ms": 3,
@@ -1026,22 +1606,12 @@ async def test_library_helpers(client: HypercolorClient) -> None:
             ),
         )
     )
-    respx.post("http://hyperia.test:9420/api/v1/library/presets/preset-b/apply").mock(
+    respx.delete(
+        "http://hyperia.test:9420/api/v1/library/presets/22222222-2222-4222-8222-222222222222"
+    ).mock(
         return_value=httpx.Response(
-            200,
-            content=_envelope(
-                {
-                    "preset": {"id": "preset-b", "name": "Aurora Bright"},
-                    "effect": {"id": "aurora", "name": "Aurora"},
-                    "applied_controls": {"speed": 64},
-                    "rejected_controls": [],
-                    "warnings": [],
-                }
-            ),
+            200, content=_envelope({"id": "22222222-2222-4222-8222-222222222222", "deleted": True})
         )
-    )
-    respx.delete("http://hyperia.test:9420/api/v1/library/presets/preset-b").mock(
-        return_value=httpx.Response(200, content=_envelope({"id": "preset-b", "deleted": True}))
     )
 
     presets = await client.get_presets()
@@ -1052,8 +1622,7 @@ async def test_library_helpers(client: HypercolorClient) -> None:
         controls={"speed": 64},
         tags=["bright"],
     )
-    applied = await client.apply_preset("preset-b")
-    deleted = await client.delete_preset("preset-b")
+    deleted = await client.delete_preset("22222222-2222-4222-8222-222222222222")
 
     assert presets[0].name == "Aurora Soft"
     assert json.loads(create_route.calls[0].request.content) == {
@@ -1063,14 +1632,14 @@ async def test_library_helpers(client: HypercolorClient) -> None:
         "controls": {"speed": 64},
         "tags": ["bright"],
     }
-    assert created.id == "preset-b"
-    assert applied.effect.id == "aurora"
-    assert deleted == {"id": "preset-b", "deleted": True}
+    assert str(created.id) == "22222222-2222-4222-8222-222222222222"
+    assert str(deleted.id) == "22222222-2222-4222-8222-222222222222"
+    assert deleted.deleted is True
 
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_scene_profile_display_and_diagnostics_helpers(
+async def test_scene_display_and_diagnostics_helpers(
     client: HypercolorClient,
 ) -> None:
     scene_route = respx.post("http://hyperia.test:9420/api/v1/scenes").mock(
@@ -1088,15 +1657,17 @@ async def test_scene_profile_display_and_diagnostics_helpers(
             ),
         )
     )
-    profile_route = respx.post("http://hyperia.test:9420/api/v1/profiles").mock(
+    snapshot_route = respx.post("http://hyperia.test:9420/api/v1/scenes/snapshot").mock(
         return_value=httpx.Response(
             201,
             content=_envelope(
                 {
-                    "id": "profile-a",
+                    "id": "scene-snapshot",
                     "name": "Evening",
                     "description": "soft",
-                    "brightness": 64,
+                    "enabled": True,
+                    "priority": 50,
+                    "mutation_mode": "snapshot",
                 }
             ),
         )
@@ -1114,6 +1685,22 @@ async def test_scene_profile_display_and_diagnostics_helpers(
                         "width": 72,
                         "height": 72,
                         "circular": False,
+                        "descriptor": {
+                            "api_version": 1,
+                            "width": 72,
+                            "height": 72,
+                            "circular": False,
+                            "shape": "square",
+                            "class": "panel",
+                            "safe_area": {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "width": 1.0,
+                                "height": 1.0,
+                            },
+                            "target_fps": 30,
+                            "pixel_format": "rgb",
+                        },
                     }
                 ]
             ),
@@ -1126,8 +1713,14 @@ async def test_scene_profile_display_and_diagnostics_helpers(
                 {
                     "device_id": "streamdeck",
                     "scene_id": "scene-a",
-                    "effect": {"id": "clock", "name": "Clock"},
-                    "group": {"id": "group-a"},
+                    "effect": {
+                        "id": "44444444-4444-4444-8444-444444444444",
+                        "name": "Clock",
+                        "author": "hypercolor",
+                        "description": "Face clock",
+                        "source": {"html": {"path": "clock.html"}},
+                    },
+                    "zone": {"id": "zone-a"},
                 }
             ),
         )
@@ -1146,23 +1739,88 @@ async def test_scene_profile_display_and_diagnostics_helpers(
                         }
                     ],
                     "summary": {"passed": 1, "warnings": 0, "failed": 0},
+                    "snapshot": {
+                        "input": {
+                            "enabled": False,
+                            "host_capture_registered": False,
+                            "host_capturing": False,
+                            "devices_opened": 0,
+                            "devices_denied": 0,
+                            "backends": [],
+                            "source_graph_generation": 0,
+                            "sources": [],
+                        },
+                        "render": {
+                            "latest_frame": None,
+                            "recent_window": {
+                                "frames": 0,
+                                "gpu_sample_deferred": 0,
+                                "gpu_sample_stale": 0,
+                                "gpu_sample_retry_hit": 0,
+                                "gpu_sample_queue_saturated": 0,
+                                "gpu_sample_wait_blocked": 0,
+                                "gpu_sample_cpu_fallback": 0,
+                                "output_current_frame": 0,
+                                "output_published_frame": 0,
+                                "output_routed_reuse": 0,
+                                "output_reused_published_frame": 0,
+                                "output_error_frames": 0,
+                                "push_avg_ms": 0.0,
+                                "push_p95_ms": 0.0,
+                                "publish_avg_ms": 0.0,
+                                "publish_p95_ms": 0.0,
+                            },
+                        },
+                        "usb": {
+                            "display_frames_total": 0,
+                            "display_frames_delayed_for_led_total": 0,
+                            "display_led_priority_wait_total_ms": 0.0,
+                            "display_led_priority_wait_avg_ms": 0.0,
+                            "display_led_priority_wait_max_ms": 0.0,
+                        },
+                        "display_output": {
+                            "captured_devices": 0,
+                            "preview_subscribers": 0,
+                            "encode_attempts_total": 0,
+                            "encode_successes_total": 0,
+                            "encode_failures_total": 0,
+                            "encode_avg_ms": 0.0,
+                            "encode_max_ms": 0.0,
+                            "encode_last_ms": None,
+                            "encoded_bytes_total": 0,
+                            "encoded_last_bytes": 0,
+                            "write_attempts_total": 0,
+                            "write_successes_total": 0,
+                            "write_failures_total": 0,
+                            "retry_attempts_total": 0,
+                            "last_failure_age_ms": None,
+                        },
+                        "device_output": {
+                            "queues": 0,
+                            "usb_queues": 0,
+                            "lagging_queues": 0,
+                            "worker_finished_queues": 0,
+                            "dropped_frames_total": 0,
+                            "errors_total": 0,
+                            "items": [],
+                        },
+                    },
                 }
             ),
         )
     )
 
     scene = await client.create_scene("Desk Glow", enabled=True, mutation_mode="live")
-    profile = await client.save_profile(
+    snapshot = await client.snapshot_scene(
         "Evening",
         description="soft",
-        brightness=64,
-        force=True,
     )
     displays = await client.list_displays()
     face = await client.set_display_face(
         "streamdeck",
         "clock",
         controls={"speed": 0.8},
+        blend_mode=BlendMode.SCREEN,
         opacity=0.8,
     )
     diagnostics = await client.run_diagnostics(checks=["daemon"], system=True)
@@ -1173,25 +1831,26 @@ async def test_scene_profile_display_and_diagnostics_helpers(
         "enabled": True,
         "mutation_mode": "live",
     }
-    assert profile.name == "Evening"
-    assert json.loads(profile_route.calls[0].request.content) == {
+    assert snapshot.name == "Evening"
+    assert snapshot.mutation_mode == "snapshot"
+    assert json.loads(snapshot_route.calls[0].request.content) == {
         "name": "Evening",
         "description": "soft",
-        "brightness": 64,
-        "force": True,
     }
     assert displays[0].id == "streamdeck"
     assert json.loads(face_route.calls[0].request.content) == {
         "effect_id": "clock",
-        "controls": {"speed": {"float": 0.8}},
+        "controls": {"speed": {"kind": "float", "value": 0.8}},
+        "blend_mode": "screen",
         "opacity": 0.8,
     }
-    assert face.effect["id"] == "clock"
+    assert face.effect.name == "Clock"
     assert json.loads(diagnostics_route.calls[0].request.content) == {
         "checks": ["daemon"],
         "system": True,
     }
-    assert diagnostics["summary"]["passed"] == 1
+    assert diagnostics.summary.passed == 1
+    assert diagnostics.snapshot.render.latest_frame is None
 
 
 @respx.mock
@@ -1220,11 +1879,16 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
                             "min": 0,
                             "max": 100,
                             "step": 1,
-                            "default_value": {"integer": 40},
+                            "default_value": {"kind": "int", "value": 40},
                         }
                     ],
-                    "presets": [{"name": "Default", "controls": {"effectSpeed": {"integer": 40}}}],
-                    "active_control_values": {"effectSpeed": {"integer": 40}},
+                    "presets": [
+                        {
+                            "id": "default",
+                            "name": "Default",
+                            "controls": {"effectSpeed": {"kind": "int", "value": 40}},
+                        }
+                    ],
                 }
             ),
         )
@@ -1232,16 +1896,19 @@ async def test_get_effect_decodes_full_model(client: HypercolorClient) -> None:
 
     effect = await client.get_effect("aurora")
 
-    assert isinstance(effect, Effect)
-    assert effect.controls[0].label == "Animation Speed"
-    assert effect.active_control_values == {"effectSpeed": 40}
+    assert isinstance(effect, EffectDetailResponse)
+    assert not isinstance(effect.controls, Unset)
+    assert effect.controls[0].name == "Animation Speed"
+    assert not isinstance(effect.presets, Unset)
     assert effect.presets[0].name == "Default"
+    assert not isinstance(effect.presets[0].controls, Unset)
+    assert effect.presets[0].controls.to_dict() == {"effectSpeed": {"kind": "int", "value": 40}}
 
 
 @respx.mock
 @pytest.mark.asyncio
 async def test_get_audio_devices(client: HypercolorClient) -> None:
-    respx.get("http://hyperia.test:9420/api/v1/audio/devices").mock(
+    respx.get("http://hyperia.test:9420/api/v1/system/audio-devices").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -1268,7 +1935,7 @@ async def test_get_audio_devices(client: HypercolorClient) -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> None:
-    route = respx.post("http://hyperia.test:9420/api/v1/config/set").mock(
+    route = respx.put("http://hyperia.test:9420/api/v1/config/keys/audio.device").mock(
         return_value=httpx.Response(
             200,
             content=_envelope(
@@ -1276,6 +1943,8 @@ async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> Non
                     "key": "audio.device",
                     "value": "default",
                     "live": True,
+                    "requires_restart": False,
+                    "pending_restart": [],
                     "path": "/var/lib/hypercolor/hypercolor.toml",
                 }
             ),
@@ -1285,9 +1954,9 @@ async def test_set_audio_device_uses_config_api(client: HypercolorClient) -> Non
     result = await client.set_audio_device("default")
 
     assert route.called
-    assert json.loads(route.calls[0].request.content) == {
-        "key": "audio.device",
-        "value": '"default"',
-        "live": True,
-    }
+    request = route.calls[0].request
+    assert json.loads(request.content) == "default"
+    assert request.url.params["live"] == "true"
     assert result.key == "audio.device"
+    assert result.requires_restart is False
+    assert result.pending_restart == []

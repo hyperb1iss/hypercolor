@@ -100,7 +100,7 @@ pub fn PageHeader(
                     // The sidebar carries the brand on desktop; with it
                     // hidden below md, the mark anchors every page header.
                     <img
-                        src="/assets/brand/mark-color.png"
+                        src=crate::route_ui::asset_href("/assets/brand/mark-color.png")
                         alt=""
                         class="md:hidden w-6 h-6 select-none shrink-0"
                         draggable="false"

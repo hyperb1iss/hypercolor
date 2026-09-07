@@ -151,7 +151,7 @@ fn start_daemon_client<R: Runtime>(app: &AppHandle<R>) {
 
 fn start_message_pump<R: Runtime>(app: AppHandle<R>, message_rx: mpsc::Receiver<DaemonMessage>) {
     let spawn_result = thread::Builder::new()
-        .name("hypercolor-tray-state".to_owned())
+        .name("hypercolor-app-tray-state".to_owned())
         .spawn(move || {
             let mut state = AppState::disconnected();
             for message in message_rx {
@@ -227,7 +227,7 @@ fn should_toggle_window(event: &TrayIconEvent) -> bool {
 fn tooltip_for(state: &AppState) -> String {
     if state.connected {
         let effect_label = state
-            .current_effect
+            .active_effect
             .as_ref()
             .map_or("No effect", |effect| effect.name.as_str());
         match &state.active_scene_name {

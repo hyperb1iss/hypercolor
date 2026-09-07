@@ -2,21 +2,147 @@
 
 use bytes::Bytes;
 use hypercolor_leptos_ext::ws::{
-    DEFAULT_PREVIEW_MAX_CHUNK_COUNT, DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES,
-    DEFAULT_PREVIEW_MAX_MESSAGE_BYTES, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN,
-    EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN,
-    INTERACTIVE_PREVIEW_FRAME_TAG, INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame,
-    PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG,
-    PREVIEW_FRAME_HEADER_LEN, PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame, PreviewChunkError,
-    PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame, PreviewFrameChannel,
-    PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability, PreviewTransportVersion,
-    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame,
-    WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG, WIDE_SCREEN_ZONES_FRAME_HEADER_LEN,
-    WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_HEADER_LEN,
-    ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, split_preview_publication,
-    split_preview_publication_with_capability,
+    DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, DEFAULT_PREVIEW_MAX_MESSAGE_BYTES,
+    DISPLAY_PREVIEW_FRAME_PREFIX_LEN, DISPLAY_PREVIEW_FRAME_TAG, DISPLAY_PREVIEW_ID_MAX_BYTES,
+    DisplayPreviewFrame, EXTENDED_SCREEN_ZONES_FRAME_HEADER_LEN, EXTENDED_SCREEN_ZONES_FRAME_TAG,
+    INTERACTIVE_PREVIEW_FRAME_PREFIX_LEN, INTERACTIVE_PREVIEW_FRAME_TAG,
+    INTERACTIVE_PREVIEW_ID_MAX_BYTES, InteractivePreviewFrame, PREVIEW_CANCEL_FRAME_TAG,
+    PREVIEW_CANCEL_SCHEMA, PREVIEW_CHUNK_FIXED_HEADER_LEN, PREVIEW_CHUNK_FRAME_TAG,
+    PREVIEW_CHUNK_SCHEMA, PREVIEW_FRAME_HEADER_LEN, PREVIEW_MIN_MESSAGE_BYTES, PreviewCancelFrame,
+    PreviewChunkError, PreviewChunkFrame, PreviewChunkReassembler, PreviewFrame,
+    PreviewFrameChannel, PreviewFrameDecodeError, PreviewPixelFormat, PreviewPublicationMetadata,
+    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportLimits,
+    SCREEN_ZONES_FRAME_HEADER_LEN, SCREEN_ZONES_FRAME_TAG, ScreenZonesFrame, SpectrumFrame,
+    WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG, WIDE_PREVIEW_FRAME_TAG,
+    WIDE_SCREEN_ZONES_FRAME_HEADER_LEN, WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG,
+    ZONE_PREVIEW_FRAME_HEADER_LEN, ZONE_PREVIEW_FRAME_TAG, ZonePreviewFrame, codec_binary_messages,
+    codec_frame_layouts, split_preview_publication,
 };
+
+#[derive(Debug, PartialEq)]
+enum ManifestFieldValue {
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+    F32(f32),
+    Uuid([u8; 16]),
+    Utf8(String),
+    Bytes(Vec<u8>),
+    F32List(Vec<f32>),
+    RgbList(Vec<[u8; 3]>),
+}
+
+fn assert_manifest_layout(
+    layout_name: &str,
+    encoded: &[u8],
+    expected: &[(&str, ManifestFieldValue)],
+) {
+    let mut layouts = codec_frame_layouts();
+    layouts.extend(codec_binary_messages());
+    let layout = layouts[layout_name]["layout"]
+        .as_array()
+        .expect("codec layout is an array");
+    assert_eq!(layout.len(), expected.len(), "{layout_name} field count");
+
+    let mut offset = 0;
+    for (descriptor, (expected_name, expected_value)) in layout.iter().zip(expected) {
+        let descriptor = descriptor.as_array().expect("field descriptor is an array");
+        let encoding = descriptor[0].as_str().expect("field encoding is a string");
+        let field_name = descriptor[1].as_str().expect("field name is a string");
+        assert_eq!(
+            field_name, *expected_name,
+            "{layout_name} field at {offset}"
+        );
+
+        let actual = match (encoding, expected_value) {
+            ("u8", ManifestFieldValue::U8(_)) => {
+                let value = encoded[offset];
+                offset += 1;
+                ManifestFieldValue::U8(value)
+            }
+            ("u16_le", ManifestFieldValue::U16(_)) => {
+                let value = u16::from_le_bytes(
+                    encoded[offset..offset + 2]
+                        .try_into()
+                        .expect("u16 field is complete"),
+                );
+                offset += 2;
+                ManifestFieldValue::U16(value)
+            }
+            ("u32_le", ManifestFieldValue::U32(_)) => {
+                let value = u32::from_le_bytes(
+                    encoded[offset..offset + 4]
+                        .try_into()
+                        .expect("u32 field is complete"),
+                );
+                offset += 4;
+                ManifestFieldValue::U32(value)
+            }
+            ("u64_le", ManifestFieldValue::U64(_)) => {
+                let value = u64::from_le_bytes(
+                    encoded[offset..offset + 8]
+                        .try_into()
+                        .expect("u64 field is complete"),
+                );
+                offset += 8;
+                ManifestFieldValue::U64(value)
+            }
+            ("f32_le", ManifestFieldValue::F32(_)) => {
+                let value = f32::from_le_bytes(
+                    encoded[offset..offset + 4]
+                        .try_into()
+                        .expect("f32 field is complete"),
+                );
+                offset += 4;
+                ManifestFieldValue::F32(value)
+            }
+            ("uuid", ManifestFieldValue::Uuid(_)) => {
+                let value = encoded[offset..offset + 16]
+                    .try_into()
+                    .expect("UUID field is complete");
+                offset += 16;
+                ManifestFieldValue::Uuid(value)
+            }
+            ("utf8", ManifestFieldValue::Utf8(value)) => {
+                let length = value.len();
+                let actual = String::from_utf8(encoded[offset..offset + length].to_vec())
+                    .expect("UTF-8 field is valid");
+                offset += length;
+                ManifestFieldValue::Utf8(actual)
+            }
+            ("bytes", ManifestFieldValue::Bytes(value)) => {
+                let length = value.len();
+                let actual = encoded[offset..offset + length].to_vec();
+                offset += length;
+                ManifestFieldValue::Bytes(actual)
+            }
+            ("repeated_f32_le", ManifestFieldValue::F32List(value)) => {
+                let actual = encoded[offset..offset + value.len() * 4]
+                    .chunks_exact(4)
+                    .map(|chunk| {
+                        f32::from_le_bytes(chunk.try_into().expect("f32 list item is complete"))
+                    })
+                    .collect();
+                offset += value.len() * 4;
+                ManifestFieldValue::F32List(actual)
+            }
+            ("repeated_u8_rgb", ManifestFieldValue::RgbList(value)) => {
+                let actual = encoded[offset..offset + value.len() * 3]
+                    .chunks_exact(3)
+                    .map(|chunk| <[u8; 3]>::try_from(chunk).expect("RGB list item is complete"))
+                    .collect();
+                offset += value.len() * 3;
+                ManifestFieldValue::RgbList(actual)
+            }
+            _ => panic!(
+                "{layout_name}.{field_name} declares {encoding}, incompatible with {expected_value:?}"
+            ),
+        };
+        assert_eq!(actual, *expected_value, "{layout_name}.{field_name}");
+    }
+    assert_eq!(offset, encoded.len(), "{layout_name} encoded length");
+}
 
 fn jpeg_payload(width: u32, height: u32, len: usize) -> Bytes {
     let width = u16::try_from(width).expect("JPEG fixture width fits u16");
@@ -37,6 +163,512 @@ fn jpeg_payload(width: u32, height: u32, len: usize) -> Bytes {
     assert!(len >= payload.len());
     payload.resize(len, 0);
     Bytes::from(payload)
+}
+
+#[test]
+fn codec_manifest_layouts_match_production_encoders_field_by_field() {
+    let preview_payload = vec![0xA1, 0xB2, 0xC3];
+    let preview = PreviewFrame {
+        channel: PreviewFrameChannel::Canvas,
+        frame_number: 0x0403_0201,
+        timestamp_ms: 0x0807_0605,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(preview_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "preview_frame",
+        &preview,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(PreviewFrameChannel::Canvas.tag()),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x0403_0201)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x0807_0605)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(preview_payload)),
+        ],
+    );
+
+    let wide_payload = vec![0x5A; 70_001 * 3];
+    let wide_preview = PreviewFrame {
+        channel: PreviewFrameChannel::WebViewportCanvas,
+        frame_number: 0x1413_1211,
+        timestamp_ms: 0x1817_1615,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "wide_preview_frame",
+        &wide_preview,
+        &[
+            ("tag", ManifestFieldValue::U8(WIDE_PREVIEW_FRAME_TAG)),
+            (
+                "channel_tag",
+                ManifestFieldValue::U8(PreviewFrameChannel::WebViewportCanvas.tag()),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x1413_1211)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x1817_1615)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(wide_payload)),
+        ],
+    );
+
+    let scene_id = [0x31; 16];
+    let zone_id = [0x42; 16];
+    let zone_payload = vec![0x51, 0x62, 0x73, 0x84];
+    let zone = ZonePreviewFrame {
+        scene_id,
+        zone_id,
+        frame_number: 0x2423_2221,
+        timestamp_ms: 0x2827_2625,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from(zone_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "zone_preview_frame",
+        &zone,
+        &[
+            ("tag", ManifestFieldValue::U8(ZONE_PREVIEW_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x2423_2221)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x2827_2625)),
+            ("scene_id", ManifestFieldValue::Uuid(scene_id)),
+            ("zone_id", ManifestFieldValue::Uuid(zone_id)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgba.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(zone_payload)),
+        ],
+    );
+
+    let wide_zone_payload = vec![0x6B; 70_001 * 3];
+    let wide_zone = ZonePreviewFrame {
+        scene_id,
+        zone_id,
+        frame_number: 0x3433_3231,
+        timestamp_ms: 0x3837_3635,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_zone_payload.clone()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "wide_zone_preview_frame",
+        &wide_zone,
+        &[
+            ("tag", ManifestFieldValue::U8(WIDE_ZONE_PREVIEW_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x3433_3231)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x3837_3635)),
+            ("scene_id", ManifestFieldValue::Uuid(scene_id)),
+            ("zone_id", ManifestFieldValue::Uuid(zone_id)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(wide_zone_payload)),
+        ],
+    );
+
+    let interactive_id = "preview-layout".to_owned();
+    let interactive_payload = vec![0x17, 0x28, 0x39];
+    let interactive = InteractivePreviewFrame {
+        preview_id: interactive_id.clone(),
+        frame_number: 0x4443_4241,
+        timestamp_ms: 0x4847_4645,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(interactive_payload.clone()),
+    }
+    .encode()
+    .expect("interactive frame encodes");
+    assert_manifest_layout(
+        "interactive_preview_frame",
+        &interactive,
+        &[
+            ("tag", ManifestFieldValue::U8(INTERACTIVE_PREVIEW_FRAME_TAG)),
+            (
+                "preview_id_len",
+                ManifestFieldValue::U8(u8::try_from(interactive_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x4443_4241)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x4847_4645)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            (
+                "preview_id",
+                ManifestFieldValue::Utf8(interactive_id.clone()),
+            ),
+            ("payload", ManifestFieldValue::Bytes(interactive_payload)),
+        ],
+    );
+
+    let wide_interactive_payload = vec![0x29; 70_001 * 3];
+    let wide_interactive = InteractivePreviewFrame {
+        preview_id: interactive_id.clone(),
+        frame_number: 0x5453_5251,
+        timestamp_ms: 0x5857_5655,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_interactive_payload.clone()),
+    }
+    .encode()
+    .expect("wide interactive frame encodes");
+    assert_manifest_layout(
+        "wide_interactive_preview_frame",
+        &wide_interactive,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(WIDE_INTERACTIVE_PREVIEW_FRAME_TAG),
+            ),
+            (
+                "preview_id_len",
+                ManifestFieldValue::U8(u8::try_from(interactive_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x5453_5251)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x5857_5655)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("preview_id", ManifestFieldValue::Utf8(interactive_id)),
+            (
+                "payload",
+                ManifestFieldValue::Bytes(wide_interactive_payload),
+            ),
+        ],
+    );
+
+    let device_id = "display-layout".to_owned();
+    let display_payload = vec![0x3A, 0x4B, 0x5C, 0x6D];
+    let display = DisplayPreviewFrame {
+        device_id: device_id.clone(),
+        frame_number: 0x6463_6261,
+        timestamp_ms: 0x6867_6665,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from(display_payload.clone()),
+    }
+    .encode()
+    .expect("display frame encodes");
+    assert_manifest_layout(
+        "display_preview_frame",
+        &display,
+        &[
+            ("tag", ManifestFieldValue::U8(DISPLAY_PREVIEW_FRAME_TAG)),
+            (
+                "device_id_len",
+                ManifestFieldValue::U8(u8::try_from(device_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x6463_6261)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x6867_6665)),
+            ("width", ManifestFieldValue::U16(1)),
+            ("height", ManifestFieldValue::U16(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgba.tag()),
+            ),
+            ("device_id", ManifestFieldValue::Utf8(device_id.clone())),
+            ("payload", ManifestFieldValue::Bytes(display_payload)),
+        ],
+    );
+
+    let wide_display_payload = vec![0x7E; 70_001 * 3];
+    let wide_display = DisplayPreviewFrame {
+        device_id: device_id.clone(),
+        frame_number: 0x7473_7271,
+        timestamp_ms: 0x7877_7675,
+        width: 70_001,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(wide_display_payload.clone()),
+    }
+    .encode()
+    .expect("wide display frame encodes");
+    assert_manifest_layout(
+        "wide_display_preview_frame",
+        &wide_display,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(WIDE_DISPLAY_PREVIEW_FRAME_TAG),
+            ),
+            (
+                "device_id_len",
+                ManifestFieldValue::U8(u8::try_from(device_id.len()).expect("ID fits u8")),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0x7473_7271)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x7877_7675)),
+            ("width", ManifestFieldValue::U32(70_001)),
+            ("height", ManifestFieldValue::U32(1)),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Rgb.tag()),
+            ),
+            ("device_id", ManifestFieldValue::Utf8(device_id)),
+            ("payload", ManifestFieldValue::Bytes(wide_display_payload)),
+        ],
+    );
+
+    let screen_colors = vec![[0x10, 0x20, 0x30], [0x40, 0x50, 0x60]];
+    let screen = ScreenZonesFrame {
+        frame_number: 0x8483_8281,
+        timestamp_ms: 0x8887_8685,
+        source_width: 0x1211,
+        source_height: 0x1413,
+        grid_cols: 2,
+        grid_rows: 1,
+        letterbox: [3, 4, 5, 6],
+        payload: Bytes::from(screen_colors.iter().flatten().copied().collect::<Vec<_>>()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "screen_zones_frame",
+        &screen,
+        &[
+            ("tag", ManifestFieldValue::U8(SCREEN_ZONES_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x8483_8281)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x8887_8685)),
+            ("source_width", ManifestFieldValue::U16(0x1211)),
+            ("source_height", ManifestFieldValue::U16(0x1413)),
+            ("grid_cols", ManifestFieldValue::U8(2)),
+            ("grid_rows", ManifestFieldValue::U8(1)),
+            ("letterbox_top", ManifestFieldValue::U8(3)),
+            ("letterbox_bottom", ManifestFieldValue::U8(4)),
+            ("letterbox_left", ManifestFieldValue::U8(5)),
+            ("letterbox_right", ManifestFieldValue::U8(6)),
+            (
+                "zone_colors",
+                ManifestFieldValue::RgbList(screen_colors.clone()),
+            ),
+        ],
+    );
+
+    let wide_screen = ScreenZonesFrame {
+        frame_number: 0x9493_9291,
+        timestamp_ms: 0x9897_9695,
+        source_width: 70_001,
+        source_height: 70_002,
+        grid_cols: 2,
+        grid_rows: 1,
+        letterbox: [7, 8, 9, 10],
+        payload: Bytes::from(screen_colors.iter().flatten().copied().collect::<Vec<_>>()),
+    }
+    .encode();
+    assert_manifest_layout(
+        "wide_screen_zones_frame",
+        &wide_screen,
+        &[
+            ("tag", ManifestFieldValue::U8(WIDE_SCREEN_ZONES_FRAME_TAG)),
+            ("frame_number", ManifestFieldValue::U32(0x9493_9291)),
+            ("timestamp_ms", ManifestFieldValue::U32(0x9897_9695)),
+            ("source_width", ManifestFieldValue::U32(70_001)),
+            ("source_height", ManifestFieldValue::U32(70_002)),
+            ("grid_cols", ManifestFieldValue::U8(2)),
+            ("grid_rows", ManifestFieldValue::U8(1)),
+            ("letterbox_top", ManifestFieldValue::U8(7)),
+            ("letterbox_bottom", ManifestFieldValue::U8(8)),
+            ("letterbox_left", ManifestFieldValue::U8(9)),
+            ("letterbox_right", ManifestFieldValue::U8(10)),
+            (
+                "zone_colors",
+                ManifestFieldValue::RgbList(screen_colors.clone()),
+            ),
+        ],
+    );
+
+    let extended_colors = vec![[0x21, 0x32, 0x43]; 256];
+    let extended_screen = ScreenZonesFrame {
+        frame_number: 0xA4A3_A2A1,
+        timestamp_ms: 0xA8A7_A6A5,
+        source_width: 0x2423,
+        source_height: 0x2625,
+        grid_cols: 256,
+        grid_rows: 1,
+        letterbox: [257, 258, 259, 260],
+        payload: Bytes::from(
+            extended_colors
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
+        ),
+    }
+    .encode();
+    assert_manifest_layout(
+        "extended_screen_zones_frame",
+        &extended_screen,
+        &[
+            (
+                "tag",
+                ManifestFieldValue::U8(EXTENDED_SCREEN_ZONES_FRAME_TAG),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0xA4A3_A2A1)),
+            ("timestamp_ms", ManifestFieldValue::U32(0xA8A7_A6A5)),
+            ("source_width", ManifestFieldValue::U32(0x2423)),
+            ("source_height", ManifestFieldValue::U32(0x2625)),
+            ("grid_cols", ManifestFieldValue::U32(256)),
+            ("grid_rows", ManifestFieldValue::U32(1)),
+            ("letterbox_top", ManifestFieldValue::U32(257)),
+            ("letterbox_bottom", ManifestFieldValue::U32(258)),
+            ("letterbox_left", ManifestFieldValue::U32(259)),
+            ("letterbox_right", ManifestFieldValue::U32(260)),
+            ("zone_colors", ManifestFieldValue::RgbList(extended_colors)),
+        ],
+    );
+
+    let chunk_payload = vec![0x81, 0x92, 0xA3, 0xB4];
+    let chunk = PreviewChunkFrame {
+        metadata: PreviewPublicationMetadata {
+            stream: PreviewStreamId::Interactive("chunk-layout".to_owned()),
+            publication_id: 0x0807_0605_0403_0201,
+            frame_number: 0xB4B3_B2B1,
+            timestamp_ms: 0xB8B7_B6B5,
+            width: 0xC4C3_C2C1,
+            height: 0xC8C7_C6C5,
+            format: PreviewPixelFormat::Jpeg,
+        },
+        total_encoded_bytes: 9,
+        chunk_offset: 5,
+        chunk_index: 1,
+        chunk_count: 2,
+        payload: Bytes::from(chunk_payload.clone()),
+    };
+    let chunk_identity = b"chunk-layout".to_vec();
+    let chunk = chunk.try_encode().expect("preview chunk encodes");
+    assert_manifest_layout(
+        "preview_chunk_frame",
+        &chunk,
+        &[
+            ("tag", ManifestFieldValue::U8(PREVIEW_CHUNK_FRAME_TAG)),
+            ("schema", ManifestFieldValue::U8(PREVIEW_CHUNK_SCHEMA)),
+            ("stream_kind", ManifestFieldValue::U8(2)),
+            (
+                "channel_tag",
+                ManifestFieldValue::U8(INTERACTIVE_PREVIEW_FRAME_TAG),
+            ),
+            (
+                "format",
+                ManifestFieldValue::U8(PreviewPixelFormat::Jpeg.tag()),
+            ),
+            (
+                "stream_identity_len",
+                ManifestFieldValue::U16(
+                    u16::try_from(chunk_identity.len()).expect("identity fits u16"),
+                ),
+            ),
+            (
+                "publication_id",
+                ManifestFieldValue::U64(0x0807_0605_0403_0201),
+            ),
+            ("frame_number", ManifestFieldValue::U32(0xB4B3_B2B1)),
+            ("timestamp_ms", ManifestFieldValue::U32(0xB8B7_B6B5)),
+            ("width", ManifestFieldValue::U32(0xC4C3_C2C1)),
+            ("height", ManifestFieldValue::U32(0xC8C7_C6C5)),
+            ("total_encoded_bytes", ManifestFieldValue::U64(9)),
+            ("chunk_offset", ManifestFieldValue::U64(5)),
+            ("chunk_index", ManifestFieldValue::U32(1)),
+            ("chunk_count", ManifestFieldValue::U32(2)),
+            ("stream_identity", ManifestFieldValue::Bytes(chunk_identity)),
+            ("chunk_payload", ManifestFieldValue::Bytes(chunk_payload)),
+        ],
+    );
+
+    let cancel_identity = [scene_id, zone_id].concat();
+    let cancel = PreviewCancelFrame {
+        stream: PreviewStreamId::Zone { scene_id, zone_id },
+        publication_id: 0x1817_1615_1413_1211,
+    }
+    .try_encode()
+    .expect("preview cancellation encodes");
+    assert_manifest_layout(
+        "preview_cancel_frame",
+        &cancel,
+        &[
+            ("tag", ManifestFieldValue::U8(PREVIEW_CANCEL_FRAME_TAG)),
+            ("schema", ManifestFieldValue::U8(PREVIEW_CANCEL_SCHEMA)),
+            ("stream_kind", ManifestFieldValue::U8(1)),
+            (
+                "channel_tag",
+                ManifestFieldValue::U8(ZONE_PREVIEW_FRAME_TAG),
+            ),
+            ("stream_identity_len", ManifestFieldValue::U16(32)),
+            (
+                "publication_id",
+                ManifestFieldValue::U64(0x1817_1615_1413_1211),
+            ),
+            (
+                "stream_identity",
+                ManifestFieldValue::Bytes(cancel_identity),
+            ),
+        ],
+    );
+
+    let spectrum_bins = vec![0.125, 0.25, 0.5];
+    let spectrum = SpectrumFrame {
+        timestamp_ms: 0xD4D3_D2D1,
+        level: 0.625,
+        bass: 0.375,
+        mid: 0.75,
+        treble: 0.875,
+        beat: true,
+        beat_confidence: 0.9375,
+        bins: spectrum_bins.clone(),
+    }
+    .encode();
+    assert_manifest_layout(
+        "spectrum",
+        &spectrum,
+        &[
+            ("tag", ManifestFieldValue::U8(0x02)),
+            ("timestamp_ms", ManifestFieldValue::U32(0xD4D3_D2D1)),
+            (
+                "bin_count",
+                ManifestFieldValue::U8(u8::try_from(spectrum_bins.len()).expect("bin count fits")),
+            ),
+            ("level", ManifestFieldValue::F32(0.625)),
+            ("bass", ManifestFieldValue::F32(0.375)),
+            ("mid", ManifestFieldValue::F32(0.75)),
+            ("treble", ManifestFieldValue::F32(0.875)),
+            ("beat", ManifestFieldValue::U8(1)),
+            ("beat_confidence", ManifestFieldValue::F32(0.9375)),
+            ("bins", ManifestFieldValue::F32List(spectrum_bins)),
+        ],
+    );
 }
 
 fn assert_one_byte_chunks_reassemble(
@@ -192,7 +824,7 @@ fn preview_frame_roundtrips_rgba_payload() {
 #[test]
 fn preview_frame_keeps_jpeg_payload_variable_length() {
     let frame = PreviewFrame {
-        channel: PreviewFrameChannel::DisplayPreview,
+        channel: PreviewFrameChannel::WebViewportCanvas,
         frame_number: 7,
         timestamp_ms: 11,
         width: 640,
@@ -311,6 +943,110 @@ fn zone_preview_frame_decode_bytes_matches_decode() {
         ZonePreviewFrame::decode(&encoded).expect("slice decode"),
         ZonePreviewFrame::decode_bytes(&encoded).expect("bytes decode"),
     );
+}
+
+#[test]
+fn display_preview_frame_names_the_device_it_came_from() {
+    let frame = DisplayPreviewFrame {
+        device_id: "3f2504e0-4f89-11d3-9a0c-0305e82c3301".to_owned(),
+        frame_number: 44,
+        timestamp_ms: 1234,
+        width: 2,
+        height: 1,
+        format: PreviewPixelFormat::Rgba,
+        payload: Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8]),
+    };
+    let encoded = frame.encode().expect("display frame should encode");
+
+    assert_eq!(encoded[0], DISPLAY_PREVIEW_FRAME_TAG);
+    assert_eq!(
+        encoded.len(),
+        DISPLAY_PREVIEW_FRAME_PREFIX_LEN + frame.device_id.len() + 8
+    );
+    assert_eq!(DisplayPreviewFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn display_preview_decode_bytes_shares_payload_buffer() {
+    let frame = DisplayPreviewFrame {
+        device_id: "display-a".to_owned(),
+        frame_number: 1,
+        timestamp_ms: 2,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[9, 8, 7]),
+    };
+    let encoded = frame.encode().expect("display frame should encode");
+    let decoded = DisplayPreviewFrame::decode_bytes(&encoded).expect("frame should decode");
+    let payload_offset = DISPLAY_PREVIEW_FRAME_PREFIX_LEN + frame.device_id.len();
+
+    assert_eq!(decoded, frame);
+    assert_eq!(
+        decoded.payload.as_ptr() as usize,
+        encoded.as_ptr() as usize + payload_offset,
+    );
+}
+
+#[test]
+fn display_preview_frame_rejects_invalid_device_ids() {
+    let empty = DisplayPreviewFrame {
+        device_id: String::new(),
+        frame_number: 1,
+        timestamp_ms: 1,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[1, 2, 3]),
+    };
+    assert_eq!(empty.encode(), Err(PreviewFrameDecodeError::EmptyPreviewId));
+
+    let too_long = DisplayPreviewFrame {
+        device_id: "x".repeat(DISPLAY_PREVIEW_ID_MAX_BYTES + 1),
+        ..empty
+    };
+    assert_eq!(
+        too_long.encode(),
+        Err(PreviewFrameDecodeError::PreviewIdTooLong {
+            maximum: DISPLAY_PREVIEW_ID_MAX_BYTES,
+            actual: DISPLAY_PREVIEW_ID_MAX_BYTES + 1,
+        })
+    );
+}
+
+#[test]
+fn a_wide_display_preview_frame_keeps_its_full_dimensions() {
+    let frame = DisplayPreviewFrame {
+        device_id: "wall".to_owned(),
+        frame_number: 5,
+        timestamp_ms: 6,
+        width: 70_001,
+        height: 3,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from(vec![0; 70_001 * 3 * 3]),
+    };
+    let encoded = frame.encode().expect("wide display frame should encode");
+
+    assert_eq!(encoded[0], WIDE_DISPLAY_PREVIEW_FRAME_TAG);
+    assert_eq!(DisplayPreviewFrame::decode(&encoded), Ok(frame));
+}
+
+#[test]
+fn display_and_interactive_previews_do_not_decode_as_each_other() {
+    let display = DisplayPreviewFrame {
+        device_id: "display-a".to_owned(),
+        frame_number: 1,
+        timestamp_ms: 2,
+        width: 1,
+        height: 1,
+        format: PreviewPixelFormat::Rgb,
+        payload: Bytes::from_static(&[9, 8, 7]),
+    }
+    .encode()
+    .expect("display frame should encode");
+
+    assert!(InteractivePreviewFrame::decode(&display).is_err());
+    assert!(PreviewFrame::decode(&display).is_err());
 }
 
 #[test]
@@ -484,7 +1220,7 @@ fn screen_zones_frame_preserves_wide_source_layout() {
 }
 
 #[test]
-fn screen_zones_frame_keeps_legacy_layout_at_u8_boundaries() {
+fn screen_zones_frame_keeps_compact_layout_at_u8_boundaries() {
     let frame = ScreenZonesFrame {
         frame_number: 79,
         timestamp_ms: 123_458,
@@ -602,7 +1338,7 @@ fn screen_zones_frame_rejects_wrong_tag() {
 }
 
 #[test]
-fn legacy_preview_layout_is_byte_for_byte_stable() {
+fn compact_preview_layout_is_byte_for_byte_stable() {
     let encoded = PreviewFrame {
         channel: PreviewFrameChannel::Canvas,
         frame_number: 0x0403_0201,
@@ -625,7 +1361,7 @@ fn legacy_preview_layout_is_byte_for_byte_stable() {
 #[test]
 fn wide_preview_layouts_round_trip_without_truncation() {
     let passive = PreviewFrame {
-        channel: PreviewFrameChannel::DisplayPreview,
+        channel: PreviewFrameChannel::WebViewportCanvas,
         frame_number: 1,
         timestamp_ms: 2,
         width: 70_001,
@@ -732,7 +1468,6 @@ fn reassembler(max_bytes: usize) -> PreviewChunkReassembler {
         max_decoded_publication_bytes: 128 * 1024 * 1024,
         max_encoded_publication_bytes: max_bytes,
         max_connection_bytes: max_bytes.checked_mul(2).expect("fixture budget fits"),
-        max_streams: 2,
         max_message_bytes: max_bytes,
         ..PreviewReassemblyLimits::default()
     })
@@ -851,7 +1586,7 @@ fn newer_publication_reclaims_superseded_partial() {
 }
 
 #[test]
-fn v2_replacement_reuses_connection_and_state_budgets() {
+fn replacement_reuses_connection_and_state_budgets() {
     let old_metadata = interactive_metadata(1, 1);
     let new_metadata = interactive_metadata(2, 2);
     let old =
@@ -864,7 +1599,6 @@ fn v2_replacement_reuses_connection_and_state_budgets() {
         max_encoded_publication_bytes: 256,
         max_connection_bytes: 256,
         max_message_bytes: 128,
-        max_streams: 0,
         ..PreviewReassemblyLimits::default()
     });
 
@@ -878,7 +1612,7 @@ fn v2_replacement_reuses_connection_and_state_budgets() {
 }
 
 #[test]
-fn v2_reassembly_charges_full_interactive_identity_at_exact_boundary() {
+fn reassembly_charges_full_interactive_identity_at_exact_boundary() {
     let mut metadata = interactive_metadata(1, 1);
     metadata.stream = PreviewStreamId::Interactive("x".repeat(INTERACTIVE_PREVIEW_ID_MAX_BYTES));
     let chunks = split_preview_publication(
@@ -915,12 +1649,11 @@ fn v2_reassembly_charges_full_interactive_identity_at_exact_boundary() {
 }
 
 #[test]
-fn v2_reassembly_uses_bytes_instead_of_legacy_stream_counts() {
+fn reassembly_admits_streams_by_state_bytes() {
     let stream_count = 257_usize;
     let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
         max_encoded_publication_bytes: 256,
         max_connection_bytes: 256 * stream_count,
-        max_streams: 1,
         max_reassembly_state_bytes: 1024 * 1024,
         max_message_bytes: 128,
         ..PreviewReassemblyLimits::default()
@@ -973,7 +1706,6 @@ fn chunk_reassembly_enforces_publication_and_connection_byte_budgets() {
         max_decoded_publication_bytes: 128 * 1024 * 1024,
         max_encoded_publication_bytes: 512,
         max_connection_bytes: 700,
-        max_streams: 2,
         ..PreviewReassemblyLimits::default()
     });
     assert_eq!(connection_limited.push(&first_chunks[0]), Ok(None));
@@ -1035,7 +1767,6 @@ fn chunk_reassembly_enforces_decoded_budget_separately_from_encoded_budget() {
         max_decoded_publication_bytes: 1023,
         max_encoded_publication_bytes: 1024,
         max_connection_bytes: 2048,
-        max_streams: 2,
         ..PreviewReassemblyLimits::default()
     });
 
@@ -1222,7 +1953,7 @@ fn cancellation_releases_bytes_but_keeps_stream_high_water() {
 }
 
 #[test]
-fn v2_tombstones_evict_by_identity_bytes_and_clear_releases_ledgers() {
+fn tombstones_evict_by_identity_bytes_and_clear_releases_ledgers() {
     let long_stream = PreviewStreamId::Interactive("x".repeat(INTERACTIVE_PREVIEW_ID_MAX_BYTES));
     let mut probe = PreviewChunkReassembler::new(PreviewReassemblyLimits::default());
     probe
@@ -1236,7 +1967,6 @@ fn v2_tombstones_evict_by_identity_bytes_and_clear_releases_ledgers() {
     let short_stream = PreviewStreamId::Interactive("x".to_owned());
     let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
         max_tombstone_bytes: exact_tombstone_bytes,
-        max_tombstones: 1,
         ..PreviewReassemblyLimits::default()
     });
     reassembler
@@ -1273,59 +2003,7 @@ fn cancellation_frame_roundtrips_publication_identity() {
 }
 
 #[test]
-fn bounded_tombstones_do_not_consume_active_stream_capacity() {
-    let mut reassembler = PreviewChunkReassembler::new(PreviewReassemblyLimits {
-        max_encoded_publication_bytes: 512,
-        max_connection_bytes: 512,
-        max_streams: 1,
-        max_tombstones: 2,
-        max_message_bytes: 128,
-        version: hypercolor_leptos_ext::ws::PreviewTransportVersion::V1,
-        ..PreviewReassemblyLimits::default()
-    });
-    let mut newest = None;
-    for publication_id in 1..=3 {
-        let metadata = PreviewPublicationMetadata {
-            stream: PreviewStreamId::Interactive(format!("stream-{publication_id}")),
-            ..interactive_metadata(publication_id, publication_id as u32)
-        };
-        let chunks =
-            split_preview_publication(&interactive_encoded(&metadata, 128), &metadata, 128)
-                .expect("fixture chunks");
-        assert_eq!(reassembler.push_at(&chunks[0], publication_id), Ok(None));
-        reassembler
-            .cancel_publication(&PreviewCancelFrame {
-                stream: metadata.stream.clone(),
-                publication_id,
-            })
-            .expect("cancellation records high-water");
-        newest = Some((metadata, chunks));
-    }
-
-    assert_eq!(reassembler.partial_count(), 0);
-    assert_eq!(reassembler.tombstone_count(), 2);
-    let (newest_metadata, newest_chunks) = newest.expect("latest fixture");
-    assert!(matches!(
-        reassembler.push_at(&newest_chunks[0], 4),
-        Err(PreviewChunkError::StalePublication {
-            publication_id: 3,
-            high_water: 3,
-        })
-    ));
-
-    let reused = PreviewPublicationMetadata {
-        stream: PreviewStreamId::Interactive("stream-1".to_owned()),
-        ..interactive_metadata(4, 4)
-    };
-    let reused_chunks = split_preview_publication(&interactive_encoded(&reused, 128), &reused, 128)
-        .expect("reused stream chunks");
-    assert_eq!(reassembler.push_at(&reused_chunks[0], 5), Ok(None));
-    assert_eq!(reassembler.partial_count(), 1);
-    assert_ne!(newest_metadata.stream, reused.stream);
-}
-
-#[test]
-fn chunk_admission_enforces_message_and_chunk_count_budgets() {
+fn chunk_admission_enforces_message_budget() {
     let metadata = interactive_metadata(1, 1);
     let chunks = split_preview_publication(&interactive_encoded(&metadata, 256), &metadata, 128)
         .expect("fixture chunks");
@@ -1336,16 +2014,6 @@ fn chunk_admission_enforces_message_and_chunk_count_budgets() {
     assert!(matches!(
         message_limited.push(&chunks[0]),
         Err(PreviewChunkError::MessageBudgetExceeded { .. })
-    ));
-
-    let mut chunk_limited = PreviewChunkReassembler::new(PreviewReassemblyLimits {
-        max_chunk_count: 1,
-        version: hypercolor_leptos_ext::ws::PreviewTransportVersion::V1,
-        ..PreviewReassemblyLimits::default()
-    });
-    assert!(matches!(
-        chunk_limited.push(&chunks[0]),
-        Err(PreviewChunkError::ChunkCountBudgetExceeded { .. })
     ));
 }
 
@@ -1400,7 +2068,6 @@ fn idle_expiry_releases_bytes_but_keeps_stream_high_water() {
         max_decoded_publication_bytes: 128 * 1024 * 1024,
         max_encoded_publication_bytes: 1024,
         max_connection_bytes: 2048,
-        max_streams: 2,
         max_idle_ms: 10,
         ..PreviewReassemblyLimits::default()
     });
@@ -1461,215 +2128,11 @@ fn chunked_zone_publication_reassembles_for_shared_ui_decoder() {
 }
 
 #[test]
-fn preview_transport_capability_roundtrips_shared_resource_budgets() {
-    let capability = PreviewTransportCapability::default();
-    let encoded = capability.encode();
+fn preview_transport_limits_cover_chunking_and_connection_headroom() {
+    let limits = PreviewTransportLimits::default();
 
-    assert_eq!(PreviewTransportCapability::decode(&encoded), Ok(capability));
-    assert_eq!(
-        PreviewTransportCapability::from_capabilities(["preview_chunking", encoded.as_str()]),
-        Some(capability)
-    );
-    assert!(capability.max_connection_bytes >= capability.max_encoded_publication_bytes * 2);
-}
-
-#[test]
-fn preview_transport_capability_prefers_v2_and_falls_back_to_v1() {
-    let v2 = PreviewTransportCapability::default();
-    let v1 = v2.legacy_v1();
-    let v2_encoded = v2.encode();
-    let v1_encoded = v1.encode();
-
-    assert_eq!(
-        PreviewTransportCapability::from_capabilities([v1_encoded.as_str(), v2_encoded.as_str(),]),
-        Some(v2)
-    );
-    assert_eq!(
-        PreviewTransportCapability::from_capabilities([v1_encoded.as_str()]),
-        Some(v1)
-    );
-    assert_eq!(v2.negotiated_with(v1).version, PreviewTransportVersion::V1);
-}
-
-#[test]
-fn preview_transport_capability_fits_every_stream_identity() {
-    let capability = PreviewTransportCapability {
-        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES - 1,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert!(
-        hypercolor_leptos_ext::ws::PreviewTransportCapability::decode(&capability.encode())
-            .is_err()
-    );
-}
-
-#[test]
-fn preview_transport_capability_enforces_encoded_chunk_capacity() {
-    let payload_bytes = 16_usize;
-    let chunk_count = 16_u32;
-    let max_message_bytes =
-        PREVIEW_CHUNK_FIXED_HEADER_LEN + INTERACTIVE_PREVIEW_ID_MAX_BYTES + payload_bytes;
-    let max_encoded_publication_bytes =
-        payload_bytes * usize::try_from(chunk_count).expect("fixture chunk count fits usize");
-    let exact = PreviewTransportCapability {
-        max_encoded_publication_bytes,
-        max_connection_bytes: max_encoded_publication_bytes * 2,
-        max_message_bytes,
-        max_chunk_count: chunk_count,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&exact.encode()),
-        Ok(exact)
-    );
-
-    let impossible = PreviewTransportCapability {
-        max_encoded_publication_bytes: max_encoded_publication_bytes + 1,
-        max_connection_bytes: (max_encoded_publication_bytes + 1) * 2,
-        ..exact
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&impossible.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-}
-
-#[test]
-fn preview_transport_capability_handles_capacity_overflow_without_wrapping() {
-    let capability = PreviewTransportCapability {
-        max_encoded_publication_bytes: usize::MAX / 2,
-        max_connection_bytes: usize::MAX,
-        max_message_bytes: usize::MAX - 1,
-        max_chunk_count: 2,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&capability.encode()),
-        Ok(capability)
-    );
-
-    let impossible = PreviewTransportCapability {
-        max_encoded_publication_bytes: PREVIEW_MIN_MESSAGE_BYTES + 1,
-        max_connection_bytes: (PREVIEW_MIN_MESSAGE_BYTES + 1) * 2,
-        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES,
-        max_chunk_count: 1,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&impossible.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-}
-
-#[test]
-fn preview_transport_capability_requires_replacement_headroom() {
-    let encoded_bytes = 1_024_usize;
-    let exact = PreviewTransportCapability {
-        max_encoded_publication_bytes: encoded_bytes,
-        max_connection_bytes: encoded_bytes * 2,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&exact.encode()),
-        Ok(exact)
-    );
-
-    let insufficient = PreviewTransportCapability {
-        max_connection_bytes: encoded_bytes * 2 - 1,
-        ..exact
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&insufficient.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-
-    let overflow = PreviewTransportCapability {
-        max_encoded_publication_bytes: usize::MAX,
-        max_connection_bytes: usize::MAX,
-        max_message_bytes: usize::MAX,
-        max_chunk_count: u32::MAX,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&overflow.encode()),
-        Err(hypercolor_leptos_ext::ws::PreviewCapabilityError::InvalidLimits)
-    );
-}
-
-#[test]
-fn preview_transport_negotiation_clamps_cross_field_chunk_capacity() {
-    let narrow_messages = PreviewTransportCapability {
-        max_encoded_publication_bytes: 1_000,
-        max_connection_bytes: 2_000,
-        max_message_bytes: PREVIEW_MIN_MESSAGE_BYTES,
-        max_chunk_count: 1_000,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    let narrow_chunk_count = PreviewTransportCapability {
-        max_encoded_publication_bytes: 1_000,
-        max_connection_bytes: 2_000,
-        max_message_bytes: 1_000,
-        max_chunk_count: 1,
-        ..PreviewTransportCapability::default().legacy_v1()
-    };
-    assert_eq!(
-        PreviewTransportCapability::decode(&narrow_messages.encode()),
-        Ok(narrow_messages)
-    );
-    assert_eq!(
-        PreviewTransportCapability::decode(&narrow_chunk_count.encode()),
-        Ok(narrow_chunk_count)
-    );
-
-    let negotiated = narrow_messages.negotiated_with(narrow_chunk_count);
-    assert_eq!(negotiated.max_message_bytes, PREVIEW_MIN_MESSAGE_BYTES);
-    assert_eq!(negotiated.max_chunk_count, 1);
-    assert_eq!(
-        negotiated.max_encoded_publication_bytes,
-        PREVIEW_MIN_MESSAGE_BYTES
-    );
-    assert_eq!(negotiated.max_connection_bytes, 2_000);
-    assert_eq!(
-        PreviewTransportCapability::decode(&negotiated.encode()),
-        Ok(negotiated)
-    );
-}
-
-#[test]
-fn preview_transport_negotiation_uses_each_peers_physical_minimum() {
-    let local = PreviewReassemblyLimits::default();
-    let peer = PreviewTransportCapability {
-        max_decoded_publication_bytes: local.max_decoded_publication_bytes / 2,
-        max_encoded_publication_bytes: local.max_encoded_publication_bytes / 2,
-        max_connection_bytes: local.max_connection_bytes / 2,
-        max_streams: local.max_streams / 2,
-        max_tombstones: local.max_tombstones / 2,
-        max_idle_ms: local.max_idle_ms / 2,
-        max_message_bytes: local.max_message_bytes / 2,
-        max_chunk_count: local.max_chunk_count / 2,
-        max_reassembly_state_bytes: local.max_reassembly_state_bytes / 2,
-        max_tombstone_bytes: local.max_tombstone_bytes / 2,
-        max_sender_state_bytes: PreviewTransportCapability::default().max_sender_state_bytes / 2,
-        max_cursor_state_bytes: PreviewTransportCapability::default().max_cursor_state_bytes / 2,
-        version: local.version,
-    };
-
-    assert_eq!(
-        local.negotiated_with(peer),
-        PreviewReassemblyLimits {
-            max_decoded_publication_bytes: peer.max_decoded_publication_bytes,
-            max_encoded_publication_bytes: peer.max_encoded_publication_bytes,
-            max_connection_bytes: peer.max_connection_bytes,
-            max_streams: peer.max_streams,
-            max_tombstones: peer.max_tombstones,
-            max_idle_ms: peer.max_idle_ms,
-            max_message_bytes: peer.max_message_bytes,
-            max_chunk_count: peer.max_chunk_count,
-            max_reassembly_state_bytes: peer.max_reassembly_state_bytes,
-            max_tombstone_bytes: peer.max_tombstone_bytes,
-            version: peer.version,
-        }
-    );
+    assert!(limits.max_message_bytes >= PREVIEW_MIN_MESSAGE_BYTES);
+    assert!(limits.max_connection_bytes >= limits.max_encoded_publication_bytes * 2);
 }
 
 #[test]
@@ -1705,31 +2168,5 @@ fn publication_split_enforces_advertised_message_and_chunk_limits() {
             DEFAULT_PREVIEW_MAX_MESSAGE_BYTES + 1,
         ),
         Err(PreviewChunkError::MessageBudgetExceeded { .. })
-    ));
-
-    let PreviewStreamId::Interactive(preview_id) = &metadata.stream else {
-        unreachable!();
-    };
-    let one_byte_payload_message = PREVIEW_CHUNK_FIXED_HEADER_LEN + preview_id.len() + 1;
-    let encoded = Bytes::from(vec![
-        0;
-        usize::try_from(DEFAULT_PREVIEW_MAX_CHUNK_COUNT)
-            .expect("chunk limit fits usize")
-            + 1
-    ]);
-    assert_eq!(
-        split_preview_publication(&encoded, &metadata, one_byte_payload_message)
-            .expect("v2 derives its chunk ceiling from encoded bytes")
-            .len(),
-        encoded.len()
-    );
-    assert!(matches!(
-        split_preview_publication_with_capability(
-            &encoded,
-            &metadata,
-            one_byte_payload_message,
-            PreviewTransportCapability::default().legacy_v1(),
-        ),
-        Err(PreviewChunkError::ChunkCountBudgetExceeded { .. })
     ));
 }

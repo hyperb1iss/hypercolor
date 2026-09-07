@@ -1,22 +1,12 @@
 //! Integration tests for persisted named-scene storage.
 
-use hypercolor_core::scene::{SceneManager, make_scene};
-use hypercolor_daemon::persistence::AtomicWriteOutcome;
-use hypercolor_daemon::scene_store::SceneStore;
-use hypercolor_types::device::DeviceId;
-use hypercolor_types::effect::EffectId;
-use hypercolor_types::scene::{SceneId, ZoneId};
+use hypercolor_core::scene::{default_primary_zone, make_scene};
+use hypercolor_daemon::scene_store;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use tempfile::TempDir;
-use uuid::Uuid;
-
-#[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::persistence::AtomicFileWriter;
-#[cfg(feature = "persistence-test-hooks")]
-use std::time::Duration;
 
 fn sample_layout(zone_id: &str) -> SpatialLayout {
     SpatialLayout {
@@ -51,9 +41,34 @@ fn sample_layout(zone_id: &str) -> SpatialLayout {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
+}
+
+fn scene_store_payload(scene: hypercolor_types::scene::Scene) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 2,
+        "scenes": { scene.id.to_string(): scene },
+    })
+}
+
+fn write_scene_store(
+    path: &std::path::Path,
+    scenes: impl IntoIterator<Item = hypercolor_types::scene::Scene>,
+) {
+    let scenes = scenes
+        .into_iter()
+        .map(|scene| (scene.id.to_string(), scene))
+        .collect::<std::collections::HashMap<_, _>>();
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "scenes": scenes,
+        }))
+        .expect("scene store should serialize"),
+    )
+    .expect("scene store should write");
 }
 
 #[test]
@@ -61,11 +76,9 @@ fn scene_store_round_trips_named_scenes() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
 
-    let mut store = SceneStore::new(path.clone()).expect("scene store");
-    store.replace_named_scenes([make_scene("Movie Night"), make_scene("Focus")]);
-    store.save().expect("scene store should save");
+    write_scene_store(&path, [make_scene("Movie Night"), make_scene("Focus")]);
 
-    let loaded = SceneStore::load(&path).expect("scene store should load");
+    let loaded = scene_store::load(&path).expect("scene store should load");
     let names = loaded
         .list()
         .map(|scene| scene.name.as_str())
@@ -76,131 +89,96 @@ fn scene_store_round_trips_named_scenes() {
 }
 
 #[test]
-fn scene_store_sync_from_manager_filters_default_scene() {
+fn scene_store_loads_empty_unversioned_store_without_rewriting_the_file() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
+    let payload = "{}";
+    std::fs::write(&path, payload).expect("legacy scene store should write");
 
-    let mut manager = SceneManager::with_default();
-    let named_scene = make_scene("Relax");
-    let named_scene_id = named_scene.id;
-    manager.create(named_scene).expect("scene should create");
+    let loaded = scene_store::load(&path).expect("empty legacy scene store should load");
 
-    let mut store = SceneStore::new(path).expect("scene store");
-    store.sync_from_manager(&manager);
-
-    assert_eq!(store.len(), 1);
+    assert!(loaded.is_empty());
     assert_eq!(
-        store.list().next().map(|scene| scene.id),
-        Some(named_scene_id)
+        std::fs::read_to_string(&path).expect("legacy payload should remain readable"),
+        payload,
+        "read admission must never acquire write authority"
     );
+}
+
+#[test]
+fn scene_store_rejects_invalid_scenes_without_rewriting_the_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let mut scene = make_scene("Invalid");
+    scene.name = "   ".to_owned();
+    let payload = serde_json::to_string_pretty(&scene_store_payload(scene))
+        .expect("scene payload should serialize");
+    std::fs::write(&path, &payload).expect("scene payload should write");
+
+    let error = scene_store::load(&path).expect_err("invalid scenes must fail closed");
     assert!(
-        store.list().all(|scene| scene.id != SceneId::DEFAULT),
-        "the synthesized default scene should never be persisted"
-    );
-}
-
-#[test]
-fn scene_store_rejects_an_overtaken_snapshot() {
-    let tempdir = TempDir::new().expect("tempdir");
-    let path = tempdir.path().join("scenes.json");
-    let mut store = SceneStore::new(path.clone()).expect("scene store");
-    let older = make_scene("Older");
-    let newer = make_scene("Newer");
-
-    let older_save = store
-        .reserve_save([older])
-        .expect("reserve older scene snapshot");
-    let newer_save = store
-        .reserve_save([newer])
-        .expect("reserve newer scene snapshot");
-
-    assert_eq!(
-        store
-            .save_reserved(newer_save)
-            .expect("save newer scene snapshot"),
-        AtomicWriteOutcome::Written
+        format!("{error:#}").contains("scene name must not be empty"),
+        "the validation cause is preserved: {error:#}"
     );
     assert_eq!(
-        store
-            .save_reserved(older_save)
-            .expect("reject older scene snapshot"),
-        AtomicWriteOutcome::Superseded
+        std::fs::read_to_string(&path).expect("scene payload should remain readable"),
+        payload,
+        "a rejected store must remain byte-for-byte untouched"
     );
-
-    let loaded = SceneStore::load(&path).expect("scene store should reload");
-    let names = loaded
-        .list()
-        .map(|scene| scene.name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(names, vec!["Newer"]);
 }
 
-#[cfg(feature = "persistence-test-hooks")]
 #[test]
-fn failed_scene_delete_keeps_live_state_and_does_not_resurrect() {
+fn scene_store_rejects_unversioned_legacy_data_without_rewriting_the_file() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
-    let mut store = SceneStore::new(path.clone()).expect("scene store");
-    store.replace_named_scenes([make_scene("Ephemeral")]);
-    store.save().expect("seed scene store");
-    let writer = AtomicFileWriter::new(&path).expect("atomic writer");
-    writer.set_injected_replace_failures(usize::MAX);
-    let pending = store
-        .reserve_save(std::iter::empty())
-        .expect("reserve scene deletion");
+    let scene = make_scene("Legacy");
+    let payload =
+        serde_json::to_string_pretty(&std::collections::HashMap::from([(scene.id, scene)]))
+            .expect("legacy scene payload should serialize");
+    std::fs::write(&path, &payload).expect("legacy scene store should write");
 
-    assert!(store.save_reserved(pending).is_err());
-    assert!(store.is_empty(), "live scene state remains authoritative");
-
-    writer.set_injected_replace_failures(0);
-    store
-        .kick_persistence()
-        .expect("kick scene persistence retry");
-    writer
-        .flush(Duration::from_secs(5))
-        .expect("scene deletion should converge");
-    assert!(
-        SceneStore::load(&path)
-            .expect("reload scene store")
-            .is_empty()
+    let error = scene_store::load(&path).expect_err("legacy scene store must fail closed");
+    let message = format!("{error:#}");
+    assert!(message.contains(r#"{"schema_version":2,"scenes":{...}}"#));
+    assert!(message.contains("pre-v2 Hypercolor release"));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("legacy payload should remain readable"),
+        payload,
+        "a rejected legacy store must remain byte-for-byte untouched"
     );
 }
 
 #[test]
-fn scene_store_load_rejects_groups_missing_role() {
+fn scene_store_rejects_unknown_versions_without_rewriting_the_file() {
+    let tempdir = TempDir::new().expect("tempdir");
+    let path = tempdir.path().join("scenes.json");
+    let payload = r#"{"schema_version":3,"scenes":{}}"#;
+    std::fs::write(&path, payload).expect("future scene store should write");
+
+    let error = scene_store::load(&path).expect_err("future schema must fail closed");
+    assert!(format!("{error:#}").contains("zones/layers schema"));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("future payload should remain readable"),
+        payload
+    );
+}
+
+#[test]
+fn scene_store_load_rejects_zones_missing_role() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
     let mut scene = make_scene("Strict Display");
-    scene.groups = vec![
-        serde_json::from_value(serde_json::json!({
-            "id": ZoneId::new(),
-            "name": "Face",
-            "description": null,
-            "effect_id": EffectId::from(Uuid::now_v7()),
-            "controls": {},
-            "control_bindings": {},
-            "preset_id": null,
-            "layout": sample_layout("desk:display"),
-            "brightness": 1.0,
-            "enabled": true,
-            "color": null,
-            "display_target": {
-                "device_id": DeviceId::new()
-            },
-            "role": "display"
-        }))
-        .expect("group should deserialize"),
-    ];
-    let mut payload = serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
-        .expect("scene payload should serialize");
+    scene.zones = vec![default_primary_zone(sample_layout("desk:display"))];
+    let mut payload = scene_store_payload(scene);
     payload
-        .as_object_mut()
-        .and_then(|scenes| scenes.values_mut().next())
-        .and_then(|scene| scene.get_mut("groups"))
-        .and_then(serde_json::Value::as_array_mut)
-        .and_then(|groups| groups.first_mut())
+        .get_mut("scenes")
         .and_then(serde_json::Value::as_object_mut)
-        .expect("group should serialize as an object")
+        .and_then(|scenes| scenes.values_mut().next())
+        .and_then(|scene| scene.get_mut("zones"))
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|zones| zones.first_mut())
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("zone should serialize as an object")
         .remove("role");
     std::fs::write(
         &path,
@@ -208,7 +186,7 @@ fn scene_store_load_rejects_groups_missing_role() {
     )
     .expect("scene store payload should write");
 
-    let error = SceneStore::load(&path).expect_err("missing role should fail");
+    let error = scene_store::load(&path).expect_err("missing role should fail");
     assert!(
         error.to_string().contains("failed to parse scenes"),
         "expected parse failure, got {error}"
@@ -220,28 +198,11 @@ fn scene_store_load_rejects_scenes_missing_kind() {
     let tempdir = TempDir::new().expect("tempdir");
     let path = tempdir.path().join("scenes.json");
     let mut scene = make_scene("Strict Primary");
-    scene.groups = vec![
-        serde_json::from_value(serde_json::json!({
-            "id": ZoneId::new(),
-            "name": "Primary",
-            "description": null,
-            "effect_id": EffectId::from(Uuid::now_v7()),
-            "controls": {},
-            "control_bindings": {},
-            "preset_id": null,
-            "layout": sample_layout("desk:main"),
-            "brightness": 1.0,
-            "enabled": true,
-            "color": null,
-            "display_target": null,
-            "role": "primary"
-        }))
-        .expect("group should deserialize"),
-    ];
-    let mut payload = serde_json::to_value(std::collections::HashMap::from([(scene.id, scene)]))
-        .expect("scene payload should serialize");
+    scene.zones = vec![default_primary_zone(sample_layout("desk:main"))];
+    let mut payload = scene_store_payload(scene);
     payload
-        .as_object_mut()
+        .get_mut("scenes")
+        .and_then(serde_json::Value::as_object_mut)
         .and_then(|scenes| scenes.values_mut().next())
         .and_then(serde_json::Value::as_object_mut)
         .expect("scene should serialize as an object")
@@ -252,7 +213,7 @@ fn scene_store_load_rejects_scenes_missing_kind() {
     )
     .expect("scene store payload should write");
 
-    let error = SceneStore::load(&path).expect_err("missing kind should fail");
+    let error = scene_store::load(&path).expect_err("missing kind should fail");
     assert!(
         error.to_string().contains("failed to parse scenes"),
         "expected parse failure, got {error}"

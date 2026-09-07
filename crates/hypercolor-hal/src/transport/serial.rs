@@ -241,16 +241,20 @@ impl Transport for UsbSerialTransport {
 
 fn map_serial_open_error(error: &tokio_serial::Error, path: &str) -> TransportError {
     let detail = format!("failed to open serial port {path}: {error}");
-    if detail.to_ascii_lowercase().contains("permission") {
-        TransportError::PermissionDenied { detail }
-    } else {
-        TransportError::IoError { detail }
+    match error.kind() {
+        tokio_serial::ErrorKind::NoDevice => TransportError::NotFound { detail },
+        tokio_serial::ErrorKind::Io(kind) => map_io_error_kind(kind, detail),
+        _ => TransportError::IoError { detail },
     }
 }
 
 fn map_io_error(error: &std::io::Error, operation: &str) -> TransportError {
     let detail = format!("serial {operation} failed: {error}");
-    match error.kind() {
+    map_io_error_kind(error.kind(), detail)
+}
+
+fn map_io_error_kind(kind: std::io::ErrorKind, detail: String) -> TransportError {
+    match kind {
         std::io::ErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
         std::io::ErrorKind::TimedOut => TransportError::Timeout { timeout_ms: 0 },
         std::io::ErrorKind::BrokenPipe
@@ -283,4 +287,30 @@ fn is_terminator_line(line: &[u8]) -> bool {
     };
 
     stripped[start..=end] == [b'.']
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serial_open_classification_uses_error_kind_not_message() {
+        let misleading = tokio_serial::Error::new(
+            tokio_serial::ErrorKind::Unknown,
+            "permission denied and device not found",
+        );
+        assert!(matches!(
+            map_serial_open_error(&misleading, "COM-test"),
+            TransportError::IoError { .. }
+        ));
+
+        let permission = tokio_serial::Error::new(
+            tokio_serial::ErrorKind::Io(std::io::ErrorKind::PermissionDenied),
+            "harmless display text",
+        );
+        assert!(matches!(
+            map_serial_open_error(&permission, "COM-test"),
+            TransportError::PermissionDenied { .. }
+        ));
+    }
 }

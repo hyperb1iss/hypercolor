@@ -3,6 +3,10 @@
       const number = Number(value);
       return Number.isFinite(number) ? number : fallback;
     };
+    const scrollPhase = function(value) {
+      if (value === 'may_begin' || value === 'began' || value === 'changed' || value === 'stationary' || value === 'ended' || value === 'cancelled') { return value; }
+      return 'none';
+    };
     const trueObject = function(values) {
       const object = {};
       if (!Array.isArray(values)) { return object; }
@@ -33,8 +37,7 @@
     const applyAudio = function(engine, audio) {
       if (typeof audio !== 'object' || audio === null) { return; }
       if (typeof engine.audio !== 'object' || engine.audio === null) { engine.audio = {}; }
-      engine.audio.level = finiteNumber(audio.levelDb, 0);
-      engine.audio.levelRaw = finiteNumber(audio.levelDb, 0);
+      engine.audio.levelDb = finiteNumber(audio.levelDb, -100);
       engine.audio.levelLinear = finiteNumber(audio.levelLinear, 0);
       engine.audio.levelShort = finiteNumber(audio.levelShort, 0);
       engine.audio.levelLong = finiteNumber(audio.levelLong, 0);
@@ -170,7 +173,13 @@
       engine.mouse.ny = finiteNumber(mouse.ny, 0);
       engine.mouse.mode = typeof mouse.mode === 'string' ? mouse.mode : 'none';
       engine.mouse.available = engine.mouse.mode !== 'none';
-      engine.mouse.wheel = finiteNumber(mouse.wheel, 0) / 120;
+      const scroll = typeof mouse.scroll === 'object' && mouse.scroll !== null ? mouse.scroll : {};
+      engine.mouse.scroll = {
+        line120X: finiteNumber(scroll.line120X, 0),
+        line120Y: finiteNumber(scroll.line120Y, 0),
+        pixelX: finiteNumber(scroll.pixelX, 0),
+        pixelY: finiteNumber(scroll.pixelY, 0),
+      };
       engine.mouse.velocity = finiteNumber(mouse.velocity, 0);
       const events = Array.isArray(interaction.events) ? interaction.events : [];
       const keyEvents = [];
@@ -193,8 +202,12 @@
         } else if (entry.kind === 'button') {
           entry.button = typeof event.button === 'string' ? event.button : '';
           mouseEvents.push(entry);
-        } else if (entry.kind === 'wheel') {
-          entry.delta = finiteNumber(event.delta, 0) / 120;
+        } else if (entry.kind === 'scroll') {
+          entry.deltaX = finiteNumber(event.deltaX, 0);
+          entry.deltaY = finiteNumber(event.deltaY, 0);
+          entry.unit = event.unit === 'pixels' ? 'pixels' : 'line120';
+          entry.phase = scrollPhase(event.phase);
+          entry.momentumPhase = scrollPhase(event.momentumPhase);
           mouseEvents.push(entry);
         }
       }
@@ -213,13 +226,16 @@
     const renderHostFrame = function() {
       if (typeof window.__hypercolorRenderHostFrame === 'function') { window.__hypercolorRenderHostFrame(); }
     };
-    window.__hypercolorApplyHostFrame = function(timeSecs, deltaSecs, frameNumber, width, height) {
+    window.__hypercolorApplyFrameTiming = function(timeSecs, deltaSecs, frameNumber, width, height) {
       if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }
       applyTimingAndCanvas(
         window.engine,
         { timeSecs: timeSecs, deltaSecs: deltaSecs, frameNumber: frameNumber },
         { width: width, height: height }
       );
+    };
+    window.__hypercolorApplyHostFrame = function(timeSecs, deltaSecs, frameNumber, width, height) {
+      window.__hypercolorApplyFrameTiming(timeSecs, deltaSecs, frameNumber, width, height);
       renderHostFrame();
     };
     window.__hypercolorApplyFramePayload = function(payload) {

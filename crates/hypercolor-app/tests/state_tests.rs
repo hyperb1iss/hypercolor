@@ -1,8 +1,18 @@
 use hypercolor_app::state::{
-    ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, ServerResponse,
-    StateUpdate, StatusResponse, WsEventMessage, WsHello,
+    AppState, DaemonMessage, EffectInfo, StateUpdate, WsEventMessage, WsHello,
 };
+use hypercolor_types::api::effects::EffectListResponse;
+use hypercolor_types::api::system::{ServerInfo, SystemResource, SystemStatus};
+use hypercolor_types::api::{ApiResponse, ResponseMeta};
 use serde_json::json;
+
+fn response_meta() -> ResponseMeta {
+    ResponseMeta {
+        api_version: "v1".to_owned(),
+        request_id: "req_test".to_owned(),
+        timestamp: "2026-08-20T00:00:00Z".to_owned(),
+    }
+}
 
 #[test]
 fn default_state_is_disconnected() {
@@ -12,9 +22,9 @@ fn default_state_is_disconnected() {
     assert!(!state.running);
     assert!(!state.paused);
     assert_eq!(state.brightness, 0);
-    assert!(state.current_effect.is_none());
+    assert!(state.active_effect.is_none());
     assert!(state.effects.is_empty());
-    assert!(state.profiles.is_empty());
+    assert!(state.scenes.is_empty());
 }
 
 #[test]
@@ -24,7 +34,8 @@ fn parse_ws_hello_message() {
         "server": {
             "instance_id": "01912345-6789-7abc-def0-123456789abc",
             "instance_name": "desk-pc",
-            "version": "0.1.0"
+            "version": "0.1.0",
+            "auth_required": true
         },
         "version": "1.0",
         "state": {
@@ -51,27 +62,33 @@ fn parse_ws_hello_message() {
     assert!(!state.paused);
     assert_eq!(state.brightness, 75);
     assert_eq!(state.device_count, 3);
-
-    let effect = state.effect.expect("should have active effect");
-    assert_eq!(effect.id, "abc-123");
-    assert_eq!(effect.name, "Aurora Borealis");
+    // A daemon that still sends an effect has it ignored: the handshake
+    // reports how the daemon is running, not what it is rendering.
 }
 
 #[test]
-fn parse_server_response() {
-    let raw = json!({
-        "data": {
-            "instance_id": "01912345-6789-7abc-def0-123456789abc",
-            "instance_name": "desk-pc",
-            "version": "0.1.0",
-            "device_count": 2,
-            "auth_required": true
-        }
-    });
+fn parse_public_system_identity() {
+    let raw = serde_json::to_value(ApiResponse {
+        data: SystemResource {
+            identity: ServerInfo {
+                instance_id: "01912345-6789-7abc-def0-123456789abc".to_owned(),
+                instance_name: "desk-pc".to_owned(),
+                version: "0.1.0".to_owned(),
+                device_count: 2,
+                auth_required: true,
+                ..ServerInfo::default()
+            },
+            status: None,
+        },
+        meta: response_meta(),
+    })
+    .expect("system response should serialize");
 
-    let envelope: ApiEnvelope<ServerResponse> =
-        serde_json::from_value(raw).expect("should parse server response");
-    let server = envelope.data.expect("should have data");
+    let envelope: ApiResponse<SystemResource> =
+        serde_json::from_value(raw).expect("should parse system response");
+    let system = envelope.data;
+    assert!(system.status.is_none());
+    let server = system.identity;
     assert_eq!(server.instance_id, "01912345-6789-7abc-def0-123456789abc");
     assert_eq!(server.instance_name, "desk-pc");
     assert_eq!(server.version, "0.1.0");
@@ -84,6 +101,8 @@ fn parse_ws_event_effect_started() {
         "event": "effect_started",
         "timestamp": "2026-03-10T12:00:00Z",
         "data": {
+            "zone_id": "019c0000-0000-7000-8000-000000000001",
+            "layer_id": "019c0000-0000-7000-8000-000000000002",
             "effect": {
                 "id": "def-456",
                 "name": "Cosmic Wave",
@@ -103,36 +122,78 @@ fn parse_ws_event_effect_started() {
 }
 
 #[test]
-fn parse_status_response() {
-    let raw = json!({
-        "data": {
-            "running": true,
-            "version": "0.1.0",
-            "config_path": "/home/user/.config/hypercolor/hypercolor.toml",
-            "data_dir": "/home/user/.local/share/hypercolor",
-            "cache_dir": "/home/user/.cache/hypercolor",
-            "uptime_seconds": 3600,
-            "device_count": 2,
-            "effect_count": 15,
-            "scene_count": 3,
-            "active_effect": "Aurora Borealis",
-            "active_scene": "Movie Night",
-            "active_scene_snapshot_locked": true,
-            "global_brightness": 80,
-            "audio_available": true,
-            "capture_available": false,
-            "render_loop": {
-                "state": "running",
-                "fps_tier": "standard",
-                "total_frames": 216_000
-            },
-            "event_bus_subscribers": 1
-        }
-    });
+fn resync_required_event_requests_full_state_reconciliation() {
+    let message: WsEventMessage = serde_json::from_value(json!({
+        "type": "event",
+        "event": "resync_required",
+    }))
+    .expect("should parse resync event");
 
-    let envelope: ApiEnvelope<StatusResponse> =
-        serde_json::from_value(raw).expect("should parse status");
-    let status = envelope.data.expect("should have data");
+    assert!(message.requires_full_resync());
+}
+
+#[test]
+fn only_explicit_stops_are_destructive_lifecycle_events() {
+    for (reason, destructive) in [("stopped", true), ("error", false), ("replaced", false)] {
+        let message: WsEventMessage = serde_json::from_value(json!({
+            "type": "event",
+            "event": "effect_stopped",
+            "data": {
+                "reason": reason,
+                "zone_id": "019c0000-0000-7000-8000-000000000001"
+            }
+        }))
+        .expect("should parse stop event");
+
+        assert_eq!(message.is_destructive_effect_stop(), destructive);
+    }
+}
+
+#[test]
+fn lifecycle_events_only_target_the_canonical_primary_zone() {
+    let primary = hypercolor_types::scene::ZoneId::new();
+    let secondary = hypercolor_types::scene::ZoneId::new();
+    let display = hypercolor_types::scene::ZoneId::new();
+    let message: WsEventMessage = serde_json::from_value(json!({
+        "type": "event",
+        "event": "effect_started",
+        "data": {
+            "zone_id": primary.to_string(),
+            "layer_id": hypercolor_types::layer::SceneLayerId::new().to_string()
+        }
+    }))
+    .expect("should parse lifecycle event");
+
+    assert!(message.targets_zone(&primary));
+    assert!(!message.targets_zone(&secondary));
+    assert!(!message.targets_zone(&display));
+}
+
+#[test]
+fn parse_authenticated_system_status() {
+    let raw = serde_json::to_value(ApiResponse {
+        data: SystemResource {
+            identity: ServerInfo::default(),
+            status: Some(SystemStatus {
+                running: true,
+                active_effect: Some("Aurora Borealis".to_owned()),
+                active_scene: Some("Movie Night".to_owned()),
+                active_scene_snapshot_locked: true,
+                global_brightness: 80,
+                device_count: 2,
+                ..SystemStatus::default()
+            }),
+        },
+        meta: response_meta(),
+    })
+    .expect("system response should serialize");
+
+    let envelope: ApiResponse<SystemResource> =
+        serde_json::from_value(raw).expect("should parse system status");
+    let status = envelope
+        .data
+        .status
+        .expect("authenticated system response should have status");
     assert!(status.running);
     assert_eq!(status.active_effect.as_deref(), Some("Aurora Borealis"));
     assert_eq!(status.active_scene.as_deref(), Some("Movie Night"));
@@ -163,7 +224,7 @@ fn parse_effect_list_response() {
                     "name": "Effect B",
                     "description": "",
                     "author": "",
-                    "category": "reactive",
+                    "category": "interactive",
                     "source": "html",
                     "runnable": true,
                     "tags": [],
@@ -171,13 +232,19 @@ fn parse_effect_list_response() {
                     "audio_reactive": true
                 }
             ],
-            "pagination": { "offset": 0, "limit": 50, "total": 2, "has_more": false }
+            "total": 2,
+            "page": null
+        },
+        "meta": {
+            "api_version": "v1",
+            "request_id": "req_test",
+            "timestamp": "2026-08-20T00:00:00Z"
         }
     });
 
-    let envelope: ApiEnvelope<EffectListResponse> =
+    let envelope: ApiResponse<EffectListResponse> =
         serde_json::from_value(raw).expect("should parse effects");
-    let list = envelope.data.expect("should have data");
+    let list = envelope.data;
     assert_eq!(list.items.len(), 2);
     assert_eq!(list.items[0].name, "Effect A");
     assert_eq!(list.items[1].id, "bbb");
@@ -212,12 +279,61 @@ fn state_update_applies_dynamic_tray_changes() {
     assert_eq!(state.brightness, 80);
     assert_eq!(
         state
-            .current_effect
+            .active_effect
             .as_ref()
             .map(|effect| effect.id.as_str()),
         Some("aurora")
     );
     assert_eq!(state.effects[0].name, "Wave");
+}
+
+#[test]
+fn websocket_snapshot_preserves_content_state() {
+    let mut state = AppState {
+        running: true,
+        paused: true,
+        active_effect: Some(EffectInfo {
+            id: "old".to_owned(),
+            name: "Old".to_owned(),
+        }),
+        ..AppState::default()
+    };
+
+    state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::Snapshot {
+        running: true,
+        paused: false,
+        brightness: 64,
+        device_count: 3,
+    }));
+
+    assert!(state.running);
+    assert!(!state.paused);
+    assert_eq!(state.brightness, 64);
+    assert_eq!(state.device_count, 3);
+    assert_eq!(
+        state
+            .active_effect
+            .as_ref()
+            .map(|effect| effect.id.as_str()),
+        Some("old")
+    );
+}
+
+#[test]
+fn effect_stop_clears_stale_pause_state() {
+    let mut state = AppState {
+        paused: true,
+        active_effect: Some(EffectInfo {
+            id: "old".to_owned(),
+            name: "Old".to_owned(),
+        }),
+        ..AppState::default()
+    };
+
+    state.apply_daemon_message(DaemonMessage::StateUpdate(StateUpdate::EffectStopped));
+
+    assert!(!state.paused);
+    assert!(state.active_effect.is_none());
 }
 
 #[test]

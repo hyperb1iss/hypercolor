@@ -22,17 +22,21 @@ class PresetTemplate:
     these are authored by the effect developer and are read-only at runtime.
 
         Attributes:
+            id (str): Stable identifier authored by the effect or derived from its name.
             name (str): Human-readable preset name (e.g. "Sunset Glow", "Deep Ocean").
             controls (PresetTemplateControls | Unset): Control values that define this preset. Keys are control IDs.
             description (None | str | Unset): Optional short description.
     """
 
+    id: str
     name: str
     controls: PresetTemplateControls | Unset = UNSET
     description: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        id = self.id
+
         name = self.name
 
         controls: dict[str, Any] | Unset = UNSET
@@ -49,6 +53,7 @@ class PresetTemplate:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
+                "id": id,
                 "name": name,
             }
         )
@@ -64,6 +69,8 @@ class PresetTemplate:
         from ..models.preset_template_controls import PresetTemplateControls
 
         d = dict(src_dict)
+        id = d.pop("id")
+
         name = d.pop("name")
 
         _controls = d.pop("controls", UNSET)
@@ -83,6 +90,7 @@ class PresetTemplate:
         description = _parse_description(d.pop("description", UNSET))
 
         preset_template = cls(
+            id=id,
             name=name,
             controls=controls,
             description=description,

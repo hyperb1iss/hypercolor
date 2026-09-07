@@ -186,15 +186,8 @@ fn write_text(path: &Path, content: &str) -> Result<()> {
 }
 
 fn preferred_destination_dir() -> Result<PathBuf> {
-    if let Some(desktop) = dirs::desktop_dir()
-        && desktop.is_dir()
-    {
-        return Ok(desktop);
-    }
-    if let Some(home) = dirs::home_dir() {
-        return Ok(home);
-    }
-    bail!("could not locate Desktop or home directory for diagnostics output");
+    hypercolor_core::config::paths::user_output_dir()
+        .context("could not locate Desktop or home directory for diagnostics output")
 }
 
 #[cfg(target_os = "windows")]

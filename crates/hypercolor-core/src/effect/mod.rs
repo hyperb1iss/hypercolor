@@ -28,8 +28,8 @@ pub use factory::{
 };
 pub use lightscript::{LightScriptFrameUpdateOptions, LightscriptRuntime, normalized_level_to_db};
 pub use loader::{
-    HtmlDiscoveryReport, default_effect_search_paths, html_path_effect_id_for_testing,
-    load_html_effect_file, register_html_effects,
+    HtmlDiscoveryError, HtmlDiscoveryReport, default_effect_search_paths, load_html_effect_file,
+    register_html_effects,
 };
 pub use meta_parser::{
     HtmlControlKind, HtmlControlMetadata, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
@@ -57,8 +57,7 @@ pub use servo::{
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;
 pub use traits::{
-    EffectRenderOutput, EffectRenderer, FrameDataSources, FrameInput, InputSourceAvailability,
+    EffectRenderOutput, EffectRenderer, FrameDataSources, FrameInput, ImportedEffectFrame,
+    ImportedFrameFormat, ImportedFrameTimings, InputSourceAvailability,
 };
-#[cfg(feature = "servo-gpu-import")]
-pub use traits::{ImportedEffectFrame, ImportedFrameFormat, ImportedFrameTimings};
 pub use watcher::{EffectWatchEvent, EffectWatcher};

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use hypercolor_driver_api::CredentialStore;
 use hypercolor_driver_api::DiscoveryConnectBehavior;
 use hypercolor_driver_hue::{HueKnownBridge, HueScanner};
+use hypercolor_driver_support::CredentialStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -79,7 +79,7 @@ async fn scanner_enriches_known_bridge_and_marks_authenticated_bridge_autoconnec
     let bridge = &bridges[0];
     assert_eq!(bridge.bridge_id, "test-bridge");
     assert_eq!(bridge.info.name, "Studio");
-    assert_eq!(bridge.info.zones.len(), 1);
+    assert_eq!(bridge.info.segments.len(), 1);
     assert_eq!(bridge.info.total_led_count(), 1);
     assert_eq!(
         bridge.connect_behavior,

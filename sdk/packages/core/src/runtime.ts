@@ -6,20 +6,27 @@
  * and the host environment.
  */
 
+import type { AudioData } from './audio/types'
 import type { EngineKeyboard, EngineMouse, InputAvailability } from './input/types'
 
 /**
  * Audio analysis data from the Hypercolor audio pipeline.
  */
-interface HypercolorAudio {
-    /** Audio level in decibels (-100 to 0, where 0 is loudest) */
-    level: number
-    /** Tone density (0-1, 0=pure tone, 1=white noise) */
-    density: number
-    /** Stereo width (0-1) */
-    width: number
-    /** FFT frequency data (200 elements) */
+interface HypercolorAudio extends Omit<AudioData, 'beat' | 'onset'> {
+    /** Raw FFT frequency data retained for LightScript effects. */
     freq: ArrayLike<number>
+    /** Root mean square amplitude before perceptual shaping. */
+    rms: number
+    /** Peak amplitude before perceptual shaping. */
+    peak: number
+    /** Estimated tempo in beats per minute. */
+    bpm: number
+    /** Beat confidence on the LightScript surface. */
+    confidence: number
+    /** Whether the current frame contains a beat. */
+    beat: boolean
+    /** Whether the current frame contains an onset. */
+    onset: boolean
 }
 
 /**
@@ -59,6 +66,12 @@ interface HypercolorSensorReading {
  * LightScript runtime. Effects and faces access it through this global.
  */
 interface HypercolorEngine {
+    /** Active render time in seconds. Paused output does not advance it. */
+    time: number
+    /** Active render delta in seconds. */
+    deltaTime: number
+    /** Monotonic rendered frame number. */
+    frame: number
     /** Audio analysis data */
     audio: HypercolorAudio
     /** Screen zone color data */
@@ -81,12 +94,12 @@ interface HypercolorEngine {
 
     /** Keyboard state, recent presses, and ordered key events. */
     keyboard?: EngineKeyboard
-    /** Mouse/pointer state and ordered button/wheel events. */
+    /** Mouse/pointer state and ordered button/scroll events. */
     mouse?: EngineMouse
     /** Count of input events dropped this frame due to overflow. */
     inputDropped?: number
     /** Declared capability and lifecycle state for the routed input source. */
-    inputAvailability?: Omit<InputAvailability, 'available'>
+    inputAvailability?: InputAvailability
 
     // ── Canvas dimensions ──────────────────────────────────────────
     // Set by the daemon to match the render canvas or display resolution.
@@ -95,6 +108,19 @@ interface HypercolorEngine {
     width: number
     /** Canvas height in pixels. */
     height: number
+}
+
+export function hostFrameTimeSeconds(fallback: number): number {
+    if (typeof globalThis !== 'object' || globalThis === null) return fallback
+
+    const globals = globalThis as Record<string, unknown>
+    const host = typeof window === 'undefined' ? globals : (window as unknown as Record<string, unknown>)
+    const captureMode = Boolean(host.__hypercolorCaptureMode ?? globals.__hypercolorCaptureMode)
+    if (!captureMode) return fallback
+
+    const runtimeEngine = (host.engine ?? globals.engine) as { time?: unknown } | undefined
+    const time = runtimeEngine?.time
+    return typeof time === 'number' && Number.isFinite(time) ? time : fallback
 }
 
 /**

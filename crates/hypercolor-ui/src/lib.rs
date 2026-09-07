@@ -26,6 +26,7 @@ pub mod control_value_json;
 pub mod device_event_logic;
 pub mod device_metrics;
 pub mod display_preview_state;
+pub mod display_rotation;
 pub mod display_utils;
 pub mod driver_settings;
 pub mod effect_search;
@@ -36,13 +37,13 @@ pub mod input_access;
 pub mod label_utils;
 pub mod layout_geometry;
 pub mod layout_history;
-pub mod layout_page_state;
 pub mod layout_utils;
 pub mod nav;
 pub mod optimistic_controls;
 pub mod pages;
 pub mod preferences;
 pub mod preview_telemetry;
+pub mod render_canvas;
 pub mod render_presets;
 pub mod route_ui;
 pub mod settings_audio_devices;
@@ -67,6 +68,7 @@ pub use extensions::{
     UiViewBuilder, parent_route, ui_route,
 };
 pub use nav::{NavEntry, NavExtensionItems, nav_model, nav_shortcut_path};
+pub use route_ui::UiMount;
 
 // Re-export the shared HTTP client helpers (envelope unwrap + auth + Trunk
 // dev-proxy) so an embedder can call the daemon's local API through the same
@@ -77,7 +79,7 @@ pub use api::client;
 fn print_banner() {
     let version = env!("CARGO_PKG_VERSION");
     let msg = format!(
-        "%c✦ Hypercolor %cv{version}%c\n🔮 RGB Lighting Engine for Linux\ngithub.com/hyperb1iss/hypercolor"
+        "%c✦ Hypercolor %cv{version}%c\n🔮 Cross-platform RGB Lighting Engine\ngithub.com/hyperb1iss/hypercolor"
     );
     console_log_styled(
         &msg,
@@ -98,6 +100,7 @@ fn print_banner() {
 pub fn run_with_extensions(ext: UiExtensions) {
     _ = console_log::init_with_level(log::Level::Debug);
     console_error_panic_hook::set_once();
+    tauri_bridge::initialize_daemon_transport();
     print_banner();
     mount_to_body(move || app::app_view(ext));
 }

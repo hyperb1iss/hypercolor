@@ -20,11 +20,9 @@ test.describe("REST API", () => {
       const health = await readJson(healthResponse);
       expect(health.status).toBe("healthy");
 
-      const status = await readEnvelope(await api.get("/api/v1/status"));
-      expect(status.running).toBe(true);
-      expect(status.version).toBeTruthy();
-
-      expect((await api.get("/api/v1/server")).ok()).toBeTruthy();
+      const system = await readEnvelope(await api.get("/api/v1/system"));
+      expect(system.status.running).toBe(true);
+      expect(system.identity.version).toBeTruthy();
       expect((await api.post("/api/v1/diagnose")).ok()).toBeTruthy();
       expect((await api.get("/api/v1/system/sensors")).ok()).toBeTruthy();
     } finally {
@@ -32,7 +30,7 @@ test.describe("REST API", () => {
     }
   });
 
-  test("effects endpoints can apply, update, reset, rescan, and stop", async ({
+  test("effects can apply, patch controls, rescan, and clear", async ({
     playwright,
   }) => {
     const api = await createApi(playwright);
@@ -48,25 +46,29 @@ test.describe("REST API", () => {
       expect(detail.id).toBe(runnableEffect.id);
 
       await readEnvelope(await api.post(`/api/v1/effects/${runnableEffect.id}/apply`));
-      const active = await readEnvelope(await api.get("/api/v1/effects/active"));
-      expect(active.id).toBe(runnableEffect.id);
+      const scene = await readEnvelope(await api.get("/api/v1/scene"));
+      const zone = scene.zones.find((candidate) =>
+        candidate.layers.some((layer) => layer.source.effect_id === runnableEffect.id),
+      );
+      const layer = zone?.layers.find(
+        (candidate) => candidate.source.effect_id === runnableEffect.id,
+      );
+      expect(zone).toBeTruthy();
+      expect(layer).toBeTruthy();
 
-      const controls = firstControlPayload(active);
+      const controls = firstControlPayload(detail);
       expect(
         (
-          await api.patch("/api/v1/effects/current/controls", {
-            data: {
-              controls,
-            },
+          await api.patch(`/api/v1/scene/zones/${zone.id}/layers/${layer.id}/controls`, {
+            data: { values: controls },
           })
         ).ok(),
       ).toBeTruthy();
 
-      expect((await api.post("/api/v1/effects/current/reset")).ok()).toBeTruthy();
-      expect((await api.post("/api/v1/effects/stop")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/scene/clear")).ok()).toBeTruthy();
 
-      const status = await readEnvelope(await api.get("/api/v1/status"));
-      expect(status.active_effect).toBeNull();
+      const system = await readEnvelope(await api.get("/api/v1/system"));
+      expect(system.status.active_effect).toBeNull();
     } finally {
       await api.dispose();
     }
@@ -139,20 +141,25 @@ test.describe("REST API", () => {
 
       expect((await api.post(`/api/v1/scenes/${sceneId}/activate`)).ok()).toBeTruthy();
 
-      const activeScene = await readEnvelope(await api.get("/api/v1/scenes/active"));
+      const activeScene = await readEnvelope(await api.get("/api/v1/scene"));
       expect(activeScene.id).toBe(sceneId);
+
+      const storedScene = await readEnvelope(await api.get(`/api/v1/scenes/${sceneId}`));
+      const replacement = { ...storedScene };
+      delete replacement.is_default;
+      delete replacement.revision;
+      replacement.name = updatedSceneName;
+      replacement.mutation_mode = "snapshot";
 
       const updatedScene = await readEnvelope(
         await api.put(`/api/v1/scenes/${sceneId}`, {
-          data: {
-            name: updatedSceneName,
-            mutation_mode: "snapshot",
-          },
+          headers: { "If-Match": `"${storedScene.revision}"` },
+          data: replacement,
         }),
       );
       expect(updatedScene.name).toBe(updatedSceneName);
 
-      expect((await api.post("/api/v1/scenes/deactivate")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/scene/deactivate")).ok()).toBeTruthy();
     } finally {
       if (sceneId) {
         await api.delete(`/api/v1/scenes/${sceneId}`);
@@ -178,40 +185,38 @@ test.describe("REST API", () => {
       const effects = await readEnvelope(await api.get("/api/v1/effects"));
       const audioPulse = findRunnableEffect(effects.items, ["Audio Pulse", "Gradient", "Rainbow"]);
 
-      const brightnessBefore = await readEnvelope(await api.get("/api/v1/settings/brightness"));
-      const restoredBrightness = brightnessBefore.brightness;
+      const outputBefore = await readEnvelope(await api.get("/api/v1/output"));
+      const restoredBrightness = outputBefore.brightness;
 
-      const brightnessAfter = await readEnvelope(
-        await api.put("/api/v1/settings/brightness", {
+      const outputAfter = await readEnvelope(
+        await api.patch("/api/v1/output", {
           data: {
-            brightness: 37,
+            brightness: 0.37,
           },
         }),
       );
-      expect(brightnessAfter.brightness).toBe(37);
+      expect(outputAfter.brightness).toBeCloseTo(0.37, 5);
+      expect(outputAfter.power).toBe(outputBefore.power);
 
       expect((await api.get("/api/v1/config")).ok()).toBeTruthy();
-      expect((await api.get("/api/v1/audio/devices")).ok()).toBeTruthy();
+      expect((await api.get("/api/v1/config/schema")).ok()).toBeTruthy();
+      expect((await api.get("/api/v1/system/audio-devices")).ok()).toBeTruthy();
 
+      // The value is the body itself, and `live=false` keeps the write
+      // off the running daemon.
       expect(
         (
-          await api.post("/api/v1/config/set", {
-            data: {
-              key: "network.mdns_publish",
-              value: "false",
-              live: false,
-            },
+          await api.put("/api/v1/config/keys/network.mdns_publish?live=false", {
+            headers: { "content-type": "application/json" },
+            data: JSON.stringify(false),
           })
         ).ok(),
       ).toBeTruthy();
       expect(
         (
-          await api.post("/api/v1/config/reset", {
-            data: {
-              key: "network.mdns_publish",
-              live: false,
-            },
-          })
+          await api.delete(
+            "/api/v1/config/keys/network.mdns_publish?live=false",
+          )
         ).ok(),
       ).toBeTruthy();
 
@@ -240,7 +245,11 @@ test.describe("REST API", () => {
       presetId = preset.id;
       expect(preset.name).toBe(presetName);
 
-      expect((await api.post(`/api/v1/library/presets/${presetId}/apply`)).ok()).toBeTruthy();
+      expect(
+        (
+          await api.post(`/api/v1/effects/${audioPulse.id}/presets/${presetId}/apply`)
+        ).ok(),
+      ).toBeTruthy();
 
       const updatedPreset = await readEnvelope(
         await api.put(`/api/v1/library/presets/${presetId}`, {
@@ -300,10 +309,10 @@ test.describe("REST API", () => {
       expect(updatedPlaylist.name).toBe(updatedPlaylistName);
 
       expect((await api.post(`/api/v1/library/playlists/${playlistId}/activate`)).ok()).toBeTruthy();
-      expect((await api.post("/api/v1/library/playlists/stop")).ok()).toBeTruthy();
+      expect((await api.post("/api/v1/library/playlists/deactivate")).ok()).toBeTruthy();
 
       await readEnvelope(
-        await api.put("/api/v1/settings/brightness", {
+        await api.patch("/api/v1/output", {
           data: {
             brightness: restoredBrightness,
           },
@@ -316,8 +325,8 @@ test.describe("REST API", () => {
       if (presetId) {
         await api.delete(`/api/v1/library/presets/${presetId}`);
       }
-      await api.post("/api/v1/library/playlists/stop");
-      await api.post("/api/v1/effects/stop");
+      await api.post("/api/v1/library/playlists/deactivate");
+      await api.post("/api/v1/scene/clear");
       await api.dispose();
     }
   });
@@ -381,10 +390,6 @@ test.describe("REST API", () => {
       expect((await api.get(`/api/v1/devices/${simulatorId}`)).ok()).toBeTruthy();
 
       expect((await api.get(`/api/v1/devices/${simulatorId}/attachments`)).ok()).toBeTruthy();
-      const categories = await readEnvelope(await api.get("/api/v1/attachments/categories"));
-      expect(categories.items.length).toBeGreaterThan(0);
-      const vendors = await readEnvelope(await api.get("/api/v1/attachments/vendors"));
-      expect(vendors.items.length).toBeGreaterThan(0);
 
       const createdTemplate = await readEnvelope(
         await api.post("/api/v1/attachments/templates", {
@@ -393,19 +398,10 @@ test.describe("REST API", () => {
       );
       expect(createdTemplate.id).toBe(templateId);
 
-      const templateDetail = await readEnvelope(
-        await api.get(`/api/v1/attachments/templates/${templateId}`),
+      const templates = await readEnvelope(
+        await api.get(`/api/v1/attachments/templates?q=${templateId}`),
       );
-      expect(templateDetail.id).toBe(templateId);
-
-      const updatedTemplate = await readEnvelope(
-        await api.put(`/api/v1/attachments/templates/${templateId}`, {
-          data: buildAttachmentTemplate(templateId, "E2E Template Updated", 12),
-        }),
-      );
-      expect(updatedTemplate.name).toBe("E2E Template Updated");
-
-      expect((await api.delete(`/api/v1/attachments/templates/${templateId}`)).ok()).toBeTruthy();
+      expect(templates.items.some((template) => template.id === templateId)).toBe(true);
     } finally {
       if (simulatorId) {
         await api.delete(`/api/v1/simulators/displays/${simulatorId}`);

@@ -3,17 +3,20 @@
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 
-use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureEpoch, CaptureGeometry,
-    CapturePixelFormat, CaptureRotation, CaptureSourceId, CaptureTransferFunction,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, PlatformGpuApi,
+use hypercolor_core::input::screen::consumer::{CaptureEpoch, CaptureSourceId, PixelExtent};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorSpace, CaptureColorimetry, CaptureDynamicRange, CaptureGeometry,
+    CapturePixelFormat, CaptureRotation, CaptureTransferFunction, KnownCaptureColorimetry,
+    PhysicalOrigin, PlatformGpuApi, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
     RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
     ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenCaptureBackend,
     ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExtentRequest, ScreenNativeExecutionTarget,
     ScreenNativeExecutionTargetId, ScreenPhysicalGpuDeviceIdentity, ScreenProcessingProfile,
     ScreenProcessingProfileConfig, ScreenPublicationError, ScreenPublicationExecutorRequest,
     ScreenPublicationKind, ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection,
-    ScreenSourceSelector, ScreenTargetColorimetry, SourceScale,
+    ScreenSourceSelector, ScreenTargetColorimetry,
 };
 
 #[path = "support/native_target.rs"]

@@ -5,8 +5,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use hypercolor_color::{Hsl, Rgb};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::{ControlValue, EffectJsonValueError};
 use hypercolor_types::lighting::LightingState;
 use hypercolor_types::media::MediaState;
 use hypercolor_types::net::NetStats;
@@ -16,11 +17,10 @@ mod payload;
 
 use super::traits::{FrameInput, InputSourceAvailability};
 use payload::{
-    LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptControlValue,
-    LightScriptFramePayload, LightScriptInputAvailabilityPayload, LightScriptInteractionPayload,
-    LightScriptLightingPayload, LightScriptMediaPayload, LightScriptNetPayload,
-    LightScriptScreenPayload, LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32,
-    sanitize_f64,
+    LightScriptAudioPayload, LightScriptCanvasPayload, LightScriptFramePayload,
+    LightScriptInputAvailabilityPayload, LightScriptInteractionPayload, LightScriptLightingPayload,
+    LightScriptMediaPayload, LightScriptNetPayload, LightScriptScreenPayload,
+    LightScriptSensorPayload, LightScriptTimingPayload, sanitize_f32, sanitize_f64,
 };
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
@@ -48,6 +48,25 @@ const MEL_RUNNING_MAX_DECAY: f32 = 0.999;
 const MEL_RUNNING_MAX_FLOOR: f32 = 0.001;
 const SPECTRUM_BASS_END: usize = 40;
 const SPECTRUM_MID_END: usize = 130;
+
+#[cfg(feature = "servo")]
+pub(in crate::effect) fn control_js_literal(
+    value: &ControlValue,
+) -> Result<String, EffectJsonValueError> {
+    let value = control_runtime_json(value)?;
+    Ok(serde_json::to_string(&value).expect("serde_json::Value must serialize"))
+}
+
+/// JavaScript effects consume CSS hex colors; canonical storage stays linear.
+fn control_runtime_json(value: &ControlValue) -> Result<serde_json::Value, EffectJsonValueError> {
+    if let ControlValue::ColorLinear(color) = value {
+        return Ok(serde_json::Value::String(
+            color.to_encoded().to_rgb().to_hex(),
+        ));
+    }
+
+    value.try_to_effect_json()
+}
 
 #[derive(Debug, Clone, Default)]
 struct DerivedAudioState {
@@ -77,6 +96,7 @@ pub struct LightScriptFrameUpdateOptions<'a> {
     pub include_media: bool,
     pub include_net: bool,
     pub include_lighting: bool,
+    pub emit_frame_timing: bool,
     pub render_host_frame: bool,
     pub selected_sensor_labels: Option<&'a [String]>,
 }
@@ -85,7 +105,7 @@ pub struct LightScriptFrameUpdateOptions<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LightScriptFrameUpdate {
     PayloadJson(String),
-    HostFrameScript(String),
+    TimingScript(String),
 }
 
 /// Runtime state for Lightscript injection.
@@ -191,11 +211,7 @@ impl LightscriptRuntime {
             "  if (!(window.engine.audio.spectralFluxBands instanceof Float32Array) || window.engine.audio.spectralFluxBands.length !== 3) { window.engine.audio.spectralFluxBands = new Float32Array(3); }\n",
         );
         script.push_str(&format!(
-            "  window.engine.audio.level = {};\n",
-            LEVEL_FLOOR_DB
-        ));
-        script.push_str(&format!(
-            "  window.engine.audio.levelRaw = {};\n",
+            "  window.engine.audio.levelDb = {};\n",
             LEVEL_FLOOR_DB
         ));
         script.push_str("  window.engine.audio.levelLinear = 0;\n");
@@ -435,6 +451,14 @@ impl LightscriptRuntime {
         script.push_str("  }\n");
         script.push_str("  window.__hypercolorControlsDirty = true;\n");
         script.push_str("  window.__hypercolorLastControlUpdateTime = -Infinity;\n");
+        script
+            .push_str("  if (!Number.isFinite(window.engine.time)) { window.engine.time = 0; }\n");
+        script.push_str(
+            "  if (!Number.isFinite(window.engine.deltaTime)) { window.engine.deltaTime = 0; }\n",
+        );
+        script.push_str(
+            "  if (!Number.isFinite(window.engine.frame)) { window.engine.frame = 0; }\n",
+        );
         script.push_str("  if (typeof window.__hypercolorRenderHostFrame !== 'function') {\n");
         script.push_str("  window.__hypercolorRenderHostFrame = function() {\n");
         script.push_str(
@@ -451,9 +475,7 @@ impl LightscriptRuntime {
         script.push_str("    if (typeof instance.syncCanvasSizeFromEngine === 'function') {\n");
         script.push_str("      try { instance.syncCanvasSizeFromEngine(); } catch (_err) {}\n");
         script.push_str("    }\n");
-        script.push_str(
-            "    const time = (window.performance && typeof window.performance.now === 'function') ? window.performance.now() * 0.001 : Date.now() * 0.001;\n",
-        );
+        script.push_str("    const time = Number.isFinite(window.engine.time) ? window.engine.time : ((window.performance && typeof window.performance.now === 'function') ? window.performance.now() * 0.001 : Date.now() * 0.001);\n");
         script.push_str("    const shouldUpdateControls = !!window.__hypercolorControlsDirty || time - window.__hypercolorLastControlUpdateTime >= 0.1;\n");
         script.push_str("    if (shouldUpdateControls && typeof window.update === 'function') {\n");
         script.push_str("      try {\n");
@@ -489,8 +511,8 @@ impl LightscriptRuntime {
         options: LightScriptFrameUpdateOptions<'_>,
     ) -> Option<LightScriptFrameUpdate> {
         self.frame_payload(input, controls, options).map(|payload| {
-            if payload.is_host_frame_only() {
-                LightScriptFrameUpdate::HostFrameScript(host_frame_script(&payload))
+            if payload.is_timing_only() {
+                LightScriptFrameUpdate::TimingScript(frame_timing_script(&payload))
             } else {
                 LightScriptFrameUpdate::PayloadJson(payload.to_json_string())
             }
@@ -508,7 +530,7 @@ impl LightscriptRuntime {
             .then(|| self.audio_payload(input.audio));
         let screen = options
             .include_screen
-            .then(|| LightScriptScreenPayload::from_screen(input.screen));
+            .then(|| LightScriptScreenPayload::from_screen(input.screen.map(AsRef::as_ref)));
         let sensors = options
             .include_sensors
             .then(|| self.sensor_payload(input.sensors, options.selected_sensor_labels))
@@ -549,6 +571,7 @@ impl LightscriptRuntime {
             || !controls.is_empty()
             || input_availability.is_some()
             || interaction.is_some()
+            || options.emit_frame_timing
             || options.render_host_frame;
         should_emit.then(|| LightScriptFramePayload {
             timing: LightScriptTimingPayload {
@@ -910,8 +933,9 @@ impl LightscriptRuntime {
     fn changed_control_payload(
         &mut self,
         controls: &HashMap<String, ControlValue>,
-    ) -> BTreeMap<String, LightScriptControlValue> {
+    ) -> BTreeMap<String, serde_json::Value> {
         let mut changed_controls = BTreeMap::new();
+        let mut accepted = Vec::new();
         for (name, value) in controls {
             let changed = self
                 .last_controls
@@ -922,26 +946,29 @@ impl LightscriptRuntime {
                 continue;
             }
 
-            changed_controls.insert(
-                name.clone(),
-                LightScriptControlValue::from_control_value(value),
-            );
-            self.last_controls.insert(name.clone(), value.clone());
+            let projected = control_runtime_json(value)
+                .expect("effect pool admits only renderer-compatible controls");
+            changed_controls.insert(name.clone(), projected);
+            accepted.push((name.clone(), value.clone()));
         }
+        self.last_controls.extend(accepted);
         changed_controls
     }
 }
 
 #[cfg(feature = "servo")]
-fn host_frame_script(payload: &LightScriptFramePayload) -> String {
+fn frame_timing_script(payload: &LightScriptFramePayload) -> String {
     let time_secs = payload.timing.time_secs;
     let delta_secs = payload.timing.delta_secs;
     let frame_number = payload.timing.frame_number;
     let width = payload.canvas.width;
     let height = payload.canvas.height;
-    format!(
-        "window.__hypercolorApplyHostFrame({time_secs},{delta_secs},{frame_number},{width},{height});"
-    )
+    let apply_frame = if payload.render_host_frame {
+        "__hypercolorApplyHostFrame"
+    } else {
+        "__hypercolorApplyFrameTiming"
+    };
+    format!("window.{apply_frame}({time_secs},{delta_secs},{frame_number},{width},{height});")
 }
 
 fn frame_payload_adapter_script() -> &'static str {
@@ -1078,40 +1105,22 @@ fn padded_normalized_i8_vec(values: &[f32], expected_len: usize) -> Vec<i8> {
     padded
 }
 
+/// LightScript's wire form for a color: hue in whole degrees, then
+/// saturation and lightness as whole percentages. The quantization is
+/// the protocol's, so it stays here; the conversion underneath is the
+/// kernel's. Both forms were compared across all 16,777,216 byte
+/// triples and agree exactly.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::as_conversions
 )]
 fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (i16, i8, i8) {
-    let rf = f32::from(r) / 255.0;
-    let gf = f32::from(g) / 255.0;
-    let bf = f32::from(b) / 255.0;
-    let max = rf.max(gf).max(bf);
-    let min = rf.min(gf).min(bf);
-    let delta = max - min;
-    let lightness = (max + min) * 0.5;
-
-    let saturation = if delta <= f32::EPSILON {
-        0.0
-    } else {
-        delta / (1.0 - (2.0 * lightness - 1.0).abs())
-    };
-
-    let hue = if delta <= f32::EPSILON {
-        0.0
-    } else if (max - rf).abs() <= f32::EPSILON {
-        60.0 * ((gf - bf) / delta).rem_euclid(6.0)
-    } else if (max - gf).abs() <= f32::EPSILON {
-        60.0 * (((bf - rf) / delta) + 2.0)
-    } else {
-        60.0 * (((rf - gf) / delta) + 4.0)
-    };
-
+    let hsl = Hsl::from_rgb(Rgb::new(r, g, b));
     (
-        hue.round() as i16,
-        (saturation.clamp(0.0, 1.0) * 100.0).round() as i8,
-        (lightness.clamp(0.0, 1.0) * 100.0).round() as i8,
+        hsl.h.round() as i16,
+        (hsl.s.clamp(0.0, 1.0) * 100.0).round() as i8,
+        (hsl.l.clamp(0.0, 1.0) * 100.0).round() as i8,
     )
 }
 

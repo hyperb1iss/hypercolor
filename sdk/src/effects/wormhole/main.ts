@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from 'hypercolor'
+import { canvas, clamp, color, combo, num, hexToRgb as parseHexColor } from 'hypercolor'
 
 interface Point {
     x: number
@@ -130,10 +130,6 @@ const THEMES: Record<Exclude<ThemeName, 'Custom'>, ThemePalette> = {
     },
 }
 
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
-
 function lerp(start: number, end: number, amount: number): number {
     return start + (end - start) * clamp(amount, 0, 1)
 }
@@ -148,24 +144,10 @@ function hash(value: number): number {
     return seeded - Math.floor(seeded)
 }
 
-function hexToRgb(hex: string, fallback: Rgb = { b: 0, g: 0, r: 0 }): Rgb {
-    const normalized = hex.trim().replace('#', '')
-    const full =
-        normalized.length === 3
-            ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
-            : normalized
+const BLACK: Rgb = { b: 0, g: 0, r: 0 }
 
-    if (!/^[0-9a-fA-F]{6}$/.test(full)) {
-        return fallback
-    }
-
-    const value = Number.parseInt(full, 16)
-
-    return {
-        b: value & 255,
-        g: (value >> 8) & 255,
-        r: (value >> 16) & 255,
-    }
+function hexToRgb(hex: string, fallback: Rgb = BLACK): Rgb {
+    return parseHexColor(hex.trim(), fallback)
 }
 
 function mixRgb(a: Rgb, b: Rgb, amount: number): Rgb {

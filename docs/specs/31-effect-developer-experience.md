@@ -2,7 +2,13 @@
 
 > From zero to a running RGB effect in under a minute.
 
-**Status:** Draft
+**Status:** Implemented (status corrected 2026-08-25). `POST /api/v1/effects/install`
+and `POST /api/v1/effects/rescan` are both live routes, and the SDK packages shipped.
+Endpoint examples elsewhere in this document are a historical snapshot, and the
+`hypercolor profiles` command tree in the CLI usage block no longer exists; profiles
+folded into scenes.
+**API status:** Historical control-route snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
 **Scope:** SDK (npm packages), Daemon (install endpoint), CLI (install command), UI (upload)
 **Date:** 2026-04-16
 **Runtime:** Bun (primary); Node.js 24 LTS (minimum for library consumers)
@@ -268,11 +274,8 @@ declaration.
 <meta audio-reactive="true" />
 ```
 
-If this tag is absent, the daemon applies a heuristic: it searches the HTML
-content for markers like `engine.audio`, `iAudio`, `audio.freq`, `audio.level`,
-`audio.density`. If any are found, the effect is flagged as audio-reactive.
-
-Explicit declaration is preferred.
+The tag is the authority. Runtime code does not infer audio reactivity from
+JavaScript source text.
 
 ### 3.7 Runtime Environment
 
@@ -1426,7 +1429,6 @@ Body: file=@my-effect.html
   "data": {
     "id": "550e8400-e29b-41d4-a716-446655440000",
     "name": "Aurora Borealis",
-    "source": "user",
     "path": "/home/user/.local/share/hypercolor/effects/user/aurora.html",
     "controls": 3,
     "presets": 2
@@ -1524,7 +1526,7 @@ DEVICES
   hypercolor devices discover [--backend hid|wled|hue]
   hypercolor devices info <device>
   hypercolor devices identify <device> [--duration <secs>]
-  hypercolor devices set-color <device> <color>
+  hypercolor effects activate "Solid Color" --param color=<color>
 
 EFFECTS
   hypercolor effects list [--search <term>] [--audio] [--json]
@@ -1533,7 +1535,7 @@ EFFECTS
   hypercolor effects stop
 
 LIVE CONTROL
-  curl -X PATCH localhost:9420/api/v1/effects/current/controls \
+  curl -X PATCH localhost:9420/api/v1/effects/active/controls \
     -H 'Content-Type: application/json' \
     -d '{"controls": {"speed": 7, "brightness": 90}}'
 
@@ -1608,9 +1610,9 @@ SETTINGS
 
 ```
 1. hypercolor effects activate iris
-2. PATCH /api/v1/effects/current/controls → {"controls": {"speed": 3}}
+2. PATCH /api/v1/effects/active/controls → {"controls": {"speed": 3}}
 3. Observe result
-4. PATCH /api/v1/effects/current/controls → {"controls": {"speed": 7}}
+4. PATCH /api/v1/effects/active/controls → {"controls": {"speed": 7}}
 5. hypercolor library presets create "iris-fast" --effect iris -c speed=7
 ```
 
@@ -1631,7 +1633,7 @@ reference above as context, plus behavioral guidance:
 
 - Always use `--json` when parsing output programmatically
 - Prefer `hypercolor effects activate` over raw curl for effect activation
-- Use `PATCH /effects/current/controls` for live control tweaking (no CLI
+- Use `PATCH /effects/active/controls` for live control tweaking (no CLI
   equivalent currently)
 - Don't restart the daemon without asking the user
 - When installing effects, validate first

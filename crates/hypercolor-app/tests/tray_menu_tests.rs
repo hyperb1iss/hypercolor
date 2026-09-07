@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use hypercolor_app::{
-    state::{AppState, EffectInfo, ProfileInfo, ServerEntry},
+    state::{AppState, EffectInfo, SceneInfo, ServerEntry},
     tray::icons::{IconState, icon_state_for, icon_state_for_with_supervisor},
     tray::menu::{MenuAction, MenuEntry, action_for_menu_id, ids, menu_model},
 };
@@ -82,32 +82,23 @@ fn connected_menu_contains_dynamic_entries() {
     let entries = menu_model(&connected_state());
 
     assert_item(&entries, "header", "Hypercolor", false);
-    assert_item(
-        &entries,
-        "current_effect",
-        "\u{25b6} Aurora Borealis",
-        false,
-    );
-    assert_item(
-        &entries,
-        "current_scene",
-        "Scene: Movie Night [snap]",
-        false,
-    );
+    assert_item(&entries, "active_effect", "\u{25b6} Aurora Borealis", false);
+    assert_item(&entries, "active_scene", "Scene: Movie Night [snap]", false);
     let brightness = find_submenu(&entries, "Brightness (80%)");
     // The current preset (matches state.brightness=80) is the disabled marker.
     assert_item(brightness, "brightness:75", "  75%", true);
     // 100% is enabled (it's not the current value).
     assert_item(brightness, "brightness:100", "  100%", true);
-    assert_no_item(&entries, ids::PAUSE_RESUME);
+    assert_no_item(&entries, ids::PAUSE_OUTPUT);
+    assert_item(&entries, ids::RESUME_OUTPUT, "Resume", true);
     assert_item(&entries, ids::STOP_EFFECT, "Stop Effect", true);
 
     let effects = find_submenu(&entries, "Effects");
     assert_item(effects, "effect:aurora", "Aurora Borealis", true);
     assert_item(effects, "effect:wave", "Color Wave", true);
 
-    let profiles = find_submenu(&entries, "Profiles");
-    assert_item(profiles, "profile:movie", "Movie Night", true);
+    let scenes = find_submenu(&entries, "Scenes");
+    assert_item(scenes, "scene:movie", "Movie Night", true);
 
     let servers = find_submenu(&entries, "Servers");
     assert_item(servers, "server:0", "\u{25cf} desk-pc (127.0.0.1)", true);
@@ -121,14 +112,25 @@ fn connected_menu_contains_dynamic_entries() {
 }
 
 #[test]
-fn connected_menu_hides_stop_effect_without_current_effect() {
+fn connected_menu_hides_stop_effect_without_active_effect() {
     let mut state = connected_state();
-    state.current_effect = None;
+    state.active_effect = None;
 
     let entries = menu_model(&state);
 
-    assert_item(&entries, "current_effect", "No effect active", false);
+    assert_item(&entries, "active_effect", "No effect active", false);
     assert_no_item(&entries, ids::STOP_EFFECT);
+}
+
+#[test]
+fn running_connected_menu_offers_reversible_pause() {
+    let mut state = connected_state();
+    state.paused = false;
+
+    let entries = menu_model(&state);
+
+    assert_item(&entries, ids::PAUSE_OUTPUT, "Pause", true);
+    assert_no_item(&entries, ids::RESUME_OUTPUT);
 }
 
 #[test]
@@ -155,19 +157,27 @@ fn menu_ids_map_to_app_actions() {
     );
     assert_eq!(action_for_menu_id(ids::QUIT), Some(MenuAction::Quit));
     assert_eq!(
+        action_for_menu_id(ids::PAUSE_OUTPUT),
+        Some(MenuAction::SetPaused(true))
+    );
+    assert_eq!(
+        action_for_menu_id(ids::RESUME_OUTPUT),
+        Some(MenuAction::SetPaused(false))
+    );
+    assert_eq!(
         action_for_menu_id("effect:aurora"),
         Some(MenuAction::ApplyEffect("aurora".to_owned()))
     );
     assert_eq!(
-        action_for_menu_id("profile:movie"),
-        Some(MenuAction::ApplyProfile("movie".to_owned()))
+        action_for_menu_id("scene:movie"),
+        Some(MenuAction::ActivateScene("movie".to_owned()))
     );
     assert_eq!(
         action_for_menu_id("server:2"),
         Some(MenuAction::SwitchServer(2))
     );
     assert_eq!(action_for_menu_id("server:not-a-number"), None);
-    assert_eq!(action_for_menu_id("current_effect"), None);
+    assert_eq!(action_for_menu_id("active_effect"), None);
 }
 
 fn connected_state() -> AppState {
@@ -176,7 +186,7 @@ fn connected_state() -> AppState {
         running: true,
         paused: true,
         brightness: 80,
-        current_effect: Some(EffectInfo {
+        active_effect: Some(EffectInfo {
             id: "aurora".to_owned(),
             name: "Aurora Borealis".to_owned(),
         }),
@@ -193,7 +203,7 @@ fn connected_state() -> AppState {
                 name: "Color Wave".to_owned(),
             },
         ],
-        profiles: vec![ProfileInfo {
+        scenes: vec![SceneInfo {
             id: "movie".to_owned(),
             name: "Movie Night".to_owned(),
         }],

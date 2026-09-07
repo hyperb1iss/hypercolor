@@ -31,14 +31,16 @@ pub fn target_for_action(action: &MenuAction) -> ActionTarget {
         MenuAction::ExportDiagnostics => ActionTarget::ExportDiagnostics,
         MenuAction::Settings => ActionTarget::ShowSettings,
         MenuAction::Quit => ActionTarget::Quit,
-        MenuAction::TogglePause => ActionTarget::DaemonCommand(TrayCommand::TogglePause),
+        MenuAction::SetPaused(paused) => {
+            ActionTarget::DaemonCommand(TrayCommand::SetPaused(*paused))
+        }
         MenuAction::RefreshServers => ActionTarget::DaemonCommand(TrayCommand::RefreshServers),
         MenuAction::StopEffect => ActionTarget::DaemonCommand(TrayCommand::StopEffect),
         MenuAction::ApplyEffect(id) => {
             ActionTarget::DaemonCommand(TrayCommand::ApplyEffect(id.clone()))
         }
-        MenuAction::ApplyProfile(id) => {
-            ActionTarget::DaemonCommand(TrayCommand::ApplyProfile(id.clone()))
+        MenuAction::ActivateScene(id) => {
+            ActionTarget::DaemonCommand(TrayCommand::ActivateScene(id.clone()))
         }
         MenuAction::SwitchServer(index) => {
             ActionTarget::DaemonCommand(TrayCommand::SwitchServer(*index))

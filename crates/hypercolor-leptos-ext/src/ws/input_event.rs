@@ -7,7 +7,7 @@ pub const INPUT_EVENT_PAYLOAD_SCHEMA: u8 = 1;
 /// Canonical input-event data carried inside a WebSocket `event` message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimedInputEventPayload {
-    /// Tagged logical input event, retained as JSON for forward-compatible kinds.
+    /// Tagged logical input event.
     pub event: Value,
     /// Monotonic capture time in milliseconds.
     pub at_ms: u64,
@@ -17,14 +17,10 @@ pub struct TimedInputEventPayload {
     pub physical_code: Option<String>,
     /// Number of equivalent repeat edges represented by this payload.
     pub repeat_count: u32,
-    extensions: Map<String, Value>,
 }
 
 impl TimedInputEventPayload {
     /// Decode input-event data from the daemon's JSON `event` envelope.
-    ///
-    /// Timing and metadata fields default to the prior event-only payload,
-    /// while unknown fields survive a decode/re-encode round trip.
     ///
     /// # Errors
     ///
@@ -39,16 +35,16 @@ impl TimedInputEventPayload {
             .remove("event")
             .filter(Value::is_object)
             .ok_or(InputEventPayloadDecodeError::InvalidField("event"))?;
-        let at_ms = take_optional_u64(&mut fields, "at_ms")?.unwrap_or(0);
-        let seq = take_optional_u64(&mut fields, "seq")?.unwrap_or(0);
+        let at_ms = take_required_u64(&mut fields, "at_ms")?;
+        let seq = take_required_u64(&mut fields, "seq")?;
         let physical_code = take_optional_string(&mut fields, "physical_code")?;
-        let repeat_count =
-            take_optional_u64(&mut fields, "repeat_count")?.map_or(Ok(1), |value| {
-                u32::try_from(value)
-                    .ok()
-                    .filter(|count| *count > 0)
-                    .ok_or(InputEventPayloadDecodeError::InvalidField("repeat_count"))
-            })?;
+        let repeat_count = u32::try_from(take_required_u64(&mut fields, "repeat_count")?)
+            .ok()
+            .filter(|count| *count > 0)
+            .ok_or(InputEventPayloadDecodeError::InvalidField("repeat_count"))?;
+        if let Some(name) = fields.keys().next() {
+            return Err(InputEventPayloadDecodeError::UnexpectedField(name.clone()));
+        }
 
         Ok(Self {
             event,
@@ -56,13 +52,12 @@ impl TimedInputEventPayload {
             seq,
             physical_code,
             repeat_count,
-            extensions: fields,
         })
     }
 
     #[must_use]
     pub fn encode(self) -> Value {
-        let mut fields = self.extensions;
+        let mut fields = Map::new();
         fields.insert("event".to_owned(), self.event);
         fields.insert("at_ms".to_owned(), Value::from(self.at_ms));
         fields.insert("seq".to_owned(), Value::from(self.seq));
@@ -81,19 +76,18 @@ pub enum InputEventPayloadDecodeError {
     ExpectedObject,
     #[error("input event payload field '{0}' has an invalid value")]
     InvalidField(&'static str),
+    #[error("input event payload contains unexpected field '{0}'")]
+    UnexpectedField(String),
 }
 
-fn take_optional_u64(
+fn take_required_u64(
     fields: &mut Map<String, Value>,
     name: &'static str,
-) -> Result<Option<u64>, InputEventPayloadDecodeError> {
-    match fields.remove(name) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => value
-            .as_u64()
-            .map(Some)
-            .ok_or(InputEventPayloadDecodeError::InvalidField(name)),
-    }
+) -> Result<u64, InputEventPayloadDecodeError> {
+    fields
+        .remove(name)
+        .and_then(|value| value.as_u64())
+        .ok_or(InputEventPayloadDecodeError::InvalidField(name))
 }
 
 fn take_optional_string(

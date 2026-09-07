@@ -5,18 +5,17 @@
 
 use std::array;
 use std::path::PathBuf;
-use std::sync::LazyLock;
 
-use hypercolor_types::canvas::{
-    BYTES_PER_PIXEL, Canvas, Oklch, Rgba, RgbaF32, linear_to_srgb_u8, srgb_u8_to_linear,
-};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklch, Rgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{
     builtin_effect_id, color_control, dropdown_control, preset_with_desc, slider_control,
 };
+use crate::blend_math::{decode_srgb_channel, encode_srgb_channel};
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,20 +83,6 @@ pub struct ColorWaveRenderer {
     last_size: (u32, u32),
     framebuffer: Option<Canvas>,
 }
-
-const LINEAR_ENCODE_LUT_SCALE: f32 = 65_535.0;
-
-static SRGB_TO_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
-    array::from_fn(|index| {
-        let channel = u8::try_from(index).expect("LUT index must fit in u8");
-        srgb_u8_to_linear(channel)
-    })
-});
-static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(|| {
-    (0_u16..=u16::MAX)
-        .map(|index| linear_to_srgb_u8(f32::from(index) / LINEAR_ENCODE_LUT_SCALE))
-        .collect()
-});
 
 impl ColorWaveRenderer {
     /// Create a color wave renderer with reference defaults.
@@ -237,8 +222,8 @@ impl ColorWaveRenderer {
         });
     }
 
-    fn scaled_color(&self, rgba: [f32; 4]) -> RgbaF32 {
-        RgbaF32::new(
+    fn scaled_color(&self, rgba: [f32; 4]) -> LinearRgba {
+        LinearRgba::new(
             rgba[0] * self.brightness,
             rgba[1] * self.brightness,
             rgba[2] * self.brightness,
@@ -247,7 +232,7 @@ impl ColorWaveRenderer {
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f64) -> RgbaF32 {
+    fn current_wave_color(&self, wave: &WaveInstance, time_secs: f64) -> LinearRgba {
         let shifted = match self.color_mode {
             WaveColorMode::Custom => self.wave_color,
             WaveColorMode::Random => hue_shift(self.wave_color, wave.hue_offset),
@@ -260,7 +245,7 @@ impl ColorWaveRenderer {
     }
 
     fn background_fill(&self) -> Rgba {
-        self.scaled_color(self.background_color).to_srgba()
+        self.scaled_color(self.background_color).to_encoded()
     }
 
     fn fade_canvas(&self, canvas: &mut Canvas) {
@@ -290,7 +275,7 @@ impl ColorWaveRenderer {
         let wave_width = self.wave_width_px().round() as i32;
 
         for wave in &self.waves {
-            let color = self.current_wave_color(wave, time_secs).to_srgba();
+            let color = self.current_wave_color(wave, time_secs).to_encoded();
             match self.direction {
                 WaveDirection::Right | WaveDirection::Left | WaveDirection::HorizontalPass => {
                     #[allow(
@@ -379,101 +364,66 @@ impl EffectRenderer for ColorWaveRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
-        let mut canvas = match self.framebuffer.take() {
-            Some(existing)
-                if existing.width() == input.canvas_width
-                    && existing.height() == input.canvas_height =>
-            {
-                existing
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color" | "wave_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.wave_color = [color.r, color.g, color.b, color.a];
+                    }
+                }
+                "background_color" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.background_color = [color.r, color.g, color.b, color.a];
+                    }
+                }
+                "speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.speed = value.clamp(0.0, 100.0);
+                    }
+                }
+                "wave_width" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.wave_width = value.clamp(1.0, 100.0);
+                        self.reset_state();
+                    }
+                }
+                "spawn_delay" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.spawn_delay = value.clamp(0.0, 100.0);
+                    }
+                }
+                "direction" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.direction = WaveDirection::from_str(choice);
+                        self.reset_state();
+                    }
+                }
+                "color_mode" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.color_mode = WaveColorMode::from_str(choice);
+                    }
+                }
+                "cycle_speed" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.cycle_speed = value.clamp(0.0, 100.0);
+                    }
+                }
+                "trail" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.trail = value.clamp(0.0, 100.0);
+                    }
+                }
+                "brightness" => {
+                    if let Some(value) = value.as_effect_f32() {
+                        self.brightness = value.clamp(0.0, 1.0);
+                    }
+                }
+                _ => {}
             }
-            _ => {
-                let mut fresh = Canvas::new(input.canvas_width, input.canvas_height);
-                fresh.fill(self.background_fill());
-                fresh
-            }
-        };
-
-        self.fade_canvas(&mut canvas);
-
-        let spawn_interval = self.spawn_interval_secs();
-        self.spawn_accumulator += input.delta_secs.max(0.0);
-        while self.spawn_accumulator >= spawn_interval {
-            self.spawn_wave(input.canvas_width, input.canvas_height);
-            self.spawn_accumulator -= spawn_interval;
         }
-
-        self.advance_waves(input.delta_secs);
-        self.retain_visible_waves(input.canvas_width, input.canvas_height);
-        self.draw_waves(
-            &mut canvas,
-            input.time_secs,
-            input.canvas_width,
-            input.canvas_height,
-        );
-
-        self.framebuffer = Some(canvas.clone());
-        Ok(canvas)
+        Ok(())
     }
-
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color" | "wave_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.wave_color = *c;
-                }
-            }
-            "background_color" => {
-                if let ControlValue::Color(c) = value {
-                    self.background_color = *c;
-                }
-            }
-            "speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.speed = v.clamp(0.0, 100.0);
-                }
-            }
-            "wave_width" => {
-                if let Some(v) = value.as_f32() {
-                    self.wave_width = v.clamp(1.0, 100.0);
-                    self.reset_state();
-                }
-            }
-            "spawn_delay" => {
-                if let Some(v) = value.as_f32() {
-                    self.spawn_delay = v.clamp(0.0, 100.0);
-                }
-            }
-            "direction" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.direction = WaveDirection::from_str(choice);
-                    self.reset_state();
-                }
-            }
-            "color_mode" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.color_mode = WaveColorMode::from_str(choice);
-                }
-            }
-            "cycle_speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.cycle_speed = v.clamp(0.0, 100.0);
-                }
-            }
-            "trail" => {
-                if let Some(v) = value.as_f32() {
-                    self.trail = v.clamp(0.0, 100.0);
-                }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn destroy(&mut self) {
         self.reset_state();
     }
@@ -497,29 +447,14 @@ fn normalize_choice(value: &str) -> String {
 }
 
 fn hue_shift(color: [f32; 4], degrees: f32) -> [f32; 4] {
-    let rgba = RgbaF32::new(color[0], color[1], color[2], color[3]);
+    let rgba = LinearRgba::new(color[0], color[1], color[2], color[3]);
     let mut lch = rgba.to_oklch();
     if lch.c <= 0.0001 {
         return color;
     }
     lch = Oklch::new(lch.l, lch.c, (lch.h + degrees).rem_euclid(360.0), lch.alpha);
-    let shifted = RgbaF32::from_oklch(lch);
+    let shifted = lch.to_linear();
     [shifted.r, shifted.g, shifted.b, shifted.a]
-}
-
-fn decode_srgb_channel(channel: u8) -> f32 {
-    SRGB_TO_LINEAR_LUT[usize::from(channel)]
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions,
-    reason = "channel is clamped to the 16-bit LUT domain before rounding to an index"
-)]
-fn encode_srgb_channel(channel: f32) -> u8 {
-    let index = (channel.clamp(0.0, 1.0) * LINEAR_ENCODE_LUT_SCALE).round() as u16;
-    LINEAR_TO_SRGB_LUT[usize::from(index)]
 }
 
 fn fade_lut(background_channel: f32, opacity: f32) -> [u8; 256] {
@@ -696,10 +631,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Neon Scanner",
             "Fast cyan scan lines bouncing across the rig",
             &[
-                ("wave_color", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.0, 1.0, 0.85, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.0, 0.01, 0.04, 1.0]),
+                    ControlValue::linear_color([0.0, 0.01, 0.04, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(95.0)),
@@ -716,10 +654,13 @@ fn presets() -> Vec<PresetTemplate> {
             "SilkCircuit Pulse",
             "Electric purple waves on deep void",
             &[
-                ("wave_color", ControlValue::Color([0.88, 0.21, 1.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.88, 0.21, 1.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.02, 0.0, 0.06, 1.0]),
+                    ControlValue::linear_color([0.02, 0.0, 0.06, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(70.0)),
@@ -734,10 +675,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Lava Flow",
             "Slow molten waves with long ember trails",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.3, 0.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.3, 0.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.15, 0.02, 0.0, 1.0]),
+                    ControlValue::linear_color([0.15, 0.02, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(25.0)),
@@ -751,10 +695,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Ocean Drift",
             "Gentle blue-green waves rolling downward",
             &[
-                ("wave_color", ControlValue::Color([0.1, 0.5, 0.9, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.1, 0.5, 0.9, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.0, 0.03, 0.1, 1.0]),
+                    ControlValue::linear_color([0.0, 0.03, 0.1, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(35.0)),
@@ -768,10 +715,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Arctic Cascade",
             "Cool white-blue bands falling like snow",
             &[
-                ("wave_color", ControlValue::Color([0.7, 0.85, 1.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.7, 0.85, 1.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.02, 0.04, 0.1, 1.0]),
+                    ControlValue::linear_color([0.02, 0.04, 0.1, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(45.0)),
@@ -786,10 +736,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Blade Runner",
             "Fast pink slices on noir darkness",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.1, 0.6, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.01, 0.0, 0.03, 1.0]),
+                    ControlValue::linear_color([0.01, 0.0, 0.03, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(90.0)),
@@ -806,10 +759,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Laser Grid",
             "Rapid thin beams crisscrossing vertically",
             &[
-                ("wave_color", ControlValue::Color([0.0, 1.0, 0.4, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.0, 1.0, 0.4, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.0, 0.02, 0.0, 1.0]),
+                    ControlValue::linear_color([0.0, 0.02, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(85.0)),
@@ -823,10 +779,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Warning Strobe",
             "Amber hazard bands sweeping left",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.7, 0.0, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.08, 0.03, 0.0, 1.0]),
+                    ControlValue::linear_color([0.08, 0.03, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(80.0)),
@@ -841,10 +800,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Prism Parade",
             "Rainbow waves cycling through the full spectrum",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.2, 0.3, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.2, 0.3, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.01, 0.01, 0.02, 1.0]),
+                    ControlValue::linear_color([0.01, 0.01, 0.02, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Color Cycle".to_owned())),
                 ("cycle_speed", ControlValue::Float(60.0)),
@@ -859,10 +821,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Confetti Storm",
             "Random-colored bands flying in all directions",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.4, 0.8, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.4, 0.8, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.02, 0.01, 0.04, 1.0]),
+                    ControlValue::linear_color([0.02, 0.01, 0.04, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Random".to_owned())),
                 ("speed", ControlValue::Float(75.0)),
@@ -880,10 +845,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Meditation",
             "Ultra-slow deep indigo wash",
             &[
-                ("wave_color", ControlValue::Color([0.25, 0.1, 0.7, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([0.25, 0.1, 0.7, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.01, 0.0, 0.04, 1.0]),
+                    ControlValue::linear_color([0.01, 0.0, 0.04, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(12.0)),
@@ -898,10 +866,13 @@ fn presets() -> Vec<PresetTemplate> {
             "Candlelight",
             "Warm flickering gold on soft amber",
             &[
-                ("wave_color", ControlValue::Color([1.0, 0.65, 0.15, 1.0])),
+                (
+                    "wave_color",
+                    ControlValue::linear_color([1.0, 0.65, 0.15, 1.0]),
+                ),
                 (
                     "background_color",
-                    ControlValue::Color([0.12, 0.04, 0.0, 1.0]),
+                    ControlValue::linear_color([0.12, 0.04, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Random".to_owned())),
                 ("speed", ControlValue::Float(20.0)),

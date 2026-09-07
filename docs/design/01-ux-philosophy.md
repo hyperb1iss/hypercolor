@@ -2,6 +2,16 @@
 
 > The lighting engine that looks as good as your setup — and never makes you feel lost.
 
+**Status:** Design intent. The principles and information architecture still guide
+the product; the concrete token and component listings no longer match the tree.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** Appendix C ships a `--hc-*` CSS custom
+property palette (`--hc-purple`, `--hc-bg-deep`, and 36 more). No such token
+exists anywhere in the codebase. The shipped UI uses the Luminary OKLCH
+`--color-*` scale defined in `crates/hypercolor-ui/tokens/primitives.css` and
+`crates/hypercolor-ui/tokens/semantic.css`. Read `docs/DESIGN-SYSTEM.md` for the
+canonical token architecture, not this document.
+
 ---
 
 ## 1. Design Philosophy

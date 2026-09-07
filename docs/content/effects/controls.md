@@ -11,6 +11,46 @@ Every factory returns a `ControlSpec` that both `canvas()` and `effect()` consum
 
 For the authoring path these controls plug into, see [TypeScript canvas effects](@/effects/typescript-effects.md). For where they show up to a user, see [Effects and controls in the studio](@/studio/effects-and-controls.md).
 
+## Updating a live effect
+
+Live control values belong to a specific layer in the active scene. Read
+`GET /api/v1/scene`, select the effect layer you intend to change, and use the
+real zone and layer ids embedded in that document. Never derive a layer id from
+the zone id.
+
+```bash
+scene=$(curl -s http://localhost:9420/api/v1/scene)
+zone_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].id')
+layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
+
+curl -X PATCH \
+  "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
+  -H 'Content-Type: application/json' \
+  -d '{"values":{"speed":{"kind":"float","value":45.0},"palette":{"kind":"enum","value":"Aurora"}}}'
+```
+
+The control patch never uses `If-Match`. Values commit in arrival order, while
+layer identity prevents a stale patch from changing a replacement effect. An
+effect apply or whole-layer replacement mints a fresh `SceneLayerId`; a later
+patch to the old id returns `404 layer_not_found`. An apply response also
+returns the updated zone resource, so a client can take the new layer id from
+that response without another scene read.
+
+When a control has an active input binding, a manual value returns
+`409 control_bound`. Clear the binding and set the value atomically with the
+shared patch shape:
+
+```json
+{
+  "values": { "speed": { "kind": "float", "value": 45.0 } },
+  "clear_bindings": ["speed"]
+}
+```
+
+The CLI hides the lookup step. `hypercolor effects patch --param speed=45`
+reads the live scene, resolves the current effect layer, and sends the same
+canonical layer-control patch.
+
 ## Control types at a glance
 
 There are nine control types. The discriminated union lives in `controls/specs.ts`; this table is its public face. Pick the factory in the right-hand column, or reach for the inferred shorthand where one exists.
@@ -107,9 +147,9 @@ shape: combo("Shape", ["Circle", "Square", "Hexagon"], {
 
 Options: `default` (otherwise the first value wins), `tooltip`, `group`, `uniform`.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 **The palette function comes from `paletteControl`, not the key name.** A plain `combo('Palette', ['A', 'B', 'C'])`, or the shorthand `palette: ['A', 'B', 'C']`, stays a raw string at runtime. The automatic `PaletteFn` (canvas) and integer index (shaders) come from the dedicated `paletteControl()` factory, which tags the spec with `meta.palette = true`. The key name `palette` is not magic. If you have a plain combobox and want the function, call `createPaletteFn(name)` inside your draw. See [Palettes](@/effects/palettes.md).
-{% end %}
+{% </callout> %}
 
 ### `paletteControl(label, values, options?)`
 
@@ -270,9 +310,9 @@ One control name triggers automatic normalization. The SDK's `MAGIC_NAMES` table
 
 To opt out, either rename the key (for example `speedMult`) and normalize the value yourself, or set an explicit `normalize: 'none'` on the factory. The `normalize` option on `num` also lets you apply `'speed'` or `'percentage'` normalization to a differently-named control on purpose. Normalization keys off the resolved hint, which is your explicit option first and the `MAGIC_NAMES` lookup only as a fallback.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 `'percentage'` normalization maps a `0-200` slider to a `0-2` multiplier via `normalizePercentage()` (`max(0.01, value / 100)`), so `100` reads as `1.0`. It is the right hint for "intensity" or "scale" controls you want centered on unity.
-{% end %}
+{% </callout> %}
 
 ## Palette controls
 

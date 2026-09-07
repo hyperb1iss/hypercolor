@@ -13,11 +13,12 @@ T = TypeVar("T", bound="DiscoverRequest")
 
 @_attrs_define
 class DiscoverRequest:
-    """
+    """Optional body for `POST /api/v1/devices/discover`.
+
     Attributes:
-        targets (list[str] | None | Unset):
+        targets (list[str] | None | Unset): Discovery targets to scan; omitted scans every enabled target.
         timeout_ms (int | None | Unset):
-        wait (bool | None | Unset):
+        wait (bool | None | Unset): Block until the scan finishes instead of returning a scan id.
     """
 
     targets: list[str] | None | Unset = UNSET

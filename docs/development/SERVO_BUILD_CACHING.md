@@ -56,7 +56,8 @@ just e2e-build-cpu
 
 The shared wrapper configures:
 
-- `CARGO_TARGET_DIR=<repo>/target` (unless already set)
+- an isolated target directory passed through Cargo's command line or config
+  layer, never exported into rustc's cache key
 - `MOZBUILD_STATE_PATH=$HOME/.cache/hypercolor/mozbuild` (unless already set)
 - `sccache` as `RUSTC_WRAPPER` for whole-tree codegen commands
   (`cargo build`, `test`, `bench`, and anything release/bench-profiled)
@@ -95,8 +96,10 @@ sharing layer is the compile cache, not the target dir:
   worktrees and thrash on feature-shape differences.
 - **Shared, bounded caches** live under `$HOME/.cache/hypercolor`
   (`HYPERCOLOR_CACHE_DIR` to relocate): `sccache/` for compiled units,
-  `mozbuild/` for SpiderMonkey build state. A second worktree's cold build
-  becomes mostly cache hits without any cross-worktree locking.
+  `mozbuild/` for SpiderMonkey build state. Clean target directories under
+  the same checkout reuse Rust objects. C and C++ objects also reuse across
+  checkout roots. Released sccache versions keep Rust artifacts sensitive to
+  their checkout path, so a new worktree still compiles its Rust graph once.
 - **Incompatible feature shapes get isolated lanes**: `just e2e-build-cpu`
   builds into `target/cpu-smoke` so the `--no-default-features` unification
   never churns the daily tree.
@@ -112,20 +115,35 @@ churn; Cargo never garbage-collects them. Bound them with:
 
 ```bash
 just disk          # per-profile + shared-cache usage report
-just gc            # sweep orphaned-toolchain and >14-day artifacts here
-just gc-worktrees  # the same sweep across every worktree lane
-just gc-deep       # additionally drop incremental state + the cpu-smoke lane
+just gc            # preview eligible profiles across every worktree
+just gc-apply      # prune eligible profiles until pressure clears
+just gc-reclaim    # clear pressure now, preserving dirty and locked profiles
+just gc-install    # install and enable the daily user timer
+just gc-status     # show the timer schedule and previous result
 ```
 
-`sccache` trims itself to `SCCACHE_CACHE_SIZE`; the cache size only applies
-when the server starts, so after changing it run `sccache --stop-server`
-first.
+Collection starts only when aggregate Cargo profiles exceed 300 GiB. It
+uses cargo-sweep under every available Cargo profile lock, then removes the
+oldest whole profiles until usage reaches 240 GiB. The daily path preserves
+profiles younger than 14 days plus every dirty or Cargo-locked worktree.
+The explicit `just gc-reclaim` command shortens the age floor to 15 minutes,
+which protects multi-command build workflows between Cargo invocations. Set
+`HYPERCOLOR_GC_HIGH_WATER_BYTES`, `HYPERCOLOR_GC_LOW_WATER_BYTES`, and
+`HYPERCOLOR_GC_MIN_AGE_DAYS` to tune the daily bounds. Set
+`HYPERCOLOR_GC_RECLAIM_MIN_AGE_SECONDS` to tune the explicit reclaim grace.
+
+The default dev profile keeps readable backtraces with line tables and trims
+third-party symbols. Use `just debug-build` when a debugger needs full locals
+and type information.
+
+`sccache` trims itself to `SCCACHE_CACHE_SIZE`. The wrapper owns a dedicated
+Hypercolor server and restarts it safely when its size or checkout map changes.
 
 ## Verify Cache Hits
 
 ```bash
 ccache -s
-sccache --show-stats
+just disk
 ```
 
 Look for increasing cache hit counts after the first Servo build.

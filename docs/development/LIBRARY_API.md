@@ -34,9 +34,8 @@ Errors use:
 ```json
 {
   "error": {
-    "code": "not_found",
-    "message": "Preset not found: foo",
-    "details": null
+    "code": "preset_not_found",
+    "message": "preset not found: foo"
   },
   "meta": {}
 }
@@ -54,7 +53,7 @@ Errors use:
 | `GET`    | `/library/presets/{id_or_name}`            | Fetch preset                         |
 | `PUT`    | `/library/presets/{id_or_name}`            | Update preset                        |
 | `DELETE` | `/library/presets/{id_or_name}`            | Delete preset                        |
-| `POST`   | `/library/presets/{id_or_name}/apply`      | Activate preset effect + controls    |
+| `POST`   | `/effects/{effect}/presets/{preset}/apply` | Apply preset through its effect      |
 | `GET`    | `/library/playlists`                       | List playlists                       |
 | `POST`   | `/library/playlists`                       | Create playlist                      |
 | `GET`    | `/library/playlists/{id_or_name}`          | Fetch playlist                       |
@@ -62,7 +61,7 @@ Errors use:
 | `DELETE` | `/library/playlists/{id_or_name}`          | Delete playlist                      |
 | `POST`   | `/library/playlists/{id_or_name}/activate` | Start playlist runtime               |
 | `GET`    | `/library/playlists/active`                | Inspect active playlist runtime      |
-| `POST`   | `/library/playlists/stop`                  | Stop active playlist runtime         |
+| `POST`   | `/library/playlists/deactivate`            | Deactivate playlist runtime          |
 
 ## ID vs Name Resolution
 
@@ -73,8 +72,10 @@ Errors use:
 
 This currently applies to:
 
-- Presets: `GET/PUT/DELETE /library/presets/{id_or_name}` and `POST /library/presets/{id_or_name}/apply`
+- Presets: `GET/PUT/DELETE /library/presets/{id_or_name}`
 - Playlists: `GET/PUT/DELETE /library/playlists/{id_or_name}` and `POST /library/playlists/{id_or_name}/activate`
+
+Effect-scoped preset apply takes an effect id or name and a canonical preset id.
 
 ## Favorites
 
@@ -112,7 +113,7 @@ Response:
 
 `GET /api/v1/library/favorites`
 
-Returns `data.items` plus pagination metadata. Current implementation is not paged on the server and returns all items with `offset=0`, `limit=50`, `has_more=false`.
+Returns `data.items` and `data.total`. The route answers complete, so it omits the `data.page` block that paging routes carry.
 
 ### Delete
 
@@ -149,11 +150,11 @@ Behavior:
 
 Accepted `controls` input JSON types:
 
-- integer -> `ControlValue::Integer`
+- integer -> `ControlValue::Int`
 - float -> `ControlValue::Float`
-- boolean -> `ControlValue::Boolean`
+- boolean -> `ControlValue::Bool`
 - string -> `ControlValue::Text`
-- RGBA array of 4 numbers -> `ControlValue::Color`
+- RGBA array of 4 numbers -> `ControlValue::ColorLinear`
 
 ### Stored / Returned Controls Shape
 
@@ -162,25 +163,28 @@ Preset responses are strongly typed enums, for example:
 ```json
 {
   "controls": {
-    "speed": { "float": 7.5 },
-    "enabled": { "boolean": true },
-    "accent": { "color": [1.0, 0.4, 0.0, 1.0] }
+    "speed": { "kind": "float", "value": 7.5 },
+    "enabled": { "kind": "bool", "value": true },
+    "accent": {
+      "kind": "color_linear",
+      "value": { "r": 1.0, "g": 0.4, "b": 0.0, "a": 1.0 }
+    }
   }
 }
 ```
 
 ### Apply Preset
 
-`POST /api/v1/library/presets/{id_or_name}/apply`
+`POST /api/v1/effects/{effect}/presets/{preset}/apply`
 
-Response includes:
+The preset id comes from `GET /effects/{effect}/presets` or from the saved
+preset resource. The optional request body may name a target `zone`. Applying a
+preset delegates to the canonical effect sugar: it replaces the target zone's
+stack, mints a fresh layer id, and returns the updated zone resource plus the
+output-wake outcome.
 
-- applied preset summary
-- resolved effect summary
-- `applied_controls`
-- `rejected_controls`
-
-This activates the effect immediately through the same engine path as direct effect activation.
+The library owns preset storage and CRUD. It does not expose a parallel apply
+implementation.
 
 ## Playlists
 
@@ -219,7 +223,7 @@ Notes:
 
 ### Activate
 
-`POST /api/v1/library/playlists/{id_or_name}/activate`
+`POST /api/v1/library/playlists/{id}/activate`
 
 Behavior:
 
@@ -240,11 +244,12 @@ Returns:
 - `playlist.started_at_ms`
 - `state` (`running`)
 
-### Stop Runtime
+### Deactivate Runtime
 
-`POST /api/v1/library/playlists/stop`
+`POST /api/v1/library/playlists/deactivate`
 
-Stops only the playlist scheduler runtime. The last activated effect remains active until changed or stopped through effect endpoints.
+Deactivates only the playlist scheduler runtime. The last activated effect
+remains active until another effect replaces it or the scene is cleared.
 
 ## Ordering and Lifecycle Guarantees
 
@@ -272,23 +277,23 @@ The API contract stays stable because storage is abstracted behind
 
 ## Minimal cURL Flows
 
-Create a preset:
+Create a preset and retain its canonical id:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:9420/api/v1/library/presets \
+preset_id=$(curl -sS -X POST http://127.0.0.1:9420/api/v1/library/presets \
   -H 'content-type: application/json' \
   -d '{
     "name":"Warm Sweep",
     "effect":"solid_color",
     "controls":{"speed":7.25}
-  }'
+  }' | jq -r '.data.id')
 ```
 
-Apply by name:
+Apply through the effect-scoped route:
 
 ```bash
 curl -sS -X POST \
-  http://127.0.0.1:9420/api/v1/library/presets/Warm%20Sweep/apply
+  "http://127.0.0.1:9420/api/v1/effects/solid_color/presets/$preset_id/apply"
 ```
 
 Create and activate a playlist:

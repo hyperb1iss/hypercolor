@@ -6,7 +6,7 @@
   const BREAKPOINT = 768;
 
   const init = () => {
-    const toggle = document.getElementById('sidebar-toggle');
+    const toggle = document.getElementById('nav-hamburger');
     const sidebar = document.querySelector('.site-sidebar');
     if (!toggle || !sidebar) return;
 
@@ -20,6 +20,7 @@
       if (!isMobile()) return;
       sidebar.classList.add('site-sidebar--open');
       overlay?.classList.add('site-overlay--active');
+      toggle.classList.add('is-active');
       document.body.style.overflow = 'hidden';
       toggle.setAttribute('aria-expanded', 'true');
       sidebar.setAttribute('aria-hidden', 'false');
@@ -28,6 +29,7 @@
     const close = () => {
       sidebar.classList.remove('site-sidebar--open');
       overlay?.classList.remove('site-overlay--active');
+      toggle.classList.remove('is-active');
       document.body.style.overflow = '';
       toggle.setAttribute('aria-expanded', 'false');
       sidebar.setAttribute('aria-hidden', isMobile() ? 'true' : 'false');

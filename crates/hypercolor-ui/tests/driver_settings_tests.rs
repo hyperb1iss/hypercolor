@@ -1,6 +1,6 @@
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor,
-    DriverModuleKind, DriverPresentation, DriverTransportKind,
+    DriverModuleKind, DriverPresentation, DriverTransportDescriptor, DriverTransportKind,
 };
 
 use hypercolor_ui::api::{
@@ -13,7 +13,7 @@ fn driver(
     display_name: &str,
     discovery: bool,
     pairing: bool,
-    transports: Vec<DriverTransportKind>,
+    transports: Vec<DriverTransportDescriptor>,
 ) -> DriverSummary {
     DriverSummary {
         descriptor: DriverModuleDescriptor {
@@ -55,28 +55,49 @@ fn discovery_settings_follow_driver_descriptors() {
             "Leaf Driver",
             true,
             true,
-            vec![DriverTransportKind::Network],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Network,
+            )],
         ),
         driver(
             "catalog",
             "Catalog Only",
             false,
             false,
-            vec![DriverTransportKind::Usb],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Usb,
+            )],
         ),
         driver(
             "bridge",
             "Bridge Driver",
             true,
             false,
-            vec![DriverTransportKind::Bridge],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Bridge,
+            )],
         ),
         driver(
             "external",
             "External Driver",
             true,
             false,
-            vec![DriverTransportKind::Custom("open-link-hub".to_string())],
+            vec![DriverTransportDescriptor::available(
+                DriverTransportKind::Custom("open-link-hub".to_string()),
+            )],
+        ),
+        driver(
+            "asus",
+            "ASUS Aura",
+            true,
+            false,
+            vec![
+                DriverTransportDescriptor::available(DriverTransportKind::Usb),
+                DriverTransportDescriptor::unsupported_platform(
+                    DriverTransportKind::Smbus,
+                    "macOS",
+                ),
+            ],
         ),
     ]);
 
@@ -89,6 +110,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.leaf.enabled".to_string(),
                 transport_labels: vec!["Network".to_string()],
                 supports_pairing: true,
+                enabled: true,
             },
             DiscoveryDriverSetting {
                 id: "bridge".to_string(),
@@ -96,6 +118,7 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.bridge.enabled".to_string(),
                 transport_labels: vec!["Bridge".to_string()],
                 supports_pairing: false,
+                enabled: true,
             },
             DiscoveryDriverSetting {
                 id: "external".to_string(),
@@ -103,6 +126,18 @@ fn discovery_settings_follow_driver_descriptors() {
                 key: "drivers.external.enabled".to_string(),
                 transport_labels: vec!["Open Link Hub".to_string()],
                 supports_pairing: false,
+                enabled: true,
+            },
+            DiscoveryDriverSetting {
+                id: "asus".to_string(),
+                label: "ASUS Aura".to_string(),
+                key: "drivers.asus.enabled".to_string(),
+                transport_labels: vec![
+                    "USB".to_string(),
+                    "SMBus (not available on macOS)".to_string(),
+                ],
+                supports_pairing: false,
+                enabled: true,
             }
         ]
     );
@@ -111,12 +146,16 @@ fn discovery_settings_follow_driver_descriptors() {
 #[test]
 fn driver_list_response_deserializes_daemon_data() {
     let json = r#"{
+        "total": 1,
         "items": [{
             "descriptor": {
                 "id": "testnet",
                 "display_name": "Test Network",
                 "module_kind": "network",
-                "transports": ["network"],
+                "transports": [{
+                    "kind": "network",
+                    "availability": { "status": "available" }
+                }],
                 "capabilities": {
                     "config": false,
                     "discovery": true,
@@ -227,4 +266,25 @@ fn driver_config_response_handles_non_configurable_entries() {
     assert!(!response.current.enabled);
     assert!(response.current.settings.is_empty());
     assert!(response.default.is_none());
+}
+
+/// The generic config surface masks the whole `drivers` namespace, so
+/// the discovery toggles read their state from the driver inventory.
+#[test]
+fn discovery_settings_carry_the_inventory_enabled_flag() {
+    let mut disabled = driver(
+        "leaf",
+        "Leaf Driver",
+        true,
+        false,
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Network,
+        )],
+    );
+    disabled.enabled = false;
+
+    let settings = discovery_driver_settings(&[disabled]);
+
+    assert_eq!(settings.len(), 1);
+    assert!(!settings[0].enabled);
 }

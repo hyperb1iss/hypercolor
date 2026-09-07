@@ -2,6 +2,20 @@
 
 > Making the room pulse. The signal chain from soundwave to photon.
 
+**Status:** Design intent. The DSP reasoning and the capture chain still read
+true; §9's struct is not the shipped contract and must not be coded against.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** §9 is titled "The Contract" and
+none of its four LightScript-compatible fields exist. `level`, `width`, `density`,
+and `freq` are absent from the shipped `AudioData`
+(`crates/hypercolor-types/src/audio.rs:35-77`), whose fields are `spectrum`,
+`mel_bands`, `chromagram`, `beat_detected`, `beat_confidence`, `beat_phase`,
+`beat_pulse`, `bpm`, `rms_level`, `peak_level`, `spectral_centroid`,
+`spectral_flux`, `onset_detected`, and `onset_pulse`. `bass`, `mid`, and `treble`
+are real but are methods computed from `spectrum`
+(`audio.rs:104-122`), not struct fields, so anything that reads them as data is
+wrong. Read `crates/hypercolor-types/src/audio.rs` for the contract.
+
 ---
 
 ## Overview

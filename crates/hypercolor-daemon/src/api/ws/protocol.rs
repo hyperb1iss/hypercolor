@@ -3,7 +3,7 @@
 //! These types describe the wire format on `/api/v1/ws`. Everything here is data —
 //! no network I/O, no caches, no runtime state.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::hash::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -12,9 +12,14 @@ use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
+use hypercolor_leptos_ext::ws::registry::{
+    CanvasConfig, CanvasFormat, FramesConfig, TopicId, TopicSet,
+};
+use hypercolor_leptos_ext::ws::topic::{
+    ActiveSubscription, PatchError, SubscriptionTable, TopicSelector, TopicSubscription,
+};
 use hypercolor_leptos_ext::ws::{
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES, INTERACTIVE_PREVIEW_ID_MAX_BYTES,
-    PreviewTransportCapability,
 };
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::sensor::SystemSnapshot;
@@ -22,397 +27,394 @@ use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::device_metrics::DeviceMetricsSnapshot;
+use crate::domain::DomainError;
 
 // ── Subscription Types ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum WsChannel {
-    Frames,
-    Spectrum,
-    Events,
-    FrameEvents,
-    Canvas,
-    ScreenCanvas,
-    ScreenZones,
-    WebViewportCanvas,
-    ZonePreview,
-    Metrics,
-    DeviceMetrics,
-    Sensors,
-    DisplayPreview,
-    InputEvents,
+/// One validated wire selector: the topic a client named plus the
+/// canonical key its key type parsed. Unkeyed topics carry `None`; keyed
+/// ones carry whatever their key type accepted, never the raw client
+/// text, because the boundary — not the caller — decides what a key is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TopicSelection {
+    pub(super) topic: TopicId,
+    pub(super) key: Option<String>,
 }
 
-impl WsChannel {
-    pub(super) const SUPPORTED: [Self; 14] = [
-        Self::Frames,
-        Self::Spectrum,
-        Self::Events,
-        Self::FrameEvents,
-        Self::Canvas,
-        Self::ScreenCanvas,
-        Self::ScreenZones,
-        Self::WebViewportCanvas,
-        Self::ZonePreview,
-        Self::Metrics,
-        Self::DeviceMetrics,
-        Self::Sensors,
-        Self::DisplayPreview,
-        Self::InputEvents,
-    ];
-
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Frames => "frames",
-            Self::Spectrum => "spectrum",
-            Self::Events => "events",
-            Self::FrameEvents => "frame_events",
-            Self::Canvas => "canvas",
-            Self::ScreenCanvas => "screen_canvas",
-            Self::ScreenZones => "screen_zones",
-            Self::WebViewportCanvas => "web_viewport_canvas",
-            Self::ZonePreview => "zone_preview",
-            Self::Metrics => "metrics",
-            Self::DeviceMetrics => "device_metrics",
-            Self::Sensors => "sensors",
-            Self::DisplayPreview => "display_preview",
-            Self::InputEvents => "input_events",
-        }
-    }
-
-    pub(super) fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "frames" => Some(Self::Frames),
-            "spectrum" => Some(Self::Spectrum),
-            "events" => Some(Self::Events),
-            "frame_events" => Some(Self::FrameEvents),
-            "canvas" => Some(Self::Canvas),
-            "screen_canvas" => Some(Self::ScreenCanvas),
-            "screen_zones" => Some(Self::ScreenZones),
-            "web_viewport_canvas" => Some(Self::WebViewportCanvas),
-            "zone_preview" => Some(Self::ZonePreview),
-            "metrics" => Some(Self::Metrics),
-            "device_metrics" => Some(Self::DeviceMetrics),
-            "sensors" => Some(Self::Sensors),
-            "display_preview" => Some(Self::DisplayPreview),
-            "input_events" => Some(Self::InputEvents),
-            _ => None,
-        }
-    }
-
-    pub(super) fn is_supported(self) -> bool {
-        Self::SUPPORTED.contains(&self)
-    }
-
-    pub(super) const fn requires_control_subscription(self) -> bool {
-        matches!(
-            self,
-            Self::ScreenCanvas | Self::ScreenZones | Self::InputEvents
-        )
-    }
-
-    const fn bit(self) -> u16 {
-        match self {
-            Self::Frames => 1 << 0,
-            Self::Spectrum => 1 << 1,
-            Self::Events => 1 << 2,
-            Self::FrameEvents => 1 << 3,
-            Self::Canvas => 1 << 4,
-            Self::ScreenCanvas => 1 << 5,
-            Self::ScreenZones => 1 << 12,
-            Self::WebViewportCanvas => 1 << 6,
-            Self::ZonePreview => 1 << 7,
-            Self::Metrics => 1 << 8,
-            Self::DeviceMetrics => 1 << 9,
-            Self::Sensors => 1 << 10,
-            Self::DisplayPreview => 1 << 11,
-            Self::InputEvents => 1 << 13,
-        }
-    }
+/// One validated subscribe entry: a selection plus the config patch that
+/// travelled with it.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct SubscriptionRequest {
+    pub(super) selection: TopicSelection,
+    pub(super) config: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct ChannelSet(u16);
-
-impl ChannelSet {
-    pub(super) const fn contains(self, channel: WsChannel) -> bool {
-        self.0 & channel.bit() != 0
-    }
-
-    pub(super) fn insert(&mut self, channel: WsChannel) {
-        self.0 |= channel.bit();
-    }
-
-    pub(super) fn remove(&mut self, channel: WsChannel) {
-        self.0 &= !channel.bit();
-    }
-
-    pub(super) fn iter(self) -> impl Iterator<Item = WsChannel> {
-        WsChannel::SUPPORTED
-            .into_iter()
-            .filter(move |channel| self.contains(*channel))
-    }
-
-    pub(super) fn from_channels(channels: &[WsChannel]) -> Self {
-        let mut set = Self::default();
-        for channel in channels {
-            set.insert(*channel);
-        }
-        set
-    }
-}
-
+/// One connection's live subscriptions.
+///
+/// Membership and per-subscription config are two views of one fact, so
+/// they move together: [`SubscriptionState::admit`] is the only place a
+/// topic joins the set, and it materializes that topic's default config
+/// in the same step. Every client-visible change goes through
+/// [`SubscriptionState::subscribe`] or
+/// [`SubscriptionState::unsubscribe`], which build a whole replacement
+/// state the caller swaps in only after the runtime accepts it.
+///
+/// Config outlives membership on purpose: unsubscribing drops the topic
+/// from the set, and its config moves aside into [`DormantConfigs`] so a
+/// client that re-subscribes gets its own settings back rather than the
+/// defaults. The live table only ever holds live subscriptions, which is
+/// what its own contract promises and what `any_for` has to keep meaning.
 #[derive(Debug, Clone)]
 pub(super) struct SubscriptionState {
-    pub(super) channels: ChannelSet,
-    pub(super) config: ChannelConfig,
+    topics: TopicSet,
+    live: SubscriptionTable,
+    dormant: DormantConfigs,
 }
 
 impl Default for SubscriptionState {
+    /// A fresh connection starts subscribed to `events` and nothing else.
     fn default() -> Self {
-        let mut channels = ChannelSet::default();
-        channels.insert(WsChannel::Events);
-        Self {
-            channels,
-            config: ChannelConfig::default(),
-        }
+        let mut state = Self {
+            topics: TopicSet::EMPTY,
+            live: SubscriptionTable::default(),
+            dormant: DormantConfigs::default(),
+        };
+        state.admit(TopicId::Events, None);
+        state
     }
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
-pub(super) struct ChannelConfig {
-    pub(super) frames: FramesConfig,
-    pub(super) spectrum: SpectrumConfig,
-    pub(super) canvas: CanvasConfig,
-    pub(super) screen_canvas: CanvasConfig,
-    pub(super) web_viewport_canvas: CanvasConfig,
-    pub(super) zone_preview: CanvasConfig,
-    pub(super) metrics: MetricsConfig,
-    pub(super) device_metrics: MetricsConfig,
-    pub(super) display_preview: DisplayPreviewConfig,
+/// One live subscription, as the relays and the acknowledgment read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LiveSubscription<'a> {
+    pub(super) topic: TopicId,
+    pub(super) key: Option<&'a str>,
+    pub(super) config: &'a serde_json::Value,
 }
 
-impl ChannelConfig {
-    pub(super) fn apply_patch(&mut self, patch: ChannelConfigPatch) -> Result<(), WsProtocolError> {
+/// Config a client set for a topic it is not currently subscribed to.
+///
+/// Kept apart from the live subscription table on purpose: that table
+/// means "subscribed", and a config that outlives its subscription would
+/// make it lie. Keyed the same way, so the two halves stay swappable as
+/// keyed topics arrive.
+#[derive(Debug, Clone, Default)]
+struct DormantConfigs(BTreeMap<(u32, Option<String>), serde_json::Value>);
+
+impl DormantConfigs {
+    fn get(&self, bit: u32, key: Option<&str>) -> Option<&serde_json::Value> {
+        self.0.get(&(bit, key.map(str::to_owned)))
+    }
+
+    fn insert(&mut self, bit: u32, key: Option<String>, config: serde_json::Value) {
+        self.0.insert((bit, key), config);
+    }
+
+    fn take(&mut self, bit: u32, key: Option<&str>) -> Option<serde_json::Value> {
+        self.0.remove(&(bit, key.map(str::to_owned)))
+    }
+}
+
+impl SubscriptionState {
+    pub(super) const fn topics(&self) -> TopicSet {
+        self.topics
+    }
+
+    pub(super) const fn contains(&self, topic: TopicId) -> bool {
+        self.topics.contains(topic)
+    }
+
+    /// One subscription's config, live or dormant, or the topic's default
+    /// when the client has never configured that key. Dormant counts so a
+    /// client keeps its own settings across unsubscribe and resubscribe.
+    pub(super) fn config_of<C>(&self, topic: TopicId, key: Option<&str>) -> C
+    where
+        C: serde::de::DeserializeOwned + Default,
+    {
+        match self.stored_config(topic.bit(), key) {
+            // Borrowed, not cloned: relays re-read config on every frame
+            // they pace.
+            Some(stored) => C::deserialize(stored)
+                .expect("stored topic config round-trips through its own config type"),
+            None => C::default(),
+        }
+    }
+
+    /// Every live key of a keyed topic with its typed config, in key
+    /// order. Relays that fan out across keys walk this.
+    pub(super) fn keyed_configs<C>(&self, topic: TopicId) -> Vec<(String, C)>
+    where
+        C: serde::de::DeserializeOwned,
+    {
+        self.live
+            .entries_for(topic.bit())
+            .filter_map(|(key, config)| {
+                let key = key?.to_owned();
+                let config = C::deserialize(config)
+                    .expect("stored topic config round-trips through its own config type");
+                Some((key, config))
+            })
+            .collect()
+    }
+
+    fn stored_config(&self, bit: u32, key: Option<&str>) -> Option<&serde_json::Value> {
+        self.live
+            .config(bit, key)
+            .or_else(|| self.dormant.get(bit, key))
+    }
+
+    /// Whether one specific subscription is live.
+    #[cfg(test)]
+    pub(super) fn holds(&self, topic: TopicId, key: Option<&str>) -> bool {
+        self.live.config(topic.bit(), key).is_some()
+    }
+
+    /// Every live subscription, topic declaration order then key order.
+    pub(super) fn live_subscriptions(&self) -> impl Iterator<Item = LiveSubscription<'_>> {
+        TopicId::ALL.iter().copied().flat_map(move |topic| {
+            self.live
+                .entries_for(topic.bit())
+                .map(move |(key, config)| LiveSubscription { topic, key, config })
+        })
+    }
+
+    /// The subscription snapshot every acknowledgment carries. Configless
+    /// topics report no `config` at all rather than a bare `null`.
+    pub(super) fn projection(&self) -> Vec<ActiveSubscription> {
+        self.live_subscriptions()
+            .map(|live| ActiveSubscription {
+                topic: live.topic.as_str().to_owned(),
+                key: live.key.map(str::to_owned),
+                config: (!live.config.is_null()).then(|| live.config.clone()),
+                publication_id: None,
+            })
+            .collect()
+    }
+
+    /// Build the state a subscribe request would produce.
+    ///
+    /// The whole request is one transaction: every entry joins, its config
+    /// patch applies against the subscription it named, and every runtime
+    /// admission runs on a candidate copy. Any failure returns the error
+    /// with the live state untouched, so a request that names four
+    /// subscriptions and mis-configures the fourth changes nothing.
+    pub(super) fn subscribe(
+        &self,
+        requests: &[SubscriptionRequest],
+    ) -> Result<Self, WsProtocolError> {
         let mut next = self.clone();
-        next.apply_patch_inner(patch)?;
-        *self = next;
-        Ok(())
-    }
-
-    fn apply_patch_inner(&mut self, patch: ChannelConfigPatch) -> Result<(), WsProtocolError> {
-        if let Some(frames) = patch.frames {
-            if let Some(fps) = frames.fps {
-                validate_range(fps, 1, 60, "config.frames.fps", "expected 1..=60")?;
-                self.frames.fps = fps;
-            }
-            if let Some(format) = frames.format {
-                self.frames.format = format;
-            }
-            if let Some(zones) = frames.zones {
-                if zones.is_empty() {
-                    return Err(WsProtocolError::invalid_config(
-                        "config.frames.zones",
-                        "must not be empty",
-                    ));
-                }
-                self.frames.zones = zones;
-            }
+        for request in requests {
+            next.admit(request.selection.topic, request.selection.key.clone());
         }
-
-        if let Some(spectrum) = patch.spectrum {
-            if let Some(fps) = spectrum.fps {
-                validate_range(fps, 1, 60, "config.spectrum.fps", "expected 1..=60")?;
-                self.spectrum.fps = fps;
-            }
-            if let Some(bins) = spectrum.bins {
-                if ![8, 16, 32, 64, 128].contains(&bins) {
-                    return Err(WsProtocolError::invalid_config(
-                        "config.spectrum.bins",
-                        "expected one of [8, 16, 32, 64, 128]",
-                    ));
-                }
-                self.spectrum.bins = bins;
-            }
-        }
-
-        if let Some(canvas) = patch.canvas {
-            if let Some(fps) = canvas.fps {
-                validate_range(fps, 1, 60, "config.canvas.fps", "expected 1..=60")?;
-                self.canvas.fps = fps;
-            }
-            if let Some(format) = canvas.format {
-                self.canvas.format = format;
-            }
-            if let Some(width) = canvas.width {
-                self.canvas.width = width;
-            }
-            if let Some(height) = canvas.height {
-                self.canvas.height = height;
-            }
-            validate_passive_preview_shape(&self.canvas, "config.canvas")?;
-        }
-
-        if let Some(screen_canvas) = patch.screen_canvas {
-            if let Some(fps) = screen_canvas.fps {
-                validate_range(fps, 1, 60, "config.screen_canvas.fps", "expected 1..=60")?;
-                self.screen_canvas.fps = fps;
-            }
-            if let Some(format) = screen_canvas.format {
-                self.screen_canvas.format = format;
-            }
-            if let Some(width) = screen_canvas.width {
-                self.screen_canvas.width = width;
-            }
-            if let Some(height) = screen_canvas.height {
-                self.screen_canvas.height = height;
-            }
-            validate_passive_preview_shape(&self.screen_canvas, "config.screen_canvas")?;
-        }
-
-        if let Some(web_viewport_canvas) = patch.web_viewport_canvas {
-            if let Some(fps) = web_viewport_canvas.fps {
-                validate_range(
-                    fps,
-                    1,
-                    60,
-                    "config.web_viewport_canvas.fps",
-                    "expected 1..=60",
-                )?;
-                self.web_viewport_canvas.fps = fps;
-            }
-            if let Some(format) = web_viewport_canvas.format {
-                self.web_viewport_canvas.format = format;
-            }
-            if let Some(width) = web_viewport_canvas.width {
-                self.web_viewport_canvas.width = width;
-            }
-            if let Some(height) = web_viewport_canvas.height {
-                self.web_viewport_canvas.height = height;
-            }
-            validate_passive_preview_shape(
-                &self.web_viewport_canvas,
-                "config.web_viewport_canvas",
-            )?;
-        }
-
-        if let Some(zone_preview) = patch.zone_preview {
-            if let Some(fps) = zone_preview.fps {
-                validate_range(fps, 1, 60, "config.zone_preview.fps", "expected 1..=60")?;
-                self.zone_preview.fps = fps;
-            }
-            if let Some(format) = zone_preview.format {
-                self.zone_preview.format = format;
-            }
-            if let Some(width) = zone_preview.width {
-                self.zone_preview.width = width;
-            }
-            if let Some(height) = zone_preview.height {
-                self.zone_preview.height = height;
-            }
-            validate_passive_preview_shape(&self.zone_preview, "config.zone_preview")?;
-        }
-
-        if let Some(metrics) = patch.metrics
-            && let Some(interval_ms) = metrics.interval_ms
-        {
-            validate_range(
-                interval_ms,
-                100,
-                10_000,
-                "config.metrics.interval_ms",
-                "expected 100..=10000",
-            )?;
-            self.metrics.interval_ms = interval_ms;
-        }
-
-        if let Some(device_metrics) = patch.device_metrics
-            && let Some(interval_ms) = device_metrics.interval_ms
-        {
-            validate_range(
-                interval_ms,
-                100,
-                10_000,
-                "config.device_metrics.interval_ms",
-                "expected 100..=10000",
-            )?;
-            self.device_metrics.interval_ms = interval_ms;
-        }
-
-        if let Some(display_preview) = patch.display_preview {
-            // Double-Option: outer `Some` means the client sent the key;
-            // inner `None` explicitly clears the target (disabling the
-            // relay). Trim non-empty strings so accidental whitespace
-            // doesn't sneak a subscription through with no real device.
-            if let Some(device_id) = display_preview.device_id {
-                match device_id {
-                    Some(id) => {
-                        let trimmed = id.trim();
-                        if trimmed.is_empty() {
-                            return Err(WsProtocolError::invalid_config(
-                                "config.display_preview.device_id",
-                                "must be non-empty when provided",
-                            ));
-                        }
-                        self.display_preview.device_id = Some(trimmed.to_owned());
-                    }
-                    None => self.display_preview.device_id = None,
-                }
-            }
-            if let Some(fps) = display_preview.fps {
-                validate_range(fps, 1, 30, "config.display_preview.fps", "expected 1..=30")?;
-                self.display_preview.fps = fps;
-            }
-        }
-
-        Ok(())
-    }
-
-    pub(super) fn filtered_json(&self, channels: ChannelSet) -> serde_json::Value {
-        let mut map = serde_json::Map::new();
-
-        for channel in channels.iter() {
-            let value = match channel {
-                WsChannel::Frames => serde_json::to_value(&self.frames),
-                WsChannel::Spectrum => serde_json::to_value(&self.spectrum),
-                WsChannel::Canvas => serde_json::to_value(&self.canvas),
-                WsChannel::ScreenCanvas => serde_json::to_value(&self.screen_canvas),
-                WsChannel::WebViewportCanvas => serde_json::to_value(&self.web_viewport_canvas),
-                WsChannel::ZonePreview => serde_json::to_value(&self.zone_preview),
-                WsChannel::Metrics => serde_json::to_value(&self.metrics),
-                WsChannel::DeviceMetrics => serde_json::to_value(&self.device_metrics),
-                WsChannel::DisplayPreview => serde_json::to_value(&self.display_preview),
-                WsChannel::Events
-                | WsChannel::FrameEvents
-                | WsChannel::Sensors
-                | WsChannel::ScreenZones
-                | WsChannel::InputEvents => continue,
+        // Request order, so a client that sends two bad patches always
+        // hears about the first one it wrote.
+        for request in requests {
+            let Some(patch) = request.config.as_ref() else {
+                continue;
             };
-
-            if let Ok(json_value) = value {
-                map.insert(channel.as_str().to_owned(), json_value);
+            // A null patch on a topic that takes config means "no patch",
+            // exactly as an absent one does. Configless topics still go
+            // to the vtable, which refuses null on apply.
+            if patch.is_null() && request.selection.topic.vtable().configurable {
+                continue;
             }
+            next.apply_patch(
+                request.selection.topic,
+                request.selection.key.as_deref(),
+                patch,
+            )?;
         }
 
+        Ok(next)
+    }
+
+    /// Build the state an unsubscribe request would produce. Stored
+    /// config moves aside rather than dying, so a later re-subscribe
+    /// reinstates it.
+    pub(super) fn unsubscribe(&self, selections: &[TopicSelection]) -> Self {
+        let mut next = self.clone();
+        for selection in selections {
+            next.retire(selection.topic, selection.key.as_deref());
+        }
+        next
+    }
+
+    /// The single write path for joining: the set gains the topic and
+    /// the live table gains that key's config in the same step.
+    ///
+    /// Configless topics store a `null` config, so "has a live entry" and
+    /// "is subscribed" mean the same thing for every topic and the table
+    /// alone answers membership questions per key.
+    fn admit(&mut self, topic: TopicId, key: Option<String>) {
+        self.topics.insert(topic);
+        let bit = topic.bit();
+        if self.live.config(bit, key.as_deref()).is_some() {
+            return;
+        }
+        let config = self
+            .dormant
+            .take(bit, key.as_deref())
+            .unwrap_or_else(|| (topic.vtable().default_config_json)());
+        self.live.insert(bit, key, config);
+    }
+
+    /// The single write path for leaving: the live table loses that key
+    /// and its config moves to the dormant cache in the same step. The
+    /// topic leaves the set only once its last key is gone.
+    fn retire(&mut self, topic: TopicId, key: Option<&str>) {
+        let bit = topic.bit();
+        if let Some(config) = self.live.config(bit, key).cloned() {
+            self.live.remove(bit, key);
+            if !config.is_null() {
+                self.dormant.insert(bit, key.map(str::to_owned), config);
+            }
+        }
+        if !self.live.any_for(bit) {
+            self.topics.remove(topic);
+        }
+    }
+
+    fn apply_patch(
+        &mut self,
+        topic: TopicId,
+        key: Option<&str>,
+        patch: &serde_json::Value,
+    ) -> Result<(), WsProtocolError> {
+        let bit = topic.bit();
+        let current = self
+            .stored_config(bit, key)
+            .cloned()
+            .unwrap_or_else(|| (topic.vtable().default_config_json)());
+        let next = (topic.vtable().apply_patch_json)(&current, patch)
+            .map_err(|error| config_patch_error(topic, &error))?;
+        super::topics::admit_config(topic, &next)?;
+        // Every patch arrives attached to a selector the same request
+        // admitted, so the live entry for this key always exists by now.
+        debug_assert!(
+            self.live.config(bit, key).is_some(),
+            "patch target must already be live for its key"
+        );
+        self.live.insert(bit, key.map(str::to_owned), next);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SubscriptionState {
+    /// Whether the live table still means what its name says: a topic has
+    /// at least one live entry exactly when it is in the membership set.
+    pub(super) fn live_table_agrees_with_membership(&self) -> bool {
+        TopicId::ALL
+            .iter()
+            .copied()
+            .all(|topic| self.live.any_for(topic.bit()) == self.topics.contains(topic))
+    }
+
+    /// Whether this subscription's config is parked for a re-subscribe.
+    pub(super) fn has_dormant_config(&self, topic: TopicId, key: Option<&str>) -> bool {
+        self.dormant.get(topic.bit(), key).is_some()
+    }
+
+    /// Drive one subscribe request the way the wire drives it: wire
+    /// entries in, the same parse, transaction, and admission out.
+    pub(super) fn subscribed(
+        &self,
+        entries: Vec<TopicSubscription>,
+    ) -> Result<Self, WsProtocolError> {
+        self.subscribe(&parse_subscriptions(&entries)?)
+    }
+
+    /// Subscribe to unkeyed topics, pulling each one's config out of a
+    /// map keyed by topic name. A test convenience: the wire itself
+    /// carries config inside each selector, which is what makes a patch
+    /// for a topic the request never named unrepresentable.
+    pub(super) fn subscribed_unkeyed(
+        &self,
+        topics: &[&str],
+        config: serde_json::Value,
+    ) -> Result<Self, WsProtocolError> {
+        let entries = topics
+            .iter()
+            .map(|topic| TopicSubscription {
+                topic: (*topic).to_owned(),
+                key: None,
+                config: config.get(*topic).cloned(),
+            })
+            .collect();
+        self.subscribed(entries)
+    }
+
+    /// Drive one unsubscribe request the same way.
+    pub(super) fn unsubscribed(&self, selectors: Vec<TopicSelector>) -> Self {
+        let selections = parse_selectors(&selectors).expect("test selectors parse");
+        self.unsubscribe(&selections)
+    }
+
+    /// Unsubscribe from unkeyed topics by name.
+    pub(super) fn unsubscribed_unkeyed(&self, topics: &[&str]) -> Self {
+        self.unsubscribed(
+            topics
+                .iter()
+                .map(|topic| TopicSelector::unkeyed(*topic))
+                .collect(),
+        )
+    }
+
+    /// The live configs viewed as `{topic: config}` for unkeyed topics and
+    /// `{topic: {key: config}}` for keyed ones. A test-shaped view of
+    /// [`Self::projection`], which is what the wire actually carries.
+    pub(super) fn config_by_topic(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for live in self.live_subscriptions() {
+            if live.config.is_null() {
+                continue;
+            }
+            match live.key {
+                None => {
+                    map.insert(live.topic.as_str().to_owned(), live.config.clone());
+                }
+                Some(key) => {
+                    let entry = map
+                        .entry(live.topic.as_str().to_owned())
+                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let Some(keyed) = entry.as_object_mut() {
+                        keyed.insert(key.to_owned(), live.config.clone());
+                    }
+                }
+            }
+        }
         serde_json::Value::Object(map)
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct FramesConfig {
-    pub(super) fps: u32,
-    pub(super) format: FrameFormat,
-    pub(super) zones: Vec<String>,
+/// Project a rejected patch onto the wire's error vocabulary.
+///
+/// A configless topic refuses any non-null config stanza.
+/// Field-level rejections name the field under its topic; whole-value
+/// rejections name the topic alone.
+fn config_patch_error(topic: TopicId, error: &PatchError) -> WsProtocolError {
+    if !topic.vtable().configurable {
+        return WsProtocolError::invalid_config(
+            format!("config.{}", topic.as_str()),
+            "topic accepts no config",
+        );
+    }
+
+    let field = match error.field {
+        "config" | "patch" => format!("config.{}", topic.as_str()),
+        field => format!("config.{}.{field}", topic.as_str()),
+    };
+    WsProtocolError::invalid_config(field, error.reason.clone())
 }
 
 #[derive(Debug, Clone)]
-pub(super) enum FrameZoneSelection {
+pub enum FrameZoneSelection {
     All,
     Named(HashSet<String>),
 }
 
 impl FrameZoneSelection {
-    pub(super) fn new(selected: &[String]) -> Self {
+    pub fn new(selected: &[String]) -> Self {
         if selected.iter().any(|zone| zone == "all") {
             Self::All
         } else {
@@ -461,50 +463,9 @@ impl ActiveFramesConfig {
     }
 }
 
-impl Default for FramesConfig {
-    fn default() -> Self {
-        Self {
-            fps: 30,
-            format: FrameFormat::Binary,
-            zones: vec!["all".to_owned()],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct SpectrumConfig {
-    pub(super) fps: u32,
-    pub(super) bins: u16,
-}
-
-impl Default for SpectrumConfig {
-    fn default() -> Self {
-        Self { fps: 30, bins: 64 }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct CanvasConfig {
-    pub(super) fps: u32,
-    pub(super) format: CanvasFormat,
-    pub(super) width: u32,
-    pub(super) height: u32,
-}
-
-impl Default for CanvasConfig {
-    fn default() -> Self {
-        Self {
-            fps: 15,
-            format: CanvasFormat::Rgb,
-            width: 0,
-            height: 0,
-        }
-    }
-}
-
-fn validate_passive_preview_shape(
+pub(super) fn validate_passive_preview_shape(
     config: &CanvasConfig,
-    field: &'static str,
+    field: impl Into<String>,
 ) -> Result<(), WsProtocolError> {
     if config.width == 0 || config.height == 0 {
         return Ok(());
@@ -516,94 +477,44 @@ fn validate_passive_preview_shape(
         })
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct MetricsConfig {
-    pub(super) interval_ms: u32,
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self { interval_ms: 1000 }
-    }
-}
-
-/// Configuration for the per-display preview channel. `device_id` is
-/// `None` until the client sends its first subscribe with a target —
-/// once set, the relay task follows that device's JPEG frame watch and
-/// streams every new frame out as a binary `0x07` payload.
-#[derive(Debug, Clone, Serialize)]
-pub(super) struct DisplayPreviewConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) device_id: Option<String>,
-    pub(super) fps: u32,
-}
-
-impl Default for DisplayPreviewConfig {
-    fn default() -> Self {
-        Self {
-            device_id: None,
-            fps: 15,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum FrameFormat {
-    Binary,
-    Json,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum CanvasFormat {
-    Rgb,
-    Rgba,
-    Jpeg,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum InteractivePreviewTarget {
-    #[default]
-    ActiveScene,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub(super) struct InteractivePreviewConfig {
-    pub(super) target: InteractivePreviewTarget,
-    pub(super) fps: u32,
-    pub(super) width: u32,
-    pub(super) height: u32,
-    pub(super) format: CanvasFormat,
-}
-
 /// Hard transport ceiling for one complete WebSocket message or frame.
-pub(super) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_WS_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum decoded surface bytes admitted for one preview publication.
-pub(super) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
+pub(crate) const MAX_PREVIEW_PUBLICATION_BYTES: usize =
     DEFAULT_PREVIEW_MAX_DECODED_PUBLICATION_BYTES;
 /// Maximum number of edges accepted in one browser-input batch.
 pub(super) const MAX_INPUT_INJECT_EVENTS: usize = 256;
 /// Maximum UTF-8 byte length of an injected key or button name.
 pub(super) const MAX_INPUT_NAME_BYTES: usize = 128;
-/// Largest accepted browser wheel delta, equivalent to 100 notches.
-pub(super) const MAX_INPUT_WHEEL_DELTA: i32 = 120 * 100;
+/// Largest accepted exact browser scroll delta on either axis.
+pub(super) const MAX_INPUT_SCROLL_Q16_16: i64 = (120_i64 * 100) << 16;
 
-/// Client-to-server subscription messages.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum ClientMessage {
-    /// Subscribe to one or more channels.
-    Subscribe {
-        channels: Vec<String>,
-        #[serde(default)]
-        config: Option<ChannelConfigPatch>,
-        #[serde(default)]
-        preview_transport: Option<String>,
-    },
-    /// Unsubscribe from one or more channels.
-    Unsubscribe { channels: Vec<String> },
+macro_rules! define_client_messages {
+    ($($(#[$meta:meta])* $variant:ident $body:tt),+ $(,)?) => {
+        /// Client-to-server subscription messages.
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+        pub(super) enum ClientMessage {
+            $($(#[$meta])* $variant $body),+
+        }
+
+        pub(super) fn client_message_vocabulary() -> Vec<String> {
+            vec![$(hypercolor_types::event::pascal_to_snake_case(stringify!($variant))),+]
+        }
+    };
+}
+
+define_client_messages! {
+    /// Subscribe to one or more topics.
+    ///
+    /// Each entry names a topic, its key when the topic is keyed, and an
+    /// optional config patch. Config rides with its selector, so a patch
+    /// can only ever target a subscription the same request establishes,
+    /// and the topic that owns the config validates it through the
+    /// registry vtable.
+    Subscribe { topics: Vec<TopicSubscription> },
+    /// Unsubscribe from one or more topics.
+    Unsubscribe { topics: Vec<TopicSelector> },
     /// REST-equivalent command execution over WS.
     Command {
         id: String,
@@ -613,32 +524,16 @@ pub(super) enum ClientMessage {
         body: Option<serde_json::Value>,
     },
     /// Transient per-zone layout preview for Studio drag interactions.
+    ///
+    /// Active-scene-only and zone-keyed: fine-grained mutation is
+    /// live-tree-only across every transport, so there is no scene to
+    /// select (Spec 78 §1.5).
     ZoneLayoutPreview {
-        scene_id: String,
         zone_id: String,
         layout: SpatialLayout,
     },
     /// Clear one transient per-zone layout preview.
-    ZoneLayoutPreviewClear { scene_id: String, zone_id: String },
-    /// Open one interactive preview within this connection.
-    InteractivePreviewOpen {
-        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
-        preview_id: String,
-        #[serde(default)]
-        target: InteractivePreviewTarget,
-        #[serde(deserialize_with = "deserialize_interactive_preview_fps")]
-        fps: u32,
-        #[serde(deserialize_with = "deserialize_interactive_preview_dimension")]
-        width: u32,
-        #[serde(deserialize_with = "deserialize_interactive_preview_dimension")]
-        height: u32,
-        format: CanvasFormat,
-    },
-    /// Close one interactive preview within this connection.
-    InteractivePreviewClose {
-        #[serde(deserialize_with = "deserialize_interactive_preview_id")]
-        preview_id: String,
-    },
+    ZoneLayoutPreviewClear { zone_id: String },
     /// Inject browser-preview input edges into one active preview.
     InputInject {
         #[serde(deserialize_with = "deserialize_interactive_preview_id")]
@@ -678,9 +573,16 @@ pub(super) enum BrowserInputEdgeWire {
         #[serde(deserialize_with = "deserialize_finite_coordinate")]
         ny: f32,
     },
-    Wheel {
-        #[serde(deserialize_with = "deserialize_wheel_delta")]
-        delta_hi_res: i32,
+    Scroll {
+        #[serde(deserialize_with = "deserialize_scroll_delta")]
+        delta_x_q16_16: i64,
+        #[serde(deserialize_with = "deserialize_scroll_delta")]
+        delta_y_q16_16: i64,
+        unit: PointerScrollUnitWire,
+        #[serde(default)]
+        phase: PointerScrollPhaseWire,
+        #[serde(default)]
+        momentum_phase: PointerScrollPhaseWire,
     },
 }
 
@@ -692,15 +594,48 @@ pub(super) enum InputButtonStateWire {
     Repeated,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PointerScrollUnitWire {
+    Line120,
+    Pixels,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum PointerScrollPhaseWire {
+    #[default]
+    None,
+    MayBegin,
+    Began,
+    Changed,
+    Stationary,
+    Ended,
+    Cancelled,
+}
+
 impl BrowserInputEdgeWire {
     pub(super) fn into_edge(self) -> hypercolor_core::input::BrowserInputEdge {
         use hypercolor_core::input::BrowserInputEdge;
-        use hypercolor_types::event::InputButtonState;
+        use hypercolor_types::event::{InputButtonState, PointerScrollPhase, PointerScrollUnit};
 
         let map_state = |state: InputButtonStateWire| match state {
             InputButtonStateWire::Pressed => InputButtonState::Pressed,
             InputButtonStateWire::Released => InputButtonState::Released,
             InputButtonStateWire::Repeated => InputButtonState::Repeated,
+        };
+        let map_unit = |unit: PointerScrollUnitWire| match unit {
+            PointerScrollUnitWire::Line120 => PointerScrollUnit::Line120,
+            PointerScrollUnitWire::Pixels => PointerScrollUnit::Pixels,
+        };
+        let map_phase = |phase: PointerScrollPhaseWire| match phase {
+            PointerScrollPhaseWire::None => PointerScrollPhase::None,
+            PointerScrollPhaseWire::MayBegin => PointerScrollPhase::MayBegin,
+            PointerScrollPhaseWire::Began => PointerScrollPhase::Began,
+            PointerScrollPhaseWire::Changed => PointerScrollPhase::Changed,
+            PointerScrollPhaseWire::Stationary => PointerScrollPhase::Stationary,
+            PointerScrollPhaseWire::Ended => PointerScrollPhase::Ended,
+            PointerScrollPhaseWire::Cancelled => PointerScrollPhase::Cancelled,
         };
 
         match self {
@@ -716,7 +651,19 @@ impl BrowserInputEdgeWire {
                 norm_x: nx,
                 norm_y: ny,
             },
-            Self::Wheel { delta_hi_res } => BrowserInputEdge::Wheel { delta_hi_res },
+            Self::Scroll {
+                delta_x_q16_16,
+                delta_y_q16_16,
+                unit,
+                phase,
+                momentum_phase,
+            } => BrowserInputEdge::Scroll {
+                delta_x_q16_16,
+                delta_y_q16_16,
+                unit: map_unit(unit),
+                phase: map_phase(phase),
+                momentum_phase: map_phase(momentum_phase),
+            },
         }
     }
 }
@@ -748,32 +695,6 @@ where
     validate_interactive_preview_id(&preview_id)
         .map_err(|error| serde::de::Error::custom(error.message))?;
     Ok(preview_id)
-}
-
-fn deserialize_interactive_preview_fps<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let fps = u32::deserialize(deserializer)?;
-    if !(1..=60).contains(&fps) {
-        return Err(serde::de::Error::custom(
-            "interactive preview fps must be in 1..=60",
-        ));
-    }
-    Ok(fps)
-}
-
-fn deserialize_interactive_preview_dimension<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let dimension = u32::deserialize(deserializer)?;
-    if dimension == 0 {
-        return Err(serde::de::Error::custom(
-            "interactive preview dimensions must be nonzero",
-        ));
-    }
-    Ok(dimension)
 }
 
 pub(super) fn validate_interactive_preview_shape(
@@ -932,16 +853,19 @@ where
     }
 }
 
-fn deserialize_wheel_delta<'de, D>(deserializer: D) -> Result<i32, D::Error>
+fn deserialize_scroll_delta<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let value = i32::deserialize(deserializer)?;
-    if value.unsigned_abs() <= MAX_INPUT_WHEEL_DELTA.unsigned_abs() {
+    let value = i64::deserialize(deserializer)?;
+    if value
+        .checked_abs()
+        .is_some_and(|magnitude| magnitude <= MAX_INPUT_SCROLL_Q16_16)
+    {
         Ok(value)
     } else {
         Err(de::Error::custom(format_args!(
-            "browser input wheel delta must be within ±{MAX_INPUT_WHEEL_DELTA}"
+            "browser input scroll delta must be within ±{MAX_INPUT_SCROLL_Q16_16}"
         )))
     }
 }
@@ -960,138 +884,36 @@ where
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub(super) struct ChannelConfigPatch {
-    #[serde(default)]
-    pub(super) frames: Option<FramesConfigPatch>,
-    #[serde(default)]
-    pub(super) spectrum: Option<SpectrumConfigPatch>,
-    #[serde(default)]
-    pub(super) canvas: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) screen_canvas: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) web_viewport_canvas: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) zone_preview: Option<CanvasConfigPatch>,
-    #[serde(default)]
-    pub(super) metrics: Option<MetricsConfigPatch>,
-    #[serde(default)]
-    pub(super) device_metrics: Option<MetricsConfigPatch>,
-    #[serde(default)]
-    pub(super) display_preview: Option<DisplayPreviewConfigPatch>,
+macro_rules! define_server_messages {
+    ($($(#[$meta:meta])* $variant:ident $body:tt),+ $(,)?) => {
+        /// Server-to-client acknowledgment messages.
+        #[derive(Debug, Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        pub(super) enum ServerMessage {
+            $($(#[$meta])* $variant $body),+
+        }
+
+        pub(super) fn server_message_vocabulary() -> Vec<String> {
+            vec![$(hypercolor_types::event::pascal_to_snake_case(stringify!($variant))),+]
+        }
+    };
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct FramesConfigPatch {
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-    #[serde(default)]
-    pub(super) format: Option<FrameFormat>,
-    #[serde(default)]
-    pub(super) zones: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct SpectrumConfigPatch {
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-    #[serde(default)]
-    pub(super) bins: Option<u16>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct CanvasConfigPatch {
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-    #[serde(default)]
-    pub(super) format: Option<CanvasFormat>,
-    #[serde(default)]
-    pub(super) width: Option<u32>,
-    #[serde(default)]
-    pub(super) height: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct MetricsConfigPatch {
-    #[serde(default)]
-    pub(super) interval_ms: Option<u32>,
-}
-
-/// Patch for `DisplayPreviewConfig`. `device_id` uses a double-Option so
-/// clients can distinguish "leave as-is" (`device_id: undefined`) from
-/// "clear the target" (`device_id: null`). Setting the outer `Some(None)`
-/// detaches the relay and stops emitting frames.
-///
-/// The custom `deserialize_with` is required because plain
-/// `Option<Option<String>>` with serde's default behavior collapses
-/// `null` and missing-key to the same `None` — losing the tri-state we
-/// need for "clear".
-#[derive(Debug, Deserialize)]
-pub(super) struct DisplayPreviewConfigPatch {
-    #[serde(
-        default,
-        deserialize_with = "deserialize_double_option_string",
-        skip_serializing_if = "Option::is_none"
-    )]
-    #[allow(
-        clippy::option_option,
-        reason = "the patch protocol needs distinct states for missing, null, and string values"
-    )]
-    pub(super) device_id: Option<Option<String>>,
-    #[serde(default)]
-    pub(super) fps: Option<u32>,
-}
-
-/// Deserialize a double-Option so `null` maps to `Some(None)` (explicit
-/// clear) and a missing key keeps the outer `None` (via `#[serde(default)]`).
-/// Without this helper serde's default collapses both into `None`.
-#[allow(
-    clippy::option_option,
-    reason = "serde needs the tri-state shape to preserve missing-vs-null during patch application"
-)]
-fn deserialize_double_option_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer).map(Some)
-}
-
-/// Server-to-client acknowledgment messages.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(super) enum ServerMessage {
+define_server_messages! {
     /// Initial hello with state snapshot.
     Hello {
         version: String,
         server: ServerIdentity,
         state: HelloState,
         capabilities: Vec<String>,
-        subscriptions: Vec<String>,
+        subscriptions: Vec<ActiveSubscription>,
     },
-    /// Subscribe acknowledgment.
-    Subscribed {
-        channels: Vec<String>,
-        config: serde_json::Value,
-        preview_transport: String,
-    },
-    /// Unsubscribe acknowledgment.
-    Unsubscribed {
-        channels: Vec<String>,
-        remaining: Vec<String>,
-    },
-    /// Interactive preview open acknowledgment.
-    InteractivePreviewOpened {
-        preview_id: String,
-        connection_incarnation: u64,
-        publication_id: u64,
-        already_open: bool,
-        config: InteractivePreviewConfig,
-    },
-    /// Interactive preview close acknowledgment.
-    InteractivePreviewClosed { preview_id: String, closed: bool },
+    /// Subscribe acknowledgment: the connection's whole live subscription
+    /// set, so a client always learns the state it ended up in rather
+    /// than only the delta it asked for.
+    Subscribed { topics: Vec<ActiveSubscription> },
+    /// Unsubscribe acknowledgment, carrying what remains.
+    Unsubscribed { topics: Vec<ActiveSubscription> },
     /// Addressed input injection acknowledgment.
     InputInjected {
         preview_id: String,
@@ -1125,12 +947,15 @@ pub(super) enum ServerMessage {
         timestamp: String,
         data: SystemSnapshot,
     },
-    /// Backpressure warning for dropped binary channel payloads.
+    /// Backpressure warning for dropped binary payloads on one topic.
     Backpressure {
         dropped_frames: u32,
-        channel: String,
+        topic: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
         recommendation: String,
-        suggested_fps: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        suggested_fps: Option<f64>,
     },
     /// Protocol-level request error.
     Error {
@@ -1150,15 +975,71 @@ pub(super) enum ServerMessage {
     },
 }
 
+pub(super) fn json_payload_manifest() -> serde_json::Value {
+    serde_json::json!({
+        "timed_input_event_v1": {
+            "schema_version": 1,
+            "event": "input_event_received",
+            "required_fields": ["event", "at_ms", "seq", "repeat_count"],
+            "optional_fields": {
+                "physical_code": null
+            },
+            "description": "Canonical captured input edge with exact timing, ordering, and repeat multiplicity.",
+            "topic": "input_events"
+        },
+        "input_source_status_changed_v1": {
+            "schema_version": 1,
+            "event": "input_source_status_changed",
+            "required_fields": [
+                "source_id",
+                "kind",
+                "backend",
+                "configured",
+                "consented",
+                "demanded",
+                "active_consumer_count",
+                "state",
+                "freshness",
+                "source_graph_generation",
+                "session_generation",
+                "resource_count",
+                "denied_resource_count",
+                "retired"
+            ],
+            "optional_fields": {
+                "lifecycle_issue_code": null,
+                "freshness_issue_code": null
+            },
+            "description": "Coalesced input-source lifecycle and freshness transition. Contains operational metadata only and never captured input contents.",
+            "topic": "events"
+        },
+        "service_identity_changed_v1": {
+            "schema_version": 1,
+            "topic": "events",
+            "event": "service_identity_changed",
+            "required_fields": ["identity", "owner_epoch"],
+            "optional_fields": {
+                "conflict": null,
+                "recovery_required": null
+            },
+            "description": "Corroborated launcher identity of the daemon (run mode, service manager, unit) with its ownership epoch. Reports state only and cannot request an owner change."
+        }
+    })
+}
+
+/// The handshake snapshot.
+///
+/// Deliberately says nothing about what is rendering: the live tree is
+/// multi-zone and multi-layer, so a single `effect` name could only
+/// ever describe one corner of it. Clients read `/scene` for content
+/// and follow the events channel for changes (Spec 78 §7.1).
 #[derive(Debug, Serialize)]
 pub(super) struct HelloState {
     pub(super) running: bool,
     pub(super) paused: bool,
     pub(super) brightness: u8,
     pub(super) fps: HelloFps,
-    pub(super) effect: Option<NameRef>,
     pub(super) scene: Option<SceneRef>,
-    pub(super) profile: Option<NameRef>,
     pub(super) layout: Option<NameRef>,
     pub(super) device_count: usize,
     pub(super) total_leds: usize,
@@ -1169,7 +1050,6 @@ pub(super) struct HelloFps {
     pub(super) target: u32,
     pub(super) capacity: f64,
     pub(super) delivered: f64,
-    pub(super) actual: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1189,6 +1069,7 @@ pub(super) struct SceneRef {
 pub(super) struct MetricsPayload {
     pub(super) fps: MetricsFps,
     pub(super) frame_time: MetricsFrameTime,
+    pub(super) input_latency: MetricsSessionLatency,
     pub(super) stages: MetricsStages,
     pub(super) pacing: MetricsPacing,
     pub(super) effect_health: MetricsEffectHealth,
@@ -1208,7 +1089,6 @@ pub(super) struct MetricsFps {
     pub(super) ceiling: u32,
     pub(super) capacity: f64,
     pub(super) delivered: f64,
-    pub(super) actual: f64,
     pub(super) dropped: u32,
 }
 
@@ -1218,6 +1098,15 @@ pub(super) struct MetricsFps {
     reason = "JSON keys mirror protocol field names from the WebSocket spec"
 )]
 pub(super) struct MetricsFrameTime {
+    pub(super) avg_ms: f64,
+    pub(super) p95_ms: f64,
+    pub(super) p99_ms: f64,
+    pub(super) max_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct MetricsSessionLatency {
+    pub(super) sample_count: u64,
     pub(super) avg_ms: f64,
     pub(super) p95_ms: f64,
     pub(super) p99_ms: f64,
@@ -1242,7 +1131,7 @@ pub(super) struct MetricsStages {
     pub(super) preview_postprocess_ms: f64,
     pub(super) event_bus_ms: f64,
     pub(super) publish_frame_data_ms: f64,
-    pub(super) publish_group_canvas_ms: f64,
+    pub(super) publish_zone_canvas_ms: f64,
     pub(super) publish_preview_ms: f64,
     pub(super) publish_events_ms: f64,
     pub(super) coordination_overhead_ms: f64,
@@ -1279,8 +1168,6 @@ pub(super) struct MetricsPacing {
     pub(super) gpu_sample_queue_saturated: u32,
     pub(super) gpu_sample_wait_blocked: u32,
     pub(super) gpu_sample_cpu_fallback: u32,
-    pub(super) cpu_sampling_late_readback: u32,
-    pub(super) led_sampling_readback: u32,
     pub(super) preview_surface: u32,
     pub(super) scene_canvas_forced_surface: u32,
     pub(super) gpu_readback_failed_frames: u32,
@@ -1404,8 +1291,6 @@ pub(super) struct MetricsTimeline {
     pub(super) gpu_sample_queue_saturated: bool,
     pub(super) gpu_sample_wait_blocked: bool,
     pub(super) gpu_sample_cpu_fallback: bool,
-    pub(super) cpu_sampling_late_readback: bool,
-    pub(super) led_sampling_readback: bool,
     pub(super) preview_surface: bool,
     pub(super) scene_canvas_forced_surface: bool,
     pub(super) cpu_readback_skipped: bool,
@@ -1413,7 +1298,7 @@ pub(super) struct MetricsTimeline {
     pub(super) budget_ms: f64,
     pub(super) wake_late_ms: f64,
     pub(super) logical_layer_count: u32,
-    pub(super) render_group_count: u32,
+    pub(super) render_zone_count: u32,
     pub(super) scene_active: bool,
     pub(super) scene_transition_active: bool,
     pub(super) scene_snapshot_done_ms: f64,
@@ -1454,29 +1339,26 @@ pub(super) struct MetricsCopies {
     pub(super) publication_full_frame_count: u32,
     pub(super) publication_full_frame_kb: f64,
     pub(super) publication_reason: Option<&'static str>,
+    pub(super) session_full_frame_count: u64,
+    pub(super) session_full_frame_frames: u64,
+    pub(super) session_full_frame_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct MetricsRenderSurfaces {
-    pub(super) slot_count: u32,
-    pub(super) free_slots: u32,
-    pub(super) published_slots: u32,
-    pub(super) dequeued_slots: u32,
     pub(super) canvas_receivers: u32,
-    /// Monotonic counter: how many times the render-group scene surface pool
+    /// Monotonic counter: how many times the render-zone scene surface pool
     /// hit its growth cap and had to reuse a still-shared slot, forcing
     /// a fresh `Canvas::new` on every frame. A rising value means the
     /// cap is too low for current fan-out.
-    #[serde(rename = "preview_pool_saturation_reallocs")]
     pub(super) scene_pool_saturation_reallocs: u64,
-    /// Same counter summed across per-group direct-canvas pools.
+    /// Same counter summed across per-zone direct-canvas pools.
     pub(super) direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size.
     /// Benign when stable — the pool converged on its working set. A
     /// climbing value over time could indicate a pinned-Arc leak.
-    #[serde(rename = "preview_pool_grown_slots")]
     pub(super) scene_pool_grown_slots: u32,
-    /// Same gauge summed across per-group direct-canvas pools.
+    /// Same gauge summed across per-zone direct-canvas pools.
     pub(super) direct_pool_grown_slots: u32,
     pub(super) scene_pool_slot_count: u32,
     pub(super) scene_pool_max_slots: u32,
@@ -1593,6 +1475,12 @@ pub(super) struct MetricsWebsocket {
     pub(super) preview_queue_bytes: usize,
 }
 
+/// A WS command refusal, rendered with the same code vocabulary REST
+/// serves (Spec 78 §7.1).
+///
+/// The parallel WS-only code set is deleted: a client that already
+/// knows `malformed_request`, `validation_error`, and `forbidden` from
+/// the REST envelope reads a socket refusal without a second table.
 #[derive(Debug)]
 pub(super) struct WsProtocolError {
     pub(super) code: &'static str,
@@ -1602,54 +1490,41 @@ pub(super) struct WsProtocolError {
 
 impl WsProtocolError {
     pub(super) fn invalid_request(message: impl Into<String>) -> Self {
-        Self {
-            code: "invalid_request",
-            message: message.into(),
-            details: None,
-        }
+        DomainError::malformed(message).into()
     }
 
     pub(super) fn forbidden(message: impl Into<String>, details: serde_json::Value) -> Self {
-        Self {
-            code: "forbidden",
-            message: message.into(),
-            details: Some(details),
-        }
+        DomainError::forbidden_details(message, details).into()
     }
 
-    pub(super) fn invalid_config(field: &'static str, message: &'static str) -> Self {
-        Self {
-            code: "invalid_config",
-            message: format!("Invalid configuration for {field}: {message}"),
-            details: Some(json!({"field": field, "reason": message})),
-        }
+    pub(super) fn invalid_config(field: impl Into<String>, reason: impl Into<String>) -> Self {
+        let field = field.into();
+        let reason = reason.into();
+        DomainError::validation_details(
+            format!("Invalid configuration for {field}: {reason}"),
+            json!({"field": field, "reason": reason}),
+        )
+        .into()
     }
 
     pub(super) fn invalid_config_resource(
-        field: &'static str,
+        field: impl Into<String>,
         width: u32,
         height: u32,
         reason: String,
     ) -> Self {
-        Self {
-            code: "invalid_config",
-            message: format!("Invalid configuration for {field}: {reason}"),
-            details: Some(json!({
+        let field = field.into();
+        DomainError::validation_details(
+            format!("Invalid configuration for {field}: {reason}"),
+            json!({
                 "field": field,
                 "reason": reason,
                 "width": width,
                 "height": height,
                 "max_publication_bytes": MAX_PREVIEW_PUBLICATION_BYTES,
-            })),
-        }
-    }
-
-    pub(super) fn unsupported_channel(channel: &str) -> Self {
-        Self {
-            code: "unsupported_channel",
-            message: format!("Channel '{channel}' is not supported by this server"),
-            details: Some(json!({"channel": channel})),
-        }
+            }),
+        )
+        .into()
     }
 
     pub(super) fn into_message(self) -> ServerMessage {
@@ -1657,6 +1532,17 @@ impl WsProtocolError {
             code: self.code.to_owned(),
             message: self.message,
             details: self.details,
+        }
+    }
+}
+
+impl From<DomainError> for WsProtocolError {
+    fn from(error: DomainError) -> Self {
+        let code = error.code();
+        Self {
+            code,
+            message: error.client_message(),
+            details: crate::api::error::client_details(&error),
         }
     }
 }
@@ -1674,68 +1560,78 @@ pub(super) fn frame_selection_hash(selected: &[String]) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn validate_range(
-    value: u32,
-    min: u32,
-    max: u32,
-    field: &'static str,
-    message: &'static str,
-) -> Result<(), WsProtocolError> {
-    if !(min..=max).contains(&value) {
-        return Err(WsProtocolError::invalid_config(field, message));
-    }
-    Ok(())
+/// Validate one wire selector into a topic plus its canonical key.
+fn parse_selector(topic: &str, key: Option<&str>) -> Result<TopicSelection, WsProtocolError> {
+    let parsed = TopicId::parse(topic)
+        .ok_or_else(|| WsProtocolError::invalid_request(format!("Unknown topic '{topic}'")))?;
+    // The key the topic's own key type accepts, canonicalized — the
+    // table stores what the boundary validated, never raw client text.
+    let key = (parsed.vtable().validate_key)(key).map_err(|error| {
+        WsProtocolError::invalid_request(format!("Invalid key for topic '{topic}': {error}"))
+    })?;
+    Ok(TopicSelection { topic: parsed, key })
 }
 
-pub(super) fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsProtocolError> {
-    if channels.is_empty() {
+/// Parse a subscribe message's `topics` array into validated requests.
+pub(super) fn parse_subscriptions(
+    entries: &[TopicSubscription],
+) -> Result<Vec<SubscriptionRequest>, WsProtocolError> {
+    if entries.is_empty() {
         return Err(WsProtocolError::invalid_request(
-            "channels must contain at least one channel",
+            "topics must contain at least one subscription",
         ));
     }
 
-    let mut parsed = Vec::with_capacity(channels.len());
-    for channel in channels {
-        let parsed_channel = WsChannel::parse(channel).ok_or_else(|| {
-            WsProtocolError::invalid_request(format!("Unknown channel '{channel}'"))
-        })?;
-
-        if !parsed_channel.is_supported() {
-            return Err(WsProtocolError::unsupported_channel(channel));
+    let mut parsed: Vec<SubscriptionRequest> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let selection = parse_selector(&entry.topic, entry.key.as_deref())?;
+        // Two entries for one subscription means the client does not
+        // agree with itself about which config wins; resolving that
+        // silently would hide it from the only party who can fix it.
+        if parsed
+            .iter()
+            .any(|existing| existing.selection == selection)
+        {
+            return Err(WsProtocolError::invalid_request(format!(
+                "Duplicate subscription for topic '{}'",
+                entry.topic
+            )));
         }
-
-        parsed.push(parsed_channel);
+        parsed.push(SubscriptionRequest {
+            selection,
+            config: entry.config.clone(),
+        });
     }
 
     Ok(parsed)
 }
 
-pub(super) fn sorted_channel_names(channels: ChannelSet) -> Vec<String> {
-    let mut names: Vec<String> = channels
+/// Parse an unsubscribe message's `topics` array into validated selectors.
+pub(super) fn parse_selectors(
+    selectors: &[TopicSelector],
+) -> Result<Vec<TopicSelection>, WsProtocolError> {
+    if selectors.is_empty() {
+        return Err(WsProtocolError::invalid_request(
+            "topics must contain at least one subscription",
+        ));
+    }
+
+    selectors
         .iter()
-        .map(|channel| channel.as_str().to_owned())
-        .collect();
-    names.sort();
-    names
+        .map(|selector| parse_selector(&selector.topic, selector.key.as_deref()))
+        .collect()
 }
 
-pub(super) fn unique_sorted_channel_names(channels: &[WsChannel]) -> Vec<String> {
-    sorted_channel_names(ChannelSet::from_channels(channels))
-}
-
-pub(super) fn ws_capabilities() -> Vec<String> {
-    let mut capabilities: Vec<String> = WsChannel::SUPPORTED
+pub(crate) fn ws_capabilities() -> Vec<String> {
+    let mut capabilities: Vec<String> = TopicId::ALL
         .iter()
-        .map(|channel| channel.as_str().to_owned())
+        .map(|topic| topic.as_str().to_owned())
         .collect();
     capabilities.push("commands".to_owned());
     capabilities.push("canvas_format_jpeg".to_owned());
     capabilities.push("interactive_previews".to_owned());
     capabilities.push("wide_preview_frames".to_owned());
     capabilities.push("preview_chunking".to_owned());
-    let preview_transport = PreviewTransportCapability::default();
-    capabilities.push(preview_transport.encode());
-    capabilities.push(preview_transport.legacy_v1().encode());
     capabilities
 }
 
@@ -1760,7 +1656,7 @@ pub(super) fn event_message_parts(
         .and_then(serde_json::Value::as_str);
 
     let event_name = if let Some(event_type) = event_type {
-        to_snake_case(event_type)
+        hypercolor_types::event::pascal_to_snake_case(event_type)
     } else {
         format!("{:?}", event.category()).to_lowercase()
     };
@@ -1771,35 +1667,15 @@ pub(super) fn event_message_parts(
     (event_name, event_data)
 }
 
-pub(super) fn to_snake_case(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut previous_was_lower_or_digit = false;
-
-    for ch in input.chars() {
-        if ch.is_ascii_uppercase() {
-            if previous_was_lower_or_digit {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-            previous_was_lower_or_digit = false;
-        } else {
-            out.push(ch);
-            previous_was_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
-        }
-    }
-
-    out
-}
-
 pub(super) fn should_relay_event(
     event: &hypercolor_types::event::HypercolorEvent,
-    channels: ChannelSet,
+    topics: TopicSet,
 ) -> bool {
     if matches!(
         event,
         hypercolor_types::event::HypercolorEvent::FrameRendered { .. }
     ) {
-        return channels.contains(WsChannel::FrameEvents);
+        return topics.contains(TopicId::FrameEvents);
     }
 
     // Host input events carry keystroke data and never ride the default
@@ -1809,8 +1685,8 @@ pub(super) fn should_relay_event(
         event,
         hypercolor_types::event::HypercolorEvent::InputEventReceived { .. }
     ) {
-        return channels.contains(WsChannel::InputEvents);
+        return topics.contains(TopicId::InputEvents);
     }
 
-    channels.contains(WsChannel::Events)
+    topics.contains(TopicId::Events)
 }

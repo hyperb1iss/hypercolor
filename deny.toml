@@ -29,6 +29,10 @@ allow = [
     "Unicode-DFS-2016",
     "Zlib",
 ]
+exceptions = [
+    # jsonschema's URI parser uses this permissive MIT variant.
+    { allow = ["MIT-0"], crate = "borrow-or-share" },
+]
 
 [bans]
 multiple-versions = "warn"

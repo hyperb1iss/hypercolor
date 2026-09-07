@@ -37,29 +37,41 @@ When studying open-source protocol implementations (in any language), these patt
 
 **Transport vs Transfer:** A protocol reference's transport call determines TWO things in Hypercolor:
 
-- **`TransportType`** (registry.rs) — device-level transport binding, set once in `DeviceDescriptor`. Determines how the backend opens and talks to the device (e.g., `UsbControl`, `UsbHidApi`, `UsbHidRaw`, `UsbBulk`, `I2cSmBus`).
+- **`TransportType`** (registry.rs) — device-level transport binding, resolved once per `DeviceDescriptor`. Determines how the backend opens and talks to the device (e.g., `UsbControl`, `UsbHidApi`, `UsbHidRaw`, `UsbBulk`, `I2cSmBus`). HID descriptors declare a platform-free `TransportIntent` and let `resolve_current_transport` map it per target OS, because hidraw exists only on Linux.
 - **`TransferType`** (protocol.rs) — per-command path hint on `ProtocolCommand`. Allows a single protocol to mix transfer paths within one device session (e.g., HID feature reports for init, bulk for frame data). Variants: `Primary`, `Bulk`, `HidReport`.
 
-| Source Pattern                             | Hypercolor Equivalent                                                                                  |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| Fixed-size byte buffer with manual offsets | Zerocopy struct with `report_id: u8` field                                                             |
-| HID feature report send                    | `TransportType::UsbHidApi` or `UsbHidRaw` + `TransferType::HidReport`                                  |
-| USB control transfer                       | `TransportType::UsbControl` + `TransferType::Primary`                                                  |
-| HID interrupt write                        | `TransportType::UsbHid` + `TransferType::Primary`                                                      |
-| Per-LED color loop with count mismatch     | `normalize_colors() -> Cow<'a, [[u8; 3]]>` — borrow when LED count matches, allocate only when padding |
-| Sleep/delay between commands               | `post_delay: Duration::from_millis(N)`                                                                 |
-| Read response after command                | `expects_response: true` + `parse_response()`                                                          |
+| Source Pattern                             | Hypercolor Equivalent                                                                                     |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Fixed-size byte buffer with manual offsets | Zerocopy struct; whether it carries a `report_id` field depends on the resolved transport (see Common Pitfalls) |
+| HID feature report send                    | `TransportIntent::Hid(HidTransportIntent { report_mode: FeatureReport, .. })` + `TransferType::HidReport`  |
+| USB control transfer                       | `TransportType::UsbControl` + `TransferType::Primary`                                                     |
+| HID interrupt write                        | `HidAccessMode::Direct` (resolves to `UsbHid` on Linux, `UsbHidApi` elsewhere) + `TransferType::Primary`   |
+| Per-LED color loop with count mismatch     | a private per-driver `normalize_colors(&self, ..) -> Cow<'a, [[u8; 3]]>` method — borrow when the LED count matches, allocate only when padding |
+| Sleep/delay between commands               | `post_delay: Duration::from_millis(N)`                                                                    |
+| Read response after command                | `expects_response: true` + `parse_response()`                                                             |
 
 ## Common Pitfalls
 
 | Pattern                       | Pitfall                      | Correct Hypercolor Translation                    |
 | ----------------------------- | ---------------------------- | ------------------------------------------------- |
-| `RGBGetRValue(color)`         | Assumes RGB ordering         | Check actual byte positions — may be RBG or BGR   |
-| HID write with `len+1`        | +1 includes report ID        | Include report ID in zerocopy struct              |
-| `usleep(1000)`                | Units are microseconds       | `Duration::from_micros(1000)` (= 1ms)             |
-| HID get feature report        | Blocks until response        | `expects_response: true` on preceding command     |
-| `sizeof(buf)`                 | Includes report ID byte      | Compile-time assertion must match total wire size |
-| Magic numbers at byte offsets | Undocumented, easy to mismap | Define named constants for every offset           |
+| `RGBGetRValue(color)`         | Assumes RGB ordering         | Check actual byte positions — may be RBG or BGR                                    |
+| HID write with `len+1`        | +1 is the report ID          | Under `UsbHidApi` or `UsbHidRaw`, pick the `report_mode` to match: a `*WithReportId` mode means the struct carries the byte, a plain mode means the transport prepends it. Under every other transport there is no prepend step, so the struct carries it |
+| `usleep(1000)`                | Units are microseconds       | `Duration::from_micros(1000)` (= 1ms)                                              |
+| HID get feature report        | Blocks until response        | `expects_response: true` on preceding command                                      |
+| `sizeof(buf)`                 | May include the report ID    | The size assertion must match the struct, which is the wire size minus any byte the transport prepends, and only `UsbHidApi` and `UsbHidRaw` prepend anything |
+| Magic numbers at byte offsets | Undocumented, easy to mismap | Define named constants for every offset                                            |
+
+**The report ID rule is per transport, not global.** `report_mode` exists on
+exactly two of the nine `TransportType` variants, `UsbHidApi` and `UsbHidRaw`,
+and the prepend lives only in their encoders. Every other transport sends the
+payload verbatim; `UsbControl` and `UsbBulk` pass the report ID in the
+control-transfer `wValue`, and `UsbHid`, `UsbMidi`, `UsbSerial`, `I2cSmBus`,
+and `UsbVendor` add nothing at all, so there the packet struct owns the byte.
+Lian Li ENE is the counterexample worth remembering: its descriptors declare
+`TransportType::UsbHid`, which has no `report_mode` at all, and every ENE
+packet struct starts with a `report_id` field. `HidAccessMode::Direct` resolves
+to `UsbHid` on Linux, so an intent that names a `report_mode` can still land on
+a transport that ignores it.
 
 ## Verifying Your Understanding
 

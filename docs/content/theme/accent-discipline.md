@@ -31,11 +31,11 @@ Never reach for a raw `oklch()` or hex value in a component rule; always route t
 | Purple (`--color-purple`) | Yes, the only chrome color | Buttons, toggles, active bars, focus ring in light mode |
 | Cyan (`--color-cyan`) | One exception only | Dark-mode focus glow ring (`--glow-focus`) |
 | Coral (`--color-coral`) | No | Inline code text (sanctioned "code is special" semantic); audio and display category badges |
-| Yellow (`--color-yellow`) | No | `--status-warning`; reactive and source category badges |
+| Yellow (`--color-yellow`) | No | `--status-warning`; source category badges |
 | Green (`--color-green`) | No | `--status-success`; generative category badges |
 | Red (`--color-red`) | No | `--status-error`; danger callouts |
 | Blue (`--color-blue`) | No | `--status-info`; interactive category badges; API method badges |
-| Soft pink (`255, 153, 255`) | No | Productivity category badges |
+| Soft pink (`255, 153, 255`) | No | Scenic category badges |
 
 The one cyan exception is the focus glow ring in dark mode. `DESIGN-SYSTEM.md` §12.4 specifies cyan focus in dark and purple focus in light, so `:focus-visible` reads `--glow-focus`, which resolves to cyan in dark and flips to purple in light. This is the single correct use of cyan on a structural element; everywhere else, cyan is a category or status signal.
 
@@ -47,16 +47,19 @@ Effect categories carry their own color identity. This flows through badges and 
 | -------- | ----- | ----------- |
 | `ambient` | Neon cyan | `128, 255, 234` |
 | `audio` | Coral | `255, 106, 193` |
-| `display` | Coral | `255, 106, 193` |
-| `gaming` | Electric purple | `225, 53, 255` |
-| `reactive` | Electric yellow | `241, 250, 140` |
-| `source` | Electric yellow | `241, 250, 140` |
 | `generative` | Success green | `80, 250, 123` |
+| `particle` | Electric purple | `225, 53, 255` |
+| `scenic` | Soft pink | `255, 153, 255` |
 | `interactive` | Info blue | `130, 170, 255` |
-| `productivity` | Soft pink | `255, 153, 255` |
-| `utility`, unknown | Tertiary gray | `139, 133, 160` |
+| `fun` | Light purple | `189, 0, 221` |
+| `source` | Electric yellow | `241, 250, 140` |
+| `utility` | Tertiary gray | `139, 133, 160` |
+| `display` | Coral | `255, 106, 193` |
+| unknown (fallback arm) | Tertiary gray | `139, 133, 160` |
 
-Category color is **identity**, not chrome. A category badge paints the badge; it does not leak into navigation, headings, or interactive controls. A gaming effect's purple badge is not the same job as the sidebar active indicator's purple: the badge is data, the sidebar bar is chrome.
+There is one arm per `EffectCategory` variant, so any string outside that set falls through to the gray fallback. `gaming`, `reactive`, and `productivity` are not categories and never arrive.
+
+Category color is **identity**, not chrome. A category badge paints the badge; it does not leak into navigation, headings, or interactive controls. A particle effect's purple badge is not the same job as the sidebar active indicator's purple: the badge is data, the sidebar bar is chrome.
 
 When a component needs to glow in a category's color, set `--glow-rgb` to the triplet above and let `.edge-glow-accent` or `.chip-interactive` read it. Never hardcode a raw `rgba(...)` triplet in a component.
 

@@ -9,7 +9,8 @@ use leptos_router::path;
 
 use hypercolor_leptos_ext::events::Input;
 use hypercolor_leptos_ext::prelude::now_ms;
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 use hypercolor_types::event::LayerHealth;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 use hypercolor_types::sensor::SystemSnapshot;
@@ -21,8 +22,7 @@ use crate::color::CanvasFrameAnalysis;
 use crate::components::modal::Modal;
 use crate::components::shell::Shell;
 use crate::components::welcome_overlay::WelcomeOverlay;
-use crate::config_state::ConfigContext;
-use crate::control_value_json::controls_to_json;
+use crate::config_state::{ConfigContext, ConfigSchemaContext};
 use crate::device_event_logic::should_refetch_devices_for_event;
 use crate::effect_search::IndexedEffect;
 use crate::extensions::{UiExtensions, parent_route, ui_route};
@@ -43,7 +43,7 @@ use crate::ws::{
     AudioLevel, BackpressureNotice, CanvasFrame, ControlSurfaceEventHint, DeviceEventHint,
     EffectErrorHint, ExtensionEventHint, InputInjectEdge, InputSourceStatusEventHint,
     InteractivePreviewLifecycle, InteractivePreviewRequest, PerformanceMetrics, SceneEventHint,
-    ScreenZonesFrame, WsManager,
+    ScreenZonesFrame, ServiceIdentityEventHint, WsManager,
 };
 
 mod effect_state;
@@ -63,7 +63,7 @@ pub struct WsContext {
     /// Latest per-display JPEG frame from the `display_preview` WS
     /// channel. Cleared when the selected display changes (handled by
     /// `set_display_preview_device`).
-    pub display_preview_frame: ReadSignal<Option<CanvasFrame>>,
+    pub display_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_frames: ReadSignal<HashMap<String, CanvasFrame>>,
     pub interactive_preview_lifecycles: ReadSignal<HashMap<String, InteractivePreviewLifecycle>>,
     pub interactive_preview_available: ReadSignal<bool>,
@@ -92,6 +92,7 @@ pub struct WsContext {
     pub set_device_metrics_consumers: WriteSignal<u32>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
+    pub output_paused: ReadSignal<bool>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub last_scene_event: ReadSignal<Option<SceneEventHint>>,
     pub last_effect_error: ReadSignal<Option<EffectErrorHint>>,
@@ -102,18 +103,20 @@ pub struct WsContext {
     /// Latest safe source-health transition, used only to invalidate the
     /// canonical REST status snapshot.
     pub last_input_source_status_event: ReadSignal<Option<InputSourceStatusEventHint>>,
+    /// Latest daemon-owner transition, used to invalidate canonical status.
+    pub last_service_identity_event: ReadSignal<Option<ServiceIdentityEventHint>>,
     /// Increments each time the daemon socket (re)opens. Fold into fetcher
     /// epochs to refetch REST mirrors after a reconnect gap, since bus
     /// events are not replayed.
     pub connection_generation: ReadSignal<u64>,
-    /// Per-layer runtime health, keyed by `scene/group/layer`, fed by the
+    /// Per-layer runtime health, keyed by `scene/zone/layer`, fed by the
     /// daemon's `layer_health_changed` events. A layer with no entry is
     /// treated as healthy — including, until the daemon replays a snapshot
     /// on connect, layers that failed before this session connected.
     pub layer_health: ReadSignal<HashMap<String, LayerHealth>>,
     pub audio_level: ReadSignal<AudioLevel>,
-    pub send_zone_layout_preview: Callback<(String, String, SpatialLayout)>,
-    pub clear_zone_layout_preview: Callback<(String, String)>,
+    pub send_zone_layout_preview: Callback<(String, SpatialLayout)>,
+    pub clear_zone_layout_preview: Callback<String>,
     pub open_interactive_preview: Callback<InteractivePreviewRequest>,
     pub close_interactive_preview: Callback<String>,
     /// Send addressed browser-preview input edges as one control-authorized
@@ -128,7 +131,7 @@ pub struct FrameAnalysisContext {
 
 /// Named daemon capabilities (Spec 65 §9.6). Multi-zone Studio affordances
 /// gate on whether their backing capability is advertised by the daemon's
-/// `GET /api/v1/status` response — there is no probe fallback, so an
+/// authenticated `/api/v1/system` status — there is no probe fallback, so an
 /// absent advertisement means the affordance stays hidden.
 #[derive(Clone, Copy)]
 pub struct CapabilitiesContext {
@@ -160,6 +163,8 @@ pub struct EffectsContext {
     pub refresh_effects: Callback<()>,
     pub active_effect_id: ReadSignal<Option<String>>,
     pub set_active_effect_id: WriteSignal<Option<String>>,
+    pub active_effect_target: ReadSignal<Option<api::EffectLayerTarget>>,
+    pub set_active_effect_target: WriteSignal<Option<api::EffectLayerTarget>>,
     pub active_effect_name: ReadSignal<Option<String>>,
     pub set_active_effect_name: WriteSignal<Option<String>>,
     pub active_effect_category: ReadSignal<String>,
@@ -196,6 +201,7 @@ pub struct EffectsContext {
     /// change. Cleared for an effect when `apply_effect(id)` is called,
     /// so switching away and coming back re-triggers the restore.
     pub restored_effects: StoredValue<HashSet<String>>,
+    pub apply_generation: StoredValue<u64>,
     /// The zone a quick-apply targets. Studio writes it from the selected
     /// zone; every quick-apply surface reads it so applies land in the
     /// zone the user is composing (Wave B3).
@@ -216,13 +222,27 @@ pub struct EffectsContext {
 /// Shared device + layout state — accessible from devices page and layout builder.
 #[derive(Clone, Copy)]
 pub struct DevicesContext {
-    pub devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
-    pub layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
+    pub devices_resource: LocalResource<api::ApiResult<Vec<api::DeviceSummary>>>,
+    pub layouts_resource: LocalResource<api::ApiResult<Vec<api::LayoutSummary>>>,
 }
 
 #[derive(Clone, Copy)]
 pub struct DisplaysContext {
-    pub displays_resource: LocalResource<Result<Vec<api::DisplaySummary>, String>>,
+    pub displays_resource: LocalResource<api::ApiResult<Vec<api::DisplaySummary>>>,
+}
+
+async fn apply_owned_target<Apply, ApplyFuture, CurrentGeneration>(
+    request_generation: u64,
+    apply: Apply,
+    current_generation: CurrentGeneration,
+) -> api::ApiResult<Option<api::EffectLayerTarget>>
+where
+    Apply: FnOnce() -> ApplyFuture,
+    ApplyFuture: std::future::Future<Output = api::ApiResult<api::EffectLayerTarget>>,
+    CurrentGeneration: FnOnce() -> u64,
+{
+    let target = apply().await?;
+    Ok((current_generation() == request_generation).then_some(target))
 }
 
 impl EffectsContext {
@@ -238,18 +258,9 @@ impl EffectsContext {
     pub fn refresh_active_effect(&self) {
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            match api::fetch_active_effect().await {
+            match api::fetch_primary_effect_view().await {
                 Ok(Some(active)) => {
-                    let is_playing = active.state != "paused";
-                    apply_active_effect_snapshot(
-                        &ctx,
-                        active.id.clone(),
-                        active.name,
-                        active.controls,
-                        active.control_values,
-                        active.active_preset_id,
-                        is_playing,
-                    );
+                    apply_active_effect_snapshot(&ctx, active);
                 }
                 Ok(None) => ctx.set_is_playing.set(false),
                 Err(_) => {}
@@ -259,6 +270,16 @@ impl EffectsContext {
 
     pub fn refresh_active_scene(&self) {
         self.scene_refresh.run(());
+    }
+
+    pub fn adopt_replacement_target(
+        &self,
+        observed: &api::EffectLayerTarget,
+        replacement: api::EffectLayerTarget,
+    ) {
+        if self.active_effect_target.get_untracked().as_ref() == Some(observed) {
+            self.set_active_effect_target.set(Some(replacement));
+        }
     }
 
     /// Apply an effect by ID — sets local state + calls API.
@@ -283,16 +304,21 @@ impl EffectsContext {
         // named zone has to be targeted.
         let target_zone_id = apply_target.zone_id().map(ToOwned::to_owned);
         let body =
-            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectBody {
+            (stored_prefs.is_some() || target_zone_id.is_some()).then(|| api::ApplyEffectRequest {
                 preset_id: stored_prefs
                     .as_ref()
-                    .and_then(|prefs| prefs.preset_id.clone()),
+                    .and_then(|prefs| prefs.preset_id.as_deref())
+                    .and_then(|preset_id| preset_id.parse().ok()),
                 controls: stored_prefs.as_ref().and_then(|prefs| {
                     (!prefs.control_values.is_empty())
-                        .then(|| serde_json::Value::Object(controls_to_json(&prefs.control_values)))
+                        .then(|| prefs.control_values.clone().into_iter().collect())
                 }),
-                render_group: target_zone_id.clone(),
-                ..api::ApplyEffectBody::default()
+                zone: target_zone_id.as_deref().and_then(|zone_id| {
+                    uuid::Uuid::parse_str(zone_id)
+                        .ok()
+                        .map(hypercolor_types::scene::ZoneId)
+                }),
+                ..api::ApplyEffectRequest::default()
             });
 
         // A named-zone apply renders into that zone and leaves the default
@@ -309,17 +335,6 @@ impl EffectsContext {
             return;
         }
 
-        // Default-zone apply: skip if it is already the active effect.
-        if self.active_effect_id.get().as_deref() == Some(&id) {
-            return;
-        }
-
-        // If we're sending prefs with the initial apply, mark the effect
-        // as already-restored so the first snapshot falls through to the
-        // save branch instead of triggering a second restore round-trip.
-        // If no prefs exist, drop the flag so the snapshot's restore
-        // check runs (covers the case where prefs landed since the last
-        // time we looked).
         self.restored_effects.update_value(|set| {
             if stored_prefs.is_some() {
                 set.insert(id.clone());
@@ -327,17 +342,20 @@ impl EffectsContext {
                 set.remove(&id);
             }
         });
+        let generation = self.apply_generation.get_value().saturating_add(1);
+        self.apply_generation.set_value(generation);
         self.set_last_effect_error.set(None);
 
         let previous = capture_active_effect_state(self);
         let selected_effect = self.effect_summary(&id);
+        self.set_active_effect_target.set(None);
         self.set_active_effect_id.set(Some(id.clone()));
         self.set_active_effect_name
             .set(selected_effect.as_ref().map(|effect| effect.name.clone()));
         self.set_active_effect_category.set(
             selected_effect
                 .as_ref()
-                .map(|effect| effect.category.clone())
+                .map(|effect| effect.category.as_str().to_owned())
                 .unwrap_or_default(),
         );
         // Optimistically mirror the stored controls locally so the sidebar
@@ -355,11 +373,23 @@ impl EffectsContext {
 
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::apply_effect(&id, body.as_ref()).await.is_ok() {
-                ctx.refresh_active_effect();
-            } else {
-                restore_active_effect_state(&ctx, previous);
-                toasts::toast_error("Couldn't apply the effect");
+            match apply_owned_target(
+                generation,
+                || async { api::apply_effect(&id, body.as_ref()).await },
+                || ctx.apply_generation.get_value(),
+            )
+            .await
+            {
+                Ok(Some(target)) => {
+                    ctx.set_active_effect_target.set(Some(target));
+                    ctx.refresh_active_effect();
+                }
+                Ok(None) => ctx.refresh_active_effect(),
+                Err(_) if ctx.apply_generation.get_value() == generation => {
+                    restore_active_effect_state(&ctx, previous);
+                    toasts::toast_error("Couldn't apply the effect");
+                }
+                Err(_) => ctx.refresh_active_effect(),
             }
         });
     }
@@ -407,7 +437,7 @@ impl EffectsContext {
         self.set_last_effect_error.set(None);
         let ctx = *self;
         leptos::task::spawn_local(async move {
-            if api::pause_effect().await.is_err() {
+            if api::pause_output().await.is_err() {
                 ctx.refresh_active_effect();
                 toasts::toast_error("Couldn't pause the effect");
             }
@@ -416,19 +446,17 @@ impl EffectsContext {
 
     /// Resume the previously paused effect.
     pub fn resume_effect(&self) {
-        if self.active_effect_id.get_untracked().is_some() {
-            self.set_is_playing.set(true);
-            self.set_last_effect_error.set(None);
-            let ctx = *self;
-            leptos::task::spawn_local(async move {
-                if api::resume_effect().await.is_ok() {
-                    ctx.refresh_active_effect();
-                } else {
-                    ctx.set_is_playing.set(false);
-                    ctx.refresh_active_effect();
-                }
-            });
-        }
+        self.set_is_playing.set(true);
+        self.set_last_effect_error.set(None);
+        let ctx = *self;
+        leptos::task::spawn_local(async move {
+            if api::resume_output().await.is_ok() {
+                ctx.refresh_active_effect();
+            } else {
+                ctx.set_is_playing.set(false);
+                ctx.refresh_active_effect();
+            }
+        });
     }
 }
 
@@ -441,6 +469,7 @@ impl EffectsContext {
 /// app unchanged.
 pub fn app_view(ext: UiExtensions) -> impl IntoView {
     let UiExtensions {
+        mount,
         routes: extension_routes,
         nav_items: extension_nav,
         settings_sections: extension_settings,
@@ -448,7 +477,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         on_setup,
     } = ext;
     provide_meta_context();
+    provide_context(mount.clone());
     leptoaster::provide_toaster();
+    crate::toasts::install_root_context();
     provide_context(NavExtensionItems(extension_nav));
     provide_context(crate::extensions::SettingsExtensionSections(
         std::sync::Arc::new(extension_settings),
@@ -477,7 +508,11 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 {
                     set_api_key_required.set(true);
                 }
-                Err(_) => {}
+                Err(error) => {
+                    leptos::logging::warn!(
+                        "Config fetch failed (retries on the next socket open): {error}"
+                    );
+                }
             }
         });
     });
@@ -494,13 +529,22 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         refresh: refresh_config,
         audio_enabled,
     });
-    refresh_config.run(());
+    // A one-shot fetch at wasm init loses the race when the daemon is
+    // still binding (app boot) or mid-restart, and nothing would retry.
+    // Keying the fetch to the socket generation refires it on every
+    // WebSocket open, so config heals on the same reconnect that
+    // refreshes the hint-driven resources.
+    let config_connection_generation = ws.connection_generation;
+    Effect::new(move |_| {
+        let _generation = config_connection_generation.get();
+        refresh_config.run(());
+    });
 
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
         screen_canvas_frame: ws.screen_canvas_frame,
         web_viewport_canvas_frame: ws.web_viewport_canvas_frame,
-        display_preview_frame: ws.display_preview_frame,
+        display_preview_frames: ws.display_preview_frames,
         interactive_preview_frames: ws.interactive_preview_frames,
         interactive_preview_lifecycles: ws.interactive_preview_lifecycles,
         interactive_preview_available: ws.interactive_preview_available,
@@ -520,12 +564,14 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_device_metrics_consumers: ws.set_device_metrics_consumers,
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
+        output_paused: ws.output_paused,
         last_device_event: ws.last_device_event,
         last_scene_event: ws.last_scene_event,
         last_effect_error: ws.last_effect_error,
         last_control_surface_event: ws.last_control_surface_event,
         last_extension_event: ws.last_extension_event,
         last_input_source_status_event: ws.last_input_source_status_event,
+        last_service_identity_event: ws.last_service_identity_event,
         connection_generation: ws.connection_generation,
         layer_health: ws.layer_health,
         audio_level: ws.audio_level,
@@ -552,7 +598,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     // Daemon capability advertisement (§9.6). Fetched once — the set is
     // fixed per daemon build — and exposed as a context so multi-zone
     // Studio affordances can gate on it without each re-querying status.
-    let status_resource = LocalResource::new(api::fetch_status);
+    let status_resource = api::daemon_resource(api::fetch_status);
     let capabilities = Memo::new(move |_| {
         status_resource
             .get()
@@ -562,6 +608,20 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
     provide_context(CapabilitiesContext {
         capabilities: capabilities.into(),
+    });
+
+    // The daemon's config key registry. Fetched once per connection —
+    // the table is fixed per daemon build — so every settings control
+    // can ask how its key applies instead of mirroring the rules.
+    let config_schema_resource = api::daemon_resource(api::fetch_config_schema);
+    let config_schema_entries = Memo::new(move |_| {
+        config_schema_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+    });
+    provide_context(ConfigSchemaContext {
+        entries: config_schema_entries.into(),
     });
 
     Effect::new(move |_| {
@@ -581,7 +641,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
 
     // Global effects state — shared between sidebar player + effects page
-    let effects_resource = LocalResource::new(api::fetch_effects);
+    let effects_resource = api::daemon_resource(api::fetch_effects);
     let effects_index: Memo<Vec<IndexedEffect>> = Memo::new(move |_| {
         effects_resource
             .get()
@@ -590,31 +650,36 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             .unwrap_or_default()
     });
     // Per-zone effect state — what each LED zone is playing, derived
-    // from the shared scene (zip preserves surfaces_from_groups' 1:1
+    // from the shared scene (zip preserves surfaces_from_zones' 1:1
     // scene ordering) plus the effects index for display names.
     let zone_effects = Memo::new(move |_| {
         let Some(scene) = zones_ctx.active_scene.get() else {
             return Vec::new();
         };
-        let surfaces = crate::zones::surface::surfaces_from_groups(&scene.groups);
+        let surfaces = crate::zones::surface::surfaces_from_zones(&scene.zones);
         effects_index.with(|effects| {
             scene
-                .groups
+                .zones
                 .iter()
                 .zip(surfaces)
                 .filter(|(_, surface)| surface.kind == crate::zones::surface::SurfaceKind::Light)
-                .map(|(group, surface)| {
-                    let effect_id = group.effect_id.as_ref().map(ToString::to_string);
+                .map(|(zone, surface)| {
+                    let effect = api::zone_effect(zone);
+                    let effect_id = effect.map(|effect| effect.effect_id.to_string());
                     let indexed = effect_id
                         .as_ref()
                         .and_then(|id| effects.iter().find(|entry| entry.effect.id == *id));
                     crate::zones::ZoneEffectState {
                         effect_name: indexed.map(|entry| entry.effect.name.clone()),
-                        effect_category: indexed.map(|entry| entry.effect.category.clone()),
-                        control_values: group.controls.clone(),
-                        preset_id: group.preset_id.as_ref().map(ToString::to_string),
-                        controls_version: group.controls_version,
-                        layers_version: group.layers_version,
+                        effect_category: indexed
+                            .map(|entry| entry.effect.category.as_str().to_owned()),
+                        control_values: effect
+                            .map(|effect| effect.controls.clone())
+                            .unwrap_or_default(),
+                        preset_id: effect
+                            .and_then(|effect| effect.preset_id)
+                            .map(|preset_id| preset_id.to_string()),
+                        revision: scene.revision,
                         effect_id,
                         zone: surface,
                     }
@@ -634,9 +699,10 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         })
     });
 
-    let active_resource = LocalResource::new(api::fetch_active_effect);
-    let favorites_resource = LocalResource::new(api::fetch_favorites);
+    let active_resource = api::daemon_resource(api::fetch_primary_effect_view);
+    let favorites_resource = api::daemon_resource(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
+    let (active_effect_target, set_active_effect_target) = signal(None::<api::EffectLayerTarget>);
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
     let (active_effect_category, set_active_effect_category) = signal(String::new());
     let (active_controls, set_active_controls) = signal(Vec::<ControlDefinition>::new());
@@ -665,6 +731,8 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         refresh_effects: Callback::new(move |()| effects_resource.refetch()),
         active_effect_id,
         set_active_effect_id,
+        active_effect_target,
+        set_active_effect_target,
         active_effect_name,
         set_active_effect_name,
         active_effect_category,
@@ -689,6 +757,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         set_favorite_ids,
         preferences: preferences_store,
         restored_effects: StoredValue::new(HashSet::new()),
+        apply_generation: StoredValue::new(0),
         apply_target: RwSignal::new(ApplyTarget::Primary),
         scene_refresh: zones_ctx.refresh,
         zone_effects,
@@ -723,9 +792,9 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     });
 
     // Global devices + layouts state
-    let devices_resource = LocalResource::new(api::fetch_devices);
-    let layouts_resource = LocalResource::new(api::fetch_layouts);
-    let displays_resource = LocalResource::new(api::fetch_displays);
+    let devices_resource = api::daemon_resource(api::fetch_devices);
+    let layouts_resource = api::daemon_resource(api::fetch_layouts);
+    let displays_resource = api::daemon_resource(api::fetch_displays);
     provide_context(DevicesContext {
         devices_resource,
         layouts_resource,
@@ -739,13 +808,13 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             return;
         };
 
-        let current_device_ids = devices_resource
+        let current_devices = devices_resource
             .get_untracked()
             .and_then(|result| result.ok())
             .map(|devices| {
                 devices
                     .into_iter()
-                    .map(|device| device.id)
+                    .map(|device| (device.id, device.status))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -754,7 +823,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
             &event.event_type,
             event.device_id.as_deref(),
             event.found_count,
-            &current_device_ids,
+            &current_devices,
         );
 
         if should_refetch {
@@ -766,19 +835,17 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
     // Initialize active effect from API on load
     Effect::new(move |_| {
         if let Some(Ok(Some(active))) = active_resource.get() {
-            let is_playing = active.state != "paused";
-            apply_active_effect_snapshot(
-                &effects_ctx,
-                active.id,
-                active.name,
-                active.controls,
-                active.control_values,
-                active.active_preset_id,
-                is_playing,
-            );
+            apply_active_effect_snapshot(&effects_ctx, active);
         } else if let Some(Ok(None)) = active_resource.get() {
             effects_ctx.set_is_playing.set(false);
         }
+    });
+
+    Effect::new(move |_| {
+        let has_active_effect = effects_ctx.active_effect_id.get().is_some();
+        effects_ctx
+            .set_is_playing
+            .set(has_active_effect && !ws_ctx.output_paused.get());
     });
 
     Effect::new(move |_| {
@@ -828,7 +895,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
                 effects_ctx
                     .effect_summary(&effect_error.effect_id)
                     .is_some_and(|effect| {
-                        !effect.category.eq_ignore_ascii_case("display")
+                        effect.category != hypercolor_types::effect::EffectCategory::Display
                             && Some(effect_error.effect_id.clone()) != active_effect_id
                     })
             })
@@ -883,7 +950,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         <Meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <Title text="Hypercolor" />
 
-        <Router>
+        <Router base=mount.route_base().to_owned()>
             {app_routes(extension_routes)}
         </Router>
 
@@ -1022,11 +1089,92 @@ fn NotFoundPage() -> impl IntoView {
             <div class="text-5xl font-bold tracking-tight text-accent/60">"404"</div>
             <div class="text-sm text-fg-secondary">"This page doesn't exist."</div>
             <a
-                href="/"
+                href=crate::route_ui::route_href("/")
                 class="mt-2 rounded-lg border border-edge-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-fg-primary transition hover:border-accent/40 hover:bg-surface-hover btn-press"
             >
                 "Back to the dashboard"
             </a>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll, Waker};
+
+    use super::apply_owned_target;
+    use crate::api::{ApiResult, EffectLayerTarget};
+
+    struct SuspendedApply {
+        generation: Rc<Cell<u64>>,
+        target: Option<EffectLayerTarget>,
+        suspended: bool,
+    }
+
+    impl Future for SuspendedApply {
+        type Output = ApiResult<EffectLayerTarget>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.suspended {
+                self.suspended = true;
+                self.generation.set(2);
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(Ok(self
+                .target
+                .take()
+                .expect("apply target is returned once")))
+        }
+    }
+
+    fn target(layer_id: &str) -> EffectLayerTarget {
+        EffectLayerTarget {
+            effect_id: "00000000-0000-0000-0000-00000000000a".to_owned(),
+            zone_id: "00000000-0000-0000-0000-000000000002".to_owned(),
+            layer_id: layer_id.to_owned(),
+        }
+    }
+
+    #[test]
+    fn suspended_direct_same_effect_apply_cannot_overwrite_newer_layer_ownership() {
+        let generation = Rc::new(Cell::new(1_u64));
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let apply_generation = Rc::clone(&generation);
+        let current_generation = Rc::clone(&generation);
+        let old = apply_owned_target(
+            1,
+            move || SuspendedApply {
+                generation: apply_generation,
+                target: Some(target(old_layer)),
+                suspended: false,
+            },
+            move || current_generation.get(),
+        );
+        let mut old = std::pin::pin!(old);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        assert!(matches!(old.as_mut().poll(&mut context), Poll::Pending));
+        let current_generation = Rc::clone(&generation);
+        let new = apply_owned_target(
+            2,
+            || std::future::ready(Ok(target(new_layer))),
+            move || current_generation.get(),
+        );
+        let mut new = std::pin::pin!(new);
+        let Poll::Ready(Ok(Some(adopted))) = new.as_mut().poll(&mut context) else {
+            panic!("the newer same-effect apply should own its returned layer");
+        };
+        assert_eq!(adopted.layer_id, new_layer);
+
+        let Poll::Ready(Ok(None)) = old.as_mut().poll(&mut context) else {
+            panic!("the suspended older response must lose generation ownership");
+        };
     }
 }

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use hypercolor_types::canvas::Canvas;
 use thiserror::Error;
+use tokio::sync::watch;
 
 use super::plan::{
     InputPublicationDemandRevision, ScreenCapturePlan, ScreenPlanError, ScreenPlanGeneration,
@@ -16,9 +18,10 @@ use super::plan::{
 };
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureEpoch, CapturePixelFormat, CaptureSourceId,
-    CaptureTransferFunction, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
-    ResolvedScreenPublicationDescriptor, ScreenByteLease, ScreenPublicationKind,
-    ScreenPublicationResidency,
+    CaptureTransferFunction, LetterboxBars, PixelExtent, PlatformGpuApi, PlatformGpuSurface,
+    RegisteredScreenBranchDemand, ResolvedScreenPublicationDescriptor, ScreenByteLease,
+    ScreenConsumerBranchId, ScreenConsumerBranchRevision, ScreenConsumerBranchRoute,
+    ScreenPublicationExecutor, ScreenPublicationKind, ScreenPublicationResidency,
 };
 
 const SURFACE_PIXEL_BYTES: u64 = 4;
@@ -154,6 +157,31 @@ impl<'a> ScreenSurfacePayload<'a> {
     pub const fn pixels(self) -> &'a [u8] {
         self.pixels
     }
+
+    /// Copy this surface into an RGBA8 canvas for CPU consumers.
+    ///
+    /// Only the two eight-bit four-channel encodings are CPU-readable as
+    /// canvas pixels; packed 10-bit, half-float, and planar video formats
+    /// return `None` rather than a misdecoded image.
+    #[must_use]
+    pub fn to_rgba_canvas(self) -> Option<Canvas> {
+        let extent = self.extent;
+        let mut canvas = Canvas::try_new(extent.width(), extent.height()).ok()?;
+        let target = canvas.as_rgba_bytes_mut();
+        match self.pixel_format {
+            CapturePixelFormat::Rgba8 => target.copy_from_slice(self.pixels),
+            CapturePixelFormat::Bgra8 => {
+                for (dst, src) in target.chunks_exact_mut(4).zip(self.pixels.chunks_exact(4)) {
+                    dst[0] = src[2];
+                    dst[1] = src[1];
+                    dst[2] = src[0];
+                    dst[3] = src[3];
+                }
+            }
+            _ => return None,
+        }
+        Some(canvas)
+    }
 }
 
 /// Target primaries and transfer contract shared by surfaces and RGB zones.
@@ -221,11 +249,45 @@ impl<'a> ScreenGpuSurfacePayload<'a> {
     }
 }
 
+/// Renderer work carrying one truthful source-native GPU surface.
+#[derive(Clone, Copy, Debug)]
+pub struct ScreenNativeWorkPayload<'a> {
+    source_colorimetry: ScreenPublicationColorimetry,
+    source: &'a PlatformGpuSurface,
+}
+
+impl<'a> ScreenNativeWorkPayload<'a> {
+    /// Construct deferred native work from the exact source storage contract.
+    #[must_use]
+    pub const fn new(
+        source_colorimetry: ScreenPublicationColorimetry,
+        source: &'a PlatformGpuSurface,
+    ) -> Self {
+        Self {
+            source_colorimetry,
+            source,
+        }
+    }
+
+    /// Exact source primaries and transfer contract.
+    #[must_use]
+    pub const fn source_colorimetry(self) -> ScreenPublicationColorimetry {
+        self.source_colorimetry
+    }
+
+    /// Raw source surface retained until renderer execution completes.
+    #[must_use]
+    pub const fn source(self) -> &'a PlatformGpuSurface {
+        self.source
+    }
+}
+
 /// Typed zone publication input borrowed only for the publish call.
 #[derive(Clone, Copy, Debug)]
 pub struct ScreenZonesPayload<'a> {
     columns: NonZeroU32,
     rows: NonZeroU32,
+    bars: LetterboxBars,
     colorimetry: ScreenPublicationColorimetry,
     colors: &'a [[u8; 3]],
 }
@@ -252,6 +314,7 @@ impl<'a> ScreenZonesPayload<'a> {
         Ok(Self {
             columns,
             rows,
+            bars: LetterboxBars::default(),
             colorimetry,
             colors,
         })
@@ -267,6 +330,12 @@ impl<'a> ScreenZonesPayload<'a> {
     #[must_use]
     pub const fn rows(self) -> NonZeroU32 {
         self.rows
+    }
+
+    /// Bars removed from the requested grid.
+    #[must_use]
+    pub const fn bars(self) -> LetterboxBars {
+        self.bars
     }
 
     /// Exact target encoding and transfer contract.
@@ -289,6 +358,8 @@ pub enum ScreenBranchPayload<'a> {
     Surface(ScreenSurfacePayload<'a>),
     /// Logical four-channel platform GPU surface.
     GpuSurface(ScreenGpuSurfacePayload<'a>),
+    /// Raw source-native GPU work awaiting renderer-owned execution.
+    NativeWork(ScreenNativeWorkPayload<'a>),
     /// Logical RGB zone grid.
     Zones(ScreenZonesPayload<'a>),
 }
@@ -298,7 +369,9 @@ impl ScreenBranchPayload<'_> {
     #[must_use]
     pub const fn kind(self) -> ScreenPayloadKind {
         match self {
-            Self::Surface(_) | Self::GpuSurface(_) => ScreenPayloadKind::Surface,
+            Self::Surface(_) | Self::GpuSurface(_) | Self::NativeWork(_) => {
+                ScreenPayloadKind::Surface
+            }
             Self::Zones(_) => ScreenPayloadKind::Zones,
         }
     }
@@ -310,6 +383,9 @@ impl ScreenBranchPayload<'_> {
             Self::Surface(_) | Self::Zones(_) => ScreenPublicationResidency::Cpu,
             Self::GpuSurface(payload) => {
                 ScreenPublicationResidency::PlatformGpu(payload.surface().api().clone())
+            }
+            Self::NativeWork(payload) => {
+                ScreenPublicationResidency::PlatformGpu(payload.source().api().clone())
             }
         }
     }
@@ -378,12 +454,13 @@ pub enum ScreenBranchDeliveryLifecycle {
     Retired,
 }
 
-/// Orthogonal lock-free delivery diagnostics for one exact branch.
+/// One coherent delivery observation for an exact branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenBranchDeliveryState {
     lifecycle: ScreenBranchDeliveryLifecycle,
     freshness: Option<ScreenPublicationFreshness>,
     source_health: Option<ScreenPublicationHealth>,
+    invalidation_epoch: u64,
     last_publish_was_pressured: bool,
     pressure_events: u64,
 }
@@ -405,6 +482,12 @@ impl ScreenBranchDeliveryState {
     #[must_use]
     pub const fn source_health(self) -> Option<ScreenPublicationHealth> {
         self.source_health
+    }
+
+    /// Monotonic terminal invalidation epoch for this branch authority.
+    #[must_use]
+    pub const fn invalidation_epoch(self) -> u64 {
+        self.invalidation_epoch
     }
 
     /// Whether the most recent publish attempt failed because every slot was held.
@@ -523,6 +606,12 @@ impl ScreenPublicationMetadata {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScreenStoredGpuPayloadKind {
+    OutputSurface,
+    NativeWork,
+}
+
 #[derive(Debug)]
 enum ScreenPublicationStorage {
     CpuSurface {
@@ -534,11 +623,13 @@ enum ScreenPublicationStorage {
     GpuSurface {
         api: PlatformGpuApi,
         colorimetry: ScreenPublicationColorimetry,
+        payload_kind: ScreenStoredGpuPayloadKind,
         surface: Option<PlatformGpuSurface>,
     },
     Zones {
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
         color_count: usize,
         colorimetry: ScreenPublicationColorimetry,
         colors: Box<[[u8; 3]]>,
@@ -571,6 +662,7 @@ impl ScreenPublicationStorage {
                 Ok(Self::GpuSurface {
                     api,
                     colorimetry: descriptor_colorimetry(descriptor),
+                    payload_kind: ScreenStoredGpuPayloadKind::OutputSurface,
                     surface: None,
                 })
             }
@@ -579,6 +671,7 @@ impl ScreenPublicationStorage {
                 Ok(Self::Zones {
                     columns,
                     rows,
+                    bars: LetterboxBars::default(),
                     color_count: len,
                     colorimetry: descriptor_colorimetry(descriptor),
                     colors: try_zeroed_color_slice(len)?,
@@ -592,13 +685,37 @@ impl ScreenPublicationStorage {
             (Self::CpuSurface { pixels, .. }, ScreenBranchPayload::Surface(payload)) => {
                 pixels.copy_from_slice(payload.pixels());
             }
-            (Self::GpuSurface { surface, .. }, ScreenBranchPayload::GpuSurface(payload)) => {
+            (
+                Self::GpuSurface {
+                    colorimetry,
+                    payload_kind,
+                    surface,
+                    ..
+                },
+                ScreenBranchPayload::GpuSurface(payload),
+            ) => {
+                *colorimetry = payload.colorimetry();
+                *payload_kind = ScreenStoredGpuPayloadKind::OutputSurface;
                 *surface = Some(payload.surface().clone());
+            }
+            (
+                Self::GpuSurface {
+                    colorimetry,
+                    payload_kind,
+                    surface,
+                    ..
+                },
+                ScreenBranchPayload::NativeWork(payload),
+            ) => {
+                *colorimetry = payload.source_colorimetry();
+                *payload_kind = ScreenStoredGpuPayloadKind::NativeWork;
+                *surface = Some(payload.source().clone());
             }
             (
                 Self::Zones {
                     columns,
                     rows,
+                    bars,
                     color_count,
                     colors,
                     ..
@@ -607,6 +724,7 @@ impl ScreenPublicationStorage {
             ) => {
                 *columns = payload.columns();
                 *rows = payload.rows();
+                *bars = payload.bars();
                 *color_count = payload.colors().len();
                 colors[..*color_count].copy_from_slice(payload.colors());
             }
@@ -628,14 +746,18 @@ impl ScreenPublicationStorage {
         }
     }
 
-    fn set_effective_zone_shape(
+    fn set_effective_zone_layout(
         &mut self,
+        maximum_columns: NonZeroU32,
+        maximum_rows: NonZeroU32,
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
     ) -> Result<(), ScreenPublicationHubError> {
         let Self::Zones {
             columns: effective_columns,
             rows: effective_rows,
+            bars: effective_bars,
             color_count,
             colors,
             ..
@@ -646,6 +768,7 @@ impl ScreenPublicationStorage {
                 observed: ScreenPayloadKind::Zones,
             });
         };
+        validate_effective_zone_layout(maximum_columns, maximum_rows, columns, rows, bars)?;
         let count = zone_count(columns, rows)?;
         if count > colors.len() {
             return Err(
@@ -658,16 +781,17 @@ impl ScreenPublicationStorage {
         }
         *effective_columns = columns;
         *effective_rows = rows;
+        *effective_bars = bars;
         *color_count = count;
         Ok(())
     }
 
-    fn reset_effective_shape(
+    fn reset_effective_layout(
         &mut self,
         descriptor: &ResolvedScreenPublicationDescriptor,
     ) -> Result<(), ScreenPublicationHubError> {
         if let ScreenPublicationKind::Zones { columns, rows } = descriptor.kind() {
-            self.set_effective_zone_shape(columns, rows)?;
+            self.set_effective_zone_layout(columns, rows, columns, rows, LetterboxBars::default())?;
         }
         Ok(())
     }
@@ -701,23 +825,39 @@ impl ScreenPublicationStorage {
             }),
             Self::GpuSurface {
                 colorimetry,
+                payload_kind,
                 surface,
                 ..
-            } => ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload {
-                colorimetry: *colorimetry,
-                surface: surface
+            } => {
+                let surface = surface
                     .as_ref()
-                    .expect("published GPU slots always contain a surface"),
-            }),
+                    .expect("published GPU slots always contain a surface");
+                match payload_kind {
+                    ScreenStoredGpuPayloadKind::OutputSurface => {
+                        ScreenBranchPayload::GpuSurface(ScreenGpuSurfacePayload {
+                            colorimetry: *colorimetry,
+                            surface,
+                        })
+                    }
+                    ScreenStoredGpuPayloadKind::NativeWork => {
+                        ScreenBranchPayload::NativeWork(ScreenNativeWorkPayload {
+                            source_colorimetry: *colorimetry,
+                            source: surface,
+                        })
+                    }
+                }
+            }
             Self::Zones {
                 columns,
                 rows,
+                bars,
                 color_count,
                 colorimetry,
                 colors,
             } => ScreenBranchPayload::Zones(ScreenZonesPayload {
                 columns: *columns,
                 rows: *rows,
+                bars: *bars,
                 colorimetry: *colorimetry,
                 colors: &colors[..*color_count],
             }),
@@ -838,12 +978,6 @@ impl ScreenBranchPublication {
         self.branch_sequence
     }
 
-    /// Compatibility alias for the branch-local publication sequence.
-    #[must_use]
-    pub const fn publication_epoch(&self) -> NonZeroU64 {
-        self.branch_sequence
-    }
-
     /// Capture timestamp supplied by the source worker.
     #[must_use]
     pub const fn captured_at(&self) -> Instant {
@@ -889,6 +1023,20 @@ impl ScreenBranchPublication {
     pub fn payload(&self) -> ScreenBranchPayload<'_> {
         self.storage.view()
     }
+
+    /// Materialize a CPU surface payload as an RGBA8 canvas.
+    ///
+    /// GPU-resident and zone payloads return `None`; CPU renderers that need
+    /// pixels read only what the exact CPU executor published.
+    #[must_use]
+    pub fn surface_canvas(&self) -> Option<Canvas> {
+        match self.payload() {
+            ScreenBranchPayload::Surface(surface) => surface.to_rgba_canvas(),
+            ScreenBranchPayload::GpuSurface(_)
+            | ScreenBranchPayload::NativeWork(_)
+            | ScreenBranchPayload::Zones(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -896,6 +1044,7 @@ struct ScreenBranchRuntime {
     slots: Vec<Option<Arc<ScreenBranchPublication>>>,
     last_native_sequence: Option<NonZeroU64>,
     next_branch_sequence: u64,
+    invalidation_epoch: u64,
 }
 
 struct ScreenBranchEntry {
@@ -946,6 +1095,7 @@ impl ScreenBranchEntry {
                 slots,
                 last_native_sequence: None,
                 next_branch_sequence: 0,
+                invalidation_epoch: 0,
             }),
             latest: ArcSwapOption::empty(),
             last_publish_was_pressured: AtomicBool::new(false),
@@ -985,56 +1135,68 @@ impl ScreenBranchEntry {
         self.latest.load_full()
     }
 
-    fn read(&self) -> Option<Arc<ScreenBranchPublication>> {
+    fn observe(
+        &self,
+        now: Instant,
+    ) -> (
+        Option<Arc<ScreenBranchPublication>>,
+        ScreenBranchDeliveryState,
+    ) {
+        let runtime = self.lock_runtime();
         if self.is_retired() {
-            return None;
-        }
-        let publication = self.raw_latest()?;
-        if self.is_retired() {
-            return None;
-        }
-        Some(publication)
-    }
-
-    fn delivery_state(&self, now: Instant) -> ScreenBranchDeliveryState {
-        if self.is_retired() {
-            return ScreenBranchDeliveryState {
-                lifecycle: ScreenBranchDeliveryLifecycle::Retired,
-                freshness: None,
-                source_health: None,
-                last_publish_was_pressured: false,
-                pressure_events: self.pressure_events.load(Ordering::Acquire),
-            };
+            return (
+                None,
+                ScreenBranchDeliveryState {
+                    lifecycle: ScreenBranchDeliveryLifecycle::Retired,
+                    freshness: None,
+                    source_health: None,
+                    invalidation_epoch: runtime.invalidation_epoch,
+                    last_publish_was_pressured: false,
+                    pressure_events: self.pressure_events.load(Ordering::Acquire),
+                },
+            );
         }
         let Some(publication) = self.latest.load_full() else {
-            return ScreenBranchDeliveryState {
-                lifecycle: ScreenBranchDeliveryLifecycle::Pending,
-                freshness: None,
-                source_health: ScreenPublicationHealth::decode(
-                    self.delivery_health.load(Ordering::Acquire),
-                ),
-                last_publish_was_pressured: self.last_publish_was_pressured.load(Ordering::Acquire),
-                pressure_events: self.pressure_events.load(Ordering::Acquire),
-            };
+            return (
+                None,
+                ScreenBranchDeliveryState {
+                    lifecycle: ScreenBranchDeliveryLifecycle::Pending,
+                    freshness: None,
+                    source_health: ScreenPublicationHealth::decode(
+                        self.delivery_health.load(Ordering::Acquire),
+                    ),
+                    invalidation_epoch: runtime.invalidation_epoch,
+                    last_publish_was_pressured: self
+                        .last_publish_was_pressured
+                        .load(Ordering::Acquire),
+                    pressure_events: self.pressure_events.load(Ordering::Acquire),
+                },
+            );
         };
         if self.is_retired() {
-            return ScreenBranchDeliveryState {
-                lifecycle: ScreenBranchDeliveryLifecycle::Retired,
-                freshness: None,
-                source_health: None,
-                last_publish_was_pressured: false,
-                pressure_events: self.pressure_events.load(Ordering::Acquire),
-            };
+            return (
+                None,
+                ScreenBranchDeliveryState {
+                    lifecycle: ScreenBranchDeliveryLifecycle::Retired,
+                    freshness: None,
+                    source_health: None,
+                    invalidation_epoch: runtime.invalidation_epoch,
+                    last_publish_was_pressured: false,
+                    pressure_events: self.pressure_events.load(Ordering::Acquire),
+                },
+            );
         }
-        ScreenBranchDeliveryState {
+        let delivery = ScreenBranchDeliveryState {
             lifecycle: ScreenBranchDeliveryLifecycle::Live,
             freshness: Some(publication.freshness_at(now)),
             source_health: ScreenPublicationHealth::decode(
                 self.delivery_health.load(Ordering::Acquire),
             ),
+            invalidation_epoch: runtime.invalidation_epoch,
             last_publish_was_pressured: self.last_publish_was_pressured.load(Ordering::Acquire),
             pressure_events: self.pressure_events.load(Ordering::Acquire),
-        }
+        };
+        (Some(publication), delivery)
     }
 
     fn record_pressure(&self) {
@@ -1399,6 +1561,12 @@ impl ScreenCommittedState {
         self.worker_bindings.as_slice()
     }
 
+    /// Committed routes from consumer registrations to canonical branches.
+    #[must_use]
+    pub fn route_catalog(&self) -> &[ScreenConsumerBranchRoute] {
+        self.plan.consumer_routes()
+    }
+
     pub(crate) fn runtime_binding(
         &self,
         source_id: &CaptureSourceId,
@@ -1626,18 +1794,23 @@ impl ScreenCommitActivation {
 /// Coordinator-owned atomic screen runtime authority.
 pub struct ScreenPublicationHub {
     state: Arc<ArcSwap<ScreenCommittedState>>,
+    plan_generation: watch::Sender<ScreenPlanGeneration>,
     pending_retired_bytes: Arc<AtomicU64>,
+    next_invalidation_epoch: AtomicU64,
 }
 
 impl ScreenPublicationHub {
     pub(crate) fn new(slot_policy: ScreenPublicationSlotPolicy) -> Self {
         let pending_retired_bytes = Arc::new(AtomicU64::new(0));
+        let (plan_generation, _) = watch::channel(ScreenPlanGeneration::default());
         Self {
             state: Arc::new(ArcSwap::from_pointee(ScreenCommittedState::initial(
                 slot_policy,
                 Arc::clone(&pending_retired_bytes),
             ))),
+            plan_generation,
             pending_retired_bytes,
+            next_invalidation_epoch: AtomicU64::new(1),
         }
     }
 
@@ -1671,6 +1844,46 @@ impl ScreenPublicationHub {
                 authority: Arc::clone(&self.state),
             });
         (generation, lease)
+    }
+
+    /// Observe the first preferred branch, or the first fallback branch, from
+    /// one committed authority snapshot.
+    #[must_use]
+    pub fn observe_preferred_matching_lease(
+        &self,
+        mut preferred: impl FnMut(&ResolvedScreenPublicationDescriptor) -> bool,
+        mut fallback: impl FnMut(&ResolvedScreenPublicationDescriptor) -> bool,
+    ) -> (ScreenPlanGeneration, Option<ScreenBranchLease>) {
+        let state = self.state.load_full();
+        let generation = state.plan.generation();
+        let branch = state
+            .branches
+            .iter()
+            .find(|branch| preferred(&branch.entry.descriptor))
+            .or_else(|| {
+                state
+                    .branches
+                    .iter()
+                    .find(|branch| fallback(&branch.entry.descriptor))
+            });
+        let lease = branch.map(|branch| ScreenBranchLease {
+            branch: Arc::clone(&branch.entry),
+            authority: Arc::clone(&self.state),
+        });
+        (generation, lease)
+    }
+
+    /// Bind a registration-owned observer to its exact committed route.
+    #[must_use]
+    pub fn branch_observer(
+        &self,
+        consumer_branch_id: ScreenConsumerBranchId,
+    ) -> ScreenBranchObserver {
+        ScreenBranchObserver {
+            consumer_branch_id,
+            authority: Arc::clone(&self.state),
+            plan_generation: self.plan_generation.subscribe(),
+        }
     }
 
     /// Currently committed demand revision.
@@ -1765,7 +1978,7 @@ impl ScreenPublicationHub {
         payload: ScreenBranchPayload<'_>,
         metadata: &ScreenPublicationMetadata,
     ) -> Result<PreparedScreenPublication, ScreenPublicationHubError> {
-        validate_payload(&publisher.branch.descriptor, payload)?;
+        validate_payload(&publisher.branch.descriptor, &publisher.binding, payload)?;
         validate_metadata(&publisher.branch, &publisher.binding, metadata)?;
         let mut prepared = self.reserve_publication(publisher, metadata)?;
         let publication_storage = prepared.publication_mut()?;
@@ -1808,6 +2021,7 @@ impl ScreenPublicationHub {
                 admitted_slots: u32::try_from(runtime.slots.len()).unwrap_or(u32::MAX),
             });
         };
+        let invalidation_epoch = runtime.invalidation_epoch;
         drop(runtime);
         if Arc::get_mut(&mut publication).is_none() {
             let reserved = PreparedScreenPublication {
@@ -1816,6 +2030,7 @@ impl ScreenPublicationHub {
                 slot_index,
                 publication: Some(publication),
                 metadata: metadata.clone(),
+                invalidation_epoch,
             };
             drop(reserved);
             publisher.branch.record_pressure();
@@ -1826,13 +2041,14 @@ impl ScreenPublicationHub {
         Arc::get_mut(&mut publication)
             .expect("reserved publication has unique ownership")
             .storage
-            .reset_effective_shape(&publisher.branch.descriptor)?;
+            .reset_effective_layout(&publisher.branch.descriptor)?;
         Ok(PreparedScreenPublication {
             branch: Arc::clone(&publisher.branch),
             binding: publisher.binding.clone(),
             slot_index,
             publication: Some(publication),
             metadata: metadata.clone(),
+            invalidation_epoch,
         })
     }
 
@@ -1952,6 +2168,105 @@ impl ScreenPublicationHub {
         Ok(())
     }
 
+    /// Update every branch owned by one current worker without replacing last-good.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a worker binding that no longer owns current runtime authority.
+    pub(crate) fn report_worker_delivery_health(
+        &self,
+        binding: &ScreenWorkerBinding,
+        health: ScreenPublicationHealth,
+    ) -> Result<(), ScreenPublicationHubError> {
+        let _finalization = binding.lock_finalization();
+        let state = self.state.load_full();
+        if !state.owns_runtime_binding(binding) {
+            return Err(ScreenPublicationHubError::WorkerAuthorityStale {
+                expected: state.plan.generation(),
+                observed: binding.plan_generation(),
+            });
+        }
+        let entries = state
+            .branches
+            .iter()
+            .filter(|branch| {
+                branch.binding.source_id() == binding.source_id()
+                    && branch.binding.shares_finalization_gate(binding)
+            })
+            .map(|branch| Arc::clone(&branch.entry))
+            .collect::<Vec<_>>();
+        let guards = entries
+            .iter()
+            .map(|entry| entry.lock_runtime())
+            .collect::<Vec<_>>();
+        if !Arc::ptr_eq(&state, &self.state.load_full()) || !state.owns_runtime_binding(binding) {
+            return Err(ScreenPublicationHubError::WorkerAuthorityStale {
+                expected: self.state.load().plan.generation(),
+                observed: binding.plan_generation(),
+            });
+        }
+        for entry in &entries {
+            entry.report_health(health);
+        }
+        drop(guards);
+        Ok(())
+    }
+
+    /// Clear every branch owned by one current worker under one invalidation epoch.
+    ///
+    /// Prepared publications from before the invalidation cannot finalize after
+    /// the operation completes. A later preparation may publish fresh output
+    /// under the same still-current worker authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale worker authority or exhausted invalidation sequence space.
+    pub(crate) fn invalidate_worker(
+        &self,
+        binding: &ScreenWorkerBinding,
+    ) -> Result<u64, ScreenPublicationHubError> {
+        let _finalization = binding.lock_finalization();
+        let state = self.state.load_full();
+        if !state.owns_runtime_binding(binding) {
+            return Err(ScreenPublicationHubError::WorkerAuthorityStale {
+                expected: state.plan.generation(),
+                observed: binding.plan_generation(),
+            });
+        }
+        let entries = state
+            .branches
+            .iter()
+            .filter(|branch| {
+                branch.binding.source_id() == binding.source_id()
+                    && branch.binding.shares_finalization_gate(binding)
+            })
+            .map(|branch| Arc::clone(&branch.entry))
+            .collect::<Vec<_>>();
+        let mut guards = entries
+            .iter()
+            .map(|entry| entry.lock_runtime())
+            .collect::<Vec<_>>();
+        if !Arc::ptr_eq(&state, &self.state.load_full()) || !state.owns_runtime_binding(binding) {
+            return Err(ScreenPublicationHubError::WorkerAuthorityStale {
+                expected: self.state.load().plan.generation(),
+                observed: binding.plan_generation(),
+            });
+        }
+        let epoch = self
+            .next_invalidation_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map_err(|_| ScreenPublicationHubError::InvalidationEpochExhausted)?;
+        for (entry, runtime) in entries.iter().zip(guards.iter_mut()) {
+            entry.report_health(ScreenPublicationHealth::Failed);
+            entry.latest.store(None);
+            runtime.invalidation_epoch = epoch;
+        }
+        drop(guards);
+        Ok(epoch)
+    }
+
     /// Acquire continuity only from an exactly live committed branch.
     ///
     /// # Errors
@@ -2017,6 +2332,7 @@ impl ScreenPublicationHub {
         for lifetime in &activation.retired_resource_lifetimes {
             lifetime.arm_retirement();
         }
+        let plan_generation = state.plan.generation();
         self.state.store(state);
         for entry in &activation.retired_entries {
             entry.retire();
@@ -2030,6 +2346,13 @@ impl ScreenPublicationHub {
         for entry in &activation.retired_entries {
             entry.reap_releasable_gpu_payloads();
         }
+        self.plan_generation.send_if_modified(|current| {
+            if *current == plan_generation {
+                return false;
+            }
+            *current = plan_generation;
+            true
+        });
         let ScreenCommitActivation {
             activation: _,
             barrier_bindings: _,
@@ -2062,6 +2385,9 @@ fn preflight_publication(
         return Err(ScreenPublicationHubError::BranchRetired {
             descriptor: Arc::new(prepared.branch.descriptor.clone()),
         });
+    }
+    if runtime.invalidation_epoch != prepared.invalidation_epoch {
+        return Err(ScreenPublicationHubError::PublicationInvalidated);
     }
     validate_metadata(&prepared.branch, &prepared.binding, &prepared.metadata)?;
     if runtime
@@ -2162,6 +2488,106 @@ pub struct ScreenBranchLease {
     authority: Arc<ArcSwap<ScreenCommittedState>>,
 }
 
+/// One coherent observation of a registration's current exact route.
+#[derive(Clone, Debug)]
+pub struct ScreenBranchObserverSnapshot {
+    consumer_branch_id: ScreenConsumerBranchId,
+    plan_generation: ScreenPlanGeneration,
+    branch_revision: Option<ScreenConsumerBranchRevision>,
+    lease: Option<ScreenBranchLease>,
+}
+
+impl ScreenBranchObserverSnapshot {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Committed plan generation observed with the route.
+    #[must_use]
+    pub const fn plan_generation(&self) -> ScreenPlanGeneration {
+        self.plan_generation
+    }
+
+    /// Revision of the active exact route, or `None` after removal.
+    #[must_use]
+    pub const fn branch_revision(&self) -> Option<ScreenConsumerBranchRevision> {
+        self.branch_revision
+    }
+
+    /// Exact active branch lease, or `None` after removal.
+    #[must_use]
+    pub const fn lease(&self) -> Option<&ScreenBranchLease> {
+        self.lease.as_ref()
+    }
+
+    /// Consume the observation and return its exact active lease.
+    #[must_use]
+    pub fn into_lease(self) -> Option<ScreenBranchLease> {
+        self.lease
+    }
+}
+
+/// Registration-owned latest-value observer for one exact consumer route.
+pub struct ScreenBranchObserver {
+    consumer_branch_id: ScreenConsumerBranchId,
+    authority: Arc<ArcSwap<ScreenCommittedState>>,
+    plan_generation: watch::Receiver<ScreenPlanGeneration>,
+}
+
+impl ScreenBranchObserver {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
+    /// Read one coherent committed route snapshot without retaining old routes.
+    #[must_use]
+    pub fn snapshot(&self) -> ScreenBranchObserverSnapshot {
+        let state = self.authority.load_full();
+        let route = state.plan.consumer_route(self.consumer_branch_id);
+        let lease = route.map(|route| {
+            let branch = &state.branches[route.branch_index()];
+            ScreenBranchLease {
+                branch: Arc::clone(&branch.entry),
+                authority: Arc::clone(&self.authority),
+            }
+        });
+        ScreenBranchObserverSnapshot {
+            consumer_branch_id: self.consumer_branch_id,
+            plan_generation: state.plan.generation(),
+            branch_revision: route.map(ScreenConsumerBranchRoute::revision),
+            lease,
+        }
+    }
+
+    /// Wait for the next committed screen-plan generation.
+    pub async fn changed(&mut self) -> Option<ScreenBranchObserverSnapshot> {
+        self.plan_generation.changed().await.ok()?;
+        Some(self.snapshot())
+    }
+}
+
+impl fmt::Debug for ScreenBranchObserver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScreenBranchObserver")
+            .field("consumer_branch_id", &self.consumer_branch_id)
+            .field("plan_generation", &*self.plan_generation.borrow())
+            .finish_non_exhaustive()
+    }
+}
+
+impl RegisteredScreenBranchDemand {
+    /// Observe the exact route owned by this registration.
+    #[must_use]
+    pub fn observer(&self, hub: &ScreenPublicationHub) -> ScreenBranchObserver {
+        hub.branch_observer(self.consumer_branch_id())
+    }
+}
+
 impl ScreenBranchLease {
     /// Exact descriptor this lease can read.
     #[must_use]
@@ -2172,37 +2598,45 @@ impl ScreenBranchLease {
     /// Latest live publication, or `None` while pending or after retirement.
     #[must_use]
     pub fn read(&self) -> Option<Arc<ScreenBranchPublication>> {
+        self.observe(Instant::now()).0
+    }
+
+    /// Publication and delivery state from one coherent authority observation.
+    #[must_use]
+    pub fn observe(
+        &self,
+        now: Instant,
+    ) -> (
+        Option<Arc<ScreenBranchPublication>>,
+        ScreenBranchDeliveryState,
+    ) {
         loop {
             let state = self.authority.load_full();
             if !state.contains_entry(&self.branch) {
-                return None;
+                let runtime = self.branch.lock_runtime();
+                return (
+                    None,
+                    ScreenBranchDeliveryState {
+                        lifecycle: ScreenBranchDeliveryLifecycle::Retired,
+                        freshness: None,
+                        source_health: None,
+                        invalidation_epoch: runtime.invalidation_epoch,
+                        last_publish_was_pressured: false,
+                        pressure_events: self.branch.pressure_events.load(Ordering::Acquire),
+                    },
+                );
             }
-            let publication = self.branch.read();
+            let observation = self.branch.observe(now);
             if Arc::ptr_eq(&state, &self.authority.load_full()) {
-                return publication;
+                return observation;
             }
         }
     }
 
-    /// Lock-free delivery state at one caller-selected observation instant.
+    /// Delivery state at one caller-selected observation instant.
     #[must_use]
     pub fn delivery_state(&self, now: Instant) -> ScreenBranchDeliveryState {
-        loop {
-            let state = self.authority.load_full();
-            if !state.contains_entry(&self.branch) {
-                return ScreenBranchDeliveryState {
-                    lifecycle: ScreenBranchDeliveryLifecycle::Retired,
-                    freshness: None,
-                    source_health: None,
-                    last_publish_was_pressured: false,
-                    pressure_events: self.branch.pressure_events.load(Ordering::Acquire),
-                };
-            }
-            let delivery = self.branch.delivery_state(now);
-            if Arc::ptr_eq(&state, &self.authority.load_full()) {
-                return delivery;
-            }
-        }
+        self.observe(now).1
     }
 }
 
@@ -2251,6 +2685,7 @@ pub struct PreparedScreenPublication {
     slot_index: usize,
     publication: Option<Arc<ScreenBranchPublication>>,
     metadata: ScreenPublicationMetadata,
+    invalidation_epoch: u64,
 }
 
 impl PreparedScreenPublication {
@@ -2317,16 +2752,19 @@ impl PreparedScreenPublication {
     /// Select the compact row-major prefix published by a dynamic zone crop.
     ///
     /// The reserved allocation remains descriptor-sized. Only the effective
-    /// shape and its exact color prefix become visible after finalization.
+    /// layout, removed bars, and exact color prefix become visible after
+    /// finalization.
     ///
     /// # Errors
     ///
     /// Rejects surface reservations, lost unique ownership, arithmetic
-    /// overflow, or a shape larger than the admitted descriptor capacity.
-    pub fn set_effective_zone_shape(
+    /// overflow, a shape larger than the admitted descriptor capacity, or
+    /// bars that do not produce the effective shape.
+    pub fn set_effective_zone_layout(
         &mut self,
         columns: NonZeroU32,
         rows: NonZeroU32,
+        bars: LetterboxBars,
     ) -> Result<(), ScreenPublicationHubError> {
         let expected = descriptor_payload_kind(&self.branch.descriptor);
         let (maximum_columns, maximum_rows) = match self.branch.descriptor.kind() {
@@ -2338,19 +2776,13 @@ impl PreparedScreenPublication {
                 });
             }
         };
-        if columns > maximum_columns || rows > maximum_rows {
-            return Err(
-                ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor {
-                    maximum_columns,
-                    maximum_rows,
-                    observed_columns: columns,
-                    observed_rows: rows,
-                },
-            );
-        }
-        self.publication_mut()?
-            .storage
-            .set_effective_zone_shape(columns, rows)
+        self.publication_mut()?.storage.set_effective_zone_layout(
+            maximum_columns,
+            maximum_rows,
+            columns,
+            rows,
+            bars,
+        )
     }
 }
 
@@ -2361,6 +2793,7 @@ impl fmt::Debug for PreparedScreenPublication {
             .field("descriptor", &self.branch.descriptor)
             .field("worker_plan_generation", &self.binding.plan_generation())
             .field("slot_index", &self.slot_index)
+            .field("invalidation_epoch", &self.invalidation_epoch)
             .finish_non_exhaustive()
     }
 }
@@ -2644,6 +3077,14 @@ pub enum ScreenPublicationHubError {
         /// Publisher worker generation.
         observed: ScreenPlanGeneration,
     },
+    /// Worker no longer owns the current source runtime.
+    #[error("screen worker authority is stale: expected {expected:?}, observed {observed:?}")]
+    WorkerAuthorityStale {
+        /// Current committed plan generation.
+        expected: ScreenPlanGeneration,
+        /// Worker binding generation.
+        observed: ScreenPlanGeneration,
+    },
     /// Caller substituted another opaque worker binding.
     #[error("worker binding does not own the requested publication branch")]
     WorkerBindingMismatch {
@@ -2690,7 +3131,7 @@ pub enum ScreenPublicationHubError {
         /// Submitted format.
         observed: CapturePixelFormat,
     },
-    /// Submitted primaries or transfer differ from the descriptor target.
+    /// Submitted primaries or transfer differ from the required contract.
     #[error("publication colorimetry mismatch: expected {expected:?}, observed {observed:?}")]
     ColorimetryMismatch {
         /// Descriptor target colorimetry.
@@ -2698,6 +3139,31 @@ pub enum ScreenPublicationHubError {
         /// Submitted colorimetry.
         observed: ScreenPublicationColorimetry,
     },
+    /// Deferred native work was submitted for a non-native descriptor.
+    #[error("native GPU work requires a source-native publication descriptor")]
+    NativeWorkExecutorMismatch,
+    /// Deferred native work does not expose the exact source storage extent.
+    #[error("native work source extent mismatch: expected {expected:?}, observed {observed:?}")]
+    NativeWorkSourceExtentMismatch {
+        /// Exact source storage extent.
+        expected: PixelExtent,
+        /// Submitted raw storage extent.
+        observed: PixelExtent,
+    },
+    /// Deferred native work does not expose the exact source pixel format.
+    #[error("native work source format mismatch: expected {expected:?}, observed {observed:?}")]
+    NativeWorkSourcePixelFormatMismatch {
+        /// Exact native source format.
+        expected: CapturePixelFormat,
+        /// Submitted raw storage format.
+        observed: CapturePixelFormat,
+    },
+    /// A source-native surface lacks its exact renderer-target lifetime.
+    #[error("native GPU surface has no lifetime for its exact renderer target and descriptor")]
+    NativeTargetLifetimeMismatch,
+    /// A source-native surface lacks its exact capture-worker lifetime.
+    #[error("native GPU surface has no lifetime for its exact capture worker")]
+    NativeCaptureLifetimeMismatch,
     /// Zone grid shape differs from the committed descriptor.
     #[error(
         "zone shape mismatch: expected {expected_columns}x{expected_rows}, observed {observed_columns}x{observed_rows}"
@@ -2725,6 +3191,22 @@ pub enum ScreenPublicationHubError {
         observed_columns: NonZeroU32,
         /// Requested effective rows.
         observed_rows: NonZeroU32,
+    },
+    /// Dynamic crop bars do not produce the submitted effective shape.
+    #[error(
+        "effective zone layout is incoherent: requested {requested_columns}x{requested_rows}, observed {observed_columns}x{observed_rows} with bars {bars:?}"
+    )]
+    EffectiveZoneLayoutMismatch {
+        /// Descriptor-requested columns.
+        requested_columns: NonZeroU32,
+        /// Descriptor-requested rows.
+        requested_rows: NonZeroU32,
+        /// Submitted effective columns.
+        observed_columns: NonZeroU32,
+        /// Submitted effective rows.
+        observed_rows: NonZeroU32,
+        /// Submitted dynamic crop bars.
+        bars: LetterboxBars,
     },
     /// Dynamic crop color prefix exceeds the admitted zone allocation.
     #[error("effective zone shape {columns}x{rows} exceeds admitted color capacity {capacity}")]
@@ -2790,13 +3272,20 @@ pub enum ScreenPublicationHubError {
     /// Reserved slot no longer occupies its exact pool position.
     #[error("prepared publication slot reservation was lost")]
     PublicationReservationLost,
+    /// Terminal invalidation occurred after this publication was prepared.
+    #[error("prepared publication predates the latest terminal invalidation")]
+    PublicationInvalidated,
     /// Branch-local accepted sequence space is exhausted.
     #[error("screen publication branch sequence exhausted")]
     BranchSequenceExhausted,
+    /// Hub-wide terminal invalidation sequence space is exhausted.
+    #[error("screen publication invalidation epoch exhausted")]
+    InvalidationEpochExhausted,
 }
 
 fn validate_payload(
     descriptor: &ResolvedScreenPublicationDescriptor,
+    binding: &ScreenWorkerBinding,
     payload: ScreenBranchPayload<'_>,
 ) -> Result<(), ScreenPublicationHubError> {
     let expected_residency = descriptor.required_residency();
@@ -2841,6 +3330,37 @@ fn validate_payload(
                 });
             }
             validate_colorimetry(descriptor, surface.colorimetry())?;
+            validate_native_surface_lifetimes(descriptor, binding, surface.surface())?;
+        }
+        (ScreenPublicationKind::Surface, ScreenBranchPayload::NativeWork(work)) => {
+            if !matches!(
+                descriptor.executor(),
+                ScreenPublicationExecutor::SourceNative(_)
+            ) {
+                return Err(ScreenPublicationHubError::NativeWorkExecutorMismatch);
+            }
+            let source = work.source();
+            let expected_extent = descriptor.source().geometry().storage_extent();
+            if source.extent() != expected_extent {
+                return Err(ScreenPublicationHubError::NativeWorkSourceExtentMismatch {
+                    expected: expected_extent,
+                    observed: source.extent(),
+                });
+            }
+            let expected_format = descriptor.source_pixel_format();
+            if source.format() != expected_format {
+                return Err(
+                    ScreenPublicationHubError::NativeWorkSourcePixelFormatMismatch {
+                        expected: expected_format,
+                        observed: source.format(),
+                    },
+                );
+            }
+            validate_expected_colorimetry(
+                ScreenPublicationColorimetry::new(descriptor.source_colorimetry()),
+                work.source_colorimetry(),
+            )?;
+            validate_native_surface_lifetimes(descriptor, binding, source)?;
         }
         (ScreenPublicationKind::Zones { columns, rows }, ScreenBranchPayload::Zones(zones)) => {
             if zones.columns() != columns || zones.rows() != rows {
@@ -2866,6 +3386,28 @@ fn validate_payload(
             });
         }
     }
+    Ok(())
+}
+
+fn validate_native_surface_lifetimes(
+    descriptor: &ResolvedScreenPublicationDescriptor,
+    binding: &ScreenWorkerBinding,
+    surface: &PlatformGpuSurface,
+) -> Result<(), ScreenPublicationHubError> {
+    let ScreenPublicationExecutor::SourceNative(target) = descriptor.executor() else {
+        return Ok(());
+    };
+    let target_lifetime = surface
+        .resource_lifetime()
+        .filter(|lifetime| lifetime.belongs_to_binding(binding))
+        .filter(|lifetime| lifetime.matches_native_target(target.id().get(), descriptor))
+        .ok_or(ScreenPublicationHubError::NativeTargetLifetimeMismatch)?;
+    let capture_lifetime = surface
+        .capture_resource_lifetime()
+        .filter(|lifetime| lifetime.belongs_to_binding(binding))
+        .filter(|lifetime| target_lifetime.belongs_to_same_worker(lifetime))
+        .ok_or(ScreenPublicationHubError::NativeCaptureLifetimeMismatch)?;
+    debug_assert!(capture_lifetime.belongs_to_same_worker(target_lifetime));
     Ok(())
 }
 
@@ -2927,7 +3469,13 @@ fn validate_colorimetry(
     descriptor: &ResolvedScreenPublicationDescriptor,
     observed: ScreenPublicationColorimetry,
 ) -> Result<(), ScreenPublicationHubError> {
-    let expected = descriptor_colorimetry(descriptor);
+    validate_expected_colorimetry(descriptor_colorimetry(descriptor), observed)
+}
+
+fn validate_expected_colorimetry(
+    expected: ScreenPublicationColorimetry,
+    observed: ScreenPublicationColorimetry,
+) -> Result<(), ScreenPublicationHubError> {
     if observed == expected {
         Ok(())
     } else {
@@ -2951,6 +3499,45 @@ fn surface_byte_len(extent: PixelExtent) -> Result<usize, ScreenPublicationHubEr
         })
         .and_then(|pixels| pixels.checked_mul(SURFACE_PIXEL_BYTES as usize))
         .ok_or(ScreenPublicationHubError::PayloadShapeOverflow)
+}
+
+fn validate_effective_zone_layout(
+    requested_columns: NonZeroU32,
+    requested_rows: NonZeroU32,
+    observed_columns: NonZeroU32,
+    observed_rows: NonZeroU32,
+    bars: LetterboxBars,
+) -> Result<(), ScreenPublicationHubError> {
+    if observed_columns > requested_columns || observed_rows > requested_rows {
+        return Err(
+            ScreenPublicationHubError::EffectiveZoneShapeExceedsDescriptor {
+                maximum_columns: requested_columns,
+                maximum_rows: requested_rows,
+                observed_columns,
+                observed_rows,
+            },
+        );
+    }
+    let expected_columns = requested_columns
+        .get()
+        .checked_sub(bars.left)
+        .and_then(|columns| columns.checked_sub(bars.right));
+    let expected_rows = requested_rows
+        .get()
+        .checked_sub(bars.top)
+        .and_then(|rows| rows.checked_sub(bars.bottom));
+    if expected_columns != Some(observed_columns.get())
+        || expected_rows != Some(observed_rows.get())
+    {
+        return Err(ScreenPublicationHubError::EffectiveZoneLayoutMismatch {
+            requested_columns,
+            requested_rows,
+            observed_columns,
+            observed_rows,
+            bars,
+        });
+    }
+    Ok(())
 }
 
 fn zone_count(columns: NonZeroU32, rows: NonZeroU32) -> Result<usize, ScreenPublicationHubError> {

@@ -19,9 +19,9 @@ If you want to write an effect for personal use or a community release, start wi
 
 The 11 native built-ins (`solid_color`, `gradient`, `rainbow`, `breathing`, `audio_pulse`, `color_wave`, `color_zones`, `screen_cast`, `media_player`, `calibration`, and `web_viewport`, which is Servo-only) exist because they must work even when Servo is not compiled in. New native effects should meet that same bar. Everything else belongs in the SDK.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 There is no runnable wgpu/GPU shader lane in Hypercolor. `EffectSource::Shader` is reserved. GLSL effects run as WebGL2 inside Servo's renderer, not as native GPU compute. Frame wgpu shaders as future work and never suggest authors target that path.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -43,13 +43,13 @@ crates/hypercolor-core/src/effect/builtin/
 
 Every native effect is a struct that implements `EffectRenderer` from `crates/hypercolor-core/src/effect/traits.rs`. The trait is `Send` but not `Sync`, so keep that in mind if the effect holds non-`Sync` state.
 
-The two methods you must implement are `init` (called once on activation) and `render_into` (called once per frame):
+The four required methods are `init`, `render_into`, `apply_controls`, and `destroy`:
 
 ```rust
-use hypercolor_types::canvas::{Canvas, RgbaF32};
+use hypercolor_types::canvas::{Canvas, LinearRgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource,
-    PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 use crate::effect::traits::{EffectRenderer, FrameInput, prepare_target_canvas};
 use super::common::{builtin_effect_id, slider_control};
@@ -83,16 +83,21 @@ impl EffectRenderer for YourEffectRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "speed" => {
-                if let Some(v) = value.as_f32() { self.speed = v.max(0.1); }
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "speed" => {
+                    if let Some(v) = value.as_effect_f32() { self.speed = v.max(0.1); }
+                }
+                "brightness" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.brightness = v.clamp(0.0, 1.0);
+                    }
+                }
+                _ => {}
             }
-            "brightness" => {
-                if let Some(v) = value.as_f32() { self.brightness = v.clamp(0.0, 1.0); }
-            }
-            _ => {}
         }
+        Ok(())
     }
 
     fn destroy(&mut self) {}
@@ -103,7 +108,7 @@ Key constraints:
 
 - `render_into` returns `anyhow::Result`, so use `?`, never `unwrap()`.
 - Always call `prepare_target_canvas` at the top of `render_into` so the canvas resizes correctly when the daemon config changes. Never hardcode dimensions.
-- Math goes in linear RGB or Oklab; final pixel values go to the canvas in sRGB. Use `RgbaF32::to_srgba()` for the conversion.
+- Math goes in linear RGB or Oklab; final pixel values go to the canvas in sRGB. Use `LinearRgba::to_encoded()` for the conversion.
 - `unsafe_code` is forbidden in application, driver, and domain crates (the only exceptions are the audited platform-interop crates). No unsafe blocks in effect code.
 
 ### Write a metadata constructor
@@ -131,6 +136,7 @@ pub(super) fn metadata() -> EffectMetadata {
         presets: vec![],
         audio_reactive: false,
         screen_reactive: false,
+        input_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/your_effect"),
         },
@@ -170,7 +176,7 @@ your_effect::metadata(),
 Tests go in a `tests/` directory, not inline `#[cfg(test)]` blocks. The whole workspace follows this rule. Name the file `your_effect_tests.rs` and cover at minimum:
 
 - Canvas is non-empty after `render_into()`.
-- Every declared control ID is handled in `set_control()` without panicking.
+- Every declared control ID is handled in `apply_controls()` without panicking.
 - `render_into()` returns `Ok` for a zero `delta_secs` frame.
 
 ---
@@ -179,9 +185,9 @@ Tests go in a `tests/` directory, not inline `#[cfg(test)]` blocks. The whole wo
 
 SDK effects live under `sdk/src/effects/<name>/`. The build pipeline compiles them to self-contained HTML files that the daemon renders via Servo's WebGL2 context.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `hypercolor` is published to npm. External contributors can scaffold a standalone workspace with `bun create hypercolor`; see [creating effects](@/effects/creating-effects.md). Inside the monorepo, effects resolve the SDK through the Bun workspace instead.
-{% end %}
+{% </callout> %}
 
 ### Build an effect in the monorepo
 
@@ -214,7 +220,7 @@ Display faces (`face()` declarations for HUDs, clocks, and sensor readouts) live
 
 A `cover.webp` sitting beside `main.ts` becomes the effect's card artwork in the browser grid. The build embeds it as a `data:image/webp;base64,` URI in the artifact's `<meta cover>` tag, so a built effect is self-contained: share the `.html` and the artwork goes with it.
 
-The image ships inside every copy of the effect and the daemon parses it on each registry scan, so keep it small. The convention is 640px wide WebP at quality 80, which lands between 2KB and 60KB; the build warns above 128KB and the daemon ignores anything over 1MB. Only `data:` URIs are accepted; a remote URL would let an effect track everyone whose card grid renders it.
+The image ships inside every copy of the effect and the daemon parses it on each registry scan, so keep it small. The `sync-covers` tool re-encodes to at most 960px wide WebP at quality 88, and daemon captures cap at the 640px compositor width, so covers land between 2KB and 60KB in practice. The build warns above 256KB and the daemon ignores anything over 1MB. Only `data:` URIs are accepted; a remote URL would let an effect track everyone whose card grid renders it.
 
 The easiest way to produce one is to let the capture tool do it. With the daemon running:
 
@@ -337,7 +343,7 @@ The effect-reviewer agent (`.agents/agents/effect-reviewer/`) runs this checklis
 ### Technical: native Rust effects
 
 - **Linear color math.** Math in linear RGB or Oklab; output converted to sRGB for the canvas.
-- **Control dispatch.** `set_control()` must handle every control ID declared in `metadata()`.
+- **Control dispatch.** `apply_controls()` must handle every control ID declared in `metadata()`.
 - **Canvas sizing.** Use `Canvas::new(input.canvas_width, input.canvas_height)` for any scratch canvas; never hardcode dimensions. Call `prepare_target_canvas` at the top of `render_into`.
 - **Error handling.** `render_into` returns `anyhow::Result`. No `unwrap()` anywhere.
 
@@ -367,6 +373,6 @@ The effect-reviewer agent (`.agents/agents/effect-reviewer/`) runs this checklis
 - The effect name is title-cased and distinct from existing effects.
 - Native effects include tests; HTML effects include at least one preset.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Run the effect-reviewer agent against your work before opening a PR. It catches the color science and animation issues that are hardest to see on a monitor but obvious on hardware.
-{% end %}
+{% </callout> %}

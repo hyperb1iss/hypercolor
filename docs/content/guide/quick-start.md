@@ -20,9 +20,9 @@ curl -s http://localhost:9420/health
 
 A `200 OK` response means the daemon is running and the REST API is reachable.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **Close other RGB software first.** OpenRGB, Aura Sync, openrazer daemon, iCUE wine layers, and similar tools all grab USB HID devices exclusively. If one of them is running, Hypercolor cannot claim the same device. Stop those tools before continuing. If a USB device appears in `lsusb` but not in `hypercolor devices list`, a conflicting tool is the most likely cause. See [conflicting software](@/hardware/conflicting-software.md) for diagnosis steps.
-{% end %}
+{% </callout> %}
 
 ## 1. Check device discovery
 
@@ -34,9 +34,9 @@ hypercolor devices list
 
 You should see a table of connected devices with their name, driver, output route, LED count, status, and firmware. If the list is empty and you have hardware plugged in, check the [udev rules](@/guide/installation.md) and confirm no conflicting software is running.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 **No hardware? Use a simulated display.** The daemon has a built-in virtual display simulator; no physical LEDs required. Create one via the REST API and it will appear in `devices list` like real hardware:
 
 ```bash
@@ -46,7 +46,7 @@ curl -s -X POST http://localhost:9420/api/v1/simulators/displays \
 ```
 
 You can then apply effects to it and preview frames at `GET /api/v1/simulators/displays/{id}/frame` (returns JPEG). Delete it when you are done with `DELETE /api/v1/simulators/displays/{id}`. The web UI canvas preview at `http://localhost:9420` works without any physical devices at all.
-{% end %}
+{% </callout> %}
 
 ## 2. Browse effects
 
@@ -68,7 +68,7 @@ hypercolor effects list --category ambient
 
 The web UI at `http://localhost:9420` has a visual effect browser with search, category filters, and canvas preview before you apply anything.
 
-{{ img(path="img/ui/dashboard.webp", alt="Web UI dashboard showing the effect browser") }}
+{{< img path="img/ui/dashboard.webp" alt="Web UI dashboard showing the effect browser" />}}
 
 ## 3. Apply an effect
 
@@ -93,7 +93,7 @@ Via REST:
 ```bash
 curl -X POST http://localhost:9420/api/v1/effects/borealis/apply \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 50, "intensity": 75}}'
+  -d '{"controls": {"speed": {"kind": "float", "value": 50.0}, "intensity": {"kind": "float", "value": 75.0}}}'
 ```
 
 ## 4. Tweak controls in real time
@@ -111,12 +111,20 @@ hypercolor effects reset
 Via REST:
 
 ```bash
-curl -X PATCH http://localhost:9420/api/v1/effects/current/controls \
+scene=$(curl -s http://localhost:9420/api/v1/scene)
+zone_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].id')
+layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
+
+curl -X PATCH \
+  "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 30, "palette": "Midnight"}}'
+  -d '{"values": {"speed": {"kind": "float", "value": 30.0}, "palette": {"kind": "enum", "value": "Midnight"}}}'
 ```
 
-The render loop picks up new values on the next frame. It targets up to 60 fps and adapts down across five tiers under load, so a change lands in roughly 17 to 100 ms depending on the active tier.
+The control route uses the real layer id from the live scene document and never
+takes `If-Match`. The render loop picks up new values on the next frame. It
+targets up to 60 fps and adapts down across five tiers under load, so a change
+lands in roughly 17 to 100 ms depending on the active tier.
 
 ## 5. Try the TUI
 
@@ -126,7 +134,7 @@ The terminal UI gives you a full interactive control surface in one pane (device
 hypercolor tui
 ```
 
-{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard view") }}
+{{< img path="img/tui/tui-dashboard.png" alt="TUI dashboard view" />}}
 
 See [the TUI guide](@/guide/tui.md) for keyboard shortcuts and layout details.
 
@@ -139,14 +147,16 @@ hypercolor effects stop
 Or via REST:
 
 ```bash
-curl -X POST http://localhost:9420/api/v1/effects/stop
+curl -X POST http://localhost:9420/api/v1/scene/clear \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 ## What's next
 
 - [Your first 10 minutes](@/guide/your-first-10-minutes.md): an opinionated golden path through the web UI
-- [First session](@/guide/first-session.md): a longer hands-on walkthrough of devices, layouts, profiles, and scenes
+- [First session](@/guide/first-session.md): a longer hands-on walkthrough of devices, layouts, and scenes
 - [Audio setup](@/guide/audio-setup.md): configure an audio loopback source so reactive effects respond to your music
-- [Profiles and scenes](@/guide/profiles-and-scenes.md): save your lighting state and switch between setups
+- [Scenes and snapshots](@/guide/scenes-and-snapshots.md): save your lighting state and switch between setups
 - [Effect catalog](@/effects/_index.md): browse every built-in effect with parameters and previews
 - [Configuration](@/guide/configuration.md): tune FPS, canvas size, network access, and more

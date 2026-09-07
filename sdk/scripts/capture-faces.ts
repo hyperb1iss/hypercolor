@@ -3,9 +3,9 @@
  * Display face screenshot capture tool.
  *
  * Assigns each display-category effect (face) to the Face Dev simulator
- * displays, subscribes the `display_preview` WebSocket channel per device so
+ * displays, subscribes the keyed `display_preview` WebSocket topic per device so
  * the display worker encodes simulator frames, then snapshots
- * `/displays/{id}/preview.jpg` into the shared screenshot drafts tree:
+ * `/displays/{id}/frame` into the shared screenshot drafts tree:
  *
  *   effects/screenshots/drafts/<slug>/default/rank-1.png   (round 480x480)
  *   effects/screenshots/drafts/<slug>/strip/rank-1.png     (strip 960x160)
@@ -47,7 +47,6 @@ interface EffectSummary {
     id: string
     name: string
     category: string
-    source: string | null
     runnable: boolean | null
 }
 
@@ -64,7 +63,7 @@ interface FaceLayer {
 
 interface FaceState {
     effect: { id: string }
-    group: { layers: FaceLayer[] }
+    zone: { layers: FaceLayer[] }
 }
 
 /** Prior assignment snapshot used to restore a simulator after capture. */
@@ -155,7 +154,7 @@ async function getPriorFace(daemon: string, deviceId: string): Promise<PriorFace
     } catch {
         return null
     }
-    const layer = state.group.layers[0]
+    const layer = state.zone.layers[0]
     return {
         blendMode: layer?.blend ?? 'replace',
         controls: layer?.source.controls ?? {},
@@ -194,7 +193,7 @@ async function restoreFace(daemon: string, deviceId: string, prior: PriorFace | 
 
 async function snapPreview(daemon: string, deviceId: string): Promise<Uint8Array | null> {
     for (let attempt = 0; attempt < SNAP_ATTEMPTS; attempt += 1) {
-        const response = await fetch(`${daemon}/api/v1/displays/${deviceId}/preview.jpg`)
+        const response = await fetch(`${daemon}/api/v1/displays/${deviceId}/frame`)
         if (response.ok) return new Uint8Array(await response.arrayBuffer())
         await sleep(SNAP_RETRY_MS)
     }
@@ -211,6 +210,33 @@ async function writeDraft(slug: string, variantKey: string, jpeg: Uint8Array): P
 
 function sleep(ms: number): Promise<void> {
     return new Promise((res) => setTimeout(res, ms))
+}
+
+function sendAndWaitForAck(
+    ws: WebSocket,
+    payload: object,
+    acknowledgmentType: 'subscribed' | 'unsubscribed',
+): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            ws.removeEventListener('message', onMessage)
+            reject(new Error(`${acknowledgmentType} acknowledgment timed out`))
+        }, 5000)
+        const onMessage = (event: MessageEvent) => {
+            if (typeof event.data !== 'string') return
+            const message = JSON.parse(event.data) as { message?: string; type?: string }
+            if (message.type !== acknowledgmentType && message.type !== 'error') return
+            clearTimeout(timeout)
+            ws.removeEventListener('message', onMessage)
+            if (message.type === 'error') {
+                reject(new Error(message.message ?? 'display preview subscription rejected'))
+            } else {
+                resolve()
+            }
+        }
+        ws.addEventListener('message', onMessage)
+        ws.send(JSON.stringify(payload))
+    })
 }
 
 async function main(): Promise<void> {
@@ -232,9 +258,7 @@ async function main(): Promise<void> {
     const facesByName = new Map<string, EffectSummary>()
     for (const effect of effects.items) {
         if (effect.category !== 'display' || effect.runnable === false) continue
-        // Prefer bundled entries over user-dir duplicates.
-        const existing = facesByName.get(effect.name)
-        if (!existing || effect.source !== 'user') facesByName.set(effect.name, effect)
+        if (!facesByName.has(effect.name)) facesByName.set(effect.name, effect)
     }
     let faces = [...facesByName.values()].sort((a, b) => a.name.localeCompare(b.name))
     if (opts.faceFilter) {
@@ -256,14 +280,32 @@ async function main(): Promise<void> {
         ws.onopen = () => res()
         ws.onerror = () => reject(new Error('websocket connection failed'))
     })
-    const follow = (deviceId: string) =>
-        ws.send(
-            JSON.stringify({
-                channels: ['display_preview'],
-                config: { display_preview: { device_id: deviceId, fps: 15 } },
+    // display_preview is keyed by device, so following a second simulator
+    // adds a subscription rather than retargeting the first. Each capture
+    // drops the previous key so only one display streams at a time.
+    let followed: string | undefined
+    const follow = async (deviceId: string): Promise<void> => {
+        if (followed === deviceId) return
+        if (followed !== undefined) {
+            await sendAndWaitForAck(
+                ws,
+                {
+                    topics: [{ key: followed, topic: 'display_preview' }],
+                    type: 'unsubscribe',
+                },
+                'unsubscribed',
+            )
+        }
+        await sendAndWaitForAck(
+            ws,
+            {
+                topics: [{ config: { fps: 15 }, key: deviceId, topic: 'display_preview' }],
                 type: 'subscribe',
-            }),
+            },
+            'subscribed',
         )
+        followed = deviceId
+    }
 
     let failures = 0
     const startedAt = Date.now()
@@ -274,7 +316,7 @@ async function main(): Promise<void> {
             for (const sim of simulators) {
                 try {
                     await assignFace(opts.daemon, sim.deviceId, face.id, {}, 'replace', 1.0)
-                    follow(sim.deviceId)
+                    await follow(sim.deviceId)
                     await sleep(opts.warmupMs)
                     const jpeg = await snapPreview(opts.daemon, sim.deviceId)
                     if (!jpeg) {

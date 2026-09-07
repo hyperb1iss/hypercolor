@@ -1,18 +1,21 @@
 //! Contract tests for the backend-neutral capture frame envelope.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
-    CaptureCursorShapeFormat, CaptureDamage, CaptureDynamicRange, CaptureEpoch, CaptureFrame,
-    CaptureFrameError, CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool,
-    CaptureRotation, CaptureSourceId, CaptureStageKind, CaptureStorage, CaptureTransferFunction,
-    CpuCaptureStorage, KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect,
-    PlatformGpuApi, PlatformGpuSurface, RawCaptureSurface, ScreenAdmissionCapacity,
-    ScreenByteAdmissionCoordinator, SourceScale,
+use hypercolor_core::input::screen::consumer::{
+    CaptureEpoch, CaptureSourceId, PixelExtent, PixelRect, ScreenByteAdmissionCoordinator,
 };
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorSpace, CaptureColorimetry, CaptureCursor, CaptureCursorContent, CaptureCursorShape,
+    CaptureCursorShapeFormat, CaptureDamage, CaptureDynamicRange, CaptureFrame, CaptureFrameError,
+    CaptureFrameMetadata, CaptureGeometry, CapturePixelFormat, CapturePlanePool, CaptureRotation,
+    CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
+    KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PlatformGpuApi, PlatformGpuSurface,
+    PlatformGpuSurfaceTimingSink, RawCaptureSurface, SourceScale,
+};
+use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
 
 fn extent(width: u32, height: u32) -> PixelExtent {
     PixelExtent::new(width, height).expect("test extent is non-empty")
@@ -285,6 +288,10 @@ fn every_rotation_preserves_raw_scanout_and_reports_logical_extent() {
         (CaptureRotation::Clockwise90, extent(3, 4)),
         (CaptureRotation::Clockwise180, extent(4, 3)),
         (CaptureRotation::Clockwise270, extent(3, 4)),
+        (CaptureRotation::Flipped, extent(4, 3)),
+        (CaptureRotation::Flipped90, extent(3, 4)),
+        (CaptureRotation::Flipped180, extent(4, 3)),
+        (CaptureRotation::Flipped270, extent(3, 4)),
     ] {
         let frame = CaptureFrame::<RawCaptureSurface>::new(
             metadata(rotation),
@@ -301,6 +308,33 @@ fn every_rotation_preserves_raw_scanout_and_reports_logical_extent() {
                 .rotation()
                 .apply_to_extent(frame.metadata().geometry.native_extent()),
             expected
+        );
+    }
+}
+
+#[test]
+fn every_d4_transform_maps_unique_corners_and_inverts_exactly() {
+    let native = extent(4, 3);
+    for (transform, expected) in [
+        (CaptureRotation::Identity, (0, 0)),
+        (CaptureRotation::Clockwise90, (2, 0)),
+        (CaptureRotation::Clockwise180, (3, 2)),
+        (CaptureRotation::Clockwise270, (0, 3)),
+        (CaptureRotation::Flipped, (3, 0)),
+        (CaptureRotation::Flipped90, (2, 3)),
+        (CaptureRotation::Flipped180, (0, 2)),
+        (CaptureRotation::Flipped270, (0, 0)),
+    ] {
+        let logical = transform
+            .apply_to_point(0, 0, native)
+            .expect("native corner is in bounds");
+        assert_eq!(logical, expected);
+        let logical_extent = transform.apply_to_extent(native);
+        assert_eq!(
+            transform
+                .invert()
+                .apply_to_point(logical.0, logical.1, logical_extent),
+            Some((0, 0))
         );
     }
 }
@@ -403,6 +437,51 @@ impl Drop for GpuLifetimeProbe {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
     }
+}
+
+#[derive(Default)]
+struct GpuTimingProbe {
+    import_ns: AtomicU64,
+    reduction_ns: AtomicU64,
+}
+
+impl PlatformGpuSurfaceTimingSink for GpuTimingProbe {
+    fn record_import(&self, elapsed: Duration) {
+        self.import_ns.store(
+            u64::try_from(elapsed.as_nanos()).expect("fixture duration fits u64"),
+            Ordering::Release,
+        );
+    }
+
+    fn record_native_reduction_submission(&self, elapsed: Duration) {
+        self.reduction_ns.store(
+            u64::try_from(elapsed.as_nanos()).expect("fixture duration fits u64"),
+            Ordering::Release,
+        );
+    }
+}
+
+#[test]
+fn gpu_surface_retains_and_forwards_backend_timing_observations() {
+    let timing = Arc::new(GpuTimingProbe::default());
+    let surface = PlatformGpuSurface::new(
+        PlatformGpuApi::Metal,
+        42,
+        extent(4, 3),
+        CapturePixelFormat::Bgra8,
+        Arc::new(()),
+    )
+    .expect("non-zero opaque handle is valid")
+    .with_timing_sink(Arc::clone(&timing));
+    let sink = surface
+        .timing_sink()
+        .expect("attached timing sink remains observable");
+
+    sink.record_import(Duration::from_nanos(17));
+    sink.record_native_reduction_submission(Duration::from_nanos(23));
+
+    assert_eq!(timing.import_ns.load(Ordering::Acquire), 17);
+    assert_eq!(timing.reduction_ns.load(Ordering::Acquire), 23);
 }
 
 #[test]

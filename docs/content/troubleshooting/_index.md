@@ -8,7 +8,7 @@ template = "section.html"
 
 Something is not working. Find your symptom in the table below and follow the link: each entry goes directly to the relevant fix, not a general overview.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## Find your symptom
 
@@ -87,9 +87,9 @@ The daemon defaults to `info` level, which is quiet by design. `debug` gives you
 
 ## Troubleshooting pages
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Each page below is organized by symptom, not by subsystem. If your symptom does not appear in the table above, check the page closest to your failure category: the symptoms within each page are more specific than the summary table here.
-{% end %}
+{% </callout> %}
 
 ### [Devices not found](@/troubleshooting/devices-not-found.md)
 

@@ -59,7 +59,7 @@ Windows after isolating Windows linker resource issues.
 2. Spec 73 T17 remains the authority for chunk offset and size, signed stride,
    crop metadata, all eight SPA D4 transforms, exact-once buffer requeue, stream
    death, and reconnect acceptance.
-3. Resolved: `/api/v1/status` now reports `screen_capture_capacity` on Linux
+3. Resolved: `/api/v1/system` now reports `status.screen_capture_capacity` on Linux
    (field `admission_enforced`, no longer `windows_admission_enforced`).
    Record the capacity object in every acceptance row.
 4. Branch-aware Wayland acquisition envelopes remain Sibyl task
@@ -135,7 +135,7 @@ In terminal B, confirm health and enable capture transactionally:
 curl -fsS http://127.0.0.1:9420/health
 just cli config get capture.enabled
 just cli config set capture.enabled true --live
-curl -fsS -X POST http://127.0.0.1:9420/api/v1/capture/source/pick
+curl -fsS -X PUT http://127.0.0.1:9420/api/v1/capture/source
 ```
 
 Choose a display in the portal. Use `source = "auto"`; the portal restore token

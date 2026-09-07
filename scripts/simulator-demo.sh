@@ -464,12 +464,11 @@ if [[ -n "$EFFECT_ID" || "$WAIT_FRAME" == true ]]; then
   api_json POST "${BASE_URL}/api/v1/effects/${resolved_effect_id}/apply" '{}' >/dev/null
 fi
 
-preview_url="${BASE_URL}/preview?mode=simulator&display=$(urlencode "$simulator_id")"
+preview_url="${UI_URL:-${BASE_URL}}/preview?display=$(urlencode "$simulator_id")"
 frame_url="${BASE_URL}/api/v1/simulators/displays/${simulator_id}/frame"
 
 log_success "Simulator ready: ${simulator_name} [${simulator_id}] ${simulator_width}x${simulator_height} circular=${simulator_circular}"
-log_info "Browser preview: ${preview_url}"
-log_info "Canvas preview: ${BASE_URL}/preview"
+log_info "Display preview: ${preview_url}"
 log_info "Frame endpoint: ${frame_url}"
 
 if [[ "$WAIT_FRAME" == true ]]; then

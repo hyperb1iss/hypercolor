@@ -1,34 +1,12 @@
-#[cfg(any(
-    all(feature = "servo-gpu-import", target_os = "linux"),
-    all(feature = "servo-gpu-import", target_os = "macos")
-))]
-use std::sync::Arc;
-use std::sync::mpsc;
-
-use hypercolor_core::blend_math::encode_srgb_channel;
-use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
-};
-use hypercolor_types::config::RenderAccelerationMode;
-use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
-use hypercolor_types::event::ZoneColors;
-use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
-use hypercolor_types::spatial::{
-    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
-    StripDirection,
-};
-use hypercolor_types::viewport::FitMode;
-#[cfg(target_os = "windows")]
-use hypercolor_windows_gpu_interop::D3d11On12ScreenInteropError;
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "linux"))]
-use super::CachedGpuSourceCopy;
 use super::compositor::{ComposeShaderMode, encode_compose_params};
 use super::screen_upload::{
     ScreenPublicationUploadPool, ScreenUploadContentKey, ScreenUploadPoolSaturated,
     ScreenUploadResidencyPolicy, resident_frame_bytes,
 };
+#[cfg(feature = "servo-gpu-import")]
+use super::source::CachedGpuSourceCopy;
+#[cfg(feature = "servo-gpu-import")]
+use super::source::GpuSourceFrame;
 use super::{
     DISPLAY_FINALIZE_READBACK_SLOT_COUNT, DisplayYuv420Frame, FrameInFlight, GpuCanvasAdmission,
     GpuCanvasFallbackReason, GpuDisplayFinalizeDispatch, GpuDisplayFinalizeFrame,
@@ -37,19 +15,34 @@ use super::{
     PendingPreviewReadback, ensure_readback_buffer_capacity, ensure_storage_buffer_capacity,
     gpu_canvas_admission,
 };
-#[cfg(target_os = "windows")]
-use super::{
-    NativeScreenCopyFailurePolicy, native_screen_copy_failure_policy,
-    screen_storage_requires_cache_turnover, validate_windows_plan_generation,
-};
 use crate::performance::CompositorBackendKind;
 use crate::render_thread::producer_queue::{GpuTextureFrame, GpuTextureFrameOrigin, ProducerFrame};
+#[cfg(feature = "servo-gpu-import")]
+use crate::render_thread::producer_queue::{ProducerFrameState, ProducerQueue};
 use crate::render_thread::sparkleflinger::gpu_sampling::GpuSamplingPlan;
 use crate::render_thread::sparkleflinger::{
     CompositionLayer, CompositionPlan, CompositionTransform, DisplayFinalizeCacheKey,
     DisplayFinalizeParams, PreviewSurfaceRequest, SparkleFlinger, SparkleFlingerBackend,
     cpu::CpuSparkleFlinger,
 };
+use hypercolor_core::blend_math::encode_srgb_channel;
+use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::canvas::{
+    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor,
+};
+use hypercolor_types::config::RenderAccelerationMode;
+use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
+use hypercolor_types::event::ZoneColors;
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::ZoneId;
+use hypercolor_types::spatial::{
+    EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
+    StripDirection,
+};
+use hypercolor_types::viewport::FitMode;
+#[cfg(feature = "servo-gpu-import")]
+use std::sync::Arc;
+use std::sync::mpsc;
 
 #[test]
 fn compose_params_encode_target_space_as_float_flag() {
@@ -72,7 +65,7 @@ fn compose_params_encode_target_space_as_float_flag() {
     assert_eq!(flag, 1.0);
 }
 
-fn solid_canvas(color: Rgba) -> Canvas {
+pub(super) fn solid_canvas(color: Rgba) -> Canvas {
     let mut canvas = Canvas::new(4, 4);
     canvas.fill(color);
     canvas
@@ -94,12 +87,89 @@ fn required_gpu<T>(result: anyhow::Result<T>) -> Option<T> {
     }
 }
 
-fn gpu_test_compositor() -> Option<GpuSparkleFlinger> {
+pub(super) fn gpu_test_compositor() -> Option<GpuSparkleFlinger> {
     required_gpu(GpuSparkleFlinger::new())
 }
 
 fn gpu_test_sparkleflinger() -> Option<SparkleFlinger> {
     required_gpu(SparkleFlinger::new(RenderAccelerationMode::Gpu))
+}
+
+#[cfg(feature = "servo-gpu-import")]
+#[test]
+fn imported_frame_identity_separates_allocation_content_and_origin() {
+    let Some(compositor) = gpu_test_compositor() else {
+        return;
+    };
+    let texture = Arc::new(compositor.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("SparkleFlinger imported frame identity test"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    }));
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    let lease = hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture));
+    let frame = |content_generation, origin| hypercolor_gpu_frame::ImportedEffectFrame {
+        width: 1,
+        height: 1,
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Rgba8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(41),
+        content_generation,
+        origin,
+        texture: Arc::clone(&texture),
+        view: Arc::clone(&view),
+        lease: lease.clone(),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
+    };
+    let top_left = frame(7, hypercolor_gpu_frame::FrameOrigin::TopLeft);
+    let bottom_left = frame(8, hypercolor_gpu_frame::FrameOrigin::BottomLeft);
+
+    assert!(!GpuSourceFrame::Imported(&top_left).needs_shader_copy());
+    assert!(GpuSourceFrame::Imported(&bottom_left).needs_shader_copy());
+
+    let mut queue = ProducerQueue::new();
+    assert!(queue.submit_latest(ProducerFrame::Gpu(top_left)).is_none());
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("first imported contents should latch")
+            .state,
+        ProducerFrameState::Fresh
+    );
+
+    assert!(
+        queue
+            .submit_latest(ProducerFrame::Gpu(bottom_left.clone()))
+            .is_some()
+    );
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("new contents in the same allocation should latch")
+            .state,
+        ProducerFrameState::Fresh
+    );
+
+    assert!(
+        queue
+            .submit_latest(ProducerFrame::Gpu(bottom_left))
+            .is_some()
+    );
+    assert_eq!(
+        queue
+            .latch_latest()
+            .expect("duplicate imported contents should stay retained")
+            .state,
+        ProducerFrameState::Retained
+    );
 }
 
 fn bypass_surface_plan(width: u32, height: u32) -> CompositionPlan {
@@ -832,7 +902,6 @@ fn texture_composition_survives_scoped_full_frame_readback_rejection() {
         crate::performance::CompositorBackendKind::Gpu
     );
     assert!(compositor.canvas_gpu_admitted());
-    #[cfg(target_os = "windows")]
     let native_target_available = compositor.screen_native_execution_target().is_some();
 
     let error = compositor
@@ -847,7 +916,6 @@ fn texture_composition_survives_scoped_full_frame_readback_rejection() {
         .expect_err("full-size CPU readback should reject its local buffer request");
     assert!(error.to_string().contains("requires 64 bytes"));
     assert!(compositor.canvas_gpu_admitted());
-    #[cfg(target_os = "windows")]
     assert_eq!(
         compositor.screen_native_execution_target().is_some(),
         native_target_available
@@ -1188,7 +1256,7 @@ fn solid_canvas_with_size(width: u32, height: u32, color: Rgba) -> Canvas {
 fn display_finalize_params(
     width: u32,
     height: u32,
-    blend_mode: DisplayFaceBlendMode,
+    blend_mode: BlendMode,
 ) -> DisplayFinalizeParams {
     display_finalize_params_for_format(width, height, blend_mode, DisplayFrameFormat::Rgb)
 }
@@ -1196,12 +1264,12 @@ fn display_finalize_params(
 fn display_finalize_params_for_format(
     width: u32,
     height: u32,
-    blend_mode: DisplayFaceBlendMode,
+    blend_mode: BlendMode,
     frame_format: DisplayFrameFormat,
 ) -> DisplayFinalizeParams {
     DisplayFinalizeParams {
         cache_key: DisplayFinalizeCacheKey {
-            group_id: ZoneId::new(),
+            zone_id: ZoneId::new(),
             device_id: DeviceId::new(),
             width,
             height,
@@ -1222,7 +1290,7 @@ fn display_finalize_params_for_format(
     }
 }
 
-fn patterned_canvas(seed: u8) -> Canvas {
+pub(super) fn patterned_canvas(seed: u8) -> Canvas {
     patterned_canvas_with_size(4, 4, seed)
 }
 
@@ -1283,7 +1351,7 @@ fn slot_surface_with_size(width: u32, height: u32, color: Rgba) -> PublishedSurf
     clippy::unnecessary_wraps,
     reason = "test helper mirrors the Option<PreviewSurfaceRequest> shape accepted by compositor entry points"
 )]
-fn full_preview_request(plan: &CompositionPlan) -> Option<PreviewSurfaceRequest> {
+pub(super) fn full_preview_request(plan: &CompositionPlan) -> Option<PreviewSurfaceRequest> {
     Some(PreviewSurfaceRequest {
         width: plan.width,
         height: plan.height,
@@ -1338,7 +1406,9 @@ fn assert_gpu_samples_match_cpu(
     assert_zone_colors_within(&sampled, &expected_zones, tolerance);
 }
 
-fn resolve_preview_surface_blocking(compositor: &mut GpuSparkleFlinger) -> PublishedSurface {
+pub(super) fn resolve_preview_surface_blocking(
+    compositor: &mut GpuSparkleFlinger,
+) -> PublishedSurface {
     loop {
         if let Some(surface) = compositor
             .resolve_preview_surface()
@@ -1436,7 +1506,7 @@ fn defer_pending_preview_map(compositor: &mut GpuSparkleFlinger) {
     assert!(compositor.pending_preview_map.is_some());
 }
 
-fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
+pub(super) fn sampling_layout(mode: SamplingMode) -> SpatialLayout {
     sampling_layout_with_led_count(mode, 4)
 }
 
@@ -1473,7 +1543,6 @@ fn sampling_layout_with_led_count(mode: SamplingMode, led_count: u32) -> Spatial
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -1508,7 +1577,6 @@ fn fade_sampling_layout(mode: SamplingMode) -> SpatialLayout {
         }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -1524,78 +1592,9 @@ fn gpu_compositor_probe_reports_a_texture_format() {
     assert!(!probe.texture_format.is_empty());
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(feature = "servo-gpu-import")]
 #[test]
-fn dx12_compositor_exposes_one_renderer_bound_screen_target() {
-    let Some(compositor) = gpu_test_compositor() else {
-        return;
-    };
-    if compositor.probe.backend == "dx12" {
-        let target = compositor
-            .screen_native_execution_target()
-            .expect("DX12 compositor should expose a D3D11On12 target");
-        assert_eq!(
-            target.max_texture_dimension().get(),
-            compositor.probe.max_texture_dimension_2d
-        );
-    } else {
-        assert!(compositor.screen_native_execution_target().is_none());
-    }
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn native_screen_copy_failure_policy_separates_pressure_from_stale_structure() {
-    use std::num::NonZeroU64;
-
-    use hypercolor_windows_capture::{CaptureError, GpuSurfaceDescriptorId};
-
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::KeyedMutexTimeout),
-        NativeScreenCopyFailurePolicy::Retain
-    );
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::Capture(
-            CaptureError::GpuSurfaceUseUnavailable {
-                descriptor_id: GpuSurfaceDescriptorId::new(NonZeroU64::MIN),
-                source_sequence: 7,
-            },
-        )),
-        NativeScreenCopyFailurePolicy::Retain
-    );
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::PreparedTargetMismatch {
-            field: "plan_generation",
-        },),
-        NativeScreenCopyFailurePolicy::Reprepare
-    );
-    assert_eq!(
-        native_screen_copy_failure_policy(&D3d11On12ScreenInteropError::TargetContentUncertain {
-            operation: "release capture keyed mutex",
-            source: Box::new(D3d11On12ScreenInteropError::KeyedMutexTimeout),
-        },),
-        NativeScreenCopyFailurePolicy::InvalidateFrameAndReprepare
-    );
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn native_screen_storage_turnover_purges_only_changed_targets() {
-    assert!(screen_storage_requires_cache_turnover(None, 7));
-    assert!(!screen_storage_requires_cache_turnover(Some(7), 7));
-    assert!(screen_storage_requires_cache_turnover(Some(7), 8));
-}
-
-#[cfg(target_os = "windows")]
-#[test]
-fn native_screen_manifest_generation_is_an_exact_fence() {
-    validate_windows_plan_generation(7, 7).expect("matching plan generation is accepted");
-    assert!(validate_windows_plan_generation(7, 8).is_err());
-}
-
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
-#[test]
-fn gpu_macos_imported_frame_composes_without_cpu_readback() {
+fn gpu_imported_frame_composes_without_cpu_readback() {
     let Some(mut compositor) = gpu_test_compositor() else {
         return;
     };
@@ -1638,14 +1637,18 @@ fn gpu_macos_imported_frame_composes_without_cpu_readback() {
         },
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let frame = hypercolor_core::effect::ImportedEffectFrame {
+    let texture = Arc::new(texture);
+    let frame = hypercolor_gpu_frame::ImportedEffectFrame {
         width,
         height,
-        format: hypercolor_core::effect::ImportedFrameFormat::Bgra8Unorm,
-        storage_id: 1,
-        texture: Arc::new(texture),
+        format: hypercolor_gpu_frame::ImportedFrameFormat::Bgra8Unorm,
+        allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(1),
+        content_generation: 1,
+        origin: hypercolor_gpu_frame::FrameOrigin::BottomLeft,
+        lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+        texture,
         view: Arc::new(view),
-        timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+        timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
     };
 
     let composed = compositor
@@ -1793,8 +1796,7 @@ fn gpu_compositor_rejects_every_cached_surface_texture_before_reactivation() {
                 texture: texture.texture.clone(),
                 view: texture.view.clone(),
                 immutable_lease: None,
-                #[cfg(target_os = "windows")]
-                windows_screen_lease: None,
+                native_screen_lease: None,
             }
         };
         [
@@ -2737,7 +2739,7 @@ fn gpu_compositor_reuses_source_bind_groups_across_frames() {
     );
 }
 
-#[cfg(all(feature = "servo-gpu-import", target_os = "macos"))]
+#[cfg(feature = "servo-gpu-import")]
 #[test]
 fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
     let Some(mut compositor) = gpu_test_compositor() else {
@@ -2745,7 +2747,7 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
     };
     let width = 4;
     let height = 4;
-    let imported_frame = |storage_id: u64| {
+    let imported_frame = |allocation_id: u64| {
         let texture = compositor.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("SparkleFlinger test flipped imported source"),
             size: wgpu::Extent3d {
@@ -2791,14 +2793,18 @@ fn gpu_blend_modes_flip_imported_frames_like_replace_path() {
             },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        hypercolor_core::effect::ImportedEffectFrame {
+        let texture = Arc::new(texture);
+        hypercolor_gpu_frame::ImportedEffectFrame {
             width,
             height,
-            format: hypercolor_core::effect::ImportedFrameFormat::Bgra8Unorm,
-            storage_id,
-            texture: Arc::new(texture),
+            format: hypercolor_gpu_frame::ImportedFrameFormat::Bgra8Unorm,
+            allocation_id: hypercolor_gpu_frame::ImportedFrameAllocationId::new(allocation_id),
+            content_generation: allocation_id,
+            origin: hypercolor_gpu_frame::FrameOrigin::BottomLeft,
+            lease: hypercolor_gpu_frame::ImportedFrameLease::new(Arc::clone(&texture)),
+            texture,
             view: Arc::new(view),
-            timings: hypercolor_core::effect::ImportedFrameTimings::default(),
+            timings: hypercolor_gpu_frame::ImportedFrameTimings::default(),
         }
     };
 

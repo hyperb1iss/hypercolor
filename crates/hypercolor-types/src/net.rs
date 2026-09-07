@@ -2,13 +2,13 @@
 //! injected into display faces as `engine.net`.
 
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// Throughput of the busiest non-loopback network interface.
 ///
 /// Refreshed at 1 Hz by the net input source; rates are averaged over the
 /// refresh interval.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct NetStats {
     /// Receive rate in bytes per second.
     pub rx_bps: u64,

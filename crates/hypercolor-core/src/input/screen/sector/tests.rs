@@ -1,6 +1,6 @@
 use super::{SectorGrid, accumulate_region, prepare_sector_chunk_plan};
 use crate::input::screen::{FrameRegion, LetterboxBars};
-use crate::types::canvas::linear_to_srgb_u8;
+use hypercolor_types::canvas::linear_to_srgb_u8;
 
 fn patterned_rgba(width: u32, height: u32) -> Vec<u8> {
     let mut frame = Vec::with_capacity(

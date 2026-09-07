@@ -9,7 +9,7 @@ The Hypercolor desktop app (`hypercolor-app`) is the native shell that wraps the
 
 The app does three things the raw daemon cannot: it supervises the daemon process (auto-restarts on crash), registers the system tray icon, and presents the web UI in a native window. Everything it controls is ultimately talking to the daemon on `:9420`; the shell itself has no rendering logic.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard" />}}
 
 ---
 
@@ -54,7 +54,7 @@ When the daemon is reachable the menu contains the following items, in order:
 | Current effect name | Disabled label | Shows `▶ <effect name>` or `No effect active` |
 | `Scene: <name>` | Disabled label | Shown only when a scene is active; appends ` [snap]` when the scene snapshot is locked |
 | **Effects** | Submenu | One item per available effect; clicking applies it |
-| **Profiles** | Submenu | One item per saved profile; clicking applies it |
+| **Scenes** | Submenu | One item per saved scene; clicking activates it |
 | **Servers** | Submenu | Shown only when more than one daemon server is configured; see [Multi-server](#multi-server) |
 | **Brightness (`N%`)** | Submenu | Five presets: 0%, 25%, 50%, 75%, 100% |
 | **Stop Effect** | Item | Shown only when an effect is active |
@@ -70,7 +70,7 @@ When the daemon is reachable the menu contains the following items, in order:
 
 ### Tray menu: disconnected state
 
-When the daemon is not reachable the header changes to `Hypercolor (Disconnected)` and a disabled `Daemon not reachable` label replaces the effect/scene labels. The Effects, Profiles, Brightness, and Stop Effect items are removed. The Servers submenu still appears if more than one server is configured, and the app entries (Show Window through Quit) remain available.
+When the daemon is not reachable the header changes to `Hypercolor (Disconnected)` and a disabled `Daemon not reachable` label replaces the effect/scene labels. The Effects, Scenes, Brightness, and Stop Effect items are removed. The Servers submenu still appears if more than one server is configured, and the app entries (Show Window through Quit) remain available.
 
 ---
 
@@ -142,13 +142,13 @@ The desktop app can register itself to launch at login. When autostart is enable
 
 Toggle autostart in the Settings page inside the app.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 If you want to start the app hidden from the command line (for example in a session startup script), pass `--minimized` or `--hidden` directly:
 
 ```bash
 hypercolor-app --minimized
 ```
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -192,4 +192,4 @@ See [The pieces](@/guide/the-pieces.md) for a full breakdown of what each compon
 
 **Export Diagnostics fails.** The Desktop directory must be writable. If the zip is not produced, check app logs (via **Open Logs Folder**) for the error message.
 
-**Autostart launches the app but lighting does not start.** The daemon restores the last active profile on boot (`start_profile = "last"` default). If no profile was saved, no effect is applied. Save a profile first using `hypercolor profiles create <name>`.
+**Autostart launches the app but lighting does not start.** The daemon restores the last active scene on boot (`start_scene = "last"` default). Capture or create a scene, activate it, then confirm it is still selected before quitting.

@@ -46,13 +46,14 @@ Release notes have two canonical homes:
 
 ## Release channels
 
-Every channel below is updated automatically when a release is tagged. There is
-no manual publishing lag between them.
+Public CI updates the Linux, Windows, AUR, npm, and PyPI channels from release
+tags. Signed macOS artifacts and their Homebrew metadata are promoted manually
+after the release acceptance checkpoint passes.
 
 | Channel | What ships there |
 |---|---|
-| [GitHub Releases](https://github.com/hyperb1iss/hypercolor/releases) | Linux tarballs and `.deb` packages, macOS DMGs, Windows NSIS installer, checksums |
-| Homebrew | `hypercolor` formula (CLI and daemon, with `brew services`) and `hypercolor-app` cask (desktop app) |
+| [GitHub Releases](https://github.com/hyperb1iss/hypercolor/releases) | Linux tarballs and `.deb` packages, Windows NSIS installer, checksums, and accepted signed macOS artifacts when attached manually |
+| Homebrew | Manually updated `hypercolor` formula (CLI and daemon, with `brew services`) and `hypercolor-app` cask (desktop app) |
 | AUR | `hypercolor-bin` prebuilt package |
 | npm | [`hypercolor`](https://www.npmjs.com/package/hypercolor) effect SDK and [`create-hypercolor`](https://www.npmjs.com/package/create-hypercolor) scaffolder |
 | PyPI | [`hypercolor`](https://pypi.org/project/hypercolor/) Python client |

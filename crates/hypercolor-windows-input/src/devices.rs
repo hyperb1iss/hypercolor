@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use hypercolor_types::host_input::{HostInputCapabilities, HostInputDevice};
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::UI::Input::{
     GetRawInputDeviceInfoW, GetRawInputDeviceList, RAWINPUTDEVICELIST, RID_DEVICE_INFO,
@@ -104,6 +105,16 @@ impl DeviceCache {
             kind,
             session_generation: self.session_generation,
             device_generation,
+            host_device: Arc::new(HostInputDevice {
+                source_id: Arc::from(format!(
+                    "windows:null:{kind_name}:s{}:d{device_generation}",
+                    self.session_generation
+                )),
+                label: Arc::from(format!("Windows null-device {kind_name}")),
+                capabilities: capabilities(kind),
+                session_generation: self.session_generation,
+                device_generation,
+            }),
         });
         match kind {
             RawDeviceKind::Keyboard => self.null_keyboard = Some(Arc::clone(&device)),
@@ -172,16 +183,24 @@ impl DeviceCache {
     fn install(&mut self, handle: HANDLE, metadata: DeviceMetadata) -> DeviceResolution {
         let device_generation = self.allocate_device_generation();
         let kind_name = kind_name(metadata.kind);
+        let source_id: Arc<str> = Arc::from(format!(
+            "windows:{kind_name}:s{}:d{device_generation}:{}",
+            self.session_generation, metadata.interface_path
+        ));
         let device = Arc::new(RawDeviceDescriptor {
-            source_id: Arc::from(format!(
-                "windows:{kind_name}:s{}:d{device_generation}:{}",
-                self.session_generation, metadata.interface_path
-            )),
+            source_id: Arc::clone(&source_id),
             interface_path: Some(metadata.interface_path),
-            label: metadata.label,
+            label: Arc::clone(&metadata.label),
             kind: metadata.kind,
             session_generation: self.session_generation,
             device_generation,
+            host_device: Arc::new(HostInputDevice {
+                source_id,
+                label: metadata.label,
+                capabilities: capabilities(metadata.kind),
+                session_generation: self.session_generation,
+                device_generation,
+            }),
         });
         let retired = self
             .entries
@@ -216,10 +235,17 @@ impl DeviceCache {
         let device = Arc::new(RawDeviceDescriptor {
             source_id: Arc::clone(&existing.source_id),
             interface_path: existing.interface_path.clone(),
-            label: metadata.label,
+            label: Arc::clone(&metadata.label),
             kind: existing.kind,
             session_generation: existing.session_generation,
             device_generation: existing.device_generation,
+            host_device: Arc::new(HostInputDevice {
+                source_id: Arc::clone(&existing.source_id),
+                label: metadata.label,
+                capabilities: capabilities(existing.kind),
+                session_generation: existing.session_generation,
+                device_generation: existing.device_generation,
+            }),
         });
         self.entries.insert(key, Arc::clone(&device));
         DeviceResolution {
@@ -255,6 +281,19 @@ const fn kind_name(kind: RawDeviceKind) -> &'static str {
     match kind {
         RawDeviceKind::Keyboard => "keyboard",
         RawDeviceKind::Mouse => "mouse",
+    }
+}
+
+const fn capabilities(kind: RawDeviceKind) -> HostInputCapabilities {
+    match kind {
+        RawDeviceKind::Keyboard => HostInputCapabilities {
+            keyboard: true,
+            pointer: false,
+        },
+        RawDeviceKind::Mouse => HostInputCapabilities {
+            keyboard: false,
+            pointer: true,
+        },
     }
 }
 

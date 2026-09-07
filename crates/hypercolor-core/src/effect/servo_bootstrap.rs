@@ -1,128 +1,149 @@
-//! Servo feature bootstrap helpers.
+//! Servo rendering-context bootstrap.
 //!
-//! This module is intentionally minimal for Phase 6.1:
-//! - verify that `servo` is wired correctly behind a crate feature
-//! - provide a tiny API to create a headless rendering context
-//! - keep all Servo-specific types out of non-Servo builds
+//! The worker asks one [`ServoRenderPlatform`] (selected by chaining the GPU
+//! interop crates' stub-everywhere constructors) for a rendering context and
+//! applies the GPU-import policy here: attempt a GPU-importable context when
+//! the mode allows it, fail hard when the mode requires it, and otherwise fall
+//! back to the platform's CPU context or Servo's portable software context.
 
 use std::rc::Rc;
 
 use anyhow::{Result, anyhow};
 use dpi::PhysicalSize;
+use hypercolor_gpu_frame::servo::ServoRenderPlatform;
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_gpu_frame::servo::{ServoGpuAdapterIdentity, ServoGpuFrameImporter};
 use servo::{RenderingContext, SoftwareRenderingContext};
-
-#[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-use hypercolor_linux_gpu_interop::{LinuxServoRenderDevice, LinuxServoRenderingContext};
-#[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
-use hypercolor_macos_gpu_interop::MacosHardwareRenderingContext;
-#[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
-use hypercolor_windows_gpu_interop::{WindowsAngleRenderingContext, WindowsDxgiAdapterIdentity};
-#[cfg(target_os = "windows")]
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-#[cfg(target_os = "windows")]
-use servo::WindowRenderingContext;
-#[cfg(target_os = "windows")]
-use std::cell::RefCell;
-#[cfg(target_os = "windows")]
-use tao::event_loop::{EventLoop, EventLoopBuilder};
-#[cfg(target_os = "windows")]
-use tao::platform::windows::EventLoopBuilderExtWindows;
-#[cfg(target_os = "windows")]
-use tao::window::{Window, WindowBuilder};
-#[cfg(any(
-    all(target_os = "macos", feature = "servo-gpu-import"),
-    all(target_os = "windows", feature = "servo-gpu-import")
-))]
+#[cfg(feature = "servo-gpu-import")]
 use tracing::warn;
 
-#[cfg(target_os = "windows")]
-thread_local! {
-    static SERVO_RENDER_WINDOWS: RefCell<Vec<WindowsServoWindow>> = const { RefCell::new(Vec::new()) };
-}
-
-#[cfg(target_os = "windows")]
-struct WindowsServoWindow {
-    _event_loop: EventLoop<()>,
-    _window: Window,
-}
-
+/// A rendering context for one Servo session, plus the importer that reads
+/// its frames back into wgpu when the context supports GPU import.
 pub(crate) struct ServoRenderingContextHandle {
     pub(crate) rendering_context: Rc<dyn RenderingContext>,
-    #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-    pub(crate) linux_context: Option<Rc<LinuxServoRenderingContext>>,
-    #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
-    pub(crate) macos_hardware_context: Option<Rc<MacosHardwareRenderingContext>>,
-    #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
-    pub(crate) windows_angle_context: Option<Rc<WindowsAngleRenderingContext>>,
+    #[cfg(feature = "servo-gpu-import")]
+    pub(crate) gpu_importer: Option<Box<dyn ServoGpuFrameImporter>>,
 }
 
 impl ServoRenderingContextHandle {
-    fn new(rendering_context: Rc<dyn RenderingContext>) -> Self {
+    fn cpu(rendering_context: Rc<dyn RenderingContext>) -> Self {
         Self {
             rendering_context,
-            #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-            linux_context: None,
-            #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
-            macos_hardware_context: None,
-            #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
-            windows_angle_context: None,
-        }
-    }
-
-    #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-    fn linux_software(context: Rc<LinuxServoRenderingContext>) -> Self {
-        let rendering_context: Rc<dyn RenderingContext> = context.clone();
-        Self {
-            rendering_context,
-            linux_context: Some(context),
-            #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
-            windows_angle_context: None,
-        }
-    }
-
-    #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
-    fn macos_hardware(context: Rc<MacosHardwareRenderingContext>) -> Self {
-        let rendering_context: Rc<dyn RenderingContext> = context.clone();
-        Self {
-            rendering_context,
-            #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-            linux_context: None,
-            macos_hardware_context: Some(context),
-            #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
-            windows_angle_context: None,
-        }
-    }
-
-    #[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
-    fn windows_angle(context: Rc<WindowsAngleRenderingContext>) -> Self {
-        let rendering_context: Rc<dyn RenderingContext> = context.clone();
-        Self {
-            rendering_context,
-            #[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-            linux_context: None,
-            #[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
-            macos_hardware_context: None,
-            windows_angle_context: Some(context),
+            #[cfg(feature = "servo-gpu-import")]
+            gpu_importer: None,
         }
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "servo-gpu-import"))]
-pub(crate) fn bootstrap_linux_shared_rendering_context(
-    parent: Rc<LinuxServoRenderDevice>,
-    width: u32,
-    height: u32,
-) -> Result<ServoRenderingContextHandle> {
-    let context = Rc::new(parent.create_rendering_context(width, height).map_err(|error| {
-        anyhow!("failed to create Linux Servo offscreen render target ({width}x{height}): {error:?}")
-    })?);
-    Ok(ServoRenderingContextHandle::linux_software(context))
+/// The platform selected for this worker thread, if any.
+///
+/// Platforms hold per-thread state (a shared GL device, hidden-window
+/// keepalives), so one host lives for the life of the Servo worker.
+pub(crate) struct ServoPlatformHost {
+    platform: Option<Box<dyn ServoRenderPlatform>>,
+}
+
+impl ServoPlatformHost {
+    /// Select the platform for the current host by asking each interop crate
+    /// in turn; every constructor returns `None` off its operating system.
+    pub(crate) fn select() -> Self {
+        let platform = None
+            .or_else(hypercolor_windows_gpu_interop::servo_render_platform)
+            .or_else(select_gpu_import_platform);
+        Self { platform }
+    }
+
+    /// Create the rendering context for a new session.
+    pub(crate) fn create_rendering_context(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<ServoRenderingContextHandle> {
+        #[cfg(feature = "servo-gpu-import")]
+        if crate::effect::servo_gpu_import_should_attempt()
+            && let Some(handle) = self.try_create_gpu_import_context(width, height)?
+        {
+            return Ok(handle);
+        }
+
+        self.create_cpu_rendering_context(width, height)
+    }
+
+    fn create_cpu_rendering_context(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<ServoRenderingContextHandle> {
+        if let Some(platform) = self.platform.as_mut()
+            && let Some(rendering_context) = platform.create_cpu_rendering_context(width, height)?
+        {
+            return Ok(ServoRenderingContextHandle::cpu(rendering_context));
+        }
+        bootstrap_software_rendering_context_handle(width, height)
+    }
+
+    /// Attempt a GPU-importable context. `Ok(None)` means the platform has
+    /// no GPU path here (or it failed in `Auto` mode) and the caller should
+    /// fall back to a CPU context.
+    #[cfg(feature = "servo-gpu-import")]
+    fn try_create_gpu_import_context(
+        &mut self,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<ServoRenderingContextHandle>> {
+        let required = matches!(
+            crate::effect::servo_gpu_import_mode(),
+            hypercolor_types::config::ServoGpuImportMode::On
+        );
+        let Some(platform) = self.platform.as_mut() else {
+            if required {
+                return Err(anyhow!(
+                    "Servo GPU import is required but this host has no Servo GPU platform"
+                ));
+            }
+            return Ok(None);
+        };
+        let adapter = crate::effect::servo_gpu_import_adapter_info().map(|adapter_info| {
+            ServoGpuAdapterIdentity {
+                vendor_id: adapter_info.vendor_id,
+                device_id: adapter_info.device_id,
+            }
+        });
+        match platform.create_gpu_import_session(width, height, adapter) {
+            Ok(session) => Ok(Some(ServoRenderingContextHandle {
+                rendering_context: session.rendering_context,
+                gpu_importer: Some(session.importer),
+            })),
+            Err(error) if required => Err(anyhow!(
+                "failed to create required {} Servo GPU import context: {error:#}",
+                platform.name()
+            )),
+            Err(error) => {
+                warn!(
+                    %error,
+                    platform = platform.name(),
+                    "Servo GPU import context unavailable; using CPU context"
+                );
+                Ok(None)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "servo-gpu-import")]
+fn select_gpu_import_platform() -> Option<Box<dyn ServoRenderPlatform>> {
+    None.or_else(hypercolor_linux_gpu_interop::servo_render_platform)
+        .or_else(hypercolor_macos_gpu_interop::servo_render_platform)
+}
+
+#[cfg(not(feature = "servo-gpu-import"))]
+fn select_gpu_import_platform() -> Option<Box<dyn ServoRenderPlatform>> {
+    None
 }
 
 /// Create a headless Servo software rendering context.
 ///
-/// This is the first integration seam for HTML effect rendering. Later phases
-/// will layer `ServoBuilder`, `WebView`, and runtime JS/audio injection on top.
+/// This is the portable CPU-readback path every platform can fall back to.
 ///
 /// # Errors
 ///
@@ -136,143 +157,11 @@ pub fn bootstrap_software_rendering_context(
     })
 }
 
-#[cfg_attr(target_os = "windows", allow(dead_code))]
-pub(crate) fn bootstrap_software_rendering_context_handle(
+fn bootstrap_software_rendering_context_handle(
     width: u32,
     height: u32,
 ) -> Result<ServoRenderingContextHandle> {
-    Ok(ServoRenderingContextHandle::new(Rc::new(
+    Ok(ServoRenderingContextHandle::cpu(Rc::new(
         bootstrap_software_rendering_context(width, height)?,
     )))
-}
-
-/// Create the rendering context used by Hypercolor's Servo worker.
-///
-/// Windows uses a hidden native window plus Servo's offscreen context. Servo's
-/// software WARP context can load pages there, but WebGL effects panic during
-/// ANGLE surface import before any pixels can be read back.
-#[cfg(all(target_os = "windows", not(feature = "servo-gpu-import")))]
-pub(crate) fn bootstrap_rendering_context(
-    width: u32,
-    height: u32,
-) -> Result<ServoRenderingContextHandle> {
-    bootstrap_windows_window_rendering_context(width, height)
-}
-
-#[cfg(all(target_os = "windows", feature = "servo-gpu-import"))]
-pub(crate) fn bootstrap_rendering_context(
-    width: u32,
-    height: u32,
-) -> Result<ServoRenderingContextHandle> {
-    if crate::effect::servo_gpu_import_should_attempt() {
-        let adapter_identity = crate::effect::servo_gpu_import_adapter_info().map(|adapter_info| {
-            WindowsDxgiAdapterIdentity {
-                vendor_id: adapter_info.vendor_id,
-                device_id: adapter_info.device_id,
-            }
-        });
-        match WindowsAngleRenderingContext::new(width, height, adapter_identity) {
-            Ok(context) => {
-                return Ok(ServoRenderingContextHandle::windows_angle(Rc::new(context)));
-            }
-            Err(error)
-                if matches!(
-                    crate::effect::servo_gpu_import_mode(),
-                    hypercolor_types::config::ServoGpuImportMode::On
-                ) =>
-            {
-                return Err(anyhow!(
-                    "failed to create required Windows Servo ANGLE context: {error}"
-                ));
-            }
-            Err(error) => {
-                warn!(%error, "Windows Servo GPU import context unavailable; using hidden-window CPU context");
-            }
-        }
-    }
-
-    bootstrap_windows_window_rendering_context(width, height)
-}
-
-#[cfg(target_os = "windows")]
-fn bootstrap_windows_window_rendering_context(
-    width: u32,
-    height: u32,
-) -> Result<ServoRenderingContextHandle> {
-    let event_loop = EventLoopBuilder::new().with_any_thread(true).build();
-    let window = WindowBuilder::new()
-        .with_title("Hypercolor Servo Renderer")
-        .with_visible(false)
-        .with_decorations(false)
-        .with_inner_size(tao::dpi::PhysicalSize::new(width, height))
-        .build(&event_loop)
-        .map_err(|error| {
-            anyhow!("failed to create hidden Servo rendering window ({width}x{height}): {error}")
-        })?;
-
-    let display_handle = window.display_handle().map_err(|error| {
-        anyhow!("failed to get hidden Servo rendering display handle: {error:?}")
-    })?;
-    let window_handle = window.window_handle().map_err(|error| {
-        anyhow!("failed to get hidden Servo rendering window handle: {error:?}")
-    })?;
-    let size = PhysicalSize::new(width, height);
-    let parent = Rc::new(
-        WindowRenderingContext::new(display_handle, window_handle, size).map_err(|error| {
-            anyhow!("failed to create Servo WindowRenderingContext ({width}x{height}): {error:?}")
-        })?,
-    );
-    let context = parent.offscreen_context(size);
-
-    SERVO_RENDER_WINDOWS.with(|windows| {
-        windows.borrow_mut().push(WindowsServoWindow {
-            _event_loop: event_loop,
-            _window: window,
-        });
-    });
-
-    Ok(ServoRenderingContextHandle::new(Rc::new(context)))
-}
-
-#[cfg(all(target_os = "macos", feature = "servo-gpu-import"))]
-pub(crate) fn bootstrap_rendering_context(
-    width: u32,
-    height: u32,
-) -> Result<ServoRenderingContextHandle> {
-    if crate::effect::servo_gpu_import_should_attempt() {
-        match MacosHardwareRenderingContext::new(width, height) {
-            Ok(context) => {
-                return Ok(ServoRenderingContextHandle::macos_hardware(Rc::new(
-                    context,
-                )));
-            }
-            Err(error)
-                if matches!(
-                    crate::effect::servo_gpu_import_mode(),
-                    hypercolor_types::config::ServoGpuImportMode::On
-                ) =>
-            {
-                return Err(anyhow!(
-                    "failed to create required macOS Servo hardware context: {error}"
-                ));
-            }
-            Err(error) => {
-                warn!(%error, "macOS Servo hardware context unavailable; using software context");
-            }
-        }
-    }
-
-    bootstrap_software_rendering_context_handle(width, height)
-}
-
-#[cfg(not(any(
-    target_os = "windows",
-    all(target_os = "linux", feature = "servo-gpu-import"),
-    all(target_os = "macos", feature = "servo-gpu-import")
-)))]
-pub(crate) fn bootstrap_rendering_context(
-    width: u32,
-    height: u32,
-) -> Result<ServoRenderingContextHandle> {
-    bootstrap_software_rendering_context_handle(width, height)
 }

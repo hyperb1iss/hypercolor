@@ -4,9 +4,8 @@
 //! [`crate::shared`] and the arithmetic in [`crate::decode`] are not — that is
 //! the point of the split, and it is what lets Linux CI test the decoding.
 
-use crate::shared::{
-    RawInputBatch, RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState,
-};
+use crate::shared::{RawInputConfig, RawInputError, RawInputResult, SessionState, WorkerState};
+use hypercolor_types::host_input::HostInputBatch;
 
 /// Raw Input session placeholder for platforms without the API.
 pub struct RawInputSession {
@@ -21,7 +20,7 @@ impl RawInputSession {
     /// Always returns [`RawInputError::UnsupportedPlatform`].
     pub fn start(
         _config: RawInputConfig,
-        _sink: impl FnMut(RawInputBatch<'_>) + Send + 'static,
+        _sink: impl FnMut(HostInputBatch<'_>) + Send + 'static,
     ) -> RawInputResult<Self> {
         Err(RawInputError::UnsupportedPlatform)
     }

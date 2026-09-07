@@ -1,8 +1,8 @@
 use hypercolor_driver_api::DriverModule;
 use hypercolor_driver_govee::{
-    GoveeCapabilities, GoveeDriverModule, known_cloud_sku_count, known_sku_count, profile_for_sku,
+    GoveeCapabilities, GoveeConfig, GoveeDriverModule, known_cloud_sku_count, known_sku_count,
+    profile_for_sku,
 };
-use hypercolor_types::config::GoveeConfig;
 use hypercolor_types::device::DeviceClassHint;
 
 #[test]

@@ -141,8 +141,82 @@ fn source_is_degraded(source: &InputSourceStatus) -> bool {
             || (source.demanded && source.freshness == "stale"))
 }
 
+// Only host interaction sources speak for the input pipeline. Media,
+// network, and audio sources live in their own domains, and an
+// unsupported-on-this-platform media source must never degrade input
+// health or push its remediation into the input section.
 fn source_is_relevant(source: &InputSourceStatus) -> bool {
-    source.backend != "browser" && (source.configured || source.demanded)
+    source.kind == "interaction"
+        && source.backend != "browser"
+        && (source.configured || source.demanded)
+}
+
+/// Visual tone for the single settings status sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusLineTone {
+    Active,
+    Ready,
+    Warn,
+}
+
+/// The one sentence the Input section shows, or `None` when the section's
+/// own controls already tell the story (consent off, or the permission row
+/// is on screen).
+#[must_use]
+pub fn input_status_line(input: &InputStatus) -> Option<(StatusLineTone, String)> {
+    if !input.enabled {
+        return None;
+    }
+    match input_pipeline_state(input) {
+        InputPipelineState::ConsentOff => None,
+        InputPipelineState::Live => Some((
+            StatusLineTone::Active,
+            "Capturing input for the active effect.".to_owned(),
+        )),
+        InputPipelineState::Ready => Some((
+            StatusLineTone::Ready,
+            "Ready. Capture starts when an effect uses input.".to_owned(),
+        )),
+        InputPipelineState::Degraded => {
+            let sentence = input_status_remediation(input).map_or_else(
+                || "Input capture isn't working right now.".to_owned(),
+                |remedy| format!("Input capture isn't working right now. {remedy}"),
+            );
+            Some((StatusLineTone::Warn, sentence))
+        }
+        InputPipelineState::Unavailable => Some((
+            StatusLineTone::Warn,
+            "Host input isn't available on this system.".to_owned(),
+        )),
+    }
+}
+
+/// The one sentence the Screen Capture section shows, or `None` when the
+/// toggle or the permission row already tells the story.
+#[must_use]
+pub fn screen_status_line(input: &InputStatus) -> Option<(StatusLineTone, String)> {
+    let screen = input
+        .sources
+        .iter()
+        .find(|source| !source.retired && source.kind == "screen")?;
+
+    if screen.state == "live" {
+        return Some((StatusLineTone::Active, "Capturing your screen.".to_owned()));
+    }
+    let issue = primary_input_source_issue(screen);
+    if issue.is_some() || matches!(screen.state.as_str(), "failed" | "degraded" | "unavailable") {
+        let sentence = issue
+            .and_then(|issue| issue.remediation.clone())
+            .map_or_else(
+                || "Screen capture isn't working right now.".to_owned(),
+                |remedy| format!("Screen capture isn't working right now. {remedy}"),
+            );
+        return Some((StatusLineTone::Warn, sentence));
+    }
+    Some((
+        StatusLineTone::Ready,
+        "Ready. Starts when a screen effect runs.".to_owned(),
+    ))
 }
 
 /// Which remediation the banner should offer, if any.

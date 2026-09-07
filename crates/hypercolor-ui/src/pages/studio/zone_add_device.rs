@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
 
-use hypercolor_types::scene::{Zone, ZoneRole};
+use hypercolor_types::scene::ZoneRole;
 
 use crate::api;
 use crate::api::zones::{OutputAssignment, ZoneOutcome};
@@ -25,20 +25,13 @@ use crate::toasts;
 
 use super::StudioContext;
 
-/// Fallback canvas used when minting an `Output` for an unassigned device
-/// and the target zone's own canvas cannot be read. Minting prefers the
-/// target zone's dimensions, because a seeded hardware footprint is fitted
-/// to a canvas aspect ratio and is then persisted as-is.
-const MINT_CANVAS_WIDTH: u32 = 640;
-const MINT_CANVAS_HEIGHT: u32 = 480;
-
 /// The "+ Add device" control. Collapsed to a button until clicked,
 /// then a picker of every device not currently in `zone_id`.
 #[component]
 pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
     let devices = expect_context::<DevicesContext>();
-    let picking = RwSignal::new(false);
+    let picking = super::keyed_disclosure(studio.rail_disclosure, format!("add-picker::{zone_id}"));
     let zone_id = StoredValue::new(zone_id);
 
     let options = Memo::new(move |_| {
@@ -56,24 +49,22 @@ pub fn ZoneAddDevice(zone_id: String) -> impl IntoView {
             .filter_map(|device| {
                 let device_layout_id = device.layout_device_id.as_str();
                 let outputs_outside_target = scene
-                    .groups
+                    .zones
                     .iter()
-                    .filter(|group| group.id.to_string() != target)
-                    .flat_map(|group| group.layout.zones.iter())
-                    .filter(|output| output.device_id == device_layout_id)
+                    .filter(|zone| zone.id.to_string() != target)
+                    .flat_map(|zone| zone.members.iter())
+                    .filter(|member| member.device_id == device_layout_id)
                     .count();
-                let any_output = scene.groups.iter().any(|group| {
-                    group
-                        .layout
-                        .zones
+                let any_output = scene.zones.iter().any(|zone| {
+                    zone.members
                         .iter()
-                        .any(|output| output.device_id == device_layout_id)
+                        .any(|member| member.device_id == device_layout_id)
                 });
                 // Already entirely in this zone; nothing to move.
                 if any_output && outputs_outside_target == 0 {
                     return None;
                 }
-                let location = device_location(&scene.groups, device_layout_id, &target);
+                let location = device_location(&scene.zones, device_layout_id, &target);
                 Some((
                     device.layout_device_id.clone(),
                     format!("{} ({location})", device.name),
@@ -167,14 +158,14 @@ pub(super) fn assign_device_to_zone(
         return;
     };
     let mut assignments: Vec<OutputAssignment> = Vec::new();
-    for group in &scene.groups {
-        if group.id.to_string() == zone_id {
+    for zone in &scene.zones {
+        if zone.id.to_string() == zone_id {
             continue;
         }
-        for output in &group.layout.zones {
-            if output.device_id == device.layout_device_id {
+        for member in &zone.members {
+            if member.device_id == device.layout_device_id {
                 assignments.push(OutputAssignment::Existing {
-                    id: output.id.clone(),
+                    id: member.id.to_string(),
                 });
             }
         }
@@ -182,14 +173,8 @@ pub(super) fn assign_device_to_zone(
     let mut preserve_placement = false;
     if assignments.is_empty() {
         // A seeded footprint is fitted to a canvas aspect ratio, so it has to
-        // be built against the canvas it will actually live on.
-        let canvas = scene
-            .groups
-            .iter()
-            .find(|group| group.id.to_string() == zone_id)
-            .map_or((MINT_CANVAS_WIDTH, MINT_CANVAS_HEIGHT), |group| {
-                (group.layout.canvas_width, group.layout.canvas_height)
-            });
+        // be built against the daemon's canvas, the one it will live on.
+        let canvas = studio.render_canvas_size.get_untracked();
         let minted = mint_device_zones(&device, canvas);
         assignments = minted.assignments;
         preserve_placement = minted.preserve_placement;
@@ -200,18 +185,10 @@ pub(super) fn assign_device_to_zone(
         toasts::toast_error("Device has no channels to add");
         return;
     }
-    let scene_id = scene.id.clone();
-    let revision = scene.groups_revision;
+    let revision = scene.revision;
     let device_name = device.name.clone();
     spawn_local(async move {
-        match api::zones::assign_devices(
-            &scene_id,
-            &zone_id,
-            assignments,
-            preserve_placement,
-            Some(revision),
-        )
-        .await
+        match api::zones::assign_devices(&zone_id, assignments, preserve_placement, revision).await
         {
             Ok(ZoneOutcome::Applied(_)) => {
                 toasts::toast_success(&format!("{device_name} added to the zone"));
@@ -234,7 +211,7 @@ struct MintedOutputs {
 }
 
 /// Build a fresh `Output` per channel for a device that no scene
-/// has placed: one zone per declared `ZoneSummary`, or a single zone
+/// has placed: one zone per declared `SegmentSummary`, or a single zone
 /// for a device with no channels.
 ///
 /// A device with a seeded footprint (the Push 2's pads, display, and
@@ -249,11 +226,17 @@ fn mint_device_zones(
     let physical_id = device.id.as_str();
     let name = device.name.as_str();
     let total_leds = device.total_leds as usize;
+    let light_segments = device
+        .segments
+        .iter()
+        .filter(|segment| is_light_segment(segment))
+        .cloned()
+        .collect::<Vec<_>>();
 
     if let Some(seed) = layout_geometry::seeded_device_layout(
         layout_id,
         name,
-        &device.zones,
+        &light_segments,
         canvas_width,
         canvas_height,
         0,
@@ -267,7 +250,7 @@ fn mint_device_zones(
                     // non-alphanumeric character to '_', so device ids that
                     // differ only in punctuation collapse together — two Push
                     // 2s on usb paths `...-0-12` and `...-0-1-2` land on the
-                    // same id. assign_device_zone treats an output id as a
+                    // same id. assign_output_to_zone treats an output id as a
                     // scene-global ownership key, so the second device would
                     // silently take over the first one's outputs.
                     output.id = format!("zone_{}", uuid_v4_hex());
@@ -278,7 +261,7 @@ fn mint_device_zones(
         };
     }
 
-    if device.zones.is_empty() {
+    if device.segments.is_empty() {
         return MintedOutputs {
             assignments: vec![OutputAssignment::New(Box::new(
                 layout_utils::create_default_zone(
@@ -287,8 +270,8 @@ fn mint_device_zones(
                     name,
                     None,
                     total_leds,
-                    MINT_CANVAS_WIDTH,
-                    MINT_CANVAS_HEIGHT,
+                    canvas_width,
+                    canvas_height,
                     0,
                 ),
             ))],
@@ -296,8 +279,7 @@ fn mint_device_zones(
         };
     }
     MintedOutputs {
-        assignments: device
-            .zones
+        assignments: light_segments
             .iter()
             .enumerate()
             .map(|(order, channel)| {
@@ -307,8 +289,8 @@ fn mint_device_zones(
                     name,
                     Some(channel),
                     total_leds,
-                    MINT_CANVAS_WIDTH,
-                    MINT_CANVAS_HEIGHT,
+                    canvas_width,
+                    canvas_height,
                     i32::try_from(order).unwrap_or(i32::MAX),
                 )))
             })
@@ -317,39 +299,94 @@ fn mint_device_zones(
     }
 }
 
+fn is_light_segment(segment: &api::SegmentSummary) -> bool {
+    segment.led_count > 0
+        && !matches!(
+            segment.topology_hint,
+            Some(api::SegmentTopologySummary::Display { .. })
+        )
+}
+
 /// The non-target zone that currently owns a device's outputs, or
 /// "unassigned" if no zone holds any. Drives the location hint in the
 /// picker label so the user sees where the move comes from.
-fn device_location(groups: &[Zone], device_id: &str, target: &str) -> String {
-    for group in groups {
-        if group.role == ZoneRole::Display {
+fn device_location(zones: &[api::ZoneResource], device_id: &str, target: &str) -> String {
+    for zone in zones {
+        if zone.role == ZoneRole::Display {
             continue;
         }
-        if group.id.to_string() == target {
+        if zone.id.to_string() == target {
             continue;
         }
-        if group
-            .layout
-            .zones
+        if zone
+            .members
             .iter()
-            .any(|output| output.device_id == device_id)
+            .any(|member| member.device_id == device_id)
         {
-            return format!("in {}", zone_display_name(group));
+            return format!("in {}", zone_display_name(zone));
         }
     }
     "unassigned".to_owned()
 }
 
 /// Display name for a zone: the user's typed name, or "Default zone" for an
-/// unnamed `Primary` group, so it never surfaces a raw role string. Shared
+/// unnamed `Primary` zone, so it never surfaces a raw role string. Shared
 /// with the device card's move-to-zone picker.
-pub(super) fn zone_display_name(group: &Zone) -> String {
-    let trimmed = group.name.trim();
-    if group.role == ZoneRole::Primary
+pub(super) fn zone_display_name(zone: &api::ZoneResource) -> String {
+    let trimmed = zone.name.trim();
+    if zone.role == ZoneRole::Primary
         && (trimmed.is_empty() || trimmed.eq_ignore_ascii_case("primary"))
     {
         "Default zone".to_owned()
     } else {
-        group.name.clone()
+        zone.name.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn push_segment(
+        name: &str,
+        led_count: u32,
+        topology_hint: api::SegmentTopologySummary,
+    ) -> api::SegmentSummary {
+        api::SegmentSummary {
+            id: name.to_ascii_lowercase().replace(' ', "_"),
+            name: name.to_owned(),
+            led_count,
+            topology: "fixture".to_owned(),
+            topology_hint: Some(topology_hint),
+        }
+    }
+
+    #[test]
+    fn light_segment_filter_excludes_the_push_display_surface() {
+        let segments = [
+            push_segment("Buttons Above", 40, api::SegmentTopologySummary::Strip),
+            push_segment("Buttons Below", 40, api::SegmentTopologySummary::Strip),
+            push_segment(
+                "Pads",
+                64,
+                api::SegmentTopologySummary::Matrix { rows: 8, cols: 8 },
+            ),
+            push_segment(
+                "Display",
+                0,
+                api::SegmentTopologySummary::Display {
+                    width: 960,
+                    height: 160,
+                    circular: false,
+                },
+            ),
+        ];
+        let names = segments
+            .iter()
+            .filter(|segment| is_light_segment(segment))
+            .map(|segment| segment.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, ["Buttons Above", "Buttons Below", "Pads"]);
     }
 }

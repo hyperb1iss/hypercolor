@@ -10,7 +10,7 @@ Hypercolor is an open-source RGB lighting orchestration engine for Linux, Window
 
 Effects are HTML Canvas pages rendered by an embedded Servo browser. Audio FFT, screen capture, and keyboard input feed the render every frame. A spatial sampler maps canvas pixels onto your physical LED positions. The result: one effect paints your whole rig, synchronized, regardless of how many devices or protocols are involved.
 
-{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard showing the Neon City effect active across multiple devices") }}
+{{< img path="img/ui/dashboard.webp" alt="Hypercolor dashboard showing the Neon City effect active across multiple devices" />}}
 
 ## ⚡ Where to start
 
@@ -20,25 +20,25 @@ Your path through this guide depends on two questions: **how you're installing**
 
 Not everyone needs to build from source. The right starting point depends on your OS and your goals.
 
-| If you are… | Start here |
-|---|---|
-| A Linux user who wants a quick install | [Choose your install](@/guide/choose-your-install.md) → prebuilt one-liner |
-| On Windows or macOS | [Choose your install](@/guide/choose-your-install.md) → desktop package |
-| Running Arch Linux | [Choose your install](@/guide/choose-your-install.md) → AUR package |
-| A developer hacking on Hypercolor itself | [Installation](@/guide/installation.md) → build from source |
+| If you are…                              | Start here                                                                 |
+| ---------------------------------------- | -------------------------------------------------------------------------- |
+| A Linux user who wants a quick install   | [Choose your install](@/guide/choose-your-install.md) → prebuilt one-liner |
+| On Windows or macOS                      | [Choose your install](@/guide/choose-your-install.md) → desktop package    |
+| Running Arch Linux                       | [Choose your install](@/guide/choose-your-install.md) → AUR package        |
+| A developer hacking on Hypercolor itself | [Installation](@/guide/installation.md) → build from source                |
 
 ### Pick your interface
 
 Hypercolor has six entry points. Understanding which one you want saves a lot of confusion.
 
-| Interface | What it is | When to use it |
-|---|---|---|
-| **Desktop app** | Tauri shell that owns the tray, supervises the daemon, and renders the web UI natively | The recommended starting point on Windows and macOS; available on Linux too |
-| **Web UI** | Leptos app served by the daemon at `http://localhost:9420` | Daily use: browsing effects, tweaking controls, managing layouts |
-| **TUI** | Ratatui terminal dashboard with live LED preview and audio spectrum | SSH sessions, headless setups, or if you live in the terminal |
-| **CLI** | `hypercolor` binary for scripting and quick control | Automation, shell scripts, CI pipelines |
-| **Tray applet** | System tray icon with a brightness submenu and quick actions | Minimal desktop footprint; change effects without opening a window |
-| **REST + WebSocket API** | Daemon's full HTTP interface on `:9420` | Integrations, agents, and anything programmatic |
+| Interface                | What it is                                                                             | When to use it                                                              |
+| ------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **Desktop app**          | Tauri shell that owns the tray, supervises the daemon, and renders the web UI natively | The recommended starting point on Windows and macOS; available on Linux too |
+| **Web UI**               | Leptos app served by the daemon at `http://localhost:9420`                             | Daily use: browsing effects, tweaking controls, managing layouts            |
+| **TUI**                  | Ratatui terminal dashboard with live LED preview and audio spectrum                    | SSH sessions, headless setups, or if you live in the terminal               |
+| **CLI**                  | `hypercolor` binary for scripting and quick control                                    | Automation, shell scripts, CI pipelines                                     |
+| **App tray**             | System tray icon with a brightness submenu and quick actions                           | Minimal desktop footprint; change effects without opening a window          |
+| **REST + WebSocket API** | Daemon's full HTTP interface on `:9420`                                                | Integrations, agents, and anything programmatic                             |
 
 [The pieces](@/guide/the-pieces.md) walks through how these connect and which to open first.
 
@@ -56,7 +56,7 @@ This section takes you from zero to a fully configured rig.
 **First steps**
 
 - [First launch](@/guide/first-launch.md): what happens on first run: the welcome wizard, device discovery, autostart
-- [Your first 10 minutes](@/guide/your-first-10-minutes.md): opinionated happy path from opening the app to a saved profile
+- [Your first 10 minutes](@/guide/your-first-10-minutes.md): opinionated happy path from opening the app to a saved scene
 - [Quick start](@/guide/quick-start.md): zero to RGB in five minutes via CLI and web UI
 - [First session](@/guide/first-session.md): longer hands-on walkthrough covering the full feature set
 
@@ -65,7 +65,7 @@ This section takes you from zero to a fully configured rig.
 - [The TUI](@/guide/tui.md): terminal dashboard with LED preview, audio spectrum, and fullscreen mode
 - [Finding devices](@/guide/finding-devices.md): USB discovery, network mDNS, pairing Hue and Nanoleaf, udev permission fixes
 - [Audio setup](@/guide/audio-setup.md): configure an audio loopback source for audio-reactive effects
-- [Profiles and scenes](@/guide/profiles-and-scenes.md): save full rig state in a profile, automate lighting with scenes
+- [Scenes and snapshots](@/guide/scenes-and-snapshots.md): save full rig state and connect external automation
 - [Configuration](@/guide/configuration.md): full config reference for `hypercolor.toml`
 - [Desktop app](@/guide/desktop-app.md): the Tauri shell: tray menu, autostart, diagnostics, window controls
 
@@ -76,13 +76,13 @@ This section takes you from zero to a fully configured rig.
 
 ## How the engine works
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
-    subgraph Input
-        A[Audio FFT]
-        B[Screen capture]
-        C[Keyboard / MIDI]
-    end
+subgraph Input
+A[Audio FFT]
+B[Screen capture]
+C[Keyboard / MIDI]
+end
 
     subgraph Engine
         D[Effect renderer<br>Servo · Canvas · GLSL]
@@ -100,7 +100,8 @@ graph LR
     A & B & C --> D
     D --> E --> SF --> F
     F --> G & H & I
-{% end %}
+
+{% </mermaid> %}
 
 Effects render into a virtual RGBA canvas (640×480 by default, tunable). **SparkleFlinger**, the render-thread compositor, latches the newest surface from each active layer at the frame boundary and blends them into one canonical frame per tick. The spatial engine samples that frame at each LED's physical position using normalized `[0.0, 1.0]` coordinates, so effects stay resolution-independent regardless of canvas size. Device output is queued asynchronously so a slow device never stalls the render loop.
 
@@ -112,9 +113,9 @@ Hypercolor currently ships working drivers for 179 devices across 12 driver fami
 
 If you own hardware that is not yet supported, see [contributing a driver](@/contributing/adding-a-driver.md).
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **Remove conflicting RGB software before starting.** openrazer daemon, OpenRGB, Aura Sync, and iCUE all grab USB HID devices exclusively. If one of them is running when Hypercolor starts, your devices will appear in `lsusb` but not in `hypercolor devices list`. Stop them first, or run `hypercolor diagnose` to identify the conflict.
-{% end %}
+{% </callout> %}
 
 ## Effects
 
@@ -122,23 +123,23 @@ Hypercolor renders effects through an embedded Servo browser (HTML Canvas and We
 
 The TypeScript SDK is published to npm as [`hypercolor`](https://www.npmjs.com/package/hypercolor). Scaffold a workspace with `bun create hypercolor`; see [effects setup](@/effects/setup.md).
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
 ## Interfaces
 
 **Web UI**: served by the daemon at `http://localhost:9420` with no separate process needed. Browse effects, adjust controls live, manage devices, and design spatial layouts from any browser.
 
-{{ img(path="img/ui/studio.webp", alt="Web UI showing the Studio zone editor") }}
+{{< img path="img/ui/studio.webp" alt="Web UI showing the Studio zone editor" />}}
 
-**Studio**: the zone editor inside the web UI. Divide your canvas into zones, each running an independent effect with its own controls and priority. See the [Studio section](@/studio/_index.md) for the full walkthrough.
+**Studio**: the zone editor inside the web UI. Divide your canvas into zones, each running an independent effect with its own controls. See the [Studio section](@/studio/_index.md) for the full walkthrough.
 
 **TUI**: a Ratatui terminal dashboard with true-color LED preview, audio visualization, and fullscreen effect rendering.
 
-{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard with live preview and device table") }}
+{{< img path="img/tui/tui-dashboard.png" alt="TUI dashboard with live preview and device table" />}}
 
 **CLI**: the `hypercolor` binary talks to the daemon over HTTP. Every action you can take in the UI is available via the CLI. See the [CLI reference](@/api/cli.md).
 
-**MCP server**: 16 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
+**MCP server**: 17 tools, 5 resources, and 3 prompts for AI assistant integration (Claude Code, Cursor, and friends). The MCP server is **disabled by default**; see the [MCP server reference](@/api/mcp.md) for how to enable it and connect your agent.
 
 ## Getting help
 

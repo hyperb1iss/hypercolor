@@ -1,5 +1,7 @@
 //! Native Corsair iCUE LINK hub protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
 
@@ -17,7 +19,7 @@ use crate::drivers::corsair::types::{
 };
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -90,6 +92,7 @@ impl CorsairLinkProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 
@@ -333,11 +336,16 @@ impl Protocol for CorsairLinkProtocol {
     }
 
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
-        self.state
+        let last_frame_commands = self
+            .state
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .last_frame_commands
-            .clone()
+            .clone();
+        let mut commands = Vec::with_capacity(last_frame_commands.len() + 1);
+        commands.push(Self::command(LinkCommand::SoftwareMode, &[], true));
+        commands.extend(last_frame_commands);
+        commands
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
@@ -357,13 +365,13 @@ impl Protocol for CorsairLinkProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         self.state
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .children
             .iter()
-            .map(|child| ProtocolZone {
+            .map(|child| SegmentInfo {
                 name: child.zone_name(),
                 led_count: child.led_count,
                 topology: child.topology(),

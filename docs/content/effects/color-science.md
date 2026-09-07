@@ -41,9 +41,9 @@ The safe vivid range is **180-330°** (cyan through magenta). This blue-anchored
 
 The danger zone is **30-90°** (orange through yellow-green). Mixing red and green at similar intensities produces colors that read as washed-out, greenish, or disproportionately bright.
 
-{% callout(type="tip", title="The yellow problem") %}
+{% <callout type="tip" title="The yellow problem"> %}
 Yellow (R=255, G=255, B=0) is the most deceptive hue on LEDs. On screen it looks rich. On hardware, red and green at full power produces an extremely bright, slightly greenish wash that barely reads as yellow. Reduce green to about 60-70% of red for a warmer, more convincing yellow.
-{% end %}
+{% </callout> %}
 
 ## Saturation: go hard or go home
 
@@ -94,9 +94,9 @@ For any RGB color, compute `min(R,G,B) / max(R,G,B)`. Keep this below **0.3** fo
 
 **Never run all three channels above 200/255 simultaneously unless you want white.** For any vivid color, at least one channel should be at or near 0.
 
-{% callout(type="warning", title="The HSL trap") %}
+{% <callout type="warning" title="The HSL trap"> %}
 HSL is intuitive for design tools but dangerous for LED work. An HSL lightness of 70% looks fine on screen but produces a washed-out mess on hardware. Prefer HSV or OKLCH for LED color calculations.
-{% end %}
+{% </callout> %}
 
 ## Gamma correction
 
@@ -110,18 +110,18 @@ corrected = 255 * (input / 255) ^ gamma
 
 **Gamma 2.2** is the standard starting point. Use 2.8 for high-brightness environments, 1.8 for dim rooms.
 
-Key values at gamma 2.2:
+Key values at gamma 2.2, rounded to the nearest integer:
 
 | Input | Output | Perception          |
 | ----- | ------ | ------------------- |
 | 0     | 0      | Off                 |
-| 32    | 2      | Barely visible      |
-| 64    | 10     | Very dim            |
-| 128   | 55     | Perceptual midpoint |
+| 32    | 3      | Barely visible      |
+| 64    | 12     | Very dim            |
+| 128   | 56     | Perceptual midpoint |
 | 192   | 137    | Moderately bright   |
 | 255   | 255    | Full brightness     |
 
-Perceptual 50% brightness is PWM 55/255, not 128/255. This is why uncorrected fades look wrong.
+Perceptual 50% brightness lands near PWM 56/255, not 128/255: `0.5 ^ 2.2` is `0.2176`, about 21.8 percent of full scale. This is why uncorrected fades look wrong.
 
 TypeScript implementation:
 
@@ -132,6 +132,10 @@ function gammaCorrect(value: number, gamma = 2.2): number {
 ```
 
 Or use OKLCH, which has perceptually uniform lightness built in. Changes in the L component produce visually proportional brightness changes on hardware.
+
+{% <callout type="warning"> %}
+**The engine owns the transfer, not your effect.** Hypercolor applies the IEC 61966-2-1 sRGB transfer in `crates/hypercolor-color/src/transfer.rs`, the compositor blends in `LinearRgba`, and device encoding (`crates/hypercolor-color/src/encode.rs`) adds no further LED gamma on top. So the formula above is background for reasoning about perception, not a step to run over your canvas output: an effect that gamma-corrects its own pixels before writing them double-encodes and the result reads crushed and dim. Write ordinary sRGB colors to the canvas and let the pipeline do the conversion.
+{% </callout> %}
 
 ## Color space hierarchy
 
@@ -233,14 +237,23 @@ That blend is not a naive sRGB lerp. The compositor decodes each pixel from sRGB
 
 | Layer blend mode | Behavior                                                  |
 | ---------------- | --------------------------------------------------------- |
-| Normal           | Standard alpha-over with layer opacity                    |
-| Add              | Additive in linear light (the layer equivalent of `lighter`) |
-| Screen           | Soft additive that never exceeds full white               |
-| Multiply         | Darken overlaps                                            |
+| `alpha`          | Standard alpha-over with layer opacity. The default.       |
+| `replace`        | Overwrite the scene beneath instead of compositing over it |
+| `add`            | Additive in linear light (the layer equivalent of `lighter`) |
+| `screen`         | Soft additive that never exceeds full white               |
+| `multiply`       | Darken overlaps                                            |
+| `overlay`        | Multiply the dark half, screen the bright half             |
+| `soft_light`     | Gentler contrast shaping than `overlay`                    |
+| `color_dodge`    | Brighten the layer beneath toward its highlights           |
+| `difference`     | Absolute channel difference; inverts against bright bases  |
+| `tint`           | Treat the layer as a colored filter the scene shows through |
+| `luma_reveal`    | Layer luminance decides where the tinted scene shows through |
 
-{% callout(type="tip") %}
+Those eleven are the whole set, serialized in snake_case on the wire. Note that the alpha-over mode is spelled `alpha` for layers; `Normal` is the pixel-kernel spelling of the same math, not a layer mode name.
+
+{% <callout type="tip"> %}
 Author each layer as a self-contained image. If you want glow where two layers overlap, set the upper layer to **Add** or **Screen** rather than baking the combination into a single effect. The compositor does the linear-light math for you, and the result stays correct as zone opacity changes.
-{% end %}
+{% </callout> %}
 
 Native Rust effects receive color controls already converted to linear RGBA (0.0-1.0), not sRGB. The UI picker is sRGB and the daemon converts before delivery, so convert back to sRGB bytes only when you write the final canvas. See the native effect authoring path for the full color-type vocabulary and transfer functions.
 
@@ -271,4 +284,4 @@ The 80/20 rule: one color dominates, the other accents. The most admired setups 
 - [GLSL shader effects](@/effects/glsl-effects.md): color math in WebGL2 fragment shaders (rendered via Servo, not wgpu).
 - [TypeScript canvas effects](@/effects/typescript-effects.md): the `canvas()` authoring surface these techniques target.
 
-Building a compiled-in native renderer instead? The native Rust effect path lives in `crates/hypercolor-core/src/effect/builtin/`, registered through that module's `mod.rs`. It ships the real color vocabulary (`Rgba`, `RgbaF32`, `Oklab`, `Oklch`) with working sRGB-to-linear transfer functions, so the linear-light rules on this page apply directly in code.
+Building a compiled-in native renderer instead? The native Rust effect path lives in `crates/hypercolor-core/src/effect/builtin/`, registered through that module's `mod.rs`. It ships the real color vocabulary (`Rgba`, `LinearRgba`, `Oklab`, `Oklch`) with working sRGB-to-linear transfer functions, so the linear-light rules on this page apply directly in code.

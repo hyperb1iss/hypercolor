@@ -98,10 +98,10 @@ fn append_nollie32_cable_slots(device: &DeviceInfo, slots: &mut Vec<ComponentSlo
     }
 
     let main_leds = device
-        .zones
+        .segments
         .iter()
-        .filter(|zone| matches!(zone.topology, DeviceTopologyHint::Strip))
-        .map(|zone| zone.led_count)
+        .filter(|segment| matches!(segment.topology, DeviceTopologyHint::Strip))
+        .map(|segment| segment.led_count)
         .sum::<u32>();
 
     if !slots.iter().any(|slot| slot.id == "atx-strimer") {
@@ -142,10 +142,10 @@ fn normalize_nollie32_slot_offsets(
     }
 
     let main_leds = device
-        .zones
+        .segments
         .iter()
-        .filter(|zone| matches!(zone.topology, DeviceTopologyHint::Strip))
-        .map(|zone| zone.led_count)
+        .filter(|segment| matches!(segment.topology, DeviceTopologyHint::Strip))
+        .map(|segment| segment.led_count)
         .sum::<u32>();
     let has_enabled_atx = bindings
         .iter()

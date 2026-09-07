@@ -1,15 +1,68 @@
-#[cfg(feature = "servo-gpu-import")]
-use hypercolor_core::effect::ImportedEffectFrame;
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(feature = "wgpu")]
 use hypercolor_core::input::screen::ScreenResourceLifetime;
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::implementer::{
     CapturePixelFormat, ScreenBranchPayload, ScreenBranchPublication, ScreenSurfacePayload,
 };
-use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
-use hypercolor_windows_gpu_interop::ScreenTextureCopy;
+#[cfg(feature = "servo-gpu-import")]
+use hypercolor_gpu_frame::ImportedEffectFrame;
+use hypercolor_types::canvas::{Canvas, PublishedSurface};
+#[cfg(feature = "wgpu")]
+use std::any::Any;
+#[cfg(feature = "wgpu")]
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Values that must outlive the GPU submission that references them.
+///
+/// The compositor retires entries in queue order because wgpu submissions on
+/// one queue complete in that same order.
+#[cfg(feature = "wgpu")]
+#[derive(Debug)]
+pub(crate) struct SubmissionRetirementQueue<K, T> {
+    entries: VecDeque<(K, Vec<T>)>,
+}
+
+#[cfg(feature = "wgpu")]
+impl<K, T> Default for SubmissionRetirementQueue<K, T> {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+        }
+    }
+}
+
+#[cfg(feature = "wgpu")]
+impl<K, T> SubmissionRetirementQueue<K, T> {
+    pub(crate) fn retire(&mut self, submission: K, values: Vec<T>) {
+        if !values.is_empty() {
+            self.entries.push_back((submission, values));
+        }
+    }
+
+    pub(crate) fn release_completed(&mut self, mut is_complete: impl FnMut(&K) -> bool) {
+        while self
+            .entries
+            .front()
+            .is_some_and(|(submission, _)| is_complete(submission))
+        {
+            self.entries.pop_front();
+        }
+    }
+
+    pub(crate) fn front_submission(&self) -> Option<&K> {
+        self.entries.front().map(|(submission, _)| submission)
+    }
+
+    pub(crate) fn release_front(&mut self) {
+        self.entries.pop_front();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 #[cfg(feature = "wgpu")]
 #[derive(Debug, Clone)]
@@ -26,47 +79,113 @@ pub(crate) struct GpuTextureFrame {
         reason = "the Arc value is retained for its lifetime rather than read in production"
     )]
     pub(crate) immutable_lease: Option<Arc<GpuTextureFrameLease>>,
-    #[cfg(target_os = "windows")]
-    pub(crate) windows_screen_lease: Option<WindowsScreenTextureLease>,
+    pub(crate) native_screen_lease: Option<NativeScreenTextureLease>,
 }
 
 #[cfg(feature = "wgpu")]
 #[derive(Debug)]
 pub(crate) struct GpuTextureFrameLease;
 
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
-#[derive(Debug, Clone)]
-pub(crate) struct WindowsScreenTextureLease {
-    _copy: ScreenTextureCopy,
-    target_lifetime: ScreenResourceLifetime,
-    _capture_lifetime: ScreenResourceLifetime,
+/// How much of a native screen lease a cached bind group must keep alive.
+///
+/// Backends whose imported texture stays valid for as long as the target
+/// allocation lives (DXGI copies into a daemon-owned texture) retain only
+/// the target lifetime. Backends whose texture aliases a native surface
+/// (IOSurface imports) retain the whole lease, owner included.
+#[cfg(feature = "wgpu")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeScreenCacheRetention {
+    #[allow(
+        dead_code,
+        reason = "selected by screen bridges whose copies land in daemon-owned textures"
+    )]
+    TargetLifetime,
+    #[allow(
+        dead_code,
+        reason = "selected by screen bridges whose textures alias native surfaces"
+    )]
+    FullLease,
 }
 
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
-impl WindowsScreenTextureLease {
+/// Platform resources a native screen texture must outlive.
+///
+/// The owner is opaque: each screen bridge packs whatever native handles,
+/// imported frames, and surface owners its texture aliases, and the
+/// compositor only clones and drops the lease in submission order.
+#[cfg(feature = "wgpu")]
+#[derive(Clone)]
+pub(crate) struct NativeScreenTextureLease {
+    owner: Arc<dyn Any + Send + Sync>,
+    target_lifetime: ScreenResourceLifetime,
+    cache_retention: NativeScreenCacheRetention,
+}
+
+#[cfg(feature = "wgpu")]
+impl NativeScreenTextureLease {
+    #[allow(
+        dead_code,
+        reason = "constructed by the platform screen bridges; targets without one carry the seam unused"
+    )]
     pub(crate) fn new(
-        copy: ScreenTextureCopy,
+        owner: impl Any + Send + Sync,
         target_lifetime: ScreenResourceLifetime,
-        capture_lifetime: ScreenResourceLifetime,
+        cache_retention: NativeScreenCacheRetention,
     ) -> Self {
         Self {
-            _copy: copy,
+            owner: Arc::new(owner),
             target_lifetime,
-            _capture_lifetime: capture_lifetime,
+            cache_retention,
         }
     }
 
-    pub(crate) const fn target_lifetime(&self) -> &ScreenResourceLifetime {
-        &self.target_lifetime
+    fn cache_lease(&self) -> NativeScreenCacheLease {
+        NativeScreenCacheLease {
+            _owner: match self.cache_retention {
+                NativeScreenCacheRetention::TargetLifetime => None,
+                NativeScreenCacheRetention::FullLease => Some(Arc::clone(&self.owner)),
+            },
+            _target_lifetime: self.target_lifetime.clone(),
+        }
     }
 }
 
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(feature = "wgpu")]
+impl std::fmt::Debug for NativeScreenTextureLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeScreenTextureLease")
+            .field("cache_retention", &self.cache_retention)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The slice of a native screen lease a cached bind group retains.
+#[cfg(feature = "wgpu")]
+#[derive(Clone)]
+#[allow(
+    dead_code,
+    reason = "cache lease payloads are retained for ownership rather than inspected"
+)]
+pub(crate) struct NativeScreenCacheLease {
+    _owner: Option<Arc<dyn Any + Send + Sync>>,
+    _target_lifetime: ScreenResourceLifetime,
+}
+
+#[cfg(feature = "wgpu")]
+impl std::fmt::Debug for NativeScreenCacheLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativeScreenCacheLease")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "wgpu")]
 impl GpuTextureFrame {
-    pub(crate) fn screen_target_lifetime(&self) -> Option<&ScreenResourceLifetime> {
-        self.windows_screen_lease
+    pub(crate) fn native_screen_cache_lease(&self) -> Option<NativeScreenCacheLease> {
+        self.native_screen_lease
             .as_ref()
-            .map(WindowsScreenTextureLease::target_lifetime)
+            .map(NativeScreenTextureLease::cache_lease)
     }
 }
 
@@ -104,17 +223,32 @@ pub(crate) enum ProducerFrame {
 #[derive(Debug, Clone)]
 pub(crate) struct ScreenPublicationFrame {
     publication: Arc<ScreenBranchPublication>,
+    /// CPU surface materialized once per publication. Its storage identity
+    /// is what lets a retained publication reuse preview and canvas
+    /// publications instead of republishing a fresh copy every frame.
+    surface: PublishedSurface,
 }
 
 impl ScreenPublicationFrame {
     fn try_new(publication: Arc<ScreenBranchPublication>) -> Option<Self> {
-        let ScreenBranchPayload::Surface(surface) = publication.payload() else {
+        let ScreenBranchPayload::Surface(payload) = publication.payload() else {
             return None;
         };
-        if surface.pixel_format() != CapturePixelFormat::Rgba8 {
+        if payload.pixel_format() != CapturePixelFormat::Rgba8 {
             return None;
         }
-        Some(Self { publication })
+        let extent = payload.extent();
+        let canvas = Canvas::from_rgba(payload.pixels(), extent.width(), extent.height());
+        let surface = PublishedSurface::from_owned_canvas(canvas, 0, 0);
+        Some(Self {
+            publication,
+            surface,
+        })
+    }
+
+    /// The publication's pixels as a stable CPU surface.
+    pub(crate) const fn published_surface(&self) -> &PublishedSurface {
+        &self.surface
     }
 
     pub(crate) fn surface(&self) -> ScreenSurfacePayload<'_> {
@@ -238,10 +372,8 @@ impl ProducerFrame {
                 Some((Canvas::from_published_surface(&surface), Some(surface)))
             }
             Self::ScreenPublication(publication) => {
-                let surface = publication.surface();
-                let mut canvas = Canvas::new(surface.extent().width(), surface.extent().height());
-                canvas.as_rgba_bytes_mut().copy_from_slice(surface.pixels());
-                Some((canvas, None))
+                let surface = publication.published_surface().clone();
+                Some((Canvas::from_published_surface(&surface), Some(surface)))
             }
             #[cfg(feature = "servo-gpu-import")]
             Self::Gpu(frame) => {
@@ -278,7 +410,8 @@ impl ProducerFrame {
             (Self::Gpu(left), Self::Gpu(right)) => {
                 left.width == right.width
                     && left.height == right.height
-                    && left.storage_id == right.storage_id
+                    && left.allocation_id == right.allocation_id
+                    && left.content_generation == right.content_generation
             }
             #[cfg(feature = "wgpu")]
             (Self::GpuTexture(left), Self::GpuTexture(right)) => {
@@ -363,7 +496,7 @@ impl ProducerQueue {
         self.replace_latest(ProducerSubmission { frame, fresh: true })
     }
 
-    #[cfg(any(test, all(feature = "wgpu", target_os = "windows")))]
+    #[cfg(any(test, feature = "wgpu"))]
     pub(crate) const fn has_latest(&self) -> bool {
         self.latest.is_some()
     }
@@ -426,9 +559,76 @@ impl ProducerFrameState {
 
 #[cfg(test)]
 mod tests {
-    use hypercolor_core::types::canvas::{Canvas, PublishedSurface};
+    #[cfg(feature = "wgpu")]
+    use std::sync::Arc;
+    #[cfg(feature = "wgpu")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use hypercolor_types::canvas::{Canvas, PublishedSurface};
+
+    #[cfg(feature = "wgpu")]
+    use super::SubmissionRetirementQueue;
     use super::{ProducerFrame, ProducerFrameState, ProducerQueue};
+
+    #[cfg(feature = "wgpu")]
+    struct LeaseDropProbe(Arc<AtomicUsize>);
+
+    #[cfg(feature = "wgpu")]
+    impl Drop for LeaseDropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn submission_retirement_queue_keeps_evicted_leases_until_completion() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+
+        // Cache eviction only removes its own entry. The submission queue keeps
+        // the native owner alive until the device reports this submission done.
+        retirements.release_completed(|_| false);
+        assert_eq!(retirements.len(), 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        retirements.release_completed(|submission| *submission == 17);
+        assert_eq!(retirements.len(), 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn submission_retirement_queue_never_releases_past_an_incomplete_submission() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+        retirements.retire(18_u64, vec![LeaseDropProbe(Arc::clone(&dropped))]);
+
+        retirements.release_completed(|submission| *submission == 18);
+
+        assert_eq!(retirements.len(), 2);
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+
+        retirements.release_completed(|_| true);
+        assert_eq!(retirements.len(), 0);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[cfg(feature = "wgpu")]
+    #[test]
+    fn submission_retirement_queue_drains_front_in_order() {
+        let mut retirements = SubmissionRetirementQueue::default();
+        retirements.retire(17_u64, vec![()]);
+        retirements.retire(18_u64, vec![()]);
+
+        assert_eq!(retirements.front_submission(), Some(&17));
+        retirements.release_front();
+        assert_eq!(retirements.front_submission(), Some(&18));
+        retirements.release_front();
+        assert_eq!(retirements.front_submission(), None);
+    }
 
     #[test]
     fn producer_queue_latches_fresh_then_retains() {

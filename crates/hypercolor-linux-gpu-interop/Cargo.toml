@@ -11,14 +11,24 @@ description = "Linux GL/Vulkan texture import boundary for Hypercolor"
 [features]
 default = []
 raw-gl-fixture = ["dep:euclid", "dep:surfman"]
-servo-context = ["dep:dpi", "dep:euclid", "dep:gleam", "dep:servo", "dep:surfman"]
+servo-context = [
+  "dep:anyhow",
+  "dep:dpi",
+  "dep:euclid",
+  "dep:gleam",
+  "dep:servo",
+  "dep:surfman",
+  "hypercolor-gpu-frame/servo-context",
+]
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
 ash = { workspace = true }
 dpi = { workspace = true, optional = true }
 euclid = { version = "0.22", optional = true }
 gleam = { version = "0.15", optional = true }
 glow = { workspace = true }
+hypercolor-gpu-frame = { workspace = true }
 libc = { workspace = true }
 servo = { workspace = true, features = ["baked-in-resources", "js_jit"], optional = true }
 surfman = { workspace = true, features = ["sm-x11"], optional = true }

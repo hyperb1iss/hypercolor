@@ -1,0 +1,30 @@
+[package]
+name = "hypercolor-macos-owner"
+description = "Durable macOS daemon ownership and handover coordination"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-platform-fs = { workspace = true }
+hypercolor-types = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+notify = { workspace = true }
+sha2 = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+nix = { version = "0.30.1", features = ["event", "fs", "process", "signal", "user"] }
+security-framework = "3.7.0"
+single-instance = "0.3.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }

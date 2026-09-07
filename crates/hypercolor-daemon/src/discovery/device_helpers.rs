@@ -1,10 +1,8 @@
 use anyhow::Context;
-use hypercolor_core::device::{
-    BackendIo, BackendManager, DeviceLifecycleManager, DeviceLifecyclePolicy, DiscoveredDevice,
-    SegmentRange,
-};
+use hypercolor_core::device::{BackendIo, BackendManager, DeviceLifecycleManager, SegmentRange};
+use hypercolor_driver_api::{DeviceLifecyclePolicy, DiscoveredDevice};
 use hypercolor_types::device::{
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
+    DeviceError, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, HypercolorEvent, ZoneRef};
 use tracing::info;
@@ -32,12 +30,11 @@ pub(crate) async fn apply_persisted_device_settings(
         device_id,
     )
     .await;
-    let persisted_settings = {
-        let store = runtime.device_settings.read().await;
-        store
-            .device_settings_for_key(&key)
-            .map_or(fallback_settings, stored_device_settings_to_user_settings)
-    };
+    let persisted_settings = runtime
+        .device_settings
+        .device_settings_for_key(&key)
+        .await
+        .map_or(fallback_settings, stored_device_settings_to_user_settings);
 
     let _ = runtime
         .device_registry
@@ -54,6 +51,7 @@ fn stored_device_settings_to_user_settings(settings: StoredDeviceSettings) -> De
         name: settings.name,
         enabled: !settings.disabled,
         brightness: settings.brightness.clamp(0.0, 1.0),
+        display_rotation: settings.rotation,
     }
 }
 
@@ -93,7 +91,7 @@ pub(super) async fn lifecycle_policy_for_device_info(
         return DeviceLifecyclePolicy::default();
     };
 
-    io.lifecycle_policy(info).await
+    io.lifecycle_policy(info)
 }
 
 pub(super) async fn lifecycle_policy_for_device(
@@ -118,10 +116,7 @@ pub(super) async fn sync_host_attachment_profile_config(
         return;
     };
 
-    if !backend
-        .supports_host_attachment_profiles(&tracked.info)
-        .await
-    {
+    if !backend.supports_host_attachment_profiles(&tracked.info) {
         runtime.usb_protocol_configs.remove_device(device_id).await;
         return;
     }
@@ -155,7 +150,7 @@ pub(super) async fn connect_backend_device_with_timeout(
     device_id: DeviceId,
     layout_device_id: &str,
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> Result<(), DeviceError> {
     connect_backend_device_inner(
         runtime,
         backend_id,
@@ -172,15 +167,22 @@ async fn connect_backend_device_inner(
     device_id: DeviceId,
     layout_device_id: &str,
     timeout: Option<Duration>,
-) -> anyhow::Result<()> {
-    let io = backend_io(runtime, backend_id).await?;
-    remember_discovered_device(runtime, device_id, &io).await;
+) -> Result<(), DeviceError> {
+    let io = {
+        let manager = runtime.backend_manager.lock().await;
+        manager
+            .backend_io(backend_id)
+            .ok_or_else(|| DeviceError::NotFound {
+                device: format!("backend {backend_id}"),
+            })?
+    };
+    adopt_discovered_device(runtime, device_id, &io).await?;
     sync_host_attachment_profile_config(runtime, device_id, &io).await;
     let output_cadence = match timeout {
-        Some(timeout) => io.connect_with_refresh_timeout(device_id, timeout).await?,
-        None => io.connect_with_refresh(device_id).await?,
+        Some(timeout) => io.connect_with_timeout(device_id, timeout).await?,
+        None => io.connect(device_id).await?,
     };
-    let frame_sink = io.frame_sink(device_id).await;
+    let frame_sink = io.frame_sink(device_id);
 
     let mut manager = runtime.backend_manager.lock().await;
     manager.set_cached_output_cadence(backend_id, device_id, output_cadence);
@@ -193,16 +195,20 @@ async fn connect_backend_device_inner(
     Ok(())
 }
 
-async fn remember_discovered_device(
+/// Hand the backend the descriptor it needs before a connect. The scan
+/// adopts a device under the id it discovered it with, which for a
+/// device without a serial is fresh every scan, so any connect that
+/// bypasses the lifecycle path has to adopt under the registry's id first.
+pub(crate) async fn adopt_discovered_device(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
     backend: &BackendIo,
-) {
+) -> Result<(), DeviceError> {
     let Some(tracked) = runtime.device_registry.get(&device_id).await else {
-        return;
+        return Ok(());
     };
     let Some(fingerprint) = runtime.device_registry.fingerprint_for_id(&device_id).await else {
-        return;
+        return Ok(());
     };
     let metadata = runtime
         .device_registry
@@ -211,15 +217,13 @@ async fn remember_discovered_device(
         .unwrap_or_default();
     let claim = runtime.device_registry.claim_for_id(&device_id).await;
 
-    backend
-        .remember_discovered_device(&DiscoveredDevice {
-            fingerprint,
-            connect_behavior: tracked.connect_behavior,
-            info: tracked.info,
-            metadata,
-            claim,
-        })
-        .await;
+    backend.adopt_device(&DiscoveredDevice {
+        fingerprint,
+        connect_behavior: tracked.connect_behavior,
+        info: tracked.info,
+        metadata,
+        claim,
+    })
 }
 
 pub(super) async fn disconnect_backend_device(
@@ -234,13 +238,15 @@ pub(super) async fn disconnect_backend_device(
     runtime.usb_protocol_configs.remove_device(device_id).await;
 
     let io = backend_io(runtime, backend_id).await?;
-    tokio::time::timeout(DEVICE_DISCONNECT_TIMEOUT, io.disconnect(device_id))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "timed out disconnecting device {device_id} using backend '{backend_id}'"
-            )
-        })?
+    Ok(
+        tokio::time::timeout(DEVICE_DISCONNECT_TIMEOUT, io.disconnect(device_id))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "timed out disconnecting device {device_id} using backend '{backend_id}'"
+                )
+            })??,
+    )
 }
 
 pub(super) async fn ensure_default_logical_for_device(
@@ -319,14 +325,14 @@ pub(super) async fn sync_logical_mappings_for_device(
     }
 }
 
-pub(super) async fn desired_connect_behavior(
+pub(crate) async fn desired_connect_behavior(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
     device_info: &DeviceInfo,
     fingerprint: Option<&DeviceFingerprint>,
-    discovered_behavior: hypercolor_core::device::DiscoveryConnectBehavior,
+    discovered_behavior: hypercolor_driver_api::DiscoveryConnectBehavior,
     user_enabled: bool,
-) -> hypercolor_core::device::DiscoveryConnectBehavior {
+) -> hypercolor_driver_api::DiscoveryConnectBehavior {
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(device_info, fingerprint);
     ensure_default_logical_for_device(
@@ -339,61 +345,32 @@ pub(super) async fn desired_connect_behavior(
     .await;
 
     if !user_enabled || !discovered_behavior.should_auto_connect() {
-        return hypercolor_core::device::DiscoveryConnectBehavior::Deferred;
+        return hypercolor_driver_api::DiscoveryConnectBehavior::Deferred;
     }
 
-    if active_layout_targets_enabled_device(runtime, device_id, &layout_device_id).await {
-        hypercolor_core::device::DiscoveryConnectBehavior::AutoConnect
+    if topology_unknown_until_connect(device_info) {
+        return hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect;
+    }
+
+    if runtime
+        .layout
+        .active_layout_targets_enabled_device(runtime, device_id, &layout_device_id)
+        .await
+    {
+        hypercolor_driver_api::DiscoveryConnectBehavior::AutoConnect
     } else {
-        hypercolor_core::device::DiscoveryConnectBehavior::Deferred
+        hypercolor_driver_api::DiscoveryConnectBehavior::Deferred
     }
 }
 
-pub(super) async fn active_layout_targets_enabled_device(
-    runtime: &DiscoveryRuntime,
-    physical_id: DeviceId,
-    layout_device_id: &str,
-) -> bool {
-    let candidate_ids = {
-        let logical_store = runtime.logical_devices.read().await;
-        let mut candidates = logical_devices::list_for_physical(&logical_store, physical_id)
-            .into_iter()
-            .filter(|entry| entry.enabled)
-            .map(|entry| entry.id)
-            .collect::<std::collections::HashSet<_>>();
-
-        let default_enabled = logical_store
-            .get(layout_device_id)
-            .is_none_or(|entry| entry.enabled);
-        if default_enabled {
-            candidates.insert(layout_device_id.to_owned());
-        }
-
-        candidates
-    };
-
-    let targeted_by_spatial_layout = {
-        let spatial = runtime.spatial_engine.read().await;
-        spatial
-            .layout()
-            .zones
-            .iter()
-            .any(|zone| candidate_ids.contains(&zone.device_id))
-    };
-    if targeted_by_spatial_layout {
-        return true;
-    }
-
-    // Studio composes scenes and never writes the legacy spatial layout, so
-    // a device placed only through a scene zone is invisible above. Without
-    // this arm it stays Deferred forever: discovered, never connected, and
-    // never surfacing an error to explain why.
-    let scene_manager = runtime.scene_manager.read().await;
-    scene_manager
-        .active_render_groups()
-        .iter()
-        .flat_map(|group| group.layout.zones.iter())
-        .any(|zone| candidate_ids.contains(&zone.device_id))
+/// Whether a device has nothing a layout could place yet: no light segment
+/// with LEDs. Hubs and radios learn their topology from the hardware at
+/// connect, and a screen gets its surface zone seeded once it is up, so
+/// waiting for the layout to target such a device would wait forever.
+pub(crate) fn topology_unknown_until_connect(info: &DeviceInfo) -> bool {
+    !info.segments.iter().any(|segment| {
+        segment.led_count > 0 && !matches!(segment.topology, DeviceTopologyHint::Display { .. })
+    })
 }
 
 fn map_device_with_zone_segments(
@@ -437,7 +414,7 @@ pub(super) async fn publish_device_connected(
 }
 
 fn build_zone_refs(info: &DeviceInfo) -> Vec<ZoneRef> {
-    info.zones
+    info.segments
         .iter()
         .map(|zone| ZoneRef {
             zone_id: format!("{}:{}", info.id, zone.name),
@@ -490,5 +467,76 @@ pub(super) fn device_ref_for_tracked(info: &DeviceInfo) -> DeviceRef {
         name: info.name.clone(),
         origin: info.origin.clone(),
         led_count: info.total_led_count(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::device::{
+        ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceOrigin,
+        SegmentInfo,
+    };
+
+    use super::*;
+
+    fn device(segments: Vec<SegmentInfo>) -> DeviceInfo {
+        DeviceInfo {
+            id: DeviceId::new(),
+            name: "Probe".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::new_static("probe", "Probe"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native("probe", "usb", ConnectionType::Usb),
+            segments,
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }
+    }
+
+    fn segment(led_count: u32, topology: DeviceTopologyHint) -> SegmentInfo {
+        SegmentInfo {
+            name: "Segment".to_owned(),
+            led_count,
+            topology,
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }
+    }
+
+    #[test]
+    fn a_hub_with_no_segments_yet_connects_without_a_layout() {
+        assert!(topology_unknown_until_connect(&device(Vec::new())));
+    }
+
+    #[test]
+    fn a_screen_only_device_connects_without_a_layout() {
+        let screen = segment(
+            0,
+            DeviceTopologyHint::Display {
+                width: 480,
+                height: 480,
+                circular: true,
+                format: hypercolor_types::device::DisplayFrameFormat::Jpeg,
+            },
+        );
+        assert!(topology_unknown_until_connect(&device(vec![screen])));
+    }
+
+    #[test]
+    fn a_device_with_placeable_leds_waits_for_the_layout() {
+        let ring = segment(20, DeviceTopologyHint::Ring { count: 20 });
+        assert!(!topology_unknown_until_connect(&device(vec![ring])));
+        let screen = segment(
+            0,
+            DeviceTopologyHint::Display {
+                width: 480,
+                height: 480,
+                circular: true,
+                format: hypercolor_types::device::DisplayFrameFormat::Jpeg,
+            },
+        );
+        let ring = segment(20, DeviceTopologyHint::Ring { count: 20 });
+        assert!(!topology_unknown_until_connect(&device(vec![screen, ring])));
     }
 }

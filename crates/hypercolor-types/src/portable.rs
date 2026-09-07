@@ -54,10 +54,8 @@ pub enum PortableIdentitySource {
     UsbSerial,
     /// Burned-in hardware MAC.
     MacAddress,
-    /// Hue bridge id (MAC-derived, fixed for the life of the bridge).
-    HueBridgeId,
-    /// Nanoleaf controller serial. Never a device name and never an address.
-    NanoleafSerial,
+    /// Stable identifier interpreted by the driver that discovered it.
+    DriverIdentifier,
 }
 
 /// How network-sourced hardware was reachable when it was observed.
@@ -107,24 +105,16 @@ pub enum PortableIdentityClaim {
         /// How the device was reachable when observed.
         attachment: NetworkAttachment,
     },
-    /// A Hue bridge id.
+    /// A stable identifier in a driver-owned namespace.
     #[non_exhaustive]
-    HueBridgeId {
-        /// Canonical key, `hue:{bridge id, lowercased}`.
+    DriverIdentifier {
+        /// Canonical key, `{namespace}:{identifier, lowercased}`.
         key: PortableDeviceKey,
-        /// The id as the bridge reported it.
+        /// Driver-owned namespace that prevents cross-protocol collisions.
+        namespace: String,
+        /// The identifier as the device reported it.
         raw: String,
-        /// The bridge's address when observed.
-        peer: IpAddr,
-    },
-    /// A Nanoleaf controller serial (`serial_no` or the API's `device_id`).
-    #[non_exhaustive]
-    NanoleafSerial {
-        /// Canonical key, `nanoleaf:{serial, lowercased}`.
-        key: PortableDeviceKey,
-        /// The serial as the controller reported it.
-        raw: String,
-        /// The controller's address when observed.
+        /// The device's address when observed.
         peer: IpAddr,
     },
 }
@@ -175,30 +165,20 @@ impl PortableIdentityClaim {
         })
     }
 
-    /// Claims a Hue bridge id.
-    #[must_use]
-    pub fn hue_bridge_id(raw_bridge_id: &str, peer: IpAddr) -> Option<Self> {
-        let canonical = plausible_serial(raw_bridge_id)?.to_lowercase();
-
-        Some(Self::HueBridgeId {
-            key: PortableDeviceKey(format!("hue:{canonical}")),
-            raw: raw_bridge_id.to_owned(),
-            peer,
-        })
-    }
-
-    /// Claims a Nanoleaf controller serial.
+    /// Claims a stable identifier in a driver-owned namespace.
     ///
-    /// The caller must pass `serial_no` or the API's `device_id`, never a
-    /// device name and never an address; this constructor can validate
-    /// shape but cannot know which field the scanner read.
+    /// The namespace must start with an ASCII letter or digit and contain
+    /// only lowercase ASCII letters, digits, `-`, or `_`. The identifier is
+    /// refused when it is empty or resembles a common vendor placeholder.
     #[must_use]
-    pub fn nanoleaf_serial(raw_serial: &str, peer: IpAddr) -> Option<Self> {
-        let canonical = plausible_serial(raw_serial)?.to_lowercase();
+    pub fn driver_identifier(namespace: &str, raw_identifier: &str, peer: IpAddr) -> Option<Self> {
+        let namespace = canonical_namespace(namespace)?;
+        let canonical = plausible_serial(raw_identifier)?.to_lowercase();
 
-        Some(Self::NanoleafSerial {
-            key: PortableDeviceKey(format!("nanoleaf:{canonical}")),
-            raw: raw_serial.to_owned(),
+        Some(Self::DriverIdentifier {
+            key: PortableDeviceKey(format!("{namespace}:{canonical}")),
+            namespace,
+            raw: raw_identifier.to_owned(),
             peer,
         })
     }
@@ -209,8 +189,7 @@ impl PortableIdentityClaim {
         match self {
             Self::UsbSerial { key, .. }
             | Self::MacAddress { key, .. }
-            | Self::HueBridgeId { key, .. }
-            | Self::NanoleafSerial { key, .. } => key,
+            | Self::DriverIdentifier { key, .. } => key,
         }
     }
 
@@ -220,8 +199,7 @@ impl PortableIdentityClaim {
         match self {
             Self::UsbSerial { .. } => PortableIdentitySource::UsbSerial,
             Self::MacAddress { .. } => PortableIdentitySource::MacAddress,
-            Self::HueBridgeId { .. } => PortableIdentitySource::HueBridgeId,
-            Self::NanoleafSerial { .. } => PortableIdentitySource::NanoleafSerial,
+            Self::DriverIdentifier { .. } => PortableIdentitySource::DriverIdentifier,
         }
     }
 
@@ -231,8 +209,16 @@ impl PortableIdentityClaim {
         match self {
             Self::UsbSerial { raw, .. }
             | Self::MacAddress { raw, .. }
-            | Self::HueBridgeId { raw, .. }
-            | Self::NanoleafSerial { raw, .. } => raw,
+            | Self::DriverIdentifier { raw, .. } => raw,
+        }
+    }
+
+    /// The driver-owned namespace for a namespaced identifier claim.
+    #[must_use]
+    pub fn namespace(&self) -> Option<&str> {
+        match self {
+            Self::DriverIdentifier { namespace, .. } => Some(namespace),
+            Self::UsbSerial { .. } | Self::MacAddress { .. } => None,
         }
     }
 
@@ -246,9 +232,7 @@ impl PortableIdentityClaim {
                 NetworkAttachment::Peer(peer) => AttachmentEvidence::NetworkPeer(*peer),
                 NetworkAttachment::CloudInventory => AttachmentEvidence::Unavailable,
             },
-            Self::HueBridgeId { peer, .. } | Self::NanoleafSerial { peer, .. } => {
-                AttachmentEvidence::NetworkPeer(*peer)
-            }
+            Self::DriverIdentifier { peer, .. } => AttachmentEvidence::NetworkPeer(*peer),
         }
     }
 }
@@ -305,11 +289,66 @@ pub enum SerialNormalization {
     LowercasedAscii,
 }
 
+/// The outcome of reviewing one `(vendor, product)` pair's serial
+/// reporting, as an auditable record rather than a bare enum.
+///
+/// A review answers two questions, and both have to survive into the
+/// registry. The first is how to canonicalize, which
+/// [`SerialNormalization`] carries. The second is whether the pair ships
+/// a constant, and that one has no home in a normalization: a serial the
+/// whole production run shares is well-formed, passes every generic
+/// placeholder check, and still names a model rather than a unit.
+/// Hypercolor has already met one (the wired Lian Li Uni Fan TL LCD panel
+/// reports `TL_LCDV0.1` on every panel), so the shape has to be
+/// expressible or the next reviewer registers the pair and silently
+/// merges every unit on the account into one identity.
+///
+/// `receipt` names where the evidence lives. It is not decoration: the
+/// registry's whole contract is that an entry asserts a review happened,
+/// and an assertion nobody can re-check is indistinguishable from a
+/// guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewedSerial {
+    /// How to canonicalize a serial from this pair.
+    pub normalization: SerialNormalization,
+    /// Values this pair is known to report on more than one unit.
+    /// Matched case-insensitively against the trimmed serial, because
+    /// these come back from firmware with incidental padding and casing.
+    pub refused: &'static [&'static str],
+    /// Where the review's evidence lives, for a later reader to re-check.
+    pub receipt: &'static str,
+}
+
+impl ReviewedSerial {
+    /// A review that found no constant, only a canonicalization.
+    #[must_use]
+    pub const fn new(normalization: SerialNormalization, receipt: &'static str) -> Self {
+        Self {
+            normalization,
+            refused: &[],
+            receipt,
+        }
+    }
+
+    /// Records constants this pair ships on more than one unit.
+    #[must_use]
+    pub const fn refusing(mut self, refused: &'static [&'static str]) -> Self {
+        self.refused = refused;
+        self
+    }
+
+    fn refuses(&self, trimmed: &str) -> bool {
+        self.refused
+            .iter()
+            .any(|constant| constant.eq_ignore_ascii_case(trimmed))
+    }
+}
+
 /// Host-owned registry mapping `(vendor, product)` pairs to their reviewed
-/// serial normalization.
+/// serial behavior.
 #[derive(Debug, Clone, Default)]
 pub struct SerialNormalizerRegistry {
-    entries: HashMap<(u16, u16), SerialNormalization>,
+    entries: HashMap<(u16, u16), ReviewedSerial>,
 }
 
 impl SerialNormalizerRegistry {
@@ -319,37 +358,41 @@ impl SerialNormalizerRegistry {
         Self::default()
     }
 
-    /// Registers the reviewed normalization for one `(vendor, product)`
-    /// pair, replacing any previous entry.
-    pub fn register(
-        &mut self,
-        vendor_id: u16,
-        product_id: u16,
-        normalization: SerialNormalization,
-    ) {
-        self.entries.insert((vendor_id, product_id), normalization);
+    /// Records the review of one `(vendor, product)` pair, replacing any
+    /// previous entry.
+    pub fn register(&mut self, vendor_id: u16, product_id: u16, reviewed: ReviewedSerial) {
+        self.entries.insert((vendor_id, product_id), reviewed);
     }
 
-    /// The registered normalization for a pair, if any.
+    /// The recorded review for a pair, if any.
     #[must_use]
-    pub fn get(&self, vendor_id: u16, product_id: u16) -> Option<SerialNormalization> {
+    pub fn get(&self, vendor_id: u16, product_id: u16) -> Option<ReviewedSerial> {
         self.entries.get(&(vendor_id, product_id)).copied()
     }
 
-    /// Canonicalizes a raw serial for a pair, refusing placeholders first
+    /// Every reviewed pair with its receipt, for operators and audits.
+    pub fn reviewed(&self) -> impl Iterator<Item = ((u16, u16), ReviewedSerial)> + '_ {
+        self.entries.iter().map(|(pair, entry)| (*pair, *entry))
+    }
+
+    /// Canonicalizes a raw serial for a pair, refusing generic
+    /// placeholders first, then the constants this pair's review found,
     /// and unregistered pairs always.
     #[must_use]
     pub fn normalize(&self, vendor_id: u16, product_id: u16, raw_serial: &str) -> Option<String> {
         let plausible = plausible_serial(raw_serial)?;
-        let normalization = self.get(vendor_id, product_id)?;
+        let reviewed = self.get(vendor_id, product_id)?;
         let trimmed: String = plausible
             .trim_matches(|c: char| c.is_ascii_whitespace() || c == '\0')
             .to_owned();
         if trimmed.len() < MIN_SERIAL_LEN || !trimmed.chars().all(|c| c.is_ascii_graphic()) {
             return None;
         }
+        if reviewed.refuses(&trimmed) {
+            return None;
+        }
 
-        match normalization {
+        match reviewed.normalization {
             SerialNormalization::TrimmedAscii => Some(trimmed),
             SerialNormalization::LowercasedAscii => Some(trimmed.to_lowercase()),
         }
@@ -389,6 +432,27 @@ fn plausible_serial(raw: &str) -> Option<&str> {
     Some(trimmed)
 }
 
+fn canonical_namespace(raw: &str) -> Option<String> {
+    let namespace = raw.trim();
+    if namespace != raw {
+        return None;
+    }
+    let mut chars = namespace.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return None;
+    }
+    if !chars.all(|character| {
+        character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || matches!(character, '-' | '_')
+    }) {
+        return None;
+    }
+
+    Some(namespace.to_owned())
+}
+
 /// Normalizes every accepted MAC encoding into twelve lowercase hex
 /// characters, or refuses it.
 fn canonical_mac(raw: &str) -> Option<String> {
@@ -423,10 +487,21 @@ mod tests {
 
     const PEER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 40));
 
+    // Fixtures, not registrations: these two pairs exercise the two
+    // normalization variants. `reviewed_serial_normalizers()` ships empty,
+    // and nothing here is evidence that any real pair should be added.
     fn registry() -> SerialNormalizerRegistry {
         let mut registry = SerialNormalizerRegistry::new();
-        registry.register(0x1532, 0x0226, SerialNormalization::TrimmedAscii);
-        registry.register(0x1b1c, 0x0c10, SerialNormalization::LowercasedAscii);
+        registry.register(
+            0x1532,
+            0x0226,
+            ReviewedSerial::new(SerialNormalization::TrimmedAscii, "test fixture"),
+        );
+        registry.register(
+            0x1b1c,
+            0x0c10,
+            ReviewedSerial::new(SerialNormalization::LowercasedAscii, "test fixture"),
+        );
         registry
     }
 
@@ -497,6 +572,62 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewed_constant_is_refused_though_it_looks_like_a_real_serial() {
+        // The failure this exists for: a serial that is well formed,
+        // survives every generic placeholder check, and still names a
+        // model. The wired Lian Li Uni Fan TL LCD panel reports
+        // TL_LCDV0.1 on every panel, so admitting it would merge a whole
+        // fan stack into one account-wide device.
+        let mut registry = SerialNormalizerRegistry::new();
+        registry.register(
+            0x04fc,
+            0x7393,
+            ReviewedSerial::new(SerialNormalization::TrimmedAscii, "test fixture")
+                .refusing(&["TL_LCDV0.1"]),
+        );
+
+        assert!(
+            plausible_serial("TL_LCDV0.1").is_some(),
+            "the generic list cannot catch it"
+        );
+        for raw in [
+            "TL_LCDV0.1",
+            "  TL_LCDV0.1 ",
+            "tl_lcdv0.1",
+            "TL_LCDV0.1\0\0",
+        ] {
+            assert_eq!(
+                registry.normalize(0x04fc, 0x7393, raw),
+                None,
+                "accepted the constant {raw:?}"
+            );
+        }
+        assert_eq!(
+            registry.normalize(0x04fc, 0x7393, "TL0000123456"),
+            Some("TL0000123456".to_owned()),
+            "a real per-unit serial from the same pair still claims"
+        );
+    }
+
+    #[test]
+    fn a_review_carries_its_receipt_into_the_registry() {
+        let mut registry = SerialNormalizerRegistry::new();
+        registry.register(
+            0x1532,
+            0x0226,
+            ReviewedSerial::new(SerialNormalization::TrimmedAscii, "docs/specs/34 §3.1"),
+        );
+
+        let reviewed = registry.get(0x1532, 0x0226).expect("registered pair");
+        assert_eq!(reviewed.receipt, "docs/specs/34 §3.1");
+        assert!(reviewed.refused.is_empty());
+        assert_eq!(
+            registry.reviewed().collect::<Vec<_>>(),
+            vec![((0x1532, 0x0226), reviewed)]
+        );
+    }
+
+    #[test]
     fn every_mac_encoding_lands_on_one_key() {
         let colons =
             PortableIdentityClaim::mac_address("2C:F4:32:11:22:33", NetworkAttachment::Peer(PEER));
@@ -534,15 +665,26 @@ mod tests {
     }
 
     #[test]
-    fn hue_and_nanoleaf_ids_lowercase_into_stable_keys() {
-        let hue =
-            PortableIdentityClaim::hue_bridge_id("001788FFFE23A4B5", PEER).expect("real bridge id");
-        let nanoleaf =
-            PortableIdentityClaim::nanoleaf_serial("S19122A1234", PEER).expect("real serial");
+    fn driver_namespaces_lowercase_identifiers_into_stable_keys() {
+        let hue = PortableIdentityClaim::driver_identifier("hue", "001788FFFE23A4B5", PEER)
+            .expect("real bridge id");
+        let nanoleaf = PortableIdentityClaim::driver_identifier("nanoleaf", "S19122A1234", PEER)
+            .expect("real serial");
 
         assert_eq!(hue.key().as_str(), "hue:001788fffe23a4b5");
-        assert_eq!(hue.source(), PortableIdentitySource::HueBridgeId);
+        assert_eq!(hue.source(), PortableIdentitySource::DriverIdentifier);
+        assert_eq!(hue.namespace(), Some("hue"));
         assert_eq!(nanoleaf.key().as_str(), "nanoleaf:s19122a1234");
+    }
+
+    #[test]
+    fn invalid_driver_namespaces_are_refused() {
+        for namespace in ["", "Hue", "hue.bridge", "hue:bridge", " hue "] {
+            let claim =
+                PortableIdentityClaim::driver_identifier(namespace, "001788FFFE23A4B5", PEER);
+
+            assert!(claim.is_none(), "accepted namespace {namespace:?}");
+        }
     }
 
     #[test]
@@ -598,14 +740,12 @@ mod tests {
 
     #[test]
     fn claims_round_trip_through_serde() {
-        let claim = PortableIdentityClaim::mac_address(
-            "2C:F4:32:11:22:33",
-            NetworkAttachment::CloudInventory,
-        )
-        .expect("valid unicast MAC");
+        let claim = PortableIdentityClaim::driver_identifier("hue", "001788FFFE23A4B5", PEER)
+            .expect("valid driver identifier");
         let json = serde_json::to_string(&claim).expect("serializes");
         let back: PortableIdentityClaim = serde_json::from_str(&json).expect("deserializes");
 
         assert_eq!(back, claim);
+        assert!(json.contains(r#""namespace":"hue""#));
     }
 }

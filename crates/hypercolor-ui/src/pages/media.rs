@@ -11,6 +11,7 @@
 //! bare placeholder. Uploads accept multiple files in one gesture.
 
 use hypercolor_leptos_ext::events::{Change, Input};
+use hypercolor_types::asset::AssetId;
 use leptos::html;
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -56,7 +57,7 @@ pub fn MediaPage() -> impl IntoView {
     let (search, set_search) = signal(String::new());
     let (kind_filter, set_kind_filter) = signal("all".to_owned());
     let (refresh_tick, set_refresh_tick) = signal(0_u64);
-    let (selected_id, set_selected_id) = signal(None::<String>);
+    let (selected_id, set_selected_id) = signal(None::<AssetId>);
     let (uploading, set_uploading) = signal(false);
     // Nested dragenter/dragleave pairs from child elements balance out; the
     // veil shows while the depth is positive.
@@ -64,7 +65,7 @@ pub fn MediaPage() -> impl IntoView {
     let is_dragging = Memo::new(move |_| drag_depth.get() > 0);
     let input_ref = NodeRef::<html::Input>::new();
 
-    let media_resource = LocalResource::new(move || {
+    let media_resource = api::daemon_resource(move || {
         let _ = refresh_tick.get();
         async move { api::list_assets().await }
     });
@@ -99,7 +100,7 @@ pub fn MediaPage() -> impl IntoView {
             .as_ref()
             .is_some_and(|id| items.iter().any(|asset| asset.id == *id));
         if !still_visible {
-            set_selected_id.set(items.first().map(|asset| asset.id.clone()));
+            set_selected_id.set(items.first().map(|asset| asset.id));
         }
     });
 
@@ -144,7 +145,7 @@ pub fn MediaPage() -> impl IntoView {
         leptos::task::spawn_local(async move {
             let total = files.len();
             let mut uploaded = 0_usize;
-            let mut last: Option<(String, String, bool)> = None;
+            let mut last: Option<(AssetId, String, bool)> = None;
             for file in files {
                 let file_name = file.name();
                 match api::upload_asset(file).await {
@@ -224,7 +225,8 @@ pub fn MediaPage() -> impl IntoView {
                     <span class="shrink-0 text-[11px] font-mono text-fg-tertiary/55 tabular-nums">
                         {move || {
                             let total = total_count.get();
-                            let shown = filtered_media.get().len();
+                            let shown = u64::try_from(filtered_media.get().len())
+                                .expect("media item count fits in u64");
                             if shown == total {
                                 format!("{total} files")
                             } else {
@@ -281,7 +283,7 @@ pub fn MediaPage() -> impl IntoView {
                                     <EmptyState
                                         icon=LuTriangleAlert
                                         title="Media library unavailable"
-                                        hint=error
+                                            hint=error.to_string()
                                     />
                                 }.into_any(),
                                 Some(Ok(_)) => {
@@ -476,7 +478,7 @@ fn MediaDetail(
             tags: Some(parse_tags(&draft_tags.get_untracked())),
         };
         leptos::task::spawn_local(async move {
-            match api::update_asset(&asset.id, &request).await {
+            match api::update_asset(asset.id, &request).await {
                 Ok(_) => {
                     on_changed.run(());
                     toasts::toast_success("Media metadata saved");
@@ -491,7 +493,7 @@ fn MediaDetail(
             return;
         };
         leptos::task::spawn_local(async move {
-            match api::delete_asset(&asset.id).await {
+            match api::delete_asset(asset.id).await {
                 Ok(()) => {
                     on_changed.run(());
                     toasts::toast_success("Media removed");
@@ -511,7 +513,11 @@ fn MediaDetail(
                     let accent = kind_accent(kind);
                     let icon = kind_icon(kind);
                     let label = kind_label(kind);
-                    let blob_url = format!("/api/v1/assets/{}/blob", asset.id);
+                    let blob_url = crate::api::client::daemon_url(&format!(
+                        "/api/v1/assets/{}/blob",
+                        asset.id
+                    ))
+                    .unwrap_or_default();
                     let header_name = asset.name.clone();
                     let download_name = asset.name.clone();
                     let type_text = asset.mime_type.clone();

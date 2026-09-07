@@ -9,9 +9,9 @@ The `hypercolor` CLI is the second way an agent drives the daemon, alongside the
 
 The CLI talks to the daemon over its REST API on `:9420`. It does not touch hardware directly, so every command an agent runs goes through the same shared engine state as the web UI and MCP. A change made on the command line is instantly visible everywhere else.
 
-{% callout(type="info") %}
-This is the command-driven sibling of the MCP path. If your agent runtime supports MCP, the [tool reference](@/agents/tools-reference.md) gives a typed, schema-validated surface. Reach for the CLI when you want shell scripting, piping into `jq`, exit-code branching, or coverage of commands MCP does not expose (effect rescan, profiles, layouts, driver controls). For the full human-facing command tree, see the [CLI reference](@/api/cli.md).
-{% end %}
+{% <callout type="info"> %}
+This is the command-driven sibling of the MCP path. If your agent runtime supports MCP, the [tool reference](@/agents/tools-reference.md) gives a typed, schema-validated surface. Reach for the CLI when you want shell scripting, piping into `jq`, exit-code branching, or coverage of commands MCP does not expose (effect rescan, scene snapshots, layouts, driver controls). For the full human-facing command tree, see the [CLI reference](@/api/cli.md).
+{% </callout> %}
 
 ## The agent contract: JSON in, exit codes out 🎯
 
@@ -67,13 +67,13 @@ hypercolor effects list -j
 
 The CLI reads connection settings from flags or environment variables, with the flag winning when both are set. For an agent that runs many commands, exporting the environment once is cleaner than threading flags through every call.
 
-| Variable | Flag | Default | Purpose |
-| --- | --- | --- | --- |
-| `HYPERCOLOR_HOST` | `--host` | `localhost` | Daemon hostname or IP. |
-| `HYPERCOLOR_PORT` | `--port` | `9420` | Daemon port. |
-| `HYPERCOLOR_API_KEY` | `--api-key` | _(none)_ | Bearer token for authenticated requests. |
-| `HYPERCOLOR_PROFILE` | `--profile` | _(none)_ | Named connection profile from `cli.toml`. |
-| `HYPERCOLOR_THEME` | `--theme` | _(none)_ | Color theme for table output (irrelevant under `-j`). |
+| Variable             | Flag        | Default     | Purpose                                               |
+| -------------------- | ----------- | ----------- | ----------------------------------------------------- |
+| `HYPERCOLOR_HOST`    | `--host`    | `localhost` | Daemon hostname or IP.                                |
+| `HYPERCOLOR_PORT`    | `--port`    | `9420`      | Daemon port.                                          |
+| `HYPERCOLOR_API_KEY` | `--api-key` | _(none)_    | Bearer token for authenticated requests.              |
+| `HYPERCOLOR_PROFILE` | `--profile` | _(none)_    | Named connection profile from `cli.toml`.             |
+| `HYPERCOLOR_THEME`   | `--theme`   | _(none)_    | Color theme for table output (irrelevant under `-j`). |
 
 ```bash
 export HYPERCOLOR_HOST=127.0.0.1
@@ -81,22 +81,22 @@ export HYPERCOLOR_PORT=9420
 hypercolor status -j
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 A local agent on the same machine as the daemon needs **no** API key. Loopback requests bypass authentication entirely. A token is only required when the daemon is reached from a non-loopback address, in which case set `HYPERCOLOR_API_KEY` and the CLI sends it as `Authorization: Bearer <token>`. The [REST API reference](@/api/rest.md) covers the remote-access auth model.
-{% end %}
+{% </callout> %}
 
 ## State-first workflow
 
 The reliable pattern for an agent is read, then act, then verify. Never guess the current state; query it. Never assume an effect name; search for it. After a mutation, read back to confirm the daemon applied what you intended.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
-    A[Read state: hypercolor status -j] --> B[Discover: effects list / devices list]
-    B --> C[Act: effects activate / brightness set / scenes activate]
-    C --> D[Verify: status -j, branch on exit code]
-    D -->|drifted| B
-    D -->|matches intent| E[Done]
-{% end %}
+A[Read state: hypercolor status -j] --> B[Discover: effects list / devices list]
+B --> C[Act: effects activate / brightness set / scenes activate]
+C --> D[Verify: status -j, branch on exit code]
+D -->|drifted| B
+D -->|matches intent| E[Done]
+{% </mermaid> %}
 
 ### 1. Read the live state
 
@@ -108,7 +108,7 @@ hypercolor status -j
 
 ### 2. Discover before you act
 
-Effect names are fuzzy-matched, but searching first means an agent applies a known effect instead of a guess. The catalog ships **11 native built-in effects** compiled into the engine plus roughly four dozen HTML effects from the SDK, so browse rather than hardcode names. Filter the list server-side with `--search`, `--category`, `--engine`, or `--audio`.
+Effect names are fuzzy-matched, but searching first means an agent applies a known effect instead of a guess. The catalog ships **11 native built-in effects** compiled into the engine plus roughly four dozen HTML effects from the SDK, so browse rather than hardcode names. Filter the list server-side with `--search`, `--category`, `--source`, or `--audio`.
 
 ```bash
 hypercolor effects list --search aurora -j
@@ -142,9 +142,9 @@ hypercolor brightness set 35
 hypercolor scenes activate "evening"
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Scenes are whole-rig configurations, not per-device groupings. A scene captures the full lighting setup and swaps it in atomically. Zones are flexible partitions of the render canvas within a scene. Keep the two distinct when an agent reasons about "change the lighting": a scene switch changes everything, a zone change is scoped.
-{% end %}
+{% </callout> %}
 
 ### 4. Verify
 
@@ -212,11 +212,11 @@ hypercolor server health -j
 
 The CLI has three top-level commands whose names overlap. Picking the wrong one is a frequent agent error, so keep them straight:
 
-| Command | Scope | Use it to |
-| --- | --- | --- |
-| `server` | The daemon you are connected to | Read its identity, version, and health (`server info`, `server health`). |
-| `servers` | The local network | Discover other Hypercolor daemons via mDNS (`servers discover`). |
-| `service` | The OS service manager | Manage the daemon process lifecycle through systemd or launchd (`service start`, `service stop`, `service status`, `service logs`). |
+| Command   | Scope                           | Use it to                                                                                                                           |
+| --------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `server`  | The daemon you are connected to | Read its identity, version, and health (`server info`, `server health`).                                                            |
+| `servers` | The local network               | Discover other Hypercolor daemons via mDNS (`servers discover`).                                                                    |
+| `service` | The OS service manager          | Manage the daemon process lifecycle through systemd or launchd (`service start`, `service stop`, `service status`, `service logs`). |
 
 In short: `server` queries the connected daemon, `servers` finds daemons on the LAN, and `service` controls the local daemon process.
 
@@ -241,7 +241,7 @@ hypercolor effects activate aurora
 ## Where to go next
 
 - [MCP setup](@/agents/mcp-setup.md): the typed, schema-validated alternative to shell scripting.
-- [Tools reference](@/agents/tools-reference.md): all 16 MCP tools with arguments and return shapes.
+- [Tools reference](@/agents/tools-reference.md): all 17 MCP tools with arguments and return shapes.
 - [Prompt templates](@/agents/prompt-templates.md): the three shipped prompts agents can invoke.
 - [CLI reference](@/api/cli.md): the complete command tree, human-facing.
 - [REST API reference](@/api/rest.md): the daemon contract the CLI sits on top of.

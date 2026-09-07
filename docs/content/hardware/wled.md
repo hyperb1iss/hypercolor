@@ -4,7 +4,7 @@ description = "Connect WLED controllers via mDNS or static IP. DDP streams pixel
 weight = 70
 +++
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 WLED controllers (ESP8266 / ESP32) are discovered automatically over mDNS and need no credentials or pairing step. Hypercolor streams pixel data in real time using DDP by default, a lightweight protocol with no universe management and no per-packet channel-count ceremony. E1.31/sACN is available as an alternative for xLights, Vixen, and other DMX workflows.
 
@@ -22,7 +22,7 @@ Both RGB and RGBW strip configurations are detected automatically from the devic
 
 Hypercolor browses for `_wled._tcp.local.` services using a 5-second scan window. Each candidate is enriched via `GET http://<ip>/json/info`, which provides the display name, LED count, reported max FPS, firmware version, and RGBW flag. Devices that respond to HTTP enrichment connect automatically; devices found only via mDNS where HTTP enrichment fails are held in a deferred state until the next scan.
 
-Fingerprinting uses the MAC address from `/json/info` (`net:<mac>`) so a DHCP lease change does not break the device identity.
+Fingerprinting uses the MAC address from `/json/info` (`net:wled:<mac>`) so a DHCP lease change does not break the device identity. When the device reports no MAC, the hostname is used as the key instead.
 
 Trigger a scan from the CLI:
 
@@ -80,9 +80,9 @@ E1.31 is available for installations already using DMX software (xLights, Vixen,
 | Pixels per universe (RGBW) | 127 (508 channels) |
 | Priority | 150 |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 When using E1.31, configure WLED's **Sync Interfaces → DMX** settings to match Hypercolor's output: start universe, DMX mode `multiple_rgb` (mode 4) for RGB strips or `multiple_rgbw` (mode 6) for RGBW strips, and DMX start address 1. Hypercolor checks `/json/cfg` on connect and logs any mismatches at the `warn` level.
-{% end %}
+{% </callout> %}
 
 ### Choosing a protocol
 
@@ -112,7 +112,7 @@ Adjust the tolerance in **Settings → Discovery → WLED → Frame Dedup Tolera
 - Run with debug logging to see probe attempts:
 
 ```bash
-RUST_LOG=hypercolor_driver_wled=debug hypercolor daemon
+RUST_LOG=hypercolor_driver_wled=debug just daemon
 ```
 
 ### LEDs don't respond after discovery
@@ -128,7 +128,7 @@ RUST_LOG=hypercolor_driver_wled=debug hypercolor daemon
 
 ### WLED exits realtime mode unexpectedly
 
-WLED has a built-in realtime timeout. If Hypercolor pauses sending (for example, during a profile switch), WLED reverts to its saved state after the timeout expires. The 2-second keepalive is designed to prevent this during normal operation. If the strip flashes its saved WLED effect mid-session, check for packet loss or a subnet routing change, or increase WLED's realtime timeout setting.
+WLED has a built-in realtime timeout. If Hypercolor pauses sending (for example, during a scene switch), WLED reverts to its saved state after the timeout expires. The 2-second keepalive is designed to prevent this during normal operation. If the strip flashes its saved WLED effect mid-session, check for packet loss or a subnet routing change, or increase WLED's realtime timeout setting.
 
 ## Related pages
 

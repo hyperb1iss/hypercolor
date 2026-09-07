@@ -2,9 +2,9 @@ use std::time::Instant;
 
 use tracing::{debug, trace, warn};
 
-use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::Canvas;
-use hypercolor_core::types::event::FrameTiming;
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::Canvas;
+use hypercolor_types::event::FrameTiming;
 use hypercolor_types::session::OffOutputBehavior;
 
 use super::frame_io::{FramePublicationRequest, FramePublicationSurfaces, publish_frame_updates};
@@ -68,7 +68,7 @@ pub(crate) async fn maybe_sleep_throttle(
         return Some(frame_policy.sleep_throttle_execution(&mut render_loop));
     }
 
-    if power_state.off_output_behavior == OffOutputBehavior::Release {
+    if power_state.effective_off_output_behavior() == OffOutputBehavior::Release {
         output_artifacts.clear_zones();
         let frame_num_u32 = u64_to_u32(scene_snapshot.frame_token);
         let surface = output_artifacts.static_surface(
@@ -86,15 +86,14 @@ pub(crate) async fn maybe_sleep_throttle(
                     canvas: Some(Canvas::from_published_surface(&surface)),
                     frame_surface: Some(surface),
                     preview_surface: None,
-                    screen_capture_surface: None,
                     web_viewport_preview_surface: None,
                     effect_running: false,
                     screen_capture_active: false,
                 },
                 scene_id: scene_snapshot.scene_runtime.active_scene_id,
-                group_canvases: &[],
+                display_zone_frames: &[],
                 zone_canvases: &[],
-                active_group_canvas_ids: &[],
+                active_display_zone_ids: &[],
                 frame_number: frame_num_u32,
                 elapsed_ms: scene_snapshot.elapsed_ms,
                 reuse_existing_frame: false,
@@ -123,7 +122,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let surface = output_artifacts.static_surface(
         state.canvas_dims.width(),
         state.canvas_dims.height(),
-        power_state.off_output_color,
+        power_state.effective_off_output_color(),
     );
     let canvas = Canvas::from_published_surface(&surface);
     let sample_start = Instant::now();
@@ -144,7 +143,7 @@ pub(crate) async fn maybe_sleep_throttle(
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
+        let write_stats = manager.write_frame(zone_colors, layout.as_ref());
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
@@ -168,15 +167,14 @@ pub(crate) async fn maybe_sleep_throttle(
                 canvas: Some(canvas),
                 frame_surface: Some(surface),
                 preview_surface: None,
-                screen_capture_surface: None,
                 web_viewport_preview_surface: None,
                 effect_running: false,
                 screen_capture_active: false,
             },
             scene_id: scene_snapshot.scene_runtime.active_scene_id,
-            group_canvases: &[],
+            display_zone_frames: &[],
             zone_canvases: &[],
-            active_group_canvas_ids: &[],
+            active_display_zone_ids: &[],
             frame_number: frame_num_u32,
             elapsed_ms: scene_snapshot.elapsed_ms,
             reuse_existing_frame: false,

@@ -16,6 +16,7 @@ and `just verify` do not cover it. Build and test separately:
 just ui-dev          # Trunk dev server on :9430, proxies API to :9420
 just ui-build        # Production WASM build
 just ui-test         # Run UI crate tests
+just ui-dist         # Build and stage dist/ for daemon embedding
 ```
 
 Trunk orchestrates Tailwind v4 compilation before the WASM build. See
@@ -23,12 +24,12 @@ Trunk orchestrates Tailwind v4 compilation before the WASM build. See
 
 ## Role and Position
 
-Leaf WASM application. Depends on `hypercolor-types` and `hypercolor-leptos-ext`
-(via relative paths in `Cargo.toml`) for shared engine types and the WebSocket
-client. All other dependencies are third-party WASM/browser crates: `leptos`,
-`leptos_router`, `leptos_meta`, `gloo-net`, `wasm-bindgen`, `web-sys`,
-`leptos_icons`, `leptoaster`. Version pinning is manual (no workspace
-inheritance).
+Leaf WASM application. Depends on `hypercolor-color`, `hypercolor-types`, and
+`hypercolor-leptos-ext` (via relative paths in `Cargo.toml`) for shared engine
+types and the WebSocket client. All other dependencies are third-party
+WASM/browser crates: `leptos`, `leptos_router`, `leptos_meta`, `leptos-use`,
+`gloo-net`, `wasm-bindgen`, `web-sys`, `leptos_icons`, `leptoaster`. Version
+pinning is manual (no workspace inheritance).
 
 ## Key Entry Points
 
@@ -48,4 +49,4 @@ None. Build variants are Trunk-managed.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB
-lighting orchestration for Linux. Apache-2.0.
+lighting orchestration for Linux, Windows, and macOS. Apache-2.0.

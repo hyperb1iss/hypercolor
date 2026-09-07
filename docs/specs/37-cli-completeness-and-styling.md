@@ -6,11 +6,28 @@
 > operation from a flag-heavy chore into a first-class experience with named
 > connection profiles and WebSocket streaming subscriptions.
 
-**Status:** Draft
+**Status:** Implemented. The deliverables shipped; the route inventory below did not
+survive with them, so treat every endpoint in this document as historical.
+**API status:** Historical command and route snapshot. The resource model in
+[Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
+
+> **Note (2026-08-25):** "Draft" understated this spec and its route table overstated
+> the daemon, in the same header. The deliverables are live: `Painter`
+> (`crates/hypercolor-cli/src/output/painter.rs`), named connection profiles
+> (`crates/hypercolor-cli/src/config/mod.rs`), and the WebSocket client
+> (`crates/hypercolor-cli/src/client.rs`). Two documented commands target deleted
+> routes and cannot be built: `hypercolor devices identify <id> zone <zone-id>` against
+> `POST /devices/{id}/zones/{zone_id}/identify`, which is now
+> `/devices/{id}/segments/{segment}/identify`, and `hypercolor devices logical list <id>`
+> against `GET /devices/{id}/logical-devices`, which was removed outright along with the
+> `logical.rs` subcommand tree it implies. The `hypercolor profile` surface referenced
+> here is also gone; profiles folded into scenes.
 **Author:** Nova
 **Date:** 2026-04-09
 **Crates:** `hypercolor-cli`, `hypercolor-daemon` (minor)
-**Related:** `docs/specs/10-rest-websocket-api.md`, `docs/specs/15-cli-commands.md`
+**Related:** `docs/specs/78-api-resource-model.md` for the live route surface;
+`docs/archive/10-rest-websocket-api.md` and `docs/archive/15-cli-commands.md` (both
+archived 2026-08-25) for history
 
 ---
 
@@ -86,8 +103,8 @@ zero CLI exposure:
   no CLI equivalents.
 - **Effect layout associations.** `GET/PUT/DELETE /effects/{id}/layout` —
   linking a specific effect to a preferred layout — is entirely absent.
-- **Live control patching.** `PATCH /effects/current/controls` and `POST
-/effects/current/reset`. Today the only way to change controls is
+- **Live control patching.** `PATCH /effects/active/controls` and `POST
+/effects/active/reset`. Today the only way to change controls is
   `hypercolor effects activate <name> --param ...`, which re-applies the whole
   effect rather than patching the running instance.
 - **Effect rescan.** `POST /effects/rescan` — triggers a reload of the effect
@@ -380,8 +397,8 @@ hypercolor effects list                              # (existing)
 hypercolor effects info <name>                       # (existing)
 hypercolor effects activate <name> [--param ...]     # (existing)
 hypercolor effects stop                              # (existing)
-hypercolor effects patch --param key=value ...       # (new)  PATCH /effects/current/controls
-hypercolor effects reset                             # (new)  POST  /effects/current/reset
+hypercolor effects patch --param key=value ...       # (new)  PATCH /effects/active/controls
+hypercolor effects reset                             # (new)  POST  /effects/active/reset
 hypercolor effects rescan                            # (new)  POST  /effects/rescan
 hypercolor effects layout show <name>                # (new)  GET   /effects/{id}/layout
 hypercolor effects layout set <name> <layout-id>     # (new)  PUT   /effects/{id}/layout
@@ -408,7 +425,6 @@ hypercolor devices unpair <id>                                   # (new)     DEL
 hypercolor devices identify <id>                                 # (existing)
 hypercolor devices identify <id> zone <zone-id>                  # (new)     POST   /devices/{id}/zones/{zone_id}/identify
 hypercolor devices identify <id> slot <slot-id>                  # (new)     POST   /devices/{id}/attachments/{slot_id}/identify
-hypercolor devices set-color <id> <color>                        # (existing)
 hypercolor devices delete <id>                                   # (new)     DELETE /devices/{id}
 hypercolor devices update <id> [--name ...] [--enabled ...]      # (new)     PUT    /devices/{id}
 hypercolor devices attachments show <id>                         # (new)     GET    /devices/{id}/attachments
@@ -1186,7 +1202,8 @@ Verification:
 
 Files:
 
-- `docs/specs/15-cli-commands.md` — append a "Spec 37 delta" section
+- `docs/archive/15-cli-commands.md`, archived 2026-08-25, so no delta section is
+  possible against it any more
   listing the new commands
 - `crates/hypercolor-cli/src/commands/completions.rs` — verify generation
   picks up new subcommands without source changes
@@ -1290,7 +1307,7 @@ audio.device ...` on the grounds that it is CLI config, not an API
    call. If the daemon grows a dedicated `PUT /audio/device` endpoint,
    we add a subcommand then.
 4. **Should `hypercolor effects patch` support `--json-patch` for complex
-   nested control shapes?** The daemon's `PATCH /effects/current/controls`
+   nested control shapes?** The daemon's `PATCH /effects/active/controls`
    accepts a JSON object today. `--param k=v` is easy; `--json-patch` would
    be for scripts that need more than scalar overrides. The spec defers
    this until a real use case appears.

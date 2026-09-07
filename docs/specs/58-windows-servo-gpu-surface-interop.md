@@ -1,10 +1,22 @@
 # 58 - Windows Servo GPU Surface Interop
 
-**Status:** Implemented and Windows-fixture verified; cross-vendor soak and performance characterization ongoing
+**Status:** Implemented and Windows-fixture verified. Section 5.1's per-platform mirror
+requirement was retired and must not be re-applied.
 **Author:** Nova
 **Date:** 2026-05-22 (FBO revision 2026-06-12)
 **Crates:** `hypercolor-core`, `hypercolor-daemon`, `hypercolor-windows-gpu-interop`
-**Related:** Specs 32, 48, 56, 57; `docs/design/45-graphics-pipeline-unification-plan.md`
+**Related:** Specs 32, 48, 56, 57; `docs/design/45-graphics-pipeline-unification-plan.md`,
+`docs/design/72-cross-platform-boundary-review.md`
+
+> **Note (2026-08-25):** section 5.1 mandates that the Windows frame and importer types
+> "mirror the macOS crate exactly", and section 9 asks for a Windows-only crate
+> "mirroring `hypercolor-macos-gpu-interop`". That doctrine is dead. There is now a
+> single `ImportedEffectFrame` in the tree, at
+> `crates/hypercolor-gpu-frame/src/lib.rs`, re-exported neutrally through
+> `hypercolor-core`. `docs/design/72-cross-platform-boundary-review.md` names this exact
+> sentence as the defect it walked back: a mirror is a review obligation rather than a
+> compiler guarantee, and it had already drifted. Everything else in this spec, including
+> the FBO revision, is current.
 
 ## 0.0 FBO Revision (2026-06-12)
 

@@ -1,6 +1,4 @@
-import { canvas, combo, getScreenZoneData, hslToRgb, num, rect } from 'hypercolor'
-
-import { wrapHue } from '../_builtin/common'
+import { canvas, clamp, combo, getScreenZoneData, hslToRgb, num, rect } from 'hypercolor'
 
 interface RectValue {
     x: number
@@ -10,10 +8,6 @@ interface RectValue {
 }
 
 const MIN_VIEWPORT_EDGE = 0.02
-
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value))
-}
 
 function clampViewport(viewport: RectValue): RectValue {
     const width = clamp(Number.isFinite(viewport.width) ? viewport.width : 1, MIN_VIEWPORT_EDGE, 1)
@@ -95,11 +89,11 @@ export default canvas.stateful(
             for (let index = 0; index < cellCount; index++) {
                 const lightness = clamp(screen.lightness[index] * brightness, 0, 1)
                 const saturation = clamp(screen.saturation[index], 0, 1)
-                const [r, g, b] = hslToRgb(wrapHue(screen.hue[index]), saturation, lightness)
+                const cell = hslToRgb(screen.hue[index], saturation, lightness)
                 const offset = index * 4
-                pixels[offset] = Math.round(r * 255)
-                pixels[offset + 1] = Math.round(g * 255)
-                pixels[offset + 2] = Math.round(b * 255)
+                pixels[offset] = cell.r
+                pixels[offset + 1] = cell.g
+                pixels[offset + 2] = cell.b
                 pixels[offset + 3] = 255
             }
             sourceCtx.putImageData(frame, 0, 0)

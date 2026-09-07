@@ -4,8 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use hypercolor_types::scene::{SceneKind, SceneMutationMode};
-use serde::{Deserialize, Serialize};
+use hypercolor_types::api::effects::EffectSourceKind;
+pub use hypercolor_types::api::scene::{SceneDocument, ZoneResource};
+pub use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectCategory;
+use hypercolor_types::layer::{LayerSource, SceneLayer};
+use hypercolor_types::library::PresetId;
+use hypercolor_types::scene::ZoneRole;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::screen::ScreenId;
 
@@ -32,7 +38,7 @@ pub struct AppState {
     pub devices: Vec<DeviceSummary>,
     pub favorites: Vec<String>,
     pub scenes: Vec<SceneSummary>,
-    pub active_scene: Option<Arc<ActiveScene>>,
+    pub active_scene: Option<Arc<SceneDocument>>,
     /// Zone targeted by apply/control edits. `None` = the primary zone.
     pub focused_zone: Option<String>,
     pub spectrum: Option<Arc<SpectrumSnapshot>>,
@@ -47,12 +53,12 @@ impl AppState {
     /// Falls back to the primary zone when no explicit focus is set or the
     /// focused zone no longer exists in the active scene.
     #[must_use]
-    pub fn target_zone(&self) -> Option<&ZoneSummary> {
+    pub fn target_zone(&self) -> Option<&ZoneResource> {
         let scene = self.active_scene.as_deref()?;
         self.focused_zone
             .as_deref()
-            .and_then(|id| scene.zone(id))
-            .or_else(|| scene.primary())
+            .and_then(|id| scene_zone(scene, id))
+            .or_else(|| primary_zone(scene))
     }
 }
 
@@ -61,59 +67,75 @@ impl AppState {
 /// One saved scene, as listed by `GET /scenes` (shared wire contract).
 pub use hypercolor_types::api::scenes::SceneSummary;
 
-/// The active scene with its render groups (zones).
-#[derive(Debug, Clone)]
-pub struct ActiveScene {
-    pub id: String,
-    pub name: String,
-    pub kind: SceneKind,
-    pub mutation_mode: SceneMutationMode,
-    pub snapshot_locked: bool,
-    pub groups_revision: u64,
-    pub zones: Vec<ZoneSummary>,
+/// Whether the live scene contains more than one authored zone.
+#[must_use]
+pub fn scene_is_multi_zone(scene: &SceneDocument) -> bool {
+    scene.zones.len() > 1
 }
 
-impl ActiveScene {
-    /// Whether the scene runs more than one zone.
-    #[must_use]
-    pub fn multi_zone(&self) -> bool {
-        self.zones.len() > 1
-    }
-
-    /// Look up a zone by id.
-    #[must_use]
-    pub fn zone(&self, id: &str) -> Option<&ZoneSummary> {
-        self.zones.iter().find(|zone| zone.id == id)
-    }
-
-    /// The scene's primary zone, if any.
-    #[must_use]
-    pub fn primary(&self) -> Option<&ZoneSummary> {
-        self.zones
-            .iter()
-            .find(|zone| zone.is_primary)
-            .or_else(|| self.zones.first())
-    }
+/// Look up a zone by its canonical wire id.
+#[must_use]
+pub fn scene_zone<'a>(scene: &'a SceneDocument, id: &str) -> Option<&'a ZoneResource> {
+    scene.zones.iter().find(|zone| zone.id.to_string() == id)
 }
 
-/// A render group (zone) within the active scene.
-///
-/// Projection of `hypercolor_types::scene::Zone` carrying only what the
-/// TUI renders and mutates. The zone's id doubles as its legacy layer id
-/// for the layer-scoped controls PATCH (`Zone::legacy_layer_id()` wraps
-/// the same UUID).
-#[derive(Debug, Clone)]
-pub struct ZoneSummary {
-    pub id: String,
-    pub name: String,
-    pub effect_id: Option<String>,
-    pub brightness: f32,
-    pub enabled: bool,
-    pub is_primary: bool,
-    pub color: Option<String>,
-    pub controls: HashMap<String, ControlValue>,
-    pub controls_version: u64,
-    pub layers_version: u64,
+/// Select the primary zone, falling back to the first authored zone.
+#[must_use]
+pub fn primary_zone(scene: &SceneDocument) -> Option<&ZoneResource> {
+    scene
+        .zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .or_else(|| scene.zones.first())
+}
+
+/// Select the topmost effect layer from a canonical zone resource.
+#[must_use]
+pub fn zone_effect_layer(zone: &ZoneResource) -> Option<&SceneLayer> {
+    zone.layers
+        .iter()
+        .rev()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+}
+
+/// Select the topmost effect id from a canonical zone resource.
+#[must_use]
+pub fn zone_effect_id(zone: &ZoneResource) -> Option<String> {
+    let LayerSource::Effect { effect_id, .. } = &zone_effect_layer(zone)?.source else {
+        return None;
+    };
+    Some(effect_id.to_string())
+}
+
+/// Materialize the selected effect layer's controls for TUI widgets.
+#[must_use]
+pub fn zone_effect_controls(zone: &ZoneResource) -> HashMap<String, ControlValue> {
+    let Some(layer) = zone_effect_layer(zone) else {
+        return HashMap::new();
+    };
+    let LayerSource::Effect { controls, .. } = &layer.source else {
+        return HashMap::new();
+    };
+    controls
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// Update one selected effect control in a canonical zone resource.
+pub fn set_zone_effect_control(zone: &mut ZoneResource, id: &str, value: &ControlValue) {
+    let Some(layer) = zone
+        .layers
+        .iter_mut()
+        .rev()
+        .find(|layer| matches!(layer.source, LayerSource::Effect { .. }))
+    else {
+        return;
+    };
+    let LayerSource::Effect { controls, .. } = &mut layer.source else {
+        return;
+    };
+    controls.insert(id.to_owned(), value.clone());
 }
 
 // ── Daemon State ────────────────────────────────────────────────────
@@ -125,12 +147,6 @@ pub struct DaemonState {
     pub brightness: u8,
     pub fps_target: f32,
     pub fps_actual: f32,
-    pub effect_name: Option<String>,
-    pub effect_id: Option<String>,
-    pub scene_name: Option<String>,
-    #[serde(default)]
-    pub scene_snapshot_locked: bool,
-    pub profile_name: Option<String>,
     pub device_count: u32,
     pub total_leds: u32,
 }
@@ -146,10 +162,8 @@ pub struct EffectSummary {
     pub description: String,
     #[serde(default)]
     pub author: String,
-    #[serde(default)]
-    pub category: String,
-    #[serde(default)]
-    pub source: String,
+    pub category: EffectCategory,
+    pub source: EffectSourceKind,
     #[serde(default)]
     pub audio_reactive: bool,
     #[serde(default)]
@@ -177,44 +191,41 @@ pub struct ControlDefinition {
 }
 
 /// An effect-defined preset snapshot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PresetTemplate {
+    pub id: String,
     pub name: String,
     pub description: Option<String>,
     #[serde(default)]
     pub controls: std::collections::HashMap<String, ControlValue>,
 }
 
-/// A control parameter value.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ControlValue {
-    Float(f32),
-    Integer(i32),
-    Boolean(bool),
-    Color([f32; 4]),
-    Text(String),
+#[derive(Deserialize)]
+struct PresetTemplateWire {
+    id: Option<String>,
+    name: String,
+    description: Option<String>,
+    #[serde(default)]
+    controls: HashMap<String, ControlValue>,
 }
 
-impl ControlValue {
-    /// Extract as f32, if numeric.
-    #[must_use]
-    pub fn as_f32(&self) -> Option<f32> {
-        match self {
-            Self::Float(v) => Some(*v),
-            #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-            Self::Integer(v) => Some(*v as f32),
-            _ => None,
-        }
-    }
+impl<'de> Deserialize<'de> for PresetTemplate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = PresetTemplateWire::deserialize(deserializer)?;
+        let id = wire
+            .id
+            .filter(|id| !PresetId::normalize_key(id).is_empty())
+            .unwrap_or_else(|| PresetId::stable(&wire.name).to_string());
 
-    /// Extract as bool, if boolean.
-    #[must_use]
-    pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Self::Boolean(v) => Some(*v),
-            _ => None,
-        }
+        Ok(Self {
+            id,
+            name: wire.name,
+            description: wire.description,
+            controls: wire.controls,
+        })
     }
 }
 
@@ -232,21 +243,7 @@ pub struct DeviceSummary {
 }
 
 /// Summary of a daemon-managed virtual display simulator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SimulatedDisplaySummary {
-    pub id: String,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub circular: bool,
-    #[serde(default = "simulator_enabled_default")]
-    pub enabled: bool,
-}
-
-const fn simulator_enabled_default() -> bool {
-    true
-}
+pub type SimulatedDisplaySummary = hypercolor_types::api::simulators::SimulatedDisplay;
 
 /// Selected source for the TUI preview surface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

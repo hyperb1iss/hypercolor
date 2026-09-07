@@ -28,32 +28,31 @@ test("websocket handshake, subscribe ack, and live events flow through the proxy
     expect(hello.type).toBe("hello");
     expect(hello.version).toBe("1.0");
     expect(hello.capabilities).toContain("events");
-    expect(hello.subscriptions).toEqual(["events"]);
+    expect(hello.subscriptions.map((entry) => entry.topic)).toEqual(["events"]);
 
     socket.send(
       JSON.stringify({
         type: "subscribe",
-        channels: ["metrics"],
+        topics: [{ topic: "metrics" }],
       }),
     );
 
     const ack = await inbox.waitFor((message) => message.type === "subscribed");
-    expect(ack.channels).toEqual(["metrics"]);
-    expect(ack.config.metrics).toBeTruthy();
+    expect(ack.topics.map((entry) => entry.topic)).toEqual(["events", "metrics"]);
+    const metrics = ack.topics.find((entry) => entry.topic === "metrics");
+    expect(metrics.config).toBeTruthy();
 
     const effects = await readEnvelope(await api.get("/api/v1/effects"));
     const runnableEffect = findRunnableEffect(effects.items, ["Audio Pulse", "Gradient", "Rainbow"]);
     await readEnvelope(await api.post(`/api/v1/effects/${runnableEffect.id}/apply`));
 
     const effectEvent = await inbox.waitFor(
-      (message) =>
-        message.type === "event" &&
-        ["effect_started", "effect_activated", "effect_changed"].includes(message.event),
+      (message) => message.type === "event" && message.event === "effect_started",
     );
-    expect(effectEvent.event).toMatch(/effect_/);
+    expect(effectEvent.event).toBe("effect_started");
   } finally {
     socket.close();
-    await api.post("/api/v1/effects/stop");
+    await api.post("/api/v1/scene/clear");
     await api.dispose();
   }
 });

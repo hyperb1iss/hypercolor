@@ -1,0 +1,25 @@
+[package]
+name = "hypercolor-pipewire-interop"
+description = "Audited XDG Portal and PipeWire capture boundary for Hypercolor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { workspace = true }
+libc = { workspace = true }
+pipewire = { workspace = true }
+tracing = { workspace = true }
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"

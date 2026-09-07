@@ -1,11 +1,11 @@
 use hypercolor_types::attachment::{
     ComponentBinding, ComponentCanvasSize, ComponentCategory, ComponentCompatibility,
     ComponentOrigin, ComponentSlot, ComponentTemplate, ComponentTemplateManifest,
-    slot_id_matches_zone_name, slugify_slot_id, zone_name_matches_slot_alias,
+    channel_name_matches_slot_alias, slot_id_matches_channel_name, slugify_slot_id,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition};
 
@@ -49,15 +49,15 @@ fn sample_device() -> DeviceInfo {
         model: Some("fixture_model".into()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("fixture-controller", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "ATX Strimer".into(),
                 led_count: 120,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "GPU Strimer".into(),
                 led_count: 162,
                 topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
@@ -84,17 +84,17 @@ fn slot_alias_matching_uses_default_profile_slug_rules() {
     assert_eq!(slugify_slot_id("Channel 1"), "channel-1");
     assert_eq!(slugify_slot_id("Channel 01"), "channel-01");
     assert_eq!(slugify_slot_id("!!!"), "slot");
-    assert!(slot_id_matches_zone_name("channel-1", "Channel 1"));
-    assert!(slot_id_matches_zone_name("CHANNEL-01", "Channel 1"));
-    assert!(zone_name_matches_slot_alias(
+    assert!(slot_id_matches_channel_name("channel-1", "Channel 1"));
+    assert!(slot_id_matches_channel_name("CHANNEL-01", "Channel 1"));
+    assert!(channel_name_matches_slot_alias(
         Some("ATX Strimer"),
         Some("atx-strimer")
     ));
-    assert!(zone_name_matches_slot_alias(
+    assert!(channel_name_matches_slot_alias(
         Some("gpu_strimer"),
         Some("GPU Strimer")
     ));
-    assert!(!zone_name_matches_slot_alias(
+    assert!(!channel_name_matches_slot_alias(
         Some("channel-1"),
         Some("Channel 2")
     ));
@@ -204,7 +204,7 @@ fn attachment_slot_accepts_any_other_category_bucket() {
 }
 
 #[test]
-fn device_info_derives_default_attachment_profile_from_zones() {
+fn device_info_derives_default_attachment_profile_from_segments() {
     let device = sample_device();
     let profile = device.default_attachment_profile();
 
@@ -229,15 +229,15 @@ fn device_info_derives_default_attachment_profile_from_zones() {
 #[test]
 fn device_info_default_attachment_profile_deduplicates_slot_ids() {
     let device = DeviceInfo {
-        zones: vec![
-            ZoneInfo {
+        segments: vec![
+            SegmentInfo {
                 name: "Channel 1".into(),
                 led_count: 16,
                 topology: DeviceTopologyHint::Strip,
                 color_format: DeviceColorFormat::Rgb,
                 layout_hint: None,
             },
-            ZoneInfo {
+            SegmentInfo {
                 name: "Channel 1".into(),
                 led_count: 16,
                 topology: DeviceTopologyHint::Strip,
@@ -260,7 +260,7 @@ fn default_attachment_profile_uses_topology_categories_only() {
         model: Some("fixture".into()),
         origin: DeviceOrigin::native("fixture-driver", "usb", ConnectionType::Usb)
             .with_protocol_id("fixture/protocol"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Channel 1".into(),
             led_count: 126,
             topology: DeviceTopologyHint::Strip,

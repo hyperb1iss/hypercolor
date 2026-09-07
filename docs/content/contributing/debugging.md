@@ -48,7 +48,7 @@ with `RUST_LOG`.
 ## Built-in diagnostics
 
 `hypercolor diagnose` posts to `POST /api/v1/diagnose` and runs a set of named health checks
-against the live daemon. The default check set is `daemon`, `render`, `devices`, `config`.
+against the live daemon. The default check set is `daemon`, `render`, `devices`, `config`, `input`, and `memory`.
 
 ```bash
 # Tabular output (the default, easiest to read)
@@ -78,6 +78,12 @@ line at the end counts totals across all checks.
 | `render` | render | Render loop state, frame liveness (stale > 2 s → warning, > 10 s → fail), LED freshness |
 | `devices` | devices | Registry count, output queue health, USB actor display lane, display output encoder |
 | `config` | config | Config manager availability |
+| `input` | input | Input-source lifecycle and data freshness: a demanded source that is failed, unavailable, stopped, degraded, or stale |
+| `memory` | memory | Servo memory-profiler summary (warning on Windows and on builds without the `servo` feature) |
+
+One further check, `macos_screen_parity`, is opt-in: it never runs by default, and requesting it
+requires protected-control authorization, so an unauthenticated call asking for it is rejected
+rather than answered.
 
 The response also includes a `snapshot` object with detailed render timing, USB actor metrics,
 display output encoder counters, and per-device queue state. Inspect it with:
@@ -92,33 +98,34 @@ and `last_error`. That split distinguishes healthy latest-wins pacing from a lag
 
 ### Servo memory diagnostics
 
-On non-Windows builds with the `servo` feature enabled, a separate endpoint captures Servo's
-internal memory profiler output:
+On non-Windows builds with the `servo` feature enabled, the `memory` diagnostic check captures
+Servo's internal memory profiler summary:
 
 ```bash
-curl -s -X POST http://localhost:9420/api/v1/diagnose/memory | jq
+curl -s -X POST http://localhost:9420/api/v1/diagnose \
+  -H 'Content-Type: application/json' \
+  -d '{"checks":["memory"]}' | jq '.data.checks[]'
 ```
 
-This returns a `ServoMemoryReportSnapshot` with per-process explicit heap, system heap, non-heap,
-and non-explicit bytes. Useful for tracking down long-session Servo memory growth.
+The check detail reports process and report counts plus explicit and non-explicit bytes. It is
+useful for tracking long-session Servo memory growth without exposing a parallel endpoint.
 
-{% callout(type="warning") %}
-Servo memory diagnostics are disabled on Windows because the embedded memory reporter can abort
-the daemon process. The endpoint returns `404` on that platform. On Linux/macOS builds without
-the `servo` feature the endpoint also returns `404`.
-{% end %}
+{% <callout type="warning"> %}
+Servo memory reporting is disabled on Windows because the embedded reporter can abort the daemon
+process. The `memory` check returns a warning there, and on builds without the `servo` feature.
+{% </callout> %}
 
 ## REST and WebSocket inspection
 
 ```bash
 # Full system status (includes audio_available and effect_health)
-curl -s http://localhost:9420/api/v1/status | jq
+curl -s http://localhost:9420/api/v1/system | jq '.data.status'
 
 # Connected devices and their current state
 curl -s http://localhost:9420/api/v1/devices | jq
 
-# Active effect
-curl -s http://localhost:9420/api/v1/effects/active | jq
+# Live scene, including real zone and layer ids
+curl -s http://localhost:9420/api/v1/scene | jq
 
 # Real-time event stream (install websocat if needed: cargo install websocat)
 websocat ws://localhost:9420/api/v1/ws | jq
@@ -189,7 +196,7 @@ the device database yet.
 2. Check the daemon audio state:
 
    ```bash
-   curl -s http://localhost:9420/api/v1/status | jq '.data.audio_available'
+   curl -s http://localhost:9420/api/v1/system | jq '.data.status.audio_available'
    ```
 
 3. Enable audio input tracing to see what the daemon receives:
@@ -198,10 +205,10 @@ the device database yet.
    RUST_LOG=hypercolor_core::input=debug just daemon
    ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 For audio-reactive effects, you want a "monitor" source that captures your system audio output.
 On PulseAudio and PipeWire these are named like `alsa_output.*.monitor`.
-{% end %}
+{% </callout> %}
 
 ## Effect debugging
 
@@ -270,7 +277,7 @@ Servo telemetry lives under `effect_health` on the status endpoint, not in the d
 snapshot:
 
 ```bash
-curl -s http://localhost:9420/api/v1/status | jq '.data.effect_health'
+curl -s http://localhost:9420/api/v1/system | jq '.data.status.effect_health'
 ```
 
 ### Servo session failures
@@ -279,8 +286,8 @@ The Servo worker manages sessions in an `Idle → Loading → Running` state mac
 creation and page load failures are counted under `effect_health`:
 
 ```bash
-curl -s http://localhost:9420/api/v1/status | jq '
-  .data.effect_health |
+curl -s http://localhost:9420/api/v1/system | jq '
+  .data.status.effect_health |
   {
     session_creates: .servo_session_creates_total,
     session_create_failures: .servo_session_create_failures_total,
@@ -295,24 +302,24 @@ For full Servo telemetry (render queue waits, GPU import stats, per-frame timing
 `servo_*` field under `effect_health`:
 
 ```bash
-curl -s http://localhost:9420/api/v1/status | jq '.data.effect_health | with_entries(select(.key | startswith("servo_")))'
+curl -s http://localhost:9420/api/v1/system | jq '.data.status.effect_health | with_entries(select(.key | startswith("servo_")))'
 ```
 
 ### Servo CSS and layout constraints
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 CSS grid does not work in Servo: children render stacked full-width instead of in a grid. Use
 flexbox for display-face layouts. This is a known Servo limitation, not a Hypercolor bug.
-{% end %}
+{% </callout> %}
 
 WebGL2 works via the Servo canvas but not all extensions available in Chrome are present. If a
 GLSL effect works in a browser but not in Hypercolor, check for extension dependencies.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 There is no native GPU/wgpu shader lane. `EffectSource::Shader` is reserved for future work and
 is not currently executed. GLSL effects run as WebGL2 inside Servo. Do not expect a native
 compiled shader path to be available.
-{% end %}
+{% </callout> %}
 
 ### Servo OOM or crash
 
@@ -324,7 +331,9 @@ If the daemon process exits or becomes unresponsive while running HTML effects:
 2. Check Servo memory before and after loading the problematic effect:
 
    ```bash
-   curl -s -X POST http://localhost:9420/api/v1/diagnose/memory | jq '.data.totals'
+   curl -s -X POST http://localhost:9420/api/v1/diagnose \
+     -H 'Content-Type: application/json' \
+     -d '{"checks":["memory"]}' | jq '.data.checks[]'
    ```
 
 3. If explicit heap grows unboundedly across effect restarts, the effect may be holding DOM
@@ -367,7 +376,7 @@ Then fetch the current frame:
 curl -s http://localhost:9420/api/v1/simulators/displays/{id}/frame -o /tmp/face-preview.jpg
 ```
 
-The display preview WebSocket channel (binary tag `0x07`) streams JPEG frames to subscribers.
+The display preview WebSocket channel (binary tags `0x07` and `0x12`) streams JPEG frames to subscribers.
 Those payloads are binary JPEG, not JSON, so you subscribe with a config message rather than
 piping through `jq`. See the [WebSocket reference](@/api/websocket.md) for the `display_preview`
 channel configuration and frame layout.
@@ -426,9 +435,11 @@ up to 5 min with repeated failures) or restart the daemon. If it reopens immedia
 `RUST_LOG=hypercolor_core::effect::servo=trace` to capture the failure reason before the
 breaker trips again.
 
-**Servo memory diagnostics return 404**: this endpoint is disabled on Windows. On Linux/macOS
-with the `servo` feature it should always be available; without the feature it also returns
-`404`.
+**Servo memory check reports a warning**: on Windows the embedded reporter can abort the daemon
+process, so the check is disabled and answers `warning` with "Servo memory reporting is disabled
+on Windows"; a build without the `servo` feature answers the same way. There is no separate memory
+endpoint, so nothing here returns `404`: `memory` is a check inside `POST /api/v1/diagnose`, which
+is always routed.
 
 ## Related pages
 

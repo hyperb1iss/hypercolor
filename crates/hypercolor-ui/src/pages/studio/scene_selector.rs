@@ -34,7 +34,7 @@ pub fn SceneSelector() -> impl IntoView {
     // ephemeral default scene; the active scene is folded into `options`
     // below so the picker can always name what is on screen.
     let (list_tick, set_list_tick) = signal(0_u64);
-    let scenes = LocalResource::new(move || {
+    let scenes = api::daemon_resource(move || {
         let _ = list_tick.get();
         async move { api::list_scenes().await }
     });
@@ -47,7 +47,7 @@ pub fn SceneSelector() -> impl IntoView {
     let (menu_open, set_menu_open) = signal(false);
 
     let active_id = Signal::derive(move || {
-        active_scene.with(|scene| scene.as_ref().map(|scene| scene.id.clone()))
+        active_scene.with(|scene| scene.as_ref().map(|scene| scene.id.to_string()))
     });
     let active_name = Signal::derive(move || {
         active_scene.with(|scene| scene.as_ref().map(|scene| scene.name.clone()))
@@ -64,9 +64,9 @@ pub fn SceneSelector() -> impl IntoView {
             .collect();
         active_scene.with(|scene| {
             if let Some(scene) = scene
-                && !opts.iter().any(|(id, _)| id == &scene.id)
+                && !opts.iter().any(|(id, _)| id == &scene.id.to_string())
             {
-                opts.insert(0, (scene.id.clone(), scene.name.clone()));
+                opts.insert(0, (scene.id.to_string(), scene.name.clone()));
             }
         });
         opts
@@ -84,18 +84,6 @@ pub fn SceneSelector() -> impl IntoView {
             .and_then(Result::ok)
             .is_some_and(|list| list.iter().any(|scene| scene.id == id))
     });
-    // The active scene's description, echoed back verbatim on rename: the
-    // daemon's PUT replaces the field wholesale, so omitting it clears it.
-    let active_description = Signal::derive(move || {
-        let id = active_id.get()?;
-        scenes
-            .get()
-            .and_then(Result::ok)?
-            .into_iter()
-            .find(|scene| scene.id == id)
-            .and_then(|scene| scene.description)
-    });
-
     let activate = Callback::new(move |id: String| {
         if active_id.get_untracked().as_deref() == Some(id.as_str()) {
             return;
@@ -138,6 +126,12 @@ pub fn SceneSelector() -> impl IntoView {
     });
 
     let commit_rename = Callback::new(move |()| {
+        // Enter closes the field, and the unmount blur calls this again
+        // before the active name has refreshed; the closed check keeps
+        // that second call from sending a duplicate rename.
+        if !renaming.get_untracked() {
+            return;
+        }
         let name = rename_value.get_untracked().trim().to_owned();
         set_renaming.set(false);
         let Some(id) = active_id.get_untracked() else {
@@ -146,9 +140,8 @@ pub fn SceneSelector() -> impl IntoView {
         if name.is_empty() || active_name.get_untracked().as_deref() == Some(name.as_str()) {
             return;
         }
-        let description = active_description.get_untracked();
         spawn_local(async move {
-            match api::rename_scene(&id, &name, description.as_deref()).await {
+            match api::rename_scene(&id, &name).await {
                 Ok(()) => {
                     refresh_scene.run(());
                     refetch_scenes();
@@ -159,7 +152,24 @@ pub fn SceneSelector() -> impl IntoView {
         });
     });
 
+    // Delete arms on the first click and fires on the second, matching the
+    // zone delete flow. The armed state carries the scene id it was armed
+    // for, so a scene switch (another client, the CLI) between the two
+    // clicks disarms instead of deleting whatever became active. Closing
+    // the menu disarms too.
+    let (confirm_delete, set_confirm_delete) = signal(None::<String>);
+    Effect::new(move |_| {
+        if !menu_open.get() {
+            set_confirm_delete.set(None);
+        }
+    });
     let delete = Callback::new(move |()| {
+        let target = active_id.get_untracked();
+        if confirm_delete.get_untracked() != target || target.is_none() {
+            set_confirm_delete.set(target);
+            return;
+        }
+        set_confirm_delete.set(None);
         set_menu_open.set(false);
         let Some(id) = active_id.get_untracked() else {
             return;
@@ -320,6 +330,7 @@ pub fn SceneSelector() -> impl IntoView {
                             <button
                                 type="button"
                                 class="dropdown-option flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-status-error/70 hover:text-status-error"
+                                class=("bg-status-error/10", move || confirm_delete.get().is_some())
                                 on:click=move |_| delete.run(())
                             >
                                 <Icon
@@ -328,7 +339,7 @@ pub fn SceneSelector() -> impl IntoView {
                                     height="12px"
                                     style="color: rgba(255, 99, 99, 0.7); flex-shrink: 0"
                                 />
-                                <span>"Delete"</span>
+                                <span>{move || if confirm_delete.get().is_some() { "Delete scene? Click again" } else { "Delete" }}</span>
                             </button>
                         </div>
                     </Show>

@@ -102,12 +102,6 @@ fn build_cmd() -> clap::Command {
                         .arg(Arg::new("duration").long("duration").default_value("5")),
                 )
                 .subcommand(
-                    Command::new("set-color")
-                        .about("Set device color")
-                        .arg(Arg::new("device").required(true))
-                        .arg(Arg::new("color").required(true)),
-                )
-                .subcommand(
                     Command::new("controls")
                         .about("Show device controls")
                         .arg(Arg::new("device").required(true)),
@@ -117,13 +111,7 @@ fn build_cmd() -> clap::Command {
                         .about("Apply a device control value")
                         .arg(Arg::new("device").required(true))
                         .arg(Arg::new("field").required(true))
-                        .arg(Arg::new("value").required(true))
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
-                        ),
+                        .arg(Arg::new("value").required(true)),
                 )
                 .subcommand(
                     Command::new("action")
@@ -171,12 +159,6 @@ fn build_cmd() -> clap::Command {
                                 .short('v')
                                 .required(true)
                                 .action(ArgAction::Append),
-                        )
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
                         ),
                 )
                 .subcommand(
@@ -208,13 +190,7 @@ fn build_cmd() -> clap::Command {
                         .about("Apply a driver control value")
                         .arg(Arg::new("driver").required(true))
                         .arg(Arg::new("field").required(true))
-                        .arg(Arg::new("value").required(true))
-                        .arg(Arg::new("expected-revision").long("expected-revision"))
-                        .arg(
-                            Arg::new("dry-run")
-                                .long("dry-run")
-                                .action(ArgAction::SetTrue),
-                        ),
+                        .arg(Arg::new("value").required(true)),
                 )
                 .subcommand(
                     Command::new("action")
@@ -237,7 +213,7 @@ fn build_cmd() -> clap::Command {
                 .subcommand(
                     Command::new("list")
                         .about("List effects")
-                        .arg(Arg::new("engine").long("engine"))
+                        .arg(Arg::new("source").long("source"))
                         .arg(Arg::new("audio").long("audio").action(ArgAction::SetTrue))
                         .arg(Arg::new("search").long("search"))
                         .arg(Arg::new("category").long("category")),
@@ -251,6 +227,8 @@ fn build_cmd() -> clap::Command {
                         .arg(Arg::new("transition").long("transition").default_value("0")),
                 )
                 .subcommand(Command::new("stop").about("Stop effect"))
+                .subcommand(Command::new("pause").about("Pause all output"))
+                .subcommand(Command::new("resume").about("Resume all output"))
                 .subcommand(
                     Command::new("info")
                         .about("Show effect info")
@@ -282,6 +260,12 @@ fn build_cmd() -> clap::Command {
                         ),
                 )
                 .subcommand(
+                    Command::new("snapshot")
+                        .about("Snapshot current scene")
+                        .arg(Arg::new("name").required(true))
+                        .arg(Arg::new("description").long("description")),
+                )
+                .subcommand(
                     Command::new("activate")
                         .about("Activate scene")
                         .arg(Arg::new("name").required(true)),
@@ -296,36 +280,6 @@ fn build_cmd() -> clap::Command {
                 .subcommand(
                     Command::new("info")
                         .about("Scene info")
-                        .arg(Arg::new("name").required(true)),
-                ),
-        )
-        .subcommand(
-            Command::new("profiles")
-                .about("Profile management")
-                .subcommand_required(true)
-                .subcommand(Command::new("list").about("List profiles"))
-                .subcommand(
-                    Command::new("create")
-                        .about("Create profile")
-                        .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("description").long("description"))
-                        .arg(Arg::new("force").long("force").action(ArgAction::SetTrue)),
-                )
-                .subcommand(
-                    Command::new("apply")
-                        .about("Apply profile")
-                        .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("transition").long("transition").default_value("0")),
-                )
-                .subcommand(
-                    Command::new("delete")
-                        .about("Delete profile")
-                        .arg(Arg::new("name").required(true))
-                        .arg(Arg::new("yes").long("yes").action(ArgAction::SetTrue)),
-                )
-                .subcommand(
-                    Command::new("info")
-                        .about("Profile info")
                         .arg(Arg::new("name").required(true)),
                 ),
         )
@@ -423,7 +377,7 @@ fn build_cmd() -> clap::Command {
                                 .arg(Arg::new("playlist").required(true)),
                         )
                         .subcommand(Command::new("active").about("Show active playlist"))
-                        .subcommand(Command::new("stop").about("Stop active playlist"))
+                        .subcommand(Command::new("deactivate").about("Deactivate active playlist"))
                         .subcommand(
                             Command::new("delete")
                                 .about("Delete playlist")
@@ -618,21 +572,12 @@ fn parse_devices_identify() {
 }
 
 #[test]
-fn parse_devices_set_color() {
+fn reject_devices_set_color() {
     let cmd = build_cmd();
-    let matches = cmd
+    let error = cmd
         .try_get_matches_from(["hyper", "devices", "set-color", "Strip", "#ff6ac1"])
-        .expect("devices set-color should parse");
-    let (_, sub) = matches.subcommand().expect("should have subcommand");
-    let (_, sc) = sub.subcommand().expect("should have set-color");
-    assert_eq!(
-        sc.get_one::<String>("device").map(String::as_str),
-        Some("Strip")
-    );
-    assert_eq!(
-        sc.get_one::<String>("color").map(String::as_str),
-        Some("#ff6ac1")
-    );
+        .expect_err("devices set-color should not parse");
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
 #[test]
@@ -668,8 +613,6 @@ fn parse_devices_set_control() {
             "00000000-0000-0000-0000-000000000001",
             "color_order",
             "enum:grb",
-            "--expected-revision",
-            "2",
         ])
         .expect("devices set-control should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -739,9 +682,6 @@ fn parse_controls_set_typed_values() {
             "host=ip:10.0.0.42",
             "--value",
             "timeout=duration:1500",
-            "--expected-revision",
-            "4",
-            "--dry-run",
         ])
         .expect("controls set should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -751,12 +691,6 @@ fn parse_controls_set_typed_values() {
         .expect("should have values")
         .collect();
     assert_eq!(values, vec!["host=ip:10.0.0.42", "timeout=duration:1500"]);
-    assert_eq!(
-        set.get_one::<String>("expected-revision")
-            .map(String::as_str),
-        Some("4")
-    );
-    assert!(set.get_flag("dry-run"));
 }
 
 #[test]
@@ -798,9 +732,6 @@ fn parse_drivers_set_control() {
             "wled",
             "default_protocol",
             "enum:ddp",
-            "--expected-revision",
-            "3",
-            "--dry-run",
         ])
         .expect("drivers set-control should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
@@ -817,12 +748,6 @@ fn parse_drivers_set_control() {
         set.get_one::<String>("value").map(String::as_str),
         Some("enum:ddp")
     );
-    assert_eq!(
-        set.get_one::<String>("expected-revision")
-            .map(String::as_str),
-        Some("3")
-    );
-    assert!(set.get_flag("dry-run"));
 }
 
 #[test]
@@ -863,24 +788,61 @@ fn parse_effects_list() {
     assert_eq!(sub.subcommand_name(), Some("list"));
 }
 
+/// Parsed by the real `Cli`, not the mirror below.
+///
+/// `build_cmd` is a hand-written copy of the command tree, which cannot
+/// notice a flag being renamed: it kept asserting `--engine` for a full
+/// release after the real parser had moved to `--source`. Every filter
+/// this test names reaches a live query parameter, so it reads the
+/// shipped definition.
 #[test]
 fn parse_effects_list_with_filters() {
-    let cmd = build_cmd();
-    let matches = cmd
-        .try_get_matches_from([
-            "hyper", "effects", "list", "--engine", "native", "--audio", "--search", "aurora",
-        ])
-        .expect("effects list with filters should parse");
-    let (_, sub) = matches.subcommand().expect("should have subcommand");
-    let (_, list) = sub.subcommand().expect("should have list");
-    assert_eq!(
-        list.get_one::<String>("engine").map(String::as_str),
-        Some("native")
-    );
-    assert!(list.get_flag("audio"));
-    assert_eq!(
-        list.get_one::<String>("search").map(String::as_str),
-        Some("aurora")
+    use clap::Parser as _;
+    use hypercolor_cli::Commands;
+    use hypercolor_cli::commands::effects::EffectCommand;
+    use hypercolor_types::api::effects::EffectSourceKind;
+    use hypercolor_types::effect::EffectCategory;
+
+    let cli = hypercolor_cli::Cli::try_parse_from([
+        "hyper",
+        "effects",
+        "list",
+        "--source",
+        "native",
+        "--audio",
+        "--search",
+        "aurora",
+        "--category",
+        "ambient",
+    ])
+    .expect("effects list with filters should parse");
+
+    let Commands::Effects(effects) = cli.command else {
+        panic!("expected the effects subcommand");
+    };
+    let EffectCommand::List(list) = effects.command else {
+        panic!("expected the list subcommand");
+    };
+
+    assert_eq!(list.source, Some(EffectSourceKind::Native));
+    assert!(list.audio);
+    assert_eq!(list.search.as_deref(), Some("aurora"));
+    assert_eq!(list.category, Some(EffectCategory::Ambient));
+}
+
+/// The renamed flag is gone, not aliased.
+///
+/// `--engine` named values (`web`, `wasm`) the daemon never emitted, so
+/// keeping it as an alias would forward two spellings that now answer
+/// with a validation error.
+#[test]
+fn the_old_engine_flag_no_longer_parses() {
+    use clap::Parser as _;
+
+    assert!(
+        hypercolor_cli::Cli::try_parse_from(["hyper", "effects", "list", "--engine", "native"])
+            .is_err(),
+        "--engine was renamed to --source"
     );
 }
 
@@ -913,6 +875,17 @@ fn parse_effects_stop() {
         .expect("effects stop should parse");
     let (_, sub) = matches.subcommand().expect("should have subcommand");
     assert_eq!(sub.subcommand_name(), Some("stop"));
+}
+
+#[test]
+fn parse_effects_pause_and_resume() {
+    for command in ["pause", "resume"] {
+        let matches = build_cmd()
+            .try_get_matches_from(["hyper", "effects", command])
+            .expect("effects output command should parse");
+        let (_, sub) = matches.subcommand().expect("should have subcommand");
+        assert_eq!(sub.subcommand_name(), Some(command));
+    }
 }
 
 #[test]
@@ -1008,52 +981,24 @@ fn parse_scenes_delete_with_yes() {
 }
 
 #[test]
-fn parse_profiles_list() {
+fn parse_scenes_snapshot() {
     let cmd = build_cmd();
-    cmd.try_get_matches_from(["hyper", "profiles", "list"])
-        .expect("profiles list should parse");
-}
-
-#[test]
-fn parse_profiles_create() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from([
-        "hyper",
-        "profiles",
-        "create",
-        "late-night",
-        "--description",
-        "Dim aurora",
-    ])
-    .expect("profiles create should parse");
-}
-
-#[test]
-fn parse_profiles_apply() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from([
-        "hyper",
-        "profiles",
-        "apply",
-        "evening",
-        "--transition",
-        "3000",
-    ])
-    .expect("profiles apply should parse");
-}
-
-#[test]
-fn parse_profiles_delete() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from(["hyper", "profiles", "delete", "old-profile", "--yes"])
-        .expect("profiles delete should parse");
-}
-
-#[test]
-fn parse_profiles_info() {
-    let cmd = build_cmd();
-    cmd.try_get_matches_from(["hyper", "profiles", "info", "evening"])
-        .expect("profiles info should parse");
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "scenes",
+            "snapshot",
+            "late-night",
+            "--description",
+            "Dim aurora",
+        ])
+        .expect("scenes snapshot should parse");
+    let (_, scenes) = matches.subcommand().expect("should have scenes");
+    let (_, snapshot) = scenes.subcommand().expect("should have snapshot");
+    assert_eq!(
+        snapshot.get_one::<String>("name").map(String::as_str),
+        Some("late-night")
+    );
 }
 
 #[test]
@@ -1129,6 +1074,30 @@ fn parse_library_playlists_activate() {
     assert_eq!(
         activate.get_one::<String>("playlist").map(String::as_str),
         Some("runtime_loop")
+    );
+}
+
+#[test]
+fn parse_library_playlists_deactivate_with_the_real_cli() {
+    use clap::Parser as _;
+    use hypercolor_cli::Commands;
+    use hypercolor_cli::commands::library::{LibraryCommand, PlaylistsCommand};
+
+    let cli =
+        hypercolor_cli::Cli::try_parse_from(["hypercolor", "library", "playlists", "deactivate"])
+            .expect("library playlists deactivate should parse");
+    let Commands::Library(library) = cli.command else {
+        panic!("expected the library subcommand");
+    };
+    let LibraryCommand::Playlists(playlists) = library.command else {
+        panic!("expected the playlists subcommand");
+    };
+    assert!(matches!(playlists.command, PlaylistsCommand::Deactivate));
+
+    assert!(
+        hypercolor_cli::Cli::try_parse_from(["hypercolor", "library", "playlists", "stop",])
+            .is_err(),
+        "the retired stop command must not remain as an alias"
     );
 }
 

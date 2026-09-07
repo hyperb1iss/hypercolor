@@ -16,6 +16,10 @@ pub enum SessionEvent {
     ScreenLocked,
     /// The user's session was unlocked.
     ScreenUnlocked,
+    /// The user's session became inactive, such as during fast user switching.
+    SessionInactive,
+    /// The user's session became active again.
+    SessionActive,
     /// The system is about to suspend.
     Suspending,
     /// The system resumed from suspend.
@@ -32,7 +36,7 @@ pub enum SessionEvent {
 
 /// Session-awareness configuration loaded from `[session]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SessionConfig {
     pub enabled: bool,
     pub idle_enabled: bool,

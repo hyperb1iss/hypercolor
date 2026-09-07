@@ -7,6 +7,20 @@ import json
 from pathlib import Path
 from typing import Any
 
+#: Byte width of every fixed-size field type the manifest layouts use.
+#: A type absent here is variable-length and ends the fixed prefix.
+FIXED_FIELD_WIDTHS = {
+    "u8": 1,
+    "u16_le": 2,
+    "u32_le": 4,
+    "f32_le": 4,
+    "u64_le": 8,
+    "uuid": 16,
+}
+
+#: Manifest keys that declare a layout's fixed prefix length.
+PREFIX_LENGTH_KEYS = ("header_len", "prefix_len", "fixed_header_len")
+
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parent
 MANIFEST_PATH = REPO_ROOT / "protocol" / "websocket-v1.json"
@@ -51,12 +65,17 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def render(manifest: dict[str, Any]) -> str:
-    channels = [str(channel["name"]) for channel in expect_list(manifest["channels"])]
+    topics = [str(topic["name"]) for topic in expect_list(manifest["topics"])]
+    json_payloads = expect_dict(manifest["json_payloads"])
+    json_payload_contracts = render_python_value(json_payloads, indent=0)
     binary_messages = expect_list(manifest["binary_messages"])
     preview_messages = [
         message for message in binary_messages if message.get("layout") == "preview_frame"
     ]
     preview_formats = expect_dict(expect_dict(manifest["preview_frame"])["formats"])
+    preview_transport = render_python_value(manifest["preview_transport"], indent=0)
+    frame_layouts = render_python_value(binary_frame_layouts(manifest), indent=0)
+    message_layouts = render_python_value(binary_message_layouts(binary_messages), indent=0)
 
     lines = [
         '"""Generated WebSocket protocol constants."""',
@@ -70,10 +89,22 @@ def render(manifest: dict[str, Any]) -> str:
         f"WS_SUBPROTOCOL: Final = {quote(str(manifest['subprotocol']))}",
         *tuple_assignment("DEFAULT_WS_SUBSCRIPTIONS", manifest["default_subscriptions"]),
         "",
-        "WS_CHANNELS: Final = (",
-        *[f"    {quote(channel)}," for channel in channels],
+        "WS_TOPICS: Final = (",
+        *[f"    {quote(topic)}," for topic in topics],
         ")",
         *tuple_assignment("WS_CAPABILITIES", manifest["capabilities"]),
+        "",
+        f"PREVIEW_TRANSPORT: Final = {preview_transport[0]}",
+        *preview_transport[1:],
+        "",
+        f"BINARY_FRAME_LAYOUTS: Final = {frame_layouts[0]}",
+        *frame_layouts[1:],
+        "",
+        f"BINARY_MESSAGE_LAYOUTS: Final = {message_layouts[0]}",
+        *message_layouts[1:],
+        "",
+        f"JSON_PAYLOAD_CONTRACTS: Final = {json_payload_contracts[0]}",
+        *json_payload_contracts[1:],
         "",
         "BINARY_MESSAGE_TAGS: Final = MappingProxyType(",
         "    {",
@@ -83,10 +114,10 @@ def render(manifest: dict[str, Any]) -> str:
         ],
         "    }",
         ")",
-        "PREVIEW_CHANNEL_TAGS: Final = MappingProxyType(",
+        "PREVIEW_TOPIC_TAGS: Final = MappingProxyType(",
         "    {",
         *[
-            f"        0x{int(message['tag']):02X}: {quote(str(message['channel']))},"
+            f"        0x{int(message['tag']):02X}: {quote(str(message['topic']))},"
             for message in preview_messages
         ],
         "    }",
@@ -104,6 +135,137 @@ def render(manifest: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def binary_frame_layouts(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project every `*_frame` layout into offsets a parser can index by name.
+
+    Offsets stop at the first variable-length field, which is where the
+    manifest's own `header_len` / `prefix_len` / `fixed_header_len` stops
+    too; the two are cross-checked so a layout edit that forgets one of
+    them fails generation instead of shipping a silently wrong parser.
+    """
+    layouts: dict[str, Any] = {}
+    for name, definition in manifest.items():
+        if not name.endswith("_frame") or not isinstance(definition, dict):
+            continue
+        layouts[name] = frame_layout(name, definition)
+    return dict(sorted(layouts.items()))
+
+
+def binary_message_layouts(binary_messages: list[Any]) -> dict[str, Any]:
+    """Project the messages whose layout is spelled inline, not by reference."""
+    layouts: dict[str, Any] = {}
+    for message in binary_messages:
+        layout = message.get("layout")
+        if not isinstance(layout, list):
+            continue
+        offsets, types, span = fixed_prefix(layout)
+        layouts[str(message["name"])] = {
+            "prefix_len": span,
+            "offsets": offsets,
+            "types": types,
+        }
+    return dict(sorted(layouts.items()))
+
+
+def fixed_prefix(layout: list[Any]) -> tuple[dict[str, int], dict[str, str], int]:
+    offsets: dict[str, int] = {}
+    types: dict[str, str] = {}
+    offset = 0
+    for field in layout:
+        field_type, field_name = (str(part) for part in expect_list(field))
+        types[field_name] = field_type
+        offsets[field_name] = offset
+        width = FIXED_FIELD_WIDTHS.get(field_type)
+        if width is None:
+            break
+        offset += width
+    return offsets, types, offset
+
+
+def frame_layout(name: str, definition: dict[str, Any]) -> dict[str, Any]:
+    offsets, types, offset = fixed_prefix(expect_list(definition["layout"]))
+
+    declared_key = next((key for key in PREFIX_LENGTH_KEYS if key in definition), None)
+    if declared_key is None:
+        raise ValueError(f"{name} declares no fixed prefix length")
+    declared = int(definition[declared_key])
+    if declared != offset:
+        raise ValueError(
+            f"{name} declares {declared_key}={declared} but its fixed fields span {offset} bytes"
+        )
+
+    layout: dict[str, Any] = {
+        "prefix_len": declared,
+        "offsets": offsets,
+        "types": types,
+    }
+    if "formats" in definition:
+        layout["formats"] = expect_dict(definition["formats"])
+    return layout
+
+
+def render_python_value(value: Any, *, indent: int) -> list[str]:
+    if isinstance(value, dict):
+        return render_python_mapping(value, indent=indent)
+
+    if isinstance(value, list):
+        return render_python_list(value, indent=indent)
+
+    if value is None:
+        rendered = "None"
+    elif isinstance(value, bool):
+        rendered = str(value)
+    elif isinstance(value, (int, float)):
+        rendered = repr(value)
+    elif isinstance(value, str):
+        rendered = quote(value)
+    else:
+        raise TypeError("expected JSON value")
+    return [rendered]
+
+
+def render_python_mapping(value: dict[Any, Any], *, indent: int) -> list[str]:
+    if not value:
+        return ["MappingProxyType({})"]
+    lines = ["MappingProxyType(", f"{' ' * (indent + 4)}{{"]
+    child_indent = indent + 8
+    child_prefix = " " * child_indent
+    for key, child in value.items():
+        if not isinstance(key, str):
+            raise TypeError("expected JSON object key")
+        rendered = render_python_value(child, indent=child_indent)
+        if len(rendered) == 1:
+            lines.append(f"{child_prefix}{quote(key)}: {rendered[0]},")
+            continue
+        lines.append(f"{child_prefix}{quote(key)}: {rendered[0]}")
+        lines.extend(rendered[1:-1])
+        lines.append(f"{rendered[-1]},")
+    lines.extend((f"{' ' * (indent + 4)}}}", f"{' ' * indent})"))
+    return lines
+
+
+def render_python_list(value: list[Any], *, indent: int) -> list[str]:
+    if not value:
+        return ["()"]
+    if len(value) == 1:
+        rendered = render_python_value(value[0], indent=indent)
+        if len(rendered) == 1:
+            return [f"({rendered[0]},)"]
+    lines = ["("]
+    child_indent = indent + 4
+    child_prefix = " " * child_indent
+    for child in value:
+        rendered = render_python_value(child, indent=child_indent)
+        if len(rendered) == 1:
+            lines.append(f"{child_prefix}{rendered[0]},")
+            continue
+        lines.append(f"{child_prefix}{rendered[0]}")
+        lines.extend(rendered[1:-1])
+        lines.append(f"{rendered[-1]},")
+    lines.append(f"{' ' * indent})")
+    return lines
+
+
 def tuple_assignment(name: str, values: Any) -> list[str]:
     strings = [str(value) for value in expect_list(values)]
     if len(strings) == 1:
@@ -112,7 +274,7 @@ def tuple_assignment(name: str, values: Any) -> list[str]:
 
 
 def quote(value: str) -> str:
-    return json.dumps(value)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def expect_dict(value: Any) -> dict[str, Any]:

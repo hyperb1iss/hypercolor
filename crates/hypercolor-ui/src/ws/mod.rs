@@ -7,13 +7,16 @@ pub mod input;
 pub mod interactive_preview;
 pub mod messages;
 mod preview;
+pub mod transport;
 
 pub use connection::WsManager;
-pub use input::{InputEdgeButton, InputEdgeState, InputInjectEdge};
+pub use input::{
+    InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
+};
 pub use interactive_preview::{InteractivePreviewLifecycle, InteractivePreviewRequest};
 pub use messages::{
     AudioLevel, BackpressureNotice, CanvasFrame, CanvasPixelFormat, ControlSurfaceEventHint,
     DeviceEventHint, EffectErrorHint, ExtensionEventHint, InputSourceStatusEventHint,
-    PerformanceMetrics, SceneEventHint, ScreenZonesFrame,
+    PerformanceMetrics, SceneEventHint, ScreenZonesFrame, ServiceIdentityEventHint,
 };
 pub use preview::DEFAULT_PREVIEW_FPS_CAP;

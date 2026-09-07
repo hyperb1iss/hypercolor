@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 
@@ -15,14 +15,11 @@ use anyhow::{Result, bail};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
-use hypercolor_daemon::device_settings::DeviceSettingsStore;
-use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use hypercolor_driver_api::{
     BackendInfo, ControlApplyTarget, DeviceBackend, DiscoveredDevice, DiscoveryCapability,
-    DiscoveryConnectBehavior, DiscoveryRequest, DiscoveryResult, DriverConfigView,
-    DriverControlProvider, DriverDescriptor, DriverHost, DriverModule, DriverRuntimeCacheProvider,
-    ValidatedControlChanges,
+    DiscoveryConnectBehavior, DiscoveryRequest, DriverConfigView, DriverControlProvider,
+    DriverControlStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverRuntimeCacheProvider, ValidatedControlChanges,
 };
 #[cfg(feature = "builtin-drivers")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -32,64 +29,60 @@ use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use hypercolor_core::bus::{CanvasFrame, DisplayGroupFrame, DisplayGroupTarget};
+use hypercolor_core::bus::{CanvasFrame, DisplayZoneFrame, DisplayZoneTarget};
 use hypercolor_core::device::DeviceLifecycleManager;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_core::engine::RenderLoopState;
 use hypercolor_core::input::screen::ScreenAdmissionCapacity;
 use hypercolor_core::input::{
-    BrowserInputEdge, InputData, InputSource, SourceIssue, SourceKind, SourceSessionWriter,
-    SourceStatusHandle, SourceStatusReporter,
+    AudioSource, AudioSourceRole, BrowserConnectionIncarnation, BrowserInputChildKey,
+    BrowserInputEdge, BrowserPreviewId, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    SourceKind, SourceRoleBinding, SourceSessionWriter, SourceStatusHandle, SourceStatusReporter,
 };
-use hypercolor_core::types::event::InputButtonState;
+use hypercolor_daemon::LayoutTransactionRejection;
+use hypercolor_daemon::api;
+use hypercolor_daemon::api::local::TrustedLocalApi;
+use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
 #[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::api::layouts::{LayoutMutationTestOperation, LayoutMutationTestPoint};
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::domain::layout::{LayoutMutationTestOperation, LayoutMutationTestPoint};
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::JsonLibraryStore;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::persistence::AtomicFileWriter;
-use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::SceneTransaction;
-use hypercolor_daemon::session::{
-    OutputPowerState, current_global_brightness, set_global_brightness,
-};
+use hypercolor_daemon::scene_store;
 #[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::simulators::{SimulatedDisplayConfig, SimulatedDisplayStore};
+use hypercolor_daemon::simulators::SimulatedDisplayConfig;
 use hypercolor_network::DriverModuleRegistry;
-use hypercolor_types::asset::AssetId;
+use hypercolor_types::api::scene::SceneDocument;
+use hypercolor_types::api::scenes::{ReplaceSceneLayerRequest, ReplaceSceneRequest};
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig, RenderAccelerationMode};
+use hypercolor_types::control::ControlValue as SurfaceControlValue;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlActionDescriptor, ControlActionResult,
     ControlActionStatus, ControlAvailabilityExpr, ControlChange, ControlOwner,
-    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope,
-    ControlValue as SurfaceControlValue, ControlValueMap,
+    ControlSurfaceDocument, ControlSurfaceEvent, ControlSurfaceScope, ControlValueMap,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
-    DriverTransportKind, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceState,
+    DeviceTopologyHint, DisplayFrameFormat, DriverTransportKind, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlBinding, ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory,
-    EffectId, EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState, GradientStop, PresetTemplate,
 };
-use hypercolor_types::event::{
-    ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
-};
+use hypercolor_types::event::InputButtonState;
+use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{
-    LayerAdjust, LayerBlendMode, LayerSource, LayerTransform, MediaPlayback, SceneLayer,
-    SceneLayerId,
+    BlendMode, LayerAdjust, LayerSource, LayerTransform, SceneLayer, SceneLayerId,
 };
-use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceBlendMode, DisplayFaceTarget, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, SceneScope, TransitionSpec, UnassignedBehavior,
-    Zone, ZoneRole,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
-use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -98,6 +91,20 @@ use hypercolor_types::spatial::{
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
 static COVER_DATA_DIR_LOCK: LazyLock<AsyncMutex<()>> = LazyLock::new(|| AsyncMutex::new(()));
+
+fn zone_effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => Some(controls),
+        _ => None,
+    })
+}
+
+fn zone_effect_preset(zone: &Zone) -> Option<String> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { preset_id, .. } => preset_id.map(|id| id.to_string()),
+        _ => None,
+    })
+}
 
 std::thread_local! {
     static ISOLATED_STATE_DATA_DIRS: std::cell::RefCell<Vec<tempfile::TempDir>> =
@@ -151,15 +158,15 @@ fn assert_canvas_frame_color(frame: &CanvasFrame, color: [u8; 3]) {
     );
 }
 
-fn assert_display_group_frame_black(frame: &DisplayGroupFrame) {
-    let DisplayGroupFrame::Canvas(frame) = frame else {
-        panic!("test display group frame should be a canvas");
+fn assert_display_zone_frame_black(frame: &DisplayZoneFrame) {
+    let DisplayZoneFrame::Canvas(frame) = frame else {
+        panic!("test display zone frame should be a canvas");
     };
     assert_canvas_frame_black(frame);
 }
 
-fn display_group_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> DisplayGroupFrame {
-    DisplayGroupFrame::Canvas(CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms))
+fn display_zone_frame(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> DisplayZoneFrame {
+    DisplayZoneFrame::Canvas(CanvasFrame::from_canvas(canvas, frame_number, timestamp_ms))
 }
 
 fn isolated_state() -> AppState {
@@ -169,11 +176,52 @@ fn isolated_state() -> AppState {
 }
 
 fn isolated_state_with_tempdir() -> (AppState, tempfile::TempDir) {
+    let (builder, tempdir) = isolated_state_builder();
+    (builder.build(), tempdir)
+}
+
+fn isolated_state_builder() -> (AppStateBuilder, tempfile::TempDir) {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let data_dir = tempdir.path().join("data");
     std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-    let state = AppState::new_with_data_dir(data_dir);
+    (AppStateBuilder::new(data_dir), tempdir)
+}
+
+fn isolated_state_with_config_manager(config_manager: Arc<ConfigManager>) -> AppState {
+    let (builder, tempdir) = isolated_state_builder();
+    let state = builder.with_config_manager(config_manager).build();
+    ISOLATED_STATE_DATA_DIRS.with(|data_dirs| data_dirs.borrow_mut().push(tempdir));
+    state
+}
+
+fn isolated_state_with_driver_registry(
+    driver_registry: Arc<DriverModuleRegistry>,
+) -> (AppState, tempfile::TempDir) {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = tempdir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+    let state = AppStateBuilder::new(data_dir)
+        .with_driver_registry(driver_registry)
+        .build();
     (state, tempdir)
+}
+
+async fn create_stored_layout(state: &AppState, name: &str) -> SpatialLayout {
+    let created = state
+        .domains
+        .layout
+        .create(hypercolor_types::api::layouts::CreateLayoutRequest {
+            name: name.to_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect("test layout should create");
+    state
+        .domains
+        .layout
+        .resolve(&created.id)
+        .await
+        .expect("created test layout should resolve")
 }
 
 struct ObservableInputSource {
@@ -251,6 +299,12 @@ impl InputSource for ObservableInputSource {
     }
 }
 
+impl SourceRoleBinding for ObservableInputSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for ObservableInputSource {}
+
 struct CoverFixtureGuard {
     _tempdir: tempfile::TempDir,
     data_dir: PathBuf,
@@ -301,23 +355,62 @@ fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
 }
 
+/// Build a test router with a web UI mounted, which installs the SPA
+/// fallback. The returned tempdir must outlive the router.
+fn test_app_with_ui() -> (axum::Router, tempfile::TempDir) {
+    let ui_dir = tempfile::tempdir().expect("ui tempdir should build");
+    fs::write(
+        ui_dir.path().join("index.html"),
+        "<!doctype html><title>hypercolor</title>",
+    )
+    .expect("index.html should be written");
+    let state = Arc::new(isolated_state());
+    let app = api::build_router(state, Some(ui_dir.path()));
+    (app, ui_dir)
+}
+
+/// Assert a response is the canonical `DomainError` not-found envelope
+/// for `path`, rather than a bare status or an HTML page.
+async fn assert_canonical_route_404(response: axum::response::Response, path: &str) {
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "{path} should answer 404"
+    );
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        content_type.starts_with("application/json"),
+        "{path} should answer JSON, got content-type {content_type:?}"
+    );
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["code"]
+            .as_str()
+            .is_some_and(|code| code.ends_with("_not_found")),
+        "{path} error code"
+    );
+    assert_eq!(
+        json["error"]["message"],
+        format!("route not found: {path}"),
+        "{path} error message"
+    );
+    assert_eq!(json["meta"]["api_version"], "1.0", "{path} envelope meta");
+}
+
 fn test_state_with_temp_config_manager() -> (Arc<AppState>, Arc<ConfigManager>, tempfile::TempDir) {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
     );
-    state.config_manager = Some(Arc::clone(&manager));
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(Arc::clone(&manager))),
-    );
+    let state = builder.with_config_manager(Arc::clone(&manager)).build();
     {
-        let mut input_manager = state
-            .input_manager
-            .try_lock()
-            .expect("isolated input manager should be uncontended");
+        let input_manager = state.input_manager();
         let capacity = input_manager.screen_resource_capacity();
         input_manager
             .set_screen_capacity_plan(capacity, capacity, capacity)
@@ -413,19 +506,26 @@ impl DeviceBackend for NoopBackend {
         self.info.clone()
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
-    }
-
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        _colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 }
@@ -440,21 +540,14 @@ static ACTION_TEST_DRIVER: DriverDescriptor = DriverDescriptor::new(
 
 struct ActionTestDriver;
 
+#[derive(serde::Deserialize)]
+struct ActionTestConfig {
+    descriptor: serde_json::Value,
+}
+
 impl DriverModule for ActionTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &ACTION_TEST_DRIVER
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
     }
 
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
@@ -467,7 +560,7 @@ impl DriverControlProvider for ActionTestDriver {
     async fn driver_surface(
         &self,
         _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
+        config: DriverConfigView<'_>,
     ) -> anyhow::Result<Option<ControlSurfaceDocument>> {
         let mut surface = ControlSurfaceDocument::empty(
             "driver:action_test",
@@ -490,6 +583,23 @@ impl DriverControlProvider for ActionTestDriver {
             availability: ControlAvailabilityExpr::Always,
             ordering: 0,
         });
+        if config.entry.settings.contains_key("descriptor") {
+            let config = config.parse_settings::<ActionTestConfig>()?;
+            let name = config
+                .descriptor
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("test descriptor must have a name"))?;
+            surface
+                .values
+                .insert("descriptor".to_owned(), ControlValue::Text(name.to_owned()));
+        }
+        if config.entry.settings.contains_key("persisted") {
+            surface.values.insert(
+                "persisted".to_owned(),
+                ControlValue::Text("projected".to_owned()),
+            );
+        }
         Ok(Some(surface))
     }
 
@@ -575,18 +685,6 @@ impl DriverModule for RescanTestDriver {
         &RESCAN_TEST_DRIVER
     }
 
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
-    }
-
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(self)
     }
@@ -603,9 +701,9 @@ impl DiscoveryCapability for RescanTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<DiscoveryResult> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
-        Ok(DiscoveryResult::default())
+        Ok(Vec::new())
     }
 }
 
@@ -706,18 +804,6 @@ impl DriverModule for BlockingReconnectTestDriver {
         &BLOCKING_RECONNECT_TEST_DRIVER
     }
 
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
-    }
-
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
         Some(self)
     }
@@ -730,13 +816,13 @@ impl DiscoveryCapability for BlockingReconnectTestDriver {
         _host: &dyn DriverHost,
         _request: &DiscoveryRequest,
         _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<DiscoveryResult> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         self.discoveries.fetch_add(1, Ordering::Relaxed);
         let _permit = Arc::clone(&self.release)
             .acquire_owned()
             .await
             .expect("blocking reconnect semaphore should stay open");
-        Ok(DiscoveryResult::default())
+        Ok(Vec::new())
     }
 }
 
@@ -753,18 +839,6 @@ struct UnsupportedImpactTestDriver;
 impl DriverModule for UnsupportedImpactTestDriver {
     fn descriptor(&self) -> &'static DriverDescriptor {
         &UNSUPPORTED_IMPACT_TEST_DRIVER
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
-    }
-
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        _config: DriverConfigView<'_>,
-    ) -> anyhow::Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(None)
     }
 
     fn controls(&self) -> Option<&dyn DriverControlProvider> {
@@ -836,7 +910,93 @@ impl DriverControlProvider for UnsupportedImpactTestDriver {
 struct DisconnectRecordingBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
-    connected: bool,
+    connected: AtomicBool,
+}
+
+type StaticOutputWrites = Arc<StdMutex<Vec<(DeviceId, Vec<[u8; 3]>)>>>;
+
+struct StaticOutputRecordingBackend {
+    writes: StaticOutputWrites,
+}
+
+struct IdentifyRecordingBackend {
+    writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for StaticOutputRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "static-output".to_owned(),
+            name: "Static Output Recording Backend".to_owned(),
+            description: "Records global static output frames".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn write_colors(
+        &self,
+        id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
+        self.writes
+            .lock()
+            .expect("static output writes lock")
+            .push((*id, colors.to_vec()));
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for IdentifyRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "wled".to_owned(),
+            name: "Identify Recording Backend".to_owned(),
+            description: "Records identify and held output frames".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> std::result::Result<(), DeviceError> {
+        Ok(())
+    }
+
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
+        self.writes
+            .lock()
+            .expect("identify output writes lock")
+            .push(colors.to_vec());
+        Ok(())
+    }
 }
 
 impl DisconnectRecordingBackend {
@@ -844,7 +1004,7 @@ impl DisconnectRecordingBackend {
         Self {
             expected_device_id,
             disconnects,
-            connected: false,
+            connected: AtomicBool::new(false),
         }
     }
 }
@@ -859,42 +1019,61 @@ impl DeviceBackend for DisconnectRecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
     }
 
     fn supports_temporary_direct_control(&self, _info: &DeviceInfo) -> bool {
         true
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::protocol(id, "unexpected device id"));
         }
-        self.connected = true;
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn disconnect(&self, id: &DeviceId) -> std::result::Result<(), DeviceError> {
         if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
+            return Err(DeviceError::protocol(id, "unexpected device id"));
         }
-        if !self.connected {
-            bail!("disconnect called while backend was not connected");
+        if !self.connected.load(Ordering::Acquire) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(
+        &self,
+        _id: &DeviceId,
+        _colors: &[[u8; 3]],
+    ) -> std::result::Result<(), DeviceError> {
         Ok(())
     }
 }
 
 async fn register_noop_backend(state: &Arc<AppState>, id: &str, name: &str) {
     let mut manager = state.backend_manager.lock().await;
-    manager.register_backend(Box::new(NoopBackend::new(id, name)));
+    manager.register_backend(Arc::new(NoopBackend::new(id, name)));
+}
+
+/// A `PATCH /api/v1/output` request carrying the given JSON document.
+fn output_patch_request(body: &str) -> Request<Body> {
+    Request::builder()
+        .method("PATCH")
+        .uri("/api/v1/output")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_owned()))
+        .expect("failed to build output patch request")
 }
 
 /// Extract the JSON body from a response.
@@ -910,9 +1089,28 @@ async fn request_with_layout_ack(
     request: Request<Body>,
     state: &Arc<AppState>,
 ) -> (axum::response::Response, Vec<SpatialLayout>) {
-    request_with_layout_ack_and_hook(app, request, state, || async {}).await
+    let request = async move {
+        app.oneshot(request)
+            .await
+            .expect("failed to execute request")
+    };
+    drive_request_with_layout_ack(request, state).await
 }
 
+async fn trusted_request_with_layout_ack(
+    request: Request<Body>,
+    state: &Arc<AppState>,
+) -> (axum::response::Response, Vec<SpatialLayout>) {
+    let api = TrustedLocalApi::new(Arc::clone(state));
+    let request = async move {
+        api.execute(request)
+            .await
+            .expect("trusted local request should execute")
+    };
+    drive_request_with_layout_ack(request, state).await
+}
+
+#[cfg(feature = "persistence-test-hooks")]
 async fn request_with_layout_ack_and_hook<F, Fut>(
     app: axum::Router,
     request: Request<Body>,
@@ -923,56 +1121,93 @@ where
     F: Fn() -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    let request = app.oneshot(request);
+    let request = async move {
+        app.oneshot(request)
+            .await
+            .expect("failed to execute request")
+    };
+    drive_request_with_layout_ack_and_hook(request, state, before_publication).await
+}
+
+async fn drive_request_with_layout_ack<R>(
+    request: R,
+    state: &Arc<AppState>,
+) -> (axum::response::Response, Vec<SpatialLayout>)
+where
+    R: Future<Output = axum::response::Response>,
+{
     tokio::pin!(request);
-    let mut applied = Vec::new();
+    let executor = state.layout_publication_test_executor();
     let mut publications: Vec<
-        tokio::task::JoinHandle<
-            Result<(), hypercolor_daemon::scene_transactions::LayoutTransactionRejection>,
-        >,
+        tokio::task::JoinHandle<Result<Option<SpatialLayout>, LayoutTransactionRejection>>,
     > = Vec::new();
     loop {
         tokio::select! {
             response = &mut request => {
+                let mut applied = Vec::new();
                 for publication in publications {
-                    publication
+                    if let Some(layout) = publication
                         .await
                         .expect("layout publication task should not panic")
-                        .expect("layout publication should succeed");
-                }
-                return (
-                    response.expect("failed to execute request"),
-                    applied,
-                );
-            }
-            () = tokio::time::sleep(Duration::from_millis(1)) => {
-                let mut deferred = Vec::new();
-                for transaction in state.scene_transactions.drain() {
-                    match transaction {
-                        SceneTransaction::PrepareLayout(transaction) => {
-                            applied.push(transaction.spatial_engine().layout().as_ref().clone());
-                            let spatial_engine = Arc::clone(&state.spatial_engine);
-                            let scene_manager = Arc::clone(&state.scene_manager);
-                            let before_publication = before_publication.clone();
-                            publications.push(tokio::spawn(async move {
-                                transaction
-                                    .accept_and_publish_for_test(
-                                        &spatial_engine,
-                                        &scene_manager,
-                                        before_publication,
-                                    )
-                                    .await
-                            }));
-                        }
-                        transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                            deferred.push(transaction);
-                        }
+                        .expect("layout publication should succeed")
+                    {
+                        applied.push(layout);
                     }
                 }
-                for transaction in deferred {
-                    state.scene_transactions
-                        .push(transaction)
-                        .expect("test transaction queue should remain open");
+                return (response, applied);
+            }
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
+                if executor.pending_layout_publications() > 0 {
+                    let executor = executor.clone();
+                    publications.push(tokio::spawn(async move {
+                        executor.execute_next_layout_publication().await
+                    }));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+async fn drive_request_with_layout_ack_and_hook<R, F, Fut>(
+    request: R,
+    state: &Arc<AppState>,
+    before_publication: F,
+) -> (axum::response::Response, Vec<SpatialLayout>)
+where
+    R: Future<Output = axum::response::Response>,
+    F: Fn() -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    tokio::pin!(request);
+    let executor = state.layout_publication_test_executor();
+    let mut publications: Vec<
+        tokio::task::JoinHandle<Result<Option<SpatialLayout>, LayoutTransactionRejection>>,
+    > = Vec::new();
+    loop {
+        tokio::select! {
+            response = &mut request => {
+                let mut applied = Vec::new();
+                for publication in publications {
+                    if let Some(layout) = publication
+                        .await
+                        .expect("layout publication task should not panic")
+                        .expect("layout publication should succeed")
+                    {
+                        applied.push(layout);
+                    }
+                }
+                return (response, applied);
+            }
+            () = tokio::time::sleep(Duration::from_millis(1)) => {
+                if executor.pending_layout_publications() > 0 {
+                    let executor = executor.clone();
+                    let before_publication = before_publication.clone();
+                    publications.push(tokio::spawn(async move {
+                        executor
+                            .execute_next_layout_publication_with_hook(before_publication)
+                            .await
+                    }));
                 }
             }
         }
@@ -987,51 +1222,40 @@ async fn run_two_layout_publications_with_gates(
     release_second_admission: Arc<Semaphore>,
 ) {
     tokio::time::timeout(Duration::from_secs(5), async move {
+        let executor = state.layout_publication_test_executor();
         let mut publication_index = 0;
         while publication_index < 2 {
-            let mut deferred = Vec::new();
-            for transaction in state.scene_transactions.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        let index = publication_index;
-                        let entered = Arc::clone(&first_publication_entered);
-                        let release = Arc::clone(&release_first_publication);
-                        transaction
-                            .accept_and_publish_for_test(
-                                &state.spatial_engine,
-                                &state.scene_manager,
-                                move || async move {
-                                    if index == 0 {
-                                        entered.notify_one();
-                                        let _permit = release
-                                            .acquire_owned()
-                                            .await
-                                            .expect("first publication gate should remain open");
-                                    }
-                                },
-                            )
-                            .await
-                            .expect("layout publication should succeed");
-                        publication_index += 1;
-                        if publication_index == 1 {
-                            let _permit = Arc::clone(&release_second_admission)
-                                .acquire_owned()
+            if executor.pending_layout_publications() == 0 {
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let index = publication_index;
+            let entered = Arc::clone(&first_publication_entered);
+            let release = Arc::clone(&release_first_publication);
+            executor
+                .execute_next_layout_publication_with_hook(move || async move {
+                    if index == 0 {
+                        entered.notify_one();
+                        let _permit =
+                            tokio::time::timeout(Duration::from_secs(2), release.acquire_owned())
                                 .await
-                                .expect("second admission gate should remain open");
-                        }
+                                .expect("first publication release should arrive")
+                                .expect("first publication gate should remain open");
                     }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                        deferred.push(transaction);
-                    }
-                }
+                })
+                .await
+                .expect("layout publication should succeed")
+                .expect("layout publication should be pending");
+            publication_index += 1;
+            if publication_index == 1 {
+                let _permit = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    Arc::clone(&release_second_admission).acquire_owned(),
+                )
+                .await
+                .expect("second admission release should arrive")
+                .expect("second admission gate should remain open");
             }
-            for transaction in deferred {
-                state
-                    .scene_transactions
-                    .push(transaction)
-                    .expect("test transaction queue should remain open");
-            }
-            tokio::task::yield_now().await;
         }
     })
     .await
@@ -1045,39 +1269,24 @@ async fn run_one_layout_publication_with_gate(
     release_publication: Arc<Semaphore>,
 ) {
     tokio::time::timeout(Duration::from_secs(5), async move {
+        let executor = state.layout_publication_test_executor();
         loop {
-            let mut deferred = Vec::new();
-            for transaction in state.scene_transactions.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        let entered = Arc::clone(&publication_entered);
-                        let release = Arc::clone(&release_publication);
-                        transaction
-                            .accept_and_publish_for_test(
-                                &state.spatial_engine,
-                                &state.scene_manager,
-                                move || async move {
-                                    entered.notify_one();
-                                    let _permit = release
-                                        .acquire_owned()
-                                        .await
-                                        .expect("publication gate should remain open");
-                                },
-                            )
-                            .await
-                            .expect("layout publication should succeed");
-                        return;
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                        deferred.push(transaction);
-                    }
-                }
-            }
-            for transaction in deferred {
-                state
-                    .scene_transactions
-                    .push(transaction)
-                    .expect("test transaction queue should remain open");
+            if executor.pending_layout_publications() > 0 {
+                let entered = Arc::clone(&publication_entered);
+                let release = Arc::clone(&release_publication);
+                executor
+                    .execute_next_layout_publication_with_hook(move || async move {
+                        entered.notify_one();
+                        let _permit =
+                            tokio::time::timeout(Duration::from_secs(2), release.acquire_owned())
+                                .await
+                                .expect("publication release should arrive")
+                                .expect("publication gate should remain open");
+                    })
+                    .await
+                    .expect("layout publication should succeed")
+                    .expect("layout publication should be pending");
+                return;
             }
             tokio::task::yield_now().await;
         }
@@ -1086,38 +1295,20 @@ async fn run_one_layout_publication_with_gate(
     .expect("layout publication worker should finish");
 }
 
-#[cfg(feature = "persistence-test-hooks")]
 async fn run_layout_publications(
     state: Arc<AppState>,
     expected_count: usize,
 ) -> Vec<SpatialLayout> {
     let mut applied = Vec::with_capacity(expected_count);
+    let executor = state.layout_publication_test_executor();
     let result = tokio::time::timeout(Duration::from_secs(5), async {
         while applied.len() < expected_count {
-            let mut deferred = Vec::new();
-            for transaction in state.scene_transactions.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        applied.push(transaction.spatial_engine().layout().as_ref().clone());
-                        transaction
-                            .accept_and_publish_for_test(
-                                &state.spatial_engine,
-                                &state.scene_manager,
-                                || async {},
-                            )
-                            .await
-                            .expect("layout publication should succeed");
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                        deferred.push(transaction);
-                    }
-                }
-            }
-            for transaction in deferred {
-                state
-                    .scene_transactions
-                    .push(transaction)
-                    .expect("test transaction queue should remain open");
+            if let Some(layout) = executor
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication should succeed")
+            {
+                applied.push(layout);
             }
             tokio::task::yield_now().await;
         }
@@ -1141,9 +1332,11 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     let fingerprint = state.device_registry.fingerprint_for_id(device_id).await;
     let layout_device_id =
         DeviceLifecycleManager::canonical_layout_device_id(&tracked.info, fingerprint.as_ref());
-    let mut layout = state.spatial_engine.read().await.layout().as_ref().clone();
+    let mut layout = state.spatial_engine.snapshot().layout().as_ref().clone();
+    layout.id = format!("stale-auto-layout-{device_id}");
+    "Stale Auto Layout".clone_into(&mut layout.name);
     assert_eq!(
-        hypercolor_daemon::discovery::append_auto_layout_zones_for_device(
+        state.domains.layout.test_fixture().append_auto_zones(
             &mut layout,
             &layout_device_id,
             &tracked.info,
@@ -1158,7 +1351,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
     "Stale Auto Layout Zone".clone_into(&mut stale_zone.name);
     let mut repair_probe = layout.clone();
     assert_eq!(
-        hypercolor_daemon::discovery::reconcile_auto_layout_zones_for_device(
+        state.domains.layout.test_fixture().reconcile_auto_zones(
             &mut repair_probe,
             &layout_device_id,
             &tracked.info,
@@ -1166,7 +1359,7 @@ async fn seed_stale_auto_layout_zone(state: &AppState, device_id: &DeviceId) -> 
         1,
         "seeded auto-layout zone should require repair"
     );
-    state.spatial_engine.write().await.update_layout(layout);
+    state.domains.layout.test_fixture().replace_current(layout);
     layout_device_id
 }
 
@@ -1188,36 +1381,23 @@ where
     .expect("condition should become true");
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 async fn request_with_layout_rejection(
     app: axum::Router,
     request: Request<Body>,
     state: &Arc<AppState>,
-    rejection: hypercolor_daemon::scene_transactions::LayoutTransactionRejection,
+    rejection: LayoutTransactionRejection,
 ) -> axum::response::Response {
     let request = app.oneshot(request);
     tokio::pin!(request);
+    let executor = state.layout_publication_test_executor();
     loop {
         tokio::select! {
             response = &mut request => {
                 return response.expect("failed to execute request");
             }
             () = tokio::time::sleep(Duration::from_millis(1)) => {
-                let mut deferred = Vec::new();
-                for transaction in state.scene_transactions.drain() {
-                    match transaction {
-                        SceneTransaction::PrepareLayout(transaction) => {
-                            transaction.reject(rejection.clone());
-                        }
-                        transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => {
-                            deferred.push(transaction);
-                        }
-                    }
-                }
-                for transaction in deferred {
-                    state.scene_transactions
-                        .push(transaction)
-                        .expect("test transaction queue should remain open");
-                }
+                executor.reject_next_layout_publication(rejection.clone());
             }
         }
     }
@@ -1342,13 +1522,13 @@ async fn spa_fallback_serves_index_html_for_client_routes() {
 }
 
 #[tokio::test]
-async fn status_returns_200_with_envelope() {
+async fn system_returns_identity_and_status_with_envelope() {
     let app = test_app();
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1359,20 +1539,22 @@ async fn status_returns_200_with_envelope() {
 
     let json = body_json(response).await;
     assert!(
-        json["data"]["running"]
+        json["data"]["status"]["running"]
             .as_bool()
             .expect("running should be bool")
     );
     assert!(
-        json["data"]["global_brightness"].as_u64().is_some(),
+        json["data"]["status"]["global_brightness"]
+            .as_u64()
+            .is_some(),
         "global_brightness should be an integer percentage"
     );
     assert!(
-        json["data"]["active_scene"].is_string(),
+        json["data"]["status"]["active_scene"].is_string(),
         "active_scene should be a string"
     );
     assert!(
-        json["data"]["active_scene_snapshot_locked"].is_boolean(),
+        json["data"]["status"]["active_scene_snapshot_locked"].is_boolean(),
         "active_scene_snapshot_locked should be a bool"
     );
     assert!(json["meta"]["api_version"].is_string());
@@ -1388,32 +1570,54 @@ async fn status_returns_200_with_envelope() {
         "request_id should start with req_"
     );
     assert_eq!(
-        json["data"]["config_path"],
+        json["data"]["status"]["config_path"],
         serde_json::json!(default_config_path())
     );
     assert!(
-        json["data"]["data_dir"]
+        json["data"]["status"]["data_dir"]
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "data_dir should be a non-empty string"
     );
     assert!(
-        json["data"]["cache_dir"]
+        json["data"]["status"]["cache_dir"]
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "cache_dir should be a non-empty string"
     );
-    assert!(
-        json["data"]["audio_available"].is_boolean(),
-        "audio_available should be a bool"
-    );
+    assert_eq!(json["data"]["status"]["audio_available"], false);
     assert_eq!(
-        json["data"]["capture_available"],
+        json["data"]["status"]["capture_available"],
         serde_json::json!(
-            cfg!(target_os = "windows")
+            cfg!(any(target_os = "windows", target_os = "macos"))
                 || (cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some())
         )
     );
+}
+
+#[tokio::test]
+async fn status_derives_audio_availability_from_registered_sources() {
+    let state = Arc::new(isolated_state());
+    let (source, _) = ObservableInputSource::new("available_audio", false, Duration::from_secs(1));
+    state
+        .input_manager()
+        .add_source(ManagedSourceRole::audio(Box::new(source)))
+        .expect("observable audio source should register");
+    let app = test_app_with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/system")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["status"]["audio_available"], true);
 }
 
 #[tokio::test]
@@ -1421,33 +1625,41 @@ async fn status_reports_stale_source_health_without_captured_contents() {
     const PRIVACY_SENTINEL: &str = "capture_secret_73_do_not_expose";
 
     let state = Arc::new(isolated_state());
-    state.browser_input.inject(
-        PRIVACY_SENTINEL,
-        [BrowserInputEdge::Key {
-            key: PRIVACY_SENTINEL.to_owned(),
-            state: InputButtonState::Pressed,
-        }],
-    );
     let (source, _) =
         ObservableInputSource::new("stale_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
-        manager.add_source(Box::new(source));
+        let manager = state.input_manager();
+        manager
+            .add_source(ManagedSourceRole::audio(Box::new(source)))
+            .expect("stale audio source should register");
         manager.start_all().expect("test input graph should start");
     }
+    let browser_attachment = state
+        .browser_input
+        .attach(BrowserInputChildKey::new(
+            BrowserConnectionIncarnation::new(1),
+            BrowserPreviewId::new(PRIVACY_SENTINEL),
+        ))
+        .expect("browser preview should attach");
+    browser_attachment
+        .inject([BrowserInputEdge::Key {
+            key: PRIVACY_SENTINEL.to_owned(),
+            state: InputButtonState::Pressed,
+        }])
+        .expect("browser key should inject");
     tokio::time::sleep(Duration::from_millis(25)).await;
 
     let response = test_app_with_state(state)
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
     let json = body_json(response).await;
-    let input = &json["data"]["input"];
+    let input = &json["data"]["status"]["input"];
     let stale = input["sources"]
         .as_array()
         .expect("sources should be an array")
@@ -1470,12 +1682,41 @@ async fn status_reports_stale_source_health_without_captured_contents() {
 }
 
 #[tokio::test]
-async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
+async fn diagnose_default_set_includes_memory_as_a_finding() {
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/diagnose")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let finding = json["data"]["checks"]
+        .as_array()
+        .expect("diagnose checks should be an array")
+        .iter()
+        .find(|check| check["name"] == "servo_memory")
+        .expect("default diagnostics should include Servo memory");
+    assert_eq!(finding["category"], "memory");
+    assert!(matches!(
+        finding["status"].as_str(),
+        Some("pass" | "warning" | "fail")
+    ));
+}
+
+#[tokio::test]
+async fn input_status_and_diagnose_observe_failure_from_lock_free_handles() {
     let state = Arc::new(isolated_state());
     let (source, session) =
         ObservableInputSource::new("failed_test_audio", true, Duration::from_millis(1));
     {
-        let mut manager = state.input_manager.lock().await;
+        let manager = state.input_manager();
         manager
             .set_screen_capacity_plan(
                 ScreenAdmissionCapacity::new(2_000_000, 1_500_000),
@@ -1483,17 +1724,23 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
                 ScreenAdmissionCapacity::new(750_000, 700_000),
             )
             .expect("empty manager should accept exact test capacity");
-        manager.add_source(Box::new(source));
+        manager
+            .add_source(ManagedSourceRole::audio(Box::new(source)))
+            .expect("failed audio source should register");
         manager.start_all().expect("test input graph should start");
     }
 
-    let mut manager_guard = state.input_manager.lock().await;
+    let manager_guard = state.input_manager();
     let (demanded_stopped, _) =
         ObservableInputSource::new("demanded_stopped_audio", true, Duration::from_secs(30));
-    manager_guard.add_source(Box::new(demanded_stopped));
+    manager_guard
+        .add_source(ManagedSourceRole::audio(Box::new(demanded_stopped)))
+        .expect("demanded stopped audio source should register");
     let (undemanded, _) =
         ObservableInputSource::new("undemanded_stopped_audio", false, Duration::from_secs(30));
-    manager_guard.add_source(Box::new(undemanded));
+    manager_guard
+        .add_source(ManagedSourceRole::audio(Box::new(undemanded)))
+        .expect("undemanded audio source should register");
     let session = session
         .lock()
         .expect("test source session lock should not be poisoned")
@@ -1511,7 +1758,7 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
         Duration::from_secs(1),
         app.clone().oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         ),
@@ -1521,26 +1768,26 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .expect("status request should succeed");
     let json = body_json(response).await;
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["admission_enforced"],
+        json["data"]["status"]["screen_capture_capacity"]["admission_enforced"],
         true
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_transition_byte_capacity"],
         2_000_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_transition_backend_capacity"],
         1_500_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["physical_available_bytes"],
+        json["data"]["status"]["screen_capture_capacity"]["physical_available_bytes"],
         1_500_000
     );
     assert_eq!(
-        json["data"]["screen_capture_capacity"]["steady_total_byte_budget"],
+        json["data"]["status"]["screen_capture_capacity"]["steady_total_byte_budget"],
         1_000_000
     );
-    let failed = json["data"]["input"]["sources"]
+    let failed = json["data"]["status"]["input"]["sources"]
         .as_array()
         .expect("sources should be an array")
         .iter()
@@ -1565,7 +1812,6 @@ async fn input_status_and_diagnose_observe_failure_while_manager_is_locked() {
     .await
     .expect("diagnose must not wait for the input manager")
     .expect("diagnose request should succeed");
-    drop(manager_guard);
 
     let json = body_json(response).await;
     let checks = json["data"]["checks"]
@@ -1619,7 +1865,7 @@ async fn status_reports_stopped_render_loop_as_not_running() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1628,8 +1874,8 @@ async fn status_reports_stopped_render_loop_as_not_running() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["running"], serde_json::json!(false));
-    assert_eq!(json["data"]["render_loop"]["state"], "stopped");
+    assert_eq!(json["data"]["status"]["running"], serde_json::json!(false));
+    assert_eq!(json["data"]["status"]["render_loop"]["state"], "stopped");
 }
 
 #[tokio::test]
@@ -1639,14 +1885,13 @@ async fn status_prefers_live_config_manager_path() {
     let config_manager = Arc::new(
         ConfigManager::new(custom_config_path.clone()).expect("config manager should build"),
     );
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
 
     let app = test_app_with_state(Arc::new(state));
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1657,7 +1902,7 @@ async fn status_prefers_live_config_manager_path() {
 
     let json = body_json(response).await;
     assert_eq!(
-        json["data"]["config_path"],
+        json["data"]["status"]["config_path"],
         serde_json::json!(custom_config_path.display().to_string())
     );
 }
@@ -1671,23 +1916,24 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         .clone()
         .oneshot(
             Request::builder()
-                .method("PUT")
-                .uri("/api/v1/settings/brightness")
+                .method("PATCH")
+                .uri("/api/v1/output")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"brightness":42}"#))
+                .body(Body::from(r#"{"brightness":0.42}"#))
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
     assert_eq!(update_response.status(), StatusCode::OK);
     let update_json = body_json(update_response).await;
-    assert_eq!(update_json["data"]["brightness"], 42);
+    assert_eq!(update_json["data"]["brightness"], 0.42);
+    assert_eq!(update_json["data"]["power"], "running");
 
     let get_response = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/settings/brightness")
+                .uri("/api/v1/output")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1695,12 +1941,12 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         .expect("failed to execute request");
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_json = body_json(get_response).await;
-    assert_eq!(get_json["data"]["brightness"], 42);
+    assert_eq!(get_json["data"]["brightness"], 0.42);
 
     let status_response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/status")
+                .uri("/api/v1/system")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1708,9 +1954,9 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         .expect("failed to execute request");
     assert_eq!(status_response.status(), StatusCode::OK);
     let status_json = body_json(status_response).await;
-    assert_eq!(status_json["data"]["global_brightness"], 42);
+    assert_eq!(status_json["data"]["status"]["global_brightness"], 42);
 
-    let device_settings_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+    let device_settings_raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings file should exist");
     let device_settings_json: serde_json::Value =
         serde_json::from_str(&device_settings_raw).expect("device settings file should be valid");
@@ -1719,13 +1965,9 @@ async fn global_brightness_endpoint_updates_status_and_persistence() {
         serde_json::json!(0.42)
     );
 
-    let runtime_state_raw = fs::read_to_string(tmp.path().join("runtime-state.json"))
-        .expect("runtime state file should exist");
-    let runtime_state_json: serde_json::Value =
-        serde_json::from_str(&runtime_state_raw).expect("runtime state file should be valid");
-    assert_eq!(
-        runtime_state_json["global_brightness"],
-        serde_json::json!(0.42)
+    assert!(
+        !tmp.path().join("runtime-state.json").exists(),
+        "brightness must not create a second persisted authority"
     );
 }
 
@@ -1736,7 +1978,7 @@ async fn audio_devices_returns_default_option_and_current_value() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/audio/devices")
+                .uri("/api/v1/system/audio-devices")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1770,14 +2012,13 @@ async fn audio_devices_preserve_custom_configured_id_without_rewrite() {
     config.audio.device = "pulse-monitor".to_owned();
     config_manager.update(config);
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/audio/devices")
+                .uri("/api/v1/system/audio-devices")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -1801,38 +2042,78 @@ async fn audio_devices_preserve_custom_configured_id_without_rewrite() {
 #[test]
 fn audio_device_filter_hides_synthetic_outputs_from_named_input_list() {
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device("PipeWire Sound Server",)
+        !hypercolor_daemon::api::system::should_offer_named_audio_device("PipeWire Sound Server",)
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
-            "PulseAudio Sound Server",
-        )
+        !hypercolor_daemon::api::system::should_offer_named_audio_device("PulseAudio Sound Server",)
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Monitor of Built-in Audio Analog Stereo",
         )
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
         )
     );
     assert!(
-        hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Razer Seiren V3 Chroma, USB Audio",
         )
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Rate Converter Plugin Using Speex Resampler",
         )
     );
     assert!(
-        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+        !hypercolor_daemon::api::system::should_offer_named_audio_device(
             "Discard all samples (playback) or generate zero samples (capture)",
         )
     );
+}
+
+/// A `PUT /api/v1/config/keys/{key}` request.
+///
+/// `live` gates whether the daemon re-applies the live sections the key
+/// touches; omitting it takes the route's default, which is to apply.
+fn config_put_request(key: &str, value: &serde_json::Value, live: Option<bool>) -> Request<Body> {
+    let uri = match live {
+        Some(live) => format!("/api/v1/config/keys/{key}?live={live}"),
+        None => format!("/api/v1/config/keys/{key}"),
+    };
+    Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(value.to_string()))
+        .expect("failed to build request")
+}
+
+/// A `DELETE /api/v1/config/keys/{key}` request: reset one key.
+fn config_delete_request(key: &str) -> Request<Body> {
+    Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/config/keys/{key}"))
+        .body(Body::empty())
+        .expect("failed to build request")
+}
+
+async fn execute_trusted_config_request(
+    state: &Arc<AppState>,
+    request: Request<Body>,
+) -> axum::response::Response {
+    TrustedLocalApi::new(Arc::clone(state))
+        .execute(request)
+        .await
+        .expect("trusted config request should execute")
+}
+
+/// Read a table-driven test value the way a human types it: JSON when it
+/// parses, a JSON string otherwise.
+fn config_test_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()))
 }
 
 #[tokio::test]
@@ -1842,24 +2123,18 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"microphone\""}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request(
+            "audio.device",
+            &serde_json::json!("microphone"),
+            Some(false),
+        ),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -1869,11 +2144,11 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager();
         assert_eq!(
             input_manager.source_count(),
-            1,
-            "only the always-registered browser injection source remains"
+            0,
+            "the direct browser registry stays outside the input manager"
         );
     }
 
@@ -1884,27 +2159,63 @@ async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
 }
 
 #[tokio::test]
-async fn config_set_legacy_render_acceleration_key_updates_compositor_acceleration() {
+async fn config_set_publishes_exactly_one_config_changed_from_the_manager() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+    let state = Arc::new(isolated_state_with_config_manager(config_manager));
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request(
+            "audio.device",
+            &serde_json::json!("microphone"),
+            Some(false),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut changes = Vec::new();
+    while let Ok(timestamped) = events.try_recv() {
+        if let HypercolorEvent::ConfigChanged {
+            key,
+            old_value,
+            new_value,
+        } = timestamped.event
+        {
+            changes.push((key, old_value, new_value));
+        }
+    }
+    assert_eq!(
+        changes,
+        vec![(
+            "audio.device".to_owned(),
+            Some(serde_json::json!("default")),
+            serde_json::json!("microphone")
+        )],
+        "the handler no longer publishes on its own: one save, one event"
+    );
+}
+
+#[tokio::test]
+async fn config_set_compositor_acceleration_key_updates_and_persists() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let config_path = tempdir.path().join("hypercolor.toml");
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"effect_engine.render_acceleration_mode","value":"\"cpu\""}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "effect_engine.compositor_acceleration_mode",
+            &serde_json::json!("cpu"),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -1933,21 +2244,15 @@ async fn config_set_driver_registry_key_updates_driver_config() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"drivers.wled.known_ips","value":"[\"192.168.1.50\"]"}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "drivers.wled.known_ips",
+            &serde_json::json!(["192.168.1.50"]),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -1955,7 +2260,11 @@ async fn config_set_driver_registry_key_updates_driver_config() {
 
     let json = body_json(response).await;
     assert_eq!(json["data"]["key"], "drivers.wled.known_ips");
-    assert_eq!(json["data"]["value"], serde_json::json!(["192.168.1.50"]));
+    assert_eq!(
+        json["data"]["value"],
+        serde_json::json!({ "redacted": true }),
+        "secret-classified keys mask on every read surface, echoes included"
+    );
 
     let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
     let config: HypercolorConfig =
@@ -1973,32 +2282,29 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"drivers.wled.known_ips","value":"[\"127.0.0.1\"]"}"#,
-                ))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "drivers.wled.known_ips",
+            &serde_json::json!(["127.0.0.1"]),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(message.contains("drivers.wled"));
+    assert!(message.contains("driver validation"));
     assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message should be a string")
-            .contains("invalid WLED known IP")
+        !message.contains("127.0.0.1"),
+        "a secret-classified key must not echo the value it refused: {message}"
     );
     assert!(
         !config_path.exists(),
@@ -2006,10 +2312,88 @@ async fn config_set_driver_registry_key_rejects_non_routable_ip() {
     );
 }
 
+/// A rejected write must not hand the submitted value back.
+///
+/// Serde quotes the value it refused, so a wrong-typed write to a
+/// secret-classified key would put a credential in the error body and
+/// in whatever logs it.
+#[tokio::test]
+async fn config_write_rejection_does_not_echo_a_secret_value() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let state = isolated_state_with_config_manager(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let secret = "sk-live-do-not-echo-me";
+    let response = app
+        .oneshot(config_put_request(
+            "drivers.wled.enabled",
+            &serde_json::json!(secret),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(
+        message.contains("drivers.wled.enabled"),
+        "the caller still learns which key failed: {message}"
+    );
+    assert!(
+        !message.contains(secret),
+        "a secret-classified key must not echo the value it refused: {message}"
+    );
+    assert!(
+        !serde_json::to_string(&json)
+            .expect("error body should serialize")
+            .contains(secret),
+        "the value must not survive anywhere in the error body"
+    );
+}
+
+/// Plain keys keep the detail that makes a rejection actionable.
+#[tokio::test]
+async fn config_write_rejection_keeps_detail_for_a_plain_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let state = isolated_state_with_config_manager(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!("not-a-number"),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    let message = json["error"]["message"]
+        .as_str()
+        .expect("error message should be a string");
+    assert!(message.contains("daemon.target_fps"));
+    assert!(
+        message.contains("invalid type"),
+        "a plain key keeps the serde detail: {message}"
+    );
+}
+
 #[tokio::test]
 async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
 
     for (key, value) in [
         ("capture.capture_fps", "0"),
@@ -2017,20 +2401,11 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         ("capture.smoothing", "1.1"),
         ("capture.gamma", "nan"),
     ] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/config/set")
-                    .header("content-type", "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"key":"{key}","value":"{value}"}}"#
-                    )))
-                    .expect("failed to build request"),
-            )
-            .await
-            .expect("failed to execute request");
+        let response = execute_trusted_config_request(
+            &state,
+            config_put_request(key, &config_test_value(value), None),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let json = body_json(response).await;
@@ -2041,41 +2416,35 @@ async fn config_set_rejects_invalid_capture_boundaries_before_persistence() {
         !manager.path().exists(),
         "invalid capture config must not reach persistent storage"
     );
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager().has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn config_set_rejects_capture_resource_plan_before_persistence() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"capture.publication_memory_bytes","value":"1"}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request(
+            "capture.publication_memory_bytes",
+            &serde_json::json!(1),
+            None,
+        ),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
     assert!(!manager.path().exists());
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager().has_screen_source());
 }
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
     let (state, manager, _tempdir) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
 
     let source = r"monitor:\\?\DISPLAY#TEST#stable";
     for (key, value) in [
@@ -2085,43 +2454,28 @@ async fn config_set_applies_windows_capture_settings_source_and_disable_live() {
             serde_json::to_string(source).expect("source should encode as JSON"),
         ),
     ] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/v1/config/set")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "key": key, "value": value }).to_string(),
-                    ))
-                    .expect("failed to build request"),
-            )
-            .await
-            .expect("failed to execute request");
+        let response = execute_trusted_config_request(
+            &state,
+            config_put_request(key, &config_test_value(&value), None),
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["data"]["live"], true);
-        assert!(state.input_manager.lock().await.has_screen_source());
+        assert!(state.input_manager().has_screen_source());
     }
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"key":"capture.enabled","value":"false"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request("capture.enabled", &serde_json::json!(false), None),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["live"], true);
-    assert!(!state.input_manager.lock().await.has_screen_source());
+    assert!(!state.input_manager().has_screen_source());
 
     let persisted = fs::read_to_string(manager.path()).expect("capture config should persist");
     let persisted: HypercolorConfig =
@@ -2138,24 +2492,14 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"microphone\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request("audio.device", &serde_json::json!("microphone"), Some(true)),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2165,11 +2509,11 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager();
         assert_eq!(
             input_manager.source_count(),
-            2,
-            "browser injection source plus the rebuilt audio source"
+            1,
+            "the rebuilt audio source is the only sampled source"
         );
         assert!(
             input_manager
@@ -2193,24 +2537,14 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"mic\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request("audio.device", &serde_json::json!("mic"), Some(true)),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2220,7 +2554,7 @@ async fn config_set_legacy_audio_alias_persists_canonical_device_id() {
     assert_eq!(json["data"]["live"], true);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager();
         assert!(
             input_manager
                 .source_names()
@@ -2243,24 +2577,14 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"auto\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request("audio.device", &serde_json::json!("auto"), Some(true)),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2270,11 +2594,11 @@ async fn config_set_legacy_audio_alias_skips_live_rebuild_when_already_canonical
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager();
         assert_eq!(
             input_manager.source_count(),
-            1,
-            "only the always-registered browser injection source remains"
+            0,
+            "the direct browser registry stays outside the input manager"
         );
     }
 
@@ -2291,24 +2615,14 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
-    let app = test_app_with_state(Arc::clone(&state));
 
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"audio.device","value":"\"default\"","live":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
+    let response = execute_trusted_config_request(
+        &state,
+        config_put_request("audio.device", &serde_json::json!("default"), Some(true)),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
 
@@ -2318,11 +2632,11 @@ async fn config_set_identical_audio_value_skips_live_rebuild() {
     assert_eq!(json["data"]["live"], false);
 
     {
-        let input_manager = state.input_manager.lock().await;
+        let input_manager = state.input_manager();
         assert_eq!(
             input_manager.source_count(),
-            1,
-            "only the always-registered browser injection source remains"
+            0,
+            "the direct browser registry stays outside the input manager"
         );
     }
 
@@ -2339,23 +2653,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
-
-    let active_layout = {
-        let spatial = state
-            .spatial_engine
-            .try_read()
-            .expect("spatial engine should not be contended");
-        spatial.layout().as_ref().clone()
-    };
-    {
-        let mut layouts = state
-            .layouts
-            .try_write()
-            .expect("layout store should not be contended");
-        layouts.insert(active_layout.id.clone(), active_layout.clone());
-    }
+    let state = isolated_state_with_config_manager(config_manager);
 
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
@@ -2367,14 +2665,7 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     ] {
         let (response, applied) = request_with_layout_ack(
             app.clone(),
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"key":"{key}","value":"{value}"}}"#
-                )))
-                .expect("failed to build request"),
+            config_put_request(key, &config_test_value(value), None),
             &state,
         )
         .await;
@@ -2387,15 +2678,17 @@ async fn config_set_render_canvas_updates_active_layout_dimensions() {
     }
 
     {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         assert_eq!(spatial.layout().canvas_width, 1024);
         assert_eq!(spatial.layout().canvas_height, 768);
     }
 
     {
-        let layouts = state.layouts.read().await;
-        let saved = layouts
-            .get("default")
+        let saved = state
+            .domains
+            .layout
+            .resolve("default")
+            .await
             .expect("active layout should remain persisted");
         assert_eq!(saved.canvas_width, 1024);
         assert_eq!(saved.canvas_height, 768);
@@ -2425,20 +2718,16 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"key":"daemon.target_fps","value":"45"}"#))
-                .expect("failed to build request"),
-        )
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!(45),
+            None,
+        ))
         .await
         .expect("failed to execute request");
 
@@ -2461,14 +2750,291 @@ async fn config_set_render_target_fps_updates_render_loop_live() {
     assert_eq!(config.daemon.target_fps, 45);
 }
 
+/// A config carrying a retired top-level key, driver settings, a secret, and
+/// a foreign section.
+///
+/// `acme_cloud` is deliberately not a registered driver module, so its
+/// settings stand in for anything a driver may persist without the host
+/// modelling the shape.
+const RESET_FIXTURE_CONFIG: &str = r#"
+schema_version = 5
+include = ["desk-overrides.toml", "travel.toml"]
+
+[daemon]
+target_fps = 45
+
+[audio]
+device = "microphone"
+
+[drivers.wled]
+enabled = true
+known_ips = ["192.168.1.50"]
+
+[drivers.acme_cloud]
+enabled = false
+api_key = "sk-live-do-not-lose-me"
+account = "bliss@example.com"
+
+[cloud]
+enabled = true
+refresh_token = "rt-do-not-lose-me"
+"#;
+
+/// An extension document with nested tables and an array of tables.
+///
+/// Spec 76 §3.1 promises arbitrary extension documents survive a reset, so
+/// the shape that exercises the serialization boundary gets its own fixture.
+const RESET_NESTED_EXTENSION_CONFIG: &str = r#"
+schema_version = 5
+
+[telemetry]
+enabled = true
+endpoint = "https://telemetry.example.invalid/ingest"
+
+[telemetry.retry]
+backoff_ms = 250
+max_attempts = 5
+
+[[telemetry.rules]]
+levels = ["error", "fatal"]
+name = "errors"
+
+[[telemetry.rules]]
+levels = ["info"]
+name = "audit"
+"#;
+
+/// A driver entry the registered WLED module rejects as invalid.
+const RESET_INVALID_DRIVER_CONFIG: &str = r#"
+schema_version = 5
+
+[drivers.wled]
+enabled = true
+known_ips = ["127.0.0.1"]
+"#;
+
+fn reset_fixture_state(config_path: &Path) -> (Arc<AppState>, Arc<ConfigManager>) {
+    reset_fixture_state_from(config_path, RESET_FIXTURE_CONFIG)
+}
+
+/// Build daemon state over a config manager seeded from an on-disk fixture.
+///
+/// The capacity plan matters on Windows, where capture defaults to enabled
+/// and a keyless reset therefore rebuilds the screen graph.
+fn reset_fixture_state_from(
+    config_path: &Path,
+    source: &str,
+) -> (Arc<AppState>, Arc<ConfigManager>) {
+    fs::write(config_path, source).expect("fixture config should be written");
+    let config_manager = Arc::new(
+        ConfigManager::new(config_path.to_path_buf()).expect("config manager should build"),
+    );
+    let state = isolated_state_with_config_manager(Arc::clone(&config_manager));
+    {
+        let input_manager = state.input_manager();
+        let capacity = input_manager.screen_resource_capacity();
+        input_manager
+            .set_screen_capacity_plan(capacity, capacity, capacity)
+            .expect("isolated input manager should accept its default capacity");
+    }
+    (Arc::new(state), config_manager)
+}
+
+fn reset_fixture_app(config_path: &Path) -> (axum::Router, Arc<AppState>, Arc<ConfigManager>) {
+    let (state, config_manager) = reset_fixture_state(config_path);
+    (
+        test_app_with_state(Arc::clone(&state)),
+        state,
+        config_manager,
+    )
+}
+
+/// Drive a whole-config reset, standing in for the render loop.
+///
+/// A reset re-applies every live section now, and the render section
+/// queues a canvas transaction that waits on a pipeline acknowledgment.
+/// The test state's layout starts at 320x200 against a 640x480 config
+/// default, so the reset genuinely resizes and needs the ack pump.
+async fn post_config_reset(state: &Arc<AppState>) -> axum::response::Response {
+    trusted_request_with_layout_ack(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/config/reset")
+            .body(Body::empty())
+            .expect("failed to build request"),
+        state,
+    )
+    .await
+    .0
+}
+
+async fn delete_config_key(app: axum::Router, key: &str) -> axum::response::Response {
+    app.oneshot(config_delete_request(key))
+        .await
+        .expect("failed to execute request")
+}
+
 #[tokio::test]
-async fn preview_page_returns_html() {
-    let app = test_app();
+async fn config_full_reset_preserves_driver_settings_and_seeds_builtin_entries() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (state, config_manager) = reset_fixture_state(&config_path);
+
+    let response = post_config_reset(&state).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+
+    let acme = saved
+        .drivers
+        .get("acme_cloud")
+        .expect("a full reset must not destroy driver entries");
+    assert_eq!(
+        acme.settings["api_key"],
+        serde_json::json!("sk-live-do-not-lose-me"),
+        "a full reset must not destroy driver credentials"
+    );
+    assert_eq!(
+        acme.settings["account"],
+        serde_json::json!("bliss@example.com")
+    );
+    assert!(
+        !acme.enabled,
+        "a driver's enable flag is part of its preserved entry"
+    );
+    assert_eq!(
+        saved.drivers["wled"].settings["known_ips"],
+        serde_json::json!(["192.168.1.50"])
+    );
+
+    for driver_id in hypercolor_daemon::startup::default_config().drivers.keys() {
+        assert!(
+            saved.drivers.contains_key(driver_id),
+            "reset must seed builtin driver entry {driver_id} like the load path does"
+        );
+    }
+
+    assert_eq!(
+        saved.daemon.target_fps,
+        HypercolorConfig::default().daemon.target_fps,
+        "sections the daemon owns return to defaults"
+    );
+    assert_eq!(saved.audio.device, HypercolorConfig::default().audio.device);
+
+    let live = config_manager.get();
+    assert_eq!(
+        live.drivers["acme_cloud"].settings["api_key"],
+        serde_json::json!("sk-live-do-not-lose-me")
+    );
+    assert_eq!(
+        live.daemon.target_fps,
+        HypercolorConfig::default().daemon.target_fps
+    );
+}
+
+#[tokio::test]
+async fn config_full_reset_preserves_extension_sections_and_retired_keys() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (state, config_manager) = reset_fixture_state(&config_path);
+
+    let response = post_config_reset(&state).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+
+    let cloud = saved
+        .extensions
+        .get("cloud")
+        .expect("an extension section must survive a full reset");
+    assert_eq!(
+        cloud.get("refresh_token"),
+        Some(&serde_json::json!("rt-do-not-lose-me"))
+    );
+    assert_eq!(cloud.get("enabled"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        config_manager.get().extensions.get("cloud"),
+        saved.extensions.get("cloud")
+    );
+
+    assert_eq!(
+        saved.extensions.get("include"),
+        Some(&serde_json::json!(["desk-overrides.toml", "travel.toml"])),
+        "a retired top-level key names files only the user knows about"
+    );
+    assert_eq!(
+        config_manager.get().extensions.get("include"),
+        saved.extensions.get("include")
+    );
+}
+
+#[tokio::test]
+async fn config_keyed_reset_restores_one_key_and_leaves_the_rest_intact() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = delete_config_key(app, "daemon.target_fps").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "daemon.target_fps");
+    assert_eq!(
+        json["data"]["value"],
+        serde_json::json!(HypercolorConfig::default().daemon.target_fps)
+    );
+    assert_eq!(json["data"]["requires_restart"], false);
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+
+    assert_eq!(
+        saved.daemon.target_fps,
+        HypercolorConfig::default().daemon.target_fps
+    );
+    assert_eq!(
+        saved.audio.device, "microphone",
+        "a keyed reset leaves untargeted sections alone"
+    );
+    assert_eq!(
+        saved.drivers["acme_cloud"].settings["api_key"],
+        serde_json::json!("sk-live-do-not-lose-me")
+    );
+    assert_eq!(
+        saved
+            .extensions
+            .get("cloud")
+            .and_then(|section| section.get("refresh_token")),
+        Some(&serde_json::json!("rt-do-not-lose-me"))
+    );
+    assert_eq!(
+        saved.extensions.get("include"),
+        Some(&serde_json::json!(["desk-overrides.toml", "travel.toml"]))
+    );
+}
+
+#[tokio::test]
+async fn config_reset_rejects_an_unknown_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = delete_config_key(app, "daemon.not_a_real_key").await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn config_schema_route_serves_the_key_registry() {
+    let app = test_app_with_state(Arc::new(isolated_state()));
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/preview")
+                .uri("/api/v1/config/schema")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -2476,39 +3042,417 @@ async fn preview_page_returns_html() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::OK);
-
-    let content_type = response
-        .headers()
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html content type, got {content_type}"
+    let json = body_json(response).await;
+    let entries = json["data"]
+        .as_array()
+        .expect("the schema is served as a list of entries");
+    assert_eq!(
+        entries.len(),
+        hypercolor_types::config_registry::schema_entries().len()
     );
 
-    let body = body_text(response).await;
-    assert!(body.contains("Hypercolor Live Preview"));
-    assert!(body.contains("/api/v1/ws"));
-    assert!(body.contains("/api/v1/simulators/displays"));
-    assert!(body.contains("id=\"previewMode\""));
-    assert!(body.contains("show unavailable"));
-    assert!(body.contains("run-preview-servo.sh"));
-    assert!(body.contains("value=\"30\""));
+    let render = entries
+        .iter()
+        .find(|entry| entry["pattern"] == "daemon.target_fps")
+        .expect("the render override is published");
+    assert_eq!(render["apply"]["kind"], "live");
+    assert_eq!(render["apply"]["section"], "render");
+    assert_eq!(render["redaction"], "plain");
+
+    let drivers = entries
+        .iter()
+        .find(|entry| entry["pattern"] == "drivers.*")
+        .expect("the dynamic driver namespace is published");
+    assert_eq!(drivers["redaction"], "secret");
+
+    let capture = entries
+        .iter()
+        .find(|entry| entry["pattern"] == "capture")
+        .expect("the capture section is published");
+    assert_eq!(capture["has_validator"], true);
+}
+
+#[tokio::test]
+async fn config_read_masks_secret_namespaces_and_keeps_plain_sections() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["daemon"]["target_fps"], 45);
+    assert_eq!(json["data"]["audio"]["device"], "microphone");
+    assert_eq!(
+        json["data"]["drivers"]["acme_cloud"],
+        serde_json::json!({ "redacted": true }),
+        "driver entries carry credentials, so the generic read masks them"
+    );
+    assert_eq!(
+        json["data"]["drivers"]["wled"],
+        serde_json::json!({ "redacted": true })
+    );
+    assert_eq!(
+        json["data"]["cloud"],
+        serde_json::json!({ "redacted": true }),
+        "unmodeled extension sections are deny-by-default"
+    );
+}
+
+#[tokio::test]
+async fn config_key_read_answers_one_key_and_masks_the_secret_ones() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config/keys/daemon.target_fps")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "daemon.target_fps");
+    assert_eq!(json["data"]["value"], 45);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config/keys/drivers.acme_cloud.api_key")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["value"],
+        serde_json::json!({ "redacted": true })
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/config/keys/daemon.not_a_real_key")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn config_key_routes_reject_a_malformed_key() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (app, _state, _config_manager) = reset_fixture_app(&config_path);
+
+    for request in [
+        Request::builder()
+            .uri("/api/v1/config/keys/daemon..target_fps")
+            .body(Body::empty())
+            .expect("failed to build request"),
+        config_put_request("daemon..target_fps", &serde_json::json!(45), None),
+        config_delete_request("daemon..target_fps"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "malformed_request");
+    }
+}
+
+#[tokio::test]
+async fn config_write_reports_restart_classification_and_pending_restart() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    fs::write(&config_path, RESET_FIXTURE_CONFIG).expect("fixture config should be written");
+    let loaded = ConfigManager::load_with_sources(hypercolor_core::config::ConfigSources {
+        file: Some(config_path.clone()),
+        ..hypercolor_core::config::ConfigSources::default_path()
+    })
+    .expect("fixture config should load");
+    let state = isolated_state_with_config_manager(Arc::new(loaded.manager));
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .clone()
+        .oneshot(config_put_request(
+            "daemon.port",
+            &serde_json::json!(9430),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["value"], 9430);
+    assert_eq!(
+        json["data"]["live"], false,
+        "a boot-frozen key has no subsystem to re-apply"
+    );
+    assert_eq!(json["data"]["requires_restart"], true);
+    assert_eq!(
+        json["data"]["pending_restart"],
+        serde_json::json!(["daemon"]),
+        "the persisted daemon section now differs from the booted one"
+    );
+
+    let response = app
+        .oneshot(config_put_request(
+            "session.on_suspend",
+            &serde_json::json!("dim"),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["requires_restart"], false,
+        "a read-fresh key takes effect without a restart"
+    );
+}
+
+#[tokio::test]
+async fn config_write_declining_live_persists_without_re_applying() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+    let state = isolated_state_with_config_manager(Arc::clone(&config_manager));
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!(20),
+            Some(false),
+        ))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["live"], false);
+    assert_eq!(config_manager.get().daemon.target_fps, 20);
+    assert_ne!(
+        state.render_loop.read().await.stats().max_tier.fps(),
+        20,
+        "declining the live apply leaves the running loop alone"
+    );
+}
+
+/// A whole-config reset re-applies every live section, render included.
+///
+/// The hand predicate this replaced matched three exact keys and ignored
+/// the whole-config case, so a reset persisted a new target FPS and left
+/// the render loop running at the old one until the next restart.
+#[tokio::test]
+async fn config_full_reset_retunes_the_render_loop() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (state, config_manager) = reset_fixture_state(&config_path);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    // Retune the running loop away from the default first. The fixture
+    // already carries the config's 45, so the write has to name a
+    // different tier or the unchanged-value short circuit skips it.
+    let response = app
+        .clone()
+        .oneshot(config_put_request(
+            "daemon.target_fps",
+            &serde_json::json!(20),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(state.render_loop.read().await.stats().max_tier.fps(), 20);
+
+    let response = post_config_reset(&state).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["live"], true);
+
+    let default_fps = HypercolorConfig::default().daemon.target_fps;
+    assert_eq!(config_manager.get().daemon.target_fps, default_fps);
+    let expected_tier = hypercolor_core::engine::FpsTier::from_fps(default_fps);
+    let stats = state.render_loop.read().await.stats();
+    assert_eq!(stats.max_tier, expected_tier);
+    assert_eq!(stats.tier, expected_tier);
+}
+
+#[tokio::test]
+async fn config_full_reset_round_trips_a_nested_extension_document() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (state, config_manager) =
+        reset_fixture_state_from(&config_path, RESET_NESTED_EXTENSION_CONFIG);
+    let authored: HypercolorConfig =
+        toml::from_str(RESET_NESTED_EXTENSION_CONFIG).expect("fixture should parse");
+    let authored_telemetry = authored
+        .extensions
+        .get("telemetry")
+        .expect("the nested fixture section lands in the catch-all");
+
+    let response = post_config_reset(&state).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+    let saved_telemetry = saved
+        .extensions
+        .get("telemetry")
+        .expect("a nested extension document must survive a full reset");
+
+    assert_eq!(
+        saved_telemetry, authored_telemetry,
+        "the whole document round-trips, sub-tables and array-of-tables included"
+    );
+    assert_eq!(
+        saved_telemetry
+            .get("retry")
+            .and_then(|retry| retry.get("max_attempts")),
+        Some(&serde_json::json!(5)),
+        "a sub-table keeps its values"
+    );
+    let rules = saved_telemetry
+        .get("rules")
+        .and_then(serde_json::Value::as_array)
+        .expect("the array of tables survives as an array");
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].get("name"), Some(&serde_json::json!("errors")));
+    assert_eq!(
+        rules[1].get("levels"),
+        Some(&serde_json::json!(["info"])),
+        "nested arrays inside an array of tables survive"
+    );
+    assert_eq!(
+        config_manager.get().extensions.get("telemetry"),
+        Some(saved_telemetry)
+    );
+}
+
+#[tokio::test]
+async fn config_full_reset_event_carries_no_config_payload() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (state, _config_manager) = reset_fixture_state(&config_path);
+    let mut events = state.event_bus.subscribe_all();
+
+    let response = post_config_reset(&state).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (key, new_value) = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::ConfigChanged { key, new_value, .. } = timestamped.event
+                    {
+                        break (key, new_value);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before the reset event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the config reset event");
+
+    assert_eq!(key, "", "a whole-config reset publishes the empty key");
+    assert_eq!(
+        new_value,
+        serde_json::Value::Null,
+        "the payload stays empty: preserved driver and extension sections hold \
+         credentials, and this event reaches every ws events subscriber"
+    );
+}
+
+#[tokio::test]
+async fn config_full_reset_is_not_blocked_by_an_invalid_driver_entry() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let (state, config_manager) =
+        reset_fixture_state_from(&config_path, RESET_INVALID_DRIVER_CONFIG);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    // Writing a loopback address through `set` is rejected, so the seeded
+    // entry is genuinely one the driver refuses rather than an inert
+    // payload. The address differs from the seeded one because `set`
+    // short-circuits an unchanged value before it reaches validation.
+    let rejected = app
+        .clone()
+        .oneshot(config_put_request(
+            "drivers.wled.known_ips",
+            &serde_json::json!(["127.0.0.2"]),
+            None,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let response = post_config_reset(&state).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "existing invalid driver config must never lock a user out of a reset"
+    );
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let saved: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+    assert_eq!(
+        saved.drivers["wled"].settings["known_ips"],
+        serde_json::json!(["127.0.0.1"]),
+        "the reset carries the entry through untouched rather than repairing it by deletion"
+    );
+    assert_eq!(
+        config_manager.get().drivers["wled"].settings["known_ips"],
+        serde_json::json!(["127.0.0.1"])
+    );
 }
 
 async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
-    let mut registry = state.effect_registry.write().await;
-    let metadata = EffectMetadata {
-        id: EffectId::new(Uuid::now_v7()),
-        name: name.to_owned(),
-        author: "test".to_owned(),
-        version: "0.1.0".to_owned(),
-        description: format!("{name} description"),
-        category: EffectCategory::Ambient,
-        tags: vec!["test".to_owned()],
-        controls: vec![ControlDefinition {
+    let _ = insert_test_effect_with_presets(state, name, Vec::new()).await;
+}
+
+async fn insert_test_effect_with_presets(
+    state: &Arc<AppState>,
+    name: &str,
+    presets: Vec<PresetTemplate>,
+) -> EffectMetadata {
+    insert_test_effect_with_controls(
+        state,
+        name,
+        vec![ControlDefinition {
             id: "speed".to_owned(),
             name: "Speed".to_owned(),
             kind: ControlKind::Number,
@@ -2524,7 +3468,27 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
             preview_source: None,
             binding: None,
         }],
-        presets: Vec::new(),
+        presets,
+    )
+    .await
+}
+
+async fn insert_test_effect_with_controls(
+    state: &Arc<AppState>,
+    name: &str,
+    controls: Vec<ControlDefinition>,
+    presets: Vec<PresetTemplate>,
+) -> EffectMetadata {
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} description"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned()],
+        controls,
+        presets,
         audio_reactive: false,
         screen_reactive: false,
         input_reactive: false,
@@ -2534,12 +3498,13 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
         license: None,
     };
     let entry = EffectEntry {
-        metadata,
+        metadata: metadata.clone(),
         source_path: format!("/tmp/{name}.html").into(),
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
+    metadata
 }
 
 fn test_html_effect_metadata(name: &str) -> EffectMetadata {
@@ -2573,7 +3538,7 @@ async fn insert_input_reactive_test_effect(state: &Arc<AppState>, name: &str) {
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let _ = state.effect_registry.write().await.register(entry);
+    let _ = state.domains.effects.register(entry).await;
 }
 
 fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
@@ -2590,8 +3555,7 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
         modified: SystemTime::now(),
         state: EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -2625,7 +3589,7 @@ async fn install_effect_upload_writes_file_and_registers_effect() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Aurora");
-    assert_eq!(json["data"]["source"], "user");
+    assert!(json["data"].get("source").is_none());
     assert_eq!(json["data"]["controls"], 1);
     assert_eq!(json["data"]["presets"], 1);
 
@@ -2635,13 +3599,10 @@ async fn install_effect_upload_writes_file_and_registers_effect() {
         "expected uploaded effect to be written"
     );
 
-    let registry = state.effect_registry.read().await;
+    let effects = state.domains.effects.all_metadata().await;
     assert!(
-        registry
-            .iter()
-            .any(|(_, entry)| entry.metadata.name == "Aurora"
-                && entry.source_path
-                    == fs::canonicalize(&installed_path).expect("canonical path should resolve"))
+        effects.iter().any(|metadata| metadata.name == "Aurora"),
+        "installed effect should enter the domain catalog"
     );
 }
 
@@ -2675,13 +3636,59 @@ async fn install_effect_upload_rejects_invalid_html() {
         .await
         .expect("failed to execute upload request");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
     let errors = json["error"]["details"]["errors"]
         .as_array()
         .expect("validation errors should be present");
     assert!(errors.iter().any(|entry| entry == "Missing <title> tag"));
     assert!(errors.iter().any(|entry| entry == "Missing <script> tag"));
+}
+
+#[tokio::test]
+async fn install_effect_upload_rejects_duplicate_preset_ids() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(state);
+    let duplicate_cases = [
+        (
+            "fallback.html",
+            r#"<meta preset="Calm" preset-controls='{}' />
+<meta preset="Calm" preset-controls='{}' />"#,
+        ),
+        (
+            "authored.html",
+            r#"<meta preset="Calm" preset-id="shared" preset-controls='{}' />
+<meta preset="Breeze" preset-id="shared" preset-controls='{}' />"#,
+        ),
+    ];
+
+    for (file_name, presets) in duplicate_cases {
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html>
+  <head><title>Duplicates</title>{presets}</head>
+  <body><canvas id="exCanvas"></canvas><script>1</script></body>
+</html>"#
+        );
+        let response = app
+            .clone()
+            .oneshot(multipart_upload_request(file_name, &html))
+            .await
+            .expect("failed to execute upload request");
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "validation_error");
+        let errors = json["error"]["details"]["errors"]
+            .as_array()
+            .expect("validation errors should be present");
+        assert!(errors.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|message| message.contains("Duplicate bundled preset id"))
+        }));
+    }
 }
 
 #[tokio::test]
@@ -2751,10 +3758,13 @@ async fn install_effect_upload_updates_existing_file_in_place() {
     );
 
     // Path-derived id is stable, so the registry holds one updated entry.
-    let registry = state.effect_registry.read().await;
-    let aurora_entries = registry
+    let aurora_entries = state
+        .domains
+        .effects
+        .all_metadata()
+        .await
         .iter()
-        .filter(|(_, entry)| entry.metadata.name == "Aurora")
+        .filter(|metadata| metadata.name == "Aurora")
         .count();
     assert_eq!(aurora_entries, 1);
 }
@@ -2772,10 +3782,8 @@ async fn activate_empty_test_scene_with_mode(
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: Vec::new(),
-        groups_revision: 0,
+        zones: Vec::new(),
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,
@@ -2785,17 +3793,26 @@ async fn activate_empty_test_scene_with_mode(
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode,
     };
 
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .create(scene.clone())
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene.clone())
         .expect("test scene should be created");
-    manager
-        .activate(&scene.id, None)
+    mutation
+        .activate(
+            scene.id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
         .expect("test scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("test scene should commit");
     scene.id
 }
 
@@ -2816,20 +3833,25 @@ async fn activate_display_face_test_scene_with_layers(
     device_id: DeviceId,
     layers: Vec<SceneLayer>,
 ) -> SceneId {
+    let layers = if layers.is_empty() {
+        vec![SceneLayer::from_effect(
+            SceneLayerId::new(),
+            effect_id,
+            HashMap::new(),
+            HashMap::new(),
+            None,
+        )]
+    } else {
+        layers
+    };
     let scene = Scene {
         id: SceneId::new(),
         name: name.to_owned(),
         description: None,
-        scope: SceneScope::Full,
-        zone_assignments: Vec::new(),
-        groups: vec![Zone {
+        zones: vec![Zone {
             id: hypercolor_types::scene::ZoneId::new(),
             name: "Display Face".to_owned(),
             description: None,
-            effect_id: Some(effect_id),
-            controls: HashMap::new(),
-            control_bindings: HashMap::new(),
-            preset_id: None,
             layers,
             layout: SpatialLayout {
                 id: "display-face-layout".to_owned(),
@@ -2840,7 +3862,6 @@ async fn activate_display_face_test_scene_with_layers(
                 zones: Vec::new(),
                 default_sampling_mode: SamplingMode::Bilinear,
                 default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
                 version: 1,
             },
             brightness: 1.0,
@@ -2851,7 +3872,7 @@ async fn activate_display_face_test_scene_with_layers(
             controls_version: 0,
             layers_version: 0,
         }],
-        groups_revision: 0,
+        zones_revision: 0,
         transition: TransitionSpec {
             duration_ms: 0,
             easing: EasingFunction::Linear,
@@ -2861,35 +3882,27 @@ async fn activate_display_face_test_scene_with_layers(
         enabled: true,
         metadata: HashMap::new(),
         unassigned_behavior: UnassignedBehavior::Off,
+        layout_id: None,
+        activation_brightness: None,
         kind: SceneKind::Named,
         mutation_mode: SceneMutationMode::Live,
     };
 
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .create(scene.clone())
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .create_scene(scene.clone())
         .expect("display face scene should be created");
-    manager
-        .activate(&scene.id, None)
+    mutation
+        .activate(
+            scene.id,
+            None,
+            hypercolor_types::event::SceneChangeReason::UserActivate,
+        )
         .expect("display face scene should activate");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("display face scene should commit");
     scene.id
-}
-
-fn test_media_layer() -> SceneLayer {
-    SceneLayer {
-        id: SceneLayerId::new(),
-        name: None,
-        source: LayerSource::Media {
-            asset_id: AssetId::new(),
-            playback: MediaPlayback::default(),
-        },
-        blend: LayerBlendMode::Alpha,
-        opacity: 1.0,
-        transform: LayerTransform::default(),
-        adjust: LayerAdjust::default(),
-        bindings: Vec::new(),
-        enabled: true,
-    }
 }
 
 fn default_config_path() -> String {
@@ -2909,7 +3922,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -2942,13 +3955,14 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
         model: Some("LCD".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "LCD".to_owned(),
             led_count: 320 * 320,
             topology: DeviceTopologyHint::Display {
                 width: 320,
                 height: 320,
                 circular: true,
+                format: DisplayFrameFormat::Jpeg,
             },
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
@@ -2986,7 +4000,7 @@ async fn insert_test_hue_bridge_device(
         model: Some("Bridge".to_owned()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("hue", "hue", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Bridge".to_owned(),
             led_count: 1,
             topology: DeviceTopologyHint::Point,
@@ -3005,7 +4019,7 @@ async fn insert_test_hue_bridge_device(
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint(format!("hue:{bridge_id}"));
+    let fingerprint = DeviceFingerprint::from_persisted(format!("hue:{bridge_id}"));
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("bridge_id".to_owned(), bridge_id.to_owned());
     metadata.insert("ip".to_owned(), ip.to_owned());
@@ -3033,7 +4047,7 @@ async fn insert_test_nanoleaf_device(
         model: Some("Shapes".to_owned()),
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("nanoleaf", "nanoleaf", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Panel".to_owned(),
             led_count: 12,
             topology: DeviceTopologyHint::Matrix { rows: 3, cols: 4 },
@@ -3052,7 +4066,7 @@ async fn insert_test_nanoleaf_device(
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint(format!("nanoleaf:{device_key}"));
+    let fingerprint = DeviceFingerprint::from_persisted(format!("nanoleaf:{device_key}"));
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("device_key".to_owned(), device_key.to_owned());
     metadata.insert("ip".to_owned(), ip.to_owned());
@@ -3073,7 +4087,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
         connection_type: ConnectionType::SmBus,
         origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
             .with_protocol_id("asus/aura-smbus"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "GPU".to_owned(),
             led_count: 24,
             topology: DeviceTopologyHint::Strip,
@@ -3092,7 +4106,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("smbus:/dev/i2c-9:40".to_owned());
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("smbus_address".to_owned(), "0x40".to_owned());
     state
@@ -3105,7 +4119,11 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
 ///
 /// This ensures that `sync_active_layout_connectivity` won't disconnect the
 /// device because the active layout has a zone referencing it.
-async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, led_count: u32) {
+async fn set_layout_targeting_device(
+    state: &Arc<AppState>,
+    layout_device_id: &str,
+    led_count: u32,
+) {
     let layout = SpatialLayout {
         id: "test-layout".into(),
         name: "Test Layout".into(),
@@ -3140,11 +4158,20 @@ async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, l
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
-    let mut spatial = state.spatial_engine.write().await;
-    spatial.update_layout(layout);
+    let publisher = tokio::spawn(run_layout_publications(Arc::clone(state), 1));
+    let response =
+        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout))
+            .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        publisher
+            .await
+            .expect("layout publication worker should not panic")
+            .len(),
+        1
+    );
 }
 
 // ── Devices ──────────────────────────────────────────────────────────────
@@ -3170,7 +4197,7 @@ async fn list_devices_returns_empty_list() {
         .as_array()
         .expect("items should be an array");
     assert!(items.is_empty());
-    assert_eq!(json["data"]["pagination"]["total"], 0);
+    assert_eq!(json["data"]["total"], 0);
 }
 
 #[tokio::test]
@@ -3200,7 +4227,10 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(wled["descriptor"]["module_kind"], "network");
     assert_eq!(
         wled["descriptor"]["transports"],
-        serde_json::json!(["network"])
+        serde_json::json!([{
+            "kind": "network",
+            "availability": { "status": "available" }
+        }])
     );
     assert_eq!(wled["descriptor"]["capabilities"]["discovery"], true);
     assert_eq!(wled["descriptor"]["capabilities"]["output_backend"], true);
@@ -3227,7 +4257,16 @@ async fn list_drivers_returns_registered_module_descriptors() {
     assert_eq!(nollie["descriptor"]["module_kind"], "hal");
     assert_eq!(
         nollie["descriptor"]["transports"],
-        serde_json::json!(["usb", "serial"])
+        serde_json::json!([
+            {
+                "kind": "usb",
+                "availability": { "status": "available" }
+            },
+            {
+                "kind": "serial",
+                "availability": { "status": "available" }
+            }
+        ])
     );
     assert_eq!(
         nollie["descriptor"]["capabilities"]["protocol_catalog"],
@@ -3270,8 +4309,7 @@ async fn get_driver_config_returns_current_and_default_entries() {
     );
     config_manager.update(config);
 
-    let mut state = isolated_state();
-    state.config_manager = Some(config_manager);
+    let state = isolated_state_with_config_manager(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -3367,7 +4405,7 @@ async fn get_driver_controls_returns_module_control_surface() {
     assert_eq!(data["values"]["default_protocol"]["value"], "ddp");
     assert_eq!(data["values"]["realtime_http_enabled"]["kind"], "bool");
     assert_eq!(data["values"]["realtime_http_enabled"]["value"], true);
-    assert_eq!(data["values"]["dedup_threshold"]["kind"], "integer");
+    assert_eq!(data["values"]["dedup_threshold"]["kind"], "int");
     assert_eq!(data["values"]["dedup_threshold"]["value"], 2);
 
     let fields = data["fields"]
@@ -3455,10 +4493,7 @@ async fn get_driver_controls_returns_govee_hue_and_nanoleaf_surfaces() {
     let nanoleaf = body_json(nanoleaf_response).await;
     assert_eq!(nanoleaf["data"]["surface_id"], "driver:nanoleaf");
     assert_eq!(nanoleaf["data"]["values"]["device_ips"]["kind"], "list");
-    assert_eq!(
-        nanoleaf["data"]["values"]["transition_time"]["kind"],
-        "integer"
-    );
+    assert_eq!(nanoleaf["data"]["values"]["transition_time"]["kind"], "int");
     let nanoleaf_fields = nanoleaf["data"]["fields"]
         .as_array()
         .expect("Nanoleaf fields should be an array");
@@ -3572,23 +4607,26 @@ async fn list_control_surfaces_preserves_driver_action_confirmation() {
 async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
+    let settings_key = hypercolor_daemon::device_settings::resolve_device_settings_key(
+        &state.device_registry,
+        &state.device_settings,
+        device_id,
+    )
+    .await;
     state
         .device_settings
-        .write()
-        .await
-        .set_driver_control_values(
-            &device_id.to_string(),
+        .persist_driver_control_values(
+            &settings_key,
             ControlValueMap::from([
                 (
                     "protocol".to_owned(),
-                    SurfaceControlValue::String("e131".to_owned()),
+                    SurfaceControlValue::Text("e131".to_owned()),
                 ),
-                (
-                    "dedup_threshold".to_owned(),
-                    SurfaceControlValue::Integer(8),
-                ),
+                ("dedup_threshold".to_owned(), SurfaceControlValue::Int(8)),
             ]),
-        );
+        )
+        .await
+        .expect("driver controls should canonicalize");
     let app = test_app_with_state(state);
     let surface_id = format!("driver:wled:device:{device_id}");
 
@@ -3614,7 +4652,7 @@ async fn get_control_surface_returns_driver_owned_device_surface_by_id() {
 
 #[tokio::test]
 async fn patch_driver_owned_device_control_surface_persists_values() {
-    let (state, tmp) = isolated_state_with_tempdir();
+    let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -3629,14 +4667,9 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            }
-                        ]
+                        "values": {
+                            "protocol": { "kind": "enum", "value": "e131" }
+                        }
                     })
                     .to_string(),
                 ))
@@ -3676,7 +4709,7 @@ async fn patch_driver_owned_device_control_surface_persists_values() {
     assert_eq!(driver_device_surface["values"]["protocol"]["value"], "e131");
     assert!(driver_device_surface["values"]["dedup_threshold"].is_null());
 
-    let raw = fs::read_to_string(tmp.path().join("data/device-settings.json"))
+    let raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings should be persisted");
     let saved: serde_json::Value =
         serde_json::from_str(&raw).expect("device settings should be valid JSON");
@@ -3704,14 +4737,9 @@ async fn patch_driver_owned_device_control_surface_publishes_values_changed_even
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            }
-                        ]
+                        "values": {
+                            "protocol": { "kind": "enum", "value": "e131" }
+                        }
                     })
                     .to_string(),
                 ))
@@ -3765,108 +4793,9 @@ async fn patch_driver_owned_device_control_surface_publishes_values_changed_even
 }
 
 #[tokio::test]
-async fn patch_driver_owned_device_control_surface_dry_run_does_not_persist_values() {
-    let (state, tmp) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-    let surface_id = format!("driver:wled:device:{device_id}");
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/control-surfaces/{surface_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-    let mut events = state.event_bus.subscribe_all();
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/v1/control-surfaces/{surface_id}/values"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "surface_id": surface_id,
-                        "expected_revision": revision,
-                        "dry_run": true,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            }
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_eq!(json["data"]["revision"], revision);
-    assert_eq!(json["data"]["values"]["protocol"]["value"], "ddp");
-    assert!(json["data"]["values"]["dedup_threshold"].is_null());
-
-    let refreshed = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/control-surfaces/{surface_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(refreshed.status(), StatusCode::OK);
-    let refreshed_json = body_json(refreshed).await;
-    assert_eq!(refreshed_json["data"]["values"]["protocol"]["value"], "ddp");
-    assert!(refreshed_json["data"]["values"]["dedup_threshold"].is_null());
-    assert!(
-        fs::read_to_string(tmp.path().join("data/device-settings.json")).is_err(),
-        "dry-run should not write driver device control settings"
-    );
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), events.recv())
-            .await
-            .is_err(),
-        "dry-run should not publish control surface events"
-    );
-}
-
-#[tokio::test]
 async fn patch_driver_control_surface_updates_config() {
     let (state, manager, _tmp) = test_state_with_temp_config_manager();
     let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/drivers/wled/controls")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
 
     let response = app
         .oneshot(
@@ -3876,19 +4805,10 @@ async fn patch_driver_control_surface_updates_config() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": revision,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "default_protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            },
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 7 }
-                            }
-                        ]
+                        "values": {
+                            "default_protocol": { "kind": "enum", "value": "e131" },
+                            "dedup_threshold": { "kind": "int", "value": 7 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -3900,8 +4820,12 @@ async fn patch_driver_control_surface_updates_config() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["surface_id"], "driver:wled");
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_ne!(json["data"]["revision"], revision);
+    assert!(
+        json["data"]["revision"].as_u64().expect("revision")
+            > json["data"]["previous_revision"]
+                .as_u64()
+                .expect("previous revision")
+    );
     assert_eq!(json["data"]["values"]["default_protocol"]["value"], "e131");
     assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 7);
 
@@ -3910,8 +4834,14 @@ async fn patch_driver_control_surface_updates_config() {
         .drivers
         .get("wled")
         .expect("wled config should exist");
-    assert_eq!(wled.settings["default_protocol"], "e131");
-    assert_eq!(wled.settings["dedup_threshold"], 7);
+    assert_eq!(
+        wled.settings["default_protocol"],
+        serde_json::json!({ "kind": "enum", "value": "e131" })
+    );
+    assert_eq!(
+        wled.settings["dedup_threshold"],
+        serde_json::json!({ "kind": "int", "value": 7 })
+    );
 
     let backend_manager = state.backend_manager.lock().await;
     assert!(backend_manager.backend_ids().contains(&"wled"));
@@ -3930,17 +4860,10 @@ async fn patch_govee_driver_control_surface_persists_backend_settings() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:govee",
-                        "changes": [
-                            {
-                                "field_id": "power_off_on_disconnect",
-                                "value": { "kind": "bool", "value": true }
-                            },
-                            {
-                                "field_id": "lan_state_fps",
-                                "value": { "kind": "integer", "value": 12 }
-                            }
-                        ]
+                        "values": {
+                            "power_off_on_disconnect": { "kind": "bool", "value": true },
+                            "lan_state_fps": { "kind": "int", "value": 12 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -3967,8 +4890,14 @@ async fn patch_govee_driver_control_surface_persists_backend_settings() {
         .drivers
         .get("govee")
         .expect("govee config should exist");
-    assert_eq!(govee.settings["power_off_on_disconnect"], true);
-    assert_eq!(govee.settings["lan_state_fps"], 12);
+    assert_eq!(
+        govee.settings["power_off_on_disconnect"],
+        serde_json::json!({ "kind": "bool", "value": true })
+    );
+    assert_eq!(
+        govee.settings["lan_state_fps"],
+        serde_json::json!({ "kind": "int", "value": 12 })
+    );
 }
 
 #[tokio::test]
@@ -3984,13 +4913,9 @@ async fn patch_hue_driver_control_surface_persists_backend_settings() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:hue",
-                        "changes": [
-                            {
-                                "field_id": "use_cie_xy",
-                                "value": { "kind": "bool", "value": false }
-                            }
-                        ]
+                        "values": {
+                            "use_cie_xy": { "kind": "bool", "value": false }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4010,7 +4935,10 @@ async fn patch_hue_driver_control_surface_persists_backend_settings() {
 
     let config = manager.get();
     let hue = config.drivers.get("hue").expect("hue config should exist");
-    assert_eq!(hue.settings["use_cie_xy"], false);
+    assert_eq!(
+        hue.settings["use_cie_xy"],
+        serde_json::json!({ "kind": "bool", "value": false })
+    );
 }
 
 #[tokio::test]
@@ -4026,13 +4954,9 @@ async fn patch_nanoleaf_driver_control_surface_persists_backend_settings() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:nanoleaf",
-                        "changes": [
-                            {
-                                "field_id": "transition_time",
-                                "value": { "kind": "integer", "value": 8 }
-                            }
-                        ]
+                        "values": {
+                            "transition_time": { "kind": "int", "value": 8 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4055,82 +4979,9 @@ async fn patch_nanoleaf_driver_control_surface_persists_backend_settings() {
         .drivers
         .get("nanoleaf")
         .expect("nanoleaf config should exist");
-    assert_eq!(nanoleaf.settings["transition_time"], 8);
-}
-
-#[tokio::test]
-async fn patch_driver_control_surface_dry_run_does_not_mutate_config() {
-    let (state, manager, _tmp) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/drivers/wled/controls")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-    let original_drivers = manager.get().drivers.clone();
-    let mut events = state.event_bus.subscribe_all();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/control-surfaces/driver:wled/values")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": revision,
-                        "dry_run": true,
-                        "changes": [
-                            {
-                                "field_id": "default_protocol",
-                                "value": { "kind": "enum", "value": "e131" }
-                            },
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 9 }
-                            }
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_eq!(json["data"]["revision"], revision);
     assert_eq!(
-        json["data"]["accepted"].as_array().expect("accepted").len(),
-        2
-    );
-    assert_eq!(json["data"]["values"]["default_protocol"]["value"], "ddp");
-    assert_eq!(json["data"]["values"]["dedup_threshold"]["value"], 2);
-    assert_eq!(
-        manager.get().drivers,
-        original_drivers,
-        "dry-run should not persist driver config changes"
-    );
-
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), events.recv())
-            .await
-            .is_err(),
-        "dry-run should not publish control surface events"
+        nanoleaf.settings["transition_time"],
+        serde_json::json!({ "kind": "int", "value": 8 })
     );
 }
 
@@ -4147,19 +4998,14 @@ async fn patch_driver_control_surface_rejects_non_routable_ip_values() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "known_ips",
-                                "value": {
-                                    "kind": "list",
-                                    "value": [
-                                        { "kind": "ip_address", "value": "127.0.0.1" }
-                                    ]
-                                }
+                        "values": {
+                            "known_ips": {
+                                "kind": "list",
+                                "value": [
+                                    { "kind": "ip", "value": "127.0.0.1" }
+                                ]
                             }
-                        ]
+                        }
                     })
                     .to_string(),
                 ))
@@ -4214,17 +5060,12 @@ async fn patch_driver_control_surface_rejects_unknown_future_value_kind() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": {
-                                    "kind": "spline_curve",
-                                    "value": [0.0, 0.4, 1.0]
-                                }
+                        "values": {
+                            "dedup_threshold": {
+                                "kind": "spline_curve",
+                                "value": [0.0, 0.4, 1.0]
                             }
-                        ]
+                        }
                     })
                     .to_string(),
                 ))
@@ -4234,19 +5075,6 @@ async fn patch_driver_control_surface_rejects_unknown_future_value_kind() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(
-        json["error"]["details"]["kind"],
-        "driver_control_validation_failed"
-    );
-    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
-    assert_eq!(json["error"]["details"]["driver_id"], "wled");
-    assert!(
-        json["error"]["details"]["detail"]
-            .as_str()
-            .expect("error detail should be a string")
-            .contains("dedup_threshold")
-    );
     assert_eq!(
         manager.get().drivers,
         original_drivers,
@@ -4268,23 +5096,15 @@ async fn patch_driver_control_surface_rejects_transaction_without_partial_persis
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 13 }
+                        "values": {
+                            "dedup_threshold": { "kind": "int", "value": 13 },
+                            "known_ips": {
+                                "kind": "list",
+                                "value": [
+                                    { "kind": "ip", "value": "127.0.0.1" }
+                                ]
                             },
-                            {
-                                "field_id": "known_ips",
-                                "value": {
-                                    "kind": "list",
-                                    "value": [
-                                        { "kind": "ip_address", "value": "127.0.0.1" }
-                                    ]
-                                }
-                            }
-                        ]
+                        }
                     })
                     .to_string(),
                 ))
@@ -4321,14 +5141,9 @@ async fn patch_driver_owned_device_control_surface_reports_validation_target() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "protocol",
-                                "value": { "kind": "enum", "value": "bogus" }
-                            }
-                        ]
+                        "values": {
+                            "protocol": { "kind": "enum", "value": "bogus" }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4355,22 +5170,6 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
 
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/drivers/wled/controls")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
     let response = app
         .oneshot(
             Request::builder()
@@ -4379,15 +5178,9 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": revision,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 11 }
-                            }
-                        ]
+                        "values": {
+                            "dedup_threshold": { "kind": "int", "value": 11 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4433,56 +5226,11 @@ async fn patch_driver_control_surface_publishes_values_changed_event() {
             assert_eq!(revision, updated_revision);
             assert_eq!(
                 values.get("dedup_threshold"),
-                Some(&SurfaceControlValue::Integer(11))
+                Some(&SurfaceControlValue::Int(11))
             );
         }
         _ => panic!("expected values_changed control surface event"),
     }
-}
-
-#[tokio::test]
-async fn patch_driver_control_surface_rejects_stale_revision() {
-    let (state, _manager, _tmp) = test_state_with_temp_config_manager();
-    let app = test_app_with_state(state);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/control-surfaces/driver:wled/values")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "surface_id": "driver:wled",
-                        "expected_revision": 1,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "dedup_threshold",
-                                "value": { "kind": "integer", "value": 7 }
-                            }
-                        ]
-                    })
-                    .to_string(),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(
-        json["error"]["details"]["kind"],
-        "control_surface_revision_conflict"
-    );
-    assert_eq!(json["error"]["details"]["surface_id"], "driver:wled");
-    assert_eq!(json["error"]["details"]["expected_revision"], 1);
-    assert!(
-        json["error"]["details"]["current_revision"]
-            .as_u64()
-            .is_some()
-    );
 }
 
 #[tokio::test]
@@ -4521,16 +5269,93 @@ async fn invoke_driver_control_surface_action_routes_to_provider() {
 }
 
 #[tokio::test]
-async fn invoke_driver_control_surface_action_publishes_progress_event() {
-    let mut state = isolated_state();
+async fn driver_control_reload_preserves_raw_objects_with_kind_fields() {
+    let (builder, tempdir) = isolated_state_builder();
+    let manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    manager.modify(|config| {
+        config.drivers.insert(
+            "action_test".to_owned(),
+            DriverConfigEntry::enabled(BTreeMap::from([(
+                "descriptor".to_owned(),
+                serde_json::json!({"kind": "network", "name": "fixture"}),
+            )])),
+        );
+    });
+
     let mut registry = DriverModuleRegistry::new();
     registry
         .register(ActionTestDriver)
         .expect("test action driver should register");
     let registry = Arc::new(registry);
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(state.driver_host.with_driver_registry(registry));
-    let state = Arc::new(state);
+    let state = builder
+        .with_config_manager(manager)
+        .with_driver_registry(registry)
+        .build();
+
+    let values = state
+        .driver_host()
+        .load_driver_values("action_test")
+        .await
+        .expect("driver values should reload");
+
+    assert_eq!(
+        values.get("descriptor"),
+        Some(&ControlValue::Text("fixture".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn driver_control_reload_rejects_malformed_canonical_envelopes() {
+    let (builder, tempdir) = isolated_state_builder();
+    let manager = Arc::new(
+        ConfigManager::new(tempdir.path().join("config.toml"))
+            .expect("config manager should be created"),
+    );
+    manager.modify(|config| {
+        config.drivers.insert(
+            "action_test".to_owned(),
+            DriverConfigEntry::enabled(BTreeMap::from([(
+                "persisted".to_owned(),
+                serde_json::json!({"kind": "float"}),
+            )])),
+        );
+    });
+
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(ActionTestDriver)
+        .expect("test action driver should register");
+    let registry = Arc::new(registry);
+    let state = builder
+        .with_config_manager(manager)
+        .with_driver_registry(registry)
+        .build();
+
+    let error = state
+        .driver_host()
+        .load_driver_values("action_test")
+        .await
+        .expect_err("malformed canonical values must not fall back to a projection");
+
+    assert!(
+        error.to_string().contains(
+            "invalid persisted control value for driver 'action_test' setting 'persisted'"
+        )
+    );
+}
+
+#[tokio::test]
+async fn invoke_driver_control_surface_action_publishes_progress_event() {
+    let (builder, _tempdir) = isolated_state_builder();
+    let mut registry = DriverModuleRegistry::new();
+    registry
+        .register(ActionTestDriver)
+        .expect("test action driver should register");
+    let registry = Arc::new(registry);
+    let state = Arc::new(builder.with_driver_registry(registry).build());
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -4596,7 +5421,7 @@ async fn invoke_driver_control_surface_action_publishes_progress_event() {
 
 #[tokio::test]
 async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -4607,16 +5432,12 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
         .register(RescanTestDriver::new(Arc::clone(&discoveries)))
         .expect("test rescan driver should register");
     let registry = Arc::new(registry);
-
-    state.config_manager = Some(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(manager))
-            .with_driver_registry(registry),
+    let state = Arc::new(
+        builder
+            .with_config_manager(manager)
+            .with_driver_registry(registry)
+            .build(),
     );
-    let state = Arc::new(state);
     let app = test_app_with_state(state);
 
     let response = app
@@ -4627,14 +5448,9 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:rescan_test",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "scan",
-                                "value": { "kind": "bool", "value": true }
-                            }
-                        ]
+                        "values": {
+                            "scan": { "kind": "bool", "value": true }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4662,7 +5478,7 @@ async fn patch_driver_control_surface_discovery_rescan_runs_through_host() {
 
 #[tokio::test]
 async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -4672,15 +5488,10 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
         .register(UnsupportedImpactTestDriver)
         .expect("test unsupported impact driver should register");
     let registry = Arc::new(registry);
-
-    state.config_manager = Some(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(manager))
-            .with_driver_registry(registry),
-    );
+    let state = builder
+        .with_config_manager(manager)
+        .with_driver_registry(registry)
+        .build();
     let app = test_app_with_state(Arc::new(state));
 
     let response = app
@@ -4691,14 +5502,9 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": "driver:unsupported_impact_test",
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "topology",
-                                "value": { "kind": "bool", "value": true }
-                            }
-                        ]
+                        "values": {
+                            "topology": { "kind": "bool", "value": true }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4709,17 +5515,14 @@ async fn patch_driver_control_surface_rejects_unsupported_driver_level_impact() 
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message")
-            .contains("unsupported driver-level control impact")
-    );
+    // An internal failure names itself in tracing, never on the wire.
+    assert_eq!(json["error"]["code"], "internal_error");
+    assert_eq!(json["error"]["message"], "internal error");
 }
 
 #[tokio::test]
 async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_level_impact() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let (builder, dir) = isolated_state_builder();
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -4729,16 +5532,12 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
         .register(UnsupportedImpactTestDriver)
         .expect("test unsupported impact driver should register");
     let registry = Arc::new(registry);
-
-    state.config_manager = Some(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(manager))
-            .with_driver_registry(registry),
+    let state = Arc::new(
+        builder
+            .with_config_manager(manager)
+            .with_driver_registry(registry)
+            .build(),
     );
-    let state = Arc::new(state);
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(state);
     let surface_id = format!("driver:unsupported_impact_test:device:{device_id}");
@@ -4751,14 +5550,9 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": surface_id,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "topology",
-                                "value": { "kind": "bool", "value": true }
-                            }
-                        ]
+                        "values": {
+                            "topology": { "kind": "bool", "value": true }
+                        }
                     })
                     .to_string(),
                 ))
@@ -4769,16 +5563,13 @@ async fn patch_driver_owned_device_control_surface_rejects_unsupported_device_le
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message")
-            .contains("unsupported device-level control impact")
-    );
+    // An internal failure names itself in tracing, never on the wire.
+    assert_eq!(json["error"]["code"], "internal_error");
+    assert_eq!(json["error"]["message"], "internal error");
 }
 
 #[tokio::test]
-async fn list_devices_includes_structured_zone_topology_hints() {
+async fn list_devices_includes_structured_segment_topology_hints() {
     let state = Arc::new(isolated_state());
     let id = DeviceId::new();
     let info = DeviceInfo {
@@ -4789,7 +5580,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Panel".to_owned(),
             led_count: 96,
             topology: DeviceTopologyHint::Matrix { rows: 6, cols: 16 },
@@ -4827,151 +5618,13 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         json["data"]["items"][0]["layout_device_id"],
         "wled:matrix-panel"
     );
-    let zone = &json["data"]["items"][0]["zones"][0];
-    assert_eq!(zone["name"], "Panel");
-    assert_eq!(zone["topology_hint"]["type"], "matrix");
-    assert_eq!(zone["topology_hint"]["rows"], 6);
-    assert_eq!(zone["topology_hint"]["cols"], 16);
-}
-
-#[tokio::test]
-async fn debug_output_queues_returns_empty_snapshot() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/devices/debug/queues")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["queue_count"], 0);
-    assert_eq!(json["data"]["mapped_device_count"], 0);
-    assert_eq!(
-        json["data"]["queues"]
-            .as_array()
-            .expect("queues should be an array")
-            .len(),
-        0
-    );
-}
-
-#[tokio::test]
-async fn list_device_metrics_returns_seeded_snapshot() {
-    let state = Arc::new(isolated_state());
-    let device_id = DeviceId::new();
-    state.device_metrics.store(Arc::new(DeviceMetricsSnapshot {
-        taken_at_ms: 1_234,
-        items: vec![DeviceMetrics {
-            id: device_id,
-            backend_id: "usb".to_owned(),
-            mapped_layout_ids: vec!["layout-device".to_owned()],
-            uses_frame_sink: true,
-            worker_finished: false,
-            worker_recoveries: 3,
-            delivered_fps: 59.5,
-            accepted_fps: 60.5,
-            fps_sent: 59.5,
-            fps_queued: 60.0,
-            fps_actual: 59.5,
-            fps_target: 60,
-            target_interval_ms: Some(17),
-            payload_bps_estimate: 1_024,
-            avg_latency_ms: 12,
-            avg_queue_wait_ms: 4,
-            avg_write_ms: 8,
-            avg_transport_latency_ms: 8,
-            frames_received: 121,
-            accepted: 122,
-            frames_sent: 120,
-            transport_started: 122,
-            transport_completed: 120,
-            transport_failed: 2,
-            completed_payload_bytes: 61_440,
-            frames_suppressed: 0,
-            frames_dropped: 3,
-            coalesced: 3,
-            coalesced_target_cadence: 2,
-            coalesced_backend_overrun: 1,
-            errors_total: 2,
-            write_failure_warnings_total: 1,
-            last_error: Some("socket timeout".to_owned()),
-            last_sent_ago_ms: Some(45),
-            last_sequence: 121,
-            queue_generation: 7,
-            last_transport_started_sequence: 121,
-            last_transport_completed_sequence: 120,
-            last_transport_failed_sequence: 121,
-        }],
-    }));
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/devices/metrics")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["items"][0]["worker_recoveries"], 3);
-    assert_eq!(json["data"]["taken_at_ms"], 1_234);
-    assert_eq!(json["data"]["items"][0]["id"], device_id.to_string());
-    assert_eq!(json["data"]["items"][0]["fps_target"], 60);
-    assert_eq!(json["data"]["items"][0]["delivered_fps"], 59.5);
-    assert_eq!(json["data"]["items"][0]["accepted"], 122);
-    assert_eq!(json["data"]["items"][0]["transport_completed"], 120);
-    assert_eq!(json["data"]["items"][0]["transport_failed"], 2);
-    assert_eq!(json["data"]["items"][0]["coalesced_target_cadence"], 2);
-    assert_eq!(json["data"]["items"][0]["coalesced_backend_overrun"], 1);
-    assert_eq!(json["data"]["items"][0]["queue_generation"], 7);
-    assert_eq!(json["data"]["items"][0]["payload_bps_estimate"], 1_024);
-    assert_eq!(json["data"]["items"][0]["errors_total"], 2);
-    assert_eq!(json["data"]["items"][0]["last_error"], "socket timeout");
-    assert!(
-        (json["data"]["items"][0]["fps_actual"]
-            .as_f64()
-            .expect("fps_actual should be numeric")
-            - 59.5)
-            .abs()
-            < f64::EPSILON
-    );
-}
-
-#[tokio::test]
-async fn debug_device_routing_returns_empty_snapshot() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/devices/debug/routing")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["mapping_count"], 0);
-    assert_eq!(json["data"]["queue_count"], 0);
-    assert_eq!(
-        json["data"]["backend_ids"],
-        serde_json::json!(["simulator"])
-    );
+    let segment = &json["data"]["items"][0]["segments"][0];
+    assert_eq!(segment["id"], "segment_0");
+    assert_eq!(segment["name"], "Panel");
+    assert_eq!(segment["topology_hint"]["type"], "matrix");
+    assert_eq!(segment["topology_hint"]["rows"], 6);
+    assert_eq!(segment["topology_hint"]["cols"], 16);
+    assert!(json["data"]["items"][0].get("zones").is_none());
 }
 
 #[tokio::test]
@@ -4991,7 +5644,7 @@ async fn get_device_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "not_found");
+    assert_eq!(json["error"]["code"], "device_not_found");
     assert!(json["meta"]["request_id"].is_string());
 }
 
@@ -5012,7 +5665,7 @@ async fn get_device_by_unknown_name_returns_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "not_found");
+    assert_eq!(json["error"]["code"], "device_not_found");
 }
 
 #[tokio::test]
@@ -5149,6 +5802,49 @@ async fn list_effects_returns_items_sorted_by_name() {
 }
 
 #[tokio::test]
+async fn list_effects_accepts_typed_category_and_source_filters() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "Aurora").await;
+
+    let response = test_app_with_state(Arc::clone(&state))
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects?category=ambient&source=native")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["items"][0]["category"], "ambient");
+    assert_eq!(json["data"]["items"][0]["source"], "native");
+}
+
+#[tokio::test]
+async fn list_effects_rejects_unknown_closed_vocabulary_values() {
+    let response = test_app()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects?source=filesystem")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("filesystem"))
+    );
+}
+
+#[tokio::test]
 async fn list_effects_carries_authoritative_input_capabilities() {
     let state = Arc::new(isolated_state());
     insert_input_reactive_test_effect(&state, "Input Probe").await;
@@ -5224,29 +5920,7 @@ async fn get_effect_returns_controls() {
 }
 
 #[tokio::test]
-async fn get_active_effect_returns_idle_payload_when_none() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["state"], "idle");
-    assert!(json["data"]["id"].is_null());
-    assert!(json["data"]["name"].is_null());
-    assert!(json["data"]["render_group_id"].is_null());
-}
-
-#[tokio::test]
-async fn apply_effect_upserts_primary_group() {
+async fn apply_effect_upserts_primary_zone() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -5264,17 +5938,90 @@ async fn apply_effect_upserts_primary_group() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
-        .expect("active scene should contain a primary group");
+        .and_then(Scene::primary_zone)
+        .expect("active scene should contain a primary zone");
     assert_eq!(primary.role, ZoneRole::Primary);
-    assert!(primary.effect_id.is_some());
+    assert!(primary.effect_ids().next().is_some());
 }
 
 #[tokio::test]
-async fn apply_effect_targets_a_named_zone_via_render_group() {
+async fn apply_effect_accepts_canonical_gradient_controls() {
+    let state = Arc::new(isolated_state());
+    let gradient = ControlValue::Gradient(vec![
+        GradientStop {
+            position: 0.0,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        GradientStop {
+            position: 0.5,
+            color: [0.5, 0.25, 0.75, 1.0],
+        },
+        GradientStop {
+            position: 1.0,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    ]);
+    insert_test_effect_with_controls(
+        &state,
+        "gradient_test",
+        vec![ControlDefinition {
+            id: "palette".to_owned(),
+            name: "Palette".to_owned(),
+            kind: ControlKind::Other("gradient".to_owned()),
+            control_type: ControlType::GradientEditor,
+            default_value: gradient.clone(),
+            min: None,
+            max: None,
+            step: None,
+            labels: Vec::new(),
+            group: None,
+            tooltip: None,
+            aspect_lock: None,
+            preview_source: None,
+            binding: None,
+        }],
+        Vec::new(),
+    )
+    .await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let body = serde_json::json!({
+        "controls": {
+            "palette": serde_json::to_value(&gradient)
+                .expect("gradient should serialize for the REST request")
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/gradient_test/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&body).expect("request body should serialize"),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let manager = state.scene_manager.snapshot().await;
+    let primary = manager
+        .active_scene()
+        .and_then(Scene::primary_zone)
+        .expect("active scene should contain a primary zone");
+    assert_eq!(
+        zone_effect_controls(primary).and_then(|controls| controls.get("palette")),
+        Some(&gradient)
+    );
+}
+
+#[tokio::test]
+async fn apply_effect_targets_a_named_zone_via_zone_id() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
 
@@ -5282,14 +6029,18 @@ async fn apply_effect_targets_a_named_zone_via_render_group() {
     // target, and remember the Primary's effect so the apply can be shown
     // to leave it alone.
     let (custom_id, primary_effect_before) = {
-        let mut manager = state.scene_manager.write().await;
-        let custom_id = manager
-            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let custom_id = mutation
+            .create_zone(SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
             .expect("custom zone should be created");
-        let primary_effect = manager
+        let primary_effect = mutation
+            .scenes()
             .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|group| group.effect_id);
+            .and_then(Scene::primary_zone)
+            .and_then(|zone| zone.effect_ids().next());
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("custom zone should commit");
         (custom_id, primary_effect)
     };
 
@@ -5302,7 +6053,7 @@ async fn apply_effect_targets_a_named_zone_via_render_group() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -5312,19 +6063,21 @@ async fn apply_effect_targets_a_named_zone_via_render_group() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let scene = manager.active_scene().expect("a scene should be active");
     let custom = scene
-        .groups
+        .zones
         .iter()
-        .find(|group| group.id == custom_id)
+        .find(|zone| zone.id == custom_id)
         .expect("the targeted zone should still exist");
     assert!(
-        custom.effect_id.is_some(),
+        custom.effect_ids().next().is_some(),
         "the effect should land in the targeted zone"
     );
     assert_eq!(
-        scene.primary_group().and_then(|group| group.effect_id),
+        scene
+            .primary_zone()
+            .and_then(|zone| zone.effect_ids().next()),
         primary_effect_before,
         "a named-zone apply must leave the Primary zone untouched",
     );
@@ -5336,10 +6089,14 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
     insert_test_effect(&state, "solid_color").await;
 
     let custom_id = {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
-            .expect("custom zone should be created")
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        let zone_id = mutation
+            .create_zone(SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
+            .expect("custom zone should be created");
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("custom zone should commit");
+        zone_id
     };
 
     let mut events = state.event_bus.subscribe_all();
@@ -5352,7 +6109,7 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
+                        "zone": custom_id.to_string(),
                     }))
                     .expect("request body should serialize"),
                 ))
@@ -5368,12 +6125,12 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
                 Ok(timestamped) => {
                     if let HypercolorEvent::EffectStarted {
                         previous,
-                        group_id,
-                        group_name,
+                        zone_id,
+                        zone_name,
                         ..
                     } = timestamped.event
                     {
-                        break (previous, group_id, group_name);
+                        break (previous, zone_id, zone_name);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -5394,98 +6151,6 @@ async fn effect_started_event_for_named_zone_carries_zone_identity() {
         started.0.is_none(),
         "previous must be the target zone's prior effect (idle), not the Primary's"
     );
-}
-
-#[tokio::test]
-async fn get_active_effect_returns_primary_group_info() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let primary_group_id = {
-        let manager = state.scene_manager.read().await;
-        manager
-            .active_scene()
-            .and_then(Scene::primary_group)
-            .map(|group| (group.id.to_string(), group.effect_id))
-            .expect("active scene should expose a primary group")
-    };
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(
-        json["data"]["id"],
-        primary_group_id
-            .1
-            .expect("primary group should have an effect id")
-            .to_string()
-    );
-    assert_eq!(json["data"]["name"], "solid_color");
-    assert_eq!(json["data"]["state"], "running");
-    assert_eq!(json["data"]["render_group_id"], primary_group_id.0);
-}
-
-#[tokio::test]
-async fn get_active_effect_includes_cover_image_url_when_available() {
-    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
-    let cover_fixture = CoverFixtureGuard::install("rainbow");
-    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
-    insert_test_effect(&state, "rainbow").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/rainbow/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    let cover_url = json["data"]["cover_image_url"]
-        .as_str()
-        .expect("active effect should include a cover image URL");
-    assert!(cover_url.starts_with("/api/v1/effects/"));
-    assert!(cover_url.ends_with("/cover"));
 }
 
 #[tokio::test]
@@ -5529,358 +6194,437 @@ async fn get_effect_cover_returns_webp_image() {
 }
 
 #[tokio::test]
-async fn get_active_effect_cover_returns_current_webp_image() {
-    let _cover_lock = COVER_DATA_DIR_LOCK.lock().await;
-    let cover_fixture = CoverFixtureGuard::install("rainbow");
-    let state = Arc::new(AppState::new_with_data_dir(cover_fixture.data_dir()));
-    insert_test_effect(&state, "rainbow").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/rainbow/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active/cover")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    let cache_control = response
-        .headers()
-        .get(http::header::CACHE_CONTROL)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("failed to read response body");
-
-    assert_eq!(content_type, "image/webp");
-    assert_eq!(cache_control, "no-store");
-    assert!(bytes.starts_with(b"RIFF"));
-}
-
-#[tokio::test]
-async fn get_active_effect_cover_returns_not_found_when_idle() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active/cover")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn stop_effect_returns_not_found_when_none() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/stop")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn pause_effect_returns_not_found_when_none() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/pause")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn stop_current_clears_primary_effect_id_but_keeps_scene() {
+async fn pausing_output_darkens_display_zones_without_an_active_effect() {
     let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let stop_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/stop")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
-
-    let manager = state.scene_manager.read().await;
-    let active_scene = manager.active_scene().expect("active scene should remain");
-    assert_eq!(active_scene.id, SceneId::DEFAULT);
-    let primary = active_scene
-        .primary_group()
-        .expect("primary group shell should remain after stop");
-    assert!(primary.effect_id.is_none());
-}
-
-#[tokio::test]
-async fn pause_resume_preserves_effect_state_and_holds_static_output() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    state.render_loop.write().await.start();
-
-    let group_id = hypercolor_types::scene::ZoneId::new();
-    state.event_bus.upsert_display_group_target(
-        group_id,
-        DisplayGroupTarget {
+    let zone_id = hypercolor_types::scene::ZoneId::new();
+    state.event_bus.upsert_display_zone_target(
+        zone_id,
+        DisplayZoneTarget {
             device_id: DeviceId::new(),
-            blend_mode: DisplayFaceBlendMode::Alpha,
+            blend_mode: BlendMode::Alpha,
             opacity: 1.0,
             finalized: false,
         },
     );
-    let group_sender = state.event_bus.group_canvas_sender(group_id);
+    let zone_sender = state.event_bus.zone_canvas_sender(zone_id);
     let mut red_canvas = Canvas::new(2, 2);
     red_canvas.fill(Rgba::new(255, 0, 0, 255));
-    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
-    let group_receiver = group_sender.subscribe();
-
+    zone_sender.send_replace(display_zone_frame(&red_canvas, 7, 7));
+    let zone_receiver = zone_sender.subscribe();
     let app = test_app_with_state(Arc::clone(&state));
-    let apply_response = app
+
+    let response = app
         .clone()
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_json = body_json(response).await;
+    assert_eq!(response_json["data"]["power"], "paused");
+    assert!(state.output_power.snapshot().manually_paused());
+    assert_display_zone_frame_black(&zone_receiver.borrow());
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime snapshot should load")
+        .expect("pause should persist runtime state");
+    assert!(snapshot.manual_paused);
+
+    let resume_response = app
+        .oneshot(output_patch_request(r#"{"power":"running"}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(resume_response.status(), StatusCode::OK);
+    assert_eq!(body_json(resume_response).await["data"]["power"], "running");
+}
+
+#[tokio::test]
+async fn pause_blacks_connected_device_outside_active_layout() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Unassigned Strip").await;
+    let device_info = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("test device should exist")
+        .info;
+    let layout_device_id = format!("unassigned:{device_id}");
+    let writes = Arc::new(StdMutex::new(Vec::new()));
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Arc::new(StaticOutputRecordingBackend {
+            writes: Arc::clone(&writes),
+        }));
+        manager
+            .connect_device("static-output", device_id, &layout_device_id)
+            .await
+            .expect("test device should connect");
+        assert!(manager.set_device_zone_segments(&layout_device_id, &device_info));
+    }
+    assert!(
+        state
+            .spatial_engine
+            .snapshot()
+            .layout()
+            .zones
+            .iter()
+            .all(|zone| zone.device_id != layout_device_id)
+    );
+
+    let response = test_app_with_state(Arc::clone(&state))
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (written_device_id, colors) = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let latest = writes
+                .lock()
+                .expect("static output writes lock")
+                .last()
+                .cloned();
+            if latest.is_some() {
+                break latest;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pause should write the unassigned device")
+    .expect("pause should record a static output frame");
+    assert_eq!(written_device_id, device_id);
+    assert_eq!(colors.len(), 60);
+    assert!(colors.iter().all(|color| *color == [0, 0, 0]));
+}
+
+#[tokio::test]
+async fn output_power_patch_is_idempotent_and_publishes_effective_transitions_once() {
+    let state = Arc::new(isolated_state());
+    state.render_loop.write().await.start();
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    for requested in ["paused", "paused", "running", "running"] {
+        let response = app
+            .clone()
+            .oneshot(output_patch_request(&format!(
+                r#"{{"power":"{requested}"}}"#
+            )))
+            .await
+            .expect("failed to execute request");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["data"]["power"], requested);
+    }
+
+    assert!(matches!(
+        events.try_recv().expect("pause event").event,
+        HypercolorEvent::Paused
+    ));
+    assert!(matches!(
+        events.try_recv().expect("resume event").event,
+        HypercolorEvent::Resumed
+    ));
+    assert!(events.try_recv().is_err());
+
+    let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
+                .uri("/api/v1/output")
+                .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["data"]["power"], "running");
+}
 
-    let pause_response = app
+/// One PATCH moves both knobs, and the response is the whole resource.
+#[tokio::test]
+async fn output_patch_sets_power_and_brightness_in_one_call() {
+    let state = Arc::new(isolated_state());
+    state.render_loop.write().await.start();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
         .clone()
-        .oneshot(
+        .oneshot(output_patch_request(
+            r#"{"power":"paused","brightness":0.25}"#,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["power"], "paused");
+    assert_eq!(json["data"]["brightness"], 0.25);
+    assert!(state.output_power.snapshot().manually_paused());
+    assert_eq!(state.output_power.global_brightness(), 0.25);
+
+    // A brightness-only patch leaves power exactly where it was.
+    let response = app
+        .oneshot(output_patch_request(r#"{"brightness":0.75}"#))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["power"], "paused");
+    assert_eq!(json["data"]["brightness"], 0.75);
+}
+
+/// The service, not the decoder, refuses a patch that asks for nothing:
+/// an empty document is a client that dropped its payload, and a silent
+/// 200 there hides the defect. `GET /output` is how a caller reads.
+#[tokio::test]
+async fn output_patch_rejects_a_document_that_sets_nothing() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(output_patch_request("{}"))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(
+        json["error"]["message"],
+        "output patch must set power, brightness, or both"
+    );
+}
+
+/// Brightness range is a domain rule: the type layer takes any `f32`
+/// and the handler names the offending field on refusal.
+#[tokio::test]
+async fn output_patch_rejects_brightness_outside_the_unit_interval() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    // `1e40` overflows the f32 cast to infinity, which fails the range
+    // check the same way NaN would: every comparison against a non-finite
+    // value is false, so `contains` says no.
+    for rejected in ["1.5", "-0.1", "1e40", "-1e40"] {
+        let response = app
+            .clone()
+            .oneshot(output_patch_request(&format!(
+                r#"{{"brightness":{rejected}}}"#
+            )))
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "brightness {rejected} must be refused"
+        );
+        let json = body_json(response).await;
+        assert_eq!(json["error"]["code"], "validation_error");
+        assert_eq!(json["error"]["details"]["field"], "brightness");
+    }
+
+    assert_eq!(state.output_power.global_brightness(), 1.0);
+}
+
+/// A rejected brightness never reaches the power half of the patch.
+#[tokio::test]
+async fn output_patch_validates_brightness_before_moving_power() {
+    let state = Arc::new(isolated_state());
+    state.render_loop.write().await.start();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(output_patch_request(
+            r#"{"power":"paused","brightness":2.0}"#,
+        ))
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!state.output_power.snapshot().manually_paused());
+}
+
+/// The routes this resource replaced are gone, not aliased.
+///
+/// Retired paths and method mismatches are both owned by the API fallback,
+/// so every removed route has one canonical 404 shape.
+#[tokio::test]
+async fn the_merged_output_routes_leave_nothing_behind() {
+    let app = test_app();
+
+    let retired = [
+        (
+            Request::builder()
+                .uri("/api/v1/output/power")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/output/power")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"state":"paused"}"#))
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .uri("/api/v1/settings/brightness")
+                .body(Body::empty())
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/settings/brightness")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"brightness":42}"#))
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/effects/pause")
                 .body(Body::empty())
                 .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(pause_response.status(), StatusCode::OK);
-
-    assert_eq!(
-        state.render_loop.read().await.state(),
-        RenderLoopState::Paused
-    );
-    let power_state = *state.power_state.borrow();
-    assert!(power_state.sleeping);
-    assert_eq!(power_state.session_brightness, 0.0);
-    assert_eq!(power_state.off_output_behavior, OffOutputBehavior::Static);
-    assert_canvas_frame_black(&state.event_bus.canvas_receiver().borrow());
-    assert_display_group_frame_black(&group_receiver.borrow());
-
-    let active_paused_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_paused_response.status(), StatusCode::OK);
-    let active_paused_json = body_json(active_paused_response).await;
-    assert_eq!(active_paused_json["data"]["state"], "paused");
-    assert_eq!(
-        active_paused_json["data"]["control_values"]["speed"]["float"],
-        7.5
-    );
-
-    let resume_response = app
-        .clone()
-        .oneshot(
+            StatusCode::NOT_FOUND,
+        ),
+        (
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/effects/resume")
                 .body(Body::empty())
                 .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(resume_response.status(), StatusCode::OK);
-
-    assert_eq!(
-        state.render_loop.read().await.state(),
-        RenderLoopState::Running
-    );
-    let power_state = *state.power_state.borrow();
-    assert!(!power_state.sleeping);
-    assert_eq!(power_state.session_brightness, 1.0);
-    let active_resumed_response = app
-        .oneshot(
+            StatusCode::NOT_FOUND,
+        ),
+        (
             Request::builder()
-                .uri("/api/v1/effects/active")
+                .uri("/api/v1/audio/devices")
                 .body(Body::empty())
                 .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    let active_resumed_json = body_json(active_resumed_response).await;
-    assert_eq!(active_resumed_json["data"]["state"], "running");
-    assert_eq!(
-        active_resumed_json["data"]["control_values"]["speed"]["float"],
-        7.5
-    );
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/output")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"power":"paused"}"#))
+                .expect("failed to build request"),
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+
+    for (request, expected) in retired {
+        let uri = request.uri().to_string();
+        let method = request.method().clone();
+        let response = app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            expected,
+            "{method} {uri} must be gone, not aliased or redirected"
+        );
+        if expected == StatusCode::NOT_FOUND {
+            assert_canonical_route_404(response, &uri).await;
+        }
+    }
 }
 
+/// The SPA fallback must never answer for an API path. With a web UI
+/// mounted, an unmatched `/api/v1` route still renders the canonical
+/// envelope, while a real client-side route still serves the app shell.
+///
+/// Without this the deletion fences are theatre in exactly the
+/// configuration users run: `ServeDir` misses, falls through to
+/// `index.html`, and a retired endpoint answers `200 text/html`.
 #[tokio::test]
-async fn stop_current_quiesces_output_and_resume_wakes_pipeline() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    state.render_loop.write().await.start();
+async fn the_spa_fallback_never_answers_for_a_deleted_api_route() {
+    let (app, _ui_dir) = test_app_with_ui();
 
-    let group_id = hypercolor_types::scene::ZoneId::new();
-    let display_device_id = DeviceId::new();
-    state.event_bus.upsert_display_group_target(
-        group_id,
-        DisplayGroupTarget {
-            device_id: display_device_id,
-            blend_mode: DisplayFaceBlendMode::Alpha,
-            opacity: 1.0,
-            finalized: false,
-        },
-    );
-    let group_sender = state.event_bus.group_canvas_sender(group_id);
-    let mut red_canvas = Canvas::new(2, 2);
-    red_canvas.fill(Rgba::new(255, 0, 0, 255));
-    group_sender.send_replace(display_group_frame(&red_canvas, 7, 7));
-    let group_receiver = group_sender.subscribe();
+    for path in [
+        "/api/v1/audio/devices",
+        "/api/v1/settings/brightness",
+        "/api/v1/output/power",
+        "/api/v1/there-is-no-such-route",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_canonical_route_404(response, path).await;
+    }
 
-    let app = test_app_with_state(Arc::clone(&state));
-    let apply_response = app
+    // The SPA still owns everything that is not an API path.
+    let spa = app
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
+                .uri("/settings")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
+    assert_eq!(spa.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(spa.into_body(), usize::MAX)
+        .await
+        .expect("spa body should read");
+    assert!(
+        String::from_utf8_lossy(&body).contains("<!doctype html>"),
+        "a client-side route should still serve the app shell"
+    );
 
-    let stop_response = app
-        .clone()
+    // And the API surface that does exist is untouched by the fallback.
+    for path in ["/api/v1/output", "/api/v1/openapi.json"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("failed to execute request");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{path} should still serve"
+        );
+    }
+}
+
+/// The same fence without a UI mounted: the bare Axum 404 is replaced by
+/// the canonical envelope, so clients get one error shape everywhere.
+#[tokio::test]
+async fn an_unmatched_api_path_renders_the_canonical_envelope_without_a_ui() {
+    let app = test_app();
+
+    let response = app
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/stop")
+                .uri("/api/v1/there-is-no-such-route")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
-
-    assert_eq!(
-        state.render_loop.read().await.state(),
-        RenderLoopState::Paused
-    );
-    let power_state = *state.power_state.borrow();
-    assert!(power_state.sleeping);
-    assert_eq!(power_state.session_brightness, 0.0);
-    assert_eq!(power_state.off_output_behavior, OffOutputBehavior::Release);
-    let canvas_receiver = state.event_bus.canvas_receiver();
-    let canvas_frame = canvas_receiver.borrow().clone();
-    assert_canvas_frame_black(&canvas_frame);
-    let scene_canvas_receiver = state.event_bus.scene_canvas_receiver();
-    let scene_canvas_frame = scene_canvas_receiver.borrow().clone();
-    assert_canvas_frame_black(&scene_canvas_frame);
-    let group_frame = group_receiver.borrow().clone();
-    assert_display_group_frame_black(&group_frame);
-
-    let resume_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(resume_response.status(), StatusCode::OK);
-    assert_eq!(
-        state.render_loop.read().await.state(),
-        RenderLoopState::Running
-    );
-    let power_state = *state.power_state.borrow();
-    assert!(!power_state.sleeping);
-    assert_eq!(power_state.session_brightness, 1.0);
+    assert_canonical_route_404(response, "/api/v1/there-is-no-such-route").await;
 }
 
 #[tokio::test]
 async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
-    let (mut state, dir) = isolated_state_with_tempdir();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
     let manager = Arc::new(
         ConfigManager::new(dir.path().join("config.toml"))
             .expect("config manager should be created"),
@@ -5895,28 +6639,22 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         ))
         .expect("blocking reconnect driver should register");
     let registry = Arc::new(registry);
-    state.config_manager = Some(Arc::clone(&manager));
-    state.driver_registry = Arc::clone(&registry);
-    state.driver_host = Arc::new(
-        state
-            .driver_host
-            .with_config_manager(Some(Arc::clone(&manager)))
-            .with_driver_registry(Arc::clone(&registry)),
+    let state = Arc::new(
+        AppStateBuilder::new(data_dir)
+            .with_config_manager(manager)
+            .with_driver_registry(registry)
+            .build(),
     );
-    let state = Arc::new(state);
     insert_test_effect(&state, "solid_color").await;
     {
         let mut render_loop = state.render_loop.write().await;
         render_loop.start();
         render_loop.pause();
     }
-    state.power_state.send_replace(OutputPowerState {
-        global_brightness: 1.0,
-        session_brightness: 0.0,
-        sleeping: true,
-        off_output_behavior: OffOutputBehavior::Release,
-        off_output_color: [0, 0, 0],
-    });
+    state
+        .output_power
+        .set_output_stopped(&state.event_bus)
+        .await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = tokio::time::timeout(
@@ -5938,8 +6676,8 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
         state.render_loop.read().await.state(),
         RenderLoopState::Running
     );
-    let power_state = *state.power_state.borrow();
-    assert!(!power_state.sleeping);
+    let power_state = state.output_power.snapshot();
+    assert!(!power_state.sleeping());
     assert_eq!(power_state.session_brightness, 1.0);
     tokio::time::timeout(Duration::from_secs(1), async {
         while discoveries.load(Ordering::Relaxed) == 0 {
@@ -5949,325 +6687,6 @@ async fn apply_effect_resumes_before_release_reconnect_scan_finishes() {
     .await
     .expect("reconnect scan should run in the background");
     release_scan.add_permits(1);
-}
-
-#[tokio::test]
-async fn update_current_controls_requires_active_effect() {
-    let app = test_app();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn patch_controls_updates_primary_group_controls() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let update_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":7.25}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(update_response.status(), StatusCode::OK);
-    let update_json = body_json(update_response).await;
-    assert_eq!(update_json["data"]["applied"]["speed"]["float"], 7.5);
-
-    let active_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_response.status(), StatusCode::OK);
-    let active_json = body_json(active_response).await;
-    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
-}
-
-#[tokio::test]
-async fn patch_effect_controls_by_id_rejects_non_uuid_path_segment() {
-    // The effect-id PATCH endpoint is UUID-keyed; anything that isn't
-    // parseable as a UUID is a client bug, not a misrouted request,
-    // so 400 is the right answer (404 would let a fat-fingered call
-    // look like "that effect just isn't loaded").
-    let app = test_app();
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/effects/not-a-uuid/controls")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":7.0}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn patch_effect_controls_by_id_threads_controls_version_through_etag() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    // The active-effect endpoint seeds the modal's draft; it must
-    // hand back both the current `controls_version` and an `ETag`
-    // header so the client can round-trip either form.
-    let active_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_response.status(), StatusCode::OK);
-    let etag = active_response
-        .headers()
-        .get("etag")
-        .expect("active effect response should carry ETag")
-        .to_str()
-        .expect("ETag must be ASCII")
-        .to_owned();
-    let active_body = body_json(active_response).await;
-    let effect_id = active_body["data"]["id"]
-        .as_str()
-        .expect("active effect must have an id")
-        .to_owned();
-    let active_controls_version = active_body["data"]["controls_version"]
-        .as_u64()
-        .expect("active effect should expose controls_version");
-    assert_eq!(etag, format!("\"{active_controls_version}\""));
-
-    // Valid `If-Match` applies; the response body + ETag advance to
-    // the next version so the next commit can chain against the fresh token.
-    let patch_uri = format!("/api/v1/effects/{effect_id}/controls");
-    let if_match = active_controls_version.to_string();
-    let next_controls_version = active_controls_version + 1;
-    let ok_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(&patch_uri)
-                .header("content-type", "application/json")
-                .header("if-match", if_match.as_str())
-                .body(Body::from(r#"{"controls":{"speed":3.0}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(ok_response.status(), StatusCode::OK);
-    let ok_etag = ok_response
-        .headers()
-        .get("etag")
-        .expect("successful PATCH should carry ETag")
-        .to_str()
-        .expect("ETag must be ASCII")
-        .to_owned();
-    assert_eq!(ok_etag, format!("\"{next_controls_version}\""));
-    let ok_body = body_json(ok_response).await;
-    assert_eq!(
-        ok_body["data"]["controls_version"]
-            .as_u64()
-            .expect("controls_version should serialize as u64"),
-        next_controls_version
-    );
-
-    // Re-issuing the same precondition now fires the stale path; the
-    // 412 body carries the server's current version so the client can
-    // rebase without a second GET.
-    let stale_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(&patch_uri)
-                .header("content-type", "application/json")
-                .header("if-match", if_match.as_str())
-                .body(Body::from(r#"{"controls":{"speed":3.5}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(stale_response.status(), StatusCode::PRECONDITION_FAILED);
-    let stale_body = body_json(stale_response).await;
-    assert_eq!(
-        stale_body["current"]
-            .as_u64()
-            .expect("stale response should expose current version"),
-        next_controls_version
-    );
-}
-
-#[tokio::test]
-async fn patch_effect_controls_by_id_accepts_missing_if_match_as_no_precondition() {
-    // Omitting the header must keep the endpoint usable for simple
-    // clients (curl, tests, ad-hoc integrations) that don't want to
-    // participate in optimistic concurrency.
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    app.clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    let active_body = body_json(
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/effects/active")
-                    .body(Body::empty())
-                    .expect("failed to build request"),
-            )
-            .await
-            .expect("failed to execute request"),
-    )
-    .await;
-    let effect_id = active_body["data"]["id"].as_str().expect("id").to_owned();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/v1/effects/{effect_id}/controls"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":4.0}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn patch_effect_controls_by_id_rejects_apply_after_effect_swap() {
-    // TOCTOU guard: the modal captures effect A's id and version,
-    // an apply() swaps the primary to effect B in between, and the
-    // stale PATCH must NOT silently land on B.
-    //
-    // The scene manager's primary-group reuse ([upsert_primary_group])
-    // keeps the same `ZoneId` across effect swaps, so
-    // patching by group id alone is unsafe — the handler verifies
-    // `effect_id` still matches before writing.
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "Aurora").await;
-    insert_test_effect(&state, "Sunset").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    app.clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/Aurora/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    let stale_body = body_json(
-        app.clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/v1/effects/active")
-                    .body(Body::empty())
-                    .expect("failed to build request"),
-            )
-            .await
-            .expect("failed to execute request"),
-    )
-    .await;
-    let stale_effect_id = stale_body["data"]["id"]
-        .as_str()
-        .expect("Aurora id")
-        .to_owned();
-
-    // Swap to a different effect. Same zone slot; different
-    // effect_id.
-    app.clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/Sunset/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    // Modal's stale PATCH against Aurora's id must not mutate Sunset.
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/v1/effects/{stale_effect_id}/controls"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":6.0}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -6290,12 +6709,12 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
         .expect("failed to execute request");
     assert_eq!(first_response.status(), StatusCode::OK);
     let first_primary_effect_id = {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|group| group.effect_id)
-            .expect("first effect apply should populate the primary group")
+            .and_then(Scene::primary_zone)
+            .and_then(|zone| zone.effect_ids().next())
+            .expect("first effect apply should populate the primary zone")
     };
 
     let second_response = app
@@ -6311,18 +6730,18 @@ async fn apply_effect_swap_replaces_primary_effect_id() {
         .expect("failed to execute request");
     assert_eq!(second_response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let active_scene = manager.active_scene().expect("active scene should remain");
-    assert_eq!(active_scene.groups.len(), 1);
+    assert_eq!(active_scene.zones.len(), 1);
     let primary = active_scene
-        .primary_group()
-        .expect("primary group should exist after effect swap");
-    assert_ne!(primary.effect_id, Some(first_primary_effect_id));
-    assert!(primary.effect_id.is_some());
+        .primary_zone()
+        .expect("primary zone should exist after effect swap");
+    assert_ne!(primary.effect_ids().next(), Some(first_primary_effect_id));
+    assert!(primary.effect_ids().next().is_some());
 }
 
 #[tokio::test]
-async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
+async fn apply_effect_with_preset_id_sets_zone_preset_atomically() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -6365,23 +6784,23 @@ async fn apply_effect_with_preset_id_sets_group_preset_atomically() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let primary = manager
         .active_scene()
-        .and_then(Scene::primary_group)
-        .expect("primary group should exist after apply");
+        .and_then(Scene::primary_zone)
+        .expect("primary zone should exist after apply");
     assert_eq!(
-        primary.preset_id.map(|id| id.to_string()),
+        zone_effect_preset(primary),
         Some(preset_id),
         "preset_id should be set on the zone in the same transaction as the effect start"
     );
-    let speed = primary
-        .controls
+    let speed = zone_effect_controls(primary)
+        .expect("primary effect layer should exist")
         .get("speed")
-        .expect("preset controls should be baked into the group");
+        .expect("preset controls should be baked into the zone");
     assert!(matches!(
         speed,
-        hypercolor_types::effect::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
+        hypercolor_types::control::ControlValue::Float(value) if (*value - 3.5).abs() < 0.01
     ));
 }
 
@@ -6428,398 +6847,6 @@ async fn apply_effect_rejects_preset_targeting_different_effect() {
 }
 
 #[tokio::test]
-async fn put_current_control_binding_updates_active_effect_schema() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let binding = ControlBinding {
-        sensor: " cpu_temp ".to_owned(),
-        sensor_min: 30.0,
-        sensor_max: 100.0,
-        target_min: 0.0,
-        target_max: 1.0,
-        deadband: -0.5,
-        smoothing: 1.2,
-    };
-    let binding_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/effects/current/controls/speed/binding")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&binding).expect("binding should serialize"),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(binding_response.status(), StatusCode::OK);
-    let binding_json = body_json(binding_response).await;
-    assert_eq!(binding_json["data"]["control"], "speed");
-    assert_eq!(binding_json["data"]["binding"]["sensor"], "cpu_temp");
-    assert_eq!(binding_json["data"]["binding"]["deadband"], 0.0);
-    assert!(
-        (binding_json["data"]["binding"]["smoothing"]
-            .as_f64()
-            .expect("smoothing should be numeric")
-            - 0.99)
-            .abs()
-            < 1.0e-6
-    );
-
-    let active_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_response.status(), StatusCode::OK);
-    let active_json = body_json(active_response).await;
-    assert_eq!(
-        active_json["data"]["controls"][0]["binding"]["sensor"],
-        "cpu_temp"
-    );
-    assert_eq!(
-        active_json["data"]["controls"][0]["binding"]["target_max"],
-        1.0
-    );
-    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 5.0);
-
-    let persisted =
-        runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
-    let persisted = persisted.expect("runtime state should exist");
-    let primary = persisted
-        .default_scene_groups
-        .iter()
-        .find(|group| group.role == ZoneRole::Primary)
-        .expect("primary group should be persisted");
-    assert_eq!(
-        primary
-            .control_bindings
-            .get("speed")
-            .expect("binding should be persisted")
-            .sensor,
-        "cpu_temp"
-    );
-}
-
-#[tokio::test]
-async fn rest_effect_lifecycle_publishes_started_and_stopped_events() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let mut events = state.event_bus.subscribe_all();
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let started = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match events.recv().await {
-                Ok(timestamped) => {
-                    if let HypercolorEvent::EffectStarted {
-                        effect,
-                        trigger,
-                        previous,
-                        transition,
-                        ..
-                    } = timestamped.event
-                    {
-                        break (effect, trigger, previous, transition);
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("event bus closed before effect start event arrived");
-                }
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for effect start event");
-
-    assert_eq!(started.0.name, "solid_color");
-    assert_eq!(started.1, ChangeTrigger::Api);
-    assert!(
-        started.2.is_none(),
-        "first activation should have no previous effect"
-    );
-    assert!(
-        started.3.is_none(),
-        "REST effect apply should mirror MCP transition semantics"
-    );
-
-    let stop_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/stop")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
-
-    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match events.recv().await {
-                Ok(timestamped) => {
-                    if let HypercolorEvent::EffectStopped { effect, reason, .. } = timestamped.event
-                    {
-                        break (effect, reason);
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("event bus closed before effect stop event arrived");
-                }
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for effect stop event");
-
-    assert_eq!(stopped.0.name, "solid_color");
-    assert_eq!(stopped.1, EffectStopReason::Stopped);
-}
-
-#[tokio::test]
-async fn scene_activate_and_deactivate_publish_active_scene_events() {
-    let state = Arc::new(isolated_state());
-    let app = test_app_with_state(Arc::clone(&state));
-    let mut events = state.event_bus.subscribe_all();
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "Studio"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    let create_json = body_json(create_response).await;
-    let scene_id = create_json["data"]["id"]
-        .as_str()
-        .expect("scene id should be present")
-        .parse::<uuid::Uuid>()
-        .map(SceneId)
-        .expect("scene id should parse");
-
-    let activate_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(activate_response.status(), StatusCode::OK);
-
-    let activated = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match events.recv().await {
-                Ok(timestamped) => {
-                    if let HypercolorEvent::ActiveSceneChanged {
-                        previous,
-                        current,
-                        current_name,
-                        current_snapshot_locked,
-                        reason,
-                        ..
-                    } = timestamped.event
-                    {
-                        break (
-                            previous,
-                            current,
-                            current_name,
-                            current_snapshot_locked,
-                            reason,
-                        );
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("event bus closed before scene activation event arrived");
-                }
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for scene activation event");
-
-    assert_eq!(activated.0, Some(SceneId::DEFAULT));
-    assert_eq!(activated.1, scene_id);
-    assert_eq!(activated.2, "Studio");
-    assert!(!activated.3);
-    assert_eq!(activated.4, SceneChangeReason::UserActivate);
-
-    let deactivate_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes/deactivate")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(deactivate_response.status(), StatusCode::OK);
-
-    let deactivated = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            match events.recv().await {
-                Ok(timestamped) => {
-                    if let HypercolorEvent::ActiveSceneChanged {
-                        previous,
-                        current,
-                        current_name,
-                        current_snapshot_locked,
-                        reason,
-                        ..
-                    } = timestamped.event
-                    {
-                        break (
-                            previous,
-                            current,
-                            current_name,
-                            current_snapshot_locked,
-                            reason,
-                        );
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("event bus closed before scene deactivation event arrived");
-                }
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for scene deactivation event");
-
-    assert_eq!(deactivated.0, Some(scene_id));
-    assert_eq!(deactivated.1, SceneId::DEFAULT);
-    assert_eq!(deactivated.2, "Default");
-    assert!(!deactivated.3);
-    assert_eq!(deactivated.4, SceneChangeReason::UserDeactivate);
-}
-
-#[tokio::test]
-async fn patch_current_controls_publishes_render_group_and_control_events() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-    let mut events = state.event_bus.subscribe_all();
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let patch_response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/v1/effects/current/controls")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(patch_response.status(), StatusCode::OK);
-
-    let mut saw_render_group_change = false;
-    let mut saw_control_change = false;
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !saw_render_group_change || !saw_control_change {
-            match events.recv().await {
-                Ok(timestamped) => match timestamped.event {
-                    HypercolorEvent::RenderGroupChanged {
-                        scene_id,
-                        role,
-                        kind,
-                        ..
-                    } if scene_id == SceneId::DEFAULT
-                        && role == ZoneRole::Primary
-                        && kind == ZoneChangeKind::ControlsPatched =>
-                    {
-                        saw_render_group_change = true;
-                    }
-                    HypercolorEvent::EffectControlChanged {
-                        control_id,
-                        old_value,
-                        new_value,
-                        trigger,
-                        ..
-                    } if control_id == "speed"
-                        && old_value == hypercolor_types::event::EventControlValue::Number(5.0)
-                        && new_value == hypercolor_types::event::EventControlValue::Number(7.5)
-                        && trigger == ChangeTrigger::Api =>
-                    {
-                        saw_control_change = true;
-                    }
-                    _ => {}
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("event bus closed before control change events arrived");
-                }
-            }
-        }
-    })
-    .await
-    .expect("timed out waiting for control patch events");
-}
-
-// ── Library ──────────────────────────────────────────────────────────────
-
-#[tokio::test]
 async fn library_favorites_crud_lifecycle() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
@@ -6853,7 +6880,7 @@ async fn library_favorites_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+    assert_eq!(list_json["data"]["total"], 1);
 
     let delete_response = app
         .clone()
@@ -6879,7 +6906,7 @@ async fn library_favorites_crud_lifecycle() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 0);
+    assert_eq!(list_json["data"]["total"], 0);
 }
 
 #[tokio::test]
@@ -6910,7 +6937,8 @@ async fn library_presets_create_and_get() {
     assert_eq!(create_response.status(), StatusCode::CREATED);
     let create_json = body_json(create_response).await;
     assert_eq!(create_json["data"]["name"], "Warm Sweep");
-    assert_eq!(create_json["data"]["controls"]["speed"]["float"], 7.5);
+    assert_eq!(create_json["data"]["controls"]["speed"]["kind"], "float");
+    assert_eq!(create_json["data"]["controls"]["speed"]["value"], 7.5);
     assert_eq!(create_json["data"]["tags"][0], "cozy");
     let preset_id = create_json["data"]["id"]
         .as_str()
@@ -6929,274 +6957,8 @@ async fn library_presets_create_and_get() {
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_json = body_json(get_response).await;
     assert_eq!(get_json["data"]["id"], preset_id);
-    assert_eq!(get_json["data"]["controls"]["speed"]["float"], 7.5);
-}
-
-#[tokio::test]
-async fn library_preset_apply_activates_effect_with_controls() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/library/presets")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{
-                        "name":"Apply Me",
-                        "effect":"solid_color",
-                        "controls":{"speed":7.25}
-                    }"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    let preset_id = create_json["data"]["id"]
-        .as_str()
-        .expect("preset id should be string")
-        .to_owned();
-
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/library/presets/{preset_id}/apply"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-    let apply_json = body_json(apply_response).await;
-    assert_eq!(apply_json["data"]["preset"]["id"], preset_id);
-    assert_eq!(apply_json["data"]["effect"]["name"], "solid_color");
-    assert_eq!(
-        apply_json["data"]["applied_controls"]["speed"]["float"],
-        7.5
-    );
-
-    let active_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_response.status(), StatusCode::OK);
-    let active_json = body_json(active_response).await;
-    assert_eq!(active_json["data"]["name"], "solid_color");
-    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
-}
-
-#[tokio::test]
-async fn library_preset_apply_targets_a_named_zone_via_render_group() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-
-    let (custom_id, primary_effect_before) = {
-        let mut manager = state.scene_manager.write().await;
-        let custom_id = manager
-            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
-            .expect("custom zone should be created");
-        let primary_effect = manager
-            .active_scene()
-            .and_then(Scene::primary_group)
-            .and_then(|group| group.effect_id);
-        (custom_id, primary_effect)
-    };
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/library/presets")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{
-                        "name":"Zone Preset",
-                        "effect":"solid_color",
-                        "controls":{"speed":7.25}
-                    }"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    let preset_id = create_json["data"]["id"]
-        .as_str()
-        .expect("preset id should be string")
-        .to_owned();
-
-    let apply_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/library/presets/{preset_id}/apply"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
-                    }))
-                    .expect("request body should serialize"),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-    let apply_json = body_json(apply_response).await;
-    assert_eq!(apply_json["data"]["preset"]["id"], preset_id);
-
-    let manager = state.scene_manager.read().await;
-    let scene = manager.active_scene().expect("a scene should be active");
-    let custom = scene
-        .groups
-        .iter()
-        .find(|group| group.id == custom_id)
-        .expect("the targeted zone should still exist");
-    assert!(
-        custom.effect_id.is_some(),
-        "the preset's effect should land in the targeted zone"
-    );
-    assert_eq!(
-        custom.preset_id.map(|id| id.to_string()),
-        Some(preset_id),
-        "the targeted zone should record the preset id"
-    );
-    assert_eq!(
-        custom
-            .controls
-            .get("speed")
-            .and_then(hypercolor_types::effect::ControlValue::as_f32),
-        Some(7.5),
-        "the preset's controls (clamped to the control range) should land in the zone"
-    );
-    assert_eq!(
-        scene.primary_group().and_then(|group| group.effect_id),
-        primary_effect_before,
-        "a named-zone preset apply must leave the Primary zone untouched",
-    );
-}
-
-#[tokio::test]
-async fn reset_controls_targets_a_named_zone_via_render_group() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-
-    let custom_id = {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .create_render_group(&SceneId::DEFAULT, "Ambient".to_owned(), None, (320, 200))
-            .expect("custom zone should be created")
-    };
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let apply_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
-                        "controls": { "speed": 7.25 },
-                    }))
-                    .expect("request body should serialize"),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
-
-    let reset_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/current/reset")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&serde_json::json!({
-                        "render_group": custom_id.to_string(),
-                    }))
-                    .expect("request body should serialize"),
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(reset_response.status(), StatusCode::OK);
-
-    let manager = state.scene_manager.read().await;
-    let scene = manager.active_scene().expect("a scene should be active");
-    let custom = scene
-        .groups
-        .iter()
-        .find(|group| group.id == custom_id)
-        .expect("the targeted zone should still exist");
-    assert_ne!(
-        custom
-            .controls
-            .get("speed")
-            .and_then(hypercolor_types::effect::ControlValue::as_f32),
-        Some(7.5),
-        "the zone's tweaked control should be back at its default"
-    );
-}
-
-#[tokio::test]
-async fn library_preset_apply_resolves_by_name() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/library/presets")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{
-                        "name":"named_preset",
-                        "effect":"solid_color",
-                        "controls":{"speed":5}
-                    }"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-
-    let apply_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/library/presets/named_preset/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(apply_response.status(), StatusCode::OK);
+    assert_eq!(get_json["data"]["controls"]["speed"]["kind"], "float");
+    assert_eq!(get_json["data"]["controls"]["speed"]["value"], 7.5);
 }
 
 #[tokio::test]
@@ -7285,111 +7047,7 @@ async fn library_playlists_create_with_effect_and_preset_targets() {
 }
 
 #[tokio::test]
-async fn library_playlist_activate_and_stop_lifecycle() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/library/playlists")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{
-                        "name":"Runtime Playlist",
-                        "loop_enabled":true,
-                        "items":[
-                            {
-                                "target":{"type":"effect","effect":"solid_color"},
-                                "duration_ms":10000
-                            }
-                        ]
-                    }"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    let playlist_id = create_json["data"]["id"]
-        .as_str()
-        .expect("playlist id should be string")
-        .to_owned();
-
-    let activate_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/library/playlists/{playlist_id}/activate"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(activate_response.status(), StatusCode::OK);
-    let activate_json = body_json(activate_response).await;
-    assert_eq!(activate_json["data"]["playlist"]["id"], playlist_id);
-
-    let active_playlist_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/library/playlists/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_playlist_response.status(), StatusCode::OK);
-    let active_playlist_json = body_json(active_playlist_response).await;
-    assert_eq!(active_playlist_json["data"]["playlist"]["id"], playlist_id);
-
-    let active_effect_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_effect_response.status(), StatusCode::OK);
-    let active_effect_json = body_json(active_effect_response).await;
-    assert_eq!(active_effect_json["data"]["name"], "solid_color");
-
-    let stop_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/library/playlists/stop")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
-
-    let active_playlist_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/library/playlists/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_playlist_response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn library_playlist_activate_resolves_by_name() {
+async fn library_playlist_advance_replaces_stack_without_waking_output() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -7418,6 +7076,12 @@ async fn library_playlist_activate_resolves_by_name() {
         .expect("failed to execute request");
     assert_eq!(create_response.status(), StatusCode::CREATED);
 
+    hypercolor_daemon::domain::output::set_power(
+        &state.domains.output,
+        hypercolor_types::api::output::OutputPowerMode::Paused,
+    )
+    .await;
+
     let activate_response = app
         .clone()
         .oneshot(
@@ -7430,18 +7094,56 @@ async fn library_playlist_activate_resolves_by_name() {
         .await
         .expect("failed to execute request");
     assert_eq!(activate_response.status(), StatusCode::OK);
+    assert!(state.output_power.snapshot().manually_paused());
 
-    let stop_response = app
+    let first_layer_id = {
+        let manager = state.scene_manager.snapshot().await;
+        manager
+            .active_scene()
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
+            .and_then(|zone| zone.layers.first())
+            .map(|layer| layer.id)
+            .expect("playlist activation should create one primary layer")
+    };
+
+    let second_activate_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/library/playlists/stop")
+                .uri("/api/v1/library/playlists/runtime_by_name/activate")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
+    assert_eq!(second_activate_response.status(), StatusCode::OK);
+    assert!(state.output_power.snapshot().manually_paused());
+
+    let second_layer_id = {
+        let manager = state.scene_manager.snapshot().await;
+        let primary = manager
+            .active_scene()
+            .and_then(hypercolor_types::scene::Scene::primary_zone)
+            .expect("playlist activation should retain the primary zone");
+        assert_eq!(primary.layers.len(), 1);
+        primary.layers[0].id
+    };
+    assert_ne!(first_layer_id, second_layer_id);
+
+    let deactivate_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists/deactivate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
+    let deactivate_json = body_json(deactivate_response).await;
+    assert_eq!(deactivate_json["data"]["deactivated"], true);
 }
 
 #[tokio::test]
@@ -7552,17 +7254,17 @@ async fn library_playlist_activate_replaces_previous_runtime() {
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["playlist"]["id"], second_id);
 
-    let stop_response = app
+    let deactivate_response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/library/playlists/stop")
+                .uri("/api/v1/library/playlists/deactivate")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(stop_response.status(), StatusCode::OK);
+    assert_eq!(deactivate_response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -7642,10 +7344,11 @@ async fn library_delete_active_playlist_stops_runtime() {
 #[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn library_delete_keeps_active_playlist_when_persistence_admission_fails() {
-    let (mut state, tempdir) = isolated_state_with_tempdir();
-    state.library_store = Arc::new(
+    let (builder, tempdir) = isolated_state_builder();
+    let library = Arc::new(
         JsonLibraryStore::open(tempdir.path().join("library.json")).expect("JSON library store"),
     );
+    let state = builder.with_library(library).build();
     let state = Arc::new(state);
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -7715,7 +7418,7 @@ async fn library_delete_keeps_active_playlist_when_persistence_admission_fails()
     );
     assert!(
         state
-            .library_store
+            .library_store()
             .list_playlists()
             .await
             .iter()
@@ -7812,252 +7515,6 @@ async fn scene_crud_publishes_scene_library_changed_events() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "CRUD lifecycle test covers full create-read-update-delete flow"
-)]
-async fn scene_crud_lifecycle() {
-    let (state, tempdir) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let scenes_path = tempdir.path().join("data/scenes.json");
-
-    // Create scene
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name": "Test Scene", "description": "A test scene"}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Test Scene");
-    let scene_id = json["data"]["id"]
-        .as_str()
-        .expect("id should be a string")
-        .to_owned();
-    let persisted: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&scenes_path).expect("scene store should be written after create"),
-    )
-    .expect("scene store should parse");
-    assert_eq!(persisted[scene_id.as_str()]["name"], "Test Scene");
-
-    // Get scene
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Test Scene");
-
-    // List scenes
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/scenes")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
-
-    // Update scene
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name": "Updated Scene", "description": "Updated description"}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Updated Scene");
-    let persisted: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&scenes_path).expect("scene store should be written after update"),
-    )
-    .expect("scene store should parse");
-    assert_eq!(persisted[scene_id.as_str()]["name"], "Updated Scene");
-
-    // Activate scene
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["activated"], true);
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/scenes/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["id"], scene_id);
-    assert_eq!(json["data"]["kind"], "named");
-    // A created scene is born with a Default zone (§5.2 output roster).
-    let groups = json["data"]["groups"]
-        .as_array()
-        .expect("groups should serialize as an array");
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0]["role"], "primary");
-
-    // Delete scene
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["deleted"], true);
-    let persisted: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&scenes_path).expect("scene store should be written after delete"),
-    )
-    .expect("scene store should parse");
-    assert!(
-        persisted.get(scene_id.as_str()).is_none(),
-        "deleted scene should be removed from the scene store"
-    );
-
-    // Verify deletion
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/scenes/{scene_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn scene_deactivate_returns_to_default_scene() {
-    let state = Arc::new(isolated_state());
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "Work"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    let json = body_json(response).await;
-    let scene_id = json["data"]["id"]
-        .as_str()
-        .expect("id should be a string")
-        .to_owned();
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/scenes/{scene_id}/activate"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes/deactivate")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["scene"]["name"], "Default");
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/scenes/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Default");
-    assert_eq!(json["data"]["kind"], "ephemeral");
-    let groups = json["data"]["groups"]
-        .as_array()
-        .expect("groups should serialize as an array");
-    assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0]["name"], "Default zone");
-    assert_eq!(groups[0]["role"], "primary");
-}
-
-#[tokio::test]
 async fn list_scenes_excludes_default_scene() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
@@ -8074,7 +7531,7 @@ async fn list_scenes_excludes_default_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 0);
+    assert_eq!(json["data"]["total"], 0);
 
     let response = app
         .oneshot(
@@ -8101,7 +7558,7 @@ async fn list_scenes_excludes_default_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
+    assert_eq!(json["data"]["total"], 1);
     let items = json["data"]["items"]
         .as_array()
         .expect("scene list should serialize as an array");
@@ -8110,6 +7567,291 @@ async fn list_scenes_excludes_default_scene() {
         items.iter().all(|item| item["name"] != "Default"),
         "default scene must stay hidden from the scenes list"
     );
+}
+
+#[tokio::test]
+async fn snapshot_scene_creates_a_locked_copy_of_the_live_tree() {
+    let state = Arc::new(isolated_state());
+    let active = state
+        .scene_manager
+        .snapshot()
+        .await
+        .active_scene()
+        .cloned()
+        .expect("default scene should be active");
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes/snapshot")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Desk capture","description":"Current runtime"}"#,
+                ))
+                .expect("snapshot request"),
+        )
+        .await
+        .expect("snapshot response");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "Desk capture");
+    assert_eq!(json["data"]["mutation_mode"], "snapshot");
+    let scene_id = json["data"]["id"]
+        .as_str()
+        .expect("snapshot id")
+        .parse::<Uuid>()
+        .expect("snapshot UUID");
+
+    let manager = state.scene_manager.snapshot().await;
+    let saved = manager
+        .get(&SceneId(scene_id))
+        .expect("snapshot should be stored");
+    assert_eq!(saved.zones, active.zones);
+    assert_eq!(saved.activation_brightness, None);
+    assert_eq!(manager.active_scene_id(), Some(&active.id));
+}
+
+#[tokio::test]
+async fn stored_scene_replace_is_whole_document_versioned_and_identity_safe() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/scenes")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Original","description":"old"}"#))
+                .expect("create request"),
+        )
+        .await
+        .expect("create response");
+    let created = body_json(created).await;
+    let scene_id = created["data"]["id"].as_str().expect("scene id");
+
+    let fetched = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .body(Body::empty())
+                .expect("get request"),
+        )
+        .await
+        .expect("get response");
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let etag = fetched
+        .headers()
+        .get(http::header::ETAG)
+        .expect("stored scene ETag")
+        .clone();
+    let fetched = body_json(fetched).await;
+    let document: SceneDocument =
+        serde_json::from_value(fetched["data"].clone()).expect("full scene document");
+    let old_zone_id = document.zones[0].id;
+    let mut replacement = ReplaceSceneRequest::from(&document);
+    replacement.name = "Replacement".to_owned();
+    replacement.description = None;
+    replacement.activation_brightness = Some(0.42);
+    replacement.priority = ScenePriority::ALERT;
+    replacement.enabled = false;
+    replacement
+        .metadata
+        .insert("origin".to_owned(), "whole-document-test".to_owned());
+    replacement.zones[0].id = None;
+    replacement.zones[0].layers.push(ReplaceSceneLayerRequest {
+        id: None,
+        name: Some("Minted fill".to_owned()),
+        source: LayerSource::ColorFill {
+            rgba: [0.1, 0.2, 0.3, 1.0],
+        },
+        blend: BlendMode::Replace,
+        opacity: 0.75,
+        transform: LayerTransform::default(),
+        adjust: LayerAdjust::default(),
+        bindings: Vec::new(),
+        enabled: true,
+    });
+
+    let replaced = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .header(http::header::IF_MATCH, etag.clone())
+                .body(Body::from(
+                    serde_json::to_vec(&replacement).expect("replacement body"),
+                ))
+                .expect("replace request"),
+        )
+        .await
+        .expect("replace response");
+    assert_eq!(replaced.status(), StatusCode::OK);
+    assert_ne!(
+        replaced.headers().get(http::header::ETAG),
+        Some(&etag),
+        "successful replacement advances the scene revision"
+    );
+    let replaced = body_json(replaced).await;
+    let document: SceneDocument =
+        serde_json::from_value(replaced["data"].clone()).expect("replacement document");
+    assert_eq!(document.id.to_string(), scene_id);
+    assert_eq!(document.name, "Replacement");
+    assert_eq!(document.description, None);
+    assert_eq!(document.activation_brightness, Some(0.42));
+    assert_eq!(document.priority, ScenePriority::ALERT);
+    assert!(!document.enabled);
+    assert_eq!(
+        document.metadata.get("origin").map(String::as_str),
+        Some("whole-document-test")
+    );
+    assert_ne!(document.zones[0].id, old_zone_id);
+    assert_eq!(document.zones[0].layers.len(), 1);
+    let minted_zone_id = document.zones[0].id;
+
+    let stale = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .header(http::header::IF_MATCH, etag)
+                .body(Body::from(
+                    serde_json::to_vec(&replacement).expect("stale body"),
+                ))
+                .expect("stale request"),
+        )
+        .await
+        .expect("stale response");
+    assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+
+    let mut mismatch = ReplaceSceneRequest::from(&document);
+    mismatch.id = Some(SceneId::new());
+    let mismatch = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&mismatch).expect("mismatch body"),
+                ))
+                .expect("mismatch request"),
+        )
+        .await
+        .expect("mismatch response");
+    assert_eq!(mismatch.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut foreign_zone = ReplaceSceneRequest::from(&document);
+    foreign_zone.zones[0].id = Some(ZoneId::new());
+    let foreign_zone = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&foreign_zone).expect("foreign zone body"),
+                ))
+                .expect("foreign zone request"),
+        )
+        .await
+        .expect("foreign zone response");
+    assert_eq!(foreign_zone.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut foreign_layer = ReplaceSceneRequest::from(&document);
+    foreign_layer.zones[0].id = Some(minted_zone_id);
+    foreign_layer.zones[0].layers[0].id = Some(SceneLayerId::new());
+    let foreign_layer = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/scenes/{scene_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&foreign_layer).expect("foreign layer body"),
+                ))
+                .expect("foreign layer request"),
+        )
+        .await
+        .expect("foreign layer response");
+    assert_eq!(foreign_layer.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn stored_scene_get_and_put_exclude_the_ephemeral_default() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let before = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scene")
+                .body(Body::empty())
+                .expect("live scene request"),
+        )
+        .await
+        .expect("live scene response");
+    let etag = before
+        .headers()
+        .get(http::header::ETAG)
+        .expect("live scene ETag")
+        .clone();
+    let before = body_json(before).await;
+    let document: SceneDocument =
+        serde_json::from_value(before["data"].clone()).expect("default scene document");
+
+    let get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scenes/default")
+                .body(Body::empty())
+                .expect("stored scene GET"),
+        )
+        .await
+        .expect("stored scene GET response");
+    assert_eq!(get.status(), StatusCode::NOT_FOUND);
+
+    let put = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/scenes/default")
+                .header("content-type", "application/json")
+                .header(http::header::IF_MATCH, etag)
+                .body(Body::from(
+                    serde_json::to_vec(&ReplaceSceneRequest::from(&document))
+                        .expect("default replacement body"),
+                ))
+                .expect("stored scene PUT"),
+        )
+        .await
+        .expect("stored scene PUT response");
+    assert_eq!(put.status(), StatusCode::NOT_FOUND);
+
+    let after = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/scene")
+                .body(Body::empty())
+                .expect("live scene request after refusal"),
+        )
+        .await
+        .expect("live scene response after refusal");
+    let after = body_json(after).await;
+    assert_eq!(after["data"], before["data"]);
 }
 
 #[tokio::test]
@@ -8137,647 +7879,6 @@ async fn delete_default_returns_409_or_422() {
             .expect("message should be a string")
             .contains("cannot be deleted"),
     );
-}
-
-#[tokio::test]
-async fn scene_deactivate_on_default_is_noop() {
-    let state = Arc::new(isolated_state());
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes/deactivate")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["deactivated"], true);
-    assert_eq!(json["data"]["scene"]["name"], "Default");
-    assert_eq!(json["data"]["previous_scene"]["name"], "Default");
-}
-
-// ── Profiles ─────────────────────────────────────────────────────────────
-
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "profile lifecycle coverage is clearer as one end-to-end integration test"
-)]
-async fn profile_crud_lifecycle() {
-    let (state, _tempdir) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    insert_test_effect(&state, "solid_color").await;
-    let display_id = insert_test_display_device(&state, "Pump LCD").await;
-    let face = insert_test_display_face_effect(&state, "System Monitor").await;
-    let profile_layout = SpatialLayout {
-        id: "layout_profile".to_owned(),
-        name: "Profile Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-    let alternate_layout = SpatialLayout {
-        id: "layout_alternate".to_owned(),
-        name: "Alternate Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-    {
-        let mut layouts = state.layouts.write().await;
-        layouts.insert(profile_layout.id.clone(), profile_layout.clone());
-        layouts.insert(alternate_layout.id.clone(), alternate_layout.clone());
-    }
-    {
-        let mut spatial = state.spatial_engine.write().await;
-        spatial.update_layout(profile_layout.clone());
-    }
-    set_global_brightness(&state.power_state, 0.72);
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"speed":12.5}}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
-                    face.id
-                )))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-
-    // Create profile
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "Gaming Mode"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Gaming Mode");
-    assert_eq!(json["data"]["brightness"], 72);
-    assert_eq!(json["data"]["layout_id"], profile_layout.id);
-    assert_eq!(json["data"]["primary"]["controls"]["speed"]["float"], 12.5);
-    assert_eq!(
-        json["data"]["displays"][0]["device_id"],
-        display_id.to_string()
-    );
-    assert_eq!(
-        json["data"]["displays"][0]["effect_id"],
-        face.id.to_string()
-    );
-    let primary_effect_id = json["data"]["primary"]["effect_id"]
-        .as_str()
-        .expect("Default-zone effect id should be present")
-        .to_owned();
-    let profile_id = json["data"]["id"]
-        .as_str()
-        .expect("id should be a string")
-        .to_owned();
-
-    // Get profile
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/profiles/{profile_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Gaming Mode");
-    assert_eq!(json["data"]["primary"]["controls"]["speed"]["float"], 12.5);
-    assert_eq!(
-        json["data"]["displays"][0]["effect_id"],
-        face.id.to_string()
-    );
-    assert_eq!(json["data"]["layout_id"], profile_layout.id);
-
-    // List profiles
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/profiles")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
-
-    // Update profile
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/profiles/{profile_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "Chill Mode", "brightness": 50}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "Chill Mode");
-    assert_eq!(json["data"]["brightness"], 50);
-
-    {
-        let mut spatial = state.spatial_engine.write().await;
-        spatial.update_layout(alternate_layout);
-    }
-    set_global_brightness(&state.power_state, 0.05);
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/stop")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-
-    // Apply profile
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/displays/{display_id}/face?scope=scene"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let (response, _) = request_with_layout_ack(
-        app.clone(),
-        Request::builder()
-            .method("POST")
-            .uri(format!("/api/v1/profiles/{profile_id}/apply"))
-            .body(Body::empty())
-            .expect("failed to build request"),
-        &state,
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["applied"], true);
-    assert_eq!(
-        json["data"]["profile"]["primary"]["effect_id"],
-        primary_effect_id
-    );
-    assert_eq!(
-        json["data"]["profile"]["primary"]["controls"]["speed"]["float"],
-        12.5
-    );
-    assert_eq!(
-        json["data"]["profile"]["displays"][0]["device_id"],
-        display_id.to_string()
-    );
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["name"], "solid_color");
-    assert_eq!(json["data"]["control_values"]["speed"]["float"], 12.5);
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["effect"]["id"], face.id.to_string());
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/layouts/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["id"], profile_layout.id);
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/settings/brightness")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["brightness"], 50);
-
-    // Delete profile
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/profiles/{profile_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["deleted"], true);
-
-    // Verify deletion
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/profiles/{profile_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn pre_final_profile_shape_is_rejected_on_load() {
-    let state = {
-        let tempdir = tempfile::tempdir().expect("tempdir should be created");
-        let data_dir = tempdir.path().join("data");
-        fs::create_dir_all(&data_dir).expect("temp data dir should be created");
-
-        let effect_id = EffectId::new(Uuid::now_v7());
-        let preset_id = PresetId(Uuid::now_v7());
-        let profiles_path = data_dir.join("profiles.json");
-        fs::write(
-            &profiles_path,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "prof_evening": {
-                    "id": "prof_evening",
-                    "name": "Evening",
-                    "effect_id": effect_id,
-                    "effect_name": "solid_color",
-                    "active_preset_id": preset_id,
-                    "controls": {
-                        "speed": { "float": 12.5 }
-                    }
-                }
-            }))
-            .expect("pre-final profile json should serialize"),
-        )
-        .expect("pre-final profile json should be written");
-
-        AppState::new_with_data_dir(data_dir)
-    };
-
-    {
-        let profiles = state.profiles.read().await;
-        assert!(
-            profiles.get("prof_evening").is_none(),
-            "invalid pre-final profiles should be dropped on load"
-        );
-    }
-}
-
-#[tokio::test]
-async fn create_profile_rejects_duplicate_names_without_force_and_force_overwrites() {
-    let state = Arc::new(isolated_state());
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let first_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Gaming Mode","brightness":72}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(first_response.status(), StatusCode::CREATED);
-    let first_json = body_json(first_response).await;
-    let first_id = first_json["data"]["id"]
-        .as_str()
-        .expect("profile id should be present")
-        .to_owned();
-
-    let duplicate_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"gaming mode","brightness":15}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(duplicate_response.status(), StatusCode::CONFLICT);
-    let duplicate_json = body_json(duplicate_response).await;
-    assert_eq!(duplicate_json["error"]["code"], "conflict");
-
-    let forced_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"gaming mode","brightness":15,"force":true}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(forced_response.status(), StatusCode::OK);
-    let forced_json = body_json(forced_response).await;
-    assert_eq!(forced_json["data"]["id"], first_id);
-    assert_eq!(forced_json["data"]["brightness"], 15);
-
-    let list_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/profiles")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
-}
-
-#[tokio::test]
-async fn profile_lookup_returns_conflict_for_ambiguous_name() {
-    let state = Arc::new(isolated_state());
-    {
-        let mut profiles = state.profiles.write().await;
-        profiles
-            .insert(Profile::named("prof_alpha", "Evening"))
-            .expect("seed first profile");
-        profiles
-            .insert(Profile::named("prof_beta", "evening"))
-            .expect("seed second profile");
-    }
-
-    let app = test_app_with_state(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/profiles/evening")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "conflict");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("ambiguous"),
-    );
-}
-
-#[tokio::test]
-async fn apply_profile_rejects_unimplemented_transition_requests() {
-    let state = Arc::new(isolated_state());
-    {
-        let mut profiles = state.profiles.write().await;
-        profiles
-            .insert(Profile::named("prof_evening", "Evening"))
-            .expect("seed profile");
-    }
-
-    let app = test_app_with_state(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles/prof_evening/apply")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"transition_ms":250}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "bad_request");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("only immediate apply is supported"),
-    );
-}
-
-#[tokio::test]
-async fn apply_profile_conflicts_when_snapshot_scene_is_active() {
-    let state = Arc::new(isolated_state());
-    {
-        let mut profiles = state.profiles.write().await;
-        let mut profile = Profile::named("prof_evening", "Evening");
-        profile.brightness = Some(40);
-        profiles.insert(profile).expect("seed profile");
-    }
-    activate_empty_test_scene_with_mode(&state, "Focus", SceneMutationMode::Snapshot).await;
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles/prof_evening/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "conflict");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("snapshot mode"),
-    );
-}
-
-#[tokio::test]
-async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
-    let state = Arc::new(isolated_state());
-    let current_layout = SpatialLayout {
-        id: "layout_current".to_owned(),
-        name: "Current Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-    let profile_layout = SpatialLayout {
-        id: "layout_profile".to_owned(),
-        name: "Profile Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-    {
-        let mut layouts = state.layouts.write().await;
-        layouts.insert(current_layout.id.clone(), current_layout.clone());
-        layouts.insert(profile_layout.id.clone(), profile_layout);
-    }
-    {
-        let mut spatial = state.spatial_engine.write().await;
-        spatial.update_layout(current_layout.clone());
-    }
-    set_global_brightness(&state.power_state, 0.8);
-    {
-        let mut profiles = state.profiles.write().await;
-        let mut profile = Profile::named("prof_broken", "Broken");
-        profile.brightness = Some(25);
-        profile.primary = Some(ProfilePrimary {
-            effect_id: EffectId::new(Uuid::now_v7()),
-            controls: HashMap::new(),
-            active_preset_id: None,
-        });
-        profile.layout_id = Some("layout_profile".to_owned());
-        profiles.insert(profile).expect("seed profile");
-    }
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/profiles/prof_broken/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let json = body_json(response).await;
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("message should be a string")
-            .contains("profile effect not found"),
-    );
-
-    let active_layout = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().id.clone()
-    };
-    assert_eq!(active_layout, current_layout.id);
-    assert!((current_global_brightness(&state.power_state) - 0.8).abs() < f32::EPSILON);
 }
 
 // ── Layouts ──────────────────────────────────────────────────────────────
@@ -8815,7 +7916,6 @@ fn layout_with_sampling_modes(
         }],
         default_sampling_mode,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -8877,7 +7977,14 @@ async fn layout_crud_lifecycle() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    assert_eq!(json["data"]["pagination"]["total"], 1);
+    assert_eq!(json["data"]["total"], 2);
+    assert!(
+        json["data"]["items"]
+            .as_array()
+            .expect("layout items should be an array")
+            .iter()
+            .any(|layout| layout["id"] == layout_id)
+    );
 
     // Update layout
     let app = test_app_with_state(Arc::clone(&state));
@@ -8921,7 +8028,7 @@ async fn layout_create_defaults_canvas_to_active_layout_dimensions() {
     let app = test_app_with_state(Arc::clone(&state));
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
 
@@ -9068,7 +8175,7 @@ async fn layout_apply_updates_active_layout() {
         .expect("failed to execute request");
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+    assert_eq!(list_json["data"]["total"], 1);
     assert_eq!(list_json["data"]["items"][0]["id"], layout_id);
     assert_eq!(list_json["data"]["items"][0]["is_active"], true);
 
@@ -9081,7 +8188,6 @@ async fn layout_apply_updates_active_layout() {
 
 #[tokio::test]
 async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
-    let (mut state, _tmp) = isolated_state_with_tempdir();
     let revision = Arc::new(AtomicUsize::new(1));
     let mut registry = DriverModuleRegistry::new();
     registry
@@ -9089,18 +8195,9 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
             revision: Arc::clone(&revision),
         })
         .expect("runtime cache test driver should register");
-    state.driver_registry = Arc::new(registry);
+    let (state, _tmp) = isolated_state_with_driver_registry(Arc::new(registry));
     let state = Arc::new(state);
-    let candidate = SpatialLayout {
-        id: "converged-layout".to_owned(),
-        name: "Converged Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
-    };
-    state
-        .layouts
-        .write()
-        .await
-        .insert(candidate.id.clone(), candidate.clone());
+    let candidate = create_stored_layout(&state, "Converged Layout").await;
     let app = test_app_with_state(Arc::clone(&state));
     let update_revision = Arc::clone(&revision);
 
@@ -9131,10 +8228,9 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
         persisted.active_layout_id.as_deref(),
         Some(candidate.id.as_str())
     );
-    assert!(persisted.driver_runtime_cache.is_empty());
     assert_eq!(
         state
-            .driver_host
+            .driver_host()
             .driver_inventory()
             .driver_cache("runtime_cache_test")["revision"],
         serde_json::json!(2)
@@ -9143,8 +8239,6 @@ async fn layout_apply_converges_a_concurrent_driver_runtime_update() {
 
 #[tokio::test]
 async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
-    let (mut state, _tmp) = isolated_state_with_tempdir();
-    let initial_layout_id = state.spatial_engine.read().await.layout().id.clone();
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
     let mut registry = DriverModuleRegistry::new();
@@ -9154,18 +8248,10 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
             release: Arc::clone(&release),
         })
         .expect("blocking runtime cache test driver should register");
-    state.driver_registry = Arc::new(registry);
+    let (state, _tmp) = isolated_state_with_driver_registry(Arc::new(registry));
+    let initial_layout_id = state.spatial_engine.snapshot().layout().id.clone();
     let state = Arc::new(state);
-    let candidate = SpatialLayout {
-        id: "superseded-layout".to_owned(),
-        name: "Superseded Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
-    };
-    state
-        .layouts
-        .write()
-        .await
-        .insert(candidate.id.clone(), candidate.clone());
+    let candidate = create_stored_layout(&state, "Superseded Layout").await;
     let runtime_state_path = state.runtime_state_path.clone();
     let concurrent_layout_id = initial_layout_id.clone();
     let superseding_write = tokio::spawn(async move {
@@ -9198,15 +8284,14 @@ async fn layout_apply_returns_conflict_when_precommit_is_superseded() {
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         initial_layout_id
     );
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
-    use hypercolor_daemon::scene_transactions::LayoutTransactionRejection;
-
     let cases = [
         (
             LayoutTransactionRejection::PreparationFailed {
@@ -9222,16 +8307,7 @@ async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
     ];
     for (rejection, expected_status) in cases {
         let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-        let candidate = SpatialLayout {
-            id: "rejected-apply".to_owned(),
-            name: "Rejected Apply".to_owned(),
-            ..state.spatial_engine.read().await.layout().as_ref().clone()
-        };
-        state
-            .layouts
-            .write()
-            .await
-            .insert(candidate.id.clone(), candidate.clone());
+        let candidate = create_stored_layout(&state, "Rejected Apply").await;
         let app = test_app_with_state(Arc::clone(&state));
 
         let response = request_with_layout_rejection(
@@ -9250,10 +8326,9 @@ async fn layout_apply_maps_renderer_rejections_to_explicit_statuses() {
     }
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn layout_preview_maps_renderer_rejections_to_explicit_statuses() {
-    use hypercolor_daemon::scene_transactions::LayoutTransactionRejection;
-
     let cases = [
         (
             LayoutTransactionRejection::PreparationFailed {
@@ -9272,7 +8347,7 @@ async fn layout_preview_maps_renderer_rejections_to_explicit_statuses() {
         let preview = SpatialLayout {
             id: "rejected-preview".to_owned(),
             name: "Rejected Preview".to_owned(),
-            ..state.spatial_engine.read().await.layout().as_ref().clone()
+            ..state.spatial_engine.snapshot().layout().as_ref().clone()
         };
         let app = test_app_with_state(Arc::clone(&state));
 
@@ -9297,19 +8372,14 @@ async fn layout_preview_maps_renderer_rejections_to_explicit_statuses() {
 
 #[tokio::test]
 async fn layout_apply_maps_persistence_failure_to_internal_error() {
-    let mut state = isolated_state();
-    state.runtime_state_path = PathBuf::new();
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = tempdir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+    let state = AppStateBuilder::new(data_dir)
+        .with_runtime_state_path(PathBuf::new())
+        .build();
     let state = Arc::new(state);
-    let candidate = SpatialLayout {
-        id: "persistence-failure".to_owned(),
-        name: "Persistence Failure".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
-    };
-    state
-        .layouts
-        .write()
-        .await
-        .insert(candidate.id.clone(), candidate.clone());
+    let candidate = create_stored_layout(&state, "Persistence Failure").await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let (response, _) = request_with_layout_ack(
@@ -9333,10 +8403,13 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     let candidate = SpatialLayout {
         id: "pending-layout".to_owned(),
         name: "Pending Layout".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(candidate.id.clone(), candidate.clone());
@@ -9367,7 +8440,7 @@ async fn layout_apply_returns_accepted_when_convergence_retry_is_armed() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["applied"], true);
     assert_eq!(json["data"]["persistence_pending"], true);
-    assert_eq!(state.spatial_engine.read().await.layout().id, candidate.id);
+    assert_eq!(state.spatial_engine.snapshot().layout().id, candidate.id);
     cleanup.reset_and_flush();
 }
 
@@ -9378,10 +8451,13 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
     let candidate = SpatialLayout {
         id: "concurrent-apply-delete".to_owned(),
         name: "Concurrent Apply Delete".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(candidate.id.clone(), candidate.clone());
@@ -9409,9 +8485,11 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
             .await
             .expect("failed to execute apply request")
     });
-    first_entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+        .await
+        .expect("first publication should reach its gate");
     let delete_id = candidate.id.clone();
-    let before_delete_guard = state.layout_mutation_test_hooks.install(
+    let before_delete_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::Delete,
         &delete_id,
@@ -9428,31 +8506,162 @@ async fn concurrent_apply_and_delete_cannot_activate_a_removed_layout() {
         .expect("failed to execute delete request")
     });
 
-    before_delete_guard.wait_until_entered().await;
-    assert!(state.layouts.read().await.contains_key(&candidate.id));
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        before_delete_guard.wait_until_entered(),
+    )
+    .await
+    .expect("delete should reach its guard");
+    assert!(
+        state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .contains_key(&candidate.id)
+    );
     before_delete_guard.release();
     release_first.add_permits(1);
-    assert_eq!(
-        apply.await.expect("apply task should not panic").status(),
-        StatusCode::OK
-    );
     release_second.add_permits(1);
-    assert_eq!(
-        delete.await.expect("delete task should not panic").status(),
-        StatusCode::OK
-    );
-    renderer
+    let apply_response = tokio::time::timeout(Duration::from_secs(5), apply)
         .await
+        .expect("apply should converge after both renderer gates open")
+        .expect("apply task should not panic");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let delete_response = tokio::time::timeout(Duration::from_secs(5), delete)
+        .await
+        .expect("delete should converge after both renderer gates open")
+        .expect("delete task should not panic");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(5), renderer)
+        .await
+        .expect("layout publication worker should finish")
         .expect("layout publication worker should not panic");
 
-    assert!(!state.layouts.read().await.contains_key(&candidate.id));
-    assert_ne!(state.spatial_engine.read().await.layout().id, candidate.id);
+    assert!(
+        !state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .contains_key(&candidate.id)
+    );
+    assert_ne!(state.spatial_engine.snapshot().layout().id, candidate.id);
     let persisted = runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
         .expect("runtime state should exist");
     assert_ne!(
         persisted.active_layout_id.as_deref(),
         Some(candidate.id.as_str())
+    );
+}
+
+fn drain_layout_changes(
+    events: &mut tokio::sync::broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
+) -> Vec<(Option<String>, String)> {
+    let mut changes = Vec::new();
+    while let Ok(timestamped) = events.try_recv() {
+        if let HypercolorEvent::LayoutChanged { previous, current } = timestamped.event {
+            changes.push((previous, current));
+        }
+    }
+    changes
+}
+
+#[tokio::test]
+async fn layout_apply_publishes_layout_changed_with_previous_and_current() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let candidate = create_stored_layout(&state, "Apply Target").await;
+    let previous_active = state.domains.layout.current().id;
+    let mut events = state.event_bus.subscribe_all();
+
+    let (apply_response, _) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(Some(previous_active), candidate.id)],
+        "an apply moves the active selection, so both ids are carried"
+    );
+}
+
+#[tokio::test]
+async fn layout_delete_publishes_layout_changed_for_the_removed_id() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let candidate = create_stored_layout(&state, "Disposable").await;
+    let mut events = state.event_bus.subscribe_all();
+
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{}", candidate.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(None, candidate.id)],
+        "deleting an inactive layout names it and leaves the active selection alone"
+    );
+}
+
+#[tokio::test]
+async fn layout_delete_of_the_active_layout_publishes_the_fallback_as_current() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+    let candidate = create_stored_layout(&state, "Active Then Gone").await;
+
+    let (apply_response, _) = request_with_layout_ack(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/layouts/{}/apply", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let mut events = state.event_bus.subscribe_all();
+
+    let (delete_response, _) = request_with_layout_ack(
+        app,
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/layouts/{}", candidate.id))
+            .body(Body::empty())
+            .expect("failed to build request"),
+        &state,
+    )
+    .await;
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let fallback = state.domains.layout.current().id;
+    assert_ne!(fallback, candidate.id);
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(Some(candidate.id), fallback)],
+        "the deleted layout was active, so the fallback becomes current"
     );
 }
 
@@ -9532,14 +8741,14 @@ async fn layout_delete_active_falls_back_to_default_layout() {
 #[tokio::test]
 async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let fallback = SpatialLayout {
         id: "fallback-delete-race".to_owned(),
         name: "Fallback Delete Race".to_owned(),
         ..active.clone()
     };
     {
-        let mut layouts = state.layouts.write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(fallback.id.clone(), fallback.clone());
     }
@@ -9567,9 +8776,11 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
             .await
             .expect("failed to execute active delete request")
     });
-    first_entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+        .await
+        .expect("first publication should reach its gate");
     let fallback_id = fallback.id.clone();
-    let before_fallback_guard = state.layout_mutation_test_hooks.install(
+    let before_fallback_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::Delete,
         &fallback_id,
@@ -9586,31 +8797,51 @@ async fn concurrent_active_and_fallback_deletes_cannot_publish_removed_fallback(
         .expect("failed to execute fallback delete request")
     });
 
-    before_fallback_guard.wait_until_entered().await;
-    assert!(state.layouts.read().await.contains_key(&fallback.id));
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        before_fallback_guard.wait_until_entered(),
+    )
+    .await
+    .expect("fallback delete should reach its guard");
+    assert!(
+        state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .contains_key(&fallback.id)
+    );
     before_fallback_guard.release();
     release_first.add_permits(1);
-    assert_eq!(
-        first_delete
-            .await
-            .expect("active delete task should not panic")
-            .status(),
-        StatusCode::OK
-    );
     release_second.add_permits(1);
-    assert_eq!(
-        fallback_delete
-            .await
-            .expect("fallback delete task should not panic")
-            .status(),
-        StatusCode::OK
-    );
-    renderer
+    let first_response = tokio::time::timeout(Duration::from_secs(5), first_delete)
         .await
+        .expect("active delete should converge after both renderer gates open")
+        .expect("active delete task should not panic");
+    assert_eq!(first_response.status(), StatusCode::OK);
+    let fallback_response = tokio::time::timeout(Duration::from_secs(5), fallback_delete)
+        .await
+        .expect("fallback delete should converge after both renderer gates open")
+        .expect("fallback delete task should not panic");
+    assert_eq!(fallback_response.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(5), renderer)
+        .await
+        .expect("layout publication worker should finish")
         .expect("layout publication worker should not panic");
 
-    assert!(!state.layouts.read().await.contains_key(&fallback.id));
-    assert_ne!(state.spatial_engine.read().await.layout().id, fallback.id);
+    assert!(
+        !state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .contains_key(&fallback.id)
+    );
+    assert_ne!(state.spatial_engine.snapshot().layout().id, fallback.id);
     let persisted = runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
         .expect("runtime state should exist");
@@ -9626,7 +8857,7 @@ async fn layout_preview_never_persists_runtime_state() {
     let preview = SpatialLayout {
         id: "preview-only".to_owned(),
         name: "Preview Only".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -9645,7 +8876,7 @@ async fn layout_preview_never_persists_runtime_state() {
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(state.spatial_engine.read().await.layout().id, preview.id);
+    assert_eq!(state.spatial_engine.snapshot().layout().id, preview.id);
     assert!(!state.runtime_state_path.exists());
 }
 
@@ -9653,8 +8884,17 @@ async fn layout_preview_never_persists_runtime_state() {
 #[tokio::test]
 async fn layout_store_write_failure_rolls_back_create() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let initial_layouts = state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
+        .read()
+        .await
+        .clone();
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
     let app = test_app_with_state(Arc::clone(&state));
@@ -9672,11 +8912,14 @@ async fn layout_store_write_failure_rolls_back_create() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(state.layouts.read().await.is_empty());
-    assert!(
-        hypercolor_daemon::layout_store::load(&state.layouts_path)
-            .expect("layout store should load")
-            .is_empty()
+    assert_eq!(
+        *state.domains.layout.test_fixture().catalog().read().await,
+        initial_layouts
+    );
+    assert_eq!(
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load"),
+        initial_layouts
     );
     cleanup.reset_and_flush();
 }
@@ -9688,16 +8931,20 @@ async fn layout_store_write_failure_rolls_back_update() {
     let stored = SpatialLayout {
         id: "failed-update".to_owned(),
         name: "Before Update".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
     let app = test_app_with_state(Arc::clone(&state));
@@ -9715,9 +8962,13 @@ async fn layout_store_write_failure_rolls_back_update() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(state.layouts.read().await[&stored.id].name, stored.name);
-    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
-        .expect("layout store should load");
+    assert_eq!(
+        state.domains.layout.test_fixture().catalog().read().await[&stored.id].name,
+        stored.name
+    );
+    let persisted =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load");
     assert_eq!(persisted[&stored.id].name, stored.name);
     cleanup.reset_and_flush();
 }
@@ -9729,16 +8980,20 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
     let stored = SpatialLayout {
         id: "failed-inactive-delete".to_owned(),
         name: "Failed Inactive Delete".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
     let app = test_app_with_state(Arc::clone(&state));
@@ -9755,9 +9010,20 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(state.layouts.read().await.get(&stored.id), Some(&stored));
-    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
-        .expect("layout store should load");
+    assert_eq!(
+        state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .get(&stored.id),
+        Some(&stored)
+    );
+    let persisted =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load");
     assert_eq!(persisted.get(&stored.id), Some(&stored));
     cleanup.reset_and_flush();
 }
@@ -9766,20 +9032,21 @@ async fn layout_store_write_failure_rolls_back_inactive_delete() {
 #[tokio::test]
 async fn layout_store_write_failure_rolls_back_active_delete() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let fallback = SpatialLayout {
         id: "failed-active-delete-fallback".to_owned(),
         name: "Failed Active Delete Fallback".to_owned(),
         ..active.clone()
     };
     {
-        let mut layouts = state.layouts.write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(fallback.id.clone(), fallback);
     }
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
     let app = test_app_with_state(Arc::clone(&state));
@@ -9797,10 +9064,21 @@ async fn layout_store_write_failure_rolls_back_active_delete() {
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(applied.len(), 2);
-    assert_eq!(state.spatial_engine.read().await.layout().id, active.id);
-    assert_eq!(state.layouts.read().await.get(&active.id), Some(&active));
-    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
-        .expect("layout store should load");
+    assert_eq!(state.spatial_engine.snapshot().layout().id, active.id);
+    assert_eq!(
+        state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .get(&active.id),
+        Some(&active)
+    );
+    let persisted =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load");
     assert_eq!(persisted.get(&active.id), Some(&active));
     let runtime = runtime_state::load(&state.runtime_state_path)
         .expect("runtime state should load")
@@ -9816,7 +9094,7 @@ async fn layout_store_write_failure_rolls_back_active_delete() {
 #[tokio::test]
 async fn layout_mutation_cancellation_finishes_create() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let barrier = state.layout_mutation_test_hooks.install(
+    let barrier = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Create,
         "Cancellation Create",
@@ -9836,7 +9114,10 @@ async fn layout_mutation_cancellation_finishes_create() {
     });
     barrier.wait_until_entered().await;
     let created_id = state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .read()
         .await
         .values()
@@ -9853,7 +9134,12 @@ async fn layout_mutation_cancellation_finishes_create() {
             .is_cancelled()
     );
     barrier.release();
-    let layouts_path = state.layouts_path.clone();
+    let layouts_path = state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog_path()
+        .to_path_buf();
     let durable_id = created_id.clone();
     wait_for_async_condition(move || {
         let layouts_path = layouts_path.clone();
@@ -9865,7 +9151,16 @@ async fn layout_mutation_cancellation_finishes_create() {
     })
     .await;
 
-    assert!(state.layouts.read().await.contains_key(&created_id));
+    assert!(
+        state
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
+            .read()
+            .await
+            .contains_key(&created_id)
+    );
 }
 
 #[cfg(feature = "persistence-test-hooks")]
@@ -9875,15 +9170,18 @@ async fn layout_mutation_cancellation_finishes_update() {
     let stored = SpatialLayout {
         id: "cancellation-update".to_owned(),
         name: "Before Cancellation Update".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
-    let barrier = state.layout_mutation_test_hooks.install(
+    let barrier = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Update,
         &stored.id,
@@ -9912,7 +9210,12 @@ async fn layout_mutation_cancellation_finishes_update() {
             .is_cancelled()
     );
     barrier.release();
-    let layouts_path = state.layouts_path.clone();
+    let layouts_path = state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog_path()
+        .to_path_buf();
     let durable_id = stored.id.clone();
     wait_for_async_condition(move || {
         let layouts_path = layouts_path.clone();
@@ -9928,7 +9231,7 @@ async fn layout_mutation_cancellation_finishes_update() {
     .await;
 
     assert_eq!(
-        state.layouts.read().await[&stored.id].name,
+        state.domains.layout.test_fixture().catalog().read().await[&stored.id].name,
         "After Cancellation Update"
     );
 }
@@ -9940,10 +9243,13 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
     let candidate = SpatialLayout {
         id: "cancellation-apply".to_owned(),
         name: "Cancellation Apply".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(candidate.id.clone(), candidate.clone());
@@ -9986,7 +9292,7 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
         let state = Arc::clone(&durable_state);
         let durable_id = durable_id.clone();
         async move {
-            if state.spatial_engine.read().await.layout().id != durable_id {
+            if state.spatial_engine.snapshot().layout().id != durable_id {
                 return false;
             }
             runtime_state::load(&state.runtime_state_path)
@@ -10004,14 +9310,14 @@ async fn layout_mutation_cancellation_finishes_apply_convergence() {
 #[tokio::test]
 async fn layout_mutation_cancellation_finishes_delete() {
     let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let fallback = SpatialLayout {
         id: "cancellation-delete-fallback".to_owned(),
         name: "Cancellation Delete Fallback".to_owned(),
         ..active.clone()
     };
     {
-        let mut layouts = state.layouts.write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(fallback.id.clone(), fallback.clone());
     }
@@ -10057,15 +9363,24 @@ async fn layout_mutation_cancellation_finishes_delete() {
         let removed_id = removed_id.clone();
         let durable_id = durable_id.clone();
         async move {
-            if state.layouts.read().await.contains_key(&removed_id)
-                || state.spatial_engine.read().await.layout().id != durable_id
+            if state
+                .domains
+                .layout
+                .test_fixture()
+                .catalog()
+                .read()
+                .await
+                .contains_key(&removed_id)
+                || state.spatial_engine.snapshot().layout().id != durable_id
             {
                 return false;
             }
-            let layouts_are_durable = hypercolor_daemon::layout_store::load(&state.layouts_path)
-                .is_ok_and(|layouts| {
-                    !layouts.contains_key(&removed_id) && layouts.contains_key(&durable_id)
-                });
+            let layouts_are_durable = hypercolor_daemon::layout_store::load(
+                state.domains.layout.test_fixture().catalog_path(),
+            )
+            .is_ok_and(|layouts| {
+                !layouts.contains_key(&removed_id) && layouts.contains_key(&durable_id)
+            });
             let runtime_is_durable = runtime_state::load(&state.runtime_state_path)
                 .ok()
                 .flatten()
@@ -10092,14 +9407,14 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
     let preview = SpatialLayout {
         id: "cancellation-preview".to_owned(),
         name: "Cancellation Preview".to_owned(),
-        ..state.spatial_engine.read().await.layout().as_ref().clone()
+        ..state.spatial_engine.snapshot().layout().as_ref().clone()
     };
-    let after_renderer = state.layout_mutation_test_hooks.install(
+    let after_renderer = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterRendererMutation,
         LayoutMutationTestOperation::Preview,
         &preview.id,
     );
-    let after_workflow = state.layout_mutation_test_hooks.install(
+    let after_workflow = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterWorkflow,
         LayoutMutationTestOperation::Preview,
         &preview.id,
@@ -10132,14 +9447,13 @@ async fn layout_mutation_cancellation_finishes_preview_connectivity_sync() {
     after_renderer.release();
     after_workflow.wait_until_entered().await;
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         "cancellation-preview"
     );
     assert!(
         state
             .spatial_engine
-            .read()
-            .await
+            .snapshot()
             .layout()
             .zones
             .iter()
@@ -10167,40 +9481,53 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
         .set_state(&device_id, DeviceState::Connected)
         .await;
     seed_stale_auto_layout_zone(&state, &device_id).await;
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     if saved_layout_present {
         state
-            .layouts
+            .domains
+            .layout
+            .test_fixture()
+            .catalog()
             .write()
             .await
             .insert(active.id.clone(), active.clone());
     }
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
+    let mut events = state.event_bus.subscribe_all();
     let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 2));
 
-    let mut runtime = state.driver_host.discovery_runtime();
-    runtime.layouts_path.clone_from(&state.layouts_path);
-    hypercolor_daemon::discovery::sync_active_layout_for_renderable_devices(&runtime, None).await;
+    let runtime = state.driver_host().discovery_runtime();
+    runtime
+        .layout
+        .test_workflows()
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
 
     let applied = renderer
         .await
         .expect("layout publication worker should not panic");
     assert_eq!(applied.len(), 2);
+    assert!(
+        drain_layout_changes(&mut events).is_empty(),
+        "a rolled-back repair never reached the store, so it publishes nothing"
+    );
     assert!(!applied[0].zones.is_empty());
     assert_eq!(applied[1], active);
-    assert_eq!(state.spatial_engine.read().await.layout().as_ref(), &active);
-    let layouts = state.layouts.read().await;
+    assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &active);
+    let layouts = state.domains.layout.test_fixture().catalog().read().await;
     assert_eq!(
         layouts.get(&active.id),
         saved_layout_present.then_some(&active)
     );
     drop(layouts);
-    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
-        .expect("layout store should load");
+    let persisted =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load");
     let persisted_active = persisted.get(&active.id).map(|layout| {
         hypercolor_core::spatial::SpatialEngine::try_new(layout.clone())
             .expect("persisted layout should rebuild")
@@ -10212,6 +9539,129 @@ async fn assert_auto_layout_store_failure_rolls_back(saved_layout_present: bool)
         persisted_active.as_ref(),
         saved_layout_present.then_some(&active)
     );
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_auto_repair_publishes_layout_changed_for_the_active_layout() {
+    let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
+    let device_id = insert_test_device(&state, "Repaired Auto Layout").await;
+    state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    seed_stale_auto_layout_zone(&state, &device_id).await;
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
+    state
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
+        .write()
+        .await
+        .insert(active.id.clone(), active.clone());
+    persist_current_layouts_for_test(&state).await;
+    let mut events = state.event_bus.subscribe_all();
+    let renderer = tokio::spawn(run_layout_publications(Arc::clone(&state), 1));
+
+    let runtime = state.driver_host().discovery_runtime();
+    runtime
+        .layout
+        .test_workflows()
+        .sync_active_layout_for_renderable_devices(runtime.clone(), None)
+        .await;
+
+    let applied = renderer
+        .await
+        .expect("layout publication worker should not panic");
+    assert_eq!(applied.len(), 1);
+    assert!(!applied[0].zones.is_empty());
+    assert_eq!(
+        drain_layout_changes(&mut events),
+        vec![(None, active.id)],
+        "a persisted repair names the active layout it rewrote"
+    );
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+fn injected_layout_store_failure(state: &AppState) -> InjectedWriterCleanup {
+    let cleanup = InjectedWriterCleanup::new(
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
+    );
+    cleanup.writer().set_injected_replace_failures(1);
+    cleanup
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_create_store_failure_publishes_nothing() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let mut events = state.event_bus.subscribe_all();
+    let cleanup = injected_layout_store_failure(&state);
+
+    let result = state
+        .domains
+        .layout
+        .create(hypercolor_types::api::layouts::CreateLayoutRequest {
+            name: "Doomed".to_owned(),
+            ..Default::default()
+        })
+        .await;
+
+    assert!(result.is_err(), "a failed store write rejects the create");
+    assert!(drain_layout_changes(&mut events).is_empty());
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_update_store_failure_publishes_nothing() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let kept = create_stored_layout(&state, "Kept").await;
+    let mut events = state.event_bus.subscribe_all();
+    let cleanup = injected_layout_store_failure(&state);
+
+    let result = state
+        .domains
+        .layout
+        .update(
+            kept.id.clone(),
+            hypercolor_types::api::layouts::UpdateLayoutRequest {
+                name: Some("Renamed".to_owned()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert!(result.is_err(), "a failed store write rejects the update");
+    assert!(drain_layout_changes(&mut events).is_empty());
+    cleanup.reset_and_flush();
+}
+
+#[cfg(feature = "persistence-test-hooks")]
+#[tokio::test]
+async fn layout_delete_store_failure_publishes_nothing() {
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
+    let kept = create_stored_layout(&state, "Kept").await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let mut events = state.event_bus.subscribe_all();
+    let cleanup = injected_layout_store_failure(&state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/layouts/{}", kept.id))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(drain_layout_changes(&mut events).is_empty());
     cleanup.reset_and_flush();
 }
 
@@ -10231,27 +9681,29 @@ async fn layout_auto_repair_store_failure_preserves_absent_saved_layout() {
 #[tokio::test]
 async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
     let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(active.id.clone(), active.clone());
     persist_current_layouts_for_test(&state).await;
     let configured_height = state
-        .config_manager
-        .as_ref()
+        .config_manager()
         .expect("config manager should exist")
         .get()
         .daemon
         .canvas_height;
     let reference = format!("1024x{configured_height}");
-    let after_memory = state.layout_mutation_test_hooks.install(
+    let after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::ConfigResize,
         &reference,
     );
-    let after_workflow = state.layout_mutation_test_hooks.install(
+    let after_workflow = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterWorkflow,
         LayoutMutationTestOperation::ConfigResize,
         &reference,
@@ -10261,14 +9713,7 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
     let request = tokio::spawn(async move {
         request_with_layout_ack(
             app,
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"daemon.canvas_width","value":"1024"}"#,
-                ))
-                .expect("failed to build request"),
+            config_put_request("daemon.canvas_width", &serde_json::json!(1024), None),
             &request_state,
         )
         .await
@@ -10285,9 +9730,12 @@ async fn layout_mutation_cancellation_finishes_config_canvas_resize() {
     );
     after_memory.release();
     after_workflow.wait_until_entered().await;
-    assert_eq!(state.layouts.read().await[&active.id].canvas_width, 1024);
     assert_eq!(
-        hypercolor_daemon::layout_store::load(&state.layouts_path)
+        state.domains.layout.test_fixture().catalog().read().await[&active.id].canvas_width,
+        1024
+    );
+    assert_eq!(
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load")[&active.id]
             .canvas_width,
         1024
@@ -10312,22 +9760,25 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
             circular: false,
             enabled: true,
         });
-    let mut stored = state.spatial_engine.read().await.layout().as_ref().clone();
+    let mut stored = state.spatial_engine.snapshot().layout().as_ref().clone();
     stored.id = "cancellation-simulator-prune".to_owned();
     stored.name = "Cancellation Simulator Prune".to_owned();
     stored.zones = vec![simulator_target_output(device_id)];
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
-    let after_memory = state.layout_mutation_test_hooks.install(
+    let after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
     );
-    let after_workflow = state.layout_mutation_test_hooks.install(
+    let after_workflow = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterWorkflow,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
@@ -10355,9 +9806,13 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
     );
     after_memory.release();
     after_workflow.wait_until_entered().await;
-    assert!(state.layouts.read().await[&stored.id].zones.is_empty());
     assert!(
-        hypercolor_daemon::layout_store::load(&state.layouts_path)
+        state.domains.layout.test_fixture().catalog().read().await[&stored.id]
+            .zones
+            .is_empty()
+    );
+    assert!(
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
             .expect("layout store should load")[&stored.id]
             .zones
             .is_empty()
@@ -10377,36 +9832,39 @@ async fn layout_mutation_cancellation_finishes_simulator_pruning() {
 #[tokio::test]
 async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
     let (state, _tmp) = test_state_with_temp_layout_config_and_simulator_stores();
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(active.id.clone(), active.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
-    let update_after_memory = state.layout_mutation_test_hooks.install(
+    let update_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Update,
         &active.id,
     );
     let configured_height = state
-        .config_manager
-        .as_ref()
+        .config_manager()
         .expect("config manager should exist")
         .get()
         .daemon
         .canvas_height;
     let resize_reference = format!("1024x{configured_height}");
-    let resize_before_guard = state.layout_mutation_test_hooks.install(
+    let resize_before_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::ConfigResize,
         &resize_reference,
     );
-    let resize_after_memory = state.layout_mutation_test_hooks.install(
+    let resize_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::ConfigResize,
         &resize_reference,
@@ -10432,14 +9890,7 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
     let resize = tokio::spawn(async move {
         request_with_layout_ack(
             app,
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/config/set")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"key":"daemon.canvas_width","value":"1024"}"#,
-                ))
-                .expect("failed to build request"),
+            config_put_request("daemon.canvas_width", &serde_json::json!(1024), None),
             &resize_state,
         )
         .await
@@ -10454,7 +9905,7 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
     );
     resize_after_memory.wait_until_entered().await;
     {
-        let layouts = state.layouts.read().await;
+        let layouts = state.domains.layout.test_fixture().catalog().read().await;
         assert_eq!(layouts[&active.id].name, active.name);
         assert_eq!(layouts[&active.id].canvas_width, 1024);
     }
@@ -10463,8 +9914,9 @@ async fn layout_update_compensation_cannot_erase_config_canvas_resize() {
         resize.await.expect("resize task should not panic").status(),
         StatusCode::OK
     );
-    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
-        .expect("layout store should load");
+    let persisted =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load");
     assert_eq!(persisted[&active.id].name, active.name);
     assert_eq!(persisted[&active.id].canvas_width, 1024);
     cleanup.reset_and_flush();
@@ -10487,31 +9939,35 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
             circular: false,
             enabled: true,
         });
-    let mut stored = state.spatial_engine.read().await.layout().as_ref().clone();
+    let mut stored = state.spatial_engine.snapshot().layout().as_ref().clone();
     stored.id = "simulator-prune-collision".to_owned();
     stored.name = "Simulator Prune Collision".to_owned();
     stored.zones = vec![simulator_target_output(device_id)];
     state
-        .layouts
+        .domains
+        .layout
+        .test_fixture()
+        .catalog()
         .write()
         .await
         .insert(stored.id.clone(), stored.clone());
     persist_current_layouts_for_test(&state).await;
     let cleanup = InjectedWriterCleanup::new(
-        AtomicFileWriter::new(&state.layouts_path).expect("layout writer should initialize"),
+        AtomicFileWriter::new(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout writer should initialize"),
     );
     cleanup.writer().set_injected_replace_failures(1);
-    let update_after_memory = state.layout_mutation_test_hooks.install(
+    let update_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::Update,
         &stored.id,
     );
-    let prune_before_guard = state.layout_mutation_test_hooks.install(
+    let prune_before_guard = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::BeforeGuard,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
     );
-    let prune_after_memory = state.layout_mutation_test_hooks.install(
+    let prune_after_memory = state.domains.layout.test_fixture().hooks().install(
         LayoutMutationTestPoint::AfterMemoryMutation,
         LayoutMutationTestOperation::SimulatorPrune,
         device_id.to_string(),
@@ -10553,7 +10009,7 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
     );
     prune_after_memory.wait_until_entered().await;
     {
-        let layouts = state.layouts.read().await;
+        let layouts = state.domains.layout.test_fixture().catalog().read().await;
         assert_eq!(layouts[&stored.id].name, stored.name);
         assert!(layouts[&stored.id].zones.is_empty());
     }
@@ -10565,17 +10021,19 @@ async fn layout_update_compensation_cannot_erase_simulator_pruning() {
             .status(),
         StatusCode::OK
     );
-    let persisted = hypercolor_daemon::layout_store::load(&state.layouts_path)
-        .expect("layout store should load");
+    let persisted =
+        hypercolor_daemon::layout_store::load(state.domains.layout.test_fixture().catalog_path())
+            .expect("layout store should load");
     assert_eq!(persisted[&stored.id].name, stored.name);
     assert!(persisted[&stored.id].zones.is_empty());
     cleanup.reset_and_flush();
 }
 
+#[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
 async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
     let state = Arc::new(isolated_state());
-    let active = state.spatial_engine.read().await.layout().as_ref().clone();
+    let active = state.spatial_engine.snapshot().layout().as_ref().clone();
     let mut invalid = layout_with_sampling_modes(
         SamplingMode::Bilinear,
         SamplingMode::GaussianArea {
@@ -10586,7 +10044,7 @@ async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
     invalid.id = "invalid-fallback".to_owned();
     invalid.name = "Invalid Fallback".to_owned();
     {
-        let mut layouts = state.layouts.write().await;
+        let mut layouts = state.domains.layout.test_fixture().catalog().write().await;
         layouts.insert(active.id.clone(), active.clone());
         layouts.insert(invalid.id.clone(), invalid.clone());
     }
@@ -10604,11 +10062,16 @@ async fn layout_delete_rolls_back_when_the_fallback_plan_is_rejected() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(state.spatial_engine.read().await.layout().as_ref(), &active);
-    let layouts = state.layouts.read().await;
+    assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &active);
+    let layouts = state.domains.layout.test_fixture().catalog().read().await;
     assert_eq!(layouts.get(&active.id), Some(&active));
     assert_eq!(layouts.get(&invalid.id), Some(&invalid));
-    assert!(state.scene_transactions.drain().is_empty());
+    assert_eq!(
+        state
+            .layout_publication_test_executor()
+            .pending_layout_publications(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -10652,13 +10115,7 @@ async fn layout_create_validates_input() {
 #[tokio::test]
 async fn layout_update_rejects_negative_output_sampling_radii_without_mutating() {
     let state = Arc::new(isolated_state());
-    let mut stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
-    stored.zones.clear();
-    state
-        .layouts
-        .write()
-        .await
-        .insert(stored.id.clone(), stored.clone());
+    let stored = create_stored_layout(&state, "Negative Radius Target").await;
 
     let invalid = layout_with_sampling_modes(
         SamplingMode::Bilinear,
@@ -10685,19 +10142,22 @@ async fn layout_update_rejects_negative_output_sampling_radii_without_mutating()
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
-    assert!(state.layouts.read().await[&stored.id].zones.is_empty());
+    assert!(
+        state
+            .domains
+            .layout
+            .resolve(&stored.id)
+            .await
+            .expect("stored layout should resolve")
+            .zones
+            .is_empty()
+    );
 }
 
 #[tokio::test]
 async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
     let state = Arc::new(isolated_state());
-    let mut stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
-    stored.zones.clear();
-    state
-        .layouts
-        .write()
-        .await
-        .insert(stored.id.clone(), stored.clone());
+    let stored = create_stored_layout(&state, "Gaussian Radius Target").await;
     let invalid = layout_with_sampling_modes(
         SamplingMode::Bilinear,
         SamplingMode::GaussianArea {
@@ -10722,19 +10182,27 @@ async fn layout_update_rejects_unaddressable_gaussian_without_mutating() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(state.layouts.read().await[&stored.id], stored);
-    assert!(state.scene_transactions.drain().is_empty());
+    assert_eq!(
+        state
+            .domains
+            .layout
+            .resolve(&stored.id)
+            .await
+            .expect("stored layout should resolve"),
+        stored
+    );
+    assert_eq!(
+        state
+            .layout_publication_test_executor()
+            .pending_layout_publications(),
+        0
+    );
 }
 
 #[tokio::test]
 async fn layout_update_rejects_invalid_geometry_without_mutating() {
     let state = Arc::new(isolated_state());
-    let stored = layout_with_sampling_modes(SamplingMode::Bilinear, SamplingMode::Bilinear);
-    state
-        .layouts
-        .write()
-        .await
-        .insert(stored.id.clone(), stored.clone());
+    let stored = create_stored_layout(&state, "Invalid Geometry Target").await;
 
     let app = test_app_with_state(Arc::clone(&state));
     let response = app
@@ -10757,13 +10225,21 @@ async fn layout_update_rejects_invalid_geometry_without_mutating() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(state.layouts.read().await[&stored.id], stored);
+    assert_eq!(
+        state
+            .domains
+            .layout
+            .resolve(&stored.id)
+            .await
+            .expect("stored layout should resolve"),
+        stored
+    );
 }
 
 #[tokio::test]
 async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
     let state = Arc::new(isolated_state());
-    let original_layout_id = state.spatial_engine.read().await.layout().id.clone();
+    let original_layout_id = state.spatial_engine.snapshot().layout().id.clone();
     let app = test_app_with_state(Arc::clone(&state));
     let negative = SamplingMode::AreaAverage {
         radius_x: -1.0,
@@ -10822,7 +10298,7 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
     }
 
     assert_eq!(
-        state.spatial_engine.read().await.layout().id,
+        state.spatial_engine.snapshot().layout().id,
         original_layout_id
     );
 }
@@ -10830,7 +10306,7 @@ async fn layout_preview_rejects_invalid_sampling_radii_without_mutating() {
 #[tokio::test]
 async fn layout_preview_rejects_invalid_geometry_without_mutating() {
     let state = Arc::new(isolated_state());
-    let original = state.spatial_engine.read().await.layout().as_ref().clone();
+    let original = state.spatial_engine.snapshot().layout().as_ref().clone();
 
     for (width, height) in [(0, original.canvas_height), (u32::MAX, u32::MAX)] {
         let mut invalid = original.clone();
@@ -10845,44 +10321,35 @@ async fn layout_preview_rejects_invalid_geometry_without_mutating() {
         .await;
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(
-            state.spatial_engine.read().await.layout().as_ref(),
-            &original
-        );
+        assert_eq!(state.spatial_engine.snapshot().layout().as_ref(), &original);
     }
 }
 
 // ── Effect Layout Associations ──────────────────────────────────────────
 
-fn test_state_with_temp_effect_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.effect_layout_links_path = dir.path().join("effect-layouts.json");
-    (Arc::new(state), dir)
-}
-
 fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.layouts_path = dir.path().join("layouts.json");
-    state.runtime_state_path = dir.path().join("runtime-state.json");
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("test data directory should be created");
+    let state = AppStateBuilder::new(data_dir)
+        .with_runtime_state_path(dir.path().join("runtime-state.json"))
+        .build();
     (Arc::new(state), dir)
 }
 
 #[cfg(feature = "persistence-test-hooks")]
 fn test_state_with_temp_layout_config_and_simulator_stores() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.layouts_path = dir.path().join("layouts.json");
-    state.runtime_state_path = dir.path().join("runtime-state.json");
-    state.logical_devices_path = dir.path().join("logical-devices.json");
-    state.config_manager = Some(Arc::new(
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("test data directory should be created");
+    let config_manager = Arc::new(
         ConfigManager::new(dir.path().join("hypercolor.toml"))
             .expect("config manager should initialize"),
-    ));
-    state.simulated_displays = Arc::new(tokio::sync::RwLock::new(SimulatedDisplayStore::new(
-        dir.path().join("simulated-displays.json"),
-    )));
+    );
+    let state = AppStateBuilder::new(data_dir)
+        .with_config_manager(config_manager)
+        .with_runtime_state_path(dir.path().join("runtime-state.json"))
+        .build();
     (Arc::new(state), dir)
 }
 
@@ -10913,246 +10380,18 @@ fn simulator_target_output(device_id: DeviceId) -> Output {
 
 #[cfg(feature = "persistence-test-hooks")]
 async fn persist_current_layouts_for_test(state: &Arc<AppState>) {
-    let layouts = state.layouts.read().await;
-    hypercolor_daemon::layout_store::save(&state.layouts_path, &layouts)
-        .expect("test layout store should persist");
+    let layouts = state.domains.layout.test_fixture().catalog().read().await;
+    let mut entries = layouts.values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    let payload = serde_json::to_vec_pretty(&entries).expect("layout fixture should serialize");
+    std::fs::write(state.domains.layout.test_fixture().catalog_path(), payload)
+        .expect("layout fixture should write");
 }
 
 fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.device_settings = Arc::new(tokio::sync::RwLock::new(DeviceSettingsStore::new(
-        dir.path().join("device-settings.json"),
-    )));
-    state.runtime_state_path = dir.path().join("runtime-state.json");
+    let state = AppState::new_with_data_dir(dir.path().to_path_buf());
     (Arc::new(state), dir)
-}
-
-#[tokio::test]
-async fn effect_layout_association_crud_persists_to_disk() {
-    let (state, _tmp) = test_state_with_temp_effect_layout_store();
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let create_layout_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/layouts")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Effect Bound Layout","canvas_width":640,"canvas_height":360}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_layout_response.status(), StatusCode::CREATED);
-    let create_layout_json = body_json(create_layout_response).await;
-    let layout_id = create_layout_json["data"]["id"]
-        .as_str()
-        .expect("layout id should be string")
-        .to_owned();
-
-    let link_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/effects/solid_color/layout")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"layout_id":"{layout_id}"}}"#)))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(link_response.status(), StatusCode::OK);
-    let link_json = body_json(link_response).await;
-    assert_eq!(link_json["data"]["linked"], true);
-    assert_eq!(link_json["data"]["layout"]["id"], layout_id);
-    let effect_id = link_json["data"]["effect"]["id"]
-        .as_str()
-        .expect("effect id should be string")
-        .to_owned();
-
-    let get_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/solid_color/layout")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let get_json = body_json(get_response).await;
-    assert_eq!(get_json["data"]["layout_id"], layout_id);
-    assert_eq!(get_json["data"]["resolved"], true);
-
-    let persisted_raw = std::fs::read_to_string(&state.effect_layout_links_path)
-        .expect("effect layout persistence file should exist");
-    let persisted: serde_json::Value =
-        serde_json::from_str(&persisted_raw).expect("effect layout map should be valid JSON");
-    assert_eq!(persisted[&effect_id], layout_id);
-
-    let delete_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/v1/effects/solid_color/layout")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(delete_response.status(), StatusCode::OK);
-    let delete_json = body_json(delete_response).await;
-    assert_eq!(delete_json["data"]["deleted"], true);
-
-    let get_after_delete_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/solid_color/layout")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(get_after_delete_response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn applying_effect_auto_applies_associated_layout() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let resp_layout_a = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/layouts")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Layout A"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(resp_layout_a.status(), StatusCode::CREATED);
-    let json_layout_a = body_json(resp_layout_a).await;
-    let first_layout_id = json_layout_a["data"]["id"]
-        .as_str()
-        .expect("layout A id should be string")
-        .to_owned();
-
-    let resp_layout_b = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/layouts")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Layout B"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(resp_layout_b.status(), StatusCode::CREATED);
-    let json_layout_b = body_json(resp_layout_b).await;
-    let layout_b_id = json_layout_b["data"]["id"]
-        .as_str()
-        .expect("layout B id should be string")
-        .to_owned();
-
-    let _ = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/effects/solid_color/layout")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(r#"{{"layout_id":"{layout_b_id}"}}"#)))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    let _ = request_with_layout_ack(
-        app.clone(),
-        Request::builder()
-            .method("POST")
-            .uri(format!("/api/v1/layouts/{first_layout_id}/apply"))
-            .body(Body::empty())
-            .expect("failed to build request"),
-        &state,
-    )
-    .await;
-
-    let (apply_effect_response, _) = request_with_layout_ack(
-        app.clone(),
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/effects/solid_color/apply")
-            .body(Body::empty())
-            .expect("failed to build request"),
-        &state,
-    )
-    .await;
-    assert_eq!(apply_effect_response.status(), StatusCode::OK);
-    let apply_effect_json = body_json(apply_effect_response).await;
-    assert_eq!(apply_effect_json["data"]["layout"]["applied"], true);
-    assert_eq!(
-        apply_effect_json["data"]["layout"]["associated_layout_id"],
-        layout_b_id
-    );
-
-    let active_layout_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/layouts/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_layout_response.status(), StatusCode::OK);
-    let active_layout_json = body_json(active_layout_response).await;
-    assert_eq!(active_layout_json["data"]["id"], layout_b_id);
-}
-
-#[tokio::test]
-async fn apply_effect_rejects_unimplemented_transition_requests() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "solid_color").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/solid_color/apply")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"transition":{"type":"crossfade","duration_ms":250}}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "bad_request");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .expect("error message should be a string")
-            .contains("only immediate cut applies"),
-    );
 }
 
 #[tokio::test]
@@ -11173,129 +10412,6 @@ async fn apply_effect_rejects_display_face_effects() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "validation_error");
-}
-
-#[tokio::test]
-async fn apply_effect_mutates_active_scene_not_default_if_named_active() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "Aurora").await;
-    insert_test_effect(&state, "Sunset").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let default_apply = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/Aurora/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(default_apply.status(), StatusCode::OK);
-
-    let default_effect_id = {
-        let manager = state.scene_manager.read().await;
-        manager
-            .get(&SceneId::DEFAULT)
-            .and_then(Scene::primary_group)
-            .and_then(|group| group.effect_id)
-            .expect("default scene should retain its Default-zone effect")
-            .to_string()
-    };
-
-    let named_scene_id = activate_empty_test_scene(&state, "Focus").await;
-
-    let named_apply = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/effects/Sunset/apply")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(named_apply.status(), StatusCode::OK);
-
-    let named_primary_group_id = {
-        let manager = state.scene_manager.read().await;
-        let default_scene = manager
-            .get(&SceneId::DEFAULT)
-            .expect("default scene should still exist");
-        assert_eq!(
-            default_scene
-                .primary_group()
-                .and_then(|group| group.effect_id)
-                .map(|effect_id| effect_id.to_string()),
-            Some(default_effect_id.clone())
-        );
-
-        let active_scene = manager
-            .active_scene()
-            .expect("named scene should stay active");
-        assert_eq!(active_scene.id, named_scene_id);
-        let primary = active_scene
-            .primary_group()
-            .expect("named scene should gain a primary group");
-        assert_ne!(
-            primary.effect_id.map(|effect_id| effect_id.to_string()),
-            Some(default_effect_id.clone())
-        );
-        primary.id.to_string()
-    };
-
-    let active_named = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_named.status(), StatusCode::OK);
-    let active_named_json = body_json(active_named).await;
-    assert_eq!(active_named_json["data"]["name"], "Sunset");
-    assert_eq!(
-        active_named_json["data"]["render_group_id"],
-        named_primary_group_id
-    );
-
-    let deactivate = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/scenes/deactivate")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(deactivate.status(), StatusCode::OK);
-
-    let active_default = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_default.status(), StatusCode::OK);
-    let active_default_json = body_json(active_default).await;
-    assert_eq!(active_default_json["data"]["name"], "Aurora");
-    assert_ne!(
-        active_default_json["data"]["render_group_id"],
-        named_primary_group_id
-    );
 }
 
 #[tokio::test]
@@ -11317,15 +10433,15 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
         .expect("failed to execute request");
     assert_eq!(response.status(), StatusCode::OK);
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     let default_scene = manager
         .get(&SceneId::DEFAULT)
         .expect("default scene should still exist");
     let default_primary = default_scene
-        .primary_group()
+        .primary_zone()
         .expect("default scene should keep its Default zone");
     assert!(
-        default_primary.effect_id.is_none(),
+        default_primary.effect_ids().next().is_none(),
         "default scene should not be mutated while a named scene is active"
     );
 
@@ -11335,8 +10451,8 @@ async fn activating_named_scene_then_applying_effect_mutates_named_scene() {
     assert_eq!(active_scene.id, named_scene_id);
     assert!(
         active_scene
-            .primary_group()
-            .and_then(|group| group.effect_id)
+            .primary_zone()
+            .and_then(|zone| zone.effect_ids().next())
             .is_some()
     );
 }
@@ -11369,11 +10485,11 @@ async fn apply_effect_conflicts_when_snapshot_scene_is_active() {
             .contains("snapshot mode"),
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .active_scene()
-            .and_then(Scene::primary_group)
+            .and_then(Scene::primary_zone)
             .is_none(),
         "snapshot scene should not be rewritten by effect apply",
     );
@@ -11388,7 +10504,7 @@ async fn error_responses_have_correct_envelope() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/api/v1/profiles/nonexistent")
+                .uri("/api/v1/scenes/nonexistent")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -11404,7 +10520,7 @@ async fn error_responses_have_correct_envelope() {
     assert!(json["meta"].is_object(), "meta key should be an object");
 
     // Error object must have `code` and `message`.
-    assert_eq!(json["error"]["code"], "not_found");
+    assert_eq!(json["error"]["code"], "scene_not_found");
     assert!(
         json["error"]["message"].is_string(),
         "error.message should be a string"
@@ -11492,8 +10608,6 @@ async fn discover_devices_rejects_unknown_target() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "validation_error");
 }
 
 #[tokio::test]
@@ -11540,7 +10654,7 @@ async fn identify_device_not_found() {
 
 #[tokio::test]
 async fn update_device_persists_name_enabled_and_brightness_state() {
-    let (state, tmp) = test_state_with_temp_output_store();
+    let (state, _tmp) = test_state_with_temp_output_store();
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -11580,11 +10694,15 @@ async fn update_device_persists_name_enabled_and_brightness_state() {
     assert_eq!(get_json["data"]["status"], "disabled");
     assert_eq!(get_json["data"]["brightness"], 27);
 
-    let persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+    let persisted_raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let persisted_device = &persisted_json["devices"][device_id.to_string()];
+    let settings_key =
+        hypercolor_daemon::device_settings::device_settings_keys(&state.device_registry, device_id)
+            .await
+            .canonical;
+    let persisted_device = &persisted_json["devices"][settings_key.as_str()];
     assert_eq!(persisted_device["name"], "Desk Strip Renamed");
     assert_eq!(persisted_device["disabled"], true);
     assert_eq!(persisted_device["brightness"], serde_json::json!(0.27));
@@ -11620,7 +10738,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -11639,7 +10757,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
             features: DeviceFeatures::default(),
         },
     };
-    let fingerprint = DeviceFingerprint("wled:studio-strip".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("wled:studio-strip".to_owned());
     state
         .device_registry
         .add_discovered(DiscoveredDevice {
@@ -11652,7 +10770,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
         .await;
     state
         .device_registry
-        .update_user_settings(&device_id, None, Some(false), None)
+        .update_user_settings(&device_id, None, Some(false), None, None)
         .await
         .expect("device settings should update");
     state
@@ -11714,7 +10832,7 @@ async fn get_device_controls_returns_host_control_surface() {
     assert_eq!(data["surface_id"], format!("device:{device_id}"));
     assert_eq!(data["schema_version"], 1);
     assert_eq!(data["scope"]["device"]["driver_id"], "wled");
-    assert_eq!(data["values"]["name"]["kind"], "string");
+    assert_eq!(data["values"]["name"]["kind"], "text");
     assert_eq!(data["values"]["name"]["value"], "Desk Strip");
     assert_eq!(data["values"]["enabled"]["kind"], "bool");
     assert_eq!(data["values"]["enabled"]["value"], true);
@@ -11749,7 +10867,7 @@ async fn get_device_controls_returns_host_control_surface() {
     );
     assert_eq!(
         identify["input_fields"][0]["default_value"]["kind"],
-        "duration_ms"
+        "duration"
     );
     assert_eq!(identify["input_fields"][0]["default_value"]["value"], 3000);
     assert_eq!(identify["input_fields"][1]["id"], "color");
@@ -11761,7 +10879,7 @@ async fn get_device_controls_returns_host_control_surface() {
 
 #[tokio::test]
 async fn patch_device_control_surface_updates_user_settings() {
-    let (state, tmp) = test_state_with_temp_output_store();
+    let (state, _tmp) = test_state_with_temp_output_store();
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -11780,26 +10898,12 @@ async fn patch_device_control_surface_updates_user_settings() {
     let revision = surface_json["data"]["revision"]
         .as_u64()
         .expect("revision should be an integer");
-    let surface_id = format!("device:{device_id}");
-
     let body = serde_json::json!({
-        "surface_id": surface_id,
-        "expected_revision": revision,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "name",
-                "value": { "kind": "string", "value": "Desk Strip Controls" }
-            },
-            {
-                "field_id": "enabled",
-                "value": { "kind": "bool", "value": false }
-            },
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.5 }
-            }
-        ]
+        "values": {
+            "name": { "kind": "text", "value": "Desk Strip Controls" },
+            "enabled": { "kind": "bool", "value": false },
+            "brightness": { "kind": "float", "value": 0.5 }
+        }
     });
 
     let response = app
@@ -11851,11 +10955,15 @@ async fn patch_device_control_surface_updates_user_settings() {
     assert_eq!(get_json["data"]["status"], "disabled");
     assert_eq!(get_json["data"]["brightness"], 50);
 
-    let persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+    let persisted_raw = fs::read_to_string(state.state_dir.join("device-settings.json"))
         .expect("device settings file should exist");
     let persisted_json: serde_json::Value =
         serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
-    let persisted_device = &persisted_json["devices"][device_id.to_string()];
+    let settings_key =
+        hypercolor_daemon::device_settings::device_settings_keys(&state.device_registry, device_id)
+            .await
+            .canonical;
+    let persisted_device = &persisted_json["devices"][settings_key.as_str()];
     assert_eq!(persisted_device["name"], "Desk Strip Controls");
     assert_eq!(persisted_device["disabled"], true);
     assert_eq!(persisted_device["brightness"], serde_json::json!(0.5));
@@ -11868,22 +10976,6 @@ async fn patch_device_control_surface_publishes_values_changed_event() {
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
 
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/controls"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
     let response = app
         .oneshot(
             Request::builder()
@@ -11894,15 +10986,9 @@ async fn patch_device_control_surface_publishes_values_changed_event() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "surface_id": format!("device:{device_id}"),
-                        "expected_revision": revision,
-                        "dry_run": false,
-                        "changes": [
-                            {
-                                "field_id": "brightness",
-                                "value": { "kind": "float", "value": 0.42 }
-                            }
-                        ]
+                        "values": {
+                            "brightness": { "kind": "float", "value": 0.42 }
+                        }
                     })
                     .to_string(),
                 ))
@@ -11979,8 +11065,11 @@ async fn invoke_host_device_control_surface_identify_action_returns_typed_result
                 .body(Body::from(
                     serde_json::json!({
                         "input": {
-                            "duration_ms": { "kind": "duration_ms", "value": 1 },
-                            "color": { "kind": "color_rgb", "value": [128, 64, 255] }
+                            "duration_ms": { "kind": "duration", "value": 1 },
+                            "color": {
+                                "kind": "color_rgb",
+                                "value": { "r": 128, "g": 64, "b": 255 }
+                            }
                         }
                     })
                     .to_string(),
@@ -12034,72 +11123,6 @@ async fn invoke_host_device_control_surface_identify_action_returns_typed_result
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_dry_run_does_not_mutate_settings() {
-    let state = Arc::new(isolated_state());
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/controls"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
-    let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": revision,
-        "dry_run": true,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
-    });
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!(
-                    "/api/v1/control-surfaces/device:{device_id}/values"
-                ))
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["previous_revision"], revision);
-    assert_eq!(json["data"]["revision"], revision);
-    assert_eq!(
-        json["data"]["accepted"].as_array().expect("accepted").len(),
-        1
-    );
-    assert_eq!(json["data"]["values"]["brightness"]["value"], 1.0);
-
-    let tracked = state
-        .device_registry
-        .get(&device_id)
-        .await
-        .expect("device should remain tracked");
-    assert_eq!(tracked.user_settings.brightness, 1.0);
-}
-
-#[tokio::test]
 async fn patch_device_control_surface_revision_is_device_local() {
     let (state, _tmp) = test_state_with_temp_output_store();
     let device_id = insert_test_device(&state, "Desk Strip").await;
@@ -12124,20 +11147,20 @@ async fn patch_device_control_surface_revision_is_device_local() {
 
     state
         .device_registry
-        .update_user_settings(&unrelated_id, Some("Shelf Renamed".to_owned()), None, None)
+        .update_user_settings(
+            &unrelated_id,
+            Some("Shelf Renamed".to_owned()),
+            None,
+            None,
+            None,
+        )
         .await
         .expect("unrelated device should update");
 
     let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": revision,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
+        "values": {
+            "brightness": { "kind": "float", "value": 0.25 }
+        }
     });
 
     let response = app
@@ -12162,75 +11185,6 @@ async fn patch_device_control_surface_revision_is_device_local() {
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_rejects_stale_revision() {
-    let state = Arc::new(isolated_state());
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let surface_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/controls"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(surface_response.status(), StatusCode::OK);
-    let surface_json = body_json(surface_response).await;
-    let revision = surface_json["data"]["revision"]
-        .as_u64()
-        .expect("revision should be an integer");
-
-    state
-        .device_registry
-        .update_user_settings(&device_id, None, None, Some(0.75))
-        .await
-        .expect("device should update");
-
-    let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": revision,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
-    });
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!(
-                    "/api/v1/control-surfaces/device:{device_id}/values"
-                ))
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "conflict");
-    assert_eq!(
-        json["error"]["details"]["kind"],
-        "control_surface_revision_conflict"
-    );
-    assert_eq!(
-        json["error"]["details"]["surface_id"],
-        format!("device:{device_id}")
-    );
-    assert_eq!(json["error"]["details"]["expected_revision"], revision);
-    assert_eq!(json["error"]["details"]["current_revision"], revision + 1);
-}
-
-#[tokio::test]
 async fn patch_device_control_surface_rejects_invalid_payloads() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
@@ -12238,67 +11192,37 @@ async fn patch_device_control_surface_rejects_invalid_payloads() {
 
     let cases = [
         (
-            serde_json::json!([
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "float", "value": 0.25 }
-                },
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "float", "value": 0.5 }
-                }
-            ]),
-            "duplicate_control_field",
-            "brightness",
-        ),
-        (
-            serde_json::json!([
-                {
-                    "field_id": "unknown",
-                    "value": { "kind": "bool", "value": true }
-                }
-            ]),
+            serde_json::json!({
+                "unknown": { "kind": "bool", "value": true }
+            }),
             "unknown_control_field",
             "unknown",
         ),
         (
-            serde_json::json!([
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "string", "value": "bright" }
-                }
-            ]),
+            serde_json::json!({
+                "brightness": { "kind": "text", "value": "bright" }
+            }),
             "control_value_type_mismatch",
             "brightness",
         ),
         (
-            serde_json::json!([
-                {
-                    "field_id": "brightness",
-                    "value": { "kind": "float", "value": 1.25 }
-                }
-            ]),
+            serde_json::json!({
+                "brightness": { "kind": "float", "value": 1.25 }
+            }),
             "control_value_out_of_range",
             "brightness",
         ),
         (
-            serde_json::json!([
-                {
-                    "field_id": "name",
-                    "value": { "kind": "string", "value": "   " }
-                }
-            ]),
+            serde_json::json!({
+                "name": { "kind": "text", "value": "   " }
+            }),
             "invalid_control_value",
             "name",
         ),
     ];
 
-    for (changes, kind, field_id) in cases {
-        let body = serde_json::json!({
-            "surface_id": format!("device:{device_id}"),
-            "dry_run": false,
-            "changes": changes,
-        });
+    for (values, kind, field_id) in cases {
+        let body = serde_json::json!({ "values": values });
 
         let response = app
             .clone()
@@ -12324,20 +11248,16 @@ async fn patch_device_control_surface_rejects_invalid_payloads() {
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_rejects_route_body_surface_mismatch() {
+async fn patch_device_control_surface_rejects_retired_body_identity() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let body = serde_json::json!({
         "surface_id": "device:not-the-route",
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
+        "values": {
+            "brightness": { "kind": "float", "value": 0.25 }
+        }
     });
 
     let response = app
@@ -12355,30 +11275,15 @@ async fn patch_device_control_surface_rejects_route_body_surface_mismatch() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "validation_error");
-    assert_eq!(json["error"]["details"]["kind"], "control_surface_mismatch");
-    assert_eq!(
-        json["error"]["details"]["route_surface_id"],
-        format!("device:{device_id}")
-    );
-    assert_eq!(
-        json["error"]["details"]["body_surface_id"],
-        "device:not-the-route"
-    );
 }
 
 #[tokio::test]
-async fn patch_device_control_surface_rejects_empty_changes_with_details() {
+async fn patch_device_control_surface_rejects_empty_values_with_details() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
-    let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "dry_run": false,
-        "changes": []
-    });
+    let body = serde_json::json!({ "values": {} });
 
     let response = app
         .oneshot(
@@ -12397,7 +11302,7 @@ async fn patch_device_control_surface_rejects_empty_changes_with_details() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
-    assert_eq!(json["error"]["details"]["kind"], "empty_control_changes");
+    assert_eq!(json["error"]["details"]["kind"], "empty_control_values");
     assert_eq!(
         json["error"]["details"]["surface_id"],
         format!("device:{device_id}")
@@ -12405,7 +11310,37 @@ async fn patch_device_control_surface_rejects_empty_changes_with_details() {
 }
 
 #[tokio::test]
-async fn patch_missing_device_control_surface_returns_not_found_before_revision_conflict() {
+async fn patch_device_control_surface_rejects_binding_clears() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/v1/control-surfaces/device:{device_id}/values"
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "clear_bindings": ["brightness"]
+                    })
+                    .to_string(),
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["details"]["field"], "clear_bindings");
+}
+
+#[tokio::test]
+async fn patch_missing_device_control_surface_returns_not_found() {
     let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -12417,15 +11352,9 @@ async fn patch_missing_device_control_surface_returns_not_found_before_revision_
         .expect("device should exist before removal");
 
     let body = serde_json::json!({
-        "surface_id": format!("device:{device_id}"),
-        "expected_revision": 999,
-        "dry_run": false,
-        "changes": [
-            {
-                "field_id": "brightness",
-                "value": { "kind": "float", "value": 0.25 }
-            }
-        ]
+        "values": {
+            "brightness": { "kind": "float", "value": 0.25 }
+        }
     });
 
     let response = app
@@ -12453,7 +11382,7 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
 
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(DisconnectRecordingBackend::new(
+        manager.register_backend(Arc::new(DisconnectRecordingBackend::new(
             device_id,
             Arc::clone(&disconnects),
         )));
@@ -12465,7 +11394,8 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
         .await
         .expect("device should exist");
     let layout_device_id = {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let discovery = state.driver_host().discovery_runtime();
+        let mut lifecycle = discovery.lifecycle_manager.lock().await;
         let _actions = lifecycle.on_discovered(device_id, &tracked.info, None);
         lifecycle
             .layout_device_id_for(device_id)
@@ -12482,7 +11412,8 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
         .expect("device should connect for disable flow");
 
     {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let discovery = state.driver_host().discovery_runtime();
+        let mut lifecycle = discovery.lifecycle_manager.lock().await;
         lifecycle
             .on_connected(device_id)
             .expect("connect transition should succeed");
@@ -12540,19 +11471,77 @@ async fn list_displays_only_returns_display_capable_devices() {
     assert_eq!(items[0]["width"], 320);
     assert_eq!(items[0]["height"], 320);
     assert_eq!(items[0]["circular"], true);
+
+    assert!(
+        state
+            .scene_manager
+            .snapshot()
+            .await
+            .active_scene()
+            .and_then(|scene| scene.display_zone_for(display_id))
+            .is_none(),
+        "display listing must not mutate the active scene"
+    );
+}
+
+/// A stack of identical wireless LCD fans ships identical names; the port
+/// is what tells them apart.
+async fn insert_test_display_device_at_port(
+    state: &Arc<AppState>,
+    name: &str,
+    usb_path: &str,
+) -> DeviceId {
+    let id = DeviceId::new();
+    let mut info = DeviceInfo {
+        id,
+        name: name.to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::new_static("lianli", "Lian Li"),
+        model: None,
+        connection_type: ConnectionType::Usb,
+        origin: DeviceOrigin::native("lianli", "usb", ConnectionType::Usb),
+        segments: vec![SegmentInfo {
+            name: "Display".to_owned(),
+            led_count: 0,
+            topology: DeviceTopologyHint::Display {
+                width: 400,
+                height: 400,
+                circular: true,
+                format: DisplayFrameFormat::Jpeg,
+            },
+            color_format: DeviceColorFormat::Rgb,
+            layout_hint: None,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    info.sync_display_capabilities();
+    let fingerprint = DeviceFingerprint::from_persisted(format!("usb:lianli:{usb_path}"));
+    let metadata = HashMap::from([("usb_path".to_owned(), usb_path.to_owned())]);
+    state
+        .device_registry
+        .add_with_fingerprint_and_metadata(info, fingerprint, metadata)
+        .await
 }
 
 #[tokio::test]
-async fn active_scene_syncs_empty_screen_surface_for_display_device() {
+async fn list_displays_tells_identical_panels_apart_by_port_and_honours_user_names() {
     let state = Arc::new(isolated_state());
-    let display_id = insert_test_display_device(&state, "Ableton Push 2").await;
+    let left = insert_test_display_device_at_port(&state, "Fan LCD", "1-1.2").await;
+    let right = insert_test_display_device_at_port(&state, "Fan LCD", "1-1.3").await;
+    let renamed = insert_test_display_device_at_port(&state, "Fan LCD", "1-1.4").await;
+    state
+        .device_registry
+        .update_user_settings(&renamed, Some("Top Left Fan".to_owned()), None, None, None)
+        .await
+        .expect("device exists");
+    let lone = insert_test_display_device(&state, "Pump LCD").await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
-        .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/v1/scenes/active")
+                .uri("/api/v1/displays")
                 .body(Body::empty())
                 .expect("failed to build request"),
         )
@@ -12561,134 +11550,61 @@ async fn active_scene_syncs_empty_screen_surface_for_display_device() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
-    let groups = json["data"]["groups"]
+    let names: HashMap<String, String> = json["data"]
         .as_array()
-        .expect("groups should be an array");
-    let display_group = groups
+        .expect("array")
         .iter()
-        .find(|group| group["role"] == "display")
-        .expect("display-capable device should have a screen surface");
-    assert_eq!(display_group["name"], "Ableton Push 2");
+        .map(|item| {
+            (
+                item["id"].as_str().expect("id").to_owned(),
+                item["name"].as_str().expect("name").to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(names[&left.to_string()], "Fan LCD (USB 1-1.2)");
+    assert_eq!(names[&right.to_string()], "Fan LCD (USB 1-1.3)");
     assert_eq!(
-        display_group["display_target"]["device_id"],
-        display_id.to_string()
+        names[&renamed.to_string()],
+        "Top Left Fan",
+        "a user name is unique on its own"
     );
-    assert!(display_group["effect_id"].is_null());
-    assert_eq!(display_group["layers"].as_array().map(Vec::len), Some(0));
-    assert_eq!(display_group["layout"]["canvas_width"], 320);
-    assert_eq!(display_group["layout"]["canvas_height"], 320);
-
-    let scene_id = json["data"]["id"]
-        .as_str()
-        .expect("scene id should be present");
-    let group_id = display_group["id"]
-        .as_str()
-        .expect("group id should be present");
-    let layers_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
-                ))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(layers_response.status(), StatusCode::OK);
-    let layers_json = body_json(layers_response).await;
     assert_eq!(
-        layers_json["data"]["items"].as_array().map(Vec::len),
-        Some(0)
+        names[&lone.to_string()],
+        "Pump LCD",
+        "a lone name is untouched"
     );
-
-    let face_response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(face_response.status(), StatusCode::OK);
-    let face_json = body_json(face_response).await;
-    assert!(face_json["data"].is_null());
 }
 
 #[tokio::test]
-async fn display_face_layer_stack_includes_legacy_face_beside_media() {
+async fn patch_display_face_controls_rejects_binding_clears() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
-    let face = insert_test_display_face_effect(&state, "System Monitor").await;
-    let scene_id = activate_display_face_test_scene_with_layers(
-        &state,
-        "Desk Scene",
-        face.id,
-        display_id,
-        vec![test_media_layer()],
-    )
-    .await;
-    let group_id = {
-        let manager = state.scene_manager.read().await;
-        manager
-            .active_scene()
-            .and_then(|scene| scene.display_group_for(display_id))
-            .expect("display group should be active")
-            .id
-    };
     let app = test_app_with_state(Arc::clone(&state));
 
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "clear_bindings": ["label"]
+                    })
+                    .to_string(),
                 ))
-                .body(Body::empty())
                 .expect("failed to build request"),
         )
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
-    let items = json["data"]["items"]
-        .as_array()
-        .expect("layer stack should serialize as an array");
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0]["source"]["type"], "effect");
-    assert_eq!(items[0]["source"]["effect_id"], face.id.to_string());
-    assert_eq!(items[1]["source"]["type"], "media");
+    assert_eq!(json["error"]["details"]["field"], "clear_bindings");
 }
 
 #[tokio::test]
-async fn active_scene_does_not_sync_screen_surfaces_into_snapshot_scene() {
-    let state = Arc::new(isolated_state());
-    let _display_id = insert_test_display_device(&state, "Ableton Push 2").await;
-    let scene_id =
-        activate_empty_test_scene_with_mode(&state, "Locked", SceneMutationMode::Snapshot).await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/scenes/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["id"], scene_id.to_string());
-    assert_eq!(json["data"]["groups"].as_array().map(Vec::len), Some(0));
-}
-
-#[tokio::test]
-async fn delete_face_idempotent_when_no_group_present() {
+async fn delete_face_idempotent_when_no_zone_present() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -12713,7 +11629,7 @@ async fn delete_face_idempotent_when_no_group_present() {
 }
 
 #[tokio::test]
-async fn get_face_returns_null_when_no_display_group() {
+async fn get_face_returns_null_when_no_display_zone() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -12734,7 +11650,7 @@ async fn get_face_returns_null_when_no_display_group() {
 }
 
 #[tokio::test]
-async fn patch_face_controls_updates_display_group() {
+async fn patch_face_controls_updates_display_zone() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let mut face = test_display_face_effect_metadata("System Monitor");
@@ -12754,15 +11670,16 @@ async fn patch_face_controls_updates_display_group() {
         preview_source: None,
         binding: None,
     }];
-    {
-        let mut registry = state.effect_registry.write().await;
-        let _ = registry.register(EffectEntry {
+    let _ = state
+        .domains
+        .effects
+        .register(EffectEntry {
             metadata: face.clone(),
             source_path: format!("/tmp/{}.html", face.name).into(),
             modified: SystemTime::now(),
             state: EffectState::Loading,
-        });
-    }
+        })
+        .await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let assign_response = app
@@ -12789,7 +11706,9 @@ async fn patch_face_controls_updates_display_group() {
                 .method("PATCH")
                 .uri(format!("/api/v1/displays/{display_id}/face/controls"))
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"controls":{"label":"gpu"}}"#))
+                .body(Body::from(
+                    r#"{"values":{"label":{"kind":"text","value":"gpu"}}}"#,
+                ))
                 .expect("failed to build request"),
         )
         .await
@@ -12797,17 +11716,17 @@ async fn patch_face_controls_updates_display_group() {
     assert_eq!(patch_response.status(), StatusCode::OK);
     let patch_json = body_json(patch_response).await;
     assert_eq!(
-        patch_json["data"]["group"]["controls"]["label"]["text"],
+        patch_json["data"]["zone"]["layers"][0]["source"]["controls"]["label"]["value"],
         "gpu"
     );
 
-    let manager = state.scene_manager.read().await;
-    let display_group = manager
+    let manager = state.scene_manager.snapshot().await;
+    let display_zone = manager
         .active_scene()
-        .and_then(|scene| scene.display_group_for(display_id))
+        .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
     assert_eq!(
-        display_group.controls.get("label"),
+        zone_effect_controls(display_zone).and_then(|controls| controls.get("label")),
         Some(&ControlValue::Text("gpu".to_owned()))
     );
 }
@@ -12845,148 +11764,14 @@ async fn put_face_conflicts_when_snapshot_scene_is_active() {
             .contains("snapshot mode"),
     );
 
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .active_scene()
-            .and_then(|scene| scene.display_group_for(display_id))
+            .and_then(|scene| scene.display_zone_for(display_id))
             .is_none(),
         "snapshot scene should not be rewritten by face assignment",
     );
-}
-
-#[tokio::test]
-async fn display_face_endpoints_assign_get_and_delete_face() {
-    let state = Arc::new(isolated_state());
-    let display_id = insert_test_display_device(&state, "Pump LCD").await;
-    let face = insert_test_display_face_effect(&state, "System Monitor").await;
-    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let put_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
-                    face.id
-                )))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(put_response.status(), StatusCode::OK);
-    let put_json = body_json(put_response).await;
-    assert_eq!(put_json["data"]["device_id"], display_id.to_string());
-    assert_eq!(put_json["data"]["scene_id"], scene_id.to_string());
-    assert_eq!(put_json["data"]["effect"]["id"], face.id.to_string());
-    assert_eq!(put_json["data"]["effect"]["category"], "display");
-    assert_eq!(
-        put_json["data"]["group"]["display_target"]["device_id"],
-        display_id.to_string()
-    );
-    assert_eq!(put_json["data"]["group"]["layout"]["canvas_width"], 320);
-    assert_eq!(put_json["data"]["group"]["layout"]["canvas_height"], 320);
-    assert!(
-        put_json["data"]["group"]["layout"]["zones"]
-            .as_array()
-            .expect("zones should serialize as an array")
-            .is_empty()
-    );
-    let group_id = put_json["data"]["group"]["id"]
-        .as_str()
-        .expect("display face group should include an id");
-
-    let layers_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/api/v1/scenes/{scene_id}/groups/{group_id}/layers"
-                ))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(layers_response.status(), StatusCode::OK);
-    let layers_json = body_json(layers_response).await;
-    let [layer] = layers_json["data"]["items"]
-        .as_array()
-        .expect("display face layers should serialize as an array")
-        .as_slice()
-    else {
-        panic!("display face should appear in the Studio layer stack");
-    };
-    assert_eq!(layer["source"]["type"], "effect");
-    assert_eq!(layer["source"]["effect_id"], face.id.to_string());
-
-    let get_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let get_json = body_json(get_response).await;
-    assert_eq!(get_json["data"]["effect"]["id"], face.id.to_string());
-    assert_eq!(
-        get_json["data"]["group"]["display_target"]["device_id"],
-        display_id.to_string()
-    );
-
-    {
-        let manager = state.scene_manager.read().await;
-        let active_scene = manager.active_scene().expect("scene should be active");
-        assert_eq!(active_scene.id, scene_id);
-        assert_eq!(active_scene.groups.len(), 1);
-    }
-
-    let delete_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/displays/{display_id}/face?scope=scene"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(delete_response.status(), StatusCode::OK);
-    let delete_json = body_json(delete_response).await;
-    assert_eq!(delete_json["data"]["deleted"], true);
-
-    let missing_response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(missing_response.status(), StatusCode::OK);
-    let missing_json = body_json(missing_response).await;
-    assert!(missing_json["data"].is_null());
-
-    let manager = state.scene_manager.read().await;
-    let active_scene = manager.active_scene().expect("scene should remain active");
-    let display_group = active_scene
-        .display_group_for(display_id)
-        .expect("display screen surface should survive face deletion");
-    assert_eq!(display_group.id.to_string(), group_id);
-    assert_eq!(display_group.role, ZoneRole::Display);
-    assert_eq!(display_group.effect_id, None);
-    assert!(display_group.layers.is_empty());
-    assert!(display_group.effective_layers().is_empty());
 }
 
 #[tokio::test]
@@ -13031,13 +11816,10 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     assert_eq!(tint_response.status(), StatusCode::OK);
     let tint_json = body_json(tint_response).await;
     assert_eq!(
-        tint_json["data"]["group"]["display_target"]["blend_mode"],
+        tint_json["data"]["zone"]["display_target"]["blend_mode"],
         "tint"
     );
-    assert_eq!(
-        tint_json["data"]["group"]["display_target"]["opacity"],
-        0.35
-    );
+    assert_eq!(tint_json["data"]["zone"]["display_target"]["opacity"], 0.35);
 
     let replace_response = app
         .clone()
@@ -13054,25 +11836,25 @@ async fn patch_face_composition_updates_material_blend_mode_and_normalizes_repla
     assert_eq!(replace_response.status(), StatusCode::OK);
     let replace_json = body_json(replace_response).await;
     assert_eq!(
-        replace_json["data"]["group"]["display_target"]["blend_mode"], "replace",
+        replace_json["data"]["zone"]["display_target"]["blend_mode"], "replace",
         "explicit replace mode should serialize since it is no longer the default"
     );
     assert!(
-        replace_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        replace_json["data"]["zone"]["display_target"]["opacity"].is_null(),
         "replace mode should normalize opacity back to the default"
     );
 
-    let manager = state.scene_manager.read().await;
-    let group = manager
+    let manager = state.scene_manager.snapshot().await;
+    let zone = manager
         .active_scene()
-        .and_then(|scene| scene.display_group_for(display_id))
+        .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
-    let target = group
+    let target = zone
         .display_target
         .clone()
         .expect("display target should remain present");
     assert_eq!(target.device_id, display_id);
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Replace);
+    assert_eq!(target.blend_mode, BlendMode::Replace);
     assert!((target.opacity - 1.0).abs() < f32::EPSILON);
 }
 
@@ -13135,118 +11917,25 @@ async fn reassigning_display_face_resets_composition_to_blended_default() {
     let assign_b_json = body_json(assign_b).await;
     assert_eq!(assign_b_json["data"]["effect"]["id"], face_b.id.to_string());
     assert!(
-        assign_b_json["data"]["group"]["display_target"]["blend_mode"].is_null(),
+        assign_b_json["data"]["zone"]["display_target"]["blend_mode"].is_null(),
         "reassigning a face should reset composition mode to the blended default (alpha serializes as absent)"
     );
     assert!(
-        assign_b_json["data"]["group"]["display_target"]["opacity"].is_null(),
+        assign_b_json["data"]["zone"]["display_target"]["opacity"].is_null(),
         "reassigning a face should reset opacity to the default"
     );
 
-    let manager = state.scene_manager.read().await;
-    let group = manager
+    let manager = state.scene_manager.snapshot().await;
+    let zone = manager
         .active_scene()
-        .and_then(|scene| scene.display_group_for(display_id))
+        .and_then(|scene| scene.display_zone_for(display_id))
         .expect("display face should remain assigned");
-    let target = group
+    let target = zone
         .display_target
         .clone()
         .expect("display target should remain present");
-    assert_eq!(target.blend_mode, DisplayFaceBlendMode::Alpha);
+    assert_eq!(target.blend_mode, BlendMode::Alpha);
     assert!((target.opacity - 1.0).abs() < f32::EPSILON);
-}
-
-#[tokio::test]
-async fn face_survives_effect_swap() {
-    let state = Arc::new(isolated_state());
-    insert_test_effect(&state, "Aurora").await;
-    insert_test_effect(&state, "Sunset").await;
-    let display_id = insert_test_display_device(&state, "Pump LCD").await;
-    let face = insert_test_display_face_effect(&state, "System Monitor").await;
-    let scene_id = activate_empty_test_scene(&state, "Desk Scene").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let assign_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
-                    face.id
-                )))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(assign_response.status(), StatusCode::OK);
-    let assign_json = body_json(assign_response).await;
-    let face_group_id = assign_json["data"]["group"]["id"]
-        .as_str()
-        .expect("face group id should be present")
-        .to_owned();
-
-    for effect_name in ["Aurora", "Sunset"] {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/v1/effects/{effect_name}/apply"))
-                    .body(Body::empty())
-                    .expect("failed to build request"),
-            )
-            .await
-            .expect("failed to execute request");
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    let active_effect = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/effects/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_effect.status(), StatusCode::OK);
-    let active_effect_json = body_json(active_effect).await;
-    assert_eq!(active_effect_json["data"]["name"], "Sunset");
-    assert_ne!(active_effect_json["data"]["render_group_id"], face_group_id);
-
-    let face_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/displays/{display_id}/face"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(face_response.status(), StatusCode::OK);
-    let face_json = body_json(face_response).await;
-    assert_eq!(face_json["data"]["scene_id"], scene_id.to_string());
-    assert_eq!(face_json["data"]["effect"]["id"], face.id.to_string());
-    assert_eq!(face_json["data"]["group"]["id"], face_group_id);
-
-    let manager = state.scene_manager.read().await;
-    let active_scene = manager.active_scene().expect("scene should remain active");
-    assert_eq!(active_scene.id, scene_id);
-    assert_eq!(active_scene.groups.len(), 2);
-    let primary = active_scene
-        .primary_group()
-        .expect("primary group should exist after effect apply");
-    let display_group = active_scene
-        .display_group_for(display_id)
-        .expect("display face should remain assigned");
-    assert_eq!(display_group.id.to_string(), face_group_id);
-    assert_eq!(display_group.effect_id, Some(face.id));
-    assert_ne!(primary.id, display_group.id);
 }
 
 #[tokio::test]
@@ -13329,7 +12018,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(disabled_response.status(), StatusCode::OK);
     let disabled_json = body_json(disabled_response).await;
-    assert_eq!(disabled_json["data"]["pagination"]["total"], 1);
+    assert_eq!(disabled_json["data"]["total"], 1);
     assert_eq!(disabled_json["data"]["items"][0]["name"], "Ceiling Panel");
 
     let query_response = app
@@ -13344,7 +12033,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(query_response.status(), StatusCode::OK);
     let query_json = body_json(query_response).await;
-    assert_eq!(query_json["data"]["pagination"]["total"], 1);
+    assert_eq!(query_json["data"]["total"], 1);
     assert_eq!(query_json["data"]["items"][0]["name"], "Desk Strip");
 
     let backend_response = app
@@ -13359,7 +12048,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(backend_response.status(), StatusCode::OK);
     let backend_json = body_json(backend_response).await;
-    assert_eq!(backend_json["data"]["pagination"]["total"], 1);
+    assert_eq!(backend_json["data"]["total"], 1);
     assert_eq!(backend_json["data"]["items"][0]["name"], "Aura GPU");
 
     let driver_response = app
@@ -13373,7 +12062,7 @@ async fn list_devices_supports_filters() {
         .expect("failed to execute request");
     assert_eq!(driver_response.status(), StatusCode::OK);
     let driver_json = body_json(driver_response).await;
-    assert_eq!(driver_json["data"]["pagination"]["total"], 1);
+    assert_eq!(driver_json["data"]["total"], 1);
     assert_eq!(
         driver_json["data"]["items"][0]["origin"]["backend_id"],
         "smbus"
@@ -13420,7 +12109,7 @@ async fn list_devices_includes_connection_summary_when_available() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -13446,7 +12135,7 @@ async fn list_devices_includes_connection_summary_when_available() {
         .device_registry
         .add_with_fingerprint_and_metadata(
             info,
-            DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned()),
+            DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned()),
             metadata,
         )
         .await;
@@ -13486,7 +12175,7 @@ async fn list_devices_preserves_custom_connection_transport_id() {
             "external-hub",
             DriverTransportKind::Custom("openlinkhub".to_owned()),
         ),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 24,
             topology: DeviceTopologyHint::Strip,
@@ -13511,7 +12200,7 @@ async fn list_devices_preserves_custom_connection_transport_id() {
         .device_registry
         .add_with_fingerprint_and_metadata(
             info,
-            DeviceFingerprint("openlinkhub:hub-001".to_owned()),
+            DeviceFingerprint::from_persisted("openlinkhub:hub-001".to_owned()),
             metadata,
         )
         .await;
@@ -13570,7 +12259,8 @@ async fn list_devices_includes_hue_auth_summary_when_configured() {
     let _device_id =
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "hue",
             "test-bridge",
@@ -13613,6 +12303,24 @@ async fn list_devices_rejects_invalid_status_filter() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let json = body_json(response).await;
     assert_eq!(json["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn list_devices_rejects_unknown_expansions() {
+    let app = test_app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices?include=attachments,unknown")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+    assert_eq!(json["error"]["details"]["field"], "include");
 }
 
 #[tokio::test]
@@ -13721,7 +12429,7 @@ async fn identify_device_temporarily_connects_known_network_device() {
     let disconnects = Arc::new(AtomicUsize::new(0));
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(DisconnectRecordingBackend::new(
+        manager.register_backend(Arc::new(DisconnectRecordingBackend::new(
             device_id,
             Arc::clone(&disconnects),
         )));
@@ -13759,6 +12467,93 @@ async fn identify_device_temporarily_connects_known_network_device() {
             .lock()
             .await
             .is_direct_control_active("wled", device_id)
+    );
+}
+
+#[tokio::test]
+async fn pause_preempts_identify_and_holds_black_output() {
+    let state = Arc::new(isolated_state());
+    let device_id = insert_test_device(&state, "Identify Strip").await;
+    let device_info = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("test device should exist")
+        .info;
+    let layout_device_id = format!("identify:{device_id}");
+    let writes = Arc::new(StdMutex::new(Vec::new()));
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Arc::new(IdentifyRecordingBackend {
+            writes: Arc::clone(&writes),
+        }));
+        manager
+            .connect_device("wled", device_id, &layout_device_id)
+            .await
+            .expect("test device should connect");
+        assert!(manager.set_device_zone_segments(&layout_device_id, &device_info));
+    }
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let identify_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/identify"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"duration_ms":10000}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute identify request");
+    assert_eq!(identify_response.status(), StatusCode::OK);
+    assert!(
+        writes
+            .lock()
+            .expect("identify output writes lock")
+            .iter()
+            .any(|frame| frame.iter().any(|color| *color != [0, 0, 0]))
+    );
+
+    let pause_response = app
+        .oneshot(output_patch_request(r#"{"power":"paused"}"#))
+        .await
+        .expect("failed to execute pause request");
+    assert_eq!(pause_response.status(), StatusCode::OK);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let direct_control_active = state
+                .backend_manager
+                .lock()
+                .await
+                .is_direct_control_active("wled", device_id);
+            let black_held = writes
+                .lock()
+                .expect("identify output writes lock")
+                .last()
+                .is_some_and(|frame| frame.iter().all(|color| *color == [0, 0, 0]));
+            if !direct_control_active && black_held {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pause should preempt identify and hold black promptly");
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        writes
+            .lock()
+            .expect("identify output writes lock")
+            .last()
+            .is_some_and(|frame| frame.iter().all(|color| *color == [0, 0, 0]))
     );
 }
 
@@ -13836,7 +12631,7 @@ async fn delete_device_by_name_returns_canonical_id() {
 async fn delete_device_forgets_learned_wled_inventory() {
     let state = Arc::new(isolated_state());
     let device_id = DeviceId::new();
-    let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+    let fingerprint = DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned());
     let info = DeviceInfo {
         id: device_id,
         name: "WLED Gledopto".to_owned(),
@@ -13845,7 +12640,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -13864,7 +12659,7 @@ async fn delete_device_forgets_learned_wled_inventory() {
         )
         .await;
     state
-        .driver_host
+        .driver_host()
         .driver_inventory()
         .replace_driver(
             "wled",
@@ -13900,21 +12695,21 @@ async fn delete_device_forgets_learned_wled_inventory() {
 
     assert_eq!(response.status(), StatusCode::OK);
     assert!(state.device_registry.get(&device_id).await.is_none());
-    let cache = state.driver_host.driver_inventory().driver_cache("wled");
+    let cache = state.driver_host().driver_inventory().driver_cache("wled");
     assert_eq!(cache["probe_ips"], serde_json::json!(["10.4.22.169"]));
     assert_eq!(cache["probe_targets"][0]["ip"], "10.4.22.169");
     assert_eq!(cache["future_key"], serde_json::json!(true));
 }
 
 #[tokio::test]
-async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanup() {
+async fn deleting_display_device_prunes_scene_display_zones_and_persists_cleanup() {
     let state = Arc::new(isolated_state());
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
     let face = insert_test_display_face_effect(&state, "System Monitor").await;
     {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_display_zone(
                 display_id,
                 "Pump LCD",
                 &face,
@@ -13928,18 +12723,22 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
                     zones: Vec::new(),
                     default_sampling_mode: SamplingMode::Bilinear,
                     default_edge_behavior: EdgeBehavior::Clamp,
-                    spaces: None,
                     version: 1,
                 },
+                hypercolor_types::scene::DisplayFaceTarget::new(display_id),
             )
             .expect("default scene face should be assigned");
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("default scene face should commit");
     }
     let named_scene_id =
         activate_display_face_test_scene(&state, "Desk Scene", face.id, display_id).await;
-    {
-        let mut manager = state.scene_manager.write().await;
-        manager.deactivate_current();
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("default scene should reactivate");
 
     let mut events = state.event_bus.subscribe_all();
     let app = test_app_with_state(Arc::clone(&state));
@@ -13963,7 +12762,7 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
         while removed_scene_ids.len() < 2 {
             match events.recv().await {
                 Ok(timestamped) => {
-                    if let HypercolorEvent::RenderGroupChanged {
+                    if let HypercolorEvent::ZoneChanged {
                         scene_id,
                         role,
                         kind,
@@ -13977,455 +12776,53 @@ async fn deleting_display_device_prunes_scene_display_groups_and_persists_cleanu
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    panic!("event bus closed before display-group removal events arrived");
+                    panic!("event bus closed before display-zone removal events arrived");
                 }
             }
         }
     })
     .await
-    .expect("timed out waiting for display-group removal events");
+    .expect("timed out waiting for display-zone removal events");
     assert!(removed_scene_ids.contains(&SceneId::DEFAULT));
     assert!(removed_scene_ids.contains(&named_scene_id));
 
     {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let default_scene = manager
             .active_scene()
             .expect("default scene should remain active");
-        assert!(default_scene.display_group_for(display_id).is_none());
+        assert!(default_scene.display_zone_for(display_id).is_none());
         let named_scene = manager
             .get(&named_scene_id)
             .expect("named scene should remain present");
-        assert!(named_scene.display_group_for(display_id).is_none());
+        assert!(named_scene.display_zone_for(display_id).is_none());
     }
 
     let persisted =
         runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
     let persisted = persisted.expect("runtime state should exist");
     assert!(
-        persisted.default_scene_groups.iter().all(|group| {
-            group
-                .display_target
+        persisted.default_scene_zones.iter().all(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_none_or(|target| target.device_id != display_id)
         }),
         "deleted device should not survive in the persisted default scene"
     );
 
-    let scene_store = state.scene_store.read().await;
+    let scene_store =
+        scene_store::load(&state.data_dir.join("scenes.json")).expect("scene store should reload");
     let named_scene = scene_store
         .list()
         .find(|scene| scene.id == named_scene_id)
         .expect("named scene should be persisted");
     assert!(
-        named_scene.groups.iter().all(|group| {
-            group
-                .display_target
+        named_scene.zones.iter().all(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_none_or(|target| target.device_id != display_id)
         }),
         "deleted device should not survive in persisted named scenes"
-    );
-}
-
-fn test_state_with_temp_logical_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.logical_devices_path = dir.path().join("logical-devices.json");
-    (Arc::new(state), dir)
-}
-
-#[tokio::test]
-async fn logical_devices_crud_persists_user_segments() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    assert_eq!(create_json["data"]["kind"], "segment");
-    assert_eq!(
-        create_json["data"]["physical_device_id"],
-        device_id.to_string()
-    );
-    let logical_id = create_json["data"]["id"]
-        .as_str()
-        .expect("logical id should be string")
-        .to_owned();
-
-    let list_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["pagination"]["total"], 2);
-    let default_entry = list_json["data"]["items"]
-        .as_array()
-        .expect("items should be array")
-        .iter()
-        .find(|item| item["kind"] == "default")
-        .expect("default logical entry should exist");
-    assert_eq!(default_entry["enabled"], false);
-
-    let persisted_raw = std::fs::read_to_string(&state.logical_devices_path)
-        .expect("logical device persistence file should exist");
-    assert!(
-        persisted_raw.contains(&logical_id),
-        "persistence file should include the created logical segment"
-    );
-
-    let delete_response = app
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/logical-devices/{logical_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(delete_response.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn logical_devices_reject_overlapping_segments() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    let device_id = insert_test_device(&state, "Desk Strip").await;
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let first_create = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(first_create.status(), StatusCode::CREATED);
-
-    let overlapping_create = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Mid","led_start":10,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(
-        overlapping_create.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    let json = body_json(overlapping_create).await;
-    assert_eq!(json["error"]["code"], "validation_error");
-}
-
-#[tokio::test]
-async fn logical_device_endpoints_preserve_smbus_origin_metadata() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    register_noop_backend(&state, "smbus", "SMBus Test").await;
-
-    let device_id = insert_test_asus_smbus_device(&state, "Aura GPU").await;
-    let tracked = state
-        .device_registry
-        .get(&device_id)
-        .await
-        .expect("device should exist");
-
-    let layout_device_id = {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
-        let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
-        let _ = lifecycle.on_discovered(device_id, &tracked.info, Some(&fingerprint));
-        let layout_device_id = lifecycle
-            .layout_device_id_for(device_id)
-            .expect("layout id should exist")
-            .to_owned();
-        let _ = lifecycle
-            .on_connected(device_id)
-            .expect("connect transition should succeed");
-        layout_device_id
-    };
-
-    state
-        .backend_manager
-        .lock()
-        .await
-        .connect_device("smbus", device_id, &layout_device_id)
-        .await
-        .expect("smbus test backend should connect");
-    let _ = state
-        .device_registry
-        .set_state(&device_id, DeviceState::Connected)
-        .await;
-
-    // The active layout must reference the segment that will be created, so that
-    // sync_active_layout_connectivity doesn't disconnect the device when
-    // reconcile_default_enabled disables the default entry.
-    let expected_segment_id = format!("{layout_device_id}:aura-segment");
-    set_layout_targeting_device(&state, &expected_segment_id, 12).await;
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Aura Segment","led_start":0,"led_count":12}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    assert_eq!(create_json["data"]["origin"]["driver_id"], "asus");
-    assert_eq!(create_json["data"]["origin"]["backend_id"], "smbus");
-    assert_eq!(create_json["data"]["origin"]["transport"], "smbus");
-    let segment_id = create_json["data"]["id"]
-        .as_str()
-        .expect("segment id should be a string")
-        .to_owned();
-
-    let list_response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    let items = list_json["data"]["items"]
-        .as_array()
-        .expect("logical items should be an array");
-    assert!(
-        items
-            .iter()
-            .all(|item| item["origin"]["backend_id"] == "smbus"),
-        "every logical device summary should keep the smbus origin"
-    );
-
-    let manager = state.backend_manager.lock().await;
-    let routing = manager.routing_snapshot();
-    assert!(
-        routing.mappings.iter().any(|entry| {
-            entry.backend_id == "smbus"
-                && entry.device_id == device_id.to_string()
-                && entry.layout_device_id == segment_id
-        }),
-        "logical segment routing should stay attached to the smbus backend"
-    );
-}
-
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "this migration test validates default-id replacement, logical-device creation, and backend mapping state in one end-to-end flow"
-)]
-async fn logical_devices_replace_outdated_default_id_with_canonical_layout_id() {
-    let (state, _tmp) = test_state_with_temp_logical_store();
-    register_noop_backend(&state, "wled", "WLED Test").await;
-
-    let fingerprint = DeviceFingerprint("net:00:11:22:33:44:55".to_owned());
-    let canonical_layout_id = "wled:00:11:22:33:44:55".to_owned();
-
-    let device_id = {
-        let id = DeviceId::new();
-        let info = DeviceInfo {
-            id,
-            name: "Desk Strip".to_owned(),
-            vendor: "test-vendor".to_owned(),
-            family: DeviceFamily::new_static("wled", "WLED"),
-            model: None,
-            connection_type: ConnectionType::Network,
-            origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-            zones: vec![ZoneInfo {
-                name: "Main".to_owned(),
-                led_count: 60,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            }],
-            firmware_version: Some("0.1.0".to_owned()),
-            capabilities: DeviceCapabilities {
-                led_count: 60,
-                supports_direct: true,
-                supports_brightness: true,
-                has_display: false,
-                display_resolution: None,
-                max_fps: 60,
-                color_space: hypercolor_types::device::DeviceColorSpace::default(),
-                features: DeviceFeatures::default(),
-            },
-        };
-        state
-            .device_registry
-            .add_with_fingerprint(info, fingerprint.clone())
-            .await
-    };
-    let tracked = state
-        .device_registry
-        .get(&device_id)
-        .await
-        .expect("device should exist");
-
-    {
-        let mut lifecycle = state.lifecycle_manager.lock().await;
-        let _ = lifecycle.on_discovered(device_id, &tracked.info, Some(&fingerprint));
-        let _ = lifecycle
-            .on_connected(device_id)
-            .expect("connect transition should succeed");
-    }
-    state
-        .backend_manager
-        .lock()
-        .await
-        .connect_device("wled", device_id, &canonical_layout_id)
-        .await
-        .expect("wled test backend should connect");
-    let _ = state
-        .device_registry
-        .set_state(&device_id, DeviceState::Connected)
-        .await;
-
-    // The active layout must reference this device so that
-    // sync_active_layout_connectivity doesn't disconnect it.
-    set_layout_targeting_device(&state, &canonical_layout_id, 60).await;
-
-    let stale_layout_id = "wled:stale-layout-id".to_owned();
-    {
-        let mut store = state.logical_devices.write().await;
-        store.insert(
-            stale_layout_id.clone(),
-            LogicalDevice {
-                id: stale_layout_id.clone(),
-                physical_device_id: device_id,
-                name: "Desk Strip".to_owned(),
-                led_start: 0,
-                led_count: 60,
-                enabled: true,
-                kind: LogicalDeviceKind::Default,
-            },
-        );
-    }
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
-                ))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    let segment_id = create_json["data"]["id"]
-        .as_str()
-        .expect("segment id should be string")
-        .to_owned();
-
-    let delete_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/v1/logical-devices/{segment_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(delete_response.status(), StatusCode::OK);
-
-    let list_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(list_response.status(), StatusCode::OK);
-    let list_json = body_json(list_response).await;
-    let items = list_json["data"]["items"]
-        .as_array()
-        .expect("items should be array");
-    let default_entry = items
-        .iter()
-        .find(|item| item["kind"] == "default")
-        .expect("default entry should exist");
-    assert_eq!(default_entry["id"], canonical_layout_id);
-    assert!(
-        items.iter().all(|item| item["id"] != stale_layout_id),
-        "outdated default logical id should be replaced"
-    );
-
-    let manager = state.backend_manager.lock().await;
-    let routing = manager.routing_snapshot();
-    let mapped_layout_ids = routing
-        .mappings
-        .into_iter()
-        .filter(|entry| entry.backend_id == "wled" && entry.device_id == device_id.to_string())
-        .map(|entry| entry.layout_device_id)
-        .collect::<Vec<_>>();
-    assert!(
-        mapped_layout_ids.contains(&canonical_layout_id),
-        "canonical layout id should be mapped"
-    );
-    assert!(
-        !mapped_layout_ids.contains(&stale_layout_id),
-        "stale default layout id should not stay mapped"
-    );
-    assert!(
-        mapped_layout_ids
-            .iter()
-            .all(|id| id != &device_id.to_string()),
-        "raw physical uuid alias should not stay mapped"
     );
 }
 
@@ -14487,7 +12884,8 @@ async fn pair_device_route_pairs_hue_by_device_id() {
 
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("hue", "test-bridge")
             .await,
         Some(serde_json::json!({
@@ -14606,7 +13004,8 @@ async fn pair_device_route_pairs_nanoleaf_by_device_id() {
 
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("nanoleaf", "serial42")
             .await,
         Some(serde_json::json!({
@@ -14625,7 +13024,8 @@ async fn delete_pairing_removes_hue_credentials() {
     let device_id =
         insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "hue",
             "test-bridge",
@@ -14637,7 +13037,8 @@ async fn delete_pairing_removes_hue_credentials() {
         .await
         .expect("store Hue credentials");
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "hue",
             "ip:10.0.0.5",
@@ -14667,14 +13068,16 @@ async fn delete_pairing_removes_hue_credentials() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "required");
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("hue", "test-bridge")
             .await,
         None
     );
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("hue", "ip:10.0.0.5")
             .await,
         None
@@ -14690,7 +13093,8 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
         insert_test_nanoleaf_device(&state, "Living Room Shapes", "serial42", "10.0.0.8", 16021)
             .await;
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "nanoleaf",
             "serial42",
@@ -14701,7 +13105,8 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
         .await
         .expect("store Nanoleaf credentials");
     state
-        .credential_store
+        .driver_host()
+        .credential_store()
         .store_driver_json(
             "nanoleaf",
             "ip:10.0.0.8",
@@ -14730,14 +13135,16 @@ async fn delete_pairing_removes_nanoleaf_credentials() {
     assert_eq!(json["data"]["device"]["auth"]["state"], "required");
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("nanoleaf", "serial42")
             .await,
         None
     );
     assert_eq!(
         state
-            .credential_store
+            .driver_host()
+            .credential_store()
             .get_driver_json("nanoleaf", "ip:10.0.0.8")
             .await,
         None
@@ -14802,172 +13209,6 @@ async fn read_pairing_http_request(stream: &mut TcpStream) -> std::io::Result<St
 }
 
 #[tokio::test]
-async fn device_bindings_surface_orphans_and_rebind_heals_them() {
-    use hypercolor_daemon::device_aliases;
-    use hypercolor_types::portable::{NetworkAttachment, PortableIdentityClaim};
-
-    let state = Arc::new(isolated_state());
-    let alias_path = state.data_dir.join(device_aliases::DEVICE_ALIASES_FILE);
-
-    // The dead predecessor is still registered, parked in Reconnecting
-    // after vanishing, carrying the user's customizations.
-    let dead_fingerprint = DeviceFingerprint("net:wled:dead-strip".to_owned());
-    let dead_id = DeviceId::new();
-    let dead_info = DeviceInfo {
-        id: dead_id,
-        name: "Shelf Strip".to_owned(),
-        vendor: "test-vendor".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: Vec::new(),
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let dead_binding =
-        DeviceLifecycleManager::canonical_layout_device_id(&dead_info, Some(&dead_fingerprint));
-    state
-        .device_registry
-        .add_discovered(DiscoveredDevice {
-            fingerprint: dead_fingerprint.clone(),
-            connect_behavior: DiscoveryConnectBehavior::Deferred,
-            info: dead_info,
-            metadata: HashMap::new(),
-            claim: PortableIdentityClaim::mac_address(
-                "2C:F4:32:00:00:10",
-                NetworkAttachment::Peer("192.168.1.50".parse().expect("valid ip")),
-            ),
-        })
-        .await;
-    state
-        .device_registry
-        .update_user_settings(&dead_id, Some("Bliss Shelf".to_owned()), None, None)
-        .await
-        .expect("predecessor exists");
-    state
-        .device_registry
-        .set_state(&dead_id, DeviceState::Reconnecting)
-        .await;
-
-    // A layout references the binding the dead device derives.
-    set_layout_targeting_device(&state, &dead_binding, 60).await;
-
-    // The replacement hardware attaches under its own key.
-    let replacement_id = DeviceId::new();
-    let replacement_info = DeviceInfo {
-        id: replacement_id,
-        name: "Shelf Strip".to_owned(),
-        vendor: "test-vendor".to_owned(),
-        family: DeviceFamily::new_static("wled", "WLED"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: Vec::new(),
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    state
-        .device_registry
-        .add_discovered(DiscoveredDevice {
-            fingerprint: DeviceFingerprint("net:wled:new-strip".to_owned()),
-            connect_behavior: DiscoveryConnectBehavior::Deferred,
-            info: replacement_info,
-            metadata: HashMap::new(),
-            claim: PortableIdentityClaim::mac_address(
-                "2C:F4:32:00:00:11",
-                NetworkAttachment::Peer("192.168.1.51".parse().expect("valid ip")),
-            ),
-        })
-        .await;
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/v1/devices/bindings")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(
-        json["data"]["unresolved"][0]["layout_device_id"],
-        dead_binding.as_str(),
-        "a Reconnecting predecessor must not mask the orphaned binding"
-    );
-    assert_eq!(json["data"]["unresolved"][0]["rebindable"], true);
-    let candidates = json["data"]["candidates"]
-        .as_array()
-        .expect("candidates array");
-    assert!(
-        candidates.iter().any(|candidate| {
-            candidate["device_id"] == replacement_id.to_string()
-                && candidate["portable_key"] == "net:2cf432000011"
-        }),
-        "the replacement should be offered as a claimed candidate"
-    );
-
-    let app = test_app_with_state(Arc::clone(&state));
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/devices/rebind")
-                .header("content-type", "application/json")
-                .body(Body::from(format!(
-                    r#"{{"layout_device_id":"{dead_binding}","device_id":"{replacement_id}"}}"#
-                )))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(response.status(), StatusCode::OK);
-    let json = body_json(response).await;
-    assert_eq!(json["data"]["layout_device_id"], dead_binding.as_str());
-    assert_eq!(json["data"]["portable_key"], "net:2cf432000011");
-
-    // The registry now resolves the replacement onto the inherited
-    // identity, the predecessor is retired with its settings migrated,
-    // and the overlay pins the replacement's key there durably.
-    assert_eq!(
-        state
-            .device_registry
-            .fingerprint_for_id(&replacement_id)
-            .await,
-        Some(DeviceFingerprint("net:wled:dead-strip".to_owned()))
-    );
-    assert!(state.device_registry.get(&dead_id).await.is_none());
-    let inherited = state
-        .device_registry
-        .get(&replacement_id)
-        .await
-        .expect("replacement exists");
-    assert_eq!(inherited.user_settings.name.as_deref(), Some("Bliss Shelf"));
-
-    // Inherited settings must survive a restart: the row is persisted
-    // under the replacement's own canonical key, since the
-    // predecessor's row lived under a key nothing derives anymore.
-    let persisted_name = state
-        .device_settings
-        .read()
-        .await
-        .device_settings_for_key("net:2cf432000011")
-        .and_then(|settings| settings.name);
-    assert_eq!(persisted_name.as_deref(), Some("Bliss Shelf"));
-    let overlay = device_aliases::load(&alias_path).expect("overlay loads");
-    let pinned = overlay
-        .aliases
-        .iter()
-        .find(|(key, _)| key.as_str() == "net:2cf432000011")
-        .map(|(_, record)| record.fingerprint.clone());
-    assert_eq!(pinned.as_deref(), Some("net:wled:dead-strip"));
-}
-
-#[tokio::test]
 async fn settings_mutations_publish_local_change_hints() {
     use hypercolor_types::event::{HypercolorEvent, LibraryChangeKind, LibraryCollection};
 
@@ -15004,14 +13245,7 @@ async fn settings_mutations_publish_local_change_hints() {
     assert_eq!(delete_response.status(), StatusCode::OK);
 
     let brightness_response = app
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/settings/brightness")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"brightness":42}"#))
-                .expect("failed to build request"),
-        )
+        .oneshot(output_patch_request(r#"{"brightness":0.42}"#))
         .await
         .expect("failed to execute request");
     assert_eq!(brightness_response.status(), StatusCode::OK);
@@ -15047,4 +13281,110 @@ async fn settings_mutations_publish_local_change_hints() {
     })
     .await
     .expect("timed out waiting for local-change hints");
+}
+
+/// Recursive key paths of a JSON value; arrays contribute their first
+/// element's shape (test scenarios keep them homogeneous).
+fn collect_key_paths(value: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                out.push(path.clone());
+                collect_key_paths(child, &path, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if let Some(first) = items.first() {
+                collect_key_paths(first, &format!("{prefix}[]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// External HTTP clients read the face payload without any Rust type to
+/// hold them to it, so this pin is what keeps the published key paths
+/// stable: renaming a field in the shared
+/// `hypercolor_types::api::displays::DisplayFaceResponse` moves the
+/// daemon and every in-tree client together and would otherwise break
+/// only the outside world, silently.
+///
+/// The fixture is shared with the UI's
+/// `display_face_response_decodes_the_daemon_shape`, which decodes the
+/// same payload and so covers the value representations this key-path
+/// comparison cannot see.
+#[tokio::test]
+async fn display_face_response_shape_matches_the_shared_fixture() {
+    let state = Arc::new(isolated_state());
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let assign_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"effect_id":"{}","scope":"scene"}}"#,
+                    face.id
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(assign_response.status(), StatusCode::OK);
+
+    let patch_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/displays/{display_id}/face/controls"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"values":{"label":{"kind":"text","value":"gpu"}}}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/displays/{display_id}/face"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let json = body_json(get_response).await;
+
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/rest_v1/display_face_shape.json"))
+            .expect("fixture parses");
+
+    let mut actual_paths = Vec::new();
+    collect_key_paths(&json["data"], "", &mut actual_paths);
+    let mut fixture_paths = Vec::new();
+    collect_key_paths(&fixture, "", &mut fixture_paths);
+    actual_paths.sort();
+    fixture_paths.sort();
+    assert_eq!(
+        actual_paths, fixture_paths,
+        "the face wire shape drifted from the shared fixture; update \
+         tests/fixtures/rest_v1/display_face_shape.json and re-run the UI \
+         decode test that reads it"
+    );
 }

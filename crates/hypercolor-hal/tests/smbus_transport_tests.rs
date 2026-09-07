@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use hypercolor_hal::transport::smbus::{SmBusOperation, decode_operations, encode_operations};
+use hypercolor_hal::transport::smbus::{
+    SmBusBusArbiter, SmBusOperation, decode_operations, encode_operations,
+};
 
 #[test]
 fn smbus_operation_codec_round_trips() {
@@ -52,4 +54,27 @@ fn smbus_encode_rejects_delays_outside_u16_millis() {
     let error = encode_operations(&operations).expect_err("long delay should fail");
     let rendered = error.to_string();
     assert!(rendered.contains("delay"));
+}
+
+#[tokio::test]
+async fn process_bus_arbiters_serialize_independent_callers_on_the_same_bus() {
+    let first = SmBusBusArbiter::for_bus("test:shared-smbus-arbiter");
+    let second = SmBusBusArbiter::for_bus("test:shared-smbus-arbiter");
+    let first_transaction = first.acquire_transaction().await;
+
+    let mut waiter = tokio::spawn(async move {
+        let _transaction = second.acquire_transaction().await;
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut waiter)
+            .await
+            .is_err(),
+        "callers for one physical bus must share transaction ownership"
+    );
+
+    drop(first_transaction);
+    tokio::time::timeout(Duration::from_secs(1), waiter)
+        .await
+        .expect("waiting caller should proceed after the bus is released")
+        .expect("waiting caller should complete");
 }

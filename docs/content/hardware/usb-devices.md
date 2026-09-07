@@ -4,13 +4,11 @@ description = "Connect USB/HID/serial/MIDI devices on Linux, Windows, and macOS:
 weight = 20
 +++
 
-# USB devices
-
 On Linux, USB-connected devices need a one-time permissions step (udev rules) before Hypercolor can talk to them. Without it the daemon finds the hardware but cannot open it, which looks like a silent no-op or a "device not found" error even though the device is physically present. Windows needs no per-device permission step, and macOS needs none for HID devices.
 
 This page covers the setup, explains how Hypercolor reaches different device types, and walks through the most common failure modes.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## Install udev rules
 
@@ -20,28 +18,33 @@ Run once from the repo root (or from wherever Hypercolor was installed):
 just udev-install
 ```
 
-That recipe copies `udev/99-hypercolor.rules` to `/etc/udev/rules.d/99-hypercolor.rules`, reloads the ruleset, and triggers an `add` action for each relevant subsystem (`hidraw`, `usb`, `tty`, `i2c-dev`). It is equivalent to:
+That recipe copies two rules files into `/etc/udev/rules.d/`: `udev/99-hypercolor.rules` for lighting device access and `udev/70-hypercolor-input.rules` for host keyboard and pointer capture. It then reloads the ruleset and triggers an `add` action for each relevant subsystem (`hidraw`, `usb`, `tty`, `i2c-dev`, `input`). It is equivalent to:
 
 ```bash
 sudo cp udev/99-hypercolor.rules /etc/udev/rules.d/
+sudo cp udev/70-hypercolor-input.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger --action=add --subsystem-match=hidraw
 sudo udevadm trigger --action=add --subsystem-match=usb
 sudo udevadm trigger --action=add --subsystem-match=tty
 sudo udevadm trigger --action=add --subsystem-match=i2c-dev
+sudo udevadm trigger --action=add --subsystem-match=input
 ```
 
-{% callout(type="warning") %}
-**AppImage and Flatpak installs do not apply udev rules automatically.** You must run the copy command manually after installing through either of those distribution methods.
-{% end %}
+Skipping the input rules file leaves lighting working while input-reactive effects
+silently see no keyboard or pointer activity.
+
+{% <callout type="warning"> %}
+**AppImage and Flatpak installs do not apply udev rules automatically.** You must run the copy commands manually after installing through either of those distribution methods.
+{% </callout> %}
 
 ## Replug or reboot after install
 
 `udevadm trigger` replays the rule against devices that are already connected, but the logind ACL (`TAG+="uaccess"`) can occasionally miss its replay for nodes that were opened before the rule was installed. If a device still fails after `just udev-install`, unplug it and plug it back in. A full reboot is the reliable fallback.
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 **Device not found after udev install? Replug first.** If Hypercolor still cannot open the device after running `just udev-install`, unplug it and replug it before investigating further. The ACL that logind sets on `/dev/hidraw*` and `/dev/bus/usb/*` is applied at plug-in time, not at rule-reload time. A replug forces a fresh assignment.
-{% end %}
+{% </callout> %}
 
 ## How the rules work
 
@@ -98,11 +101,11 @@ The `hidraw` rules cover this path as well.
 
 ### UsbControl
 
-Used by Razer peripherals. This path claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place, and the device node is in `/dev/bus/usb/`. The detach step is Linux-specific; Windows and macOS claim the interface without it.
+Used by Razer laptop keyboards (Blade-class), which claim interface 2 directly. Razer peripherals use `UsbHidApi` instead. This path claims the USB interface directly via `nusb` and sends HID feature reports as USB Class control transfers. On Linux, the `detach_and_claim_interface` call detaches `usbhid` from the interface before claiming it, so the `usb` (not `hidraw`) rules in the file must be in place, and the device node is in `/dev/bus/usb/`. The detach step is Linux-specific; Windows and macOS claim the interface without it.
 
 ### UsbHid
 
-Used by PrismRGB-class devices. Claims a HID interface directly and streams reports over its interrupt IN/OUT endpoints. Also uses `nusb`, also needs the `usb` rules.
+HID interrupt IN/OUT endpoints with the interface claimed directly. Lian Li Uni Hub (ENE) controllers declare it outright. On Linux it is also what a `Direct` HID access intent resolves to, covering PrismRGB and the Corsair LINK, Lighting Node, and LCD families; on macOS and Windows those same devices resolve to `UsbHidApi` instead. Also uses `nusb`, also needs the `usb` rules.
 
 ### UsbVendor
 
@@ -124,7 +127,7 @@ The baud rate for each device is set by its driver definition (115200 for the Fo
 
 ## Platform notes
 
-Only the `UsbHidRaw` transport (async-hid over `/dev/hidraw*`) is Linux-exclusive. The other transports (bulk, control, hid, hidapi, midi, serial, smbus, vendor) are cross-platform: `hidapi` selects a platform backend internally, and the `nusb`-based transports speak to the OS USB stack directly. SMBus on Windows goes through the optional PawnIO helper; see [SMBus/I2C devices](@/hardware/smbus-i2c.md). macOS has no SMBus path.
+Only the `UsbHidRaw` transport (async-hid over `/dev/hidraw*`) is Linux-exclusive, and SMBus is Linux and Windows only. The remaining transports (bulk, control, hid, hidapi, midi, serial, vendor) are cross-platform: `hidapi` selects a platform backend internally, and the `nusb`-based transports speak to the OS USB stack directly. SMBus on Windows goes through the optional PawnIO helper; see [SMBus/I2C devices](@/hardware/smbus-i2c.md). macOS has no SMBus path.
 
 The udev rules above are a Linux-only prerequisite. Windows needs no per-device permission step, and macOS needs none for HID devices.
 

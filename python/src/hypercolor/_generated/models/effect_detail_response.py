@@ -6,13 +6,12 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.effect_category import EffectCategory
+from ..models.effect_source_kind import EffectSourceKind
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.control_definition import ControlDefinition
-    from ..models.effect_detail_response_active_control_values_type_0 import (
-        EffectDetailResponseActiveControlValuesType0,
-    )
     from ..models.preset_template import PresetTemplate
 
 
@@ -26,15 +25,20 @@ class EffectDetailResponse:
     Attributes:
         audio_reactive (bool):
         author (str):
-        category (str):
+        category (EffectCategory): Primary classification categories for the effect taxonomy.
+
+            An effect can belong to multiple categories. Used for discovery
+            and filtering in the effect browser UI.
         description (str):
         id (str):
         name (str):
         runnable (bool):
-        source (str):
+        source (EffectSourceKind): Rendering implementation used by an effect.
+
+            The catalog publishes the implementation kind without leaking the source
+            file path carried by the engine's internal [`EffectSource`].
         tags (list[str]):
         version (str):
-        active_control_values (EffectDetailResponseActiveControlValuesType0 | None | Unset):
         controls (list[ControlDefinition] | Unset):
         cover_image_url (None | str | Unset):
         presets (list[PresetTemplate] | Unset):
@@ -42,32 +46,25 @@ class EffectDetailResponse:
 
     audio_reactive: bool
     author: str
-    category: str
+    category: EffectCategory
     description: str
     id: str
     name: str
     runnable: bool
-    source: str
+    source: EffectSourceKind
     tags: list[str]
     version: str
-    active_control_values: (
-        EffectDetailResponseActiveControlValuesType0 | None | Unset
-    ) = UNSET
     controls: list[ControlDefinition] | Unset = UNSET
     cover_image_url: None | str | Unset = UNSET
     presets: list[PresetTemplate] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.effect_detail_response_active_control_values_type_0 import (
-            EffectDetailResponseActiveControlValuesType0,
-        )
-
         audio_reactive = self.audio_reactive
 
         author = self.author
 
-        category = self.category
+        category = self.category.value
 
         description = self.description
 
@@ -77,21 +74,11 @@ class EffectDetailResponse:
 
         runnable = self.runnable
 
-        source = self.source
+        source = self.source.value
 
         tags = self.tags
 
         version = self.version
-
-        active_control_values: dict[str, Any] | None | Unset
-        if isinstance(self.active_control_values, Unset):
-            active_control_values = UNSET
-        elif isinstance(
-            self.active_control_values, EffectDetailResponseActiveControlValuesType0
-        ):
-            active_control_values = self.active_control_values.to_dict()
-        else:
-            active_control_values = self.active_control_values
 
         controls: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.controls, Unset):
@@ -129,8 +116,6 @@ class EffectDetailResponse:
                 "version": version,
             }
         )
-        if active_control_values is not UNSET:
-            field_dict["active_control_values"] = active_control_values
         if controls is not UNSET:
             field_dict["controls"] = controls
         if cover_image_url is not UNSET:
@@ -143,9 +128,6 @@ class EffectDetailResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.control_definition import ControlDefinition
-        from ..models.effect_detail_response_active_control_values_type_0 import (
-            EffectDetailResponseActiveControlValuesType0,
-        )
         from ..models.preset_template import PresetTemplate
 
         d = dict(src_dict)
@@ -153,7 +135,7 @@ class EffectDetailResponse:
 
         author = d.pop("author")
 
-        category = d.pop("category")
+        category = EffectCategory(d.pop("category"))
 
         description = d.pop("description")
 
@@ -163,36 +145,11 @@ class EffectDetailResponse:
 
         runnable = d.pop("runnable")
 
-        source = d.pop("source")
+        source = EffectSourceKind(d.pop("source"))
 
         tags = cast(list[str], d.pop("tags"))
 
         version = d.pop("version")
-
-        def _parse_active_control_values(
-            data: object,
-        ) -> EffectDetailResponseActiveControlValuesType0 | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                active_control_values_type_0 = (
-                    EffectDetailResponseActiveControlValuesType0.from_dict(data)
-                )
-
-                return active_control_values_type_0
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(
-                EffectDetailResponseActiveControlValuesType0 | None | Unset, data
-            )
-
-        active_control_values = _parse_active_control_values(
-            d.pop("active_control_values", UNSET)
-        )
 
         _controls = d.pop("controls", UNSET)
         controls: list[ControlDefinition] | Unset = UNSET
@@ -232,7 +189,6 @@ class EffectDetailResponse:
             source=source,
             tags=tags,
             version=version,
-            active_control_values=active_control_values,
             controls=controls,
             cover_image_url=cover_image_url,
             presets=presets,

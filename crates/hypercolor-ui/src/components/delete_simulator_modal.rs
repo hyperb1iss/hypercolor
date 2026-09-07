@@ -41,7 +41,7 @@ pub fn DeleteSimulatorModal(
                         on_deleted.run(device_id);
                     }
                     Err(error) => {
-                        toasts::toast_error(&error);
+                        toasts::toast_error(&error.to_string());
                         set_submitting.set(false);
                     }
                 }

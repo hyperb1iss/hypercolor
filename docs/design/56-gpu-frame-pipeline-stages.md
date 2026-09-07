@@ -1,6 +1,13 @@
 # 56 — GPU Frame Pipeline Stages 🔮
 
-**Status:** Proposed
+**Status:** Partly landed, no longer merely proposed. Checked 2026-08-25 at
+`7620eae44`: the core stage vocabulary shipped. `FrameInFlight`,
+`StagedReadback`, `ReadbackStage`, and `DeferredSamplingState` all exist in the
+daemon. The deletions the proposal promised are incomplete: `cached_readback_surface`
+still appears across eleven files and `pending_output_submission` across three,
+so the "What this deletes" section is not yet true. `EncoderState` was never
+introduced under that name. Re-derive the remaining work from the tree rather
+than assuming the whole proposal is open.
 **Scope:** `hypercolor-daemon` render thread — `sparkleflinger/gpu*`, `frame_sampling.rs`, `pipeline_runtime.rs`
 **Motivation:** Findings from the June 2026 render-pipeline deep review
 

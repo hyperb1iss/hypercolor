@@ -1,10 +1,11 @@
-//! Screen capture input source — ambient lighting driven by screen content.
+//! Screen capture: exact publication planning, the platform backends, and
+//! the reference CPU analysis pipeline.
 //!
-//! Implements [`InputSource`] for screen capture, producing [`ScreenData`]
-//! with per-zone colors extracted from a sector grid overlay. The actual
-//! screen capture backend (xcap, `PipeWire`, etc.) is external — this module
-//! provides the pure analysis pipeline: sector grid computation, letterbox
-//! detection, temporal smoothing, and zone mapping.
+//! Production consumers lease exact branches from the publication hub that
+//! the platform backends publish into. [`ScreenCaptureInput`] is the
+//! reference analyzer (sector grid, letterbox detection, temporal smoothing,
+//! zone mapping) that produces [`ScreenData`] for the macOS parity fixtures
+//! and the analysis unit tests; no backend publishes it to consumers.
 //!
 //! # Architecture
 //!
@@ -15,6 +16,7 @@
 //! The capture backend feeds raw pixel buffers. Everything downstream is
 //! backend-agnostic and testable with synthetic data.
 
+mod adapter;
 mod admission;
 mod cadence;
 mod compute;
@@ -24,7 +26,9 @@ mod fanout;
 mod frame;
 mod hub;
 mod ledger;
+mod macos;
 mod materialize;
+mod picker;
 mod plan;
 mod process;
 mod publication;
@@ -33,20 +37,23 @@ mod retained;
 mod sampling;
 pub mod sector;
 pub mod smooth;
+mod synthetic;
+mod tone_map;
 pub mod tune;
-#[cfg(target_os = "linux")]
 pub mod wayland;
-#[cfg(target_os = "windows")]
 pub mod windows;
 
+#[doc(hidden)]
 pub use admission::{
     ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteAdmissionSnapshot,
     ScreenByteLease, ScreenByteReservation, ScreenCapacityPolicySnapshot,
     ScreenCapacityStatusHandle, ScreenCapacityStatusSnapshot,
 };
+#[doc(hidden)]
 pub use cadence::{
     CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
 };
+#[doc(hidden)]
 pub use compute::{
     CpuExactReductionAdmissionError, CpuExactReductionComputeCapacity, CpuExactReductionWorkPlan,
     CpuExactReductionWorkTerms, ScreenAnalysisAdmissionError, ScreenAnalysisComputeCapacity,
@@ -54,17 +61,21 @@ pub use compute::{
     ScreenComputeCapacityPolicy,
 };
 pub(crate) use coordinator::PendingScreenWorkerPreparation;
+#[doc(hidden)]
 pub use coordinator::{
     CommittedScreenPublicationTransition, PreparedScreenPublicationPlan,
     ScreenPublicationPreparation, ScreenPublicationTransitionError,
     ScreenPublicationTransitionFailure, ScreenWorkerPreparation, ScreenWorkerRetirement,
 };
-pub use demand::{ScreenPublicationDemandError, ScreenPublicationDemandSnapshot};
+#[doc(hidden)]
+pub use demand::ScreenPublicationDemandSnapshot;
+#[doc(hidden)]
 pub use fanout::{
     CpuPublicationFanoutError, CpuPublicationFanoutReport, PreparedCpuLogicalFanout,
     PreparedCpuLogicalFanoutKind, PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout,
     PreparedCpuPublicationFanoutCandidate,
 };
+#[doc(hidden)]
 pub use frame::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureCursor,
     CaptureCursorContent, CaptureCursorShape, CaptureCursorShapeFormat, CaptureDamage,
@@ -73,125 +84,375 @@ pub use frame::{
     CapturePlanePool, CapturePositiveScalar, CaptureRotation, CaptureSourceId, CaptureStageKind,
     CaptureStorage, CaptureTransferFunction, CpuCaptureStorage, GeometryNormalizedCaptureSurface,
     KnownCaptureColorimetry, MoveRegion, PhysicalOrigin, PixelExtent, PixelRect, PlatformGpuApi,
-    PlatformGpuSurface, PooledCapturePlane, RawCaptureSurface, SourceScale,
+    PlatformGpuSurface, PlatformGpuSurfaceOwner, PlatformGpuSurfaceTimingSink, PooledCapturePlane,
+    RawCaptureSurface, SourceScale,
 };
+#[doc(hidden)]
 pub use hub::{
     PreparedScreenPublication, ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState,
-    ScreenBranchLease, ScreenBranchPayload, ScreenBranchPublication, ScreenBranchPublisher,
-    ScreenCommittedState, ScreenContinuityActivationFailure, ScreenContinuityError,
-    ScreenContinuityLease, ScreenContinuityStageFailure, ScreenGpuSurfacePayload,
-    ScreenLiveBranchReceipt, ScreenPayloadKind, ScreenPublicationColorimetry,
+    ScreenBranchLease, ScreenBranchObserver, ScreenBranchObserverSnapshot, ScreenBranchPayload,
+    ScreenBranchPublication, ScreenBranchPublisher, ScreenCommittedState,
+    ScreenContinuityActivationFailure, ScreenContinuityError, ScreenContinuityLease,
+    ScreenContinuityStageFailure, ScreenGpuSurfacePayload, ScreenLiveBranchReceipt,
+    ScreenNativeWorkPayload, ScreenPayloadKind, ScreenPublicationColorimetry,
     ScreenPublicationFreshness, ScreenPublicationHealth, ScreenPublicationHub,
     ScreenPublicationHubError, ScreenPublicationMetadata, ScreenPublicationRetirement,
     ScreenPublicationSlotPolicy, ScreenSurfacePayload, ScreenTwoPlanContinuityLease,
     ScreenZonesPayload,
 };
+#[doc(hidden)]
 pub use ledger::{
     ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,
 };
+#[cfg(feature = "macos-capture-fixtures")]
+#[doc(hidden)]
+pub use macos::MacosScreenCaptureFixture;
+#[doc(hidden)]
+pub use macos::{MacosNativeTargetManifest, MacosScreenCaptureInput};
+#[doc(hidden)]
 pub use materialize::{
     CpuSurfaceMaterializationError, CpuZoneMaterializationError, PreparedCpuSurfaceMaterializer,
     PreparedCpuZoneMaterializer, StagedCpuZonePublication,
 };
+pub use picker::{
+    PickerPersistenceDecision, PickerSelectionSnapshot, picker_persistence_decision,
+    picker_selection_snapshot,
+};
+#[doc(hidden)]
 pub use plan::{
     ArmedScreenPlan, AwaitingBackendScreenPlan, CommittedScreenPlan,
     InputPublicationDemandRevision, PreparingScreenPlan, ScreenAdmissionCapacity,
-    ScreenBranchDemand, ScreenCapturePlan, ScreenCompatibilitySelection, ScreenExactResource,
-    ScreenExactResourceLedger, ScreenInputGraphGeneration, ScreenPhysicalReductionDemand,
-    ScreenPlanAbort, ScreenPlanAdmissionLedger, ScreenPlanArmFailure, ScreenPlanBuilder,
-    ScreenPlanCommitFailure, ScreenPlanError, ScreenPlanGeneration, ScreenPlanTransactionId,
-    ScreenPreparedWorkerToken, ScreenRequiredResourceMinimum, ScreenResourceKind,
-    ScreenResourceLedger, ScreenResourceLifetime, ScreenSourcePlanDelta, ScreenWorkerBinding,
-    ScreenWorkerBindingState, ScreenWorkerPreparationTicket,
+    ScreenBranchDemand, ScreenCapturePlan, ScreenConsumerBranchRevision, ScreenConsumerBranchRoute,
+    ScreenExactResource, ScreenExactResourceLedger, ScreenInputGraphGeneration,
+    ScreenPhysicalReductionDemand, ScreenPlanAbort, ScreenPlanAdmissionLedger,
+    ScreenPlanArmFailure, ScreenPlanBuilder, ScreenPlanCommitFailure, ScreenPlanError,
+    ScreenPlanGeneration, ScreenPlanTransactionId, ScreenPreparedWorkerToken,
+    ScreenRequiredResourceMinimum, ScreenResourceKind, ScreenResourceLedger,
+    ScreenResourceLifetime, ScreenSourcePlanDelta, ScreenWorkerBinding, ScreenWorkerBindingState,
+    ScreenWorkerPreparationTicket,
 };
+#[doc(hidden)]
 pub use process::CaptureFrameProcessor;
+#[doc(hidden)]
 pub use publication::{
     AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation,
     RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorPipeline,
     ResolvedScreenColorTransform, ResolvedScreenGeometry, ResolvedScreenPublicationDescriptor,
     ResolvedScreenSource, ResolvedScreenSourceConfig, ResolvedScreenToneMap, ScreenAspectPolicy,
     ScreenBackendResourceIdentity, ScreenBoundedExtent, ScreenCaptureBackend,
-    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenContentBarsPolicy,
-    ScreenCursorCapabilities, ScreenCursorPolicy, ScreenExecutorColorCapabilities,
-    ScreenExtentRequest, ScreenGamutMapPolicy, ScreenGridPolicy, ScreenHdrPolicy,
-    ScreenLetterboxFill, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-    ScreenNativePreparationPayload, ScreenNativeTargetAllocation, ScreenNativeTargetBindingError,
-    ScreenNativeTargetPreparation, ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
+    ScreenColorTransformCapabilities, ScreenColorTuning, ScreenConsumerBranchId,
+    ScreenContentBarsPolicy, ScreenCursorCapabilities, ScreenCursorPolicy,
+    ScreenExecutorColorCapabilities, ScreenExtentRequest, ScreenGamutMapPolicy, ScreenGridPolicy,
+    ScreenHdrPolicy, ScreenLetterboxFill, ScreenNativeExecutionPolicy, ScreenNativeExecutionTarget,
+    ScreenNativeExecutionTargetId, ScreenNativeExecutionUnavailableReason,
+    ScreenNativePreparationPayload, ScreenNativeRetentionQuote, ScreenNativeTargetAllocation,
+    ScreenNativeTargetBindingError, ScreenNativeTargetPreparation,
+    ScreenNativeTargetPreparationError, ScreenNativeTargetPreparer,
     ScreenNativeTargetResourceError, ScreenPhysicalGpuDeviceIdentity,
-    ScreenPhysicalReductionDescriptor, ScreenPhysicalReductionKey, ScreenProcessingProfile,
-    ScreenProcessingProfileConfig, ScreenProfileScalar, ScreenPublicationError,
-    ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
-    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
-    ScreenPublicationResidency, ScreenRational, ScreenReductionFilter, ScreenResourceApi,
-    ScreenSceneCutPolicy, ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenSubpixelRect, ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
-    ScreenUnknownColorPolicy, ScreenUpscalePolicy,
+    ScreenPhysicalReductionDescriptor, ScreenProcessingProfile, ScreenProcessingProfileConfig,
+    ScreenProfileScalar, ScreenPublicationError, ScreenPublicationExecutor,
+    ScreenPublicationExecutorFallbackReason, ScreenPublicationExecutorRequest,
+    ScreenPublicationKind, ScreenPublicationRequest, ScreenPublicationResidency, ScreenRational,
+    ScreenReductionFilter, ScreenRendererExecutionState, ScreenResourceApi, ScreenSceneCutPolicy,
+    ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect,
+    ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy, ScreenUnknownColorPolicy,
+    ScreenUpscalePolicy,
 };
+#[doc(hidden)]
 pub use reducer::{
     CpuFallbackNeed, CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError,
     CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
     PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
 };
 pub(crate) use retained::{ExactBoxList, ExactBoxNode};
+#[doc(hidden)]
 pub use sampling::{
     CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
-    CpuStorageCoordinate,
+    CpuScalarSamplingView, CpuScalarSource, CpuStorageCoordinate,
 };
+#[doc(hidden)]
 pub use sector::{LetterboxBars, SectorGrid, proportional_sector_bounds};
+#[doc(hidden)]
 pub use smooth::TemporalSmoother;
+#[doc(hidden)]
+pub use synthetic::SyntheticScreenPublisher;
+#[doc(hidden)]
+pub use tone_map::{
+    LED_TONE_MAP_ALGORITHM_REVISION, LED_TONE_MAP_MAX_EXPOSURE_EV, LED_TONE_MAP_MIN_EXPOSURE_EV,
+    LED_TONE_MAP_TRANSITION_DURATION, LedToneMapCalibration, LedToneMapCalibrationError,
+    LedToneMapConstants, LedToneMapCurveTransition, LedToneMapTransitionSample, PreparedLedToneMap,
+    PreparedLedToneMapError,
+};
+#[doc(hidden)]
 pub use tune::ColorTuning;
-#[cfg(target_os = "linux")]
+#[doc(hidden)]
 pub use wayland::WaylandScreenCaptureInput;
-#[cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+#[cfg(feature = "windows-capture-fixtures")]
+#[doc(hidden)]
 pub use windows::WindowsScreenCaptureFixture;
-#[cfg(target_os = "windows")]
-pub use windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
+#[doc(hidden)]
+pub use windows::{
+    CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput, available_monitors,
+    monitor_selector_from_source,
+};
 
-use crate::input::traits::{InputData, InputSource, ScreenData, ScreenZoneColors};
+/// Capture vocabulary for sources that configure, demand, and sample screen
+/// capture without touching the publication machinery.
+pub mod consumer {
+    pub use super::admission::{
+        ScreenByteAdmissionCoordinator, ScreenByteAdmissionError, ScreenByteAdmissionSnapshot,
+        ScreenByteLease, ScreenByteReservation, ScreenCapacityPolicySnapshot,
+        ScreenCapacityStatusHandle, ScreenCapacityStatusSnapshot,
+    };
+    pub use super::cadence::{
+        CaptureCadence, CaptureCadenceError, CapturePacer, MAX_REPRESENTABLE_CAPTURE_FPS,
+    };
+    pub use super::compute::{
+        CpuExactReductionAdmissionError, CpuExactReductionComputeCapacity,
+        CpuExactReductionWorkPlan, CpuExactReductionWorkTerms, ScreenAnalysisAdmissionError,
+        ScreenAnalysisComputeCapacity, ScreenAnalysisComputeLane, ScreenAnalysisFrameWork,
+        ScreenAnalysisWorkPlan, ScreenComputeCapacityPolicy,
+    };
+    pub use super::demand::ScreenPublicationDemandSnapshot;
+    pub use super::frame::{
+        CaptureEpoch, CapturePixelFormat, CaptureSourceId, PixelExtent, PixelRect,
+    };
+    pub use super::hub::{
+        ScreenBranchLease, ScreenBranchPayload, ScreenBranchPublication, ScreenPayloadKind,
+        ScreenPublicationColorimetry, ScreenPublicationFreshness, ScreenPublicationHealth,
+        ScreenSurfacePayload, ScreenZonesPayload,
+    };
+    pub use super::sector::{LetterboxBars, SectorGrid, proportional_sector_bounds};
+    pub use super::smooth::TemporalSmoother;
+    pub use super::synthetic::SyntheticScreenPublisher;
+    pub use super::tune::ColorTuning;
+    pub use super::{
+        CaptureConfig, ScreenAnalysisResourcePlan, ScreenCaptureCadence, ScreenCaptureDemand,
+        ScreenCaptureInput, ScreenMonitor, available_monitors, fit_within,
+        monitor_selector_from_source,
+    };
+}
+
+/// Publication planning vocabulary: plan building, resolved descriptors,
+/// coordinator transitions, the hub's read side, and native target
+/// preparation.
+pub mod planner {
+    pub use super::coordinator::{
+        CommittedScreenPublicationTransition, PreparedScreenPublicationPlan,
+        ScreenPublicationPreparation, ScreenPublicationTransitionError,
+        ScreenPublicationTransitionFailure, ScreenWorkerPreparation, ScreenWorkerRetirement,
+    };
+    pub use super::hub::{
+        ScreenBranchDeliveryLifecycle, ScreenBranchDeliveryState, ScreenBranchLease,
+        ScreenCommittedState, ScreenContinuityActivationFailure, ScreenContinuityError,
+        ScreenContinuityLease, ScreenContinuityStageFailure, ScreenPayloadKind,
+        ScreenPublicationHub, ScreenPublicationHubError, ScreenPublicationRetirement,
+        ScreenPublicationSlotPolicy, ScreenTwoPlanContinuityLease,
+    };
+    pub use super::plan::{
+        ArmedScreenPlan, AwaitingBackendScreenPlan, CommittedScreenPlan,
+        InputPublicationDemandRevision, PreparingScreenPlan, ScreenAdmissionCapacity,
+        ScreenBranchDemand, ScreenCapturePlan, ScreenExactResource, ScreenExactResourceLedger,
+        ScreenInputGraphGeneration, ScreenPhysicalReductionDemand, ScreenPlanAbort,
+        ScreenPlanAdmissionLedger, ScreenPlanArmFailure, ScreenPlanBuilder,
+        ScreenPlanCommitFailure, ScreenPlanError, ScreenPlanGeneration, ScreenPlanTransactionId,
+        ScreenPreparedWorkerToken, ScreenRequiredResourceMinimum, ScreenResourceKind,
+        ScreenResourceLedger, ScreenResourceLifetime, ScreenSourcePlanDelta, ScreenWorkerBinding,
+        ScreenWorkerBindingState, ScreenWorkerPreparationTicket,
+    };
+    pub use super::publication::{
+        AdmittedScreenNativeTargetPreparation, BoundScreenNativeTargetPreparation,
+        RegisteredScreenBranchDemand, ResolvedScreenBranchDemand, ResolvedScreenColorPipeline,
+        ResolvedScreenColorTransform, ResolvedScreenGeometry, ResolvedScreenPublicationDescriptor,
+        ResolvedScreenSource, ResolvedScreenSourceConfig, ResolvedScreenToneMap,
+        ScreenAspectPolicy, ScreenBackendResourceIdentity, ScreenBoundedExtent,
+        ScreenCaptureBackend, ScreenColorTransformCapabilities, ScreenColorTuning,
+        ScreenConsumerBranchId, ScreenContentBarsPolicy, ScreenCursorCapabilities,
+        ScreenCursorPolicy, ScreenExecutorColorCapabilities, ScreenExtentRequest,
+        ScreenGamutMapPolicy, ScreenGridPolicy, ScreenHdrPolicy, ScreenLetterboxFill,
+        ScreenNativeExecutionPolicy, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
+        ScreenNativeExecutionUnavailableReason, ScreenNativePreparationPayload,
+        ScreenNativeRetentionQuote, ScreenNativeTargetAllocation, ScreenNativeTargetBindingError,
+        ScreenNativeTargetPreparation, ScreenNativeTargetPreparationError,
+        ScreenNativeTargetPreparer, ScreenNativeTargetResourceError,
+        ScreenPhysicalGpuDeviceIdentity, ScreenPhysicalReductionDescriptor,
+        ScreenProcessingProfile, ScreenProcessingProfileConfig, ScreenProfileScalar,
+        ScreenPublicationError, ScreenPublicationExecutor, ScreenPublicationExecutorFallbackReason,
+        ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+        ScreenPublicationResidency, ScreenRational, ScreenReductionFilter,
+        ScreenRendererExecutionState, ScreenResourceApi, ScreenSceneCutPolicy,
+        ScreenSmoothingPolicy, ScreenSourceReflection, ScreenSourceSelector, ScreenSubpixelRect,
+        ScreenTargetColorimetry, ScreenToneMapOperator, ScreenToneMapPolicy,
+        ScreenUnknownColorPolicy, ScreenUpscalePolicy,
+    };
+    pub use super::tone_map::{
+        LED_TONE_MAP_ALGORITHM_REVISION, LED_TONE_MAP_MAX_EXPOSURE_EV,
+        LED_TONE_MAP_MIN_EXPOSURE_EV, LED_TONE_MAP_TRANSITION_DURATION, LedToneMapCalibration,
+        LedToneMapCalibrationError, LedToneMapConstants, LedToneMapCurveTransition,
+        LedToneMapTransitionSample, PreparedLedToneMap, PreparedLedToneMapError,
+    };
+}
+
+/// Backend implementer vocabulary: capture frames and storage, the hub's
+/// publisher side, the exact ledger, and the CPU fanout, materialize,
+/// reduce, and sample pipeline.
+pub mod implementer {
+    pub use super::fanout::{
+        CpuPublicationFanoutError, CpuPublicationFanoutReport, PreparedCpuLogicalFanout,
+        PreparedCpuLogicalFanoutKind, PreparedCpuPhysicalFanout, PreparedCpuPublicationFanout,
+        PreparedCpuPublicationFanoutCandidate,
+    };
+    pub use super::frame::{
+        CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureCursor,
+        CaptureCursorContent, CaptureCursorShape, CaptureCursorShapeFormat, CaptureDamage,
+        CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
+        CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CapturePlaneLease,
+        CapturePlanePool, CapturePositiveScalar, CaptureRotation, CaptureSourceId,
+        CaptureStageKind, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
+        GeometryNormalizedCaptureSurface, KnownCaptureColorimetry, MoveRegion, PhysicalOrigin,
+        PixelExtent, PixelRect, PlatformGpuApi, PlatformGpuSurface, PlatformGpuSurfaceOwner,
+        PlatformGpuSurfaceTimingSink, PooledCapturePlane, RawCaptureSurface, SourceScale,
+    };
+    pub use super::hub::{
+        PreparedScreenPublication, ScreenBranchPayload, ScreenBranchPublication,
+        ScreenBranchPublisher, ScreenGpuSurfacePayload, ScreenLiveBranchReceipt,
+        ScreenNativeWorkPayload, ScreenPublicationColorimetry, ScreenPublicationFreshness,
+        ScreenPublicationHealth, ScreenPublicationMetadata, ScreenSurfacePayload,
+        ScreenZonesPayload,
+    };
+    pub use super::ledger::{
+        ScreenWorkerExactLedger, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError,
+    };
+    #[cfg(feature = "macos-capture-fixtures")]
+    pub use super::macos::MacosScreenCaptureFixture;
+    pub use super::macos::{MacosNativeTargetManifest, MacosScreenCaptureInput};
+    pub use super::materialize::{
+        CpuSurfaceMaterializationError, CpuZoneMaterializationError,
+        PreparedCpuSurfaceMaterializer, PreparedCpuZoneMaterializer, StagedCpuZonePublication,
+    };
+    pub use super::process::CaptureFrameProcessor;
+    pub use super::reducer::{
+        CpuFallbackNeed, CpuReductionBatchJob, CpuReductionBatchReport, CpuReductionError,
+        CpuReductionExecutor, CpuReductionLayout, CpuReductionRequest, CpuSurfaceReductionJob,
+        PreparedCpuMaterializationWorkspace, PreparedCpuReductionBatch,
+    };
+    pub use super::sampling::{
+        CpuMappedSamplingPoint, CpuSamplingError, CpuSamplingPoint, CpuSamplingView,
+        CpuScalarSamplingView, CpuScalarSource, CpuStorageCoordinate,
+    };
+    pub use super::wayland::WaylandScreenCaptureInput;
+    #[cfg(feature = "windows-capture-fixtures")]
+    pub use super::windows::WindowsScreenCaptureFixture;
+    pub use super::windows::{CaptureSourceSink, ResolvedCaptureSource, WindowsScreenCaptureInput};
+}
+
+use crate::input::traits::{
+    InputData, InputSource, ScreenData, ScreenSource, ScreenSourceRole, ScreenZoneColors,
+    SourceRoleBinding,
+};
 use crate::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
-use crate::types::canvas::{
+use hypercolor_types::canvas::{
     DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, PublishedSurface, RenderSurfacePool,
     SurfaceDescriptor, SurfaceResourceError, SurfaceResourceOwner,
 };
-use crate::types::event::ZoneColors;
+use hypercolor_types::event::ZoneColors;
 use std::fmt::Write as _;
 use std::mem::size_of;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thiserror::Error;
 
-/// Requested screen publication state for downstream render consumers.
+/// Acquisition cadence requested from a native screen backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenCaptureCadence {
+    /// Use the source's configured acquisition cadence.
+    #[default]
+    Configured,
+    /// Allow the native source to publish at the display's refresh cadence.
+    NativeRefresh,
+    /// Request an explicit nonzero acquisition rate.
+    FramesPerSecond(NonZeroU32),
+}
+
+impl ScreenCaptureCadence {
+    /// Construct an explicit nonzero acquisition rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureCadenceError::Zero`] when `frames_per_second` is zero.
+    pub const fn frames_per_second(frames_per_second: u32) -> Result<Self, CaptureCadenceError> {
+        let cadence = match CaptureCadence::new(frames_per_second) {
+            Ok(cadence) => cadence,
+            Err(error) => return Err(error),
+        };
+        Ok(Self::FramesPerSecond(
+            NonZeroU32::new(cadence.frames_per_second())
+                .expect("validated capture cadence is nonzero"),
+        ))
+    }
+
+    /// Resolve a demand override against the configured acquisition cadence.
+    #[must_use]
+    pub const fn resolve(self, configured: Self) -> Self {
+        match self {
+            Self::Configured => configured,
+            explicit => explicit,
+        }
+    }
+
+    const fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::NativeRefresh, _) | (_, Self::NativeRefresh) => Self::NativeRefresh,
+            (Self::FramesPerSecond(left), Self::FramesPerSecond(right)) => {
+                if left.get() >= right.get() {
+                    Self::FramesPerSecond(left)
+                } else {
+                    Self::FramesPerSecond(right)
+                }
+            }
+            (Self::Configured, cadence) | (cadence, Self::Configured) => cadence,
+        }
+    }
+}
+
+/// Capture worker lifecycle demand aggregated across exact screen consumers.
 ///
-/// The requested extent describes the analyzed surface published by the input
-/// source. Native capture geometry remains authoritative in frame metadata.
+/// Active demand starts the native capture worker and carries the acquisition
+/// policy shared by every registered branch. Output geometry never lives
+/// here: each consumer's extent, grid, and processing profile is an exact
+/// branch resolved and published through the publication hub.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScreenCaptureDemand {
     /// No consumer currently needs screen publications.
     #[default]
     Inactive,
-    /// Publish screen data fitted within this non-empty extent.
+    /// At least one exact branch is registered.
     Active {
-        /// Maximum width and height requested by the current consumer union.
-        requested_extent: PixelExtent,
+        /// Native acquisition cadence requested by the current consumer union.
+        cadence: ScreenCaptureCadence,
+        /// Cursor composition requested from the native source.
+        cursor: ScreenCursorPolicy,
     },
 }
 
 impl ScreenCaptureDemand {
-    /// Construct active demand from a validated extent.
+    /// Construct active demand with the configured cadence and no cursor.
     #[must_use]
-    pub const fn active(requested_extent: PixelExtent) -> Self {
-        Self::Active { requested_extent }
+    pub const fn active() -> Self {
+        Self::active_with_policy(
+            ScreenCaptureCadence::Configured,
+            ScreenCursorPolicy::Exclude,
+        )
     }
 
-    /// Construct active demand from checked pixel dimensions.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CaptureFrameError::EmptyExtent`] when either dimension is zero.
-    pub fn try_active(width: u32, height: u32) -> Result<Self, CaptureFrameError> {
-        match PixelExtent::new(width, height) {
-            Ok(requested_extent) => Ok(Self::active(requested_extent)),
-            Err(error) => Err(error),
-        }
+    /// Construct active demand with an explicit acquisition and cursor policy.
+    #[must_use]
+    pub const fn active_with_policy(
+        cadence: ScreenCaptureCadence,
+        cursor: ScreenCursorPolicy,
+    ) -> Self {
+        Self::Active { cadence, cursor }
     }
 
     /// Whether at least one consumer requests screen publications.
@@ -200,38 +461,61 @@ impl ScreenCaptureDemand {
         matches!(self, Self::Active { .. })
     }
 
-    /// Requested publication extent, or `None` while inactive.
+    /// Requested native acquisition cadence, or `None` while inactive.
     #[must_use]
-    pub const fn requested_extent(self) -> Option<PixelExtent> {
+    pub const fn cadence(self) -> Option<ScreenCaptureCadence> {
         match self {
             Self::Inactive => None,
-            Self::Active { requested_extent } => Some(requested_extent),
+            Self::Active { cadence, .. } => Some(cadence),
         }
     }
 
-    /// Union independent consumer demands without imposing a resolution cap.
+    /// Requested cursor composition policy, or `None` while inactive.
+    #[must_use]
+    pub const fn cursor(self) -> Option<ScreenCursorPolicy> {
+        match self {
+            Self::Inactive => None,
+            Self::Active { cursor, .. } => Some(cursor),
+        }
+    }
+
+    /// Union independent consumer demands.
     #[must_use]
     pub const fn union(self, other: Self) -> Self {
         match (self, other) {
             (Self::Inactive, demand) | (demand, Self::Inactive) => demand,
             (
                 Self::Active {
-                    requested_extent: left,
+                    cadence: left_cadence,
+                    cursor: left_cursor,
                 },
                 Self::Active {
-                    requested_extent: right,
+                    cadence: right_cadence,
+                    cursor: right_cursor,
                 },
-            ) => Self::active(left.union(right)),
+            ) => Self::active_with_policy(
+                left_cadence.union(right_cadence),
+                if matches!(left_cursor, ScreenCursorPolicy::Include)
+                    || matches!(right_cursor, ScreenCursorPolicy::Include)
+                {
+                    ScreenCursorPolicy::Include
+                } else {
+                    ScreenCursorPolicy::Exclude
+                },
+            ),
         }
     }
 }
 
+/// Reference CPU analysis of one capture frame, kept for macOS parity fixtures.
+#[cfg(feature = "macos-capture-fixtures")]
 #[derive(Clone)]
 pub(crate) struct AnalyzedScreenSnapshot {
     geometry_frame: CaptureFrame<GeometryNormalizedCaptureSurface>,
     data: ScreenData,
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 impl AnalyzedScreenSnapshot {
     pub(crate) const fn geometry_frame(&self) -> &CaptureFrame<GeometryNormalizedCaptureSurface> {
         &self.geometry_frame
@@ -242,6 +526,8 @@ impl AnalyzedScreenSnapshot {
     }
 }
 
+/// Run the reference CPU analysis over one raw capture frame.
+#[cfg(feature = "macos-capture-fixtures")]
 pub(crate) fn analyze_screen_frame(
     analyzer: &mut ScreenCaptureInput,
     frame: CaptureFrame<RawCaptureSurface>,
@@ -269,6 +555,7 @@ pub(crate) fn analyze_screen_frame(
     })
 }
 
+#[cfg(feature = "macos-capture-fixtures")]
 pub(crate) fn validate_legacy_screen_colorimetry(
     colorimetry: CaptureColorimetry,
 ) -> Result<(), CaptureFrameError> {
@@ -291,6 +578,9 @@ pub(crate) fn validate_legacy_screen_colorimetry(
 pub struct CaptureConfig {
     /// Target capture frames per second. Default: 30.
     pub target_fps: u32,
+
+    /// Cadence requested from the native acquisition backend.
+    pub acquisition_cadence: ScreenCaptureCadence,
 
     /// Sector grid columns (horizontal divisions). Default: 8.
     pub grid_cols: u32,
@@ -319,11 +609,26 @@ pub struct CaptureConfig {
     /// Color tuning applied to zone colors after smoothing.
     pub tuning: ColorTuning,
 
+    /// Target LED white-point x coordinate in CIE xy chromaticity space.
+    pub target_led_white_x: f32,
+
+    /// Target LED white-point y coordinate in CIE xy chromaticity space.
+    pub target_led_white_y: f32,
+
+    /// Target LED reference white in nits for HDR tone mapping.
+    pub target_led_reference_white_nits: f32,
+
+    /// Calibrated target LED peak in nits for HDR tone mapping.
+    pub target_led_peak_nits: f32,
+
+    /// User exposure adjustment in exposure-value stops.
+    pub exposure_ev: f32,
+
     /// XDG portal restore token from a previous session, if any.
     pub restore_token: Option<String>,
 
-    /// Persisted capture source. Windows accepts `auto`, stable monitor ids,
-    /// and legacy numeric indices; the XDG portal owns selection on Linux.
+    /// Persisted capture source. Windows accepts `auto` or a stable monitor
+    /// id; the XDG portal owns selection on Linux.
     pub source: String,
 }
 
@@ -331,6 +636,9 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             target_fps: 30,
+            acquisition_cadence: ScreenCaptureCadence::FramesPerSecond(
+                NonZeroU32::new(30).expect("default capture cadence is nonzero"),
+            ),
             grid_cols: 8,
             grid_rows: 6,
             analysis_memory_bytes: u64::MAX,
@@ -339,9 +647,144 @@ impl Default for CaptureConfig {
             letterbox_threshold: 0.02,
             letterbox_enabled: false,
             tuning: ColorTuning::default(),
+            target_led_white_x: 0.3127,
+            target_led_white_y: 0.3290,
+            target_led_reference_white_nits: 203.0,
+            target_led_peak_nits: 406.0,
+            exposure_ev: 0.0,
             restore_token: None,
             source: "auto".to_owned(),
         }
+    }
+}
+
+/// Failure to derive an exact publication profile from runtime capture settings.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum CaptureProcessingProfileError {
+    /// A byte-changing processing scalar was not finite.
+    #[error(transparent)]
+    Publication(#[from] ScreenPublicationError),
+    /// The configured LED tone-map target was invalid.
+    #[error(transparent)]
+    ToneMapCalibration(#[from] LedToneMapCalibrationError),
+}
+
+impl CaptureConfig {
+    /// Apply runtime capture controls to one consumer's exact processing profile.
+    ///
+    /// Cursor policy and output color/storage contracts remain owned by the
+    /// consumer request. Grid and raster reduction use the managed high-quality
+    /// policies because runtime configuration does not expose lower-quality
+    /// policy switches.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error for non-finite controls or invalid LED calibration.
+    pub fn exact_processing_profile(
+        &self,
+        requested: &ScreenProcessingProfile,
+    ) -> Result<ScreenProcessingProfile, CaptureProcessingProfileError> {
+        let alpha = ScreenProfileScalar::try_new(self.smoothing_alpha)?
+            .value()
+            .clamp(0.0, 1.0);
+        let scene_cut = ScreenSceneCutPolicy::MeanAbsoluteDelta {
+            threshold: ScreenProfileScalar::try_new(
+                self.scene_cut_threshold.clamp(0.0, 765.0) / 765.0,
+            )?,
+        };
+        let smoothing = if alpha == 0.0 {
+            ScreenSmoothingPolicy::Frozen { scene_cut }
+        } else if alpha == 1.0 {
+            ScreenSmoothingPolicy::Disabled
+        } else {
+            let seconds = -1.0 / (60.0 * (-f64::from(alpha)).ln_1p());
+            ScreenSmoothingPolicy::Exponential {
+                time_constant: Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX),
+                scene_cut,
+            }
+        };
+        let content_bars = if self.letterbox_enabled {
+            ScreenContentBarsPolicy::DetectAndCrop {
+                luminance_threshold: ScreenProfileScalar::try_new(
+                    self.letterbox_threshold.clamp(0.0, 1.0),
+                )?,
+            }
+        } else {
+            ScreenContentBarsPolicy::Disabled
+        };
+        let tuning = self.tuning.clamped();
+        let calibration = LedToneMapCalibration::try_new(
+            self.target_led_white_x,
+            self.target_led_white_y,
+            self.target_led_reference_white_nits,
+            self.target_led_peak_nits,
+            self.exposure_ev,
+        )?;
+        Ok(ScreenProcessingProfile::new(ScreenProcessingProfileConfig {
+            content_bars,
+            letterbox_fill: requested.letterbox_fill(),
+            smoothing,
+            tuning: ScreenColorTuning::try_new(tuning.saturation, tuning.brightness, tuning.gamma)?,
+            cursor: requested.cursor(),
+            grid: ScreenGridPolicy::AreaWeighted,
+            reduction_filter: ScreenReductionFilter::Area,
+            target_pixel_format: requested.target_pixel_format(),
+            target_colorimetry: requested.target_colorimetry(),
+            unknown_color: requested.unknown_color(),
+            hdr: ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                ScreenToneMapOperator::Bt2390Eetf,
+                calibration,
+            )),
+            gamut: requested.gamut(),
+            algorithm_revision: requested.algorithm_revision(),
+        })
+        .with_led_tone_map(calibration))
+    }
+
+    fn bind_exact_processing_profile(
+        &self,
+        demand: &RegisteredScreenBranchDemand,
+    ) -> Result<RegisteredScreenBranchDemand, CaptureProcessingProfileError> {
+        let request = demand.request();
+        let processing_profile = self.exact_processing_profile(request.processing_profile())?;
+        Ok(RegisteredScreenBranchDemand::with_id(
+            demand.consumer_branch_id(),
+            ScreenPublicationRequest::new(
+                request.selector().clone(),
+                request.kind(),
+                request.executor().clone(),
+                request.extent(),
+                request.aspect(),
+                Arc::new(processing_profile),
+            ),
+            demand.requested_hz(),
+        ))
+    }
+
+    fn processing_controls_differ(&self, other: &Self) -> bool {
+        self.smoothing_alpha != other.smoothing_alpha
+            || self.scene_cut_threshold != other.scene_cut_threshold
+            || self.letterbox_threshold != other.letterbox_threshold
+            || self.letterbox_enabled != other.letterbox_enabled
+            || self.tuning != other.tuning
+            || self.target_led_white_x != other.target_led_white_x
+            || self.target_led_white_y != other.target_led_white_y
+            || self.target_led_reference_white_nits != other.target_led_reference_white_nits
+            || self.target_led_peak_nits != other.target_led_peak_nits
+            || self.exposure_ev != other.exposure_ev
+    }
+
+    fn copy_processing_controls_from(&mut self, other: &Self) {
+        self.smoothing_alpha = other.smoothing_alpha;
+        self.scene_cut_threshold = other.scene_cut_threshold;
+        self.letterbox_threshold = other.letterbox_threshold;
+        self.letterbox_enabled = other.letterbox_enabled;
+        self.tuning = other.tuning;
+        self.target_led_white_x = other.target_led_white_x;
+        self.target_led_white_y = other.target_led_white_y;
+        self.target_led_reference_white_nits = other.target_led_reference_white_nits;
+        self.target_led_peak_nits = other.target_led_peak_nits;
+        self.exposure_ev = other.exposure_ev;
     }
 }
 
@@ -595,7 +1038,7 @@ pub fn fit_within(width: u32, height: u32, max_width: u32, max_height: u32) -> (
 /// One display output the capture backend can address directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenMonitor {
-    /// Legacy zero-based enumeration index for display ordering.
+    /// Zero-based enumeration index for display ordering.
     pub index: usize,
     /// Stable capture source id suitable for persistence.
     pub id: String,
@@ -609,53 +1052,14 @@ pub struct ScreenMonitor {
     pub primary: bool,
 }
 
-/// Display outputs the capture backend can address by index.
-///
-/// Empty where the backend owns source selection instead (the XDG portal
-/// on Linux) or no backend exists. Emptiness is the capability signal: a
-/// UI with monitors shows a picker, a UI without falls back to whatever
-/// selection flow the platform provides.
-#[must_use]
-pub fn available_monitors() -> Vec<ScreenMonitor> {
-    #[cfg(target_os = "windows")]
-    {
-        hypercolor_windows_capture::list_monitors()
-            .into_iter()
-            .map(|monitor| ScreenMonitor {
-                index: monitor.index,
-                id: monitor.id,
-                name: monitor.name,
-                width: monitor.width,
-                height: monitor.height,
-                primary: monitor.primary,
-            })
-            .collect()
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        Vec::new()
-    }
-}
-
-/// Parse a configured capture source into a Windows monitor selector.
-///
-/// `capture.source` is a free-form string shared across backends. The XDG
-/// portal picks its own source and leaves the value at "auto", so this only
-/// matters on Windows, which addresses display outputs directly. Stable ids
-/// survive adapter/output enumeration reorder; numeric values remain accepted
-/// for configuration compatibility.
-#[must_use]
-pub fn monitor_selector_from_source(source: &str) -> hypercolor_windows_capture::MonitorSelector {
-    hypercolor_windows_capture::MonitorSelector::parse(source)
-}
-
 // ── ScreenCaptureInput ────────────────────────────────────────────────────
 
-/// Screen capture input source implementing [`InputSource`].
+/// Reference CPU screen analyzer implementing [`InputSource`].
 ///
 /// Owns the sector grid configuration, temporal smoother, and latest frame
-/// state. The actual pixel data is pushed in via [`push_frame`] — the
-/// capture backend lives outside this struct (behind a feature flag).
+/// state. Pixel data is pushed in via [`push_frame`]; the macOS parity
+/// fixtures and the analysis unit tests are its only callers, since
+/// production backends publish exact branches through the hub instead.
 ///
 /// # Usage
 ///
@@ -676,6 +1080,7 @@ pub struct ScreenCaptureInput {
     /// Temporal smoother for flicker reduction.
     smoother: TemporalSmoother,
 
+    #[cfg(feature = "macos-capture-fixtures")]
     capture_processor: CaptureFrameProcessor,
 
     analysis_grid: SectorGrid,
@@ -838,6 +1243,7 @@ impl ScreenCaptureInput {
         Ok(Self {
             config,
             smoother,
+            #[cfg(feature = "macos-capture-fixtures")]
             capture_processor: CaptureFrameProcessor::default(),
             analysis_grid,
             policy_grid,
@@ -985,6 +1391,7 @@ impl ScreenCaptureInput {
             &mut self.policy_pixels,
             elapsed,
             reset_smoother,
+            false,
             &self.surface_resource_owner,
         )?
         else {
@@ -1025,6 +1432,15 @@ impl ScreenCaptureInput {
     #[must_use]
     pub fn config(&self) -> &CaptureConfig {
         &self.config
+    }
+
+    #[cfg(feature = "macos-capture-fixtures")]
+    pub(crate) fn set_led_tone_map_calibration(&mut self, calibration: LedToneMapCalibration) {
+        self.config.target_led_white_x = calibration.target_white_x();
+        self.config.target_led_white_y = calibration.target_white_y();
+        self.config.target_led_reference_white_nits = calibration.target_reference_white_nits();
+        self.config.target_led_peak_nits = calibration.target_peak_nits();
+        self.config.exposure_ev = calibration.exposure_ev();
     }
 
     /// Update the requested publication extent for the next analyzed frame.
@@ -1249,10 +1665,6 @@ impl InputSource for ScreenCaptureInput {
         self.running
     }
 
-    fn is_screen_source(&self) -> bool {
-        true
-    }
-
     fn source_status_handle(&self) -> Option<SourceStatusHandle> {
         Some(self.status.handle())
     }
@@ -1261,6 +1673,12 @@ impl InputSource for ScreenCaptureInput {
         Some(&mut self.status)
     }
 }
+
+impl SourceRoleBinding for ScreenCaptureInput {
+    type Role = ScreenSourceRole;
+}
+
+impl ScreenSource for ScreenCaptureInput {}
 
 fn admit_analysis_work(
     plan: ScreenAnalysisWorkPlan,
@@ -1558,6 +1976,7 @@ fn downscale_frame(
     policy_pixels: &mut Vec<[u8; 3]>,
     elapsed: Duration,
     reset_smoother: bool,
+    suppress_scene_cut_bypass: bool,
     surface_resource_owner: &Arc<dyn SurfaceResourceOwner>,
 ) -> Result<Option<PublishedSurface>, SurfaceResourceError> {
     if width == 0 || height == 0 || target_width == 0 || target_height == 0 {
@@ -1636,6 +2055,7 @@ fn downscale_frame(
         target_height,
         elapsed,
         reset_smoother,
+        suppress_scene_cut_bypass,
     ) {
         lease.release();
         return Ok(None);

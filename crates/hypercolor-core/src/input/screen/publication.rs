@@ -5,11 +5,14 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Duration;
 
+use hypercolor_types::config::CaptureBackendId;
 use thiserror::Error;
 
-use super::plan::ScreenNativeResourceBindingKey;
+use super::plan::{ScreenNativeResourceBindingKey, ScreenNativeSharedResourceBindingKey};
+use super::tone_map::{LED_TONE_MAP_ALGORITHM_REVISION, LedToneMapCalibration};
 use super::{
     CaptureColorSpace, CaptureColorimetry, CaptureColorimetryError, CaptureDynamicRange,
     CaptureEpoch, CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CaptureRotation,
@@ -17,6 +20,19 @@ use super::{
     PlatformGpuApi, PlatformGpuSurface, ScreenByteLease, ScreenExactResource, ScreenPlanError,
     ScreenPlanGeneration, ScreenResourceKind, ScreenResourceLifetime,
 };
+
+static NEXT_SCREEN_CONSUMER_BRANCH_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_screen_consumer_branch_id() -> ScreenConsumerBranchId {
+    let identity = NEXT_SCREEN_CONSUMER_BRANCH_ID
+        .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+            current.checked_add(1)
+        })
+        .expect("screen consumer branch identity space exhausted");
+    ScreenConsumerBranchId(
+        NonZeroU64::new(identity).expect("screen consumer branch identities start at one"),
+    )
+}
 
 /// Selector used by a consumer before capture-source resolution.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,19 +60,10 @@ pub enum ScreenSourceReflection {
 }
 
 /// Capture backend that owns the source session.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ScreenCaptureBackend {
-    /// Windows Desktop Duplication capture.
-    WindowsDesktopDuplication,
-    /// Wayland portal and `PipeWire` capture.
-    WaylandPipeWire,
-    /// macOS `ScreenCaptureKit` capture.
-    MacosScreenCaptureKit,
-    /// Deterministic CPU or fixture source.
-    Synthetic,
-    /// Extensible backend identity.
-    Other(Arc<str>),
-}
+///
+/// One vocabulary with configuration validation and status reporting; see
+/// [`CaptureBackendId`].
+pub type ScreenCaptureBackend = CaptureBackendId;
 
 /// Resource API backing a resolved capture source.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -447,15 +454,22 @@ pub enum ScreenPublicationExecutorRequest {
     Cpu,
     /// Execute for one exact native consumer without host readback.
     SourceNative(ScreenNativeExecutionTarget),
+    /// Require one exact native consumer and reject every CPU fallback.
+    SourceNativeRequired(ScreenNativeExecutionTarget),
 }
 
 impl Ord for ScreenPublicationExecutorRequest {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::Cpu, Self::Cpu) => Ordering::Equal,
-            (Self::Cpu, Self::SourceNative(_)) => Ordering::Less,
-            (Self::SourceNative(_), Self::Cpu) => Ordering::Greater,
+            (Self::Cpu, Self::SourceNative(_) | Self::SourceNativeRequired(_)) => Ordering::Less,
+            (Self::SourceNative(_) | Self::SourceNativeRequired(_), Self::Cpu) => Ordering::Greater,
             (Self::SourceNative(left), Self::SourceNative(right)) => left.cmp(right),
+            (Self::SourceNative(_), Self::SourceNativeRequired(_)) => Ordering::Less,
+            (Self::SourceNativeRequired(_), Self::SourceNative(_)) => Ordering::Greater,
+            (Self::SourceNativeRequired(left), Self::SourceNativeRequired(right)) => {
+                left.cmp(right)
+            }
         }
     }
 }
@@ -549,6 +563,45 @@ pub struct ScreenNativeTargetAllocation {
     lifetime: ScreenResourceLifetime,
 }
 
+/// Renderer retention split between branch-exclusive and shared physical storage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScreenNativeRetentionQuote {
+    exclusive_bytes: u64,
+    shared_physical_bytes: u64,
+}
+
+impl ScreenNativeRetentionQuote {
+    /// Quote bytes owned only by one logical native branch.
+    #[must_use]
+    pub const fn exclusive(exclusive_bytes: u64) -> Self {
+        Self {
+            exclusive_bytes,
+            shared_physical_bytes: 0,
+        }
+    }
+
+    /// Quote one branch allocation plus physical storage shared by equal work.
+    #[must_use]
+    pub const fn split(exclusive_bytes: u64, shared_physical_bytes: u64) -> Self {
+        Self {
+            exclusive_bytes,
+            shared_physical_bytes,
+        }
+    }
+
+    /// Bytes retained only by this branch.
+    #[must_use]
+    pub const fn exclusive_bytes(self) -> u64 {
+        self.exclusive_bytes
+    }
+
+    /// Physical bytes shared by equal descriptors in this candidate plan.
+    #[must_use]
+    pub const fn shared_physical_bytes(self) -> u64 {
+        self.shared_physical_bytes
+    }
+}
+
 impl ScreenNativeTargetAllocation {
     fn new(retained_bytes: u64, lifetime: ScreenResourceLifetime) -> Self {
         Self {
@@ -575,24 +628,42 @@ impl ScreenNativeTargetAllocation {
 pub struct ScreenNativeTargetPreparation {
     binding: Option<ScreenNativeResourceBindingKey>,
     platform: ScreenNativePreparationPayload,
-    retained_bytes: u64,
+    retention: ScreenNativeRetentionQuote,
 }
 
 impl ScreenNativeTargetPreparation {
     /// Pair renderer-specific prepared data with its exact retained byte count.
     #[must_use]
     pub fn new(platform: ScreenNativePreparationPayload, retained_bytes: u64) -> Self {
+        Self::with_retention(
+            platform,
+            ScreenNativeRetentionQuote::exclusive(retained_bytes),
+        )
+    }
+
+    /// Pair renderer-specific data with exclusive and shared retention.
+    #[must_use]
+    pub fn with_retention(
+        platform: ScreenNativePreparationPayload,
+        retention: ScreenNativeRetentionQuote,
+    ) -> Self {
         Self {
             binding: None,
             platform,
-            retained_bytes,
+            retention,
         }
     }
 
     /// Renderer bytes that must be reported before binding this preparation.
     #[must_use]
     pub const fn retained_bytes(&self) -> u64 {
-        self.retained_bytes
+        self.retention.exclusive_bytes
+    }
+
+    /// Exact split between branch-exclusive and shared physical retention.
+    #[must_use]
+    pub const fn retention(&self) -> ScreenNativeRetentionQuote {
+        self.retention
     }
 
     /// Construct the exact ledger entry that may bind this preparation.
@@ -613,7 +684,7 @@ impl ScreenNativeTargetPreparation {
         Ok(ScreenExactResource::try_new_native_target(
             name,
             accounting_scope,
-            self.retained_bytes,
+            self.retention.exclusive_bytes,
             binding,
         )?)
     }
@@ -628,14 +699,23 @@ impl ScreenNativeTargetPreparation {
         self,
         lifetime: ScreenResourceLifetime,
     ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
+        self.bind_with_shared(lifetime, None)
+    }
+
+    fn bind_with_shared(
+        self,
+        lifetime: ScreenResourceLifetime,
+        shared_lifetime: Option<ScreenResourceLifetime>,
+    ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
         let binding = self
             .binding
             .ok_or(ScreenNativeTargetBindingError::TargetIdentityMissing)?;
         BoundScreenNativeTargetPreparation::try_new(
             binding,
             self.platform,
-            self.retained_bytes,
+            self.retention,
             lifetime,
+            shared_lifetime,
         )
     }
 }
@@ -645,16 +725,22 @@ impl ScreenNativeTargetPreparation {
 pub struct AdmittedScreenNativeTargetPreparation {
     preparation: ScreenNativeTargetPreparation,
     admission_lease: ScreenByteLease,
+    shared_resource_name: Option<Arc<str>>,
+    shared_admission_lease: Option<ScreenByteLease>,
 }
 
 impl AdmittedScreenNativeTargetPreparation {
     pub(crate) fn new(
         preparation: ScreenNativeTargetPreparation,
         admission_lease: ScreenByteLease,
+        shared_resource_name: Option<Arc<str>>,
+        shared_admission_lease: Option<ScreenByteLease>,
     ) -> Self {
         Self {
             preparation,
             admission_lease,
+            shared_resource_name,
+            shared_admission_lease,
         }
     }
 
@@ -662,6 +748,12 @@ impl AdmittedScreenNativeTargetPreparation {
     #[must_use]
     pub const fn retained_bytes(&self) -> u64 {
         self.preparation.retained_bytes()
+    }
+
+    /// Exact shared physical resource name, when this branch uses one.
+    #[must_use]
+    pub const fn shared_resource_name(&self) -> Option<&Arc<str>> {
+        self.shared_resource_name.as_ref()
     }
 
     /// Bind after the exact ledger installs this preparation's byte lease.
@@ -673,10 +765,28 @@ impl AdmittedScreenNativeTargetPreparation {
         self,
         lifetime: ScreenResourceLifetime,
     ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
+        self.bind_with_shared(lifetime, None)
+    }
+
+    /// Bind branch-exclusive and optional plan-shared physical lifetimes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing, substituted, or mismatched admission lifetimes.
+    pub fn bind_with_shared(
+        self,
+        lifetime: ScreenResourceLifetime,
+        shared_lifetime: Option<ScreenResourceLifetime>,
+    ) -> Result<BoundScreenNativeTargetPreparation, ScreenNativeTargetBindingError> {
         if !lifetime.has_admission_lease(&self.admission_lease) {
             return Err(ScreenNativeTargetBindingError::AdmissionLeaseMismatch);
         }
-        self.preparation.bind(lifetime)
+        match (&self.shared_admission_lease, &shared_lifetime) {
+            (Some(lease), Some(lifetime)) if lifetime.has_admission_lease(lease) => {}
+            (None, None) => {}
+            _ => return Err(ScreenNativeTargetBindingError::SharedAdmissionLeaseMismatch),
+        }
+        self.preparation.bind_with_shared(lifetime, shared_lifetime)
     }
 }
 
@@ -686,14 +796,16 @@ pub struct BoundScreenNativeTargetPreparation {
     target_id: ScreenNativeExecutionTargetId,
     platform: ScreenNativePreparationPayload,
     allocation: ScreenNativeTargetAllocation,
+    shared_physical_allocation: Option<ScreenNativeTargetAllocation>,
 }
 
 impl BoundScreenNativeTargetPreparation {
     fn try_new(
         binding: ScreenNativeResourceBindingKey,
         platform: ScreenNativePreparationPayload,
-        retained_bytes: u64,
+        retention: ScreenNativeRetentionQuote,
         lifetime: ScreenResourceLifetime,
+        shared_lifetime: Option<ScreenResourceLifetime>,
     ) -> Result<Self, ScreenNativeTargetBindingError> {
         let resource = lifetime.resource();
         if resource.resource() != ScreenResourceKind::WorkerAdditional {
@@ -701,9 +813,9 @@ impl BoundScreenNativeTargetPreparation {
                 observed: resource.resource(),
             });
         }
-        if resource.bytes() != retained_bytes {
+        if resource.bytes() != retention.exclusive_bytes {
             return Err(ScreenNativeTargetBindingError::RetainedBytesMismatch {
-                expected: retained_bytes,
+                expected: retention.exclusive_bytes,
                 observed: resource.bytes(),
             });
         }
@@ -713,10 +825,31 @@ impl BoundScreenNativeTargetPreparation {
         if lifetime.plan_generation() != platform.plan_generation() {
             return Err(ScreenNativeTargetBindingError::PlanGenerationMismatch);
         }
+        let shared_physical_allocation = match (retention.shared_physical_bytes, shared_lifetime) {
+            (0, None) => None,
+            (0, Some(_)) | (_, None) => {
+                return Err(ScreenNativeTargetBindingError::SharedLifetimeMismatch);
+            }
+            (expected, Some(shared)) => {
+                let shared_resource = shared.resource();
+                if shared_resource.resource() != ScreenResourceKind::WorkerAdditional
+                    || shared_resource.bytes() != expected
+                    || !shared.belongs_to_same_worker(&lifetime)
+                    || !shared.matches_native_shared_target(
+                        binding.target_id(),
+                        binding.descriptor().physical(),
+                    )
+                {
+                    return Err(ScreenNativeTargetBindingError::SharedLifetimeMismatch);
+                }
+                Some(ScreenNativeTargetAllocation::new(expected, shared))
+            }
+        };
         Ok(Self {
             target_id: ScreenNativeExecutionTargetId::new(binding.target_id()),
             platform,
-            allocation: ScreenNativeTargetAllocation::new(retained_bytes, lifetime),
+            allocation: ScreenNativeTargetAllocation::new(retention.exclusive_bytes, lifetime),
+            shared_physical_allocation,
         })
     }
 
@@ -732,12 +865,21 @@ impl BoundScreenNativeTargetPreparation {
         &self.allocation
     }
 
+    /// Plan-scoped physical allocation shared by equal native branches.
+    #[must_use]
+    pub const fn shared_physical_allocation(&self) -> Option<&ScreenNativeTargetAllocation> {
+        self.shared_physical_allocation.as_ref()
+    }
+
     /// Attach platform access and exact accounting lifetime to one surface.
     #[must_use]
     pub fn retain_on_surface(&self, surface: PlatformGpuSurface) -> PlatformGpuSurface {
         surface.with_native_target_owners(
             Arc::clone(&self.platform.inner),
             self.allocation.lifetime.clone(),
+            self.shared_physical_allocation
+                .as_ref()
+                .map(|allocation| allocation.lifetime.clone()),
             None,
         )
     }
@@ -762,6 +904,9 @@ impl BoundScreenNativeTargetPreparation {
         Ok(surface.with_native_target_owners(
             Arc::clone(&self.platform.inner),
             self.allocation.lifetime.clone(),
+            self.shared_physical_allocation
+                .as_ref()
+                .map(|allocation| allocation.lifetime.clone()),
             Some(capture_lifetime),
         ))
     }
@@ -784,6 +929,9 @@ pub enum ScreenNativeTargetBindingError {
     /// The exact ledger has not installed this preparation's dedicated lease.
     #[error("native target allocation is not bound to its admitted byte lease")]
     AdmissionLeaseMismatch,
+    /// The plan-shared allocation is not bound to its admitted byte lease.
+    #[error("native shared allocation is not bound to its admitted byte lease")]
+    SharedAdmissionLeaseMismatch,
     /// Only a live execution target can stamp preparation identity.
     #[error("native target preparation is missing execution-target identity")]
     TargetIdentityMissing,
@@ -802,6 +950,9 @@ pub enum ScreenNativeTargetBindingError {
     /// The target payload belongs to another candidate plan generation.
     #[error("native target preparation belongs to another candidate plan generation")]
     PlanGenerationMismatch,
+    /// The shared physical lifetime is absent, substituted, or mismatched.
+    #[error("native shared physical allocation lifetime is missing or mismatched")]
+    SharedLifetimeMismatch,
 }
 
 /// Failure to dispatch a resolved descriptor to a native target.
@@ -825,6 +976,9 @@ pub enum ScreenNativeTargetPreparationError {
     /// The renderer retained a different byte count than it quoted.
     #[error("native target retained {actual} bytes after quoting {quoted}")]
     PreparedRetainedBytesMismatch { quoted: u64, actual: u64 },
+    /// The renderer retained a different shared byte count than it quoted.
+    #[error("native target retained {actual} shared bytes after quoting {quoted}")]
+    PreparedSharedRetainedBytesMismatch { quoted: u64, actual: u64 },
 }
 
 /// Live renderer capability that prepares one exact source-native branch.
@@ -840,6 +994,19 @@ pub trait ScreenNativeTargetPreparer: Send + Sync {
         descriptor: &ResolvedScreenPublicationDescriptor,
         platform: &ScreenNativePreparationPayload,
     ) -> anyhow::Result<u64>;
+
+    /// Quote branch-exclusive and plan-shared physical retention.
+    ///
+    /// The default preserves existing targets as fully exclusive. Targets
+    /// that reuse equal physical work override this method with a split quote.
+    fn quote_retention(
+        &self,
+        descriptor: &ResolvedScreenPublicationDescriptor,
+        platform: &ScreenNativePreparationPayload,
+    ) -> anyhow::Result<ScreenNativeRetentionQuote> {
+        self.quote_retained_bytes(descriptor, platform)
+            .map(ScreenNativeRetentionQuote::exclusive)
+    }
 
     /// Prepare renderer-owned resources without changing active delivery.
     ///
@@ -860,14 +1027,19 @@ pub(super) struct ScreenNativeTargetPreparationQuote {
     target_id: ScreenNativeExecutionTargetId,
     descriptor: ResolvedScreenPublicationDescriptor,
     plan_generation: ScreenPlanGeneration,
-    retained_bytes: u64,
+    retention: ScreenNativeRetentionQuote,
 }
 
 impl ScreenNativeTargetPreparationQuote {
-    /// Renderer bytes admitted before target preparation begins.
-    #[must_use]
-    pub const fn retained_bytes(&self) -> u64 {
-        self.retained_bytes
+    pub(super) const fn retention(&self) -> ScreenNativeRetentionQuote {
+        self.retention
+    }
+
+    pub(super) fn shared_binding(&self) -> ScreenNativeSharedResourceBindingKey {
+        ScreenNativeSharedResourceBindingKey::new(
+            self.target_id.get(),
+            Arc::new(self.descriptor.physical().clone()),
+        )
     }
 }
 
@@ -878,6 +1050,7 @@ pub struct ScreenNativeExecutionTarget {
     accepted_api: PlatformGpuApi,
     physical_gpu_device: ScreenPhysicalGpuDeviceIdentity,
     max_texture_dimension: NonZeroU32,
+    color_capabilities: ScreenColorTransformCapabilities,
     preparer: Arc<dyn ScreenNativeTargetPreparer>,
 }
 
@@ -896,8 +1069,19 @@ impl ScreenNativeExecutionTarget {
             accepted_api,
             physical_gpu_device,
             max_texture_dimension,
+            color_capabilities: ScreenColorTransformCapabilities::NONE,
             preparer,
         }
+    }
+
+    /// Attach the exact byte-changing color operations implemented by this target.
+    #[must_use]
+    pub const fn with_color_capabilities(
+        mut self,
+        color_capabilities: ScreenColorTransformCapabilities,
+    ) -> Self {
+        self.color_capabilities = color_capabilities;
+        self
     }
 
     /// Process-local renderer context identity.
@@ -922,6 +1106,12 @@ impl ScreenNativeExecutionTarget {
     #[must_use]
     pub const fn max_texture_dimension(&self) -> NonZeroU32 {
         self.max_texture_dimension
+    }
+
+    /// Exact source-native color operations implemented end to end.
+    #[must_use]
+    pub const fn color_capabilities(&self) -> ScreenColorTransformCapabilities {
+        self.color_capabilities
     }
 
     fn validate_preparation_request(
@@ -956,12 +1146,12 @@ impl ScreenNativeExecutionTarget {
         platform: &ScreenNativePreparationPayload,
     ) -> anyhow::Result<ScreenNativeTargetPreparationQuote> {
         self.validate_preparation_request(descriptor, platform)?;
-        let retained_bytes = self.preparer.quote_retained_bytes(descriptor, platform)?;
+        let retention = self.preparer.quote_retention(descriptor, platform)?;
         Ok(ScreenNativeTargetPreparationQuote {
             target_id: self.id,
             descriptor: descriptor.clone(),
             plan_generation: platform.plan_generation(),
-            retained_bytes,
+            retention,
         })
     }
 
@@ -985,11 +1175,20 @@ impl ScreenNativeExecutionTarget {
             return Err(ScreenNativeTargetPreparationError::QuoteMismatch.into());
         }
         let mut preparation = self.preparer.prepare(descriptor, platform)?;
-        if preparation.retained_bytes != quote.retained_bytes {
+        if preparation.retention.exclusive_bytes != quote.retention.exclusive_bytes {
             return Err(
                 ScreenNativeTargetPreparationError::PreparedRetainedBytesMismatch {
-                    quoted: quote.retained_bytes,
-                    actual: preparation.retained_bytes,
+                    quoted: quote.retention.exclusive_bytes,
+                    actual: preparation.retention.exclusive_bytes,
+                }
+                .into(),
+            );
+        }
+        if preparation.retention.shared_physical_bytes != quote.retention.shared_physical_bytes {
+            return Err(
+                ScreenNativeTargetPreparationError::PreparedSharedRetainedBytesMismatch {
+                    quoted: quote.retention.shared_physical_bytes,
+                    actual: preparation.retention.shared_physical_bytes,
                 }
                 .into(),
             );
@@ -1015,6 +1214,7 @@ impl fmt::Debug for ScreenNativeExecutionTarget {
             .field("accepted_api", &self.accepted_api)
             .field("physical_gpu_device", &self.physical_gpu_device)
             .field("max_texture_dimension", &self.max_texture_dimension)
+            .field("color_capabilities", &self.color_capabilities)
             .finish_non_exhaustive()
     }
 }
@@ -1025,6 +1225,7 @@ impl PartialEq for ScreenNativeExecutionTarget {
             && self.accepted_api == other.accepted_api
             && self.physical_gpu_device == other.physical_gpu_device
             && self.max_texture_dimension == other.max_texture_dimension
+            && self.color_capabilities == other.color_capabilities
     }
 }
 
@@ -1037,6 +1238,7 @@ impl Ord for ScreenNativeExecutionTarget {
             .then_with(|| platform_gpu_api_cmp(&self.accepted_api, &other.accepted_api))
             .then_with(|| self.physical_gpu_device.cmp(&other.physical_gpu_device))
             .then_with(|| self.max_texture_dimension.cmp(&other.max_texture_dimension))
+            .then_with(|| self.color_capabilities.cmp(&other.color_capabilities))
     }
 }
 
@@ -1061,6 +1263,44 @@ pub enum ScreenPublicationExecutorFallbackReason {
     TargetDimensionLimitExceeded,
     /// The target cannot execute the requested color contract exactly.
     NativeColorContractUnsupported,
+}
+
+/// How a screen source expects renderer-bound screen publications to execute.
+///
+/// Sources whose frames stay GPU-resident and must never round-trip through
+/// host memory declare `Required`: screen requests without an explicit
+/// executor wait for the renderer's native target and report
+/// [`ScreenRendererExecutionState::NativeUnavailable`] until one exists.
+/// Every other source declares `Preferred`: the renderer's native target is
+/// used when it exists and exact CPU reduction is the fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScreenNativeExecutionPolicy {
+    /// Native execution when available, exact CPU reduction otherwise.
+    #[default]
+    Preferred,
+    /// Native execution only; requests wait for a renderer target.
+    Required,
+}
+
+/// Why the renderer cannot satisfy a required native screen execution path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenNativeExecutionUnavailableReason {
+    /// The renderer has no current platform-native execution target.
+    MissingTarget,
+    /// The capture source cannot bind the current native target exactly.
+    Executor(ScreenPublicationExecutorFallbackReason),
+}
+
+/// Renderer-authoritative execution state for production screen diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScreenRendererExecutionState {
+    /// No hardware-authoritative screen effect currently requests publication.
+    #[default]
+    Inactive,
+    /// The renderer has a current platform-native target.
+    NativeReady(ScreenNativeExecutionTargetId),
+    /// Native execution is required but unavailable.
+    NativeUnavailable(ScreenNativeExecutionUnavailableReason),
 }
 
 /// Concrete executor selected after resolving the capture source.
@@ -1157,7 +1397,7 @@ pub enum ScreenSceneCutPolicy {
     /// Never reset smoothing based on scene content.
     #[default]
     Disabled,
-    /// Reset when mean absolute channel delta reaches the threshold.
+    /// Reset when mean absolute channel delta exceeds the threshold.
     MeanAbsoluteDelta {
         /// Canonical finite scene-change threshold.
         threshold: ScreenProfileScalar,
@@ -1170,6 +1410,11 @@ pub enum ScreenSmoothingPolicy {
     /// Publish every processed sample without temporal smoothing.
     #[default]
     Disabled,
+    /// Hold the committed sample until history resets.
+    Frozen {
+        /// Rule that resets history across discontinuous scenes.
+        scene_cut: ScreenSceneCutPolicy,
+    },
     /// Apply exponential smoothing with optional scene-cut resets.
     Exponential {
         /// Time constant controlling the smoothing response.
@@ -1353,7 +1598,7 @@ impl Default for ScreenTargetColorimetry {
 pub struct ScreenColorTransformCapabilities {
     linear_light_sdr_processing: bool,
     linear_relative_color_conversion: bool,
-    pq_bt2390_tone_mapping: bool,
+    reference_white_bt2390_tone_mapping: bool,
     algorithm_revision: Option<NonZeroU32>,
 }
 
@@ -1362,7 +1607,7 @@ impl ScreenColorTransformCapabilities {
     pub const NONE: Self = Self {
         linear_light_sdr_processing: false,
         linear_relative_color_conversion: false,
-        pq_bt2390_tone_mapping: false,
+        reference_white_bt2390_tone_mapping: false,
         algorithm_revision: None,
     };
 
@@ -1371,13 +1616,13 @@ impl ScreenColorTransformCapabilities {
     pub const fn new(
         linear_light_sdr_processing: bool,
         linear_relative_color_conversion: bool,
-        pq_bt2390_tone_mapping: bool,
+        reference_white_bt2390_tone_mapping: bool,
         algorithm_revision: NonZeroU32,
     ) -> Self {
         Self {
             linear_light_sdr_processing,
             linear_relative_color_conversion,
-            pq_bt2390_tone_mapping,
+            reference_white_bt2390_tone_mapping,
             algorithm_revision: Some(algorithm_revision),
         }
     }
@@ -1397,7 +1642,13 @@ impl ScreenColorTransformCapabilities {
     /// Whether PQ HDR can be mapped to SDR with BT.2390 end to end.
     #[must_use]
     pub const fn supports_pq_bt2390_tone_mapping(self) -> bool {
-        self.pq_bt2390_tone_mapping
+        self.reference_white_bt2390_tone_mapping
+    }
+
+    /// Whether reference-white BT.2390 mapping accepts supported HDR encodings.
+    #[must_use]
+    pub const fn supports_reference_white_bt2390_tone_mapping(self) -> bool {
+        self.reference_white_bt2390_tone_mapping
     }
 
     /// Whether this reducer's end-to-end conversion promises cover one gamut policy.
@@ -1405,7 +1656,7 @@ impl ScreenColorTransformCapabilities {
     pub const fn supports_gamut_policy(self, policy: ScreenGamutMapPolicy) -> bool {
         match policy {
             ScreenGamutMapPolicy::RelativeColorimetricClip => {
-                self.linear_relative_color_conversion || self.pq_bt2390_tone_mapping
+                self.linear_relative_color_conversion || self.reference_white_bt2390_tone_mapping
             }
         }
     }
@@ -1477,7 +1728,7 @@ pub enum ScreenUnknownColorPolicy {
 /// Gamut behavior for known-primary conversions.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScreenGamutMapPolicy {
-    /// Apply the relative-colorimetric matrix and clip target-linear channels.
+    /// Apply the relative-colorimetric matrix and compress target-linear chroma.
     #[default]
     RelativeColorimetricClip,
 }
@@ -1507,6 +1758,15 @@ impl ScreenToneMapPolicy {
             operator,
             target_luminance,
         }
+    }
+
+    /// Construct a tone-map request from the validated target calibration.
+    #[must_use]
+    pub fn from_calibration(
+        operator: ScreenToneMapOperator,
+        calibration: LedToneMapCalibration,
+    ) -> Self {
+        Self::new(operator, calibration.target_luminance())
     }
 
     /// Exact tone-map operator.
@@ -1539,6 +1799,7 @@ pub struct ResolvedScreenToneMap {
     source_luminance: CaptureLuminanceContext,
     target_luminance: CaptureLuminanceContext,
     gamut: ScreenGamutMapPolicy,
+    calibration: LedToneMapCalibration,
 }
 
 impl ResolvedScreenToneMap {
@@ -1565,6 +1826,12 @@ impl ResolvedScreenToneMap {
     pub const fn gamut(self) -> ScreenGamutMapPolicy {
         self.gamut
     }
+
+    /// Validated target white point, luminance coordinates, and exposure.
+    #[must_use]
+    pub const fn calibration(self) -> LedToneMapCalibration {
+        self.calibration
+    }
 }
 
 /// Byte-changing color operation selected before backend preparation.
@@ -1586,6 +1853,7 @@ pub struct ResolvedScreenColorPipeline {
     effective_source: Option<KnownCaptureColorimetry>,
     output: CaptureColorimetry,
     transform: ResolvedScreenColorTransform,
+    calibration: Option<LedToneMapCalibration>,
 }
 
 impl ResolvedScreenColorPipeline {
@@ -1606,6 +1874,12 @@ impl ResolvedScreenColorPipeline {
     pub const fn transform(self) -> ResolvedScreenColorTransform {
         self.transform
     }
+
+    /// Calibration applied by byte-changing managed color processing.
+    #[must_use]
+    pub const fn calibration(self) -> Option<LedToneMapCalibration> {
+        self.calibration
+    }
 }
 
 /// Complete immutable byte-changing processing configuration.
@@ -1623,6 +1897,7 @@ pub struct ScreenProcessingProfile {
     unknown_color: ScreenUnknownColorPolicy,
     hdr: ScreenHdrPolicy,
     gamut: ScreenGamutMapPolicy,
+    led_tone_map: LedToneMapCalibration,
     algorithm_revision: NonZeroU32,
 }
 
@@ -1697,7 +1972,7 @@ impl Default for ScreenProcessingProfileConfig {
             unknown_color: ScreenUnknownColorPolicy::default(),
             hdr: ScreenHdrPolicy::default(),
             gamut: ScreenGamutMapPolicy::default(),
-            algorithm_revision: NonZeroU32::MIN,
+            algorithm_revision: LED_TONE_MAP_ALGORITHM_REVISION,
         }
     }
 }
@@ -1719,8 +1994,22 @@ impl ScreenProcessingProfile {
             unknown_color: config.unknown_color,
             hdr: config.hdr,
             gamut: config.gamut,
+            led_tone_map: LedToneMapCalibration::DEFAULT,
             algorithm_revision: config.algorithm_revision,
         }
+    }
+
+    /// Replace the validated target LED calibration and user exposure.
+    #[must_use]
+    pub fn with_led_tone_map(mut self, led_tone_map: LedToneMapCalibration) -> Self {
+        self.led_tone_map = led_tone_map;
+        if let ScreenHdrPolicy::ToneMap(policy) = self.hdr {
+            self.hdr = ScreenHdrPolicy::ToneMap(ScreenToneMapPolicy::from_calibration(
+                policy.operator(),
+                led_tone_map,
+            ));
+        }
+        self
     }
 
     /// Content-bar detection policy.
@@ -1795,6 +2084,12 @@ impl ScreenProcessingProfile {
         self.gamut
     }
 
+    /// Target LED calibration and authoritative user exposure.
+    #[must_use]
+    pub const fn led_tone_map(&self) -> LedToneMapCalibration {
+        self.led_tone_map
+    }
+
     /// Complete processing algorithm revision.
     #[must_use]
     pub const fn algorithm_revision(&self) -> NonZeroU32 {
@@ -1826,6 +2121,7 @@ impl Ord for ScreenProcessingProfile {
             .then_with(|| self.unknown_color.cmp(&other.unknown_color))
             .then_with(|| self.hdr.cmp(&other.hdr))
             .then_with(|| self.gamut.cmp(&other.gamut))
+            .then_with(|| self.led_tone_map.cmp(&other.led_tone_map))
             .then_with(|| self.algorithm_revision.cmp(&other.algorithm_revision))
     }
 }
@@ -1963,6 +2259,10 @@ impl ScreenPublicationRequest {
             }
             ScreenCursorPolicy::Exclude | ScreenCursorPolicy::Include => {}
         }
+        let native_required = matches!(
+            self.executor,
+            ScreenPublicationExecutorRequest::SourceNativeRequired(_)
+        );
         let color_pipeline = if matches!(execution.executor, ScreenPublicationExecutor::Cpu) {
             resolve_color_pipeline(
                 &source.config,
@@ -1980,7 +2280,7 @@ impl ScreenPublicationRequest {
                 capabilities.source_native(),
             ) {
                 Ok(pipeline) => pipeline,
-                Err(ScreenPublicationError::UnsupportedColorTransform) => {
+                Err(ScreenPublicationError::UnsupportedColorTransform) if !native_required => {
                     let pipeline = resolve_color_pipeline(
                         &source.config,
                         self.kind,
@@ -1992,6 +2292,11 @@ impl ScreenPublicationRequest {
                         ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
                     );
                     pipeline
+                }
+                Err(ScreenPublicationError::UnsupportedColorTransform) => {
+                    return Err(ScreenPublicationError::RequiredNativeUnavailable(
+                        ScreenPublicationExecutorFallbackReason::NativeColorContractUnsupported,
+                    ));
                 }
                 Err(error) => return Err(error),
             }
@@ -2259,9 +2564,6 @@ pub struct ScreenPhysicalReductionDescriptor {
     color_pipeline: ResolvedScreenColorPipeline,
 }
 
-/// Canonical sharing key for physical reduction work.
-pub type ScreenPhysicalReductionKey = ScreenPhysicalReductionDescriptor;
-
 impl ScreenPhysicalReductionDescriptor {
     /// Exact source epoch fenced by this reduction.
     #[must_use]
@@ -2469,9 +2771,28 @@ impl PartialOrd for ResolvedScreenPublicationDescriptor {
     }
 }
 
+/// Stable identity owned by one exact screen consumer registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScreenConsumerBranchId(NonZeroU64);
+
+impl ScreenConsumerBranchId {
+    /// Construct an identity supplied by a registration authority.
+    #[must_use]
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    /// Opaque numeric identity.
+    #[must_use]
+    pub const fn get(self) -> NonZeroU64 {
+        self.0
+    }
+}
+
 /// One unresolved consumer request and its independent scheduling cadence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredScreenBranchDemand {
+    consumer_branch_id: ScreenConsumerBranchId,
     request: ScreenPublicationRequest,
     requested_hz: NonZeroU32,
 }
@@ -2479,11 +2800,28 @@ pub struct RegisteredScreenBranchDemand {
 impl RegisteredScreenBranchDemand {
     /// Register a logical request at a non-zero cadence.
     #[must_use]
-    pub const fn new(request: ScreenPublicationRequest, requested_hz: NonZeroU32) -> Self {
+    pub fn new(request: ScreenPublicationRequest, requested_hz: NonZeroU32) -> Self {
+        Self::with_id(next_screen_consumer_branch_id(), request, requested_hz)
+    }
+
+    /// Register with an identity owned by an external registration authority.
+    #[must_use]
+    pub const fn with_id(
+        consumer_branch_id: ScreenConsumerBranchId,
+        request: ScreenPublicationRequest,
+        requested_hz: NonZeroU32,
+    ) -> Self {
         Self {
+            consumer_branch_id,
             request,
             requested_hz,
         }
+    }
+
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
     }
 
     /// Logical request retained by the registration.
@@ -2537,6 +2875,7 @@ impl RegisteredScreenBranchDemand {
         capabilities: ScreenExecutorColorCapabilities,
     ) -> Result<ResolvedScreenBranchDemand, ScreenPublicationError> {
         Ok(ResolvedScreenBranchDemand {
+            consumer_branch_id: self.consumer_branch_id,
             descriptor: self
                 .request
                 .resolve_with_executor_capabilities(source, capabilities)?,
@@ -2548,11 +2887,18 @@ impl RegisteredScreenBranchDemand {
 /// One independently resolved publication and its scheduling cadence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedScreenBranchDemand {
+    consumer_branch_id: ScreenConsumerBranchId,
     descriptor: ResolvedScreenPublicationDescriptor,
     requested_hz: NonZeroU32,
 }
 
 impl ResolvedScreenBranchDemand {
+    /// Stable consumer registration identity.
+    #[must_use]
+    pub const fn consumer_branch_id(&self) -> ScreenConsumerBranchId {
+        self.consumer_branch_id
+    }
+
     /// Full byte-equivalence descriptor.
     #[must_use]
     pub const fn descriptor(&self) -> &ResolvedScreenPublicationDescriptor {
@@ -2565,8 +2911,14 @@ impl ResolvedScreenBranchDemand {
         self.requested_hz
     }
 
-    pub(crate) fn into_parts(self) -> (ResolvedScreenPublicationDescriptor, NonZeroU32) {
-        (self.descriptor, self.requested_hz)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ScreenConsumerBranchId,
+        ResolvedScreenPublicationDescriptor,
+        NonZeroU32,
+    ) {
+        (self.consumer_branch_id, self.descriptor, self.requested_hz)
     }
 }
 
@@ -2606,6 +2958,9 @@ pub enum ScreenPublicationError {
     /// The reducer has not advertised an executable color transform.
     #[error("screen reducer does not support the requested color transform")]
     UnsupportedColorTransform,
+    /// A required native executor could not consume the exact source contract.
+    #[error("required native screen execution is unavailable: {0:?}")]
+    RequiredNativeUnavailable(ScreenPublicationExecutorFallbackReason),
     /// HDR input did not include the absolute context required for tone mapping.
     #[error("screen HDR source is missing luminance context")]
     MissingSourceLuminance,
@@ -2652,39 +3007,53 @@ fn resolve_executor(
             if matches!(kind, ScreenPublicationKind::Zones { .. }) {
                 return Err(ScreenPublicationError::SourceNativeZonesUnsupported);
             }
-            let ScreenResourceApi::PlatformGpu(source_api) = source.api() else {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::CpuSource,
-                ));
-            };
-            if source_api != target.accepted_api() {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::PlatformApiMismatch,
-                ));
-            }
-            let Some(source_device) = source.physical_gpu_device() else {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice,
-                ));
-            };
-            if source_device != target.physical_gpu_device() {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch,
-                ));
-            }
-            let max_dimension = target.max_texture_dimension().get();
-            if output_extent.width() > max_dimension || output_extent.height() > max_dimension {
-                return Ok(ResolvedScreenExecution::cpu_fallback(
-                    ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded,
-                ));
+            if let Err(reason) = validate_native_executor(source, target, output_extent) {
+                return Ok(ResolvedScreenExecution::cpu_fallback(reason));
             }
             Ok(ResolvedScreenExecution {
                 executor: ScreenPublicationExecutor::SourceNative(target.clone()),
-                residency: ScreenPublicationResidency::PlatformGpu(source_api.clone()),
+                residency: ScreenPublicationResidency::PlatformGpu(target.accepted_api().clone()),
+                fallback: None,
+            })
+        }
+        ScreenPublicationExecutorRequest::SourceNativeRequired(target) => {
+            if matches!(kind, ScreenPublicationKind::Zones { .. }) {
+                return Err(ScreenPublicationError::SourceNativeZonesUnsupported);
+            }
+            if let Err(reason) = validate_native_executor(source, target, output_extent) {
+                return Err(ScreenPublicationError::RequiredNativeUnavailable(reason));
+            }
+            Ok(ResolvedScreenExecution {
+                executor: ScreenPublicationExecutor::SourceNative(target.clone()),
+                residency: ScreenPublicationResidency::PlatformGpu(target.accepted_api().clone()),
                 fallback: None,
             })
         }
     }
+}
+
+fn validate_native_executor(
+    source: &ScreenBackendResourceIdentity,
+    target: &ScreenNativeExecutionTarget,
+    output_extent: PixelExtent,
+) -> Result<(), ScreenPublicationExecutorFallbackReason> {
+    let ScreenResourceApi::PlatformGpu(source_api) = source.api() else {
+        return Err(ScreenPublicationExecutorFallbackReason::CpuSource);
+    };
+    if source_api != target.accepted_api() {
+        return Err(ScreenPublicationExecutorFallbackReason::PlatformApiMismatch);
+    }
+    let Some(source_device) = source.physical_gpu_device() else {
+        return Err(ScreenPublicationExecutorFallbackReason::MissingPhysicalGpuDevice);
+    };
+    if source_device != target.physical_gpu_device() {
+        return Err(ScreenPublicationExecutorFallbackReason::PhysicalGpuDeviceMismatch);
+    }
+    let max_dimension = target.max_texture_dimension().get();
+    if output_extent.width() > max_dimension || output_extent.height() > max_dimension {
+        return Err(ScreenPublicationExecutorFallbackReason::TargetDimensionLimitExceeded);
+    }
+    Ok(())
 }
 
 fn resolve_color_pipeline(
@@ -2733,6 +3102,7 @@ fn resolve_color_pipeline(
                     effective_source: None,
                     output: source,
                     transform: ResolvedScreenColorTransform::PreserveEncodedSamples,
+                    calibration: None,
                 });
             }
             ScreenUnknownColorPolicy::Assume(assumption) => {
@@ -2804,6 +3174,7 @@ fn resolve_known_color_pipeline(
             effective_source: Some(source),
             output: CaptureColorimetry::from_known(target),
             transform: ResolvedScreenColorTransform::PreserveEncodedSamples,
+            calibration: None,
         });
     }
     if capabilities.algorithm_revision() != Some(profile.algorithm_revision) {
@@ -2830,6 +3201,7 @@ fn resolve_known_color_pipeline(
                 gamut: profile.gamut,
             }
         },
+        calibration: Some(profile.led_tone_map),
     })
 }
 
@@ -2843,34 +3215,46 @@ fn resolve_hdr_color_pipeline(
         ScreenHdrPolicy::Reject => Err(ScreenPublicationError::HdrRejected),
         ScreenHdrPolicy::ToneMap(policy)
             if source.dynamic_range() == CaptureDynamicRange::High
-                && source.transfer_function() == CaptureTransferFunction::Pq
+                && matches!(
+                    source.transfer_function(),
+                    CaptureTransferFunction::Pq
+                        | CaptureTransferFunction::Hlg
+                        | CaptureTransferFunction::Linear
+                )
                 && target.dynamic_range() == CaptureDynamicRange::Standard =>
         {
             if capabilities.algorithm_revision() != Some(profile.algorithm_revision)
-                || !capabilities.supports_pq_bt2390_tone_mapping()
+                || !capabilities.supports_reference_white_bt2390_tone_mapping()
                 || !capabilities.supports_gamut_policy(profile.gamut)
             {
                 return Err(ScreenPublicationError::UnsupportedColorTransform);
             }
-            if target
-                .luminance()
-                .is_some_and(|luminance| luminance != policy.target_luminance)
+            let target_luminance = profile.led_tone_map.target_luminance();
+            if policy.target_luminance != target_luminance
+                || target
+                    .luminance()
+                    .is_some_and(|luminance| luminance != target_luminance)
             {
                 return Err(ScreenPublicationError::ToneMapTargetLuminanceConflict);
             }
             let source_luminance = source
                 .luminance()
                 .ok_or(ScreenPublicationError::MissingSourceLuminance)?;
-            let output = target.with_luminance(policy.target_luminance);
+            if source_luminance.peak_nits() <= source_luminance.reference_white_nits() {
+                return Err(ScreenPublicationError::UnsupportedHdrConversion);
+            }
+            let output = target.with_luminance(target_luminance);
             Ok(ResolvedScreenColorPipeline {
                 effective_source: Some(source),
                 output: CaptureColorimetry::from_known(output),
                 transform: ResolvedScreenColorTransform::ToneMap(ResolvedScreenToneMap {
                     operator: policy.operator,
                     source_luminance,
-                    target_luminance: policy.target_luminance,
+                    target_luminance,
                     gamut: profile.gamut,
+                    calibration: profile.led_tone_map,
                 }),
+                calibration: Some(profile.led_tone_map),
             })
         }
         ScreenHdrPolicy::ToneMap(_) => Err(ScreenPublicationError::UnsupportedHdrConversion),
@@ -3148,6 +3532,10 @@ const fn capture_rotation_rank(rotation: CaptureRotation) -> u8 {
         CaptureRotation::Clockwise90 => 1,
         CaptureRotation::Clockwise180 => 2,
         CaptureRotation::Clockwise270 => 3,
+        CaptureRotation::Flipped => 4,
+        CaptureRotation::Flipped90 => 5,
+        CaptureRotation::Flipped180 => 6,
+        CaptureRotation::Flipped270 => 7,
     }
 }
 
@@ -3172,5 +3560,10 @@ const fn pixel_format_rank(format: CapturePixelFormat) -> u8 {
     match format {
         CapturePixelFormat::Rgba8 => 0,
         CapturePixelFormat::Bgra8 => 1,
+        CapturePixelFormat::Argb2101010 => 2,
+        CapturePixelFormat::Rgba16Float => 3,
+        CapturePixelFormat::Yuv420VideoRange => 4,
+        CapturePixelFormat::Yuv420FullRange => 5,
+        CapturePixelFormat::Yuv44410BiPlanar => 6,
     }
 }

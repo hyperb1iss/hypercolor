@@ -19,24 +19,25 @@ T = TypeVar("T", bound="DriverSummary")
 
 @_attrs_define
 class DriverSummary:
-    """
+    """One registered driver module.
+
     Attributes:
         config_key (str):
         descriptor (DriverModuleDescriptor): Stable module descriptor for native and future Wasm driver registries.
         enabled (bool):
         presentation (DriverPresentation): API and UI presentation metadata for a driver module.
-        protocols (list[DriverProtocolDescriptor]):
         control_surface_id (None | str | Unset):
         control_surface_path (None | str | Unset):
+        protocols (list[DriverProtocolDescriptor] | Unset):
     """
 
     config_key: str
     descriptor: DriverModuleDescriptor
     enabled: bool
     presentation: DriverPresentation
-    protocols: list[DriverProtocolDescriptor]
     control_surface_id: None | str | Unset = UNSET
     control_surface_path: None | str | Unset = UNSET
+    protocols: list[DriverProtocolDescriptor] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -47,11 +48,6 @@ class DriverSummary:
         enabled = self.enabled
 
         presentation = self.presentation.to_dict()
-
-        protocols = []
-        for protocols_item_data in self.protocols:
-            protocols_item = protocols_item_data.to_dict()
-            protocols.append(protocols_item)
 
         control_surface_id: None | str | Unset
         if isinstance(self.control_surface_id, Unset):
@@ -65,6 +61,13 @@ class DriverSummary:
         else:
             control_surface_path = self.control_surface_path
 
+        protocols: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.protocols, Unset):
+            protocols = []
+            for protocols_item_data in self.protocols:
+                protocols_item = protocols_item_data.to_dict()
+                protocols.append(protocols_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -73,13 +76,14 @@ class DriverSummary:
                 "descriptor": descriptor,
                 "enabled": enabled,
                 "presentation": presentation,
-                "protocols": protocols,
             }
         )
         if control_surface_id is not UNSET:
             field_dict["control_surface_id"] = control_surface_id
         if control_surface_path is not UNSET:
             field_dict["control_surface_path"] = control_surface_path
+        if protocols is not UNSET:
+            field_dict["protocols"] = protocols
 
         return field_dict
 
@@ -97,13 +101,6 @@ class DriverSummary:
         enabled = d.pop("enabled")
 
         presentation = DriverPresentation.from_dict(d.pop("presentation"))
-
-        protocols = []
-        _protocols = d.pop("protocols")
-        for protocols_item_data in _protocols:
-            protocols_item = DriverProtocolDescriptor.from_dict(protocols_item_data)
-
-            protocols.append(protocols_item)
 
         def _parse_control_surface_id(data: object) -> None | str | Unset:
             if data is None:
@@ -127,14 +124,23 @@ class DriverSummary:
             d.pop("control_surface_path", UNSET)
         )
 
+        _protocols = d.pop("protocols", UNSET)
+        protocols: list[DriverProtocolDescriptor] | Unset = UNSET
+        if _protocols is not UNSET:
+            protocols = []
+            for protocols_item_data in _protocols:
+                protocols_item = DriverProtocolDescriptor.from_dict(protocols_item_data)
+
+                protocols.append(protocols_item)
+
         driver_summary = cls(
             config_key=config_key,
             descriptor=descriptor,
             enabled=enabled,
             presentation=presentation,
-            protocols=protocols,
             control_surface_id=control_surface_id,
             control_surface_path=control_surface_path,
+            protocols=protocols,
         )
 
         driver_summary.additional_properties = d

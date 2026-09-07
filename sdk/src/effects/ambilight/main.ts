@@ -1,6 +1,6 @@
 import { canvas, combo, getScreenZoneData, hslToRgb, num } from 'hypercolor'
 
-import { clamp, clamp01, hslCss, wrapHue } from '../_builtin/common'
+import { clamp, clamp01, hslCss } from '../_builtin/common'
 
 interface EdgeStop {
     hue: number
@@ -177,11 +177,11 @@ export default canvas.stateful(
             for (let y = 0; y < screen.height; y++) {
                 for (let x = 0; x < screen.width; x++) {
                     const stop = zoneAt(screen, x, y, intensity)
-                    const [r, g, b] = hslToRgb(wrapHue(stop.hue), stop.saturation, stop.lightness)
+                    const wash = hslToRgb(stop.hue, stop.saturation, stop.lightness)
                     const offset = (y * screen.width + x) * 4
-                    pixels[offset] = Math.round(r * 255)
-                    pixels[offset + 1] = Math.round(g * 255)
-                    pixels[offset + 2] = Math.round(b * 255)
+                    pixels[offset] = wash.r
+                    pixels[offset + 1] = wash.g
+                    pixels[offset + 2] = wash.b
                     pixels[offset + 3] = 255
                 }
             }

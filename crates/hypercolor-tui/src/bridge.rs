@@ -47,7 +47,8 @@ pub async fn spawn_data_bridge(
             break;
         }
 
-        // Phase 1: REST bootstrap — fetch effects, devices, favorites, status
+        // Phase 1: REST bootstrap for reachability. Connection admission is
+        // announced only after the WebSocket subscription is acknowledged.
         let rest_ok = match bootstrap_rest(&client, &action_tx).await {
             Ok(state) => {
                 latest_daemon_state = Some(state);
@@ -104,9 +105,20 @@ pub async fn spawn_data_bridge(
                     msg = ws_rx.recv() => {
                         match msg {
                             Some(WsMessage::Hello(state)) => {
-                                if let Some(daemon_state) = parse_hello_state(&state) {
-                                    latest_daemon_state = Some(daemon_state.clone());
-                                    let _ = action_tx.send(Action::DaemonConnected(Box::new(daemon_state)));
+                                let _ = state;
+                            }
+                            Some(WsMessage::Subscribed(_acknowledgment)) => {
+                                match bootstrap_rest(&client, &action_tx).await {
+                                    Ok(state) => {
+                                        latest_daemon_state = Some(state.clone());
+                                        notified_disconnect = false;
+                                        let _ = action_tx.send(Action::DaemonConnected(Box::new(state)));
+                                    }
+                                    Err(error) => {
+                                        tracing::debug!(%error, "REST reconciliation failed after WebSocket admission");
+                                        ws_handle.abort();
+                                        break;
+                                    }
                                 }
                             }
                             Some(WsMessage::Canvas(frame)) => {
@@ -116,6 +128,11 @@ pub async fn spawn_data_bridge(
                                 let _ = action_tx.send(Action::SpectrumUpdated(Arc::new(snapshot)));
                             }
                             Some(WsMessage::Event(event)) => {
+                                if requires_full_resync(&event) {
+                                    tracing::debug!("Daemon requested a full TUI state resync");
+                                    ws_handle.abort();
+                                    break;
+                                }
                                 if let Err(error) = refresh_for_event(
                                     &client,
                                     &action_tx,
@@ -167,7 +184,6 @@ async fn bootstrap_rest(
     action_tx: &mpsc::UnboundedSender<Action>,
 ) -> anyhow::Result<DaemonState> {
     let status = client.get_status().await?;
-    let _ = action_tx.send(Action::DaemonConnected(Box::new(status.clone())));
 
     refresh_effects(client, action_tx).await;
     refresh_devices(client, action_tx).await;
@@ -207,23 +223,12 @@ async fn refresh_for_event(
             refresh_effects(client, action_tx).await;
         }
         // High-frequency zone mutations: coalesce into one scene refetch.
-        "effect_control_changed"
-        | "effect_layer_added"
-        | "effect_layer_removed"
-        | "render_group_changed" => {
+        "effect_control_changed" | "zone_changed" | "layer_stack_changed" => {
             *scene_refetch_deadline = Some(tokio::time::Instant::now() + SCENE_REFETCH_COALESCE);
         }
         "active_scene_changed" => {
-            if let Some(next_state) =
-                merge_active_scene_into_daemon_state(latest_daemon_state.as_ref(), event)
-            {
-                *latest_daemon_state = Some(next_state.clone());
-                let _ = action_tx.send(Action::DaemonStateUpdated(Box::new(next_state)));
-            } else {
-                *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
-            }
-            // The event carries no groups; pull the zone list and refresh
-            // the saved-scene list (covers create/rename ripple effects).
+            // The event carries no zones; pull the canonical live document and
+            // refresh the saved-scene list for create or rename ripple effects.
             refresh_active_scene(client, action_tx).await;
             refresh_scenes(client, action_tx).await;
         }
@@ -231,7 +236,7 @@ async fn refresh_for_event(
             refresh_scenes(client, action_tx).await;
             refresh_active_scene(client, action_tx).await;
         }
-        name if name.starts_with("profile_") || name == "session_changed" => {
+        "session_changed" => {
             *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
         }
         "control_surface_changed" => {
@@ -299,7 +304,7 @@ async fn refresh_scenes(client: &DaemonClient, action_tx: &mpsc::UnboundedSender
 async fn refresh_active_scene(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
     match client.get_active_scene().await {
         Ok(scene) => {
-            let _ = action_tx.send(Action::ActiveSceneUpdated(scene.map(Arc::new)));
+            let _ = action_tx.send(Action::ActiveSceneUpdated(Arc::new(scene)));
         }
         Err(error) => {
             tracing::debug!(%error, "Failed to refresh active scene");
@@ -341,6 +346,10 @@ fn event_name(event: &serde_json::Value) -> Option<&str> {
         .or_else(|| event.get("event_type").and_then(serde_json::Value::as_str))
 }
 
+fn requires_full_resync(event: &serde_json::Value) -> bool {
+    event_name(event) == Some("resync_required")
+}
+
 fn event_data(event: &serde_json::Value) -> &serde_json::Value {
     event.get("data").unwrap_or(event)
 }
@@ -356,11 +365,6 @@ fn merge_metrics_into_daemon_state(
         brightness: 100,
         fps_target: 0.0,
         fps_actual: 0.0,
-        effect_name: None,
-        effect_id: None,
-        scene_name: None,
-        scene_snapshot_locked: false,
-        profile_name: None,
         device_count: 0,
         total_leds: 0,
     });
@@ -370,7 +374,7 @@ fn merge_metrics_into_daemon_state(
         .and_then(json_f32)
         .unwrap_or(next.fps_target);
     next.fps_actual = fps
-        .get("actual")
+        .get("delivered")
         .and_then(json_f32)
         .unwrap_or(next.fps_actual);
     next.device_count = data
@@ -389,40 +393,6 @@ fn merge_metrics_into_daemon_state(
     Some(next)
 }
 
-fn merge_active_scene_into_daemon_state(
-    current: Option<&DaemonState>,
-    event: &serde_json::Value,
-) -> Option<DaemonState> {
-    let data = event.get("data").unwrap_or(event);
-    let scene_name = data
-        .get("current_name")
-        .or_else(|| data.get("scene_name"))
-        .and_then(serde_json::Value::as_str)?
-        .to_owned();
-    let snapshot_locked = data
-        .get("current_snapshot_locked")
-        .or_else(|| data.get("snapshot_locked"))
-        .and_then(serde_json::Value::as_bool)?;
-
-    let mut next = current.cloned().unwrap_or(DaemonState {
-        running: true,
-        brightness: 100,
-        fps_target: 0.0,
-        fps_actual: 0.0,
-        effect_name: None,
-        effect_id: None,
-        scene_name: None,
-        scene_snapshot_locked: false,
-        profile_name: None,
-        device_count: 0,
-        total_leds: 0,
-    });
-    next.scene_name = Some(scene_name);
-    next.scene_snapshot_locked = snapshot_locked;
-
-    Some(next)
-}
-
 #[allow(
     clippy::cast_possible_truncation,
     clippy::as_conversions,
@@ -437,62 +407,20 @@ fn json_f32(value: &serde_json::Value) -> Option<f32> {
     Some(value as f32)
 }
 
-/// Parse the daemon state from the WebSocket hello message.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::as_conversions
-)]
-fn parse_hello_state(hello: &serde_json::Value) -> Option<DaemonState> {
-    let state = hello.get("state")?;
-    Some(DaemonState {
-        running: state.get("running")?.as_bool().unwrap_or(true),
-        brightness: state
-            .get("brightness")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(100, |v| v.min(255) as u8),
-        fps_target: state
-            .get("fps")
-            .and_then(|f| f.get("target"))
-            .and_then(serde_json::Value::as_f64)
-            .map_or(60.0, |v| v as f32),
-        fps_actual: state
-            .get("fps")
-            .and_then(|f| f.get("actual"))
-            .and_then(serde_json::Value::as_f64)
-            .map_or(0.0, |v| v as f32),
-        effect_name: state
-            .get("effect")
-            .and_then(|e| e.get("name"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-        effect_id: state
-            .get("effect")
-            .and_then(|e| e.get("id"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-        scene_name: state
-            .get("scene")
-            .and_then(|s| s.get("name"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-        scene_snapshot_locked: state
-            .get("scene")
-            .and_then(|s| s.get("snapshot_locked"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-        profile_name: state
-            .get("profile")
-            .and_then(|p| p.get("name"))
-            .and_then(serde_json::Value::as_str)
-            .map(String::from),
-        device_count: state
-            .get("device_count")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(0, |v| v as u32),
-        total_leds: state
-            .get("total_leds")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(0, |v| v as u32),
-    })
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::requires_full_resync;
+
+    #[test]
+    fn resync_required_restarts_the_authoritative_bootstrap() {
+        assert!(requires_full_resync(&json!({
+            "event": "resync_required",
+            "data": { "channel": "events" }
+        })));
+        assert!(!requires_full_resync(&json!({
+            "event": "paused"
+        })));
+    }
 }

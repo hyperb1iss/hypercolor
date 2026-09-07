@@ -12,9 +12,11 @@ Not sure which path fits? Read [Choose your install](@/guide/choose-your-install
 ## Linux: prebuilt installer
 
 The fastest path on any Linux distribution. The script downloads a release
-tarball from GitHub, verifies its SHA256 checksum, installs the daemon and CLI
-to `~/.local/bin`, sets up a systemd user service, and prompts before applying
-udev rules and `i2c-dev` setup for USB and SMBus device access.
+tarball from GitHub, verifies its SHA256 checksum, installs `hypercolor`,
+`hypercolor-daemon`, `hypercolor-app`, `hypercolor-tui`, and `hypercolor-open`
+to `~/.local/bin`, and sets up a systemd user service. It never asks for
+`sudo`, so it does not apply the udev rules or the `i2c-dev` setup that USB and
+SMBus device access need; see [udev rules](#linux-udev-rules-usb-and-input-device-access) below.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash
@@ -23,25 +25,20 @@ curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/
 The installer is idempotent: re-running it upgrades an existing install. Pin any tagged release with `--version`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.2.1
+curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | bash -s -- --version v0.4.0
 ```
 
-To install to a different prefix instead of `~/.local`:
+On Linux the install root is fixed. `HYPERCOLOR_INSTALL_PREFIX` must be
+`$HOME/.local` and `HYPERCOLOR_INSTALL_DIR` must be `$HOME/.local/bin`; the
+script aborts on any other value, before downloading anything, so the systemd
+unit's `%h/.local/bin/hypercolor-daemon` path always resolves. On macOS both
+variables are free to point somewhere else.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/hyperb1iss/hypercolor/main/scripts/install-release.sh | HYPERCOLOR_INSTALL_PREFIX=$HOME/apps/hypercolor bash
-```
-
-`HYPERCOLOR_INSTALL_PREFIX` moves the whole install root, and
-`HYPERCOLOR_INSTALL_DIR` overrides just the binary directory (default:
-`<prefix>/bin`). A system-wide prefix such as `/opt/hypercolor` works too, but
-the script then needs root privileges to write there.
-
-{% callout(type="warning") %}
-If you installed the system hooks, **re-plug your USB devices or log out and
-back in** so the new udev rules take effect. If your devices are still not
-detected, see [Devices not found](@/troubleshooting/devices-not-found.md).
-{% end %}
+{% <callout type="warning"> %}
+After you install the udev rules, **re-plug your USB devices or log out and
+back in** so they take effect. If your devices are still not detected, see
+[Devices not found](@/troubleshooting/devices-not-found.md).
+{% </callout> %}
 
 ### Debian and Ubuntu (.deb)
 
@@ -68,9 +65,9 @@ The PKGBUILD installs binaries, the systemd user service, shell completions, and
 
 ## Linux: udev rules (USB and input device access)
 
-USB and input device access on Linux requires udev rules. The prebuilt
-installer prompts for these hooks, and the `.deb` and AUR packages handle them
-automatically. If you are installing manually or from source:
+USB and input device access on Linux requires udev rules. The `.deb` and AUR
+packages place them for you. The prebuilt one-liner does not, so if you used it
+(or you are installing manually or from source), apply them yourself:
 
 ```bash
 just udev-install
@@ -78,9 +75,9 @@ just udev-install
 
 This copies both rules files (`udev/99-hypercolor.rules` for USB and hidraw
 access, `udev/70-hypercolor-input.rules` for input capture) to
-`/etc/udev/rules.d/`, reloads udev, and triggers a rescan of the `hidraw` and
-`usb` subsystems. You will need to re-plug connected devices or log out and
-back in for group membership changes to propagate.
+`/etc/udev/rules.d/`, reloads udev, and retriggers the `hidraw`, `usb`, `tty`,
+`i2c-dev`, and `input` subsystems. You will need to re-plug connected devices or
+log out and back in for group membership changes to propagate.
 
 ---
 
@@ -99,10 +96,10 @@ administrator elevation (UAC). In that one elevated pass the installer:
 
 Run the installer and launch Hypercolor from the Start menu. The app supervises the daemon automatically, so there is no separate daemon window to manage.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Windows builds are currently unsigned, so SmartScreen may warn when you run the
 installer. Choose "More info" and then "Run anyway" to continue.
-{% end %}
+{% </callout> %}
 
 If hardware setup did not complete during install (the installer notes this in
 its details log), USB and network lighting still work. Re-run the SMBus setup
@@ -112,23 +109,52 @@ later from Settings → Device Discovery → Hardware Support.
 
 ## macOS
 
-Download the DMG from the [download page](@/download.md). Open the DMG, drag
-Hypercolor to Applications, and launch it. The app registers a LaunchAgent for
-autostart and supervises the daemon; no terminal setup is required.
+When a release includes an accepted macOS build, download the signed DMG from
+the [download page](@/download.md). Open the DMG, drag Hypercolor to
+Applications, and launch it. The app registers a LaunchAgent for autostart and
+supervises the daemon; no terminal setup is required.
 
-{% callout(type="warning") %}
-Current builds are ad-hoc signed but not notarized, so Gatekeeper will block
-the app on first launch. Right-click the app and choose **Open** to confirm.
-{% end %}
+{% <callout type="info"> %}
+Public CI does not publish unsigned macOS packages. macOS artifacts are
+promoted manually only after Developer ID signing, notarization, and the signed
+physical acceptance checkpoint pass.
+{% </callout> %}
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 macOS hardware support covers USB-HID and network devices (Hue, Nanoleaf, WLED, Govee). SMBus/motherboard RGB is Linux and Windows only.
-{% end %}
+{% </callout> %}
 
 Homebrew users can install the desktop app as a cask
 (`brew install --cask hyperb1iss/tap/hypercolor-app`) or the daemon and CLI as
 a formula (`brew install hyperb1iss/tap/hypercolor`, with `brew services`
-support). Both update automatically on every tagged release.
+support). The tap is updated manually after the matching signed artifacts pass
+acceptance.
+
+### macOS screen capture support
+
+Screen capture is off until an explicit authorization or source-selection
+action. Keyboard capture uses Input Monitoring. Passive pointer capture does
+not use a TCC service. ScreenCaptureKit uses Screen Recording. The settings
+page links directly to the matching System Settings privacy pane when manual
+remediation is needed.
+
+The native Apple Silicon HDR, Intel SDR, and Tahoe paired-reference paths are
+implemented but remain release-gated by the signed physical acceptance matrix.
+Development builds can exercise pure fixtures and native mechanics, but they
+do not establish durable TCC or hardware qualification.
+
+The CLI exposes the same explicit actions when the active process topology can
+perform them:
+
+```bash
+hypercolor access authorize-input-monitoring
+hypercolor access authorize-screen-recording
+hypercolor access choose-screen-source
+hypercolor status --watch
+```
+
+Picker presentation can require `Hypercolor.app`. A headless installation
+returns a typed app-UI remedy instead of attempting private presentation APIs.
 
 ---
 
@@ -170,6 +196,46 @@ The unit file lives at `~/.config/systemd/user/hypercolor.service` and uses `%h/
 ## macOS: LaunchAgent
 
 The macOS app install registers a LaunchAgent (`tech.hyperbliss.hypercolor`) in `~/Library/LaunchAgents`. The same `hypercolor service` subcommands work on macOS, wrapping `launchctl`.
+
+### Choose the macOS daemon owner
+
+Hypercolor supports four local daemon topologies:
+
+- **App sidecar:** the desktop app supervises its bundled daemon. This is the
+  default for the DMG and cask.
+- **Direct launchd:** Hypercolor's per-user LaunchAgent supervises the daemon.
+- **Homebrew service:** `brew services` supervises the formula daemon.
+- **Standalone:** a daemon started directly from a terminal. This topology can
+  be observed and stopped, but it is not selected for autostart.
+
+Only one topology can hold the per-user daemon guard. Select a persistent owner
+with one of these local commands:
+
+```bash
+hypercolor service choose-owner app-sidecar
+hypercolor service choose-owner direct-launchd
+hypercolor service choose-owner homebrew
+```
+
+Owner changes are journaled across stop, guard handoff, autostart changes, and
+startup. A failed handoff rolls back to the prior owner. If a standalone daemon
+owns the guard, the command reports its process ID and asks you to stop it
+before repeating the selection.
+
+When a selected external owner is offline, use the remedy named by Settings or
+status output:
+
+```bash
+# Direct launchd owner
+hypercolor service start
+
+# Homebrew owner
+brew services start hypercolor
+```
+
+Open `Hypercolor.app` to restore the app-sidecar owner. An ownership conflict is
+not a daemon crash; the losing managed contender exits without entering a
+restart loop.
 
 ---
 

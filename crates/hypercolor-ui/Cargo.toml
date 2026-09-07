@@ -4,7 +4,7 @@ description = "Leptos CSR web frontend for the Hypercolor lighting engine"
 # This crate is excluded from the root workspace (standalone trunk/WASM
 # build), so it cannot inherit workspace.package fields. scripts/set-version.ts
 # stamps the version here explicitly.
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
 license = "Apache-2.0"
@@ -17,21 +17,22 @@ rust-version = "1.94"
 leptos = { version = "0.8", features = ["csr"] }
 leptos_router = "0.8"
 leptos_meta = "0.8"
-leptos-use = "0.18"
-codee = { version = "0.3", features = ["json_serde"] }
+leptos-use = "0.19"
 gloo-net = { version = "0.7", features = ["http"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 bytes = "1.11"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
+hypercolor-color = { path = "../hypercolor-color" }
 hypercolor-types = { path = "../hypercolor-types" }
-hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["events", "canvas", "raf", "prelude", "ws-client-wasm", "leptos"] }
+hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["events", "canvas", "raf", "prelude", "ws-client-wasm"] }
 uuid = { version = "1.11", features = ["js"] }  # enable WASM RNG for transitive uuid
 leptos_icons = "0.7"
 icondata = { version = "0.7", default-features = false, features = ["lucide"] }
 icondata_core = "0.1"
+strum = { version = "0.28", features = ["derive"] }
 leptoaster = { version = "0.2", features = ["csr"] }
 console_error_panic_hook = "0.1"
 log = "0.4"
@@ -47,6 +48,7 @@ web-sys = { version = "0.3", features = [
     "HtmlMediaElement",
     "HtmlSelectElement",
     "HtmlVideoElement",
+    "History",
     "CanvasRenderingContext2d",
     "DomRect",
     "ImageData",
@@ -71,6 +73,7 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlElement",
     "KeyboardEvent",
+    "Location",
     "MessageEvent",
     "Worker",
     "BinaryType",
@@ -83,7 +86,17 @@ web-sys = { version = "0.3", features = [
 # The standalone crate does not inherit the root dev profile. Full debug info
 # pushes its native Windows test archive past the COFF 4 GiB limit.
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+
+[profile.debugging.package."*"]
+debug = "full"
 
 [profile.release]
 opt-level = "z"

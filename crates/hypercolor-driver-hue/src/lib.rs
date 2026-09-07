@@ -15,31 +15,33 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use async_trait::async_trait;
-use hypercolor_driver_api::CredentialStore;
-use hypercolor_driver_api::control_apply;
-use hypercolor_driver_api::control_surface;
-use hypercolor_driver_api::support::{
-    activate_if_requested, disconnect_after_unpair, metadata_value, network_port_from_metadata,
-    push_lookup_key,
-};
-use hypercolor_driver_api::validation::validate_ip;
+use hypercolor_driver_api::DeviceBackend;
 use hypercolor_driver_api::{
-    ClearPairingOutcome, ControlApplyTarget, DeviceAuthState, DeviceAuthSummary,
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverConfigProvider, DriverConfigView,
-    DriverControlProvider, DriverCredentialStore, DriverDescriptor, DriverDiscoveredDevice,
-    DriverHost, DriverModule, DriverPresentationProvider, DriverTrackedDevice, PairDeviceOutcome,
-    PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor, PairingFlowKind,
+    ControlApplyTarget, DeviceBackendFactory, DiscoveredDevice, DiscoveryCapability,
+    DiscoveryRequest, DriverConfigProvider, DriverConfigView, DriverControlProvider,
+    DriverCredentialStore, DriverDescriptor, DriverError, DriverHost, DriverModule,
+    DriverPresentationProvider, DriverTrackedDevice, OutputBinding, PairingCapability,
     TrackedDeviceCtx, ValidatedControlChanges,
 };
-use hypercolor_driver_api::{DeviceBackend, TransportScanner};
+use hypercolor_driver_support::network::{
+    metadata_value, network_port_from_metadata, push_lookup_key, validate_ip,
+};
+use hypercolor_driver_support::pairing::{activate_if_requested, disconnect_after_unpair};
+use hypercolor_driver_support::{CredentialStore, control_apply, control_surface};
 use hypercolor_types::config::DriverConfigEntry;
+use hypercolor_types::control::{ControlValue, IpText};
 use hypercolor_types::controls::{
     ApplyControlChangesResponse, ApplyImpact, ControlChange, ControlFieldDescriptor,
-    ControlGroupKind, ControlSurfaceDocument, ControlValue, ControlValueMap, ControlValueType,
+    ControlGroupKind, ControlSurfaceDocument, ControlValueMap, ControlValueType,
 };
 use hypercolor_types::device::{DeviceClassHint, DriverPresentation, DriverTransportKind};
+use hypercolor_types::identity::BackendId;
+use hypercolor_types::pairing::{
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, PairDeviceOutcome, PairDeviceRequest,
+    PairDeviceStatus, PairingDescriptor, PairingFlowKind,
+};
 
 pub use backend::{HueBackend, HueConfig};
 pub use bridge::{DEFAULT_HUE_API_PORT, DEFAULT_HUE_STREAM_PORT, HueBridgeClient, HueNupnpBridge};
@@ -83,16 +85,12 @@ const DEVICE_FIELD_STATE: &str = "state";
 #[derive(Clone)]
 pub struct HueDriverModule {
     credential_store: Arc<CredentialStore>,
-    mdns_enabled: bool,
 }
 
 impl HueDriverModule {
     #[must_use]
-    pub fn new(credential_store: Arc<CredentialStore>, mdns_enabled: bool) -> Self {
-        Self {
-            credential_store,
-            mdns_enabled,
-        }
+    pub fn new(credential_store: Arc<CredentialStore>) -> Self {
+        Self { credential_store }
     }
 }
 
@@ -101,20 +99,11 @@ impl DriverModule for HueDriverModule {
         &DESCRIPTOR
     }
 
-    fn build_output_backend(
-        &self,
-        _host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        Ok(Some(Box::new(HueBackend::with_mdns_enabled(
-            config.parse_settings::<HueConfig>()?,
-            Arc::clone(&self.credential_store),
-            self.mdns_enabled,
-        ))))
-    }
-
-    fn has_output_backend(&self) -> bool {
-        true
+    fn output(&self) -> OutputBinding<'_> {
+        OutputBinding::Owned {
+            id: BackendId::new(DESCRIPTOR.id).expect("Hue backend ID must be valid"),
+            factory: self,
+        }
     }
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
@@ -138,6 +127,20 @@ impl DriverModule for HueDriverModule {
     }
 }
 
+impl DeviceBackendFactory for HueDriverModule {
+    fn build(
+        &self,
+        _host: &dyn DriverHost,
+        config: DriverConfigView<'_>,
+    ) -> std::result::Result<Arc<dyn DeviceBackend>, DriverError> {
+        let config = config.parse_settings::<HueConfig>()?;
+        Ok(Arc::new(HueBackend::new(
+            config,
+            Arc::clone(&self.credential_store),
+        )))
+    }
+}
+
 impl DriverPresentationProvider for HueDriverModule {
     fn presentation(&self) -> DriverPresentation {
         DriverPresentation {
@@ -158,7 +161,7 @@ impl DiscoveryCapability for HueDriverModule {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
         config: DriverConfigView<'_>,
-    ) -> Result<DiscoveryResult> {
+    ) -> std::result::Result<Vec<DiscoveredDevice>, DriverError> {
         let config = config.parse_settings::<HueConfig>()?;
         let tracked_devices = host.discovery_state().tracked_devices(DESCRIPTOR.id).await;
         let known_bridges = resolve_hue_probe_bridges_from_sources(&config, &tracked_devices);
@@ -169,14 +172,7 @@ impl DiscoveryCapability for HueDriverModule {
             request.mdns_enabled,
             config.entertainment_config.clone(),
         );
-        let devices = scanner
-            .scan()
-            .await?
-            .into_iter()
-            .map(DriverDiscoveredDevice::from)
-            .collect();
-
-        Ok(DiscoveryResult { devices })
+        scanner.scan().await.map_err(DriverError::discovery)
     }
 }
 
@@ -188,14 +184,16 @@ impl DriverConfigProvider for HueDriverModule {
         ]))
     }
 
-    fn validate_config(&self, config: &DriverConfigEntry) -> Result<()> {
+    fn validate_config(&self, config: &DriverConfigEntry) -> std::result::Result<(), DriverError> {
         let config = DriverConfigView {
             driver_id: DESCRIPTOR.id,
             entry: config,
         }
         .parse_settings::<HueConfig>()?;
         for ip in config.bridge_ips {
-            validate_ip(ip).with_context(|| format!("invalid Hue bridge IP: {ip}"))?;
+            validate_ip(ip).map_err(|error| DriverError::Configuration {
+                message: format!("invalid Hue bridge IP {ip}: {error}"),
+            })?;
         }
         Ok(())
     }
@@ -288,7 +286,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "IP Address",
             "connection",
             ControlValueType::IpAddress,
-            ControlValue::IpAddress,
+            |raw| IpText::new(raw).ok().map(ControlValue::Ip),
             0,
         );
         if let Some(api_port) = metadata
@@ -302,7 +300,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
                 "API Port",
                 "connection",
                 control_surface::integer_value_type(0, Some(i64::from(u16::MAX))),
-                ControlValue::Integer(api_port),
+                ControlValue::Int(api_port),
                 10,
             );
         }
@@ -313,7 +311,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Bridge ID",
             "connection",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             20,
         );
         push_hue_metadata_field(
@@ -323,7 +321,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Bridge Name",
             "connection",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             30,
         );
         push_hue_metadata_field(
@@ -333,7 +331,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Entertainment Config ID",
             "entertainment",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             0,
         );
         push_hue_metadata_field(
@@ -343,7 +341,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Entertainment Config",
             "entertainment",
             control_surface::string_value_type(Some(255)),
-            ControlValue::String,
+            |raw| Some(ControlValue::Text(raw)),
             10,
         );
     }
@@ -356,7 +354,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Model",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(model.clone()),
+            ControlValue::Text(model.clone()),
             0,
         );
     }
@@ -368,7 +366,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
             "Firmware",
             "diagnostics",
             control_surface::string_value_type(Some(80)),
-            ControlValue::String(firmware_version.clone()),
+            ControlValue::Text(firmware_version.clone()),
             10,
         );
     }
@@ -379,7 +377,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
         "LED Count",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.total_led_count())),
+        ControlValue::Int(i64::from(device.info.total_led_count())),
         20,
     );
     control_surface::push_readonly_value(
@@ -389,7 +387,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
         "Max FPS",
         "diagnostics",
         control_surface::integer_value_type(0, None),
-        ControlValue::Integer(i64::from(device.info.capabilities.max_fps)),
+        ControlValue::Int(i64::from(device.info.capabilities.max_fps)),
         30,
     );
     control_surface::push_readonly_value(
@@ -399,7 +397,7 @@ pub fn hue_device_control_surface(device: &TrackedDeviceCtx<'_>) -> ControlSurfa
         "State",
         "diagnostics",
         control_surface::string_value_type(Some(32)),
-        ControlValue::String(device.current_state.to_string()),
+        ControlValue::Text(device.current_state.to_string()),
         40,
     );
 
@@ -459,7 +457,7 @@ fn push_hue_metadata_field(
     label: &str,
     group_id: &str,
     value_type: ControlValueType,
-    value: impl FnOnce(String) -> ControlValue,
+    value: impl FnOnce(String) -> Option<ControlValue>,
     ordering: i32,
 ) {
     control_surface::push_metadata_value(
@@ -483,7 +481,7 @@ fn hue_config_values(config: &HueConfig) -> ControlValueMap {
                 config
                     .bridge_ips
                     .iter()
-                    .map(|ip| ControlValue::IpAddress(ip.to_string()))
+                    .map(|ip| ControlValue::Ip(IpText::from(*ip)))
                     .collect(),
             ),
         ),
@@ -500,15 +498,15 @@ impl PairingCapability for HueDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Option<DeviceAuthSummary> {
+    ) -> std::result::Result<Option<DeviceAuthSummary>, DriverError> {
         let last_error = device
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
         let configured = hue_credentials_present(host.credentials(), device.metadata)
             .await
-            .unwrap_or_default();
+            .map_err(DriverError::pairing)?;
 
-        Some(DeviceAuthSummary {
+        Ok(Some(DeviceAuthSummary {
             state: if last_error.is_some() {
                 DeviceAuthState::Error
             } else if configured {
@@ -519,7 +517,7 @@ impl PairingCapability for HueDriverModule {
             can_pair: true,
             descriptor: Some(hue_pairing_descriptor()),
             last_error,
-        })
+        }))
     }
 
     async fn pair(
@@ -527,10 +525,10 @@ impl PairingCapability for HueDriverModule {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
-    ) -> Result<PairDeviceOutcome> {
+    ) -> std::result::Result<PairDeviceOutcome, DriverError> {
         if hue_credentials_present(host.credentials(), device.metadata)
             .await
-            .unwrap_or_default()
+            .map_err(DriverError::pairing)?
         {
             let activated = activate_if_requested(
                 host,
@@ -563,7 +561,10 @@ impl PairingCapability for HueDriverModule {
         let bridge_port =
             network_port_from_metadata(device.metadata, "api_port").unwrap_or(DEFAULT_HUE_API_PORT);
 
-        match pair_hue_bridge_at_ip(&self.credential_store, bridge_ip, bridge_port).await? {
+        match pair_hue_bridge_at_ip(&self.credential_store, bridge_ip, bridge_port)
+            .await
+            .map_err(DriverError::pairing)?
+        {
             Some(_) => {
                 let activated = activate_if_requested(
                     host,
@@ -597,8 +598,10 @@ impl PairingCapability for HueDriverModule {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<ClearPairingOutcome> {
-        clear_hue_credentials(host.credentials(), device.metadata).await?;
+    ) -> std::result::Result<ClearPairingOutcome, DriverError> {
+        clear_hue_credentials(host.credentials(), device.metadata)
+            .await
+            .map_err(DriverError::pairing)?;
         let disconnected = disconnect_after_unpair(host, device.device_id, DESCRIPTOR.id).await;
 
         Ok(ClearPairingOutcome {

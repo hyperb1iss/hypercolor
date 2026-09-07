@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use hypercolor_types::api::effects::EffectSourceKind;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -17,8 +18,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{
-    ActiveScene, CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
-    SimulatedDisplaySummary, ZoneSummary,
+    CanvasPreviewState, ControlDefinition, ControlValue, EffectSummary, PreviewSource,
+    SceneDocument, SimulatedDisplaySummary, ZoneResource, primary_zone, scene_is_multi_zone,
+    scene_zone, zone_effect_controls, zone_effect_id,
 };
 use crate::widgets::{
     ColorPickerPopup, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
@@ -64,7 +66,7 @@ pub struct EffectBrowserView {
     all_effects: Vec<EffectSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
-    active_scene: Option<Arc<ActiveScene>>,
+    active_scene: Option<Arc<SceneDocument>>,
     focused_zone: Option<String>,
     selected_index: usize,
     scroll_offset: Cell<usize>,
@@ -166,7 +168,7 @@ impl EffectBrowserView {
                 .iter()
                 .filter(|e| {
                     e.name.to_lowercase().contains(&query)
-                        || e.category.to_lowercase().contains(&query)
+                        || e.category.as_str().contains(&query)
                         || e.tags.iter().any(|t| t.to_lowercase().contains(&query))
                 })
                 .cloned()
@@ -201,7 +203,7 @@ impl EffectBrowserView {
             self.simulators
                 .iter()
                 .filter(|simulator| simulator.enabled)
-                .map(|simulator| PreviewSource::Simulator(simulator.id.clone())),
+                .map(|simulator| PreviewSource::Simulator(simulator.id.to_string())),
         );
         sources
     }
@@ -233,7 +235,7 @@ impl EffectBrowserView {
             PreviewSource::Simulator(id) => self
                 .simulators
                 .iter()
-                .find(|simulator| simulator.id == *id)
+                .find(|simulator| simulator.id.to_string() == *id)
                 .map_or_else(
                     || "Simulator".to_string(),
                     |simulator| simulator.name.clone(),
@@ -262,12 +264,12 @@ impl EffectBrowserView {
     }
 
     /// The zone that apply/control actions currently target.
-    fn target_zone(&self) -> Option<&ZoneSummary> {
+    fn target_zone(&self) -> Option<&ZoneResource> {
         let scene = self.active_scene.as_deref()?;
         self.focused_zone
             .as_deref()
-            .and_then(|id| scene.zone(id))
-            .or_else(|| scene.primary())
+            .and_then(|id| scene_zone(scene, id))
+            .or_else(|| primary_zone(scene))
     }
 
     /// Label for the apply target, shown only in multi-zone scenes.
@@ -275,7 +277,7 @@ impl EffectBrowserView {
         if !self
             .active_scene
             .as_deref()
-            .is_some_and(ActiveScene::multi_zone)
+            .is_some_and(scene_is_multi_zone)
         {
             return None;
         }
@@ -315,15 +317,10 @@ impl EffectBrowserView {
         let Some(zone) = self.target_zone() else {
             return;
         };
-        if zone.effect_id.as_deref() != Some(effect_id.as_str()) {
+        if zone_effect_id(zone).as_deref() != Some(effect_id.as_str()) {
             return;
         }
-        let live: Vec<_> = zone
-            .controls
-            .iter()
-            .map(|(id, value)| (id.clone(), value.clone()))
-            .collect();
-        for (id, value) in live {
+        for (id, value) in zone_effect_controls(zone) {
             self.control_values.insert(id, value);
         }
     }
@@ -338,7 +335,7 @@ impl EffectBrowserView {
             .get(ctrl_idx)?
             .clone();
         let current = current_value(&self.control_values, &ctrl)
-            .as_f32()
+            .as_effect_f32()
             .unwrap_or(0.0);
         let step = ctrl.step.unwrap_or(DEFAULT_STEP);
         let min = ctrl.min.unwrap_or(0.0);
@@ -361,7 +358,7 @@ impl EffectBrowserView {
         self.last_slider_adjust = now;
 
         let new_val = (current + step * self.slider_accel * direction).clamp(min, max);
-        let new_cv = ControlValue::Float(new_val);
+        let new_cv = ControlValue::Float(f64::from(new_val));
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -373,10 +370,11 @@ impl EffectBrowserView {
             .controls
             .get(ctrl_idx)?
             .clone();
-        let current = current_value(&self.control_values, &ctrl)
-            .as_bool()
-            .unwrap_or(false);
-        let new_cv = ControlValue::Boolean(!current);
+        let current = matches!(
+            current_value(&self.control_values, &ctrl),
+            ControlValue::Bool(true)
+        );
+        let new_cv = ControlValue::Bool(!current);
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -391,8 +389,9 @@ impl EffectBrowserView {
         if ctrl.labels.is_empty() {
             return None;
         }
-        let current_text = match current_value(&self.control_values, &ctrl) {
-            ControlValue::Text(s) => s,
+        let current_value = current_value(&self.control_values, &ctrl);
+        let current_text = match &current_value {
+            ControlValue::Enum(value) | ControlValue::Text(value) => value.clone(),
             _ => String::new(),
         };
         let current_idx = ctrl
@@ -408,7 +407,11 @@ impl EffectBrowserView {
             current_idx - 1
         };
         let new_text = ctrl.labels.get(new_idx)?.clone();
-        let new_cv = ControlValue::Text(new_text);
+        let new_cv = if matches!(current_value, ControlValue::Enum(_)) {
+            ControlValue::Enum(new_text)
+        } else {
+            ControlValue::Text(new_text)
+        };
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -418,15 +421,15 @@ impl EffectBrowserView {
     /// Map a visual row offset (within the list area) to an effect index.
     fn effect_index_at_visual_row(&self, target_row: usize) -> Option<usize> {
         let mut visual_row = 0;
-        let mut current_category = String::new();
+        let mut current_category = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
-            if effect.category != current_category {
-                if !current_category.is_empty() {
+            if Some(effect.category) != current_category {
+                if current_category.is_some() {
                     visual_row += 1; // blank separator
                 }
                 visual_row += 1; // category header
-                current_category.clone_from(&effect.category);
+                current_category = Some(effect.category);
             }
 
             if visual_row == target_row {
@@ -547,7 +550,7 @@ impl EffectBrowserView {
         let min = ctrl.min.unwrap_or(0.0);
         let max = ctrl.max.unwrap_or(1.0);
         let new_val = min + t * (max - min);
-        let new_cv = ControlValue::Float(new_val);
+        let new_cv = ControlValue::Float(f64::from(new_val));
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -564,11 +567,11 @@ impl EffectBrowserView {
             return;
         };
         if ctrl.control_type == "color" {
-            let color_arr = match current_value(&self.control_values, &ctrl) {
-                ControlValue::Color(c) => c,
-                _ => [0.5, 0.5, 0.5, 1.0],
+            let (red, green, blue) = match current_value(&self.control_values, &ctrl) {
+                ControlValue::ColorLinear(color) => (color.r, color.g, color.b),
+                _ => (0.5, 0.5, 0.5),
             };
-            let (h, s, l) = rgb_to_hsl(color_arr[0], color_arr[1], color_arr[2]);
+            let (h, s, l) = rgb_to_hsl(red, green, blue);
             self.color_picker = Some(ColorPickerState {
                 ctrl_idx: idx,
                 hsl: [h, s, l],
@@ -587,10 +590,10 @@ impl EffectBrowserView {
             .clone();
         let (r, g, b) = hsl_to_rgb(picker.hsl[0], picker.hsl[1], picker.hsl[2]);
         let alpha = match current_value(&self.control_values, &ctrl) {
-            ControlValue::Color(c) => c[3],
+            ControlValue::ColorLinear(color) => color.a,
             _ => 1.0,
         };
-        let new_cv = ControlValue::Color([r, g, b, alpha]);
+        let new_cv = ControlValue::linear_color([r, g, b, alpha]);
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
@@ -920,24 +923,20 @@ impl EffectBrowserView {
 
     fn build_list_items(&self, avail_width: u16) -> (Vec<ListItem<'_>>, Option<usize>) {
         let mut items: Vec<ListItem<'_>> = Vec::new();
-        let mut current_category = String::new();
+        let mut current_category = None;
         let mut selected_item_idx = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
-            if effect.category != current_category {
-                if !current_category.is_empty() {
+            if Some(effect.category) != current_category {
+                if current_category.is_some() {
                     items.push(ListItem::new(Line::from("")));
                 }
-                let cat_display = if effect.category.is_empty() {
-                    "Uncategorized"
-                } else {
-                    &effect.category
-                };
+                let cat_display = effect.category.as_str();
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("\u{2500}\u{2500} {cat_display} \u{2500}\u{2500}"),
                     Style::default().fg(DIM_GRAY).add_modifier(Modifier::BOLD),
                 ))));
-                current_category.clone_from(&effect.category);
+                current_category = Some(effect.category);
             }
 
             if flat_idx == self.selected_index {
@@ -966,10 +965,10 @@ impl EffectBrowserView {
         let pointer = if is_selected { "\u{25B8} " } else { "  " };
         let fav_marker = if is_fav { " \u{2605}" } else { "" };
 
-        let source_badge = match effect.source.as_str() {
-            "native" | "wgpu" => "\u{2726} native",
-            "web" | "servo" => "\u{25C8} web",
-            _ => "",
+        let source_badge = match effect.source {
+            EffectSourceKind::Native => "\u{2726} native",
+            EffectSourceKind::Html => "\u{25C8} web",
+            EffectSourceKind::Shader => "\u{25C6} shader",
         };
 
         let name_style = if is_selected {
@@ -1036,7 +1035,7 @@ impl EffectBrowserView {
                     ""
                 };
                 let author_part = if effect.author.is_empty() {
-                    effect.source.clone()
+                    effect.source.to_string()
                 } else {
                     format!("{} \u{00B7} {}", effect.author, effect.source)
                 };
@@ -1328,9 +1327,10 @@ impl EffectBrowserView {
                 frame.render_widget(slider, area);
             }
             "toggle" => {
-                let on = current_value(&self.control_values, ctrl)
-                    .as_bool()
-                    .unwrap_or(false);
+                let on = matches!(
+                    current_value(&self.control_values, ctrl),
+                    ControlValue::Bool(true)
+                );
                 let name_style = selected_style(is_selected);
                 let (indicator, state_text, color) = if on {
                     ("\u{25C9}", "On", SUCCESS_GREEN)
@@ -1353,7 +1353,7 @@ impl EffectBrowserView {
             }
             "dropdown" => {
                 let current_text = match current_value(&self.control_values, ctrl) {
-                    ControlValue::Text(s) => s,
+                    ControlValue::Enum(value) | ControlValue::Text(value) => value,
                     _ => String::new(),
                 };
                 let name_style = selected_style(is_selected);
@@ -1380,13 +1380,13 @@ impl EffectBrowserView {
             }
             "color" => {
                 let name_style = selected_style(is_selected);
-                let color_arr = match current_value(&self.control_values, ctrl) {
-                    ControlValue::Color(c) => c,
-                    _ => [0.5, 0.5, 0.5, 1.0],
+                let (red, green, blue) = match current_value(&self.control_values, ctrl) {
+                    ControlValue::ColorLinear(color) => (color.r, color.g, color.b),
+                    _ => (0.5, 0.5, 0.5),
                 };
-                let r = float_to_u8(color_arr[0]);
-                let g = float_to_u8(color_arr[1]);
-                let b = float_to_u8(color_arr[2]);
+                let r = float_to_u8(red);
+                let g = float_to_u8(green);
+                let b = float_to_u8(blue);
                 let swatch = Color::Rgb(r, g, b);
                 let mut spans = vec![
                     Span::styled(
@@ -1459,7 +1459,7 @@ fn current_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinitio
 /// Normalize a control's current value to `[0, 1]`.
 fn normalized_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinition) -> f32 {
     normalize(
-        current_value(values, ctrl).as_f32().unwrap_or(0.0),
+        current_value(values, ctrl).as_effect_f32().unwrap_or(0.0),
         ctrl.min.unwrap_or(0.0),
         ctrl.max.unwrap_or(1.0),
     )
@@ -1656,7 +1656,7 @@ impl Component for EffectBrowserView {
                 self.favorites.clone_from(favs);
             }
             Action::ActiveSceneUpdated(scene) => {
-                self.active_scene.clone_from(scene);
+                self.active_scene = Some(scene.clone());
                 self.overlay_zone_controls();
             }
             Action::ZoneFocusChanged(zone) => {
@@ -1669,10 +1669,9 @@ impl Component for EffectBrowserView {
             Action::SimulatedDisplaysUpdated(simulators) => {
                 self.simulators.clone_from(simulators.as_ref());
                 if let Some(simulator_id) = self.preview_source.simulator_id()
-                    && !self
-                        .simulators
-                        .iter()
-                        .any(|simulator| simulator.enabled && simulator.id == simulator_id)
+                    && !self.simulators.iter().any(|simulator| {
+                        simulator.enabled && simulator.id.to_string() == simulator_id
+                    })
                 {
                     self.sync_preview_source(PreviewSource::Canvas);
                     return Ok(Some(Action::SetPreviewSource(PreviewSource::Canvas)));

@@ -5,15 +5,12 @@ use leptos::prelude::*;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use std::collections::HashMap;
 
-use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
-use hypercolor_types::effect::{ControlValue, PresetTemplate};
-
-use super::preset_matching::{
-    bundled_preset_matches_controls, bundled_preset_to_json, user_preset_matches_controls,
-};
 use crate::api;
 use crate::control_value_json::controls_to_json;
 use crate::toasts;
+use hypercolor_color::Hsl;
+use hypercolor_leptos_ext::events::{document as browser_document, target_closest};
+use hypercolor_types::control::ControlValue;
 
 mod actions;
 
@@ -65,21 +62,13 @@ fn djb2_hash_reversed(s: &str) -> u32 {
 
 /// Plain HSL → sRGB triplet string — vivid but still within a readable
 /// neon band once the saturation/lightness are pre-clamped by caller.
+///
+/// The kernel clamps saturation and lightness and wraps hue, so a
+/// caller that drifts out of range now degrades to the nearest legal
+/// color instead of relying on the byte cast to saturate for it.
 fn hsl_to_rgb_triplet(h: f32, s: f32, l: f32) -> String {
-    let c = (1.0 - (2.0f32 * l - 1.0).abs()) * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - ((h_prime % 2.0) - 1.0).abs());
-    let (r1, g1, b1) = match h_prime as u32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    let to_byte = |v: f32| -> u8 { ((v + m) * 255.0).round() as u8 };
-    format!("{}, {}, {}", to_byte(r1), to_byte(g1), to_byte(b1))
+    let rgb = Hsl::new(h, s, l).to_rgb();
+    format!("{}, {}, {}", rgb.r, rgb.g, rgb.b)
 }
 
 /// Compact preset toolbar for the effect detail sidebar.
@@ -100,19 +89,28 @@ pub fn PresetToolbar(
     accent_rgb: Signal<String>,
     /// Callback fired after a preset is applied (so parent can refresh controls).
     #[prop(into)]
-    on_preset_applied: Callback<()>,
+    on_preset_applied: Callback<(api::EffectLayerTarget, api::EffectLayerTarget)>,
     /// The active preset ID from the engine (restored on effect switch).
     #[prop(into, optional)]
     active_preset_id_signal: Option<Signal<Option<String>>>,
 ) -> impl IntoView {
-    let (presets, set_presets) = signal(Vec::<api::PresetSummary>::new());
-    let (bundled_presets, set_bundled_presets) = signal(Vec::<PresetTemplate>::new());
+    let (presets, set_presets) = signal(Vec::<api::EffectPresetSummary>::new());
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
     let fetch_generation = StoredValue::new(0_u64);
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
+    let active_preset_modified = Signal::derive(move || {
+        let Some(selected_id) = selected_id.get() else {
+            return false;
+        };
+        presets
+            .get()
+            .iter()
+            .find(|preset| preset.id == selected_id)
+            .is_some_and(|preset| preset_controls_modified(&preset.controls, &control_values.get()))
+    });
 
-    // Fetch user presets + bundled presets whenever effect_id *actually* changes.
+    // Fetch the effect-scoped preset stack whenever effect_id actually changes.
     //
     // Leptos signals always notify on `set()` (no PartialEq guard), so the
     // derived `effect_id` signal can re-fire even when the ID is unchanged
@@ -130,9 +128,8 @@ pub fn PresetToolbar(
         let request_generation = fetch_generation.get_value().saturating_add(1);
         fetch_generation.set_value(request_generation);
         leptos::task::spawn_local(async move {
-            let next_presets = api::fetch_presets().await.unwrap_or_default();
-            let next_bundled = if let Some(ref id) = fetch_eid {
-                api::fetch_bundled_presets(id).await.unwrap_or_default()
+            let next_presets = if let Some(ref id) = fetch_eid {
+                api::fetch_effect_presets(id).await.unwrap_or_default()
             } else {
                 Vec::new()
             };
@@ -141,92 +138,71 @@ pub fn PresetToolbar(
                 && effect_id.get_untracked() == fetch_eid
             {
                 set_presets.set(next_presets);
-                set_bundled_presets.set(next_bundled);
             }
         });
         eid
     });
 
-    // Keep the UI selection aligned with whichever preset the current control
-    // values actually match. Built-in presets do not have engine-backed IDs,
-    // so restoring from control values is the only reliable source of truth.
+    // The daemon owns preset provenance for both bundled and saved entries.
     Effect::new(move |_| {
-        let eid = effect_id.get();
-        let active_preset_id = active_preset_id_signal
+        let next_selected = active_preset_id_signal
             .map(|signal| signal.get())
             .unwrap_or_default();
-        let current_values = control_values.get();
-        let current_presets = presets.get();
-        let current_bundled = bundled_presets.get();
-
-        let next_selected = eid.as_ref().and_then(|active_effect_id| {
-            active_preset_id
-                .filter(|preset_id| {
-                    current_presets.iter().any(|preset| {
-                        preset.effect_id == *active_effect_id && preset.id == *preset_id
-                    })
-                })
-                .or_else(|| {
-                    current_presets
-                        .iter()
-                        .find(|preset| {
-                            preset.effect_id == *active_effect_id
-                                && user_preset_matches_controls(&current_values, &preset.controls)
-                        })
-                        .map(|preset| preset.id.clone())
-                })
-                .or_else(|| {
-                    current_bundled
-                        .iter()
-                        .enumerate()
-                        .find(|(_, preset)| {
-                            bundled_preset_matches_controls(&current_values, &preset.controls)
-                        })
-                        .map(|(index, _)| format!("bundled:{index}"))
-                })
-        });
 
         if selected_id.get_untracked() != next_selected {
             set_selected_id.set(next_selected);
         }
     });
 
-    // Filter presets to the active effect
-    let effect_presets = Memo::new(move |_| {
-        let eid = effect_id.get().unwrap_or_default();
-        presets
-            .get()
-            .into_iter()
-            .filter(|p| p.effect_id == eid)
-            .collect::<Vec<_>>()
-    });
-
     let selected_preset = Memo::new(move |_| {
         let sid = selected_id.get()?;
-        effect_presets.get().into_iter().find(|p| p.id == sid)
+        presets.get().into_iter().find(|preset| preset.id == sid)
     });
 
-    let has_editable_selection = Memo::new(move |_| selected_preset.get().is_some());
+    let has_editable_selection =
+        Memo::new(move |_| selected_preset.get().is_some_and(|preset| preset.editable));
 
     // Refresh helper
     let refresh_presets = move || {
+        let Some(request_effect_id) = effect_id.get_untracked() else {
+            set_presets.set(Vec::new());
+            return;
+        };
+        let request_generation = fetch_generation.get_value().saturating_add(1);
+        fetch_generation.set_value(request_generation);
         leptos::task::spawn_local(async move {
-            if let Ok(all) = api::fetch_presets().await {
-                set_presets.set(all);
+            if let Ok(next_presets) = api::fetch_effect_presets(&request_effect_id).await
+                && fetch_generation.get_value() == request_generation
+                && effect_id.get_untracked().as_deref() == Some(request_effect_id.as_str())
+            {
+                set_presets.set(next_presets);
             }
         });
     };
 
     // Select preset by value string (replaces the old on_select that took web_sys::Event)
     let on_select_value = move |val: String| {
+        let previous_selection = selected_id.get_untracked();
+        let Some(active_effect_id) = effect_id.get_untracked() else {
+            set_selected_id.set(previous_selection);
+            return;
+        };
+        let target_zone = zones_ctx.focused_zone_id_untracked();
+        let Some((observed_target, expected_revision)) =
+            zones_ctx.effect_target_untracked(&active_effect_id, target_zone.as_deref())
+        else {
+            set_selected_id.set(previous_selection);
+            toasts::toast_error("The selected effect is no longer active");
+            return;
+        };
+
         if val.is_empty() {
             // "No preset" selected — reset controls to defaults
-            let previous_selection = selected_id.get_untracked();
             set_selected_id.set(None);
             let on_applied = on_preset_applied;
             leptos::task::spawn_local(async move {
-                match api::reset_controls().await {
-                    Ok(()) => on_applied.run(()),
+                match api::reset_effect_controls(&observed_target, expected_revision).await {
+                    Ok(target) => on_applied.run((observed_target, target)),
                     Err(error) => {
                         set_selected_id.set(previous_selection);
                         toasts::toast_error(&format!("Failed to reset controls: {error}"));
@@ -236,68 +212,23 @@ pub fn PresetToolbar(
             return;
         }
 
-        // Handle bundled preset selection (value = "bundled:<index>")
-        if let Some(idx_str) = val.strip_prefix("bundled:") {
-            if let Ok(idx) = idx_str.parse::<usize>() {
-                let bp = bundled_presets.get();
-                if let Some(template) = bp.get(idx) {
-                    let controls_json = bundled_preset_to_json(&template.controls);
-                    let previous_selection = selected_id.get_untracked();
-                    set_selected_id.set(Some(val));
-                    set_mode.set(ToolbarMode::Idle);
-                    let on_applied = on_preset_applied;
-                    // Bundled presets write the same controls a manual edit
-                    // does, so they must take the same route: the zone's
-                    // synthetic legacy layer, keyed by the zone id. The old
-                    // global endpoint 404s whenever no legacy "current
-                    // effect" exists, which is always in a zone scene — and
-                    // the failure branch below then snapped the dropdown
-                    // back, so bundled presets looked like they refused to
-                    // stick.
-                    let scoped = zones_ctx.scene_scoped_target();
-                    leptos::task::spawn_local(async move {
-                        let result = match scoped {
-                            Some((scene_id, zone_id)) => api::patch_layer_controls(
-                                &scene_id,
-                                &zone_id,
-                                &zone_id,
-                                &controls_json,
-                                None,
-                            )
-                            .await
-                            .map(|_| ()),
-                            None => api::update_controls(&controls_json).await,
-                        };
-                        match result {
-                            Ok(()) => on_applied.run(()),
-                            Err(error) => {
-                                set_selected_id.set(previous_selection);
-                                toasts::toast_error(&format!(
-                                    "Failed to apply bundled preset: {error}"
-                                ));
-                            }
-                        }
-                    });
-                }
-            }
-            return;
-        }
-
-        let previous_selection = selected_id.get_untracked();
         set_selected_id.set(Some(val.clone()));
         set_mode.set(ToolbarMode::Idle);
         let on_applied = on_preset_applied;
-        // A focused zone routes the preset to that zone (the daemon maps
-        // a focused primary back to the legacy path); the shared scene
-        // refresh then propagates the zone's new state everywhere.
-        let target_zone = zones_ctx.focused_zone_id_untracked();
         leptos::task::spawn_local(async move {
-            match api::apply_preset(&val, target_zone.as_deref()).await {
-                Ok(()) => {
+            match api::apply_effect_preset(
+                &active_effect_id,
+                &val,
+                Some(&observed_target.zone_id),
+                expected_revision,
+            )
+            .await
+            {
+                Ok(target) => {
                     if target_zone.is_some() {
                         zones_ctx.refresh.run(());
                     }
-                    on_applied.run(());
+                    on_applied.run((observed_target, target));
                 }
                 Err(error) => {
                     set_selected_id.set(previous_selection);
@@ -312,6 +243,9 @@ pub fn PresetToolbar(
         let Some(preset) = selected_preset.get() else {
             return;
         };
+        if !preset.editable {
+            return;
+        }
         let eid = effect_id.get().unwrap_or_default();
         let values = control_values.get();
         let controls_json = controls_to_json(&values);
@@ -319,11 +253,11 @@ pub fn PresetToolbar(
         let pid = preset.id.clone();
         let refresh = refresh_presets;
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name,
                 description: None,
-                effect: eid,
-                controls: serde_json::Value::Object(controls_json),
+                effect: eid.clone(),
+                controls: Some(serde_json::Value::Object(controls_json)),
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {
@@ -339,19 +273,51 @@ pub fn PresetToolbar(
         let values = control_values.get();
         let controls_json = controls_to_json(&values);
         let refresh = refresh_presets;
+        let target_zone = zones_ctx.focused_zone_id_untracked();
+        let on_applied = on_preset_applied;
+        let Some((observed_target, expected_revision)) =
+            zones_ctx.effect_target_untracked(&eid, target_zone.as_deref())
+        else {
+            toasts::toast_error("The selected effect is no longer active");
+            return;
+        };
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name,
                 description: None,
-                effect: eid,
-                controls: serde_json::Value::Object(controls_json),
+                effect: eid.clone(),
+                controls: Some(serde_json::Value::Object(controls_json)),
                 tags: None,
             };
-            if let Ok(created) = api::create_preset(&req).await {
-                set_selected_id.set(Some(created.id));
-                toasts::toast_success("Preset created");
-                refresh();
+            match api::create_preset(&req).await {
+                Ok(created) => {
+                    let created_id = created.id.to_string();
+                    match api::apply_effect_preset(
+                        &eid,
+                        &created_id,
+                        Some(&observed_target.zone_id),
+                        expected_revision,
+                    )
+                    .await
+                    {
+                        Ok(target) => {
+                            set_selected_id.set(Some(created_id));
+                            toasts::toast_success("Preset created");
+                            on_applied.run((observed_target, target));
+                            refresh();
+                        }
+                        Err(error) => {
+                            toasts::toast_error(&format!(
+                                "Preset created but could not be selected: {error}"
+                            ));
+                            refresh();
+                        }
+                    }
+                }
+                Err(error) => {
+                    toasts::toast_error(&format!("Failed to create preset: {error}"));
+                }
             }
         });
     };
@@ -361,22 +327,21 @@ pub fn PresetToolbar(
         let Some(preset) = selected_preset.get() else {
             return;
         };
+        if !preset.editable {
+            return;
+        }
         let eid = effect_id.get().unwrap_or_default();
         let pid = preset.id.clone();
         let refresh = refresh_presets;
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
-            let req = api::CreatePresetRequest {
+            let req = api::SavePresetRequest {
                 name: new_name,
                 description: None,
                 effect: eid,
-                controls: serde_json::Value::Object(
-                    preset
-                        .controls
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                ),
+                controls: Some(serde_json::Value::Object(controls_to_json(
+                    &preset.controls,
+                ))),
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {
@@ -391,6 +356,9 @@ pub fn PresetToolbar(
         let Some(preset) = selected_preset.get() else {
             return;
         };
+        if !preset.editable {
+            return;
+        }
         let previous_selection = selected_id.get_untracked();
         let pid = preset.id.clone();
         let refresh = refresh_presets;
@@ -420,9 +388,9 @@ pub fn PresetToolbar(
                         view! {
                             <div class="animate-swap-in">
                                 <PresetSelectorRow
-                                    effect_presets=effect_presets
-                                    bundled_presets=bundled_presets
+                                    presets=presets
                                     selected_id=selected_id
+                                    active_preset_modified=active_preset_modified
                                     has_editable_selection=has_editable_selection
                                     accent_rgb=accent_rgb
                                     on_select=Callback::new(on_select_value)
@@ -480,9 +448,9 @@ enum ToolbarMode {
 /// The main selector row: custom dropdown + action buttons.
 #[component]
 fn PresetSelectorRow(
-    effect_presets: Memo<Vec<api::PresetSummary>>,
-    bundled_presets: ReadSignal<Vec<PresetTemplate>>,
+    presets: ReadSignal<Vec<api::EffectPresetSummary>>,
     selected_id: ReadSignal<Option<String>>,
+    active_preset_modified: Signal<bool>,
     has_editable_selection: Memo<bool>,
     accent_rgb: Signal<String>,
     on_select: Callback<String>,
@@ -500,23 +468,12 @@ fn PresetSelectorRow(
             return "Default".to_string();
         };
 
-        // Check bundled presets
-        if let Some(idx_str) = sid.strip_prefix("bundled:")
-            && let Ok(idx) = idx_str.parse::<usize>()
-        {
-            let bp = bundled_presets.get();
-            if let Some(template) = bp.get(idx) {
-                return template.name.clone();
-            }
-        }
-
-        // Check user presets
-        effect_presets
+        let name = presets
             .get()
             .iter()
             .find(|p| p.id == *sid)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "Default".to_string())
+            .map(|p| p.name.as_str().to_owned());
+        preset_display_label(Some(sid), name.as_deref(), active_preset_modified.get())
     });
 
     // The swatch the trigger shows — pulled from whichever preset is
@@ -524,15 +481,7 @@ fn PresetSelectorRow(
     // the row that's "active" in the dropdown.
     let selected_swatch = Memo::new(move |_| {
         let sid = selected_id.get()?;
-        if let Some(idx_str) = sid.strip_prefix("bundled:")
-            && let Ok(idx) = idx_str.parse::<usize>()
-        {
-            let bp = bundled_presets.get();
-            if let Some(template) = bp.get(idx) {
-                return Some(preset_swatch(&template.name));
-            }
-        }
-        effect_presets
+        presets
             .get()
             .iter()
             .find(|p| p.id == sid)
@@ -676,8 +625,15 @@ fn PresetSelectorRow(
 
                         // Bundled presets group
                         {move || {
-                            let bp = bundled_presets.get();
-                            let has_user = !effect_presets.get().is_empty();
+                            let all_presets = presets.get();
+                            let bp = all_presets
+                                .iter()
+                                .filter(|preset| preset.origin == api::EffectPresetOrigin::Bundled)
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let has_user = all_presets
+                                .iter()
+                                .any(|preset| preset.origin == api::EffectPresetOrigin::Saved);
                             if bp.is_empty() {
                                 return {
                                     let _: () = view! { <></> };
@@ -721,8 +677,8 @@ fn PresetSelectorRow(
                                             </div>
                                         }
                                     })}
-                                    {bp.into_iter().enumerate().map(|(idx, p)| {
-                                        let val = format!("bundled:{idx}");
+                                    {bp.into_iter().map(|p| {
+                                        let val = p.id;
                                         let swatch = preset_swatch(&p.name);
                                         let option_value = val.clone();
                                         view! {
@@ -745,8 +701,15 @@ fn PresetSelectorRow(
 
                         // User presets group
                         {move || {
-                            let user = effect_presets.get();
-                            let has_bundled = !bundled_presets.get().is_empty();
+                            let all_presets = presets.get();
+                            let user = all_presets
+                                .iter()
+                                .filter(|preset| preset.origin == api::EffectPresetOrigin::Saved)
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            let has_bundled = all_presets
+                                .iter()
+                                .any(|preset| preset.origin == api::EffectPresetOrigin::Bundled);
                             if user.is_empty() {
                                 return {
                                     let _: () = view! { <></> };
@@ -825,6 +788,29 @@ fn PresetSelectorRow(
             />
         </div>
     }
+}
+
+fn preset_display_label(
+    selected_id: Option<&str>,
+    selected_name: Option<&str>,
+    modified: bool,
+) -> String {
+    let Some(_) = selected_id else {
+        return "Default".to_owned();
+    };
+    let label = selected_name.unwrap_or("Preset unavailable");
+    if modified {
+        format!("{label} (Modified)")
+    } else {
+        label.to_owned()
+    }
+}
+
+fn preset_controls_modified(
+    preset: &HashMap<String, ControlValue>,
+    live: &HashMap<String, ControlValue>,
+) -> bool {
+    preset != live
 }
 
 /// A single item in the custom dropdown. Painted with its preset's own
@@ -906,4 +892,35 @@ fn install_dropdown_outside_handler(set_open: WriteSignal<bool>) {
 #[component]
 fn PresetDropdownDismissHandler(set_open: WriteSignal<bool>) -> impl IntoView {
     install_dropdown_outside_handler(set_open);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use hypercolor_types::control::ControlValue;
+
+    use super::{preset_controls_modified, preset_display_label};
+
+    #[test]
+    fn selected_preset_label_keeps_provenance_when_modified() {
+        assert_eq!(
+            preset_display_label(Some("preset-id"), Some("Night Drive"), true),
+            "Night Drive (Modified)"
+        );
+        assert_eq!(
+            preset_display_label(Some("missing-id"), None, true),
+            "Preset unavailable (Modified)"
+        );
+        assert_eq!(preset_display_label(None, None, false), "Default");
+    }
+
+    #[test]
+    fn preset_modification_compares_live_layer_controls() {
+        let preset = HashMap::from([("speed".to_owned(), ControlValue::Float(0.5))]);
+        assert!(!preset_controls_modified(&preset, &preset));
+
+        let live = HashMap::from([("speed".to_owned(), ControlValue::Float(0.75))]);
+        assert!(preset_controls_modified(&preset, &live));
+    }
 }

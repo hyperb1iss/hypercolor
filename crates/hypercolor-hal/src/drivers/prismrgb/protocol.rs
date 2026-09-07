@@ -1,9 +1,12 @@
 //! Pure `PrismRGB` protocol encoder/decoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
 
+use hypercolor_color::{DevicePixelLayout, Rgb};
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
 };
@@ -11,8 +14,8 @@ use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 const PRISM_S_ATX_LEDS: usize = 120;
@@ -446,12 +449,12 @@ impl Protocol for PrismRgbProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         match self.model {
             PrismRgbModel::PrismS => {
                 let mut zones = Vec::new();
                 if self.prism_s_config.atx_present {
-                    zones.push(ProtocolZone {
+                    zones.push(SegmentInfo {
                         name: "ATX Strimer".to_owned(),
                         led_count: u32::try_from(PRISM_S_ATX_LEDS).unwrap_or(u32::MAX),
                         topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
@@ -460,7 +463,7 @@ impl Protocol for PrismRgbProtocol {
                     });
                 }
                 if let Some(gpu_cable) = self.prism_s_config.gpu_cable {
-                    zones.push(ProtocolZone {
+                    zones.push(SegmentInfo {
                         name: "GPU Strimer".to_owned(),
                         led_count: u32::try_from(gpu_cable.led_count()).unwrap_or(u32::MAX),
                         topology: gpu_cable.topology(),
@@ -470,7 +473,7 @@ impl Protocol for PrismRgbProtocol {
                 }
                 zones
             }
-            PrismRgbModel::PrismMini => vec![ProtocolZone {
+            PrismRgbModel::PrismMini => vec![SegmentInfo {
                 name: "Channel 1".to_owned(),
                 led_count: u32::try_from(PRISM_MINI_MAX_LEDS).unwrap_or(u32::MAX),
                 topology: DeviceTopologyHint::Strip,
@@ -507,11 +510,8 @@ pub fn apply_low_power_saver(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let total = u16::from(r) + u16::from(g) + u16::from(b);
     if total > LOW_POWER_THRESHOLD {
         let scale = f32::from(LOW_POWER_THRESHOLD) / f32::from(total);
-        (
-            scale_channel(r, scale),
-            scale_channel(g, scale),
-            scale_channel(b, scale),
-        )
+        let scaled = Rgb::new(r, g, b).scale(scale);
+        (scaled.r, scaled.g, scaled.b)
     } else {
         (r, g, b)
     }
@@ -561,15 +561,19 @@ fn flatten_colors(colors: &[[u8; 3]], scale: f32, format: DeviceColorFormat) -> 
 }
 
 fn encode_color(color: [u8; 3], scale: f32, format: DeviceColorFormat) -> [u8; 3] {
-    let rs = scale_channel(color[0], scale);
-    let gs = scale_channel(color[1], scale);
-    let bs = scale_channel(color[2], scale);
+    // PrismRGB HID reports carry fixed three-byte pixels, so the RGBW
+    // format's four-channel layout and JPEG's absent one both fall back to
+    // RGB order, which is what this driver has always written for them.
+    let layout = format
+        .pixel_layout()
+        .filter(|layout| layout.channel_count() == 3)
+        .unwrap_or(DevicePixelLayout::Rgb);
+    let [red, green, blue, _] = Rgb::new(color[0], color[1], color[2])
+        .scale(scale)
+        .encode(layout)
+        .bytes;
 
-    match format {
-        DeviceColorFormat::Grb => [gs, rs, bs],
-        DeviceColorFormat::Rbg => [rs, bs, gs],
-        DeviceColorFormat::Rgb | DeviceColorFormat::Rgbw | DeviceColorFormat::Jpeg => [rs, gs, bs],
-    }
+    [red, green, blue]
 }
 
 fn command_from_packet(
@@ -583,14 +587,6 @@ fn command_from_packet(
         response_delay: Duration::ZERO,
         post_delay,
         transfer_type: TransferType::Primary,
+        ..Default::default()
     }
-}
-
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn scale_channel(value: u8, scale: f32) -> u8 {
-    (f32::from(value) * scale).round().clamp(0.0, 255.0) as u8
 }

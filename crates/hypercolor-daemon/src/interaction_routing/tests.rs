@@ -1,17 +1,10 @@
-use hypercolor_core::input::InputSource;
 use hypercolor_core::input::browser::{
-    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputSource, BrowserPreviewId,
+    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle, BrowserPreviewId,
 };
 use hypercolor_core::input::routing::SourceIncarnation;
 use hypercolor_types::config::InteractionRoutePolicy;
 
 use super::{AuthoritativeClaimError, AuthoritativeClaimOutcome, InteractionRoutingControl};
-
-fn active_browser_source() -> BrowserInputSource {
-    let mut source = BrowserInputSource::new();
-    source.start().expect("browser source should start");
-    source
-}
 
 fn key(connection: u64, preview: &str) -> BrowserInputChildKey {
     BrowserInputChildKey::new(
@@ -22,8 +15,7 @@ fn key(connection: u64, preview: &str) -> BrowserInputChildKey {
 
 #[test]
 fn authoritative_claim_is_single_owner_idempotent_and_hands_off_cleanly() {
-    let source = active_browser_source();
-    let handle = source.handle();
+    let handle = BrowserInputHandle::new();
     let first = handle
         .attach(key(1, "main"))
         .expect("first preview attaches");
@@ -60,8 +52,7 @@ fn authoritative_claim_is_single_owner_idempotent_and_hands_off_cleanly() {
 
 #[test]
 fn route_requests_use_exact_preview_and_authoritative_publications() {
-    let source = active_browser_source();
-    let handle = source.handle();
+    let handle = BrowserInputHandle::new();
     let preview = handle.attach(key(9, "cabinet")).expect("preview attaches");
     let control = InteractionRoutingControl::new(
         handle.registry(),
@@ -70,7 +61,8 @@ fn route_requests_use_exact_preview_and_authoritative_publications() {
         InteractionRoutePolicy::Browser,
     );
 
-    let preview_request = control.preview_request(&preview);
+    let initial = control.snapshot();
+    let preview_request = initial.preview_request(preview.publication_id());
     assert_eq!(preview_request.policy, InteractionRoutePolicy::Browser);
     assert_eq!(
         preview_request.browser_source,
@@ -78,22 +70,25 @@ fn route_requests_use_exact_preview_and_authoritative_publications() {
             preview.publication_id().get()
         ))
     );
-    assert_eq!(control.daemon_request().browser_source, None);
+    assert_eq!(initial.daemon_request().browser_source, None);
+    assert_eq!(initial.config_generation, 1);
 
     control
         .claim_authoritative(&preview)
         .expect("claim should succeed");
+    let claimed = control.snapshot();
     assert_eq!(
-        control.daemon_request().browser_source,
+        claimed.daemon_request().browser_source,
         preview_request.browser_source
     );
+    assert_eq!(claimed.config_generation, 1);
 }
 
 #[test]
 fn policy_publication_is_coherent_and_avoids_noop_generation_churn() {
-    let source = active_browser_source();
+    let browser = BrowserInputHandle::new();
     let control = InteractionRoutingControl::new(
-        source.handle().registry(),
+        browser.registry(),
         3,
         InteractionRoutePolicy::Host,
         InteractionRoutePolicy::Browser,

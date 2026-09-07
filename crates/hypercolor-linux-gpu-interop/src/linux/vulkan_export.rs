@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use ash::{khr, vk};
 
+use crate::LinuxImportedFrameFormatExt;
+
 use super::{LinuxGlFramebufferImportDescriptor, LinuxGpuInteropError, Result};
 
 pub(super) struct ExportableVulkanImage {
@@ -37,7 +39,12 @@ impl ExportableVulkanImage {
             .handle_types(vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD);
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
-            .format(descriptor.format.vk_format())
+            .format(
+                descriptor
+                    .format
+                    .vk_format()
+                    .expect("validated Linux import format"),
+            )
             .extent(vk::Extent3D {
                 width: descriptor.width,
                 height: descriptor.height,

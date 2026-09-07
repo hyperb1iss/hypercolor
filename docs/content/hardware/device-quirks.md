@@ -4,8 +4,6 @@ description = "Known rebrands, firmware-split behavior, and devices that appear 
 weight = 100
 +++
 
-# Device quirks & rebrands
-
 The compatibility matrix tells you which devices are supported. This page covers the cases
 where the matrix entry alone is not enough: hardware that was sold under multiple names,
 devices whose firmware version determines which protocol is used, and devices that enumerate
@@ -15,9 +13,10 @@ correctly but whose full feature routing is not yet enabled.
 
 ## PrismRGB Prism 8 is a Nollie 8 v2 rebrand
 
-If you plug in a PrismRGB Prism 8 controller and the device list reads **"Nollie 8 v2"**,
-nothing is wrong. The Prism 8 is a hardware rebrand of the Nollie 8 v2. Hypercolor
-identifies it by USB VID/PID and routes it through the Nollie driver, which is correct.
+A PrismRGB Prism 8 appears in the device list as **"PrismRGB Prism 8"** under the
+PrismRGB family, but it is driven by the `nollie` driver because the Prism 8 is a hardware
+rebrand of the Nollie 8 v2. Hypercolor identifies it by USB VID/PID and routes it through
+the Nollie driver, which is correct.
 
 The specifics, sourced from `data/drivers/vendors/prismrgb.toml` and `nollie.toml`:
 
@@ -31,14 +30,16 @@ The specifics, sourced from `data/drivers/vendors/prismrgb.toml` and `nollie.tom
 | Host brightness scale | **0.75** (not 1.0; the Prism 8 has less hardware headroom) |
 
 The Nollie 8 v2 and PrismRGB Prism 8 share PID `0x1F01` but enumerate on different VIDs.
-Both are handled by a single `nollie` driver entry. The 0.75 brightness scale is applied
+Both are handled by the `nollie` driver module, which registers them as separate
+descriptors with their own protocol bindings. The 0.75 brightness scale is applied
 automatically; you do not need to configure anything.
 
-{% callout(type="info") %}
-In the driver database this device is named "Nollie 8 v2 / PrismRGB Prism 8", so the
-device list may show it under the Nollie name even though the box says PrismRGB. This is
-expected: the underlying silicon is the same hardware regardless of the badge.
-{% end %}
+{% <callout type="info"> %}
+In the compatibility matrix the shared entry is listed as
+"Nollie 8 v2 / PrismRGB Prism 8" because one matrix row covers both badges. The device
+list keeps them apart. Each VID gets its own name and family even though the underlying
+silicon is the same hardware regardless of the badge.
+{% </callout> %}
 
 ---
 
@@ -51,7 +52,7 @@ firmware, it will enumerate via a different transport path.
 | Firmware version | USB transport | Notes |
 |---|---|---|
 | v1.0 (AL10) | USB vendor protocol (`usb_vendor`) | Older units; distinct packet framing |
-| v1.7 and later | USB HID (`usb_hid`) | Current shipping firmware |
+| v1.7 | USB HID (`usb_hid`) | Current shipping firmware; matched exactly |
 
 Source: `data/drivers/vendors/lianli.toml`, `pid = 0xA101` notes field.
 
@@ -60,13 +61,13 @@ installed, check which firmware version is on the hub. The hub's firmware versio
 visible in Lian Li's L-Connect software on Windows, or sometimes printed on a label
 inside the hub housing.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Both firmware versions share the same PID (`0xA101`). Hypercolor keeps two database
 entries for that PID and picks the right one by matching the hub's reported firmware
 version (`1.7` selects the HID path, `1.0` selects the vendor path), not a manual
 setting. If the device does not appear, verify that `udev/99-hypercolor.rules` is
 installed and that you restarted the daemon after plugging in the hub.
-{% end %}
+{% </callout> %}
 
 The Uni Hub AL V2 (PID `0xA104`) is a separate device and always uses the HID transport;
 the firmware split applies only to the original AL.
@@ -98,11 +99,11 @@ protocol. Check the [compatibility matrix](@/hardware/compatibility.md) for the 
 entry of your specific model. The Harpoon, Ironclaw, and Dark Core RGB Pro SE all have
 supported wired-mode entries in the Bragi peripheral list.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Child routing (the dongle forwarding Hypercolor color packets to the wireless peripheral)
 is the feature that is not yet implemented, not the Bragi protocol itself. Wired Bragi
 devices work fully. This is a protocol engineering gap, not a hardware limitation.
-{% end %}
+{% </callout> %}
 
 ---
 

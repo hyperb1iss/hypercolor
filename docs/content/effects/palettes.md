@@ -26,7 +26,7 @@ Inspect a single entry (stops, mood, accent, background) with `getPalette()`:
 import { getPalette } from "hypercolor";
 
 const p = getPalette("SilkCircuit");
-console.log(p?.stops);      // ['#e135ff', '#80ffea', '#ff6ac1', '#f1fa8c', '#50fa7b']
+console.log(p?.stops);      // ['#e135ff', '#00e5d0', '#ff2f9e', '#ffd21e', '#22e05e']
 console.log(p?.accent);     // '#e135ff'
 console.log(p?.background); // '#0d0221'
 ```
@@ -37,7 +37,7 @@ The `PaletteEntry` shape is exactly:
 
 ```typescript
 interface PaletteEntry {
-  readonly id: string;          // kebab-case, e.g. 'silk-circuit'
+  readonly id: string;          // lowercase slug, e.g. 'silkcircuit', 'cherry-blossom'
   readonly name: string;        // display + lookup key, e.g. 'SilkCircuit'
   readonly mood: readonly string[];
   readonly stops: readonly string[]; // hex colors, the gradient anchors
@@ -85,9 +85,9 @@ palette: ["SilkCircuit", "Aurora", "Fire"];
 palette: combo("Palette", ["SilkCircuit", "Aurora", "Fire"]);
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The key name `palette` is **not** magic. Naming a control `palette` does nothing on its own. Only `paletteControl()` flips the flag. If your color sampling silently returns plain strings or your shader index never moves, this is almost always the cause: you reached for `combo()` or a raw array when you meant `paletteControl()`.
-{% end %}
+{% </callout> %}
 
 `paletteControl(label, values, opts?)` accepts the same options as `combo()` (`default`, `tooltip`, `group`, `uniform`), so you keep grouping and a non-first default without losing the behavior.
 
@@ -181,22 +181,22 @@ const { a, b, c, d } = getPalette("Plasma")!.iq;
 // feed a/b/c/d into your shader's cosPal uniforms
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The cosine `iq` coefficients are an *approximation* of the stop-based ramp, not a pixel-exact match. The Oklab LUT (canvas path) and the cosine palette (shader path) will differ slightly. Treat `iq` as "close enough to read as the same palette," and tune by eye if the two paths sit side by side.
-{% end %}
+{% </callout> %}
 
 ## How Oklab interpolation works
 
 The LUT build is straightforward and runs once per palette name:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
   S[hex stops] --> O[sRGB to Oklab]
   O --> I[linear interp in Oklab]
   I --> B[Oklab to sRGB]
   B --> L[256-entry LUT]
   L --> C[cache by name]
-{% end %}
+{% </mermaid> %}
 
 Interpolating in Oklab instead of raw sRGB is what keeps mid-tones clean. A straight RGB lerp between two saturated hues dips through a muddy gray midpoint and wobbles in perceived brightness; Oklab keeps lightness and chroma even across the transition. That matters more on LEDs than on a screen, where a washed-out midpoint reads as a dead spot in the animation.
 

@@ -5,40 +5,23 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
-use hypercolor_core::device::{
-    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior, SmBusBackend,
-    SmBusScanner, TransportScanner,
+use anyhow::Result;
+use hypercolor_core::device::{SmBusBackend, SmBusScanner};
+use hypercolor_driver_api::{
+    DeviceBackend, DeviceLifecyclePolicy, DiscoveredDevice, DiscoveryConnectBehavior,
 };
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+use hypercolor_hal::SmBusProbeError;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+use hypercolor_hal::transport::TransportPlatform;
 use hypercolor_hal::transport::smbus::{SmBusBusArbiter, SmBusOperation, decode_operations};
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    SegmentInfo,
 };
 use tempfile::tempdir;
-
-#[derive(Clone)]
-struct StaticScanner {
-    devices: Vec<DiscoveredDevice>,
-}
-
-impl StaticScanner {
-    fn new(devices: Vec<DiscoveredDevice>) -> Self {
-        Self { devices }
-    }
-}
-
-#[async_trait::async_trait]
-impl TransportScanner for StaticScanner {
-    fn name(&self) -> &'static str {
-        "static-smbus-test"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        Ok(self.devices.clone())
-    }
-}
 
 struct ScriptedTransport {
     send_receive_results: StdMutex<Vec<Result<Vec<u8>, TransportError>>>,
@@ -266,10 +249,30 @@ impl Transport for ConcurrentSmBusTransport {
     }
 }
 
-#[test]
-fn smbus_scanner_name_is_stable() {
-    let scanner = SmBusScanner::new();
-    assert_eq!(scanner.name(), "SMBus HAL");
+fn assert_root_scoped_smbus_scan<T: std::fmt::Debug>(result: Result<Vec<T>>) {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    {
+        let devices = result.expect("scan should succeed on supported platforms");
+        assert!(devices.is_empty());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let error = result.expect_err("scan should reject an unsupported platform");
+        let error_chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(
+            matches!(
+                error.downcast_ref::<SmBusProbeError>(),
+                Some(SmBusProbeError::Transport(
+                    TransportError::UnsupportedPlatform {
+                        transport: "SMBus",
+                        platform,
+                    }
+                )) if *platform == TransportPlatform::CURRENT
+            ),
+            "unexpected SMBus scan error chain: {error_chain:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -277,8 +280,7 @@ async fn smbus_scanner_ignores_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
     let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
 
-    let devices = scanner.scan().await.expect("scan should succeed");
-    assert!(devices.is_empty());
+    assert_root_scoped_smbus_scan(scanner.scan().await);
 }
 
 #[tokio::test]
@@ -288,9 +290,7 @@ async fn smbus_scanner_ignores_non_device_i2c_nodes() {
     fs::write(&fake_bus, b"not a real i2c bus").expect("fake i2c node should write");
 
     let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
-    let devices = scanner.scan().await.expect("scan should succeed");
-
-    assert!(devices.is_empty());
+    assert_root_scoped_smbus_scan(scanner.scan().await);
 }
 
 #[test]
@@ -317,59 +317,43 @@ fn smbus_backend_lifecycle_policy_runs_connect_in_background() {
 }
 
 #[tokio::test]
-async fn smbus_backend_discover_is_empty_on_empty_dev_root() {
+async fn smbus_discovery_source_is_empty_on_empty_dev_root() {
     let tempdir = tempdir().expect("tempdir should create");
-    let mut backend = SmBusBackend::with_scanner(SmBusScanner::with_dev_root(tempdir.path()));
+    let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
 
-    let devices = backend.discover().await.expect("discover should succeed");
-    assert!(devices.is_empty());
+    assert_root_scoped_smbus_scan(scanner.scan().await);
 }
 
 #[tokio::test]
-async fn smbus_backend_reinitializes_transport_after_write_failure() {
+async fn smbus_backend_preserves_transport_timeout_without_private_retry() {
     let device_id = DeviceId::new();
-    let scanner = StaticScanner::new(vec![discovered_smbus_device(device_id)]);
+    let discovered = discovered_smbus_device(device_id);
     let open_count = Arc::new(AtomicUsize::new(0));
     let first_packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
-    let second_packets = Arc::new(StdMutex::new(Vec::<Vec<u8>>::new()));
     let close_count = Arc::new(AtomicUsize::new(0));
 
-    let mut backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
+    let backend = SmBusBackend::with_transport_factory({
         let open_count = Arc::clone(&open_count);
         let first_packets = Arc::clone(&first_packets);
-        let second_packets = Arc::clone(&second_packets);
         let close_count = Arc::clone(&close_count);
 
         move |bus_path, address, _bus_arbiter| {
             assert_eq!(bus_path, "/dev/i2c-9");
             assert_eq!(address, 0x71);
 
-            let open_index = open_count.fetch_add(1, Ordering::SeqCst);
-            match open_index {
-                0 => Ok(Box::new(ScriptedTransport::new(
-                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
-                    vec![
-                        Ok(()),
-                        Err(TransportError::IoError {
-                            detail: "simulated frame write failure".to_owned(),
-                        }),
-                    ],
-                    Arc::clone(&first_packets),
-                    Arc::clone(&close_count),
-                ))),
-                1 => Ok(Box::new(ScriptedTransport::new(
-                    vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
-                    vec![Ok(()), Ok(())],
-                    Arc::clone(&second_packets),
-                    Arc::clone(&close_count),
-                ))),
-                other => bail!("unexpected extra SMBus transport open #{other}"),
-            }
+            assert_eq!(open_count.fetch_add(1, Ordering::SeqCst), 0);
+            Ok(Box::new(ScriptedTransport::new(
+                vec![Ok(dram_firmware_response()), Ok(dram_config_response(8))],
+                vec![Ok(()), Err(TransportError::Timeout { timeout_ms: 275 })],
+                Arc::clone(&first_packets),
+                Arc::clone(&close_count),
+            )))
         }
     });
 
-    let devices = backend.discover().await.expect("discover should succeed");
-    assert_eq!(devices.len(), 1);
+    backend
+        .adopt_device(&discovered)
+        .expect("backend should adopt discovery descriptor");
 
     backend
         .connect(&device_id)
@@ -384,16 +368,20 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
         1,
         "duplicate connect should preserve the active device and its frame sinks"
     );
-    backend
+    let error = backend
         .write_colors(&device_id, &[[0x10, 0x20, 0x30]; 8])
         .await
-        .expect("write should recover after one transport reinitialize");
+        .expect_err("transport timeout should cross the backend boundary");
+    assert!(matches!(
+        error,
+        DeviceError::Timeout { after } if after == Duration::from_millis(275)
+    ));
     backend
         .disconnect(&device_id)
         .await
         .expect("disconnect should succeed");
 
-    assert_eq!(open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(open_count.load(Ordering::SeqCst), 1);
     assert_eq!(
         first_packets
             .lock()
@@ -403,55 +391,53 @@ async fn smbus_backend_reinitializes_transport_after_write_failure() {
         "first transport should see init traffic plus the failed frame write"
     );
     assert_eq!(
-        second_packets
-            .lock()
-            .expect("second packet log lock should not be poisoned")
-            .len(),
-        4,
-        "replacement transport should rerun init and then accept the retried frame"
-    );
-    assert_eq!(
         close_count.load(Ordering::SeqCst),
-        2,
-        "recovery should close the stale transport and disconnect should close the replacement"
+        1,
+        "disconnect should close the original transport"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions() {
+async fn smbus_backend_instances_share_one_physical_bus_arbiter() {
     let first_id = DeviceId::new();
     let second_id = DeviceId::new();
-    let scanner = StaticScanner::new(vec![
+    let discovered = [
         discovered_smbus_device_at(first_id, "/dev/i2c-9", 0x71),
         discovered_smbus_device_at(second_id, "/dev/i2c-9", 0x73),
-    ]);
+    ];
     let probe = Arc::new(SmBusConcurrencyProbe::new());
-    let mut backend = SmBusBackend::with_scanner_and_transport_factory(scanner, {
+    let make_backend = || {
         let probe = Arc::clone(&probe);
-        move |bus_path, address, bus_arbiter| {
+        SmBusBackend::with_transport_factory(move |bus_path, address, bus_arbiter| {
             assert_eq!(bus_path, "/dev/i2c-9");
             assert!(matches!(address, 0x71 | 0x73));
             Ok(Box::new(ConcurrentSmBusTransport::new(
                 bus_arbiter,
                 Arc::clone(&probe),
             )))
-        }
-    });
+        })
+    };
+    let first_backend = make_backend();
+    let second_backend = make_backend();
 
-    let devices = backend.discover().await.expect("discover should succeed");
-    assert_eq!(devices.len(), 2);
-    backend
+    first_backend
+        .adopt_device(&discovered[0])
+        .expect("first backend should adopt its discovery descriptor");
+    second_backend
+        .adopt_device(&discovered[1])
+        .expect("second backend should adopt its discovery descriptor");
+    first_backend
         .connect(&first_id)
         .await
         .expect("first connect should succeed");
-    backend
+    second_backend
         .connect(&second_id)
         .await
         .expect("second connect should succeed");
-    let first_sink = backend
+    let first_sink = first_backend
         .frame_sink(&first_id)
         .expect("first device should expose a frame sink");
-    let second_sink = backend
+    let second_sink = second_backend
         .frame_sink(&second_id)
         .expect("second device should expose a frame sink");
 
@@ -471,10 +457,14 @@ async fn smbus_device_sinks_overlap_waits_without_overlapping_bus_transactions()
     assert_eq!(probe.max_active_waits.load(Ordering::SeqCst), 2);
 
     probe.finish();
-    backend
+    first_backend
         .disconnect(&first_id)
         .await
         .expect("first disconnect should succeed");
+    second_backend
+        .disconnect(&second_id)
+        .await
+        .expect("second disconnect should succeed");
     let stale_sink_error = first_sink
         .write_colors_shared(Arc::new(vec![[0, 0, 0]; 8]))
         .await
@@ -542,7 +532,7 @@ fn discovered_smbus_device_at(
     address: u16,
 ) -> DiscoveredDevice {
     DiscoveredDevice {
-        fingerprint: DeviceFingerprint(format!("smbus:{bus_path}:{address:02x}")),
+        fingerprint: DeviceFingerprint::from_persisted(format!("smbus:{bus_path}:{address:02x}")),
         connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: DeviceInfo {
             id: device_id,
@@ -553,7 +543,7 @@ fn discovered_smbus_device_at(
             connection_type: ConnectionType::SmBus,
             origin: DeviceOrigin::native("asus", "smbus", ConnectionType::SmBus)
                 .with_protocol_id("asus/aura-smbus"),
-            zones: vec![ZoneInfo {
+            segments: vec![SegmentInfo {
                 name: "Lighting".to_owned(),
                 led_count: 8,
                 topology: DeviceTopologyHint::Strip,

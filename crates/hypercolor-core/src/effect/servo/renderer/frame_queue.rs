@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::{EffectCategory, EffectMetadata};
 use hypercolor_types::event::{InputButtonState, InputEvent};
 use hypercolor_types::sensor::SystemSnapshot;
 use tracing::warn;
@@ -69,6 +70,7 @@ impl ServoRenderer {
                 include_media: self.include_media_updates,
                 include_net: self.include_net_updates,
                 include_lighting: self.include_lighting_updates,
+                emit_frame_timing: true,
                 render_host_frame: self.host_driven_animation,
                 selected_sensor_labels: selected_sensor_labels(
                     &self.scoped_sensor_control_ids,
@@ -84,7 +86,7 @@ impl ServoRenderer {
                             .expect("LightScript frame payload should serialize as a JSON object"),
                     );
                 }
-                LightScriptFrameUpdate::HostFrameScript(script) => {
+                LightScriptFrameUpdate::TimingScript(script) => {
                     self.pending_scripts.push(script);
                 }
             }
@@ -266,7 +268,7 @@ pub(super) struct QueuedFrameInput {
     frame_number: u64,
     audio: Option<Arc<hypercolor_types::audio::AudioData>>,
     interaction: Option<Arc<crate::input::InteractionData>>,
-    screen: Option<Arc<crate::input::ScreenData>>,
+    screen: Option<Arc<crate::input::ScreenBranchPublication>>,
     sensors: Option<Arc<SystemSnapshot>>,
     input_availability: crate::effect::InputSourceAvailability,
     media: Option<Arc<hypercolor_types::media::MediaState>>,
@@ -287,7 +289,7 @@ impl QueuedFrameInput {
                 .interaction
                 .then(|| Arc::new(input.interaction.clone())),
             screen: if demand.screen {
-                input.screen.map(|screen| Arc::new(screen.clone()))
+                input.screen.map(Arc::clone)
             } else {
                 None
             },
@@ -330,7 +332,13 @@ impl QueuedFrameInput {
         self.frame_number = input.frame_number;
         clone_demanded_from(&mut self.audio, input.audio, demand.audio);
         clone_demanded_from(&mut self.interaction, input.interaction, demand.interaction);
-        clone_optional_demanded_from(&mut self.screen, input.screen, demand.screen);
+        // Exact publications are immutable snapshots: retaining the Arc keeps
+        // the newest frame without copying pixels into the queue.
+        self.screen = if demand.screen {
+            input.screen.map(Arc::clone)
+        } else {
+            None
+        };
         clone_demanded_from(&mut self.sensors, input.sensors, demand.sensors);
         self.input_availability = input.sources.input_availability;
         clone_optional_demanded_from(&mut self.media, input.sources.media, demand.media);
@@ -354,7 +362,7 @@ impl QueuedFrameInput {
             frame_number: self.frame_number,
             audio: self.audio.as_deref().unwrap_or(&SILENT_AUDIO),
             interaction: self.interaction.as_deref().unwrap_or(&EMPTY_INTERACTION),
-            screen: self.screen.as_deref(),
+            screen: self.screen.as_ref(),
             sensors: self.sensors.as_deref().unwrap_or(&EMPTY_SENSORS),
             sources: crate::effect::traits::FrameDataSources {
                 input_availability: self.input_availability,
@@ -420,7 +428,7 @@ fn normalize_queued_interaction(interaction: &mut crate::input::InteractionData)
                     } => Some(key.clone()),
                     InputEvent::Key { .. }
                     | InputEvent::MouseButton { .. }
-                    | InputEvent::MouseWheel { .. }
+                    | InputEvent::PointerScroll { .. }
                     | InputEvent::MidiNote { .. }
                     | InputEvent::MidiControlChange { .. }
                     | InputEvent::MidiPitchBend { .. }

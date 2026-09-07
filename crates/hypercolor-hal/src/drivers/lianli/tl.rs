@@ -6,6 +6,8 @@
 //! commands carrying averaged colors, and handshake/product-info init
 //! responses that populate per-port fan counts and firmware strings.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{PoisonError, RwLock};
 use std::time::Duration;
@@ -14,11 +16,11 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopo
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
-use super::common::{LianLiHubVariant, TL_REPORT_ID};
+use super::common::{LianLiHubVariant, TL_REPORT_ID, record_first_product_info};
 
 pub const TL_PACKET_LEN: usize = 64;
 const TL_PAYLOAD_LEN: usize = 58;
@@ -30,6 +32,8 @@ const TL_MAX_PORTS: usize = 4;
 const TL_MAX_FANS_PER_PORT: usize = 10;
 const TL_MAX_TOTAL_FANS: usize = 16;
 const TL_RESPONSE_TIMEOUT: Duration = Duration::from_millis(100);
+/// `0xA6` answers with a version report followed by a build-date report.
+const TL_PRODUCT_INFO_REPORTS: u8 = 2;
 const TL_FRAME_INTERVAL: Duration = Duration::from_millis(100);
 const TL_EFFECT_STATIC: u8 = 0x01;
 const TL_BRIGHTNESS_FULL: u8 = 0x04;
@@ -127,6 +131,7 @@ impl TlFanProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 
@@ -134,8 +139,12 @@ impl TlFanProtocol {
         self.command(0xA1, &[], true)
     }
 
+    /// `0xA6` answers with two reports: the firmware version, then the build
+    /// date. Reading only one leaves the second queued, desyncing every later
+    /// read on this device.
     fn product_info_command(&self) -> ProtocolCommand {
         self.command(0xA6, &[], true)
+            .with_response_count(TL_PRODUCT_INFO_REPORTS)
     }
 
     /// Encode one TL per-fan PWM duty write.
@@ -284,18 +293,8 @@ impl Protocol for TlFanProtocol {
                     .port_fan_counts = counts;
             }
             0xA6 => {
-                let firmware = payload
-                    .iter()
-                    .take_while(|byte| **byte != 0x00)
-                    .copied()
-                    .collect::<Vec<_>>();
-                let firmware = String::from_utf8_lossy(&firmware).trim().to_owned();
-                if !firmware.is_empty() {
-                    self.state
-                        .write()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .firmware = Some(firmware);
-                }
+                let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+                record_first_product_info(&mut state.firmware, payload, "0xA6");
             }
             _ => {}
         }
@@ -310,7 +309,7 @@ impl Protocol for TlFanProtocol {
         TL_RESPONSE_TIMEOUT
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let counts = self.port_fan_counts();
         let total_fans: usize = counts.iter().map(|count| usize::from(*count)).sum();
         let mut zones = Vec::with_capacity(total_fans);
@@ -318,7 +317,7 @@ impl Protocol for TlFanProtocol {
 
         for (port, fan_count) in counts.into_iter().enumerate() {
             for fan_index in 0..fan_count {
-                zones.push(ProtocolZone {
+                zones.push(SegmentInfo {
                     name: format!("Port {} Fan {}", port + 1, fan_index + 1),
                     led_count,
                     topology: DeviceTopologyHint::Ring { count: led_count },

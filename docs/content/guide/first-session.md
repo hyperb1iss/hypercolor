@@ -1,11 +1,11 @@
 +++
 title = "Your first session"
-description = "Hands-on walkthrough from daemon start to a saved, audio-reactive setup: devices, effects, layouts, profiles, scenes, and Studio."
+description = "Hands-on walkthrough from daemon start to a saved, audio-reactive setup: devices, effects, layouts, scenes, and Studio."
 weight = 90
 template = "page.html"
 +++
 
-This tutorial assumes installation is complete and the `hypercolor` binary is in your `PATH`. If you haven't built Hypercolor yet, start with [Installation](@/guide/installation.md). Each section builds on the last. By the end you'll have a running daemon, connected devices, an active effect, a spatial layout, a saved profile, and a scene. That's the point at which Hypercolor is genuinely set up.
+This tutorial assumes installation is complete and the `hypercolor` binary is in your `PATH`. If you haven't built Hypercolor yet, start with [Installation](@/guide/installation.md). Each section builds on the last. By the end you'll have a running daemon, connected devices, an active effect, a spatial layout, and reusable live and snapshot scenes. That's the point at which Hypercolor is genuinely set up.
 
 ## 1. Start the daemon 🌊
 
@@ -59,7 +59,7 @@ hypercolor status --watch
 The same information is available via the API if you want to script against it:
 
 ```bash
-curl http://localhost:9420/api/v1/status | jq .data
+curl http://localhost:9420/api/v1/system | jq .data.status
 ```
 
 ## 3. Discover and connect devices
@@ -102,9 +102,9 @@ just udev-install
 
 Re-plug the device or log out and back in after installing the rules. For more detail, see [Debugging](@/contributing/debugging.md).
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If a USB device appears in `lsusb` but not in `hypercolor devices list`, check whether another RGB manager such as OpenRGB, Aura Sync, or the openrazer daemon is running. These tools grab the HID device file and Hypercolor cannot take over until they release it.
-{% end %}
+{% </callout> %}
 
 **Identify a specific device** by making it flash a test pattern. This is useful when you have multiple devices and want to confirm which physical unit has which ID:
 
@@ -114,7 +114,7 @@ hypercolor devices identify <device-name-or-id>
 
 The device pulses for five seconds by default. Pass `--duration 10` for a longer window.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## 4. Browse the effect library
 
@@ -220,27 +220,36 @@ hypercolor effects reset
 
 ### Via REST
 
-Changes apply on the next rendered frame:
+Read the live scene first. The document carries the real zone and layer ids that
+control writes address:
 
 ```bash
-curl -X PATCH http://localhost:9420/api/v1/effects/current/controls \
+scene=$(curl -s http://localhost:9420/api/v1/scene)
+zone_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].id')
+layer_id=$(printf '%s' "$scene" | jq -r '.data.zones[0].layers[-1].id')
+
+curl -X PATCH \
+  "http://localhost:9420/api/v1/scene/zones/$zone_id/layers/$layer_id/controls" \
   -H "Content-Type: application/json" \
-  -d '{"controls": {"speed": 3}}'
+  -d '{"values": {"speed": {"kind": "float", "value": 3.0}}}'
 ```
 
-To see what parameters the active effect exposes:
+The control patch deliberately has no `If-Match` header. A replaced layer gets
+a fresh id, so a stale write returns `404 layer_not_found` instead of changing
+the new effect. To inspect the current values:
 
 ```bash
-curl http://localhost:9420/api/v1/effects/active | jq '.data.controls'
+curl -s http://localhost:9420/api/v1/scene \
+  | jq '.data.zones[].layers[] | select(.source.type == "effect") | .source.controls'
 ```
 
 The web UI's controls panel lets you adjust these with sliders, which is easier for exploration. The REST PATCH and `effects patch` are the right paths for scripting or keyboard macros.
 
-{{ img(path="img/ui/ui-effect-controls.webp", alt="Effect control panel in the Hypercolor Studio") }}
+{{< img path="img/ui/ui-effect-controls.webp" alt="Effect control panel in the Hypercolor Studio" />}}
 
 ## 7. Build a spatial layout
 
-Without a layout, every device zone gets the same averaged color from the canvas, so all your LEDs pulse together as one blob. A layout tells Hypercolor where each zone sits in the virtual canvas, so gradients actually flow across your desk from left to right, and a vertical strip gets the top of the canvas while a keyboard gets the bottom.
+Without a layout, every device output gets the same averaged color from the canvas, so all your LEDs pulse together as one blob. A layout tells Hypercolor where each output sits in the virtual canvas, so gradients actually flow across your desk from left to right, and a vertical strip gets the top of the canvas while a keyboard gets the bottom.
 
 Canvas coordinates are normalized to `[0.0, 1.0]`, so positions stay valid regardless of the configured canvas resolution.
 
@@ -263,7 +272,7 @@ curl http://localhost:9420/api/v1/layouts | jq .data.items
 curl http://localhost:9420/api/v1/layouts/active | jq
 ```
 
-**Create a layout** from the web UI or via REST with a JSON zone definition. The web UI is the recommended tool here: open `http://localhost:9420`, navigate to Layouts, and use the drag-and-drop zone editor to position your device zones on the canvas. Topology options include strip, matrix, and ring configurations. Once you're satisfied, save it from the UI.
+**Create a layout** from the web UI or via REST with a JSON zone definition. The web UI is the recommended tool here: open `http://localhost:9420`, go to Studio, select a zone, and drag its device outputs around the Stage canvas. Once you're satisfied, save the layout from the Stage toolbar.
 
 From the CLI, you can create a layout by providing a JSON definition:
 
@@ -289,9 +298,9 @@ Delete a layout you no longer need:
 hypercolor layouts delete "Old Layout"
 ```
 
-{% callout(type="tip") %}
-The Studio workspace offers a full visual zone editor for spatial layouts. Open `http://localhost:9420`, click the Studio tab, and use the zone canvas to drag device zones into position. See [Studio overview](@/studio/overview.md) and [Layouts](@/studio/layouts.md) for the full walkthrough.
-{% end %}
+{% <callout type="tip"> %}
+The Studio workspace offers a full visual editor for spatial layouts. Open `http://localhost:9420`, click the Studio tab, and drag device outputs into position on the selected zone's Stage canvas. See [Studio overview](@/studio/overview.md) and [Layouts](@/studio/layouts.md) for the full walkthrough.
+{% </callout> %}
 
 ## 8. Set up audio-reactive effects
 
@@ -306,7 +315,7 @@ hypercolor effects activate audio-pulse
 If the effect doesn't react, the most common cause is that the audio capture device is wrong. First confirm the daemon sees an audio source at all; `status` exposes an `audio_available` flag:
 
 ```bash
-curl http://localhost:9420/api/v1/status | jq '.data.audio_available'
+curl http://localhost:9420/api/v1/system | jq '.data.status.audio_available'
 ```
 
 Then list the capture devices the daemon can see and check which one it picked up:
@@ -319,45 +328,44 @@ You can also inspect the live spectrum in the terminal UI (see the [terminal UI 
 
 For a full guide to configuring audio sources, see [Audio setup](@/guide/audio-setup.md).
 
-## 9. Save a profile
+## 9. Capture a scene snapshot
 
-Once you have an effect and brightness level you like, save the whole state as a named profile:
-
-```bash
-hypercolor profiles create "Gaming"
-```
-
-This captures the active effect, all control values, brightness, device assignments, and spatial layout. Switching profiles is near-instant.
-
-Add a description when you want to annotate what the profile is for:
+Once you have the rig tuned, capture the live scene as a named snapshot:
 
 ```bash
-hypercolor profiles create "Focus" --description "Dim breathing for deep work"
+hypercolor scenes snapshot "Gaming"
 ```
 
-**Switch between profiles:**
+The snapshot preserves zones, layers, control values, device assignments, display faces, and the active named layout. Global output brightness remains separate.
+
+Add a description when you want to annotate what the snapshot is for:
 
 ```bash
-hypercolor profiles list
-hypercolor profiles apply "Gaming"
+hypercolor scenes snapshot "Focus" --description "Breathing effect for deep work"
 ```
 
-Profile switching is immediate. The `--transition` flag is reserved for profile
-crossfades, but only `0` is accepted today.
-
-**Delete a profile** when you no longer need it (requires `--yes` to confirm):
+**Switch between scenes:**
 
 ```bash
-hypercolor profiles delete "Gaming" --yes
+hypercolor scenes list
+hypercolor scenes activate "Gaming"
 ```
 
-**Inspect a profile's contents:**
+Scene activation uses the transition stored in the scene.
+
+**Delete a scene** when you no longer need it (requires `--yes` to confirm):
 
 ```bash
-hypercolor profiles info "Gaming"
+hypercolor scenes delete "Gaming" --yes
 ```
 
-The daemon restores the last active profile on startup by default. See [Configuration](@/guide/configuration.md) for how to change the `start_profile` behavior.
+**Inspect a scene's contents:**
+
+```bash
+hypercolor scenes info "Gaming"
+```
+
+The daemon restores the last active scene on startup by default. See [Configuration](@/guide/configuration.md) for how to change the `start_scene` behavior.
 
 ## 10. Create a scene
 
@@ -381,9 +389,9 @@ hypercolor scenes create "Late Night" --description "Dim amber for late sessions
 hypercolor scenes activate "Focus Mode"
 ```
 
-Scene activation uses the stored scene transition. The CLI `--transition` flag
-is accepted for forward compatibility, but the activate endpoint does not
-override the stored value yet.
+Scene activation uses the transition stored in the scene. Pass
+`--transition <ms>` to override its duration for this activation only; the
+scene's stored transition is left untouched.
 
 **Return to the Default scene:**
 
@@ -409,28 +417,27 @@ hypercolor scenes active
 hypercolor scenes delete "Old Scene" --yes
 ```
 
-For the conceptual difference between profiles and scenes, and how to configure scene groups, zone overrides, and priorities, see [Profiles and scenes](@/guide/profiles-and-scenes.md).
+For live and snapshot mutation modes, boot restore, and external automation, see [Scenes and snapshots](@/guide/scenes-and-snapshots.md).
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Studio is the visual authoring surface for scenes. The Studio workspace lets you build multi-zone scenes with per-zone effects, inspect the composition in a live canvas preview, and manage scene groups without writing JSON. See [Studio scenes](@/studio/scenes.md) and [Studio zones](@/studio/zones.md).
-{% end %}
+{% </callout> %}
 
-{{ img(path="img/ui/ui-scenes.webp", alt="The scene switcher in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-scenes.webp" alt="The scene switcher in the Hypercolor web UI" />}}
 
 ## 11. Tour the web UI
 
 Open `http://localhost:9420` in a browser. The daemon serves the embedded Leptos web UI directly, with no separate server process required.
 
-{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard with effects browser, canvas preview, and device status panel") }}
+{{< img path="img/ui/dashboard.webp" alt="Hypercolor dashboard with effects browser, canvas preview, and device status panel" />}}
 
 The UI is organized into panels:
 
 - **Effects browser**: search and filter the full effect catalog, preview effects in the canvas panel before committing to hardware
 - **Controls panel**: per-parameter sliders for the active effect; equivalent to `effects patch` but much easier for exploration
 - **Devices panel**: connection status for every discovered device, per-device brightness, and an identify button to flash a test pattern
-- **Layouts editor**: drag-and-drop zone positioning with topology selection (strip, matrix, ring); the canonical way to build spatial layouts
-- **Profiles**: save, apply, and delete named configurations
-- **Scenes**: create and manage scenes
+- **Studio Stage**: the spatial layout editor, always on for the selected lighting zone; drag, resize, and rotate that zone's device outputs on its own canvas
+- **Scenes**: the Studio header's scene selector creates, renames, deletes, and switches scenes, and the dashboard's scene pill switches between them; snapshotting the live rig is CLI and REST only (`hypercolor scenes snapshot`)
 - **Studio**: the full multi-zone authoring workspace (see below)
 
 The canvas preview shows exactly what the render loop is producing, updated at the daemon's current target FPS.
@@ -441,12 +448,12 @@ Studio is the advanced authoring workspace inside the web UI. It goes beyond app
 
 Open Studio from the top navigation, or navigate directly to `http://localhost:9420` and click the Studio tab.
 
-{{ img(path="img/ui/studio.webp", alt="Hypercolor Studio zone canvas with live preview and effect layers") }}
+{{< img path="img/ui/studio.webp" alt="Hypercolor Studio zone canvas with live preview and effect layers" />}}
 
 What Studio adds on top of the basic effects browser:
 
-- **Zone canvas**: position and resize device zones visually; zones are flexible canvas partitions, not rooms
-- **Per-zone effect layers**: assign a different effect to each zone, with independent control values and priority ordering
+- **Zone canvas**: position and resize device outputs visually; zones are flexible canvas partitions, not rooms
+- **Per-zone effect layers**: assign a different effect to each zone, with independent control values and its own bottom-to-top layer order
 - **Layer compositing**: stack effects with blend modes to create layered lighting compositions
 - **Scene authoring**: save the full multi-zone composition as a scene that can be recalled with one click
 - **Display faces**: when an effect supports it, you can target specific display faces (front, top, rear) of a device; see [Display faces](@/effects/display-faces.md) for how effects declare and use face geometry
@@ -475,11 +482,11 @@ Exit with `q` or Ctrl-C.
 
 You now have a fully configured Hypercolor setup. Where to go from here:
 
-- [Profiles and scenes](@/guide/profiles-and-scenes.md): conceptual guide and full CLI/API reference for saved configurations and scene management
+- [Scenes and snapshots](@/guide/scenes-and-snapshots.md): conceptual guide and full CLI/API reference for saved configurations
 - [Audio setup](@/guide/audio-setup.md): configure monitor or loopback sources for audio-reactive effects
 - [Studio overview](@/studio/overview.md): multi-zone authoring, scene groups, the visual zone canvas, and the Studio workspace tour
 - [Creating effects](@/effects/creating-effects.md): write custom effects with the TypeScript SDK and see them appear in the effect browser immediately
 - [Display faces](@/effects/display-faces.md): how effects target specific geometry faces on multi-face devices
 - [Hardware: Compatibility matrix](@/hardware/compatibility.md): check driver status for every supported device family
-- [Configuration](@/guide/configuration.md): full config reference covering audio device selection, daemon network settings, the profile and scene JSON schemas, and config hot-reload behavior
+- [Configuration](@/guide/configuration.md): full config reference covering audio device selection, daemon network settings, scene storage, and config hot-reload behavior
 - [API reference](@/api/rest.md): full REST and WebSocket API documentation for scripting and third-party integration

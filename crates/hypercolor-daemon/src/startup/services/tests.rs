@@ -1,23 +1,19 @@
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::sync::Arc;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::{BootConfig, ConfigManager};
 #[cfg(target_os = "windows")]
 use hypercolor_core::input::screen::ResolvedCaptureSource;
-use hypercolor_core::input::screen::{PixelExtent, ScreenAdmissionCapacity, ScreenCaptureDemand};
-#[cfg(target_os = "windows")]
+use hypercolor_core::input::screen::planner::ScreenAdmissionCapacity;
 use hypercolor_core::input::{SourceKind, SourceStatusHandle, SourceStatusReporter};
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 use super::CaptureConfigPersistenceGate;
 #[cfg(target_os = "linux")]
 use super::CaptureConfigPersistenceUpdate;
 #[cfg(target_os = "windows")]
 use super::windows_capture_source_sink;
 use super::{
-    screen_analysis_plan_for_demand, screen_capacity_plan, screen_capacity_plan_for_backend,
-    screen_capture_config_from, screen_capture_config_with_capacity_from,
+    screen_capacity_plan, screen_capacity_plan_for_backend, screen_capture_config_from,
+    screen_capture_config_with_capacity_from,
 };
 
 #[test]
@@ -47,44 +43,6 @@ fn steady_capacity_defaults_to_live_backend_memory() {
     assert_eq!(total.byte_budget(), 1_000_000);
 }
 
-#[test]
-fn analysis_quote_uses_the_actual_requested_extent() {
-    let mut capture = hypercolor_types::config::CaptureConfig::default();
-    let extent = PixelExtent::new(3840, 2160).expect("4K extent is non-empty");
-    let demand = ScreenCaptureDemand::active(extent);
-    let unbounded = ScreenAdmissionCapacity::new(u64::MAX, u64::MAX);
-    let baseline = screen_analysis_plan_for_demand(&capture, demand, unbounded)
-        .expect("4K analysis is representable")
-        .expect("active demand has an analysis plan");
-    let peak = baseline.peak_bytes();
-
-    capture.publication_memory_bytes = Some(peak);
-    let exact = screen_capacity_plan_for_backend(&capture, peak).expect("exact peak is configured");
-    let admitted = screen_analysis_plan_for_demand(&capture, demand, exact.total_capacity())
-        .expect("exact 4K peak is admitted")
-        .expect("active demand has an analysis plan");
-    assert_eq!(admitted.peak_bytes(), peak);
-
-    capture.publication_memory_bytes = Some(peak - 1);
-    let undersized = screen_capacity_plan_for_backend(&capture, peak)
-        .expect("steady policy is valid while capture is inactive");
-    assert!(
-        screen_analysis_plan_for_demand(&capture, demand, undersized.total_capacity()).is_err()
-    );
-
-    capture.publication_memory_bytes = Some(peak + 777);
-    let capacity = screen_capacity_plan_for_backend(&capture, peak + 333)
-        .expect("independent steady and physical fences resolve");
-    assert_eq!(
-        capacity.resource_capacity(),
-        ScreenAdmissionCapacity::new(peak + 333, peak + 333)
-    );
-    assert_eq!(
-        capacity.total_capacity(),
-        ScreenAdmissionCapacity::new(peak + 777, peak + 333)
-    );
-}
-
 #[cfg(target_os = "windows")]
 fn persistence_gate(
     manager: &Arc<ConfigManager>,
@@ -100,7 +58,6 @@ fn persistence_gate(
     (persistence, expected)
 }
 
-#[cfg(target_os = "windows")]
 fn live_screen_status() -> SourceStatusHandle {
     let mut reporter =
         SourceStatusReporter::new("test-screen", SourceKind::Screen, "test", true, true, true);
@@ -111,6 +68,95 @@ fn live_screen_status() -> SourceStatusHandle {
         .expect("manager-bound source creates a session");
     session.mark_event_driven_live_without_deadline(1);
     reporter.handle()
+}
+
+fn picker_gate(
+    manager: &Arc<ConfigManager>,
+) -> (
+    CaptureConfigPersistenceGate,
+    Arc<hypercolor_types::config::HypercolorConfig>,
+) {
+    let expected = Arc::clone(&manager.get());
+    let persistence = CaptureConfigPersistenceGate::for_picker(
+        Arc::clone(manager),
+        &expected,
+        live_screen_status(),
+    )
+    .expect("picker persistence authority is reserved");
+    (persistence, expected)
+}
+
+#[test]
+fn display_picker_selection_persists_stable_uuid() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
+    let (persistence, expected) = picker_gate(&manager);
+
+    persistence.publish_picker_selection(
+        expected.capture.source.clone(),
+        "display:7a3f4954-3d72-47a6-a914-16ef68d02122".to_owned(),
+    );
+
+    assert_eq!(
+        manager.get().capture.source,
+        "display:7a3f4954-3d72-47a6-a914-16ef68d02122"
+    );
+    drop(manager);
+    let restarted = ConfigManager::new(path).expect("config manager reopens");
+    assert_eq!(
+        restarted.get().capture.source,
+        "display:7a3f4954-3d72-47a6-a914-16ef68d02122"
+    );
+}
+
+#[test]
+fn window_picker_selection_persists_only_session_scope() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let path = directory.path().join("hypercolor.toml");
+    let manager = Arc::new(ConfigManager::new(path.clone()).expect("config manager opens"));
+    let (persistence, expected) = picker_gate(&manager);
+
+    persistence
+        .publish_picker_selection(expected.capture.source.clone(), "session_scoped".to_owned());
+
+    assert_eq!(manager.get().capture.source, "session_scoped");
+    drop(persistence);
+    drop(manager);
+    let restarted = ConfigManager::new(path).expect("config manager reopens");
+    assert_eq!(restarted.get().capture.source, "session_scoped");
+}
+
+#[test]
+fn picker_update_cannot_overwrite_newer_config() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let manager = Arc::new(
+        ConfigManager::new(directory.path().join("hypercolor.toml")).expect("config manager opens"),
+    );
+    let (persistence, expected) = picker_gate(&manager);
+    manager.modify(|config| config.capture.source = "primary_display".to_owned());
+
+    persistence.publish_picker_selection(
+        expected.capture.source.clone(),
+        "display:7a3f4954-3d72-47a6-a914-16ef68d02122".to_owned(),
+    );
+
+    assert_eq!(manager.get().capture.source, "primary_display");
+}
+
+#[test]
+fn revoked_picker_gate_preserves_current_selection() {
+    let directory = tempfile::tempdir().expect("test config directory is created");
+    let manager = Arc::new(
+        ConfigManager::new(directory.path().join("hypercolor.toml")).expect("config manager opens"),
+    );
+    let (persistence, expected) = picker_gate(&manager);
+    persistence.revoke();
+
+    persistence
+        .publish_picker_selection(expected.capture.source.clone(), "session_scoped".to_owned());
+
+    assert_eq!(manager.get().capture.source, expected.capture.source);
 }
 
 #[cfg(target_os = "windows")]
@@ -226,6 +272,11 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
         grid_rows: 1,
         smoothing: 1.0,
         gamma: 5.0,
+        target_led_white_x: 0.2,
+        target_led_white_y: 0.3,
+        target_led_reference_white_nits: 100.0,
+        target_led_peak_nits: 1_000.0,
+        exposure_ev: -2.0,
         ..hypercolor_types::config::CaptureConfig::default()
     };
 
@@ -240,6 +291,11 @@ fn screen_capture_config_conversion_preserves_validated_values_exactly() {
     assert_eq!(runtime.analysis_memory_bytes, u64::MAX);
     assert!((runtime.smoothing_alpha - 1.0).abs() < f32::EPSILON);
     assert!((runtime.tuning.gamma - 5.0).abs() < f32::EPSILON);
+    assert!((runtime.target_led_white_x - 0.2).abs() < f32::EPSILON);
+    assert!((runtime.target_led_white_y - 0.3).abs() < f32::EPSILON);
+    assert!((runtime.target_led_reference_white_nits - 100.0).abs() < f32::EPSILON);
+    assert!((runtime.target_led_peak_nits - 1_000.0).abs() < f32::EPSILON);
+    assert!((runtime.exposure_ev - -2.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -277,7 +333,11 @@ fn daemon_initialization_rejects_invalid_capture_config_before_startup() {
         ..hypercolor_types::config::HypercolorConfig::default()
     };
 
-    let result = super::DaemonState::initialize(&config, directory.path().join("hypercolor.toml"));
+    let manager = Arc::new(ConfigManager::from_config_unchecked(
+        directory.path().join("hypercolor.toml"),
+        config.clone(),
+    ));
+    let result = super::DaemonState::initialize(BootConfig::from_config_unchecked(config), manager);
     let Err(error) = result else {
         panic!("invalid capture config must stop daemon initialization");
     };

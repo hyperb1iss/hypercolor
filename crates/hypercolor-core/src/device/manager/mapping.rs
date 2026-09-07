@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use tracing::debug;
 
-use super::routing::{DeviceMapping, device_output_len, zone_segments_from_device_info};
+use super::routing::{DeviceMapping, device_output_len, device_segments_from_device_info};
 use super::{BackendManager, SegmentRange};
 
 impl BackendManager {
@@ -55,7 +55,7 @@ impl BackendManager {
         self.invalidate_routing_plan();
     }
 
-    /// Attach hardware zone segment metadata to an existing layout-device mapping.
+    /// Attach hardware segment metadata to an existing layout-device mapping.
     ///
     /// This lets spatial zones that share one `device_id` but differ by
     /// `zone_name` target the correct physical LED ranges on multi-zone devices.
@@ -70,7 +70,7 @@ impl BackendManager {
                 return false;
             };
 
-            mapping.zone_segments = zone_segments_from_device_info(device_info);
+            mapping.zone_segments = device_segments_from_device_info(device_info);
             mapping.physical_led_count = device_output_len(device_info);
         }
         self.invalidate_routing_plan();

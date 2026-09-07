@@ -2,7 +2,11 @@
 
 > Audit findings and concrete fixes for Hypercolor's packaging, install, and CI/CD surface. Wave 1 release-blockers (§2.1-2.4) are resolved. Wave 2 hygiene items are in progress. Waves 3-4 are planned post-v0.1.0. See per-item RESOLVED/OPEN notes throughout.
 
-**Status:** Partially resolved — Wave 1 release-blockers fixed; Wave 2 hygiene items in progress; Waves 3-4 post-v0.1.0
+**Status:** Partially resolved. Wave 1 release-blockers fixed; Wave 2 hygiene items in
+progress; Waves 3-4 post-v0.1.0. Section 1's key-context claim that no git tags exist is
+dead as of 2026-08-25: `v0.2.1`, `v0.3.1`, and `v0.3.2` are all tagged and the workspace
+version is 0.3.2, so the "never actually run end-to-end" framing for the CI release path
+no longer holds either.
 **Scope:** `scripts/`, `packaging/`, `.github/workflows/`, `Cargo.toml`, `rust-toolchain.toml`, `deny.toml`, `udev/`, `.gitignore`
 **Author:** Nova
 **Date:** 2026-04-26
@@ -45,7 +49,7 @@ These would cause the v0.1.0 release pipeline to fail or produce a broken tarbal
 **File:** `.github/workflows/ci.yml:407`
 
 ```yaml
-for bin in hypercolor hyper hypercolor-tray hypercolor-tui; do
+for bin in hypercolor hyper hypercolor-app hypercolor-tui; do
 cp "${REL}/${bin}" "${DIST}/bin/"
 done
 ```
@@ -60,7 +64,7 @@ The TUI is dispatched via the `packaging/bin/hypercolor-tui` shell shim that cal
 
 The completions step on `ci.yml:432-434` calls `${DIST}/bin/hyper completions ...` — same wrong name. The `|| true` guards mask the failure, so the released tarball ships silently without shell completions.
 
-**Fix applied:** `build-release` now delegates to `dist.sh`, which installs `hypercolor-daemon`, `hypercolor`, `hypercolor-tray`, and the shell shims correctly. Completion filenames updated to `_hypercolor` / `hypercolor.fish`. The library-only `-p hypercolor-tui` build step was dropped.
+**Fix applied:** `build-release` delegates to `dist.sh`, which installs `hypercolor-daemon`, `hypercolor`, `hypercolor-app`, and the shell shims correctly. Completion filenames use `_hypercolor` and `hypercolor.fish`. The library-only `-p hypercolor-tui` build step was dropped.
 
 ### 2.2 install-release.sh launchd plist runs the CLI, not the daemon — RESOLVED
 
@@ -320,7 +324,7 @@ For each wave, the validation is:
 
 - Push an `rc` tag to a fork or a throwaway branch with adjusted permissions.
 - Confirm `build-release` matrix produces all three tarballs (linux-amd64, linux-arm64, macos-arm64).
-- Extract each tarball; verify `bin/` contains `hypercolor-daemon hypercolor hypercolor-tray hypercolor-tui hypercolor-open`, that `hypercolor-tui` is the shell shim, and that `share/{bash-completion,zsh,fish}/...` are populated.
+- Extract each tarball; verify `bin/` contains `hypercolor-daemon hypercolor hypercolor-app hypercolor-tui hypercolor-open`, that `hypercolor-tui` is the shell shim, and that `share/{bash-completion,zsh,fish}/...` are populated.
 - On macOS, install the macos-arm64 tarball via `install-release.sh`, confirm `launchctl list tech.hyperbliss.hypercolor` shows the daemon running stably (no respawn loop).
 - Confirm `update-homebrew` job runs without errors (existing job, but the input tarball shape is changing).
 

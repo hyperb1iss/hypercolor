@@ -231,6 +231,12 @@ driver API:
 - consecutive write failures
 - output-disabled reason
 
+> **Removed (Spec 76, Phase 0):** `DeviceBackend::health_check` and `HealthStatus`
+> are deleted; the probe had zero callers. The coarse-health inputs listed above
+> still reach the daemon through discovery metadata and device-output metrics.
+> `DeviceStateMachine::on_comm_error` is the future home if a real probe is ever
+> needed. See `docs/specs/76-internal-api-unification.md` §7.4.
+
 The current `DeviceBackend::health_check` contract exposes only
 `healthy`/`degraded`/`unreachable`. Negotiated protocol and output-disabled
 reason already surface through discovery metadata, and exact SDK write failures

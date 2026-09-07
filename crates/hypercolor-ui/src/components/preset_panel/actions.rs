@@ -19,7 +19,7 @@ pub(super) fn PresetActionButtons(
             // Save (overwrite current preset)
             <button
                 class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                       hover:text-success-green hover:bg-success-green/10"
+                       hover:text-status-success hover:bg-status-success/10"
                 title="Save controls to preset"
                 aria-label="Save controls to preset"
                 disabled=move || !has_selection.get()
@@ -31,7 +31,7 @@ pub(super) fn PresetActionButtons(
             // New preset
             <button
                 class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                       hover:text-neon-cyan hover:bg-neon-cyan/10"
+                       hover:text-cyan hover:bg-cyan/10"
                 title="Create new preset"
                 aria-label="Create new preset"
                 on:click=on_new
@@ -42,7 +42,7 @@ pub(super) fn PresetActionButtons(
             // Edit name
             <button
                 class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                       hover:text-electric-purple hover:bg-electric-purple/10"
+                       hover:text-accent hover:bg-accent/10"
                 title="Rename preset"
                 aria-label="Rename preset"
                 disabled=move || !has_selection.get()
@@ -54,7 +54,7 @@ pub(super) fn PresetActionButtons(
             // Delete
             <button
                 class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                       hover:text-error-red hover:bg-error-red/10"
+                       hover:text-status-error hover:bg-status-error/10"
                 title="Delete preset"
                 aria-label="Delete preset"
                 disabled=move || !has_selection.get()
@@ -122,7 +122,7 @@ fn InlineNameButtons(
     view! {
         <button
             class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                   hover:text-success-green hover:bg-success-green/10"
+                   hover:text-status-success hover:bg-status-success/10"
             title="Confirm"
             disabled=move || value.get().trim().is_empty()
             on:click=move |_| {
@@ -136,7 +136,7 @@ fn InlineNameButtons(
         </button>
         <button
             class="p-1.5 rounded-lg text-fg-tertiary/40 toolbar-action
-                   hover:text-error-red hover:bg-error-red/10"
+                   hover:text-status-error hover:bg-status-error/10"
             title="Cancel"
             on:click=move |_| on_cancel.run(())
         >

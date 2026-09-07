@@ -13,15 +13,15 @@ T = TypeVar("T", bound="OutputComponent")
 
 @_attrs_define
 class OutputComponent:
-    """Attachment metadata carried by imported layout zones.
+    """Attachment metadata carried by imported layout outputs.
 
     Attributes:
         slot_id (str): Source slot ID on the physical controller.
         template_id (str): Bound attachment template identifier.
         instance (int | Unset): Zero-based attachment instance index within the binding.
-        led_count (int | None | Unset): Physical LED count reserved for this imported attachment zone.
+        led_count (int | None | Unset): Physical LED count reserved for this imported attachment.
         led_mapping (list[int] | None | Unset): Optional spatial-order -> physical-order LED remapping.
-        led_start (int | None | Unset): Inclusive physical LED start index for this imported attachment zone.
+        led_start (int | None | Unset): Inclusive physical LED start index for this imported attachment.
     """
 
     slot_id: str

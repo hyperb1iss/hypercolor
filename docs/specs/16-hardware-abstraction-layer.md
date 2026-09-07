@@ -2,10 +2,24 @@
 
 > Protocol encoding separated from transport I/O, a static device database keyed by VID/PID, and a `UsbBackend` adapter that bridges raw USB devices up to the engine's `DeviceBackend` trait.
 
-**Status:** Draft
+**Status:** Implemented, with a stale trait definition. Do not copy section 3's
+`Protocol` trait; it no longer matches the HAL.
 **Crate:** `hypercolor-hal`
 **Author:** Nova
 **Date:** 2026-03-04
+
+> **Note (2026-08-25):** "Draft" badly understated this. The HAL ships nine driver
+> families (asus, corsair, dygma, lianli, nollie, prismrgb, push2, qmk, razer). Section
+> 3's trait, though, will not compile against the tree. `fn zones()` returns
+> `Vec<SegmentInfo>`, not `Vec<ProtocolZone>`, and `ProtocolZone` was deleted outright,
+> so it has no definition anywhere. `fn name` returns `&'static str`. The trait also
+> gained methods this spec never mentions, including `encode_frame_into`,
+> `encode_brightness`, `keepalive`, `encode_display_frame`, `connection_diagnostics`,
+> `response_timeout`, and the scroll-mode family. Read
+> `crates/hypercolor-hal/src/protocol.rs` for the real trait, and the
+> `hal-driver-development` skill for the implementation patterns.
+>
+> References to "spec 04" further down point at a deleted file. Spec 20 supersedes it.
 
 ---
 
@@ -1291,6 +1305,7 @@ For each supported device family, maintain a set of captured USB packets (from v
 - Spec 19: Lian Li Uni Hub Driver — `LianLiProtocol`, `LianLiHidTransport`, `LianLiCtrlTransport`
 - `crates/hypercolor-types/src/device.rs` — `DeviceFamily`, `DeviceIdentifier`, `DeviceInfo`
 - `crates/hypercolor-core/src/device/traits.rs` — `DeviceBackend`, `DevicePlugin`, `BackendInfo`
+  (`DevicePlugin` is deleted; see Spec 76 §7.4)
 - `crates/hypercolor-core/src/device/discovery.rs` — `TransportScanner`, `DiscoveryOrchestrator`
 - `crates/hypercolor-core/src/device/lifecycle.rs` — `DeviceLifecycleManager`, `LifecycleAction`
 - `crates/hypercolor-core/src/device/manager.rs` — `BackendManager`, `OutputQueue`

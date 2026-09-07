@@ -22,8 +22,8 @@ impl BackendManager {
         let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-        let output_cadence = io.connect_with_refresh(device_id).await?;
-        let frame_sink = io.frame_sink(device_id).await;
+        let output_cadence = io.connect(device_id).await?;
+        let frame_sink = io.frame_sink(device_id);
         self.set_cached_output_cadence(backend_id, device_id, output_cadence);
         self.set_device_frame_sink(backend_id, device_id, frame_sink);
 
@@ -51,7 +51,7 @@ impl BackendManager {
         let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-        io.connected_device_info(device_id).await
+        Ok(io.connected_device_info(device_id).await?)
     }
 
     /// Disconnect a physical device and unmap its layout device identifier.
@@ -71,6 +71,6 @@ impl BackendManager {
 
         let disconnect_result = io.disconnect(device_id).await;
         let _ = self.remove_device_mappings_for_physical(backend_id, device_id);
-        disconnect_result
+        Ok(disconnect_result?)
     }
 }

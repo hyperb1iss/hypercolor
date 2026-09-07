@@ -1,4 +1,4 @@
-import { canvas, clamp, color, combo, num, scaleContext, toggle } from 'hypercolor'
+import { canvas, clamp, color, combo, num, hexToRgb as parseHexColor, scaleContext, toggle } from 'hypercolor'
 
 const RAIN_DESIGN_BASIS = { height: 200, width: 320 } as const
 
@@ -163,25 +163,7 @@ function canvasScale(width: number, height: number): number {
 }
 
 function hexToRgb(hex: string): Rgb {
-    const normalized = hex.trim().replace('#', '')
-    const expanded =
-        normalized.length === 3
-            ? normalized
-                  .split('')
-                  .map((char) => `${char}${char}`)
-                  .join('')
-            : normalized
-
-    if (!/^[0-9a-fA-F]{6}$/.test(expanded)) {
-        return WHITE
-    }
-
-    const value = Number.parseInt(expanded, 16)
-    return {
-        b: value & 255,
-        g: (value >> 8) & 255,
-        r: (value >> 16) & 255,
-    }
+    return parseHexColor(hex.trim(), WHITE)
 }
 
 function rgba(color: Rgb, alpha: number): string {

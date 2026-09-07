@@ -10,7 +10,24 @@
 > control), adds the missing geometry knowledge layer (rig templates), and
 > encodes the setup workflow (calibration loop, MCP prompt, agent skill).
 
-**Status:** Draft
+**Status:** Draft, built on a false baseline. Regenerate section 2.1 and the tool
+budget before planning any work from this document.
+**API status:** Historical scene and MCP snapshot. The canonical resource model
+in [Spec 78](78-api-resource-model.md) supersedes its endpoint examples.
+
+> **Note (2026-08-25):** the "current MCP surface" table in section 2.1 is introduced as
+> what the dispatch table "routes exactly", and it is wrong. `stop_effect` and
+> `set_profile` have no hits anywhere in `crates/hypercolor-daemon/src/mcp/`;
+> `set_profile` died when profiles folded into scenes, and `create_scene` takes no
+> `profile_id`. The shipped surface is exactly 17 tools, 5 resources, and 3 prompt
+> templates: `get_status`, `set_output_power`, `get_audio_state`, `get_layout`,
+> `diagnose`, `get_sensor_data`, `activate_scene`, `list_scenes`, `create_scene`,
+> `clear_zone`, `adjust_controls`, `set_effect`, `list_effects`, `set_color`,
+> `set_display_face`, `get_devices`, `set_brightness`. The plan for "eighteen new tools
+> bringing the total to 34" is therefore counted against a baseline that never existed,
+> and the API-status line above does not cover it, because Spec 78 governs REST resources
+> and does not settle the MCP tool count. The spec's own new vocabulary, `RigTemplate` and
+> `RigMount`, is genuinely unbuilt, which is fine for a draft.
 **Author:** Nova
 **Date:** 2026-06-12
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
@@ -280,7 +297,7 @@ remains for automation scenes and is documented as such.
 | 14 | `configure_scene`          | scenes      | W  | `POST/PATCH /scenes/{id}` + unassigned-behavior                    |
 | 15 | `configure_zones`          | scenes      | W  | zone CRUD + device assignment + zone layout                        |
 | 16 | `configure_layers`         | scenes      | W  | layer CRUD + order + controls                                      |
-| 17 | `set_effect_controls`      | effects     | W  | `PATCH /effects/current/controls`                                  |
+| 17 | `set_effect_controls`      | effects     | W  | `PATCH /effects/active/controls`                                  |
 | 18 | `save_profile`             | library     | W  | `POST /profiles`                                                   |
 
 Plus two smaller parity items folded into existing tools rather than
@@ -843,10 +860,10 @@ Per workspace convention: tests in `tests/`, named `{feature}_tests.rs`.
 1. **Mount occupancy.** Should `place_outputs` track which mounts are
    filled and warn on double-booking? Leaning yes-as-warning (it's
    legitimate to stack a strip behind a fan).
-2. **Desk/room scale and `spaces`.** `SpatialLayout.spaces` +
-   `RoomDimensions` exist but are unused. Room-kind rig templates can
-   target a flat canvas now and adopt spaces when that subsystem wakes
-   up — confirm we're happy deferring.
+2. **Desk/room scale and `spaces`.** *Resolved by deletion (2026-08-22):*
+   `SpatialLayout.spaces` and `RoomDimensions` were unused and are gone.
+   Room-kind rig templates target a flat canvas. Reviving a multi-scale
+   model means designing it fresh, not un-deferring this.
 3. **Template versioning across sync.** When the community template registry lands,
    id collisions between local user templates and community templates
    need a precedence rule. Proposal: local always wins, registry pulls

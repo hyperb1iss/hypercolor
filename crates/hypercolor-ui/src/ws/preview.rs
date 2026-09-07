@@ -5,8 +5,9 @@ use leptos::prelude::*;
 use super::messages::CanvasFrame;
 use hypercolor_leptos_ext::canvas::supports_bitmap_worker_canvas;
 use hypercolor_leptos_ext::prelude::current_page_location;
-use hypercolor_leptos_ext::ws::transport::send_websocket_json;
 use hypercolor_types::spatial::SpatialLayout;
+
+use super::transport::{WebSocketConnection, send_json};
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
 pub(super) const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
@@ -92,7 +93,7 @@ fn web_viewport_preview_request_dimensions() -> (u32, u32) {
 }
 
 pub(super) fn request_preview_subscription(
-    ws: &web_sys::WebSocket,
+    ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     set_preview_target_fps: WriteSignal<u32>,
     engine_target_fps: u32,
@@ -113,21 +114,21 @@ pub(super) fn request_preview_subscription(
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
-        "channels": ["canvas"],
-        "config": {
-            "canvas": {
+        "topics": [{
+            "topic": "canvas",
+            "config": {
                 "fps": request.fps,
                 "format": request.format,
                 "width": request.width,
                 "height": request.height
             }
-        }
+        }]
     });
-    let _ = send_websocket_json(ws, &subscribe_msg);
+    let _ = send_json(ws, &subscribe_msg);
 }
 
 pub(super) fn request_screen_preview_subscription(
-    ws: &web_sys::WebSocket,
+    ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     engine_target_fps: u32,
     page_visible: bool,
@@ -144,21 +145,21 @@ pub(super) fn request_screen_preview_subscription(
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
-        "channels": ["screen_canvas"],
-        "config": {
-            "screen_canvas": {
+        "topics": [{
+            "topic": "screen_canvas",
+            "config": {
                 "fps": request.fps,
                 "format": request.format,
                 "width": request.width,
                 "height": request.height
             }
-        }
+        }]
     });
-    let _ = send_websocket_json(ws, &subscribe_msg);
+    let _ = send_json(ws, &subscribe_msg);
 }
 
 pub(super) fn request_web_viewport_preview_subscription(
-    ws: &web_sys::WebSocket,
+    ws: &dyn WebSocketConnection,
     requested_preview_request: StoredValue<Option<PreviewSubscriptionRequest>>,
     engine_target_fps: u32,
     page_visible: bool,
@@ -176,17 +177,17 @@ pub(super) fn request_web_viewport_preview_subscription(
 
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
-        "channels": ["web_viewport_canvas"],
-        "config": {
-            "web_viewport_canvas": {
+        "topics": [{
+            "topic": "web_viewport_canvas",
+            "config": {
                 "fps": request.fps,
                 "format": request.format,
                 "width": request.width,
                 "height": request.height
             }
-        }
+        }]
     });
-    let _ = send_websocket_json(ws, &subscribe_msg);
+    let _ = send_json(ws, &subscribe_msg);
 }
 
 pub(super) fn clear_preview_subscription(
@@ -217,112 +218,97 @@ pub(super) fn clear_web_viewport_preview_subscription(
     set_web_viewport_canvas_frame.set(None);
 }
 
-pub(super) fn send_canvas_unsubscribe(ws: &web_sys::WebSocket) {
+pub(super) fn send_canvas_unsubscribe(ws: &dyn WebSocketConnection) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
-        "channels": ["canvas"]
+        "topics": [{ "topic": "canvas" }]
     });
-    let _ = send_websocket_json(ws, &unsubscribe_msg);
+    let _ = send_json(ws, &unsubscribe_msg);
 }
 
-pub(super) fn send_screen_zones_subscribe(ws: &web_sys::WebSocket) {
+pub(super) fn send_screen_zones_subscribe(ws: &dyn WebSocketConnection) {
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
-        "channels": ["screen_zones"]
+        "topics": [{ "topic": "screen_zones" }]
     });
-    let _ = send_websocket_json(ws, &subscribe_msg);
+    let _ = send_json(ws, &subscribe_msg);
 }
 
-pub(super) fn send_screen_zones_unsubscribe(ws: &web_sys::WebSocket) {
+pub(super) fn send_screen_zones_unsubscribe(ws: &dyn WebSocketConnection) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
-        "channels": ["screen_zones"]
+        "topics": [{ "topic": "screen_zones" }]
     });
-    let _ = send_websocket_json(ws, &unsubscribe_msg);
+    let _ = send_json(ws, &unsubscribe_msg);
 }
 
-pub(super) fn send_screen_canvas_unsubscribe(ws: &web_sys::WebSocket) {
+pub(super) fn send_screen_canvas_unsubscribe(ws: &dyn WebSocketConnection) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
-        "channels": ["screen_canvas"]
+        "topics": [{ "topic": "screen_canvas" }]
     });
-    let _ = send_websocket_json(ws, &unsubscribe_msg);
+    let _ = send_json(ws, &unsubscribe_msg);
 }
 
-pub(super) fn send_web_viewport_canvas_unsubscribe(ws: &web_sys::WebSocket) {
+pub(super) fn send_web_viewport_canvas_unsubscribe(ws: &dyn WebSocketConnection) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
-        "channels": ["web_viewport_canvas"]
+        "topics": [{ "topic": "web_viewport_canvas" }]
     });
-    let _ = send_websocket_json(ws, &unsubscribe_msg);
+    let _ = send_json(ws, &unsubscribe_msg);
 }
 
-/// Subscribe the `display_preview` channel to a specific device at the
-/// requested fps. Sending a fresh subscribe for a different `device_id`
-/// retargets the server-side relay without an explicit unsubscribe, so
-/// the UI can switch displays with a single message.
-pub(super) fn send_display_preview_subscribe(ws: &web_sys::WebSocket, device_id: &str, fps: u32) {
+/// Follow one device's display output. The device is the subscription
+/// key, so following a second display is a second subscription rather
+/// than a retarget, and every frame names the device it came from.
+pub(super) fn send_display_preview_subscribe(
+    ws: &dyn WebSocketConnection,
+    device_id: &str,
+    fps: u32,
+) {
     let subscribe_msg = serde_json::json!({
         "type": "subscribe",
-        "channels": ["display_preview"],
-        "config": {
-            "display_preview": {
-                "device_id": device_id,
-                "fps": fps
-            }
-        }
+        "topics": [{
+            "topic": "display_preview",
+            "key": device_id,
+            "config": { "fps": fps }
+        }]
     });
-    let _ = send_websocket_json(ws, &subscribe_msg);
+    let _ = send_json(ws, &subscribe_msg);
 }
 
-/// Unsubscribe from the `display_preview` channel and clear the target
-/// device on the server. The extra `device_id: null` tells the relay to
-/// release its watch receiver immediately rather than waiting for the
-/// unsubscribe to propagate.
-pub(super) fn send_display_preview_unsubscribe(ws: &web_sys::WebSocket) {
-    let clear_msg = serde_json::json!({
-        "type": "subscribe",
-        "channels": ["display_preview"],
-        "config": {
-            "display_preview": {
-                "device_id": null
-            }
-        }
-    });
-    let _ = send_websocket_json(ws, &clear_msg);
+/// Stop following one device's display output.
+pub(super) fn send_display_preview_unsubscribe(ws: &dyn WebSocketConnection, device_id: &str) {
     let unsubscribe_msg = serde_json::json!({
         "type": "unsubscribe",
-        "channels": ["display_preview"]
+        "topics": [{ "topic": "display_preview", "key": device_id }]
     });
-    let _ = send_websocket_json(ws, &unsubscribe_msg);
+    let _ = send_json(ws, &unsubscribe_msg);
 }
 
+/// Stage a drag preview on the live tree.
+///
+/// Zone-keyed only: previews apply to what is rendering, so the daemon
+/// owns which scene that is (Spec 78 §1.5).
 pub(super) fn send_zone_layout_preview(
-    ws: &web_sys::WebSocket,
-    scene_id: &str,
+    ws: &dyn WebSocketConnection,
     zone_id: &str,
     layout: &SpatialLayout,
 ) {
     let msg = serde_json::json!({
         "type": "zone_layout_preview",
-        "scene_id": scene_id,
         "zone_id": zone_id,
         "layout": layout
     });
-    let _ = send_websocket_json(ws, &msg);
+    let _ = send_json(ws, &msg);
 }
 
-pub(super) fn send_zone_layout_preview_clear(
-    ws: &web_sys::WebSocket,
-    scene_id: &str,
-    zone_id: &str,
-) {
+pub(super) fn send_zone_layout_preview_clear(ws: &dyn WebSocketConnection, zone_id: &str) {
     let msg = serde_json::json!({
         "type": "zone_layout_preview_clear",
-        "scene_id": scene_id,
         "zone_id": zone_id
     });
-    let _ = send_websocket_json(ws, &msg);
+    let _ = send_json(ws, &msg);
 }
 
 fn preview_hostname() -> String {

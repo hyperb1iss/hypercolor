@@ -5,7 +5,7 @@ weight = 10
 template = "page.html"
 +++
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 You ran `hypercolor devices list` (or checked the web UI) and the device you just
 plugged in is nowhere. Here are the five reasons that happen, in order of how often
@@ -57,18 +57,18 @@ ls -l /etc/udev/rules.d/99-hypercolor.rules
 ls -l /dev/hidraw*
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The rules grant access via `TAG+="uaccess"`, so systemd-logind gives the physically
 logged-in user access to the device nodes. A `GROUP="users" MODE="0660"` fallback is
 also set for cases where the logind ACL replay misses an already-plugged device. Both
 are in the same rules file.
-{% end %}
+{% </callout> %}
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `just udev-install` re-triggers events for devices already plugged in, but on some
 systems the logind `uaccess` ACL is not replayed for existing nodes. If re-triggering
 does not help, re-plug the device or reboot.
-{% end %}
+{% </callout> %}
 
 ## 2. You have not logged out and back in
 
@@ -109,12 +109,10 @@ Then re-plug the device.
 
 If the device node is accessible but Hypercolor still cannot connect, another
 application has likely claimed the USB interface first. When this happens the HAL
-transport receives a permission-denied error from the OS and reports it at `debug`
-level as:
-
-```
-permission denied opening hidraw node ...
-```
+transport receives a permission-denied error from the OS and surfaces it as a
+`TransportError::PermissionDenied` carrying the OS detail string. Running the daemon at
+`debug` level also shows the node-selection trace, which lists the candidate nodes the
+transport considered and why each was rejected.
 
 Common offenders:
 
@@ -144,12 +142,12 @@ pkill openrgb
 hypercolor devices discover --target usb
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Hypercolor has its own built-in Razer driver and communicates directly with Razer
 hardware over USB HID. Do **not** install openrazer to make Razer devices work with
 Hypercolor; it is unnecessary and conflicts. If openrazer is running, the two
 daemons fight over the same HID interface and neither behaves correctly.
-{% end %}
+{% </callout> %}
 
 ## 5. Passive USB hub hiding the device
 
@@ -187,9 +185,15 @@ lsof /dev/hidraw*
 # 5. Full daemon health check (devices, render, config)
 hypercolor diagnose
 
-# 6. Discovery with debug logging
-RUST_LOG=hypercolor_hal=debug hypercolor devices discover --target usb
+# 6. Discovery with debug logging: start the daemon with the HAL target enabled
+#    in one terminal, then trigger discovery from another
+RUST_LOG=hypercolor_hal=debug just daemon
+hypercolor devices discover --target usb
 ```
+
+The `RUST_LOG` filter has to go on the daemon, not the CLI. The HAL scan runs inside the
+daemon process; `hypercolor-cli` does not link the HAL at all, so setting the filter on
+the CLI command produces no extra output.
 
 The daemon exposes the same health checks via REST while it is running:
 

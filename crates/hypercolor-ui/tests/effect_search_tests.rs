@@ -1,3 +1,5 @@
+use hypercolor_types::api::effects::EffectSourceKind;
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
 use hypercolor_ui::effect_search::IndexedEffect;
 
@@ -7,8 +9,8 @@ fn effect(name: &str) -> EffectSummary {
         name: name.to_owned(),
         description: "Cinematic ambient wash".to_owned(),
         author: "Nova".to_owned(),
-        category: "ambient".to_owned(),
-        source: "native".to_owned(),
+        category: EffectCategory::Ambient,
+        source: EffectSourceKind::Native,
         runnable: true,
         tags: vec!["cinematic".to_owned()],
         version: "1.0.0".to_owned(),
@@ -16,6 +18,8 @@ fn effect(name: &str) -> EffectSummary {
         input_reactive: false,
         capabilities: EffectCapabilitySet::default(),
         cover_image_url: None,
+        controls: None,
+        presets: None,
     }
 }
 

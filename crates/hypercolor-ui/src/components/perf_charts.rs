@@ -15,7 +15,7 @@ pub fn Sparkline(
     #[prop(into)]
     values: Signal<Vec<f64>>,
     /// Stroke color (CSS color expression).
-    #[prop(default = "var(--color-neon-cyan)")]
+    #[prop(default = "var(--color-cyan)")]
     stroke: &'static str,
     /// Whether to render a soft area fill under the line.
     #[prop(default = true)]
@@ -141,7 +141,7 @@ pub fn RadialGauge(
     /// Secondary label below primary (e.g. "fps" or "/ 60").
     #[prop(into)]
     secondary: Signal<String>,
-    #[prop(default = "var(--color-neon-cyan)")] color: &'static str,
+    #[prop(default = "var(--color-cyan)")] color: &'static str,
     /// Optional small caption above the gauge (upper-case track label).
     #[prop(default = "")]
     caption: &'static str,
@@ -590,7 +590,7 @@ pub fn PhaseWaterfall(
                             let budget_y_pct = scale_info.with(|s| s.budget_y_pct);
                             format!(
                                 "top: {budget_y_pct:.2}%; \
-                                 background: repeating-linear-gradient(to right, var(--color-electric-yellow) 0 4px, transparent 4px 8px); \
+                                 background: repeating-linear-gradient(to right, var(--color-status-warning) 0 4px, transparent 4px 8px); \
                                  opacity: 0.55"
                             )
                         }
@@ -636,7 +636,7 @@ pub fn PhaseWaterfall(
                     <span class="text-fg-tertiary/50">
                         {move || scale_info.with(|s| format!("{:.2} ms", s.scale))}
                     </span>
-                    <span class="text-electric-yellow/60">
+                    <span class="text-status-warning/60">
                         {move || scale_info.with(|s| if s.budget_in_range {
                             format!("budget {:.1}ms", s.budget)
                         } else {
@@ -723,7 +723,7 @@ fn DistributionMarker(
                         let budget_pct = scale_info.with(|s| s.budget_pct);
                         format!(
                             "left: {budget_pct:.2}%; \
-                             background: repeating-linear-gradient(to bottom, var(--color-electric-yellow) 0 2px, transparent 2px 5px); \
+                             background: repeating-linear-gradient(to bottom, var(--color-status-warning) 0 2px, transparent 2px 5px); \
                              opacity: 0.8"
                         )
                     }
@@ -786,9 +786,9 @@ pub fn DistributionBar(
 
     view! {
         <div class="space-y-2">
-            <DistributionMarker label="avg" value=avg color="var(--color-success-green)" scale_info=scale_info />
-            <DistributionMarker label="p95" value=p95 color="var(--color-neon-cyan)" scale_info=scale_info />
-            <DistributionMarker label="p99" value=p99 color="var(--color-electric-purple)" scale_info=scale_info />
+            <DistributionMarker label="avg" value=avg color="var(--color-status-success)" scale_info=scale_info />
+            <DistributionMarker label="p95" value=p95 color="var(--color-cyan)" scale_info=scale_info />
+            <DistributionMarker label="p99" value=p99 color="var(--color-accent)" scale_info=scale_info />
             <DistributionMarker label="max" value=max color="var(--color-coral)" scale_info=scale_info />
             <div class="flex items-center justify-between text-[9px] font-mono tabular-nums px-0.5 pt-0.5">
                 <span class="text-fg-tertiary/60">"0 ms"</span>
@@ -796,7 +796,7 @@ pub fn DistributionBar(
                     scale_info.with(|s| if s.budget_in_range {
                         "text-fg-tertiary/60"
                     } else {
-                        "text-electric-yellow/70"
+                        "text-status-warning/70"
                     })
                 }>
                     {move || scale_info.with(|s| if s.budget_in_range {
@@ -820,7 +820,7 @@ pub fn ProgressRing(
     #[prop(into)] max: Signal<f64>,
     #[prop(into)] label: Signal<String>,
     #[prop(into)] detail: Signal<String>,
-    #[prop(default = "var(--color-electric-purple)")] color: &'static str,
+    #[prop(default = "var(--color-accent)")] color: &'static str,
     /// Accessible label for screen readers. Falls back to "Progress ring" if empty.
     #[prop(default = "")]
     aria_label: &'static str,
@@ -903,7 +903,7 @@ pub fn HitRateBar(
     #[prop(into)] label: Signal<String>,
     #[prop(into)] value: Signal<u32>,
     #[prop(into)] total: Signal<u32>,
-    #[prop(default = "var(--color-success-green)")] color: &'static str,
+    #[prop(default = "var(--color-status-success)")] color: &'static str,
 ) -> impl IntoView {
     let pct = Memo::new(move |_| {
         let t = f64::from(total.get());

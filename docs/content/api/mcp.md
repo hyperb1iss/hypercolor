@@ -1,27 +1,25 @@
 +++
 title = "MCP server"
-description = "Hypercolor's Model Context Protocol server: 16 tools, 5 resources, 3 prompts over Streamable HTTP. Canonical docs live in Agents."
+description = "Hypercolor's Model Context Protocol server: 17 tools, 5 resources, 3 prompts over Streamable HTTP. Canonical docs live in Agents."
 weight = 80
 +++
-
-# MCP server
 
 Hypercolor ships a [Model Context Protocol](https://modelcontextprotocol.io/)
 server so AI agents can drive your lighting through structured tool calls instead
 of raw REST. It runs inside the daemon and speaks the MCP **Streamable HTTP**
 transport, mounted at `/mcp` on the same `:9420` port as everything else.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 This page is the compact API-reference entry point for the MCP surface. The
 full, worked documentation (client setup, every tool schema, the resource
 shapes, and the prompt templates) lives in the **Agents** section. Start there:
 
 - [Agents & MCP overview](@/agents/_index.md): MCP vs CLI and the three primitives
 - [MCP setup](@/agents/mcp-setup.md): Claude Code / Desktop / Cursor / Zed config
-- [Tools reference](@/agents/tools-reference.md): all 16 tools, full JSON schema
+- [Tools reference](@/agents/tools-reference.md): all 17 tools, full JSON schema
 - [Resources reference](@/agents/resources-reference.md): the 5 `hypercolor://` resources
 - [Prompt templates](@/agents/prompt-templates.md): the 3 shipped prompts
-{% end %}
+  {% </callout> %}
 
 ## The transport at a glance
 
@@ -29,25 +27,25 @@ The server is built on `rmcp`'s `StreamableHttpService`. One endpoint handles th
 whole protocol (tool listing and calls, resource reads, prompt fetches) over
 HTTP with optional Server-Sent Events for streaming.
 
-| Property | Value |
-| --- | --- |
-| Transport | Streamable HTTP (`streamable-http`) |
-| Default URL | `http://localhost:9420/mcp` |
-| Tools | 16 |
-| Resources | 5 (`state`, `devices`, `effects`, `audio`, `profiles`) |
-| Prompts | 3 (`mood_lighting`, `troubleshoot`, `setup_automation`) |
-| Default state | **disabled** |
+| Property      | Value                                                   |
+| ------------- | ------------------------------------------------------- |
+| Transport     | Streamable HTTP (`streamable-http`)                     |
+| Default URL   | `http://localhost:9420/mcp`                             |
+| Tools         | 17                                                      |
+| Resources     | 5 (`state`, `devices`, `effects`, `audio`, `scenes`)    |
+| Prompts       | 3 (`mood_lighting`, `troubleshoot`, `setup_automation`) |
+| Default state | **disabled**                                            |
 
 The server advertises tools, resources, and prompts in its capabilities and ships
 `instructions` that tell agents to read `hypercolor://state` or call `get_status`
 before making changes.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **MCP is off by default.** Until you set `enabled = true` in the `[mcp]` config
 block, the daemon never mounts the `/mcp` route and the endpoint returns 404. The
 [MCP setup](@/agents/mcp-setup.md) page leads with enabling it, then walks the
 per-client config. Enable it there first.
-{% end %}
+{% </callout> %}
 
 ## Enable the server
 
@@ -90,20 +88,20 @@ them live on the [MCP setup](@/agents/mcp-setup.md) page.
 
 The three MCP primitives map cleanly onto Hypercolor's engine.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
-  A[MCP client] -->|tools| T[16 tools: set_effect, get_status, ...]
-  A -->|resources| R[5 resources: hypercolor://state, devices, ...]
-  A -->|prompts| P[3 prompts: mood_lighting, troubleshoot, setup_automation]
-  T --> E[Daemon engine + event bus]
-  R --> E
-{% end %}
+A[MCP client] -->|tools| T[17 tools: set_effect, get_status, ...]
+A -->|resources| R[5 resources: hypercolor://state, devices, ...]
+A -->|prompts| P[3 prompts: mood_lighting, troubleshoot, setup_automation]
+T --> E[Daemon engine + event bus]
+R --> E
+{% </mermaid> %}
 
 **Tools** are actions and reads. Eight are listed as `read_only` (`list_effects`,
 `get_devices`, `get_status`, `list_scenes`, `get_audio_state`, `get_sensor_data`,
 `get_layout`, `diagnose`), and the mutating ones carry `idempotent` annotations so
-agents can reason about retries. `create_scene` is the one tool flagged
-non-idempotent, because each call writes a new scene from current state.
+agents can reason about retries. `set_effect`, `set_color`, `create_scene`, and
+`set_display_face` are non-idempotent because repeated calls replace or add state.
 
 **Resources** are live read-only snapshots the agent can pull for context. The
 `hypercolor://audio` resource updates at roughly 10 Hz when audio is active (not
@@ -111,50 +109,53 @@ per render frame) so it is a summary surface, not a spectrum stream.
 
 **Prompts** are guided workflows: `mood_lighting` (vibe to effect), `troubleshoot`
 (diagnostics-driven fixes, the only prompt with a required argument: `issue`), and
-`setup_automation` (scene and schedule setup).
+`setup_automation` (scenes for external automation).
 
 ### Tool catalog
 
-{% api_endpoint(method="POST", path="/mcp") %}
+{% <api_endpoint method="POST" path="/mcp"> %}
 Tool calls and all other MCP traffic flow through this single endpoint. The table
 below is a map; the [tools reference](@/agents/tools-reference.md) carries the full
 input schemas, defaults, enums, and a worked call plus response for each tool.
-{% end %}
+{% </api_endpoint> %}
 
-| Tool | Read-only | Idempotent |
-| --- | --- | --- |
-| `set_effect` | No | Yes |
-| `list_effects` | Yes | Yes |
-| `stop_effect` | No | Yes |
-| `set_color` | No | Yes |
-| `get_devices` | Yes | Yes |
-| `set_brightness` | No | Yes |
-| `get_status` | Yes | Yes |
-| `activate_scene` | No | Yes |
-| `list_scenes` | Yes | Yes |
-| `create_scene` | No | No |
-| `get_audio_state` | Yes | Yes |
-| `get_sensor_data` | Yes | Yes |
-| `set_display_face` | No | Yes |
-| `set_profile` | No | Yes |
-| `get_layout` | Yes | Yes |
-| `diagnose` | Yes | Yes |
+| Tool               | Read-only | Destructive | Idempotent |
+| ------------------ | --------- | ----------- | ---------- |
+| `set_effect`       | No        | Yes         | No         |
+| `list_effects`     | Yes       | No          | Yes        |
+| `set_color`        | No        | Yes         | No         |
+| `set_output_power` | No        | No          | Yes        |
+| `clear_zone`       | No        | Yes         | Yes        |
+| `adjust_controls`  | No        | No          | Yes        |
+| `get_devices`      | Yes       | No          | Yes        |
+| `set_brightness`   | No        | No          | Yes        |
+| `get_status`       | Yes       | No          | Yes        |
+| `activate_scene`   | No        | Yes         | Yes        |
+| `list_scenes`      | Yes       | No          | Yes        |
+| `create_scene`     | No        | No          | No         |
+| `get_audio_state`  | Yes       | No          | Yes        |
+| `get_sensor_data`  | Yes       | No          | Yes        |
+| `set_display_face` | No        | Yes         | No         |
+| `get_layout`       | Yes       | No          | Yes        |
+| `diagnose`         | Yes       | No          | Yes        |
 
-`set_effect` and `set_color` accept fuzzy input: an exact effect name, a partial
-match, or a natural-language description ("calm blue waves", "warm sunset orange").
-The daemon resolves it and returns the match with a confidence score, so an agent
-does not have to know the catalog by heart. Scenes are whole-rig configs and zones
-are flexible canvas partitions; the tools follow that vocabulary exactly.
+`set_effect` resolves an effect by exact ID, exact case-insensitive name, or a
+unique case-insensitive name substring. Scene, zone, layer, device, and display
+face selectors follow the same deterministic policy. No match or an ambiguous
+substring returns structured candidate details instead of choosing silently.
+Color text keeps its separate CSS and natural-language resolver. Scenes are
+whole-rig configs and zones are flexible canvas partitions; the tools follow
+that vocabulary exactly.
 
 ### Resources
 
-| URI | Updates |
-| --- | --- |
-| `hypercolor://state` | on every state change |
-| `hypercolor://devices` | on device connect/disconnect |
+| URI                    | Updates                           |
+| ---------------------- | --------------------------------- |
+| `hypercolor://state`   | on every state change             |
+| `hypercolor://devices` | on device connect/disconnect      |
 | `hypercolor://effects` | when effects are added or removed |
-| `hypercolor://profiles` | when profiles change |
-| `hypercolor://audio` | ~10 Hz while audio is active |
+| `hypercolor://scenes`  | when scenes change                |
+| `hypercolor://audio`   | ~10 Hz while audio is active      |
 
 ## CLI as the scripting alternative
 

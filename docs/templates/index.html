@@ -3,6 +3,10 @@
 {% block title %}{{ config.title }}: {{ config.description }}{% endblock title %}
 
 {% block content %}
+{# The drawer is the only mobile navigation surface, and it is fixed-position
+   there, so the home page carries it without a layout column. #}
+{% include "partials/sidebar.html" %}
+
 <main id="main-content">
   <section class="hero hero--home">
     <!-- Brand stage: the gradient paints immediately; the nebula shader
@@ -52,7 +56,7 @@
       <a class="feature-card feature-card--door" href="{{ config.base_url | safe }}/agents/">
         <div class="feature-card__icon">&#129302;</div>
         <h3 class="feature-card__title">Agents &amp; MCP</h3>
-        <p class="feature-card__desc">Drive your lighting from AI agents over the MCP server: 16 tools, 5 resources.</p>
+        <p class="feature-card__desc">Drive your lighting from AI agents over the MCP server: 17 tools, 5 resources.</p>
         <span class="feature-card__cta">Automate &rarr;</span>
       </a>
     </div>
@@ -76,6 +80,12 @@
       </a>
     </div>
   </section>
+
+  {% if section.content %}
+    <article class="doc">
+      {{ section.content | safe }}
+    </article>
+  {% endif %}
 </main>
 {% endblock content %}
 

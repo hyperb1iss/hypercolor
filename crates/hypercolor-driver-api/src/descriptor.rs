@@ -1,6 +1,6 @@
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet, DriverModuleDescriptor,
-    DriverTransportKind,
+    DriverTransportDescriptor, DriverTransportKind,
 };
 
 /// Current driver API schema version. Bump this on any breaking change to
@@ -80,7 +80,7 @@ impl DriverDescriptor {
             display_name: self.display_name.to_owned(),
             vendor_name: None,
             module_kind: self.transport.module_kind(),
-            transports: vec![self.transport.clone()],
+            transports: vec![DriverTransportDescriptor::available(self.transport.clone())],
             capabilities: DriverCapabilitySet {
                 config: false,
                 discovery: self.supports_discovery,

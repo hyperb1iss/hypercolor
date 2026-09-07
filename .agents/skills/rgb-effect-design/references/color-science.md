@@ -144,9 +144,14 @@ Green appears ~6x brighter than blue at the same PWM. This asymmetry is the root
 1. Convert start/end colors to Oklab
 2. Linearly interpolate L, a, b components
 3. Convert result to linear RGB
-4. Apply gamma correction
+4. Encode with the output transfer curve  <- the engine's job in Hypercolor
 5. Send to LED hardware
 ```
+
+Step 4 belongs to whoever owns the output stage. Inside a Hypercolor effect
+that is the daemon, not you: write sRGB pixels to the canvas and stop. Step 4
+is yours only when you are driving LED PWM directly. See Gamma Correction
+below.
 
 Performance: Optimized Oklab interpolation (LMS shortcut) adds only 1.3-1.4x overhead vs RGB — negligible at LED refresh rates.
 
@@ -154,15 +159,15 @@ Performance: Optimized Oklab interpolation (LMS shortcut) adds only 1.3-1.4x ove
 
 ## Gamma Correction
 
-### Why Mandatory
+### Why It Matters, and Who Applies It
 
-LEDs respond linearly to PWM. Human eyes perceive brightness non-linearly (~power curve). Without gamma:
+LEDs respond linearly to PWM. Human eyes perceive brightness non-linearly (~power curve). Without a transfer curve somewhere in the chain:
 
 - Fades jump to bright immediately, then crawl
 - Dark values are indistinguishable
 - Midtones appear washed out
 
-**This is the single highest-impact quality improvement.**
+**Getting the transfer right is the single highest-impact quality improvement in an LED pipeline, and applying it twice is one of the fastest ways to ruin one.** Exactly one stage owns it. In Hypercolor that stage is the daemon's output path, so the rest of this section describes a curve your effect must not apply itself. It is here because you will meet it when reading other engines, porting effects, or driving PWM directly.
 
 ### The Math
 
@@ -178,16 +183,18 @@ corrected = 255 * (input / 255) ^ gamma
 
 ### Key LUT Values (Gamma 2.2)
 
+Rounded to nearest:
+
 | Input | Output | Perception          |
 | ----- | ------ | ------------------- |
 | 0     | 0      | Off                 |
-| 32    | 2      | Barely visible      |
-| 64    | 10     | Very dim            |
-| 128   | 55     | Perceptual midpoint |
+| 32    | 3      | Barely visible      |
+| 64    | 12     | Very dim            |
+| 128   | 56     | Perceptual midpoint |
 | 192   | 137    | Moderately bright   |
 | 255   | 255    | Full brightness     |
 
-**Perceptual 50% = PWM 21.6%, not 50%.**
+**Perceptual 50% = PWM 56/255, about 22%, not 50%.**
 
 ### Per-Channel Tuning
 
@@ -201,7 +208,9 @@ Single gamma of 2.2 for all channels is a solid default.
 
 ### Pipeline Position
 
-Gamma correction is the **last step** — after all color math, blending, interpolation. All internal operations in linear space. Gamma is output encoding only.
+Gamma correction is the **last step** in whatever stage owns it: after all color math, blending, and interpolation. All internal operations happen in linear space, and gamma is output encoding only.
+
+**Who owns it in Hypercolor:** the engine, not your effect. Effect canvases are sRGB-encoded already, and the daemon's output stage decodes them with the sRGB piecewise curve (IEC 61966-2-1, the `srgb_to_linear` / `linear_to_srgb` pair in `hypercolor-color`) before writing linear-light PWM bytes. The 2.2 power law above is the classic approximation and is close above the toe, but it is not the curve the engine runs. Apply your own gamma pass inside a Hypercolor effect and you double-encode.
 
 ---
 

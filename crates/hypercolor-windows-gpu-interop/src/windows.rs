@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use thiserror::Error;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE};
 use windows::Win32::Graphics::Direct3D::{
@@ -24,8 +25,13 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::core::{Interface, PCWSTR};
 
+use crate::{
+    FrameOrigin, ImportedEffectFrame, ImportedFrameAllocationId, ImportedFrameFormat,
+    ImportedFrameLease, ImportedFrameTimings,
+};
+
 const BYTES_PER_PIXEL: u32 = 4;
-static NEXT_STORAGE_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ALLOCATION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Result type for Windows GPU interop operations.
 pub type Result<T> = std::result::Result<T, WindowsGpuInteropError>;
@@ -57,6 +63,13 @@ pub enum WindowsGpuInteropError {
         width: u32,
         /// Requested frame height.
         height: u32,
+    },
+
+    /// The neutral frame format is not supported by the Windows import path.
+    #[error("unsupported Windows import frame format {format:?}")]
+    UnsupportedFrameFormat {
+        /// Requested frame format.
+        format: ImportedFrameFormat,
     },
 
     /// The supplied D3D11 shared handle is null.
@@ -170,31 +183,52 @@ pub enum WindowsGpuInteropError {
     PublishFenceTimeout,
 }
 
-/// Pixel format shared by the D3D11 texture and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ImportedFrameFormat {
-    /// 8-bit normalized RGBA.
-    Rgba8Unorm,
-    /// 8-bit normalized BGRA.
-    Bgra8Unorm,
-}
-
-impl ImportedFrameFormat {
-    /// Returns the matching wgpu texture format.
-    #[must_use]
-    pub const fn wgpu_format(self) -> wgpu::TextureFormat {
+impl GpuFrameImportError for WindowsGpuInteropError {
+    fn fallback_reason(&self) -> GpuFrameImportFallbackReason {
         match self {
-            Self::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-            Self::Bgra8Unorm => wgpu::TextureFormat::Bgra8Unorm,
+            Self::MissingWgpuVulkanDevice => GpuFrameImportFallbackReason::MissingWgpuVulkanDevice,
+            Self::MissingVulkanExternalMemoryWin32 => {
+                GpuFrameImportFallbackReason::MissingVulkanExternalMemoryWin32
+            }
+            Self::MissingWindowsAngleContext => {
+                GpuFrameImportFallbackReason::MissingWindowsAngleContext
+            }
+            Self::WindowsImportStaleFrame | Self::PublishFenceTimeout => {
+                GpuFrameImportFallbackReason::WindowsImportStaleFrame
+            }
+            Self::DxgiAdapterNotFound { .. } => GpuFrameImportFallbackReason::AdapterLuidMismatch,
+            Self::D3d11DeviceCreateFailed { .. } | Self::D3d11ImmediateContextUnavailable => {
+                GpuFrameImportFallbackReason::D3d11DeviceCreateFailed
+            }
+            Self::D3d11SharedTextureCreateFailed { .. }
+            | Self::D3d11TextureInterfaceQueryFailed { .. } => {
+                GpuFrameImportFallbackReason::D3d11SharedTextureCreateFailed
+            }
+            Self::D3d11SharedHandleCreateFailed { .. } => {
+                GpuFrameImportFallbackReason::D3d11SharedHandleCreateFailed
+            }
+            Self::InvalidDimensions { .. } => GpuFrameImportFallbackReason::InvalidDimensions,
+            Self::VulkanD3d11ImportFailed => GpuFrameImportFallbackReason::VulkanD3d11ImportFailed,
+            Self::GlCreateResource { .. } => GpuFrameImportFallbackReason::GlResource,
+            Self::GlOperation { .. } => GpuFrameImportFallbackReason::GlOperation,
+            Self::GlFramebufferIncomplete { .. } => {
+                GpuFrameImportFallbackReason::GlFramebufferIncomplete
+            }
+            Self::ServoContext { operation, .. }
+                if *operation == crate::WINDOWS_ANGLE_CLIENT_BUFFER_SURFACE_OPERATION =>
+            {
+                GpuFrameImportFallbackReason::AngleClientBufferSurfaceFailed
+            }
+            _ => GpuFrameImportFallbackReason::Other,
         }
     }
+}
 
-    const fn dxgi_format(self) -> DXGI_FORMAT {
-        match self {
-            Self::Rgba8Unorm => DXGI_FORMAT_R8G8B8A8_UNORM,
-            Self::Bgra8Unorm => DXGI_FORMAT_B8G8R8A8_UNORM,
-        }
+const fn dxgi_format(format: ImportedFrameFormat) -> Option<DXGI_FORMAT> {
+    match format {
+        ImportedFrameFormat::Rgba8Unorm => Some(DXGI_FORMAT_R8G8B8A8_UNORM),
+        ImportedFrameFormat::Bgra8Unorm => Some(DXGI_FORMAT_B8G8R8A8_UNORM),
+        _ => None,
     }
 }
 
@@ -218,6 +252,11 @@ impl WindowsD3d11SharedTextureImportDescriptor {
             || height > i32::MAX as u32
         {
             Err(WindowsGpuInteropError::InvalidDimensions { width, height })
+        } else if !matches!(
+            format,
+            ImportedFrameFormat::Rgba8Unorm | ImportedFrameFormat::Bgra8Unorm
+        ) {
+            Err(WindowsGpuInteropError::UnsupportedFrameFormat { format })
         } else {
             Ok(Self {
                 width,
@@ -226,38 +265,6 @@ impl WindowsD3d11SharedTextureImportDescriptor {
             })
         }
     }
-}
-
-/// GPU-resident Servo effect frame imported into Hypercolor's wgpu device.
-#[derive(Debug, Clone)]
-pub struct ImportedEffectFrame {
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// Frame pixel format.
-    pub format: ImportedFrameFormat,
-    /// Monotonically increasing content version; contents changed iff this
-    /// changed. Does NOT imply distinct GPU storage — the same D3D11 shared
-    /// texture (and cached wgpu texture) can carry many successive versions.
-    pub storage_id: u64,
-    /// Imported wgpu texture.
-    pub texture: Arc<wgpu::Texture>,
-    /// Default view over `texture`.
-    pub view: Arc<wgpu::TextureView>,
-    /// Import timing counters for observability.
-    pub timings: ImportedFrameTimings,
-}
-
-/// Timing counters captured while importing a D3D11 shared texture.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ImportedFrameTimings {
-    /// Time spent wrapping the D3D11 shared handle as a wgpu texture.
-    pub wrap_us: u64,
-    /// Time spent waiting for producer-side synchronization.
-    pub sync_us: u64,
-    /// Total import time, including wgpu wrapping.
-    pub total_us: u64,
 }
 
 /// D3D11 device and immediate context used to create shared textures.
@@ -476,6 +483,7 @@ pub struct WindowsD3d11SharedTextureImporter {
 
 #[derive(Debug, Clone)]
 struct ImportedSharedTexture {
+    allocation_id: ImportedFrameAllocationId,
     texture: Arc<wgpu::Texture>,
     view: Arc<wgpu::TextureView>,
 }
@@ -519,9 +527,8 @@ impl WindowsD3d11SharedTextureImporter {
 
     /// Imports a D3D11 NT shared handle into the supplied wgpu device.
     ///
-    /// `content_generation` is the producer's monotonic content version for
-    /// the texture contents and becomes the frame's `storage_id`. Repeated
-    /// imports of the same shared handle reuse the cached wgpu texture.
+    /// `content_generation` is the producer's monotonic content version.
+    /// Repeated imports of one handle retain the same allocation identity.
     ///
     /// # Safety
     ///
@@ -533,6 +540,7 @@ impl WindowsD3d11SharedTextureImporter {
         &mut self,
         device: &wgpu::Device,
         shared_handle: HANDLE,
+        origin: FrameOrigin,
         content_generation: u64,
         sync_us: u64,
     ) -> Result<ImportedEffectFrame> {
@@ -547,12 +555,16 @@ impl WindowsD3d11SharedTextureImporter {
                 width: self.descriptor.width,
                 height: self.descriptor.height,
                 format: self.descriptor.format,
-                storage_id: content_generation,
+                allocation_id: imported.allocation_id,
+                content_generation,
+                origin,
                 texture: Arc::clone(&imported.texture),
                 view: Arc::clone(&imported.view),
+                lease: ImportedFrameLease::new(Arc::clone(&imported.texture)),
                 timings: ImportedFrameTimings {
-                    wrap_us: 0,
-                    sync_us,
+                    blit_us: None,
+                    wrap_us: Some(0),
+                    sync_us: Some(sync_us),
                     total_us: elapsed_micros(total_start),
                 },
             });
@@ -580,46 +592,35 @@ impl WindowsD3d11SharedTextureImporter {
         let wrap_us = elapsed_micros(wrap_start);
         let texture = Arc::new(texture);
         let view = Arc::new(view);
+        let allocation_id =
+            ImportedFrameAllocationId::new(NEXT_ALLOCATION_ID.fetch_add(1, Ordering::Relaxed));
         self.imported_textures.insert(
             shared_handle_key,
             ImportedSharedTexture {
+                allocation_id,
                 texture: Arc::clone(&texture),
                 view: Arc::clone(&view),
             },
         );
+        let lease = ImportedFrameLease::new(Arc::clone(&texture));
 
         Ok(ImportedEffectFrame {
             width: self.descriptor.width,
             height: self.descriptor.height,
             format: self.descriptor.format,
-            storage_id: content_generation,
+            allocation_id,
+            content_generation,
+            origin,
             texture,
             view,
+            lease,
             timings: ImportedFrameTimings {
-                wrap_us,
-                sync_us,
+                blit_us: None,
+                wrap_us: Some(wrap_us),
+                sync_us: Some(sync_us),
                 total_us: elapsed_micros(total_start),
             },
         })
-    }
-
-    /// Imports a shared handle that has no producer content generation.
-    ///
-    /// Allocates a fresh content version from a process-global counter, so
-    /// every call reports changed contents. Intended for tests and
-    /// compatibility probes built around synthetic D3D11 textures.
-    ///
-    /// # Safety
-    ///
-    /// Same contract as [`Self::import_shared_handle`].
-    pub unsafe fn import_shared_handle_for_test(
-        &mut self,
-        device: &wgpu::Device,
-        shared_handle: HANDLE,
-    ) -> Result<ImportedEffectFrame> {
-        let content_generation = NEXT_STORAGE_ID.fetch_add(1, Ordering::Relaxed);
-        // SAFETY: forwarded directly under the caller's contract.
-        unsafe { self.import_shared_handle(device, shared_handle, content_generation, 0) }
     }
 }
 
@@ -692,7 +693,7 @@ fn d3d11_texture_descriptor(
         Height: descriptor.height,
         MipLevels: 1,
         ArraySize: 1,
-        Format: descriptor.format.dxgi_format(),
+        Format: dxgi_format(descriptor.format).expect("validated Windows import format"),
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
             Quality: 0,

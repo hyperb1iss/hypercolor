@@ -1,9 +1,11 @@
 use std::fmt;
-use std::sync::Arc;
 use std::time::Instant;
 
 use ash::vk;
+use hypercolor_gpu_frame::{GpuFrameImportError, GpuFrameImportFallbackReason};
 use thiserror::Error;
+
+use crate::{ImportedEffectFrame, ImportedFrameFormat};
 
 const DEFAULT_IMPORT_SLOT_COUNT: usize = 8;
 
@@ -53,6 +55,13 @@ pub enum LinuxGpuInteropError {
         width: u32,
         /// Requested frame height.
         height: u32,
+    },
+
+    /// The neutral frame format is not supported by the Linux import path.
+    #[error("unsupported Linux import frame format {format:?}")]
+    UnsupportedFrameFormat {
+        /// Requested frame format.
+        format: ImportedFrameFormat,
     },
 
     /// Vulkan failed while creating or exporting the backing image.
@@ -108,36 +117,26 @@ pub enum LinuxGpuInteropError {
     },
 }
 
-/// Pixel format shared by the GL source and imported wgpu texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ImportedFrameFormat {
-    /// 8-bit normalized RGBA.
-    Rgba8Unorm,
-}
-
-impl ImportedFrameFormat {
-    /// Returns the matching wgpu texture format.
-    #[must_use]
-    pub const fn wgpu_format(self) -> wgpu::TextureFormat {
+impl GpuFrameImportError for LinuxGpuInteropError {
+    fn fallback_reason(&self) -> GpuFrameImportFallbackReason {
         match self {
-            Self::Rgba8Unorm => wgpu::TextureFormat::Rgba8Unorm,
-        }
-    }
-
-    /// Returns the matching GL internal format.
-    #[must_use]
-    pub const fn gl_internal_format(self) -> u32 {
-        match self {
-            Self::Rgba8Unorm => glow::RGBA8,
-        }
-    }
-
-    /// Returns the matching Vulkan image format.
-    #[must_use]
-    pub const fn vk_format(self) -> vk::Format {
-        match self {
-            Self::Rgba8Unorm => vk::Format::R8G8B8A8_UNORM,
+            Self::MissingWgpuVulkanDevice => GpuFrameImportFallbackReason::MissingWgpuVulkanDevice,
+            Self::MissingVulkanDeviceExtension(_) => {
+                GpuFrameImportFallbackReason::MissingVulkanExternalMemoryFd
+            }
+            Self::MissingGlFunction(_) => GpuFrameImportFallbackReason::MissingGlFunction,
+            Self::GlProcLoaderUnavailable => GpuFrameImportFallbackReason::GlProcLoaderUnavailable,
+            Self::InvalidDimensions { .. } => GpuFrameImportFallbackReason::InvalidDimensions,
+            Self::UnsupportedFrameFormat { .. } => GpuFrameImportFallbackReason::Other,
+            Self::Vulkan { .. } | Self::MemoryTypeUnavailable | Self::DuplicateFdFailed { .. } => {
+                GpuFrameImportFallbackReason::Vulkan
+            }
+            Self::GlCreateResource { .. } => GpuFrameImportFallbackReason::GlResource,
+            Self::GlOperation { .. } => GpuFrameImportFallbackReason::GlOperation,
+            Self::GlFramebufferIncomplete { .. } => {
+                GpuFrameImportFallbackReason::GlFramebufferIncomplete
+            }
+            Self::ImportSlotsExhausted { .. } => GpuFrameImportFallbackReason::ImportSlotsExhausted,
         }
     }
 }
@@ -158,6 +157,8 @@ impl LinuxGlFramebufferImportDescriptor {
     pub const fn new(width: u32, height: u32, format: ImportedFrameFormat) -> Result<Self> {
         if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
             Err(LinuxGpuInteropError::InvalidDimensions { width, height })
+        } else if !matches!(format, ImportedFrameFormat::Rgba8Unorm) {
+            Err(LinuxGpuInteropError::UnsupportedFrameFormat { format })
         } else {
             Ok(Self {
                 width,
@@ -174,36 +175,6 @@ impl LinuxGlFramebufferImportDescriptor {
     fn height_i32(self) -> i32 {
         self.height as i32
     }
-}
-
-/// GPU-resident Servo effect frame imported into Hypercolor's wgpu device.
-#[derive(Debug, Clone)]
-pub struct ImportedEffectFrame {
-    /// Frame width in pixels.
-    pub width: u32,
-    /// Frame height in pixels.
-    pub height: u32,
-    /// Frame pixel format.
-    pub format: ImportedFrameFormat,
-    /// Monotonic storage identity for cache comparisons.
-    pub storage_id: u64,
-    /// Imported wgpu texture.
-    pub texture: Arc<wgpu::Texture>,
-    /// Default view over `texture`.
-    pub view: Arc<wgpu::TextureView>,
-    /// Import timing counters for observability.
-    pub timings: ImportedFrameTimings,
-}
-
-/// Timing counters captured while importing a GL framebuffer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ImportedFrameTimings {
-    /// Time spent issuing the GL framebuffer blit.
-    pub blit_us: u64,
-    /// Time spent in the conservative GL synchronization wait.
-    pub sync_us: u64,
-    /// Total import time, including Vulkan allocation and wgpu wrapping.
-    pub total_us: u64,
 }
 
 /// Snapshot of the GL framebuffer state used by the import blit.
@@ -253,8 +224,8 @@ pub struct LinuxGlImporterStateSnapshot {
     pub available_slots: usize,
     /// Age in milliseconds of the oldest pending fence.
     pub oldest_pending_age_ms: Option<u64>,
-    /// Monotonic storage id for the newest completed slot.
-    pub latest_completed_storage_id: Option<u64>,
+    /// Content generation for the newest completed slot.
+    pub latest_completed_content_generation: Option<u64>,
 }
 
 /// Reusable importer for repeatedly copying one GL framebuffer into wgpu.

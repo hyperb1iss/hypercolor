@@ -1,44 +1,53 @@
 //! Integration tests for daemon startup orchestration.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
 use axum::extract::State;
 use axum::{Router, body::to_bytes, routing::get};
-use hypercolor_core::config::ConfigManager;
+use hypercolor_core::config::{BootConfig, ConfigManager};
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
-use hypercolor_daemon::api::{AppState, system::get_status};
+use hypercolor_core::engine::RenderLoopState;
+use hypercolor_daemon::api::system::get_status;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::daemon::{
     DaemonRunOptions, bind_api_listener, effective_bind_target, effective_bind_targets,
     effective_startup_bind_targets, serve_api_listeners_with_shutdown_timeout,
     validate_network_bind_auth,
 };
-use hypercolor_daemon::discovery;
+use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
+use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
+#[cfg(unix)]
+use hypercolor_daemon::startup::install_signal_handlers_with_parent_claim;
 use hypercolor_daemon::startup::{
-    DaemonState, collect_unmapped_driver_layout_targets, collect_unmapped_prefixed_layout_targets,
-    default_config, install_signal_handlers, load_config, parse_config_toml,
+    DaemonState, ParentLifetime, collect_unmapped_driver_layout_targets,
+    collect_unmapped_prefixed_layout_targets, config_sources, default_config,
+    install_signal_handlers, parse_config_toml,
 };
-use hypercolor_daemon::{layout_store, runtime_state, scene_store::SceneStore};
-use hypercolor_driver_api::{BackendInfo, DeviceBackend};
+use hypercolor_daemon::{layout_store, runtime_state};
+use hypercolor_driver_api::{BackendInfo, DeviceBackend, OutputCadence};
 use hypercolor_types::canvas::{DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::config::{
-    CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, NetworkAccessMode, RenderAccelerationMode,
+    CURRENT_SCHEMA_VERSION, EffectErrorFallbackPolicy, HypercolorConfig, InteractionRoutePolicy,
+    NetworkAccessMode, RenderAccelerationMode,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
-    ZoneLayoutHint,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    SegmentInfo, SegmentLayoutHint,
 };
-use hypercolor_types::effect::EffectSource;
+use hypercolor_types::effect::{EffectId, EffectSource};
 use hypercolor_types::event::{EffectStopReason, HypercolorEvent};
+use hypercolor_types::identity::LayoutId;
+use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::scene::{SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -48,11 +57,232 @@ use serde_json::Value;
 use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 
+type Result<T> = std::result::Result<T, DeviceError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(DeviceError::protocol("test backend", format!($($arg)*)))
+    };
+}
+
 /// Minimal TOML content that `ConfigManager` can parse.
-const MINIMAL_TOML: &str = "schema_version = 3\n";
+const MINIMAL_TOML: &str = "schema_version = 5\n";
+
+fn write_scene_store(
+    path: &Path,
+    scenes: impl IntoIterator<Item = hypercolor_types::scene::Scene>,
+) {
+    std::fs::create_dir_all(
+        path.parent()
+            .expect("scene store path should have a parent"),
+    )
+    .expect("scene store directory should build");
+    let scenes = scenes
+        .into_iter()
+        .map(|scene| (scene.id.to_string(), scene))
+        .collect::<std::collections::HashMap<_, _>>();
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "scenes": scenes,
+        }))
+        .expect("scene store should serialize"),
+    )
+    .expect("scene store should write");
+}
+
+struct SeededEffectIdentity {
+    effect_root: PathBuf,
+    legacy_id: EffectId,
+    device_id: DeviceId,
+    scene_id: SceneId,
+}
+
+fn deterministic_html_effect_id(path: &Path) -> EffectId {
+    let mut hash: u128 = 0x6c62_69f0_7bb0_14d9_8d4f_1283_7ec6_3b8b;
+    for byte in format!("hypercolor:html:{}", path.display()).bytes() {
+        hash ^= u128::from(byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    let mut bytes = hash.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    EffectId::new(uuid::Uuid::from_bytes(bytes))
+}
+
+async fn seed_effect_identity_stores(
+    guard: &TestDataDirGuard,
+    builtin_id: &str,
+) -> SeededEffectIdentity {
+    let effect_root = guard.data_dir.join("startup-effects");
+    let effect_path = effect_root.join(format!("{builtin_id}.html"));
+    std::fs::create_dir_all(&effect_root).expect("effect root should build");
+    std::fs::write(
+        &effect_path,
+        format!("<head><title>{builtin_id}</title><meta builtin-id=\"{builtin_id}\" /></head>"),
+    )
+    .expect("effect port should write");
+    let effect_path = std::fs::canonicalize(effect_path).expect("effect path should canonicalize");
+    let legacy_id = deterministic_html_effect_id(&effect_path);
+
+    let mut named_scene = hypercolor_core::scene::make_scene("Legacy identity");
+    let scene_id = named_scene.id;
+    let mut zone = hypercolor_core::scene::default_primary_zone(SpatialLayout {
+        id: "identity-test".into(),
+        name: "Identity Test".to_owned(),
+        description: None,
+        canvas_width: DEFAULT_CANVAS_WIDTH,
+        canvas_height: DEFAULT_CANVAS_HEIGHT,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    });
+    zone.layers = vec![SceneLayer::from_effect(
+        SceneLayerId::new(),
+        legacy_id,
+        HashMap::new(),
+        HashMap::new(),
+        None,
+    )];
+    named_scene.zones.push(zone);
+    write_scene_store(&guard.scenes_path(), [named_scene.clone()]);
+
+    runtime_state::save(
+        &guard.legacy_state_path("runtime-state.json"),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            default_scene_zones: named_scene.zones.clone(),
+            active_layout_id: None,
+            manual_paused: false,
+        },
+    )
+    .expect("runtime identity should persist");
+
+    let device_id = DeviceId::new();
+    let mut display =
+        DisplayPreferencesStore::new(guard.legacy_state_path("display-preferences.json"))
+            .expect("display store should open");
+    display
+        .set(
+            device_id,
+            DisplayPreference {
+                effect_id: legacy_id,
+                controls: HashMap::new(),
+                blend_mode: BlendMode::Alpha,
+                opacity: 1.0,
+            },
+        )
+        .expect("display identity should persist");
+
+    let library = JsonLibraryStore::open(guard.data_dir.join("library.json"))
+        .expect("library store should open");
+    library
+        .upsert_favorite(legacy_id, 1)
+        .await
+        .expect("library identity should persist");
+
+    SeededEffectIdentity {
+        effect_root,
+        legacy_id,
+        device_id,
+        scene_id,
+    }
+}
+
+async fn registry_effect_id(state: &DaemonState, source_stem: &str) -> EffectId {
+    state
+        .effect_registry
+        .read()
+        .await
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some(source_stem))
+        .map(|(effect_id, _)| *effect_id)
+        .unwrap_or_else(|| panic!("registry should contain {source_stem}"))
+}
+
+async fn assert_effect_identity_everywhere(
+    state: &DaemonState,
+    guard: &TestDataDirGuard,
+    seeded: &SeededEffectIdentity,
+    expected_id: EffectId,
+) {
+    let manager = state.scene_manager.snapshot().await;
+    let scene_ids = manager
+        .get(&seeded.scene_id)
+        .expect("seeded scene should load")
+        .zones
+        .iter()
+        .flat_map(Zone::effect_ids)
+        .collect::<Vec<_>>();
+    assert_eq!(scene_ids, vec![expected_id]);
+
+    let runtime = runtime_state::load(&guard.runtime_state_path())
+        .expect("runtime state should load")
+        .expect("runtime state should exist");
+    assert_eq!(
+        runtime
+            .default_scene_zones
+            .iter()
+            .flat_map(Zone::effect_ids)
+            .collect::<Vec<_>>(),
+        vec![expected_id]
+    );
+
+    let scenes = hypercolor_daemon::scene_store::load(&guard.scenes_path())
+        .expect("scene store should load");
+    assert_eq!(
+        scenes
+            .list()
+            .flat_map(|scene| &scene.zones)
+            .flat_map(Zone::effect_ids)
+            .collect::<Vec<_>>(),
+        vec![expected_id]
+    );
+
+    assert_eq!(
+        state
+            .display_preferences
+            .read()
+            .await
+            .get(seeded.device_id)
+            .map(|preference| preference.effect_id),
+        Some(expected_id)
+    );
+    let display = DisplayPreferencesStore::load(&guard.state_path("display-preferences.json"))
+        .expect("display store should reopen");
+    assert_eq!(
+        display
+            .get(seeded.device_id)
+            .map(|preference| preference.effect_id),
+        Some(expected_id)
+    );
+
+    assert_eq!(
+        state.library_store().list_favorites().await[0].effect_id,
+        expected_id
+    );
+    let library = JsonLibraryStore::open(guard.data_dir.join("library.json"))
+        .expect("library store should reopen");
+    assert_eq!(library.list_favorites().await[0].effect_id, expected_id);
+}
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn write_layout_store_fixture(
+    path: &Path,
+    layouts: &std::collections::HashMap<String, SpatialLayout>,
+) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("layout fixture directory should exist");
+    }
+    let mut entries = layouts.values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    let payload = serde_json::to_vec_pretty(&entries).expect("layout fixture should serialize");
+    std::fs::write(path, payload).expect("layout fixture should write");
+}
 
 #[derive(Clone)]
 struct StuckHandlerState {
@@ -62,7 +292,51 @@ struct StuckHandlerState {
 struct ShutdownCleanupBackend {
     expected_device_id: DeviceId,
     disconnects: Arc<AtomicUsize>,
-    connected: bool,
+    connected: AtomicBool,
+}
+
+struct StaticHoldRecordingBackend {
+    writes: Arc<AtomicUsize>,
+    write_notify: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for StaticHoldRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "static-hold-test".to_owned(),
+            name: "Static Hold Test Backend".to_owned(),
+            description: "Records paused late-connect output".to_owned(),
+        }
+    }
+
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
+        Ok(())
+    }
+
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if colors.iter().any(|color| *color != [0, 0, 0]) {
+            bail!("static hold emitted a non-black color");
+        }
+        self.writes.fetch_add(1, Ordering::Release);
+        self.write_notify.notify_waiters();
+        Ok(())
+    }
+
+    fn output_cadence(&self, _id: &DeviceId) -> Option<OutputCadence> {
+        Some(OutputCadence::from_fps(60).with_max_frame_silence(Duration::from_millis(20)))
+    }
 }
 
 impl ShutdownCleanupBackend {
@@ -70,7 +344,7 @@ impl ShutdownCleanupBackend {
         Self {
             expected_device_id,
             disconnects,
-            connected: false,
+            connected: AtomicBool::new(false),
         }
     }
 }
@@ -85,31 +359,34 @@ impl DeviceBackend for ShutdownCleanupBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
-    }
-
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        if *id != self.expected_device_id {
-            bail!("unexpected device id {id}");
-        }
-        self.connected = true;
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+    async fn connect(&self, id: &DeviceId) -> Result<()> {
         if *id != self.expected_device_id {
             bail!("unexpected device id {id}");
         }
-        if !self.connected {
+        self.connected.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    async fn disconnect(&self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected.load(Ordering::Acquire) {
             bail!("disconnect called while backend was not connected");
         }
-        self.connected = false;
+        self.connected.store(false, Ordering::Release);
         self.disconnects.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+    async fn write_colors(&self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
         Ok(())
     }
 }
@@ -118,6 +395,7 @@ struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
     _dir: tempfile::TempDir,
     data_dir: PathBuf,
+    state_dir: PathBuf,
 }
 
 impl TestDataDirGuard {
@@ -125,11 +403,14 @@ impl TestDataDirGuard {
         let lock = DATA_DIR_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir should be created");
         let data_dir = dir.path().join("data");
+        let state_dir = dir.path().join("state");
         ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        ConfigManager::set_state_dir_override(Some(state_dir.clone()));
         Self {
             _lock: lock,
             _dir: dir,
             data_dir,
+            state_dir,
         }
     }
 
@@ -138,7 +419,15 @@ impl TestDataDirGuard {
     }
 
     fn runtime_state_path(&self) -> PathBuf {
-        self.data_dir.join("runtime-state.json")
+        self.state_dir.join("runtime-state.json")
+    }
+
+    fn legacy_state_path(&self, file_name: &str) -> PathBuf {
+        self.data_dir.join(file_name)
+    }
+
+    fn state_path(&self, file_name: &str) -> PathBuf {
+        self.state_dir.join(file_name)
     }
 
     fn scenes_path(&self) -> PathBuf {
@@ -149,6 +438,7 @@ impl TestDataDirGuard {
 impl Drop for TestDataDirGuard {
     fn drop(&mut self) {
         ConfigManager::set_data_dir_override(None);
+        ConfigManager::set_state_dir_override(None);
     }
 }
 
@@ -176,7 +466,93 @@ impl Drop for TestConfigDirGuard {
     }
 }
 
+#[tokio::test]
+async fn daemon_initialization_relocates_machine_state_out_of_data() {
+    let guard = TestDataDirGuard::new().await;
+    std::fs::create_dir_all(&guard.data_dir).expect("legacy data directory should be created");
+
+    let legacy_documents = [
+        (
+            "driver-inventory.json",
+            serde_json::json!({"schema_version": 1, "drivers": {}}),
+        ),
+        ("display-preferences.json", serde_json::json!({})),
+        (
+            "device-settings.json",
+            serde_json::json!({
+                "schema_version": 3,
+                "global_brightness": 0.42,
+                "devices": {},
+                "driver_controls": {},
+            }),
+        ),
+        (
+            "runtime-state.json",
+            serde_json::to_value(runtime_state::RuntimeSessionSnapshot::default())
+                .expect("runtime snapshot should serialize"),
+        ),
+        (
+            "device-aliases.json",
+            serde_json::json!({
+                "schema_version": 2,
+                "aliases": {},
+                "quarantined_keys": [],
+                "collisions": [],
+            }),
+        ),
+    ];
+    for (file_name, document) in &legacy_documents {
+        std::fs::write(
+            guard.legacy_state_path(file_name),
+            serde_json::to_vec_pretty(document).expect("legacy document should serialize"),
+        )
+        .expect("legacy document should be written");
+    }
+
+    let config = default_config();
+    let temp = temp_config_file();
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("state migration should succeed");
+
+    assert_eq!(state.runtime_state_path, guard.runtime_state_path());
+    assert_eq!(
+        state.device_aliases_path,
+        guard.state_path("device-aliases.json")
+    );
+    assert_eq!(
+        state.driver_host().driver_inventory().path(),
+        guard.state_path("driver-inventory.json")
+    );
+    assert_eq!(state.output_power.global_brightness(), 0.42);
+    for (file_name, _) in &legacy_documents {
+        assert!(guard.state_path(file_name).exists());
+        assert!(!guard.legacy_state_path(file_name).exists());
+    }
+}
+
 /// Create a temp file pre-populated with valid minimal TOML config.
+/// A boot config for a test that synthesized its own settings.
+///
+/// Initialization consumes the boot config, so each call mints one.
+fn boot_config(config: &HypercolorConfig) -> BootConfig {
+    BootConfig::from_config_unchecked(config.clone())
+}
+
+/// A config manager whose live snapshot is exactly the config under test.
+///
+/// The daemon's own manager comes from the load pipeline; tests that
+/// synthesize a config in memory materialize one over the same path the
+/// daemon would persist to.
+fn config_manager_for(config: &HypercolorConfig, path: &Path) -> Arc<ConfigManager> {
+    Arc::new(ConfigManager::from_config_unchecked(
+        path.to_path_buf(),
+        config.clone(),
+    ))
+}
+
 fn temp_config_file() -> NamedTempFile {
     let mut f = NamedTempFile::new().expect("failed to create temp file");
     f.write_all(MINIMAL_TOML.as_bytes())
@@ -190,6 +566,27 @@ async fn stuck_handler(State(state): State<StuckHandlerState>) -> &'static str {
     std::future::pending::<&'static str>().await
 }
 
+fn compact_perimeter_layout_hint() -> SegmentLayoutHint {
+    SegmentLayoutHint::custom_grid(
+        6,
+        2,
+        &[
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+        ],
+    )
+    .with_size(NormalizedPosition::new(0.2, 0.08))
+    .with_shape(ZoneShape::Rectangle)
+}
+
 fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
     DeviceInfo {
         id,
@@ -199,7 +596,7 @@ fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("cleanup", "cleanup", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 8,
             topology: DeviceTopologyHint::Strip,
@@ -227,8 +624,10 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
     let _guard = TestConfigDirGuard::new().await;
 
     // When no explicit path is provided and no file exists at the default
-    // location, load_config should succeed with defaults.
-    let (config, _path) = load_config(None).await.expect("default config should load");
+    // location, the pipeline succeeds with defaults.
+    let config = ConfigManager::load_with_sources(config_sources(None, None, None))
+        .expect("default config should load")
+        .boot;
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
@@ -237,7 +636,7 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
 #[tokio::test]
 async fn load_config_reads_toml_file() {
     let toml_content = r#"
-schema_version = 3
+schema_version = 5
 
 [daemon]
 target_fps = 30
@@ -249,14 +648,17 @@ listen_address = "0.0.0.0"
     temp.write_all(toml_content.as_bytes())
         .expect("failed to write temp config");
 
-    let (config, path) = load_config(Some(temp.path()))
-        .await
-        .expect("config should load from file");
+    let loaded = ConfigManager::load_with_sources(config_sources(
+        Some(temp.path().to_path_buf()),
+        None,
+        None,
+    ))
+    .expect("config should load from file");
 
-    assert_eq!(config.daemon.target_fps, 30);
-    assert_eq!(config.daemon.port, 8080);
-    assert_eq!(config.daemon.listen_address, "0.0.0.0");
-    assert_eq!(path, temp.path());
+    assert_eq!(loaded.boot.daemon.target_fps, 30);
+    assert_eq!(loaded.boot.daemon.port, 8080);
+    assert_eq!(loaded.boot.daemon.listen_address, "0.0.0.0");
+    assert_eq!(loaded.manager.path(), temp.path());
 }
 
 #[cfg(not(feature = "wgpu"))]
@@ -267,11 +669,42 @@ async fn initialize_rejects_explicit_gpu_render_acceleration_without_wgpu_featur
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    let Err(error) = DaemonState::initialize(&config, temp.path().to_path_buf()) else {
+    let Err(error) = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    ) else {
         panic!("gpu render acceleration should fail explicitly without wgpu support");
     };
 
     assert!(format!("{error:#}").contains("rebuild hypercolor-daemon with the `wgpu` feature"));
+}
+
+#[tokio::test]
+async fn initialize_rejects_a_corrupt_scene_store_without_overwriting_it() {
+    let guard = TestDataDirGuard::new().await;
+    std::fs::create_dir_all(&guard.data_dir).expect("test data directory should exist");
+    let corrupt = "{ definitely not scene json";
+    std::fs::write(guard.scenes_path(), corrupt).expect("corrupt scene store should write");
+    let temp = temp_config_file();
+    let config = default_config();
+
+    let Err(error) = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    ) else {
+        panic!("corrupt scene persistence must prevent startup");
+    };
+
+    assert!(
+        format!("{error:#}").contains("failed to load scenes"),
+        "the startup error identifies scene persistence: {error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(guard.scenes_path())
+            .expect("corrupt scene store should remain readable"),
+        corrupt,
+        "startup must not replace corrupt scene persistence"
+    );
 }
 
 #[cfg(not(feature = "wgpu"))]
@@ -282,8 +715,11 @@ async fn status_reports_auto_render_acceleration_cpu_fallback_without_wgpu_featu
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Auto;
 
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("auto render acceleration should initialize with CPU fallback");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("auto render acceleration should initialize with CPU fallback");
     state
         .start()
         .await
@@ -319,7 +755,10 @@ async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enable
     let mut config = default_config();
     config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Gpu;
 
-    match DaemonState::initialize(&config, temp.path().to_path_buf()) {
+    match DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    ) {
         Ok(daemon) => drop(daemon),
         Err(error) => {
             assert!(format!("{error:#}").contains("gpu compositor acceleration is unavailable"));
@@ -327,10 +766,10 @@ async fn initialize_handles_explicit_gpu_render_acceleration_when_wgpu_is_enable
     }
 }
 
-#[tokio::test]
-async fn load_config_errors_on_explicit_missing_path() {
+#[test]
+fn load_config_errors_on_explicit_missing_path() {
     let missing = PathBuf::from("/tmp/hypercolor_does_not_exist_xyz.toml");
-    let result = load_config(Some(&missing)).await;
+    let result = ConfigManager::load_with_sources(config_sources(Some(missing), None, None));
     assert!(
         result.is_err(),
         "should error when explicit path is missing"
@@ -342,7 +781,9 @@ async fn load_config_errors_on_explicit_missing_path() {
 #[test]
 fn parse_config_toml_minimal() {
     let config = parse_config_toml(MINIMAL_TOML).expect("minimal config should parse");
-    assert_eq!(config.schema_version, 3);
+    // Parsing a string runs the same migrate and normalize a file load
+    // runs, so an old schema comes back migrated forward.
+    assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
     // All sections should have serde defaults.
     assert_eq!(config.daemon.target_fps, 30);
     assert!(config.audio.enabled);
@@ -351,7 +792,7 @@ fn parse_config_toml_minimal() {
 #[test]
 fn parse_config_toml_with_overrides() {
     let toml_str = r#"
-schema_version = 3
+schema_version = 5
 
 [daemon]
 target_fps = 45
@@ -389,7 +830,66 @@ wasm_plugins = true
     );
     assert_eq!(config.drivers["wled"].settings["dedup_threshold"], 0);
     assert!(config.drivers["nollie"].enabled);
-    assert!(config.features.wasm_plugins);
+}
+
+#[test]
+fn parse_config_toml_runs_the_shared_normalize_and_seed() {
+    let config = parse_config_toml("schema_version = 5\n[audio]\ndevice = \"Auto\"\n")
+        .expect("current-schema config should parse");
+
+    // Normalization: audio device aliases canonicalize.
+    assert_eq!(config.audio.device, "default");
+    // Seeding: the builtin driver entries are installed.
+    assert!(config.drivers.contains_key("wled"));
+    assert_eq!(config.input.preview_route, InteractionRoutePolicy::Browser);
+}
+
+#[test]
+fn parse_config_toml_refuses_an_outdated_schema() {
+    let error = parse_config_toml("schema_version = 3\n")
+        .expect_err("an outdated schema must be refused, not migrated");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 3"), "{rendered}");
+    assert!(rendered.contains("schema_version = 5"), "{rendered}");
+    assert!(rendered.contains(r#"daemon_route = "merge""#), "{rendered}");
+    assert!(
+        rendered.contains(r#"preview_route = "browser""#),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn parse_config_toml_refuses_a_newer_schema() {
+    let error = parse_config_toml("schema_version = 6\n")
+        .expect_err("a future schema must be refused, not read");
+    let rendered = format!("{error:#}");
+
+    assert!(rendered.contains("schema_version 6"), "{rendered}");
+    assert!(rendered.contains("newer hypercolor"), "{rendered}");
+}
+
+#[test]
+fn loaded_config_and_manager_agree_after_one_load() {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let path = dir.path().join("hypercolor.toml");
+    std::fs::write(
+        &path,
+        "schema_version = 5\n[audio]\ndevice = \"Microphone\"\n[daemon]\nport = 9421\n",
+    )
+    .expect("config file should write");
+
+    let loaded = ConfigManager::load_with_sources(config_sources(Some(path), None, None))
+        .expect("config should load");
+    let live = loaded.manager.live();
+
+    // One materialization: the boot config and the retained manager are
+    // the same normalized, seeded document.
+    assert_eq!(loaded.boot.audio.device, "microphone");
+    assert_eq!(live.audio.device, "microphone");
+    assert_eq!(live.daemon.port, 9421);
+    assert!(live.drivers.contains_key("wled"));
+    assert_eq!(loaded.boot.drivers, live.drivers);
 }
 
 #[test]
@@ -404,7 +904,7 @@ fn parse_config_toml_rejects_invalid_toml() {
 #[test]
 fn default_config_has_sane_values() {
     let config = default_config();
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
@@ -414,7 +914,7 @@ fn default_config_has_sane_values() {
     assert!(config.drivers["wled"].settings.is_empty());
     assert!(config.drivers["asus"].enabled);
     assert!(config.drivers["nollie"].enabled);
-    assert!(config.include.is_empty());
+    assert!(config.extensions.is_empty());
 }
 
 #[test]
@@ -812,11 +1312,83 @@ async fn api_shutdown_timeout_forces_stuck_connections_to_close() {
 // ── DaemonState Initialization ──────────────────────────────────────────────
 
 #[tokio::test]
+async fn app_state_projection_preserves_composed_authority_identity() {
+    let _guard = TestDataDirGuard::new().await;
+    let config = default_config();
+    let temp = temp_config_file();
+    let mut daemon = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon state should initialize");
+    daemon.start().await.expect("daemon state should start");
+    let app = AppState::from_daemon_state(&daemon);
+
+    let daemon_input_graph = daemon.input_manager().input_graph_handle().snapshot();
+    let app_input_graph = app.input_manager().input_graph_handle().snapshot();
+    assert!(Arc::ptr_eq(&daemon_input_graph, &app_input_graph));
+    assert!(Arc::ptr_eq(daemon.driver_host(), app.driver_host()));
+    assert!(Arc::ptr_eq(daemon.driver_registry(), app.driver_registry()));
+    assert!(Arc::ptr_eq(daemon.library_store(), app.library_store()));
+    drop(app);
+    daemon.shutdown().await.expect("daemon state should stop");
+}
+
+#[tokio::test]
+async fn startup_migrates_registered_builtin_ports_across_every_durable_store() {
+    let guard = TestDataDirGuard::new().await;
+    let seeded = seed_effect_identity_stores(&guard, "breathing").await;
+    let mut config = default_config();
+    config.effect_engine.extra_effect_dirs = vec![seeded.effect_root.clone()];
+    let temp = temp_config_file();
+
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon should migrate the registered builtin port");
+    let canonical_id = registry_effect_id(&state, "breathing").await;
+
+    assert_ne!(canonical_id, seeded.legacy_id);
+    assert_effect_identity_everywhere(&state, &guard, &seeded, canonical_id).await;
+}
+
+#[cfg(not(feature = "servo"))]
+#[tokio::test]
+async fn startup_rejects_screen_cast_port_migration_without_servo() {
+    let guard = TestDataDirGuard::new().await;
+    let seeded = seed_effect_identity_stores(&guard, "screen_cast").await;
+    let mut config = default_config();
+    config.effect_engine.extra_effect_dirs = vec![seeded.effect_root.clone()];
+    let temp = temp_config_file();
+
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon should skip an unavailable HTML screen cast port");
+    let native_id = registry_effect_id(&state, "screen_cast").await;
+    let effect_path = seeded.effect_root.join("screen_cast.html");
+
+    assert_ne!(native_id, seeded.legacy_id);
+    assert!(state.effect_registry.read().await.iter().all(|(_, entry)| {
+        !matches!(
+                    &entry.metadata.source,
+                    EffectSource::Html { path } if path == &effect_path
+        )
+    }));
+    assert_effect_identity_everywhere(&state, &guard, &seeded, seeded.legacy_id).await;
+}
+
+#[tokio::test]
 async fn daemon_state_initializes_with_default_config() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf());
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    );
     assert!(state.is_ok(), "initialization should succeed with defaults");
 }
 
@@ -825,8 +1397,11 @@ async fn daemon_state_start_and_shutdown() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     // Start all subsystems.
     state.start().await.expect("start should succeed");
@@ -858,8 +1433,11 @@ async fn daemon_shutdown_disconnects_renderable_devices() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let device_id = DeviceId::new();
     let disconnects = Arc::new(AtomicUsize::new(0));
@@ -867,7 +1445,7 @@ async fn daemon_shutdown_disconnects_renderable_devices() {
 
     {
         let mut manager = state.backend_manager.lock().await;
-        manager.register_backend(Box::new(ShutdownCleanupBackend::new(
+        manager.register_backend(Arc::new(ShutdownCleanupBackend::new(
             device_id,
             Arc::clone(&disconnects),
         )));
@@ -913,8 +1491,11 @@ async fn daemon_state_device_registry_starts_empty() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     assert!(
         state.device_registry.is_empty().await,
@@ -927,18 +1508,21 @@ async fn daemon_state_default_scene_starts_with_default_zone() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert!(
         scenes.active_scene_id().is_some_and(SceneId::is_default),
         "default scene should be active initially"
     );
-    let groups = scenes.active_render_groups();
-    assert_eq!(groups.len(), 1, "default scene should start with a zone");
-    assert_eq!(groups[0].name, "Default zone");
-    assert_eq!(groups[0].role, ZoneRole::Primary);
+    let zones = scenes.resolved_zones();
+    assert_eq!(zones.len(), 1, "default scene should start with a zone");
+    assert_eq!(zones[0].name, "Default zone");
+    assert_eq!(zones[0].role, ZoneRole::Primary);
 }
 
 #[tokio::test]
@@ -946,10 +1530,13 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(
         scenes.scene_count(),
         1,
@@ -964,18 +1551,19 @@ async fn daemon_state_scene_manager_starts_with_default_scene() {
 #[tokio::test]
 async fn named_scenes_persist_across_restart() {
     let guard = TestDataDirGuard::new().await;
-    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let named_scene = hypercolor_core::scene::make_scene("Movie Night");
     let named_scene_id = named_scene.id;
-    store.replace_named_scenes([named_scene]);
-    store.save().expect("scene store should save");
+    write_scene_store(&guard.scenes_path(), [named_scene]);
 
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.scene_count(), 2);
     assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
     assert_eq!(
@@ -990,14 +1578,18 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
     let mut config = default_config();
     config.daemon.target_fps = 45;
     let temp = temp_config_file();
-    // Write specific config content so ConfigManager can load it.
+    // The manager is built over the same config the daemon boots with;
+    // the file only has to agree with it for the accessor to be honest.
     std::fs::write(
         temp.path(),
-        "schema_version = 3\n[daemon]\ntarget_fps = 45\n",
+        "schema_version = 5\n[daemon]\ntarget_fps = 45\n",
     )
     .expect("failed to write config");
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let snapshot = state.config();
     assert_eq!(snapshot.daemon.target_fps, 45);
@@ -1007,8 +1599,50 @@ async fn daemon_state_config_accessor_returns_loaded_config() {
 
 #[tokio::test]
 async fn signal_handler_channel_starts_false() {
-    let rx = install_signal_handlers();
+    let rx = install_signal_handlers(ParentLifetime::Kernel);
     assert!(!*rx.borrow(), "shutdown signal should start as false");
+}
+
+/// The platform waiter flips shutdown once the claimed parent exits. The
+/// claim must equal the live parent, so the test names its own parent and
+/// hands in a waiter that returns immediately, standing in for the kqueue
+/// watch firing.
+#[cfg(unix)]
+#[tokio::test]
+async fn parent_death_watch_flips_shutdown_when_the_waiter_returns() {
+    let parent = std::os::unix::process::parent_id();
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let mut rx = install_signal_handlers_with_parent_claim(
+        Some(parent),
+        ParentLifetime::Watch(Box::new(move |pid| {
+            let _ = seen_tx.send(pid);
+        })),
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), rx.changed())
+        .await
+        .expect("parent-death watch should flip shutdown")
+        .expect("watch sender should stay alive");
+    assert!(*rx.borrow());
+    assert_eq!(seen_rx.recv().expect("waiter ran"), parent);
+}
+
+/// A claim that does not match the live parent disarms the watch, so the
+/// waiter never runs and shutdown never flips on its own.
+#[cfg(unix)]
+#[tokio::test]
+async fn mismatched_parent_claim_disarms_the_watch() {
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let rx = install_signal_handlers_with_parent_claim(
+        Some(1),
+        ParentLifetime::Watch(Box::new(move |pid| {
+            let _ = seen_tx.send(pid);
+        })),
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!*rx.borrow());
+    assert!(seen_rx.try_recv().is_err());
 }
 
 // ── Shutdown Sequence ───────────────────────────────────────────────────────
@@ -1018,8 +1652,11 @@ async fn shutdown_is_idempotent() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     state.start().await.expect("start should succeed");
 
@@ -1032,6 +1669,53 @@ async fn shutdown_is_idempotent() {
         .shutdown()
         .await
         .expect("second shutdown should succeed");
+}
+
+#[tokio::test]
+async fn a_stale_runtime_snapshot_never_blocks_startup() {
+    let guard = TestDataDirGuard::new().await;
+    // A snapshot written before `driver_runtime_cache` was retired. The
+    // snapshot denies unknown fields, so this one no longer parses; the
+    // daemon must log it and start fresh rather than refuse to boot.
+    std::fs::create_dir_all(
+        guard
+            .runtime_state_path()
+            .parent()
+            .expect("runtime state path has a parent"),
+    )
+    .expect("data directory should be created");
+    std::fs::write(
+        guard.runtime_state_path(),
+        serde_json::json!({
+            "active_scene_id": null,
+            "default_scene_zones": [],
+            "active_layout_id": "layout_gone",
+            "global_brightness": 0.25,
+            "manual_paused": true,
+            "driver_runtime_cache": {},
+        })
+        .to_string(),
+    )
+    .expect("stale snapshot should be written");
+
+    let mut config = default_config();
+    config.daemon.start_scene = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("a stale snapshot must not block initialization");
+
+    state
+        .start()
+        .await
+        .expect("a stale snapshot must not block startup");
+
+    // Nothing from the unreadable snapshot was restored.
+    assert!((state.output_power.global_brightness() - 1.0).abs() < f32::EPSILON);
+
+    state.shutdown().await.expect("shutdown should succeed");
 }
 
 #[tokio::test]
@@ -1048,40 +1732,89 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     layouts.insert(restored_layout.id.clone(), restored_layout.clone());
-    layout_store::save(&guard.layouts_path(), &layouts).expect("layout store should save");
+    write_layout_store_fixture(&guard.layouts_path(), &layouts);
     runtime_state::save(
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: Vec::new(),
+            default_scene_zones: Vec::new(),
             active_layout_id: Some(restored_layout.id.clone()),
-            global_brightness: 1.0,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
+            manual_paused: false,
         },
     )
     .expect("runtime state should save");
 
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
-    assert_eq!(state.layouts_path, guard.layouts_path());
     assert_eq!(state.runtime_state_path, guard.runtime_state_path());
 
     state.start().await.expect("start should succeed");
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     assert_eq!(active_layout.id, restored_layout.id);
     assert_eq!(active_layout.name, restored_layout.name);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_discards_legacy_runtime_brightness_and_restores_pause() {
+    let guard = TestDataDirGuard::new().await;
+    let runtime_path = guard.runtime_state_path();
+    std::fs::create_dir_all(
+        runtime_path
+            .parent()
+            .expect("runtime state path should have a parent"),
+    )
+    .expect("runtime state directory should build");
+    std::fs::write(
+        &runtime_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "active_scene_id": SceneId::DEFAULT.to_string(),
+            "default_scene_zones": [],
+            "active_layout_id": null,
+            "global_brightness": 0.42,
+            "manual_paused": true,
+        }))
+        .expect("legacy runtime snapshot should serialize"),
+    )
+    .expect("legacy runtime snapshot should write");
+
+    let mut config = default_config();
+    config.daemon.start_scene = "default".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+
+    state.start().await.expect("start should succeed");
+
+    assert!(state.output_power.snapshot().manually_paused());
+    assert_eq!(state.output_power.global_brightness(), 1.0);
+    let rewritten: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&runtime_path).expect("rewritten runtime snapshot should read"),
+    )
+    .expect("rewritten runtime snapshot should parse");
+    assert!(rewritten.get("global_brightness").is_none());
+    assert_eq!(
+        state.render_loop.read().await.state(),
+        RenderLoopState::Paused
+    );
 
     state.shutdown().await.expect("shutdown should succeed");
 }
@@ -1100,25 +1833,27 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     layouts.insert(custom_layout.id.clone(), custom_layout);
-    layout_store::save(&guard.layouts_path(), &layouts).expect("layout store should save");
+    write_layout_store_fixture(&guard.layouts_path(), &layouts);
 
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     let persisted = layout_store::load(&guard.layouts_path()).expect("layout store should load");
     assert!(persisted.contains_key("default"));
     assert!(persisted.contains_key("layout_custom"));
-    assert_eq!(state.layouts_path, guard.layouts_path());
-
-    let in_memory = state.layouts.read().await;
-    let default_layout = in_memory
-        .get("default")
+    let default_layout = state
+        .domains
+        .layout
+        .resolve("default")
+        .await
         .expect("default layout should be present in memory");
     assert_eq!(default_layout.name, "Default Layout");
     assert_eq!(default_layout.canvas_width, config.daemon.canvas_width);
@@ -1130,8 +1865,11 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
     let guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     assert_eq!(state.runtime_state_path, guard.runtime_state_path());
     state.start().await.expect("start should succeed");
@@ -1148,18 +1886,24 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
 
     {
         let layout = {
-            let spatial = state.spatial_engine.read().await;
+            let spatial = state.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(
+        let api_state = AppState::from_daemon_state(&state);
+        let mut mutation = api_state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_primary_zone(
                 &metadata,
                 std::collections::HashMap::new(),
                 Some(preset_id),
                 layout,
+                hypercolor_types::event::ChangeTrigger::System,
+                None,
             )
             .expect("native effect should activate");
+        hypercolor_daemon::domain::scene::commit_scene(&api_state.domains.scene, mutation)
+            .await
+            .expect("native effect should commit");
     }
 
     let mut wled_metadata = std::collections::HashMap::new();
@@ -1175,7 +1919,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
                 model: None,
                 connection_type: ConnectionType::Network,
                 origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-                zones: vec![ZoneInfo {
+                segments: vec![SegmentInfo {
                     name: "Main".to_owned(),
                     led_count: 30,
                     topology: DeviceTopologyHint::Strip,
@@ -1185,7 +1929,7 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
                 firmware_version: Some("0.15.3".to_owned()),
                 capabilities: DeviceCapabilities::default(),
             },
-            DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned()),
+            DeviceFingerprint::from_persisted("net:aa:bb:cc:dd:ee:ff".to_owned()),
             wled_metadata,
         )
         .await;
@@ -1196,14 +1940,19 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
         .expect("runtime state should load")
         .expect("runtime state snapshot should exist");
     assert_eq!(snapshot.active_scene_id, Some(SceneId::DEFAULT.to_string()));
-    assert_eq!(snapshot.default_scene_groups.len(), 1);
-    assert_eq!(
-        snapshot.default_scene_groups[0].effect_id,
-        Some(metadata.id)
-    );
-    assert_eq!(snapshot.default_scene_groups[0].preset_id, Some(preset_id));
-    assert!(snapshot.driver_runtime_cache.is_empty());
-    let wled_cache = state.driver_host.driver_inventory().driver_cache("wled");
+    assert_eq!(snapshot.default_scene_zones.len(), 1);
+    assert!(matches!(
+        snapshot.default_scene_zones[0]
+            .layers
+            .first()
+            .map(|layer| &layer.source),
+        Some(LayerSource::Effect {
+            effect_id,
+            preset_id: Some(candidate),
+            ..
+        }) if *effect_id == metadata.id && *candidate == preset_id
+    ));
+    let wled_cache = state.driver_host().driver_inventory().driver_cache("wled");
     let probe_ips: Vec<std::net::IpAddr> = serde_json::from_value(wled_cache["probe_ips"].clone())
         .expect("probe IP inventory should deserialize");
     assert_eq!(
@@ -1213,22 +1962,16 @@ async fn runtime_state_and_driver_inventory_persist_independently() {
 }
 
 #[tokio::test]
-async fn daemon_start_restores_named_active_scene_and_default_groups() {
+async fn daemon_start_restores_named_active_scene_and_default_zones() {
     let guard = TestDataDirGuard::new().await;
-    let mut store = SceneStore::new(guard.scenes_path()).expect("scene store");
     let named_scene = hypercolor_core::scene::make_scene("Focus");
     let named_scene_id = named_scene.id;
-    store.replace_named_scenes([named_scene]);
-    store.save().expect("scene store should save");
+    write_scene_store(&guard.scenes_path(), [named_scene]);
 
-    let default_group = Zone {
+    let default_zone = Zone {
         id: ZoneId::new(),
-        name: "Saved Default Group".to_owned(),
+        name: "Saved Default Zone".to_owned(),
         description: None,
-        effect_id: None,
-        controls: std::collections::HashMap::new(),
-        control_bindings: std::collections::HashMap::new(),
-        preset_id: None,
         layers: Vec::new(),
         layout: SpatialLayout {
             id: "default_saved".to_owned(),
@@ -1239,7 +1982,6 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
             zones: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         },
         brightness: 1.0,
@@ -1254,29 +1996,106 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(named_scene_id.to_string()),
-            default_scene_groups: vec![default_group.clone()],
+            default_scene_zones: vec![default_zone.clone()],
             active_layout_id: None,
-            global_brightness: 1.0,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
+            manual_paused: false,
         },
     )
     .expect("runtime state should save");
 
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     state.start().await.expect("start should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.active_scene_id(), Some(&named_scene_id));
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    assert_eq!(default_scene.groups, vec![default_group]);
+    assert_eq!(default_scene.zones, vec![default_zone]);
     drop(scenes);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_activates_configured_scene_name_without_runtime_snapshot() {
+    let guard = TestDataDirGuard::new().await;
+    let selected_layout = SpatialLayout {
+        id: "startup_evening".into(),
+        name: "Startup Evening".into(),
+        description: None,
+        canvas_width: 512,
+        canvas_height: 256,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        version: 1,
+    };
+    write_layout_store_fixture(
+        &guard.layouts_path(),
+        &std::collections::HashMap::from([(selected_layout.id.clone(), selected_layout.clone())]),
+    );
+    let mut named_scene = hypercolor_core::scene::make_scene("Evening");
+    let named_scene_id = named_scene.id;
+    named_scene.layout_id = Some(LayoutId::new(&selected_layout.id).expect("valid layout id"));
+    named_scene.activation_brightness = Some(0.35);
+    write_scene_store(&guard.scenes_path(), [named_scene]);
+
+    let mut config = default_config();
+    config.daemon.start_scene = "evening".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+
+    assert!(!guard.runtime_state_path().exists());
+    state.start().await.expect("start should succeed");
+
+    assert_eq!(
+        state.scene_manager.snapshot().await.active_scene_id(),
+        Some(&named_scene_id)
+    );
+    assert!((state.output_power.global_brightness() - 0.35).abs() < f32::EPSILON);
+    assert_eq!(
+        state.spatial_engine.snapshot().layout().id,
+        selected_layout.id
+    );
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_activates_configured_scene_id() {
+    let guard = TestDataDirGuard::new().await;
+    let named_scene = hypercolor_core::scene::make_scene("Focus");
+    let named_scene_id = named_scene.id;
+    write_scene_store(&guard.scenes_path(), [named_scene]);
+
+    let mut config = default_config();
+    config.daemon.start_scene = named_scene_id.to_string();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+
+    state.start().await.expect("start should succeed");
+
+    assert_eq!(
+        state.scene_manager.snapshot().await.active_scene_id(),
+        Some(&named_scene_id)
+    );
 
     state.shutdown().await.expect("shutdown should succeed");
 }
@@ -1285,10 +2104,13 @@ async fn daemon_start_restores_named_active_scene_and_default_groups() {
 async fn default_scene_contents_restore_on_restart() {
     let guard = TestDataDirGuard::new().await;
     let mut config = default_config();
-    config.daemon.start_profile = "last".into();
+    config.daemon.start_scene = "last".into();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
     let effect_id = {
         let registry = state.effect_registry.read().await;
         registry
@@ -1299,23 +2121,27 @@ async fn default_scene_contents_restore_on_restart() {
             })
             .expect("breathing effect should be registered")
     };
+    let zone_id = ZoneId::new();
+    let controls = std::collections::HashMap::from([(
+        "speed".to_owned(),
+        hypercolor_types::control::ControlValue::Float(4.5),
+    )]);
 
     runtime_state::save(
         &guard.runtime_state_path(),
         &runtime_state::RuntimeSessionSnapshot {
             active_scene_id: Some(SceneId::DEFAULT.to_string()),
-            default_scene_groups: vec![Zone {
-                id: ZoneId::new(),
-                name: "Saved Default Group".to_owned(),
+            default_scene_zones: vec![Zone {
+                id: zone_id,
+                name: "Saved Default Zone".to_owned(),
                 description: Some("Restored from runtime snapshot".to_owned()),
-                effect_id: Some(effect_id),
-                controls: std::collections::HashMap::from([(
-                    "speed".to_owned(),
-                    hypercolor_types::effect::ControlValue::Float(4.5),
-                )]),
-                control_bindings: std::collections::HashMap::new(),
-                preset_id: None,
-                layers: Vec::new(),
+                layers: vec![SceneLayer::from_effect(
+                    SceneLayerId::new(),
+                    effect_id,
+                    controls,
+                    std::collections::HashMap::new(),
+                    None,
+                )],
                 layout: SpatialLayout {
                     id: "default_saved".to_owned(),
                     name: "Saved Default Layout".to_owned(),
@@ -1325,7 +2151,6 @@ async fn default_scene_contents_restore_on_restart() {
                     zones: Vec::new(),
                     default_sampling_mode: SamplingMode::Bilinear,
                     default_edge_behavior: EdgeBehavior::Clamp,
-                    spaces: None,
                     version: 1,
                 },
                 brightness: 0.75,
@@ -1337,28 +2162,161 @@ async fn default_scene_contents_restore_on_restart() {
                 layers_version: 0,
             }],
             active_layout_id: None,
-            global_brightness: 1.0,
-            driver_runtime_cache: std::collections::BTreeMap::new(),
+            manual_paused: false,
         },
     )
     .expect("runtime state should save");
 
     state.start().await.expect("start should succeed");
 
-    let scenes = state.scene_manager.read().await;
+    let scenes = state.scene_manager.snapshot().await;
     assert_eq!(scenes.active_scene_id(), Some(&SceneId::DEFAULT));
     let default_scene = scenes
         .get(&SceneId::DEFAULT)
         .expect("default scene should exist");
-    assert_eq!(default_scene.groups.len(), 1);
-    assert_eq!(default_scene.groups[0].name, "Saved Default Group");
-    assert_eq!(default_scene.groups[0].effect_id, Some(effect_id));
-    assert_eq!(
-        default_scene.groups[0].controls.get("speed"),
-        Some(&hypercolor_types::effect::ControlValue::Float(4.5))
-    );
-    assert_eq!(default_scene.groups[0].brightness, 0.75);
+    assert_eq!(default_scene.zones.len(), 1);
+    assert_eq!(default_scene.zones[0].name, "Saved Default Zone");
+    assert!(matches!(
+        default_scene.zones[0]
+            .layers
+            .first()
+            .map(|layer| &layer.source),
+        Some(LayerSource::Effect {
+            effect_id: candidate,
+            controls,
+            ..
+        }) if *candidate == effect_id
+            && controls.get("speed")
+                == Some(&hypercolor_types::control::ControlValue::Float(4.5))
+    ));
+    assert_eq!(default_scene.zones[0].brightness, 0.75);
     drop(scenes);
+
+    state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn paused_startup_seeds_and_reasserts_late_connected_device_output() {
+    let guard = TestDataDirGuard::new().await;
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_scene_id: Some(SceneId::DEFAULT.to_string()),
+            manual_paused: true,
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("runtime state should save");
+
+    let mut config = default_config();
+    config.daemon.start_scene = "last".into();
+    config.discovery.background_enabled = false;
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
+    state.start().await.expect("start should succeed");
+
+    let device_id = DeviceId::new();
+    let layout_device_id = device_id.to_string();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let write_notify = Arc::new(tokio::sync::Notify::new());
+    state
+        .device_registry
+        .add(DeviceInfo {
+            id: device_id,
+            name: "Late Paused Strip".to_owned(),
+            vendor: "TestVendor".to_owned(),
+            family: DeviceFamily::new_static("static-hold-test", "Static Hold Test"),
+            model: None,
+            connection_type: ConnectionType::Usb,
+            origin: DeviceOrigin::native(
+                "static-hold-test",
+                "static-hold-test",
+                ConnectionType::Usb,
+            ),
+            segments: vec![SegmentInfo {
+                name: "Main".to_owned(),
+                led_count: 30,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+                layout_hint: None,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 30,
+                supports_direct: true,
+                max_fps: 60,
+                ..DeviceCapabilities::default()
+            },
+        })
+        .await;
+    assert!(
+        state
+            .device_registry
+            .set_state(&device_id, hypercolor_types::device::DeviceState::Connected,)
+            .await,
+        "late device should enter connected state"
+    );
+    let api_state = Arc::new(AppState::from_daemon_state(&state));
+    let response = hypercolor_daemon::api::layouts::preview_layout(
+        State(api_state),
+        axum::Json(SpatialLayout {
+            id: "late-paused-layout".to_owned(),
+            name: "Late Paused Layout".to_owned(),
+            description: None,
+            canvas_width: 32,
+            canvas_height: 18,
+            zones: vec![test_zone("late-paused-zone", &layout_device_id)],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            version: 1,
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), http::StatusCode::OK);
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Arc::new(StaticHoldRecordingBackend {
+            writes: Arc::clone(&writes),
+            write_notify: Arc::clone(&write_notify),
+        }));
+        manager
+            .connect_device("static-hold-test", device_id, &layout_device_id)
+            .await
+            .expect("late device should connect while output is paused");
+    }
+
+    state.event_bus.publish(HypercolorEvent::DeviceConnected {
+        device_id: device_id.to_string(),
+        name: "Late Paused Strip".to_owned(),
+        origin: DeviceOrigin::native("static-hold-test", "static-hold-test", ConnectionType::Usb),
+        led_count: 30,
+        zones: Vec::new(),
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let notified = write_notify.notified();
+            if writes.load(Ordering::Acquire) >= 2 {
+                break;
+            }
+            notified.await;
+        }
+    })
+    .await
+    .expect("late-connected device should receive black and a repeated hold");
+    let scene_canvas = state.event_bus.scene_canvas_receiver();
+    let scene_canvas = scene_canvas.borrow();
+    assert!(scene_canvas.width > 0);
+    assert!(
+        scene_canvas
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| { pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0 && pixel[3] == 255 })
+    );
 
     state.shutdown().await.expect("shutdown should succeed");
 }
@@ -1368,8 +2326,11 @@ async fn event_bus_receives_startup_event() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("initialization should succeed");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("initialization should succeed");
 
     // Subscribe before starting so we catch the DaemonStarted event.
     let mut rx = state.event_bus.subscribe_all();
@@ -1418,7 +2379,6 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {
@@ -1467,7 +2427,6 @@ fn collect_unmapped_driver_layout_targets_groups_missing_registered_driver_prefi
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {
@@ -1522,7 +2481,6 @@ fn collect_unmapped_prefixed_layout_targets_ignores_unmatched_prefixes() {
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
     let routing = BackendRoutingDebugSnapshot {
@@ -1570,842 +2528,22 @@ fn test_zone(id: &str, device_id: &str) -> Output {
     }
 }
 
-#[test]
-fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "Desk Strip".to_owned(),
-        vendor: "Test".to_owned(),
-        family: DeviceFamily::new_static("fixture-strip", "Fixture Strip"),
-        model: None,
-        connection_type: ConnectionType::Network,
-        origin: DeviceOrigin::native("fixture-strip", "fixture-output", ConnectionType::Network),
-        zones: vec![ZoneInfo {
-            name: "Main".to_owned(),
-            led_count: 30,
-            topology: DeviceTopologyHint::Strip,
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: None,
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let added = discovery::append_auto_layout_zones_for_device(
-        &mut layout,
-        "fixture-strip:desk-strip",
-        &info,
-    );
-
-    assert_eq!(added, 1);
-    assert_eq!(layout.zones.len(), 1);
-    assert_eq!(layout.zones[0].device_id, "fixture-strip:desk-strip");
-    assert_eq!(layout.zones[0].zone_name, Some("Main".to_owned()));
-    assert_eq!(layout.zones[0].name, "Desk Strip");
-    assert_eq!(
-        layout.zones[0].topology,
-        LedTopology::Strip {
-            count: 30,
-            direction: StripDirection::LeftToRight,
-        }
-    );
-}
-
-#[test]
-fn append_auto_layout_zones_for_device_skips_display_only_devices() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "LCD Panel".to_owned(),
-        vendor: "Test".to_owned(),
-        family: DeviceFamily::named("display"),
-        model: None,
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("display", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
-            name: "Screen".to_owned(),
-            led_count: 1,
-            topology: DeviceTopologyHint::Display {
-                width: 320,
-                height: 320,
-                circular: true,
-            },
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: None,
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities {
-            has_display: true,
-            display_resolution: Some((320, 320)),
-            ..DeviceCapabilities::default()
-        },
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let added = discovery::append_auto_layout_zones_for_device(&mut layout, "usb:lcd-panel", &info);
-
-    assert_eq!(added, 0);
-    assert!(layout.zones.is_empty());
-}
-
-fn compact_perimeter_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
-        6,
-        2,
-        &[
-            (1, 0),
-            (2, 0),
-            (3, 0),
-            (4, 0),
-            (0, 1),
-            (1, 1),
-            (2, 1),
-            (3, 1),
-            (4, 1),
-            (5, 1),
-        ],
-    )
-    .with_size(NormalizedPosition::new(0.2, 0.08))
-    .with_shape(ZoneShape::Rectangle)
-}
-
-fn asymmetric_pointer_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
-        7,
-        8,
-        &[
-            (3, 5),
-            (3, 1),
-            (1, 1),
-            (0, 2),
-            (0, 3),
-            (0, 4),
-            (2, 6),
-            (4, 6),
-            (5, 3),
-            (6, 2),
-            (6, 1),
-        ],
-    )
-    .with_size(NormalizedPosition::new(0.16, 0.18))
-    .with_shape(ZoneShape::Rectangle)
-}
-
-fn outer_ring_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
-        13,
-        13,
-        &[
-            (12, 6),
-            (11, 8),
-            (10, 10),
-            (8, 11),
-            (6, 12),
-            (4, 11),
-            (2, 10),
-            (1, 8),
-            (0, 6),
-            (1, 4),
-            (2, 2),
-            (4, 1),
-            (6, 0),
-            (8, 1),
-            (10, 2),
-            (11, 4),
-            (8, 6),
-            (6, 8),
-            (4, 6),
-            (6, 4),
-        ],
-    )
-    .with_size(NormalizedPosition::new(0.16, 0.16))
-    .with_shape(ZoneShape::Ring)
-    .co_located()
-}
-
-fn inner_ring_layout_hint() -> ZoneLayoutHint {
-    ZoneLayoutHint::custom_grid(
-        11,
-        11,
-        &[
-            (10, 5),
-            (9, 6),
-            (9, 7),
-            (8, 8),
-            (7, 9),
-            (6, 9),
-            (5, 10),
-            (4, 9),
-            (3, 9),
-            (2, 8),
-            (1, 7),
-            (1, 6),
-            (0, 5),
-            (1, 4),
-            (1, 3),
-            (2, 2),
-            (3, 1),
-            (4, 1),
-            (5, 0),
-            (6, 1),
-            (7, 1),
-            (8, 2),
-            (9, 3),
-            (9, 4),
-        ],
-    )
-    .with_size(NormalizedPosition::new(0.19, 0.19))
-    .with_shape(ZoneShape::Ring)
-    .co_located()
-}
-
-#[test]
-fn append_auto_layout_zones_uses_device_declared_compact_custom_geometry() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "Compact Custom Device".to_owned(),
-        vendor: "Layout Driver".to_owned(),
-        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
-        model: None,
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
-            name: "Main".to_owned(),
-            led_count: 10,
-            topology: DeviceTopologyHint::Strip,
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: Some(compact_perimeter_layout_hint()),
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let added = discovery::append_auto_layout_zones_for_device(
-        &mut layout,
-        "usb:driver:compact:test",
-        &info,
-    );
-
-    assert_eq!(added, 1);
-    match &layout.zones[0].topology {
-        LedTopology::Custom { positions } => {
-            assert_eq!(positions.len(), 10);
-            assert!((positions[0].x - 0.2).abs() < 0.001);
-            assert!((positions[0].y - 0.0).abs() < 0.001);
-            assert!((positions[9].x - 1.0).abs() < 0.001);
-            assert!((positions[9].y - 1.0).abs() < 0.001);
-        }
-        other => panic!("expected custom topology, got {other:?}"),
-    }
-    assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
-}
-
-#[test]
-fn append_auto_layout_zones_uses_device_declared_asymmetric_custom_geometry() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "Asymmetric Custom Device".to_owned(),
-        vendor: "Layout Driver".to_owned(),
-        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
-        model: None,
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
-            name: "Main".to_owned(),
-            led_count: 11,
-            topology: DeviceTopologyHint::Matrix { rows: 1, cols: 11 },
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: Some(asymmetric_pointer_layout_hint()),
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let added = discovery::append_auto_layout_zones_for_device(
-        &mut layout,
-        "usb:driver:asymmetric:test",
-        &info,
-    );
-
-    assert_eq!(added, 1);
-    match &layout.zones[0].topology {
-        LedTopology::Custom { positions } => {
-            assert_eq!(positions.len(), 11);
-            assert!((positions[0].x - 0.5).abs() < 0.001);
-            assert!((positions[0].y - (5.0 / 7.0)).abs() < 0.001);
-            assert!((positions[10].x - 1.0).abs() < 0.001);
-            assert!((positions[10].y - (1.0 / 7.0)).abs() < 0.001);
-        }
-        other => panic!("expected custom topology, got {other:?}"),
-    }
-    assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.16, 0.18));
-}
-
-#[test]
-fn append_auto_layout_zones_preserves_device_declared_colocated_ring_geometry() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "Stacked Ring Controller".to_owned(),
-        vendor: "Layout Driver".to_owned(),
-        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
-        model: None,
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
-                name: "Outer Ring".to_owned(),
-                led_count: 20,
-                topology: DeviceTopologyHint::Ring { count: 20 },
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(outer_ring_layout_hint()),
-            },
-            ZoneInfo {
-                name: "Inner Ring".to_owned(),
-                led_count: 24,
-                topology: DeviceTopologyHint::Ring { count: 24 },
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(inner_ring_layout_hint()),
-            },
-        ],
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let added = discovery::append_auto_layout_zones_for_device(
-        &mut layout,
-        "usb:driver:stacked-rings:test",
-        &info,
-    );
-
-    assert_eq!(added, 2);
-    let outer = layout
-        .zones
-        .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("Outer Ring"))
-        .expect("expected outer ring auto-layout zone");
-    let inner = layout
-        .zones
-        .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("Inner Ring"))
-        .expect("expected inner ring auto-layout zone");
-
-    assert_eq!(outer.position, inner.position);
-    match &outer.topology {
-        LedTopology::Custom { positions } => {
-            assert_eq!(positions.len(), 20);
-            assert!((positions[0].x - 1.0).abs() < 0.001);
-            assert!((positions[0].y - 0.5).abs() < 0.001);
-            assert!((positions[16].x - (8.0 / 12.0)).abs() < 0.001);
-            assert!((positions[19].y - (4.0 / 12.0)).abs() < 0.001);
-        }
-        other => panic!("expected custom topology, got {other:?}"),
-    }
-    match &inner.topology {
-        LedTopology::Custom { positions } => {
-            assert_eq!(positions.len(), 24);
-            assert!((positions[0].x - 1.0).abs() < 0.001);
-            assert!((positions[0].y - 0.5).abs() < 0.001);
-            assert!((positions[12].x - 0.0).abs() < 0.001);
-            assert!((positions[12].y - 0.5).abs() < 0.001);
-        }
-        other => panic!("expected custom topology, got {other:?}"),
-    }
-    assert_eq!(outer.size, NormalizedPosition::new(0.16, 0.16));
-    assert_eq!(inner.size, NormalizedPosition::new(0.19, 0.19));
-    assert_eq!(
-        outer.shape,
-        Some(hypercolor_types::spatial::ZoneShape::Ring)
-    );
-    assert_eq!(
-        inner.shape,
-        Some(hypercolor_types::spatial::ZoneShape::Ring)
-    );
-}
-
-#[test]
-fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panicking() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "Ableton Push 2".to_owned(),
-        vendor: "Ableton".to_owned(),
-        family: DeviceFamily::named("Ableton"),
-        model: Some("push2".to_owned()),
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("ableton", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
-                name: "Pads".to_owned(),
-                led_count: 64,
-                topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            },
-            ZoneInfo {
-                name: "Buttons Above".to_owned(),
-                led_count: 8,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            },
-            ZoneInfo {
-                name: "Buttons Below".to_owned(),
-                led_count: 8,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            },
-            ZoneInfo {
-                name: "Scene Launch".to_owned(),
-                led_count: 8,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            },
-            ZoneInfo {
-                name: "Transport".to_owned(),
-                led_count: 4,
-                topology: DeviceTopologyHint::Custom,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            },
-            ZoneInfo {
-                name: "Touch Strip".to_owned(),
-                led_count: 31,
-                topology: DeviceTopologyHint::Strip,
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: None,
-            },
-        ],
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: Vec::new(),
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let added =
-        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:2982:1967:test", &info);
-
-    assert_eq!(added, 6);
-    assert_eq!(layout.zones.len(), 6);
-    assert_eq!(layout.zones[0].name, "Ableton Push 2: Pads");
-    assert!((layout.zones[0].size.x - 0.18).abs() < 0.001);
-    assert!((layout.zones[0].size.y - 0.03).abs() < 0.001);
-    assert_eq!(
-        layout.zones[0].topology,
-        LedTopology::Matrix {
-            width: 8,
-            height: 8,
-            serpentine: false,
-            start_corner: hypercolor_types::spatial::Corner::TopLeft,
-        }
-    );
-}
-
-#[test]
-fn reconcile_auto_layout_zones_for_device_updates_existing_custom_auto_zone() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "Compact Custom Device".to_owned(),
-        vendor: "Layout Driver".to_owned(),
-        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
-        model: None,
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
-            name: "Channel 1".to_owned(),
-            led_count: 10,
-            topology: DeviceTopologyHint::Strip,
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: Some(compact_perimeter_layout_hint()),
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: vec![Output {
-            id: "auto-usb-driver-compact-test-channel-01".to_owned(),
-            name: "Compact Custom Device".to_owned(),
-            device_id: "usb:driver:compact:test".to_owned(),
-            zone_name: Some("channel-01".to_owned()),
-
-            position: NormalizedPosition::new(0.5, 0.5),
-            size: NormalizedPosition::new(0.26, 0.1),
-            rotation: 0.0,
-            scale: 1.0,
-            orientation: None,
-            topology: LedTopology::Strip {
-                count: 10,
-                direction: StripDirection::LeftToRight,
-            },
-            led_positions: Vec::new(),
-            sampling_mode: Some(SamplingMode::Bilinear),
-            edge_behavior: Some(EdgeBehavior::Clamp),
-            shape: Some(hypercolor_types::spatial::ZoneShape::Rectangle),
-            shape_preset: None,
-            display_order: 0,
-            attachment: None,
-            brightness: None,
-            led_mapping: None,
-        }],
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let repaired = discovery::reconcile_auto_layout_zones_for_device(
-        &mut layout,
-        "usb:driver:compact:test",
-        &info,
-    );
-
-    assert_eq!(repaired, 1);
-    match &layout.zones[0].topology {
-        LedTopology::Custom { positions } => assert_eq!(positions.len(), 10),
-        other => panic!("expected custom topology, got {other:?}"),
-    }
-    assert_eq!(layout.zones[0].zone_name.as_deref(), Some("Channel 1"));
-    assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
-}
-
-#[test]
-fn reconcile_auto_layout_zones_repairs_device_declared_geometry_without_touching_rotation() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "Stacked Ring Controller".to_owned(),
-        vendor: "Layout Driver".to_owned(),
-        family: DeviceFamily::new_static("layout-driver", "Layout Driver"),
-        model: None,
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("layout-driver", "usb", ConnectionType::Usb),
-        zones: vec![
-            ZoneInfo {
-                name: "Outer Ring".to_owned(),
-                led_count: 20,
-                topology: DeviceTopologyHint::Ring { count: 20 },
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(outer_ring_layout_hint()),
-            },
-            ZoneInfo {
-                name: "Inner Ring".to_owned(),
-                led_count: 24,
-                topology: DeviceTopologyHint::Ring { count: 24 },
-                color_format: DeviceColorFormat::Rgb,
-                layout_hint: Some(inner_ring_layout_hint()),
-            },
-        ],
-        firmware_version: None,
-        capabilities: DeviceCapabilities::default(),
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: vec![
-            Output {
-                id: "auto-usb-driver-stacked-rings-test-outer-ring".to_owned(),
-                name: "Stacked Ring Controller: Outer Ring".to_owned(),
-                device_id: "usb:driver:stacked-rings:test".to_owned(),
-                zone_name: Some("Outer Ring".to_owned()),
-                position: NormalizedPosition::new(0.42, 0.55),
-                size: NormalizedPosition::new(0.08, 0.08),
-                rotation: 0.25,
-                scale: 1.0,
-                display_order: 0,
-                orientation: None,
-                topology: LedTopology::Ring {
-                    count: 20,
-                    start_angle: 0.0,
-                    direction: hypercolor_types::spatial::Winding::Clockwise,
-                },
-                led_positions: Vec::new(),
-                led_mapping: None,
-                sampling_mode: Some(SamplingMode::Bilinear),
-                edge_behavior: Some(EdgeBehavior::Clamp),
-                shape: Some(hypercolor_types::spatial::ZoneShape::Ring),
-                shape_preset: None,
-                attachment: None,
-                brightness: None,
-            },
-            Output {
-                id: "auto-usb-driver-stacked-rings-test-inner-ring".to_owned(),
-                name: "Stacked Ring Controller: Inner Ring".to_owned(),
-                device_id: "usb:driver:stacked-rings:test".to_owned(),
-                zone_name: Some("Inner Ring".to_owned()),
-                position: NormalizedPosition::new(0.42, 0.47),
-                size: NormalizedPosition::new(0.08, 0.08),
-                rotation: 3.0,
-                scale: 1.0,
-                display_order: 0,
-                orientation: None,
-                topology: LedTopology::Ring {
-                    count: 24,
-                    start_angle: 0.0,
-                    direction: hypercolor_types::spatial::Winding::Clockwise,
-                },
-                led_positions: Vec::new(),
-                led_mapping: None,
-                sampling_mode: Some(SamplingMode::Bilinear),
-                edge_behavior: Some(EdgeBehavior::Clamp),
-                shape: Some(hypercolor_types::spatial::ZoneShape::Ring),
-                shape_preset: None,
-                attachment: None,
-                brightness: None,
-            },
-        ],
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let repaired = discovery::reconcile_auto_layout_zones_for_device(
-        &mut layout,
-        "usb:driver:stacked-rings:test",
-        &info,
-    );
-
-    assert_eq!(repaired, 2);
-    let outer = layout
-        .zones
-        .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("Outer Ring"))
-        .expect("expected repaired outer ring zone");
-    let inner = layout
-        .zones
-        .iter()
-        .find(|zone| zone.zone_name.as_deref() == Some("Inner Ring"))
-        .expect("expected repaired inner ring zone");
-
-    assert!((outer.rotation - 0.25).abs() < f32::EPSILON);
-    assert!((inner.rotation - 3.0).abs() < f32::EPSILON);
-    assert_eq!(outer.size, NormalizedPosition::new(0.16, 0.16));
-    assert_eq!(inner.size, NormalizedPosition::new(0.19, 0.19));
-    match &outer.topology {
-        LedTopology::Custom { positions } => assert_eq!(positions.len(), 20),
-        other => panic!("expected custom topology, got {other:?}"),
-    }
-    match &inner.topology {
-        LedTopology::Custom { positions } => assert_eq!(positions.len(), 24),
-        other => panic!("expected custom topology, got {other:?}"),
-    }
-}
-
-#[test]
-fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
-    let device_id = DeviceId::new();
-    let info = DeviceInfo {
-        id: device_id,
-        name: "PrismRGB Prism S".to_owned(),
-        vendor: "PrismRGB".to_owned(),
-        family: DeviceFamily::new_static("prismrgb", "PrismRGB"),
-        model: Some("prism_s".to_owned()),
-        connection_type: ConnectionType::Usb,
-        origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
-            .with_protocol_id("prismrgb/prism-s"),
-        zones: vec![ZoneInfo {
-            name: "GPU Strimer".to_owned(),
-            led_count: 108,
-            topology: DeviceTopologyHint::Matrix { rows: 4, cols: 27 },
-            color_format: DeviceColorFormat::Rgb,
-            layout_hint: None,
-        }],
-        firmware_version: None,
-        capabilities: DeviceCapabilities {
-            led_count: 108,
-            ..DeviceCapabilities::default()
-        },
-    };
-    let mut layout = SpatialLayout {
-        id: "default".to_owned(),
-        name: "Default Layout".to_owned(),
-        description: None,
-        canvas_width: 320,
-        canvas_height: 200,
-        zones: vec![
-            Output {
-                id: "auto-usb-prism-s-test-atx-strimer".to_owned(),
-                name: "PrismRGB Prism S: ATX Strimer".to_owned(),
-                device_id: "usb:prism-s:test".to_owned(),
-                zone_name: Some("ATX Strimer".to_owned()),
-
-                position: NormalizedPosition::new(0.5, 0.5),
-                size: NormalizedPosition::new(0.25, 0.1),
-                rotation: 0.0,
-                scale: 1.0,
-                orientation: None,
-                topology: LedTopology::Matrix {
-                    width: 20,
-                    height: 6,
-                    serpentine: false,
-                    start_corner: hypercolor_types::spatial::Corner::TopLeft,
-                },
-                led_positions: Vec::new(),
-                sampling_mode: Some(SamplingMode::Bilinear),
-                edge_behavior: Some(EdgeBehavior::Clamp),
-                shape: Some(hypercolor_types::spatial::ZoneShape::Rectangle),
-                shape_preset: None,
-                display_order: 0,
-                attachment: None,
-                brightness: None,
-                led_mapping: None,
-            },
-            Output {
-                id: "auto-usb-prism-s-test-gpu-strimer".to_owned(),
-                name: "PrismRGB Prism S: GPU Strimer".to_owned(),
-                device_id: "usb:prism-s:test".to_owned(),
-                zone_name: Some("GPU Strimer".to_owned()),
-
-                position: NormalizedPosition::new(0.5, 0.5),
-                size: NormalizedPosition::new(0.25, 0.1),
-                rotation: 0.0,
-                scale: 1.0,
-                orientation: None,
-                topology: LedTopology::Matrix {
-                    width: 27,
-                    height: 6,
-                    serpentine: false,
-                    start_corner: hypercolor_types::spatial::Corner::TopLeft,
-                },
-                led_positions: Vec::new(),
-                sampling_mode: Some(SamplingMode::Bilinear),
-                edge_behavior: Some(EdgeBehavior::Clamp),
-                shape: Some(hypercolor_types::spatial::ZoneShape::Rectangle),
-                shape_preset: None,
-                display_order: 0,
-                attachment: None,
-                brightness: None,
-                led_mapping: None,
-            },
-        ],
-
-        default_sampling_mode: SamplingMode::Bilinear,
-        default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
-        version: 1,
-    };
-
-    let repaired =
-        discovery::reconcile_auto_layout_zones_for_device(&mut layout, "usb:prism-s:test", &info);
-
-    assert_eq!(repaired, 2);
-    assert_eq!(layout.zones.len(), 1);
-    assert_eq!(layout.zones[0].zone_name.as_deref(), Some("GPU Strimer"));
-    assert_eq!(
-        layout.zones[0].topology,
-        LedTopology::Matrix {
-            width: 27,
-            height: 4,
-            serpentine: false,
-            start_corner: hypercolor_types::spatial::Corner::TopLeft,
-        }
-    );
-}
-
 #[tokio::test]
-async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
+async fn effect_error_fallback_worker_clears_active_zones_when_configured() {
     let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
-    config.effect_engine.effect_error_fallback = EffectErrorFallbackPolicy::ClearGroups;
+    config.effect_engine.effect_error_fallback = EffectErrorFallbackPolicy::ClearZones;
     let temp = temp_config_file();
     std::fs::write(
         temp.path(),
         toml::to_string(&config).expect("serialize test config"),
     )
     .expect("write test config");
-    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
-        .expect("daemon state should initialize");
+    let mut state = DaemonState::initialize(
+        boot_config(&config),
+        config_manager_for(&config, temp.path()),
+    )
+    .expect("daemon state should initialize");
     state.start().await.expect("start should succeed");
 
     let metadata = {
@@ -2417,16 +2555,28 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
         entry.metadata.clone()
     };
 
-    let group_id = {
+    let zone_id = {
         let layout = {
-            let spatial = state.spatial_engine.read().await;
+            let spatial = state.spatial_engine.snapshot();
             spatial.layout().as_ref().clone()
         };
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&metadata, std::collections::HashMap::new(), None, layout)
+        let api_state = AppState::from_daemon_state(&state);
+        let mut mutation = api_state.scene_manager.begin_mutation().await;
+        let zone_id = mutation
+            .upsert_primary_zone(
+                &metadata,
+                std::collections::HashMap::new(),
+                None,
+                layout,
+                hypercolor_types::event::ChangeTrigger::System,
+                None,
+            )
             .expect("native effect should activate")
-            .id
+            .id;
+        hypercolor_daemon::domain::scene::commit_scene(&api_state.domains.scene, mutation)
+            .await
+            .expect("native effect should commit");
+        zone_id
     };
 
     let mut rx = state.event_bus.subscribe_all();
@@ -2438,10 +2588,10 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
 
     let mut saw_stopped = false;
     let mut saw_fallback_event = false;
-    let mut saw_group_update = false;
+    let mut saw_zone_update = false;
     let expected_effect_id = metadata.id.to_string();
     tokio::time::timeout(Duration::from_secs(3), async {
-        while !(saw_stopped && saw_fallback_event && saw_group_update) {
+        while !(saw_stopped && saw_fallback_event && saw_zone_update) {
             let event = rx.recv().await.expect("effect-error fallback event");
             match event.event {
                 HypercolorEvent::EffectStopped { effect, reason, .. }
@@ -2454,14 +2604,14 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
                     fallback,
                     ..
                 } if effect_id == expected_effect_id
-                    && fallback.as_deref() == Some("clear_groups") =>
+                    && fallback.as_deref() == Some("clear_zones") =>
                 {
                     saw_fallback_event = true;
                 }
-                HypercolorEvent::RenderGroupChanged {
-                    group_id: changed, ..
-                } if changed == group_id => {
-                    saw_group_update = true;
+                HypercolorEvent::ZoneChanged {
+                    zone_id: changed, ..
+                } if changed == zone_id => {
+                    saw_zone_update = true;
                 }
                 _ => {}
             }
@@ -2471,11 +2621,11 @@ async fn effect_error_fallback_worker_clears_active_groups_when_configured() {
     .expect("effect-error fallback worker should react");
 
     let cleared_effect = {
-        let scene_manager = state.scene_manager.read().await;
+        let scene_manager = state.scene_manager.snapshot().await;
         scene_manager
             .active_scene()
-            .and_then(|scene| scene.groups.iter().find(|group| group.id == group_id))
-            .and_then(|group| group.effect_id)
+            .and_then(|scene| scene.zones.iter().find(|zone| zone.id == zone_id))
+            .and_then(|zone| zone.effect_ids().next())
     };
     assert_eq!(cleared_effect, None);
 

@@ -12,16 +12,16 @@ the same event bus, so a brightness change made over the CLI shows up instantly
 in the web UI's preview and in any subscribed WebSocket client. There is one
 source of truth and four ways to reach it.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard, the same engine the API drives") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard, the same engine the API drives" />}}
 
 ## Pick your interface
 
-| Interface | Transport | Reach for it when |
-| --- | --- | --- |
-| [REST API](@/api/rest.md) | HTTP on `:9420` | Scripting, automation, one-shot reads and writes |
-| [WebSocket](@/api/websocket.md) | WS on `:9420` | Live state, canvas previews, spectrum streaming, low-latency UIs |
-| [CLI](@/api/cli.md) | HTTP client to the daemon | Terminal workflows, shell scripts, agent tooling |
-| [MCP server](@/api/mcp.md) | Streamable HTTP at `/mcp` | AI assistants and agents (16 tools, 5 resources, 3 prompts) |
+| Interface                       | Transport                 | Reach for it when                                                |
+| ------------------------------- | ------------------------- | ---------------------------------------------------------------- |
+| [REST API](@/api/rest.md)       | HTTP on `:9420`           | Scripting, automation, one-shot reads and writes                 |
+| [WebSocket](@/api/websocket.md) | WS on `:9420`             | Live state, canvas previews, spectrum streaming, low-latency UIs |
+| [CLI](@/api/cli.md)             | HTTP client to the daemon | Terminal workflows, shell scripts, agent tooling                 |
+| [MCP server](@/api/mcp.md)      | Streamable HTTP at `/mcp` | AI assistants and agents (17 tools, 5 resources, 3 prompts)      |
 
 REST and WebSocket share the same port and the same `AppState`. The CLI is a thin
 HTTP client over the REST surface with table/JSON/plain rendering on top. MCP is a
@@ -33,22 +33,22 @@ separate protocol mounted at `/mcp`, and it is the canonical AI-control path; th
 Everything the daemon serves lives at one of three places:
 
 - `/api/v1/...`: the REST and WebSocket surface (the bulk of the contract)
-- `/health` and `/preview`: top-level, not under `/api/v1`
+- `/health`: top-level, not under `/api/v1`
 - `/mcp`: the MCP server, top-level, mounted only when MCP is enabled
 
-The REST router groups its routes by domain. The full set, enumerated straight
-from the daemon's `build_router()`, is assets, attachments, capture, controls,
-control-surfaces (`control_values`), devices, drivers, displays, layers, layouts,
-profiles, scenes, scene zones (`scenes_zones`), settings, simulators, system,
-diagnose, access log, preview, and the WebSocket upgrade at `/api/v1/ws`. The
-[REST reference](@/api/rest.md) documents every one.
+The REST router groups routes by resource domain: assets, attachments, capture,
+control surfaces, devices, drivers, displays, effects, layouts, library,
+scenes, simulators, system, diagnostics, output, and the WebSocket
+upgrade at `/api/v1/ws`. Live render state has one root at `/api/v1/scene`.
+The [REST reference](@/api/rest.md) documents the complete surface.
 
-{% callout(type="info") %}
-**Zones live under scenes.** There is no top-level `/api/v1/zones` collection.
-Scenes are whole-rig configurations; zones are flexible canvas partitions inside
-a scene, addressed at `/api/v1/scenes/{id}/zones/...`. Scene and zone semantics
-are explained in the [Studio docs](@/studio/_index.md).
-{% end %}
+{% <callout type="info"> %}
+**Fine-grained edits target the live scene.** There is no top-level
+`/api/v1/zones` collection and no nested mutation tree under stored scenes.
+Read `/api/v1/scene`, then address its zones, members, and real layer ids below
+`/api/v1/scene/zones/...`. Scene and zone semantics are explained in the
+[Studio docs](@/studio/_index.md).
+{% </callout> %}
 
 ## The response envelope
 
@@ -72,8 +72,7 @@ Errors swap the top-level key from `data` to `error` and keep the same `meta`:
 {
   "error": {
     "code": "validation_error",
-    "message": "canvas_width must be positive",
-    "details": null
+    "message": "canvas_width must be positive"
   },
   "meta": { "api_version": "1.0", "request_id": "req_...", "timestamp": "..." }
 }
@@ -107,26 +106,26 @@ The MCP server speaks **Streamable HTTP** (not stdio, not plain SSE), mounted at
 `/mcp` by default and configurable through `McpConfig::base_path`. It is **off by
 default**, so enable it before any agent can connect.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 MCP must be turned on. Set `mcp.enabled = true` in your config (or use the
 config endpoints), then restart the daemon. The [MCP setup
 guide](@/agents/mcp-setup.md) leads with enabling it and provides copy-paste
 client config for Claude Code, Claude Desktop, Cursor, and Zed.
-{% end %}
+{% </callout> %}
 
 ## How the surfaces relate
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
-    Engine[Engine + AppState] --> Bus[HypercolorBus event bus]
-    Bus --> REST["REST /api/v1"]
-    Bus --> WS["WebSocket /api/v1/ws"]
-    Bus --> MCP["MCP /mcp"]
-    REST --> CLI[hypercolor CLI]
-    REST --> UI[Web UI + TUI]
-    WS --> UI
-    MCP --> Agents[AI agents]
-{% end %}
+Engine[Engine + AppState] --> Bus[HypercolorBus event bus]
+Bus --> REST["REST /api/v1"]
+Bus --> WS["WebSocket /api/v1/ws"]
+Bus --> MCP["MCP /mcp"]
+REST --> CLI[hypercolor CLI]
+REST --> UI[Web UI + TUI]
+WS --> UI
+MCP --> Agents[AI agents]
+{% </mermaid> %}
 
 ## Where to go next
 

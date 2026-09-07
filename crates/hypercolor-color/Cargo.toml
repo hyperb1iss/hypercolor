@@ -1,0 +1,25 @@
+[package]
+name = "hypercolor-color"
+description = "Color kernel for Hypercolor: pixel types, conversions, blending, and device encoding"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+serde = ["dep:serde"]
+schema = ["dep:utoipa"]
+
+[dependencies]
+serde = { workspace = true, optional = true }
+thiserror = { workspace = true }
+utoipa = { workspace = true, optional = true }
+
+[dev-dependencies]
+palette = "0.7"
+serde_json = { workspace = true }

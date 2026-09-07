@@ -71,4 +71,4 @@ The JSON report and terminal summary call out these pressure lanes:
 
 Investigate any nonzero steady-state growth before calling a soak clean. Some
 startup-time movement is expected during warmup; the acceptance window starts
-after `--warmup`.
+after `--warmup-ms`, which defaults to 5000.

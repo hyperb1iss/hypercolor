@@ -1,6 +1,6 @@
 //! Global zone + scene state.
 //!
-//! One shared `/scenes/active` resource and one `/scenes` list resource,
+//! One shared `/scene` resource and one `/scenes` list resource,
 //! refreshed from WebSocket scene events, exposed app-wide as
 //! [`ZonesContext`] (what zones exist, which one is focused) and
 //! [`ScenesContext`] (what scenes exist, switching between them). Studio,
@@ -10,19 +10,21 @@
 
 pub mod surface;
 
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
 
 use crate::api;
 use crate::toasts;
 use crate::ws::SceneEventHint;
-use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_groups};
+use surface::{Surface, SurfaceKind, led_zone_count, surfaces_from_zones};
 
 /// Zone-level view of the active scene, provided at the app root.
 #[derive(Clone, Copy)]
 pub struct ZonesContext {
     /// The active scene, shared by every consumer. `None` while loading
     /// or when only the ephemeral default is running with no zones yet.
-    pub active_scene: Memo<Option<api::ActiveSceneResponse>>,
+    pub active_scene: Memo<Option<api::SceneDocument>>,
     /// All zones of the active scene in scene order (LED zones and
     /// display Screens), as the UI presents them.
     pub zones: Memo<Vec<Surface>>,
@@ -68,20 +70,6 @@ impl ZonesContext {
         })
     }
 
-    /// Scene id plus the zone writes target, for control PATCHes.
-    ///
-    /// A zone's controls live on its synthetic legacy layer, whose group and
-    /// layer ids are both the zone id, so this pair is everything
-    /// `patch_layer_controls` needs. `None` means no zone scene is active and
-    /// the caller should fall back to the legacy global endpoint.
-    pub fn scene_scoped_target(&self) -> Option<(String, String)> {
-        let scene_id = self
-            .active_scene
-            .with_untracked(|scene| scene.as_ref().map(|scene| scene.id.clone()))?;
-        let zone = self.target_zone()?;
-        Some((scene_id, zone.id))
-    }
-
     /// Untracked focused-zone id, validated against the current scene.
     /// `None` when unset, stale, or pointing at a Screen.
     pub fn focused_zone_id_untracked(&self) -> Option<String> {
@@ -93,6 +81,56 @@ impl ZonesContext {
                 .then_some(id)
         })
     }
+
+    /// Immutable effect-layer identity and scene revision at the write target.
+    pub fn effect_target_untracked(
+        &self,
+        effect_id: &str,
+        zone_id: Option<&str>,
+    ) -> Option<(api::EffectLayerTarget, u64)> {
+        self.active_scene
+            .with_untracked(|scene| effect_target_in_scene(scene.as_ref()?, effect_id, zone_id))
+    }
+}
+
+fn effect_target_in_scene(
+    scene: &api::SceneDocument,
+    effect_id: &str,
+    zone_id: Option<&str>,
+) -> Option<(api::EffectLayerTarget, u64)> {
+    let zone = match zone_id {
+        Some(zone_id) => scene
+            .zones
+            .iter()
+            .find(|zone| zone.id.to_string() == zone_id),
+        None => scene
+            .zones
+            .iter()
+            .find(|zone| zone.role == ZoneRole::Primary)
+            .or_else(|| {
+                scene
+                    .zones
+                    .iter()
+                    .find(|zone| zone.role != ZoneRole::Display)
+            }),
+    }?;
+    let layer = zone.layers.iter().rev().find(|layer| {
+        let LayerSource::Effect {
+            effect_id: current, ..
+        } = &layer.source
+        else {
+            return false;
+        };
+        current.to_string() == effect_id
+    })?;
+    Some((
+        api::EffectLayerTarget {
+            effect_id: effect_id.to_owned(),
+            zone_id: zone.id.to_string(),
+            layer_id: layer.id.to_string(),
+        },
+        scene.revision,
+    ))
 }
 
 /// One LED zone's active-effect state — the per-zone answer to "what is
@@ -110,12 +148,10 @@ pub struct ZoneEffectState {
     /// to the zone's top-layer caption when the index doesn't know it.
     pub effect_name: Option<String>,
     pub effect_category: Option<String>,
-    pub control_values: std::collections::HashMap<String, hypercolor_types::effect::ControlValue>,
+    pub control_values: std::collections::HashMap<String, hypercolor_types::control::ControlValue>,
     pub preset_id: Option<String>,
-    /// `If-Match` token for the zone's controls PATCH stream.
-    pub controls_version: u64,
-    /// `If-Match` token for the zone's layer mutations.
-    pub layers_version: u64,
+    /// Scene revision observed with the control values.
+    pub revision: u64,
 }
 
 impl ZoneEffectState {
@@ -141,7 +177,7 @@ pub struct ScenesContext {
     /// Every saved scene (the daemon omits the ephemeral default).
     pub scenes: Memo<Vec<api::SceneSummary>>,
     /// The shared active scene — same memo as [`ZonesContext::active_scene`].
-    pub active: Memo<Option<api::ActiveSceneResponse>>,
+    pub active: Memo<Option<api::SceneDocument>>,
     /// Scene id mid-activation. Switchers disable and spin on this row;
     /// the displayed value flips only when the daemon confirms.
     pub switching: ReadSignal<Option<String>>,
@@ -178,13 +214,12 @@ impl ScenesContext {
 pub fn provide_scene_contexts(
     last_scene_event: ReadSignal<Option<SceneEventHint>>,
 ) -> (ZonesContext, ScenesContext) {
-    let active_scene_resource = LocalResource::new(api::fetch_active_scene);
-    let scenes_resource = LocalResource::new(api::list_scenes);
+    let active_scene_resource = api::daemon_resource(api::fetch_active_scene);
+    let scenes_resource = api::daemon_resource(api::list_scenes);
 
     // Memo (not derive) so refetches that return identical state don't
     // wake every zone-aware surface in the app.
-    let active_scene =
-        Memo::new(move |_| active_scene_resource.get().and_then(Result::ok).flatten());
+    let active_scene = Memo::new(move |_| active_scene_resource.get().and_then(Result::ok));
     let scenes = Memo::new(move |_| {
         scenes_resource
             .get()
@@ -195,7 +230,7 @@ pub fn provide_scene_contexts(
     let zones = Memo::new(move |_| {
         active_scene
             .get()
-            .map(|scene| surfaces_from_groups(&scene.groups))
+            .map(|scene| surfaces_from_zones(&scene.zones))
             .unwrap_or_default()
     });
     let led_zones = Memo::new(move |_| {
@@ -210,7 +245,7 @@ pub fn provide_scene_contexts(
     let multi_zone = Memo::new(move |_| {
         active_scene
             .get()
-            .is_some_and(|scene| led_zone_count(&scene.groups) > 1)
+            .is_some_and(|scene| led_zone_count(&scene.zones) > 1)
     });
 
     let refresh_active = Callback::new(move |()| active_scene_resource.refetch());
@@ -268,8 +303,8 @@ pub fn provide_scene_contexts(
             return current;
         };
 
-        let controls_only = hint.event_type == "render_group_changed"
-            && hint.render_group_change_kind
+        let controls_only = hint.event_type == "zone_changed"
+            && hint.zone_change_kind
                 == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched);
         if !controls_only {
             active_scene_resource.refetch();

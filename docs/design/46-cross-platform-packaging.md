@@ -5,7 +5,15 @@
 > with a real installer on Windows, a DMG on macOS, and the existing tarball/AUR/Homebrew
 > story on Linux.
 
-**Status:** Proposed
+**Status:** v1 shipped. Verified 2026-08-25 at `7620eae44`: `hypercolor-app` is
+the single front door on every platform, built on Tauri 2 with
+`tauri-plugin-autostart` and `tauri-plugin-single-instance`. The v1 installer
+formats named in §1 are live in `crates/hypercolor-app/tauri.conf.json`, whose
+bundle targets are `nsis`, `dmg`, and `app`, driven by
+`scripts/build-windows-installer.ps1` and `scripts/build-mac-installer.sh`. The
+Linux tarball, AUR, and Homebrew paths are in `packaging/`. The v1.1+ non-goals
+(MSI, AppImage, deb/rpm, Cask, store distribution, auto-updater) were not
+re-audited and should be treated as still open.
 **Author:** Nova
 **Date:** 2026-05-03
 
@@ -111,7 +119,7 @@ New work, scoped to the v1 unified-app vision.
 |---|---|---|
 | `crates/hypercolor-app/` | 🆕 | Renamed from `hypercolor-desktop`. Adds tray, supervisor, plugins |
 | Daemon supervisor module | 🆕 | Spawns `hypercolor-daemon` as child + Job Object reaping (Windows) / process group (Unix) |
-| Tray menu module | 🆕 | Ports `hypercolor-tray`'s menu logic onto Tauri 2's tray API |
+| Tray menu module | 🆕 | Ported `hypercolor-tray` menu logic onto Tauri 2's tray API |
 | Single-instance integration | 🆕 | `tauri-plugin-single-instance` + named-mutex daemon lock |
 | Autostart integration | 🆕 | `tauri-plugin-autostart` with capability permissions |
 | Window-visibility preview hook | 🆕 | Leptos UI listens for `visibilitychange`; Tauri emits to webview on hide |
@@ -119,12 +127,12 @@ New work, scoped to the v1 unified-app vision.
 | First-run flow | 🆕 | PawnIO detection (Windows), permission walkthrough (macOS), SCM-service detection (Windows) |
 | Tauri NSIS bundler config | 🆕 | `bundle.windows.nsis` block in `tauri.conf.json` |
 | Tauri DMG bundler config | 🆕 | `bundle.macOS` block + Homebrew Cask formula |
-| Notarization workflow | 🆕 | GitHub Actions step using `xcrun notarytool` |
+| Notarization workflow | 🆕 | Proprietary release step using `xcrun notarytool` |
 | AppImage build (deferred to v1.1) | 🆕 | Bundle WebKit2GTK 4.1 for old-distro reach |
 
-**Retired**: `crates/hypercolor-tray/` — its menu logic moves into `hypercolor-app`'s tray
-module. Source stays in git history. Crate is removed from the workspace once the new
-app is shipping. See [§13](#13-migration-plan).
+**Retired**: `crates/hypercolor-tray/` supplied the original menu and daemon-client logic.
+That logic now lives in `hypercolor-app`, and the retired source remains in git history.
+See [§13](#13-migration-plan).
 
 ---
 
@@ -634,7 +642,7 @@ Acceptance criteria for the v1 milestone:
 
 1. With Hypercolor running and an effect active, observe daemon CPU baseline (window visible).
 2. Hide window via close button.
-3. Within 1 second, `/api/v1/status` reports `preview_runtime.canvas_demand.subscribers = 0`.
+3. Within 1 second, `/api/v1/system` reports `status.preview_runtime.canvas_demand.subscribers = 0`.
 4. CPU drops measurably (target: at least 30% reduction in daemon CPU when the only
    active subscriber was the UI).
 5. Show window — subscribers increment, CPU returns to baseline.
@@ -738,10 +746,11 @@ detects ANSI capability — keep that for stdout, disable ANSI for files.
 Tray menu item: **"Export Diagnostics"** → produces a zip at `~/Desktop/hypercolor-diagnostics-<timestamp>.zip` containing:
 
 - Last 7 days of `logs/app.log*`, `logs/daemon.log*`
-- Output of `/api/v1/status`
+- Authorized status data from `/api/v1/system`
 - Output of `/api/v1/diagnose`
 - Sanitized config (`hypercolor.toml` with API keys redacted)
-- `device-settings.json`, `runtime-state.json`, `layouts.json`, `profiles.json`
+- Machine-local `device-settings.json` and `runtime-state.json` from the state directory
+- User-authored `layouts.json` and `profiles.json` from the data directory
 - Platform info (`OS version`, `CPU`, `RAM`, GPU model)
 - Hypercolor version
 
@@ -882,11 +891,12 @@ bootstrapper). Unsigned for early alpha; signed for v1.
   "targets": ["dmg", "app"],
   "macOS": {
     "frameworks": [],
-    "minimumSystemVersion": "11.0",
+    "minimumSystemVersion": "15.2",
     "exceptionDomain": "",
     "signingIdentity": "Developer ID Application: Stefanie Jane (TEAMID)",
     "providerShortName": "TEAMID",
     "entitlements": "entitlements.plist",
+    "infoPlist": "Info.plist",
     "dmg": {
       "background": "icons/dmg-background.png",
       "windowSize": { "width": 660, "height": 400 },
@@ -914,19 +924,36 @@ bootstrapper). Unsigned for early alpha; signed for v1.
     <true/>
     <key>com.apple.security.device.usb</key>
     <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Hypercolor uses your microphone for audio-reactive lighting effects.</string>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>Hypercolor uses input events for keyboard-reactive lighting effects.</string>
 </dict>
 </plist>
 ```
 
-> Screen recording permission has no Info.plist key — TCC-managed, prompted at first
-> capture attempt. Walk users through it in [§12.3](#123-macos-permissions).
+Privacy purpose strings belong in `Info.plist`, not the entitlement profile:
+
+```xml
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Hypercolor uses your microphone for audio-reactive lighting effects.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Hypercolor reads playback metadata from supported media apps for media-reactive lighting effects.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Hypercolor captures your screen to create screen-reactive lighting effects.</string>
+</dict>
+</plist>
+```
+
+The signed daemon sidecar alone declares
+`com.apple.security.automation.apple-events`. Native keyboard and pointer
+capture still use Input Monitoring rather than Apple Events. The Automation
+purpose string belongs to the app bundle because the nested sidecar reads
+playback metadata from supported, already-running media apps. Standalone and
+unbundled daemon topologies remain ineligible. Walk users through the TCC
+permissions in [§12.3](#123-macos-permissions).
 
 **Output**: `Hypercolor-0.1.0-arm64.dmg` (Apple Silicon) and
-`Hypercolor-0.1.0-x86_64.dmg` (Intel, courtesy build).
+`Hypercolor-0.1.0-x86_64.dmg` (Intel). Both architectures are first-class
+release targets under the macOS 15.2 support floor.
 
 **Homebrew Cask** (separate from existing CLI Homebrew formula):
 
@@ -1004,34 +1031,22 @@ itself, and the uninstaller.
 | Notarization | Mandatory for distribution outside MAS. Free, automated via `xcrun notarytool` |
 | Stapling | `xcrun stapler staple` attaches notarization ticket for offline verification |
 
-**GitHub Actions workflow:**
+**Release boundary:**
 
-```yaml
-- name: Import signing certs
-  uses: apple-actions/import-codesign-certs@v3
-  with:
-    p12-file-base64: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
-    p12-password: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+The public repository builds unsigned per-architecture `.app` fixtures with
+`--no-sign`. Those fixtures have short retention, use an `oss-ci-*` artifact
+namespace, and never enter a GitHub release. Public workflows contain no Apple
+release credentials or Homebrew promotion token.
 
-- name: Build and sign
-  run: |
-    cargo tauri build --target aarch64-apple-darwin
-  env:
-    APPLE_SIGNING_IDENTITY: "Developer ID Application: Stefanie Jane (TEAMID)"
+The proprietary release pipeline builds each candidate once, invokes
+`scripts/sign-macos-artifacts.sh`, notarizes and staples the result, runs the
+physical TCC acceptance matrix, and promotes the exact accepted bits. The
+pipeline supplies the App Store Connect API key as a private `0400` or `0600`
+file. PKCS#12 and ephemeral-keychain passwords reach Security.framework through
+a bounded stdin frame and never appear in process arguments.
 
-- name: Notarize
-  run: |
-    xcrun notarytool submit \
-      target/aarch64-apple-darwin/release/bundle/dmg/Hypercolor_0.1.0_aarch64.dmg \
-      --apple-id "${{ secrets.APPLE_ID }}" \
-      --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-      --password "${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}" \
-      --wait
-
-- name: Staple
-  run: |
-    xcrun stapler staple target/aarch64-apple-darwin/release/bundle/dmg/Hypercolor_0.1.0_aarch64.dmg
-```
+Local Apple ID notarization uses a preconfigured `notarytool` keychain profile.
+The signing actor never accepts a raw Apple ID password.
 
 ### 11.3 Linux — No Signing (v1)
 
@@ -1146,8 +1161,8 @@ Walk the user through each permission with deep links:
 | Permission | When needed | Deep link |
 |---|---|---|
 | Microphone | Audio-reactive effects | Triggered automatically on first capture; no deep link needed |
-| Screen Recording | Screen capture effects | `x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture` |
-| Accessibility | Keyboard-reactive effects | `x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility` |
+| Screen Recording | Screen capture effects | `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture` |
+| Input Monitoring | Keyboard-reactive effects | `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent` |
 | LaunchAgent (autostart) | Login | Automatic, no permission |
 | USB device access | HID devices | Automatic for HID; no deep link |
 
@@ -1188,15 +1203,13 @@ Default checked. Toggle is also available later in Settings → Startup.
 | `crates/hypercolor-tray/src/daemon.rs` | `crates/hypercolor-app/src/daemon_client.rs` | Move verbatim |
 | `crates/hypercolor-tray/src/state.rs` | `crates/hypercolor-app/src/state.rs` | Move verbatim |
 | `crates/hypercolor-tray/tests/state_tests.rs` | `crates/hypercolor-app/tests/state_tests.rs` | Move verbatim |
-| `crates/hypercolor-tray/` | (deleted) | After `hypercolor-app` ships and one release cycle of overlap |
+| `crates/hypercolor-tray/` | (deleted) | Retired after the unified app shipped |
 
-**Workspace edits:**
+**Workspace result:**
 
-- `Cargo.toml` — replace `crates/hypercolor-tray` with `crates/hypercolor-app` once ready.
-  Until then, both coexist (`hypercolor-app` as a new member, `hypercolor-tray` still
-  building).
-- Workspace excludes (`exclude = ["crates/hypercolor-ui"]`) stays. `hypercolor-app` joins
-  default workspace CI.
+- `hypercolor-app` is the sole workspace member that owns a system tray.
+- The workspace exclusion for `crates/hypercolor-ui` remains, and `hypercolor-app` runs in
+  native app CI.
 
 ### 13.2 Workspace CI
 
@@ -1212,10 +1225,10 @@ Add Tauri build deps to CI runners:
 **Per-OS bundle artifacts** uploaded on release tag:
 
 ```yaml
-# .github/workflows/release.yml additions
+# .github/workflows/ci.yml release jobs
 - ubuntu-latest: hypercolor-app-x86_64.AppImage (v1.1)
-- macos-14:      Hypercolor-arm64.dmg
-- macos-13:      Hypercolor-x86_64.dmg  (Intel courtesy)
+- macos-26:      Hypercolor-arm64.dmg
+- macos-26-intel: Hypercolor-x86_64.dmg
 - windows-latest: Hypercolor_x64-setup.exe (NSIS)
 ```
 

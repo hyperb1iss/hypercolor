@@ -1,5 +1,5 @@
-use profile_traits::mem::{MemoryReportResult, ReportKind};
 use serde::Serialize;
+use servo::profile_traits::mem::{MemoryReportResult, ReportKind};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ServoMemoryReportSnapshot {
@@ -150,7 +150,7 @@ fn memory_report_path(components: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use profile_traits::mem::{MemoryReport, Report};
+    use servo::profile_traits::mem::{MemoryReport, Report};
 
     use super::*;
 

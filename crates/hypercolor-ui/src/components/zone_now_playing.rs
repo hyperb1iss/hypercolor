@@ -36,21 +36,20 @@ pub fn split_zone_rows(
 }
 
 /// Flip one zone's `enabled` flag through the revision-guarded zone
-/// PATCH. A stale `groups_revision` means the scene changed under us:
+/// PATCH. A stale scene revision means the document changed under us:
 /// refresh the shared scene and ask the user to retry — never clobber.
 pub fn set_zone_enabled(zones_ctx: ZonesContext, zone_id: String, enabled: bool) {
     let Some(scene) = zones_ctx.active_scene.get_untracked() else {
         toasts::toast_error("No active scene is available");
         return;
     };
-    let scene_id = scene.id;
-    let revision = scene.groups_revision;
+    let revision = scene.revision;
     spawn_local(async move {
-        let request = api::zones::UpdateZoneRequest {
+        let request = api::zones::PatchZoneRequest {
             enabled: Some(enabled),
             ..Default::default()
         };
-        match api::zones::update_zone(&scene_id, &zone_id, &request, Some(revision)).await {
+        match api::zones::update_zone(&zone_id, &request, revision).await {
             Ok(ZoneOutcome::Applied(_)) => zones_ctx.refresh.run(()),
             Ok(ZoneOutcome::Stale { .. }) => {
                 zones_ctx.refresh.run(());
@@ -80,7 +79,7 @@ pub fn SidebarZoneRows() -> impl IntoView {
                         .collect_view()}
                     {(overflow > 0).then(|| view! {
                         <A
-                            href="/studio"
+                            href=crate::route_ui::route_href("/studio")
                             attr:class="flex items-center gap-1.5 px-1.5 py-1 rounded-md \
                                         text-[10px] text-fg-tertiary hover:text-fg-primary \
                                         hover:bg-surface-hover/30 transition-colors duration-200"
@@ -179,7 +178,7 @@ pub fn ZoneEffectChips() -> impl IntoView {
                             .zone
                             .color
                             .clone()
-                            .unwrap_or_else(|| "var(--color-electric-purple)".to_owned());
+                            .unwrap_or_else(|| "var(--color-accent)".to_owned());
                         let dot_glow = format!("0 0 6px {dot}");
                         let label = state.display_label();
                         let enabled = state.zone.enabled;

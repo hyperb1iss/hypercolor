@@ -1,19 +1,21 @@
-//! Scene-related MCP tools: `activate_scene`, `list_scenes`, `create_scene`.
+//! Scene-related MCP tools and live-tree mutations.
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::scenes::{
-    asset_mime_types, current_media_config, scene_media_admission_counts,
-    scene_media_admission_violation_details,
+use super::{ToolDefinition, ToolError, output_schema, serialize_result};
+use crate::app_state::AppState;
+use crate::domain::scene::{ActivateScene, CreateScene, activate_scene, create_scene};
+use crate::domain::scene_tree::{ClearScene, PatchLayerControls};
+use crate::domain::{DomainError, MutationContext};
+use crate::mcp::results::{
+    ActivateSceneResult, AdjustControlsResult, CreateSceneResult, SceneListItem, SceneListResult,
 };
-use crate::api::{
-    AppState, admit_scene_store_snapshot, publish_active_scene_changed,
-    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
-};
-use hypercolor_core::scene::make_scene;
-use hypercolor_types::event::SceneChangeReason;
-use hypercolor_types::scene::TransitionSpec;
+use crate::mcp::selector::SelectorCandidate;
+use crate::resource_summary::scene_summary;
+use hypercolor_types::api::scene::{PatchControlsRequest, SceneDocument};
+use hypercolor_types::api::scenes::ActivatedSceneRef;
+use hypercolor_types::control::control_value_json_schema;
+use hypercolor_types::scene::ZoneRole;
 use hypercolor_types::scene::{SceneKind, SceneMutationMode};
 
 // ── Tool Definitions ──────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ pub(super) fn build_activate_scene() -> ToolDefinition {
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Scene name or fuzzy query to match against"
+                    "description": "Scene ID, exact name, or unique name substring"
                 },
                 "transition_ms": {
                     "type": "integer",
@@ -38,10 +40,12 @@ pub(super) fn build_activate_scene() -> ToolDefinition {
                     "maximum": 10000
                 }
             },
-            "required": ["name"]
+            "required": ["name"],
+            "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<ActivateSceneResult>(),
         read_only: false,
+        destructive: true,
         idempotent: true,
     }
 }
@@ -50,7 +54,7 @@ pub(super) fn build_list_scenes() -> ToolDefinition {
     ToolDefinition {
         name: "list_scenes".into(),
         title: "List Scenes".into(),
-        description: "List all available lighting scenes with their names, descriptions, and trigger configurations.".into(),
+        description: "List all available lighting scenes with their names, descriptions, and activation state.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -59,10 +63,12 @@ pub(super) fn build_list_scenes() -> ToolDefinition {
                     "description": "Only show enabled scenes",
                     "default": false
                 }
-            }
+            },
+            "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<SceneListResult>(),
         read_only: true,
+        destructive: false,
         idempotent: true,
     }
 }
@@ -71,9 +77,7 @@ pub(super) fn build_create_scene() -> ToolDefinition {
     ToolDefinition {
         name: "create_scene".into(),
         title: "Create Scene".into(),
-        description:
-            "Create a new lighting scene from the current state or a specified configuration."
-                .into(),
+        description: "Create a reusable lighting scene.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -85,36 +89,9 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                     "type": "string",
                     "description": "What this scene does"
                 },
-                "profile_id": {
-                    "type": "string",
-                    "description": "Profile ID to associate with this scene"
-                },
-                "trigger": {
-                    "type": "object",
-                    "description": "Trigger configuration",
-                    "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": ["schedule", "sunset", "sunrise", "device_connect", "device_disconnect", "audio_beat", "webhook"],
-                            "description": "Trigger type"
-                        },
-                        "cron": {
-                            "type": "string",
-                            "description": "Cron expression for schedule triggers"
-                        }
-                    },
-                    "required": ["type"]
-                },
-                "transition_ms": {
-                    "type": "integer",
-                    "description": "Crossfade duration when activated",
-                    "default": 1000,
-                    "minimum": 0,
-                    "maximum": 30000
-                },
                 "enabled": {
                     "type": "boolean",
-                    "description": "Whether the scene is active immediately",
+                    "description": "Whether the scene may be activated",
                     "default": true
                 },
                 "mutation_mode": {
@@ -124,91 +101,82 @@ pub(super) fn build_create_scene() -> ToolDefinition {
                     "default": "live"
                 }
             },
-            "required": ["name", "profile_id", "trigger"]
+            "required": ["name"],
+            "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<CreateSceneResult>(),
         read_only: false,
+        destructive: false,
         idempotent: false,
     }
 }
 
-// ── Stateless Handlers ────────────────────────────────────────────────────
-
-pub(super) fn handle_activate_scene(params: &Value) -> Result<Value, ToolError> {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("name".into()))?;
-
-    let _transition_ms = params
-        .get("transition_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(1000);
-
-    // Would query scene manager with fuzzy matching
-    Ok(json!({
-        "activated": false,
-        "message": format!("No scene matching '{name}' found. Use list_scenes to browse available scenes.")
-    }))
+pub(super) fn build_clear_zone() -> ToolDefinition {
+    ToolDefinition {
+        name: "clear_zone".into(),
+        title: "Clear Scene Zone".into(),
+        description: "Clear one non-display zone's layer stack by ID, exact name, or unique name substring. Omit zone to clear every non-display zone and quiesce output.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "zone": {
+                    "type": "string",
+                    "description": "Optional zone ID, exact name, or unique name substring"
+                }
+            },
+            "additionalProperties": false
+        }),
+        output_schema: output_schema::<SceneDocument>(),
+        read_only: false,
+        destructive: true,
+        idempotent: true,
+    }
 }
 
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "will return errors when wired to scene manager"
-)]
-pub(super) fn handle_list_scenes(params: &Value) -> Result<Value, ToolError> {
-    let _enabled_only = params
-        .get("enabled_only")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    // Would query scene manager
-    Ok(json!({
-        "scenes": [],
-        "total": 0
-    }))
+pub(super) fn build_adjust_controls() -> ToolDefinition {
+    let control_value_schema = control_value_json_schema();
+    ToolDefinition {
+        name: "adjust_controls".into(),
+        title: "Adjust Layer Controls".into(),
+        description: "Atomically patch typed control values and clear bindings on one live scene layer. Zones and named layers accept IDs, exact names, or unique name substrings; unnamed layers require their ID.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "zone": {
+                    "type": "string",
+                    "description": "Zone ID, exact name, or unique name substring"
+                },
+                "layer": {
+                    "type": "string",
+                    "description": "Layer ID, exact name, or unique name substring"
+                },
+                "values": {
+                    "type": "object",
+                    "description": "Canonical typed ControlValue entries keyed by control ID",
+                    "default": {},
+                    "additionalProperties": { "$ref": "#/$defs/controlValue" }
+                },
+                "clear_bindings": {
+                    "type": "array",
+                    "description": "Control bindings to remove in the same atomic commit",
+                    "default": [],
+                    "items": { "type": "string" }
+                }
+            },
+            "required": ["zone", "layer"],
+            "additionalProperties": false,
+            "$defs": {
+                "controlValue": control_value_schema
+            }
+        }),
+        output_schema: output_schema::<AdjustControlsResult>(),
+        read_only: false,
+        destructive: false,
+        idempotent: true,
+    }
 }
 
-pub(super) fn handle_create_scene(params: &Value) -> Result<Value, ToolError> {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("name".into()))?;
-
-    let _profile_id = params
-        .get("profile_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("profile_id".into()))?;
-
-    let trigger = params
-        .get("trigger")
-        .ok_or_else(|| ToolError::MissingParam("trigger".into()))?;
-
-    let _trigger_type = trigger
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("trigger.type".into()))?;
-
-    let enabled = params
-        .get("enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let mutation_mode = params
-        .get("mutation_mode")
-        .and_then(Value::as_str)
-        .unwrap_or("live");
-
-    let scene_id = uuid::Uuid::now_v7().to_string();
-
-    Ok(json!({
-        "scene_id": scene_id,
-        "name": name,
-        "enabled": enabled,
-        "mutation_mode": mutation_mode
-    }))
-}
-
-// ── Stateful Handlers ─────────────────────────────────────────────────────
+// ── Handlers ──────────────────────────────────────────────────────────────
 
 pub(super) async fn handle_activate_scene_with_state(
     params: &Value,
@@ -223,75 +191,223 @@ pub(super) async fn handle_activate_scene_with_state(
         .get("transition_ms")
         .and_then(Value::as_u64)
         .unwrap_or(1000);
-    let asset_mime_types = asset_mime_types(state).await;
-    let media_config = current_media_config(state);
-
-    let mut scene_manager = state.scene_manager.write().await;
-    let previous_active_scene = scene_manager.active_scene_id().copied();
-    let matched_scene = scene_manager
-        .list()
-        .into_iter()
-        .find(|scene| {
-            scene.name.eq_ignore_ascii_case(name)
-                || scene.name.to_lowercase().contains(&name.to_lowercase())
-        })
-        .cloned();
-
-    let Some(scene) = matched_scene else {
-        return Ok(json!({
-            "activated": false,
-            "message": format!("No scene matching '{name}' found. Use list_scenes to browse available scenes.")
-        }));
+    let scene = {
+        let scene_manager = state.scene_manager.snapshot().await;
+        let candidates = scene_manager
+            .list()
+            .into_iter()
+            .map(|scene| {
+                SelectorCandidate::named(scene.id.to_string(), scene.name.clone(), scene.clone())
+            })
+            .collect();
+        crate::mcp::selector::resolve(name, candidates)
+            .map_err(|error| ToolError::selector("name", error))?
     };
-    let media_admission = scene_media_admission_counts(&scene, &asset_mime_types);
-    if let Some(details) = scene_media_admission_violation_details(&media_admission, &media_config)
-    {
-        return Ok(json!({
-            "activated": false,
-            "message": details.message,
-            "details": {
-                "caps": details.caps,
-                "counts": details.counts,
-                "layers": details.layers,
-            }
-        }));
+
+    let admission = state.domains.scene.evaluate_media_admission(&scene).await;
+    if let Some(details) = admission.violation.as_ref() {
+        return Err(ToolError::Conflict(details.message.clone()));
     }
 
-    let transition_override = Some(TransitionSpec {
-        duration_ms: transition_ms,
-        ..scene.transition.clone()
-    });
-    scene_manager
-        .activate(&scene.id, transition_override)
-        .map_err(|error| ToolError::Internal(format!("failed to activate scene: {error}")))?;
-    let current_active_scene = scene_manager.active_scene().cloned();
-    drop(scene_manager);
-    save_runtime_session_snapshot(state).await;
-    if previous_active_scene
-        != current_active_scene
-            .as_ref()
-            .map(|active_scene| active_scene.id)
-        && let Some(current_active_scene) = current_active_scene.as_ref()
-    {
-        publish_active_scene_changed(
-            state,
-            previous_active_scene,
-            current_active_scene,
-            SceneChangeReason::UserActivate,
-        );
-    }
-
-    // Which scene is active decides which devices are worth connecting.
-    crate::api::sync_connectivity(state).await;
-
-    Ok(json!({
-        "activated": true,
-        "scene": {
-            "id": scene.id.to_string(),
-            "name": scene.name
+    let activated = activate_scene(
+        &state.domains.scene_library,
+        ActivateScene {
+            scene_id: scene.id,
+            transition_ms: Some(transition_ms),
         },
-        "transition_ms": transition_ms
+    )
+    .await?;
+
+    serialize_result(ActivateSceneResult {
+        activated: true,
+        scene: ActivatedSceneRef {
+            id: activated.scene_id.to_string(),
+            name: activated.scene_name,
+        },
+        transition_ms,
+    })
+}
+
+pub(super) async fn handle_clear_zone_with_state(
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    let Some(zone) = params.get("zone") else {
+        let written = crate::domain::scene_tree::clear_scene(
+            &state.domains.scene_tree,
+            ClearScene {
+                zone: None,
+                expected_revision: None,
+            },
+        )
+        .await?;
+        return serialize_result(written.document);
+    };
+    let Value::String(query) = zone else {
+        return Err(ToolError::InvalidParam {
+            param: "zone".into(),
+            reason: "must be a string".into(),
+        });
+    };
+
+    let document = crate::domain::scene_tree::read_document(&state.domains.scene_tree).await?;
+    let revision = document.revision;
+    let zone = resolve_zone(query, &document)?;
+    if zone.role == ZoneRole::Display {
+        return Err(ToolError::InvalidParam {
+            param: "zone".into(),
+            reason: "display zones are cleared through the display-face tools".into(),
+        });
+    }
+    let zone_id = zone.id;
+
+    let written = retry_resolved_scene_target(
+        revision,
+        || async {
+            crate::domain::scene_tree::read_document(&state.domains.scene_tree)
+                .await
+                .map(|document| document.revision)
+        },
+        |expected_revision| async move {
+            crate::domain::scene_tree::clear_scene(
+                &state.domains.scene_tree,
+                ClearScene {
+                    zone: Some(zone_id),
+                    expected_revision: Some(expected_revision),
+                },
+            )
+            .await
+        },
+    )
+    .await?;
+    serialize_result(written.document)
+}
+
+pub(super) async fn handle_adjust_controls_with_state(
+    params: &Value,
+    state: &AppState,
+) -> Result<Value, ToolError> {
+    let zone_query = params
+        .get("zone")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("zone".into()))?;
+    let layer_query = params
+        .get("layer")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::MissingParam("layer".into()))?;
+
+    let patch: PatchControlsRequest = serde_json::from_value(json!({
+        "values": params.get("values").cloned().unwrap_or_else(|| json!({})),
+        "clear_bindings": params
+            .get("clear_bindings")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
     }))
+    .map_err(|error| ToolError::InvalidParam {
+        param: "values".into(),
+        reason: error.to_string(),
+    })?;
+
+    let document = crate::domain::scene_tree::read_document(&state.domains.scene_tree).await?;
+    let revision = document.revision;
+    let zone = resolve_zone(zone_query, &document)?;
+    if zone.role == ZoneRole::Display {
+        return Err(ToolError::InvalidParam {
+            param: "zone".into(),
+            reason: "display-face controls are adjusted through the display tools".into(),
+        });
+    }
+    let layer = resolve_layer(layer_query, &zone)?;
+    let zone_id = zone.id;
+    let layer_id = layer.id;
+
+    let written = retry_resolved_scene_target(
+        revision,
+        || async {
+            crate::domain::scene_tree::read_document(&state.domains.scene_tree)
+                .await
+                .map(|document| document.revision)
+        },
+        |expected_revision| {
+            let values = patch.values.clone().into_iter().collect();
+            let clear_bindings = patch.clear_bindings.clone();
+            async move {
+                crate::domain::scene_tree::patch_layer_controls(
+                    &state.domains.scene_tree,
+                    PatchLayerControls {
+                        zone_id,
+                        layer_id,
+                        values,
+                        clear_bindings,
+                        expected_revision: Some(expected_revision),
+                    },
+                    MutationContext::mcp(),
+                )
+                .await
+            }
+        },
+    )
+    .await?;
+    serialize_result(AdjustControlsResult {
+        zone: written.zone,
+        revision: written.revision,
+    })
+}
+
+fn resolve_zone(
+    query: &str,
+    document: &SceneDocument,
+) -> Result<hypercolor_types::api::scene::ZoneResource, ToolError> {
+    let candidates = document
+        .zones
+        .iter()
+        .cloned()
+        .map(|zone| SelectorCandidate::named(zone.id.to_string(), zone.name.clone(), zone))
+        .collect();
+    crate::mcp::selector::resolve(query, candidates)
+        .map_err(|error| ToolError::selector("zone", error))
+}
+
+fn resolve_layer(
+    query: &str,
+    zone: &hypercolor_types::api::scene::ZoneResource,
+) -> Result<hypercolor_types::layer::SceneLayer, ToolError> {
+    let candidates = zone
+        .layers
+        .iter()
+        .cloned()
+        .map(|layer| match layer.name.clone() {
+            Some(name) => SelectorCandidate::named(layer.id.to_string(), name, layer),
+            None => SelectorCandidate::unnamed(layer.id.to_string(), layer),
+        })
+        .collect();
+    crate::mcp::selector::resolve(query, candidates)
+        .map_err(|error| ToolError::selector("layer", error))
+}
+
+async fn retry_resolved_scene_target<T, ReadRevision, ReadFuture, Mutate, MutateFuture>(
+    mut revision: u64,
+    mut read_revision: ReadRevision,
+    mut mutate: Mutate,
+) -> Result<T, DomainError>
+where
+    ReadRevision: FnMut() -> ReadFuture,
+    ReadFuture: std::future::Future<Output = Result<u64, DomainError>>,
+    Mutate: FnMut(u64) -> MutateFuture,
+    MutateFuture: std::future::Future<Output = Result<T, DomainError>>,
+{
+    loop {
+        match mutate(revision).await {
+            Err(error) if scene_snapshot_was_superseded(&error) => {
+                revision = read_revision().await?;
+            }
+            outcome => return outcome,
+        }
+    }
+}
+
+fn scene_snapshot_was_superseded(error: &DomainError) -> bool {
+    matches!(error, DomainError::PreconditionFailed { .. })
 }
 
 pub(super) async fn handle_list_scenes_with_state(
@@ -303,29 +419,21 @@ pub(super) async fn handle_list_scenes_with_state(
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let scene_manager = state.scene_manager.read().await;
+    let scene_manager = state.scene_manager.snapshot().await;
     let active_scene_id = scene_manager.active_scene_id().copied();
     let scenes = scene_manager
         .list()
         .into_iter()
         .filter(|scene| scene.kind != SceneKind::Ephemeral)
         .filter(|scene| !enabled_only || scene.enabled)
-        .map(|scene| {
-            json!({
-                "id": scene.id.to_string(),
-                "name": scene.name,
-                "description": scene.description,
-                "enabled": scene.enabled,
-                "mutation_mode": scene.mutation_mode,
-                "active": Some(scene.id) == active_scene_id
-            })
+        .map(|scene| SceneListItem {
+            summary: scene_summary(scene),
+            active: Some(scene.id) == active_scene_id,
         })
         .collect::<Vec<_>>();
 
-    Ok(json!({
-        "scenes": scenes,
-        "total": scenes.len()
-    }))
+    let total = scenes.len();
+    serialize_result(SceneListResult { scenes, total })
 }
 
 pub(super) async fn handle_create_scene_with_state(
@@ -336,29 +444,6 @@ pub(super) async fn handle_create_scene_with_state(
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("name".into()))?;
-    let profile_id = params
-        .get("profile_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("profile_id".into()))?;
-
-    {
-        let profiles = state.profiles.read().await;
-        if profiles.get(profile_id).is_none() {
-            return Err(ToolError::InvalidParam {
-                param: "profile_id".into(),
-                reason: format!("profile '{profile_id}' not found"),
-            });
-        }
-    }
-
-    let trigger = params
-        .get("trigger")
-        .ok_or_else(|| ToolError::MissingParam("trigger".into()))?;
-    let trigger_type = trigger
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("trigger.type".into()))?;
-
     let enabled = params
         .get("enabled")
         .and_then(Value::as_bool)
@@ -374,39 +459,208 @@ pub(super) async fn handle_create_scene_with_state(
         }
     };
 
-    let mut scene = make_scene(name);
-    scene.description = params
-        .get("description")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
-    scene.enabled = enabled;
-    scene.mutation_mode = mutation_mode;
-    scene
-        .metadata
-        .insert("profile_id".to_owned(), profile_id.to_owned());
-    scene
-        .metadata
-        .insert("trigger_type".to_owned(), trigger_type.to_owned());
+    let created = create_scene(
+        &state.domains.scene_library,
+        CreateScene {
+            name: name.to_owned(),
+            description: params
+                .get("description")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            enabled: Some(enabled),
+            mutation_mode: Some(mutation_mode),
+            metadata: std::collections::HashMap::default(),
+        },
+    )
+    .await?;
 
-    let scene_id = scene.id.to_string();
-    let coordinator = scene_store_coordinator(state).await;
-    let pending = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let rollback = scene_manager.clone();
-        scene_manager
-            .create(scene)
-            .map_err(|error| ToolError::Internal(format!("failed to create scene: {error}")))?;
-        admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?
-    };
-    save_admitted_scene_store_snapshot(state, pending)
+    serialize_result(CreateSceneResult {
+        scene_id: created.scene.id.to_string(),
+        name: created.scene.name,
+        enabled: created.scene.enabled,
+        mutation_mode: created.scene.mutation_mode,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::future::ready;
+    use std::rc::Rc;
+
+    use hypercolor_types::api::scene::SceneDocument;
+    use serde_json::json;
+
+    use super::{resolve_layer, resolve_zone, retry_resolved_scene_target};
+    use crate::domain::{DomainError, ResourceKind};
+
+    fn scene_document(
+        revision: u64,
+        zone_id: &str,
+        zone_name: &str,
+        layer_id: &str,
+        layer_name: &str,
+    ) -> SceneDocument {
+        serde_json::from_value(json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "live",
+            "kind": "ephemeral",
+            "is_default": true,
+            "revision": revision,
+            "zones": [{
+                "id": zone_id,
+                "name": zone_name,
+                "role": "primary",
+                "enabled": true,
+                "brightness": 1.0,
+                "members": [],
+                "layers": [{
+                    "id": layer_id,
+                    "name": layer_name,
+                    "source": {
+                        "type": "effect",
+                        "effect_id": "00000000-0000-0000-0000-00000000000a",
+                        "controls": {}
+                    }
+                }]
+            }]
+        }))
+        .expect("scene fixture should deserialize")
+    }
+
+    #[tokio::test]
+    async fn clear_retry_keeps_the_zone_id_resolved_before_same_name_replacement() {
+        let old_zone = "00000000-0000-0000-0000-000000000010";
+        let new_zone = "00000000-0000-0000-0000-000000000020";
+        let initial = scene_document(
+            1,
+            old_zone,
+            "Desk",
+            "00000000-0000-0000-0000-000000000011",
+            "Glow",
+        );
+        let replacement = Rc::new(scene_document(
+            2,
+            new_zone,
+            "Desk",
+            "00000000-0000-0000-0000-000000000021",
+            "Glow",
+        ));
+        let target = resolve_zone("desk", &initial)
+            .expect("initial zone selector should resolve")
+            .id;
+        let attempts = Rc::new(RefCell::new(Vec::new()));
+        let mutation_count = Rc::new(Cell::new(0_u8));
+
+        let error = retry_resolved_scene_target(
+            initial.revision,
+            {
+                let replacement = Rc::clone(&replacement);
+                move || {
+                    assert_eq!(
+                        resolve_zone("desk", &replacement)
+                            .expect("replacement selector should resolve")
+                            .id
+                            .to_string(),
+                        new_zone
+                    );
+                    ready(Ok(replacement.revision))
+                }
+            },
+            {
+                let attempts = Rc::clone(&attempts);
+                let mutation_count = Rc::clone(&mutation_count);
+                move |revision| {
+                    attempts.borrow_mut().push((target, revision));
+                    let result: Result<(), DomainError> =
+                        if mutation_count.replace(mutation_count.get() + 1) == 0 {
+                            Err(DomainError::PreconditionFailed {
+                                resource: ResourceKind::Scene,
+                                expected: 1,
+                                current: 2,
+                            })
+                        } else {
+                            Err(DomainError::not_found(ResourceKind::Zone, target))
+                        };
+                    ready(result)
+                }
+            },
+        )
         .await
-        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
+        .expect_err("the retired zone ID must fail instead of clearing its replacement");
 
-    Ok(json!({
-        "scene_id": scene_id,
-        "name": name,
-        "enabled": enabled,
-        "mutation_mode": mutation_mode
-    }))
+        assert!(matches!(error, DomainError::NotFound { .. }));
+        assert_eq!(
+            attempts
+                .borrow()
+                .iter()
+                .map(|(zone, revision)| (zone.to_string(), *revision))
+                .collect::<Vec<_>>(),
+            [(old_zone.to_owned(), 1), (old_zone.to_owned(), 2)]
+        );
+    }
+
+    #[tokio::test]
+    async fn control_retry_keeps_the_layer_id_resolved_before_same_name_replacement() {
+        let zone_id = "00000000-0000-0000-0000-000000000010";
+        let old_layer = "00000000-0000-0000-0000-000000000011";
+        let new_layer = "00000000-0000-0000-0000-000000000012";
+        let initial = scene_document(1, zone_id, "Desk", old_layer, "Glow");
+        let replacement = Rc::new(scene_document(2, zone_id, "Desk", new_layer, "Glow"));
+        let zone = resolve_zone("desk", &initial).expect("zone selector should resolve");
+        let target = resolve_layer("glow", &zone)
+            .expect("initial layer selector should resolve")
+            .id;
+        let attempts = Rc::new(RefCell::new(Vec::new()));
+        let mutation_count = Rc::new(Cell::new(0_u8));
+
+        let error = retry_resolved_scene_target(
+            initial.revision,
+            {
+                let replacement = Rc::clone(&replacement);
+                move || {
+                    let zone = resolve_zone("desk", &replacement)
+                        .expect("replacement zone selector should resolve");
+                    assert_eq!(
+                        resolve_layer("glow", &zone)
+                            .expect("replacement layer selector should resolve")
+                            .id
+                            .to_string(),
+                        new_layer
+                    );
+                    ready(Ok(replacement.revision))
+                }
+            },
+            {
+                let attempts = Rc::clone(&attempts);
+                let mutation_count = Rc::clone(&mutation_count);
+                move |revision| {
+                    attempts.borrow_mut().push((target, revision));
+                    let result: Result<(), DomainError> =
+                        if mutation_count.replace(mutation_count.get() + 1) == 0 {
+                            Err(DomainError::PreconditionFailed {
+                                resource: ResourceKind::Scene,
+                                expected: 1,
+                                current: 2,
+                            })
+                        } else {
+                            Err(DomainError::not_found(ResourceKind::Layer, target))
+                        };
+                    ready(result)
+                }
+            },
+        )
+        .await
+        .expect_err("the retired layer ID must fail instead of patching its replacement");
+
+        assert!(matches!(error, DomainError::NotFound { .. }));
+        assert_eq!(
+            attempts
+                .borrow()
+                .iter()
+                .map(|(layer, revision)| (layer.to_string(), *revision))
+                .collect::<Vec<_>>(),
+            [(old_layer.to_owned(), 1), (old_layer.to_owned(), 2)]
+        );
+    }
 }

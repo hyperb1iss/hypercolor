@@ -2,9 +2,16 @@
 
 > From soundwave to photon. Every struct, every constant, every clock edge.
 
-**Status:** Implemented
-**Crate:** `hypercolor-core`
-**Module path:** `hypercolor_core::input`
+**Status:** Implemented, but the `AudioData` contract below is stale. Verify every
+field against the source before using section 1.
+**Crate:** `hypercolor-types` (the DSP pipeline itself is in `hypercolor-core`)
+**Module path:** `hypercolor_types::audio` for the type; `hypercolor_core::input` for the pipeline
+
+> **Note (2026-08-25):** `AudioData` moved to `crates/hypercolor-types/src/audio.rs`, and
+> its shape changed. The fields this spec documents as `freq: [f32; 200]`, `density`, and
+> `width` do not exist. The shipped struct leads with `spectrum: Vec<f32>` (200 log-spaced
+> bins), followed by `mel_bands`, `chromagram`, and the `beat_*` family. Section 1 calls
+> itself "the canonical API"; it is not, the source is.
 
 ---
 
@@ -20,7 +27,7 @@
 pub struct AudioData {
     // ─── Level & Shape ──────────────────────────────────────
     /// Overall audio level (RMS of 200 bins, normalized 0.0-1.0).
-    /// Maps to Lightscript `engine.audio.level`.
+    /// Maps to Lightscript `engine.audio.levelLinear`.
     pub level: f32,
 
     /// Audio density -- spectral flatness (0.0 = pure tone, 1.0 = white noise).
@@ -126,7 +133,8 @@ pub struct AudioData {
 
 | Rust Field             | Lightscript JS Path               | JS Type            | Notes                          |
 | ---------------------- | --------------------------------- | ------------------ | ------------------------------ |
-| `level`                | `engine.audio.level`              | `number`           | 0.0-1.0                        |
+| `level`                | `engine.audio.levelLinear`        | `number`           | 0.0-1.0                        |
+| derived dB             | `engine.audio.levelDb`            | `number`           | -100.0-0.0                     |
 | `density`              | `engine.audio.density`            | `number`           | 0.0-1.0, spectral flatness     |
 | `width`                | `engine.audio.width`              | `number`           | 0.0-1.0, stereo correlation    |
 | `freq`                 | `engine.audio.freq`               | `Int8Array(200)`   | Scaled to -128..127 for compat |

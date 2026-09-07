@@ -2,16 +2,19 @@
 
 use serde_json::{Value, json};
 
-use super::{ToolDefinition, ToolError, default_output_schema};
-use crate::api::displays::{DisplaySurfaceInfo, display_face_layout, display_surface_info};
-use crate::api::effects::resolve_effect_metadata;
-use crate::api::{
-    AppState, admit_scene_store_snapshot, publish_render_group_changed,
-    save_admitted_scene_store_snapshot, save_runtime_session_snapshot, scene_store_coordinator,
+use super::{ToolDefinition, ToolError, output_schema, resolve_effect_selector, serialize_result};
+use crate::app_state::AppState;
+use crate::domain::display::{
+    ClearDisplayFace, DisplaySurfaceInfo, SetDefaultDisplayFace, SetDisplayFace,
+    clear_display_face, display_face_layout, display_surface_info, set_display_face,
 };
+use crate::mcp::results::{DisplayDeviceResult, DisplayFaceResult};
+use crate::mcp::selector::SelectorCandidate;
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-use hypercolor_types::effect::{ControlValue, EffectCategory};
-use hypercolor_types::event::ZoneChangeKind;
+use hypercolor_types::effect::EffectMetadata;
+use hypercolor_types::layer::BlendMode;
+use hypercolor_types::scene::DisplayFaceTarget;
 
 pub(super) fn build_set_display_face() -> ToolDefinition {
     ToolDefinition {
@@ -23,11 +26,11 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
             "properties": {
                 "device": {
                     "type": "string",
-                    "description": "Display device ID or exact display name."
+                    "description": "Display device ID, exact name, or unique name substring."
                 },
                 "effect_id": {
                     "type": "string",
-                    "description": "Display-face effect UUID, exact name, or source stem. Omit when clearing."
+                    "description": "Display-face effect ID, exact name, or unique name substring. Omit when clearing."
                 },
                 "clear": {
                     "type": "boolean",
@@ -40,30 +43,18 @@ pub(super) fn build_set_display_face() -> ToolDefinition {
                 },
                 "controls": {
                     "type": "object",
-                    "description": "Optional control overrides to store on the display face group.",
+                    "description": "Optional control overrides to store on the display face zone.",
                     "additionalProperties": true
                 }
             },
             "required": ["device"],
             "additionalProperties": false
         }),
-        output_schema: default_output_schema(),
+        output_schema: output_schema::<DisplayFaceResult>(),
         read_only: false,
-        idempotent: true,
+        destructive: true,
+        idempotent: false,
     }
-}
-
-pub(super) fn handle_set_display_face(params: &Value) -> Result<Value, ToolError> {
-    let device = params
-        .get("device")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::MissingParam("device".into()))?;
-
-    Ok(json!({
-        "device": device,
-        "applied": false,
-        "message": "Display face tools require live daemon state."
-    }))
 }
 
 pub(super) async fn handle_set_display_face_with_state(
@@ -79,8 +70,8 @@ pub(super) async fn handle_set_display_face_with_state(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let scope = match params.get("scope").and_then(Value::as_str) {
-        None | Some("default") => crate::api::displays::DisplayFaceScope::Default,
-        Some("scene") => crate::api::displays::DisplayFaceScope::Scene,
+        None | Some("default") => hypercolor_types::api::displays::DisplayFaceScope::Default,
+        Some("scene") => hypercolor_types::api::displays::DisplayFaceScope::Scene,
         Some(other) => {
             return Err(ToolError::InvalidParam {
                 param: "scope".into(),
@@ -89,166 +80,85 @@ pub(super) async fn handle_set_display_face_with_state(
         }
     };
     let (device_id, info, surface) = resolve_display_device(state, raw_device).await?;
-    let controls = parse_controls_map(params.get("controls"))?;
 
-    if scope == crate::api::displays::DisplayFaceScope::Default {
-        return handle_default_scope(state, params, device_id, &info, surface, clear, controls)
-            .await;
+    if scope == hypercolor_types::api::displays::DisplayFaceScope::Default {
+        return handle_default_scope(state, params, device_id, &info, surface, clear).await;
     }
 
     if clear {
-        let coordinator = scene_store_coordinator(state).await;
-        let (active_scene_id, previous_group, cleared_group, pending) = {
-            let mut scene_manager = state.scene_manager.write().await;
-            let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-                .map_err(|error| ToolError::Conflict(error.message("removing a display face")))?;
-            let previous_group = scene_manager
-                .active_scene()
-                .and_then(|scene| scene.display_group_for(device_id))
-                .cloned();
-            let rollback = scene_manager.clone();
-            let cleared_group = scene_manager
-                .clear_display_group_assignment(
-                    device_id,
-                    info.name.as_str(),
-                    display_face_layout(device_id, info.name.as_str(), surface),
-                )
-                .map_err(|error| ToolError::Internal(error.to_string()))?
-                .clone();
-            let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-                .map_err(|error| {
-                    ToolError::Internal(format!("failed to persist scenes: {error}"))
-                })?;
-            (active_scene_id, previous_group, cleared_group, pending)
-        };
-        save_admitted_scene_store_snapshot(state, pending)
-            .await
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-        let change_kind = if previous_group.is_some() {
-            ZoneChangeKind::Updated
-        } else {
-            ZoneChangeKind::Created
-        };
-        publish_render_group_changed(state, active_scene_id, &cleared_group, change_kind);
-        save_runtime_session_snapshot(state).await;
+        let cleared = clear_display_face(
+            &state.domains.scene,
+            ClearDisplayFace {
+                device_id,
+                device_name: info.name.clone(),
+                layout: display_face_layout(device_id, info.name.as_str(), surface),
+            },
+        )
+        .await?;
         let live_scope = live_scope_payload(state, device_id).await;
-        return Ok(json!({
-            "device": display_device_payload(&info, surface),
-            "scene_id": active_scene_id.to_string(),
-            "group": cleared_group,
-            "scope": "scene",
-            "live_scope": live_scope,
-            "cleared": true,
-        }));
+        return serialize_result(DisplayFaceResult {
+            device: display_device_payload(&info, surface),
+            scope,
+            live_scope,
+            cleared: true,
+            scene_id: Some(cleared.scene_id.to_string()),
+            effect: None,
+            zone: Some(crate::domain::scene_tree::zone_resource(&cleared.zone)),
+        });
     }
 
     let effect_lookup = params
         .get("effect_id")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, effect_lookup) else {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect not found: {effect_lookup}"),
-            });
-        };
-        if effect.category != EffectCategory::Display {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not a display face", effect.name),
-            });
-        }
-        if !matches!(
-            effect.source,
-            hypercolor_types::effect::EffectSource::Html { .. }
-        ) {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not an HTML display face", effect.name),
-            });
-        }
-        effect
-    };
+    let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
+    let controls = parse_controls_map(params.get("controls"), &effect)?;
 
-    let coordinator = scene_store_coordinator(state).await;
-    let (active_scene_id, group, change_kind, pending) = {
-        let mut scene_manager = state.scene_manager.write().await;
-        let active_scene_id = crate::api::active_scene_id_for_runtime_mutation(&scene_manager)
-            .map_err(|error| ToolError::Conflict(error.message("assigning a display face")))?;
-        let change_kind = if scene_manager
-            .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
-            .is_some()
-        {
-            ZoneChangeKind::Updated
-        } else {
-            ZoneChangeKind::Created
-        };
-        let rollback = scene_manager.clone();
-        let group = scene_manager
-            .upsert_display_group(
+    // The face blends over the live effect by default; Replace is opt-in
+    // through the REST composition endpoint for face-only looks.
+    let written = set_display_face(
+        &state.domains.effects,
+        SetDisplayFace {
+            device_id,
+            device_name: info.name.clone(),
+            effect: effect.clone(),
+            controls,
+            layout: display_face_layout(device_id, info.name.as_str(), surface),
+            target: DisplayFaceTarget {
+                blend_mode: BlendMode::Alpha,
                 device_id,
-                info.name.as_str(),
-                &effect,
-                controls,
-                display_face_layout(device_id, info.name.as_str(), surface),
-            )
-            .map_err(|error| ToolError::Internal(error.to_string()))?
-            .clone();
-        // upsert seeds the target as Replace; blend over the live effect by
-        // default so the face layers on top instead of blacking it out,
-        // mirroring the REST scene-scope contract.
-        let group = scene_manager
-            .patch_display_group_target(
-                group.id,
-                Some(hypercolor_types::scene::DisplayFaceBlendMode::Alpha),
-                Some(1.0),
-            )
-            .ok_or_else(|| ToolError::Internal("failed to set display face composition".into()))?
-            .clone();
-        let pending = admit_scene_store_snapshot(&coordinator, &mut scene_manager, rollback)
-            .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-        (active_scene_id, group, change_kind, pending)
-    };
-    save_admitted_scene_store_snapshot(state, pending)
-        .await
-        .map_err(|error| ToolError::Internal(format!("failed to persist scenes: {error}")))?;
-    publish_render_group_changed(state, active_scene_id, &group, change_kind);
-    save_runtime_session_snapshot(state).await;
+                opacity: 1.0,
+            },
+        },
+    )
+    .await?;
 
-    Ok(json!({
-        "device": display_device_payload(&info, surface),
-        "scene_id": active_scene_id.to_string(),
-        "effect": effect,
-        "group": group,
-        "scope": "scene",
-        "live_scope": "scene",
-        "cleared": false,
-    }))
+    serialize_result(DisplayFaceResult {
+        device: display_device_payload(&info, surface),
+        scope,
+        live_scope: Some(hypercolor_types::api::displays::DisplayFaceScope::Scene),
+        cleared: false,
+        scene_id: Some(written.scene_id.to_string()),
+        effect: Some(crate::resource_summary::effect_summary_with_details(
+            &effect,
+        )),
+        zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),
+    })
 }
 
 /// Which layer currently drives the display, mirroring the REST contract.
-async fn live_scope_payload(state: &AppState, device_id: DeviceId) -> Value {
-    let scene_assigned = {
-        let scene_manager = state.scene_manager.read().await;
-        scene_manager
-            .active_scene()
-            .and_then(|scene| scene.display_group_for(device_id))
-            .is_some_and(|zone| zone.effect_id.is_some())
-    };
-    if scene_assigned {
-        return json!("scene");
+async fn live_scope_payload(
+    state: &AppState,
+    device_id: DeviceId,
+) -> Option<hypercolor_types::api::displays::DisplayFaceScope> {
+    let layers = state.domains.display.face_layers(device_id).await;
+    if layers.scene_assigned {
+        return Some(hypercolor_types::api::displays::DisplayFaceScope::Scene);
     }
-    let default_assigned = {
-        let store = state.display_preferences.read().await;
-        store.get(device_id).is_some()
-    };
-    if default_assigned {
-        json!("default")
+    if layers.default_assigned {
+        Some(hypercolor_types::api::displays::DisplayFaceScope::Default)
     } else {
-        Value::Null
+        None
     }
 }
 
@@ -259,124 +169,61 @@ async fn handle_default_scope(
     info: &DeviceInfo,
     surface: DisplaySurfaceInfo,
     clear: bool,
-    controls: std::collections::HashMap<String, ControlValue>,
 ) -> Result<Value, ToolError> {
     if clear {
-        let removed = {
-            let mut store = state.display_preferences.write().await;
-            store
-                .remove(device_id)
-                .map_err(|error| ToolError::Internal(error.to_string()))?
-                .is_some()
-        };
-        let (was_live, scene_id, cleared_zone) = {
-            let mut scene_manager = state.scene_manager.write().await;
-            let scene_assigned = scene_manager
-                .active_scene()
-                .and_then(|scene| scene.display_group_for(device_id))
-                .is_some_and(|zone| zone.effect_id.is_some());
-            let cleared = scene_manager.default_display_group_for(device_id).cloned();
-            scene_manager.remove_default_display_group(device_id);
-            let scene_id = scene_manager
-                .active_scene()
-                .map(|scene| scene.id)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT);
-            (!scene_assigned, scene_id, cleared)
-        };
-        if removed
-            && was_live
-            && let Some(mut zone) = cleared_zone
-        {
-            zone.effect_id = None;
-            zone.layers.clear();
-            publish_render_group_changed(state, scene_id, &zone, ZoneChangeKind::Updated);
-        }
+        let cleared = state.domains.display.clear_default_face(device_id).await?;
         let live_scope = live_scope_payload(state, device_id).await;
-        return Ok(json!({
-            "device": display_device_payload(info, surface),
-            "scope": "default",
-            "live_scope": live_scope,
-            "cleared": removed,
-        }));
+        return serialize_result(DisplayFaceResult {
+            device: display_device_payload(info, surface),
+            scope: hypercolor_types::api::displays::DisplayFaceScope::Default,
+            live_scope,
+            cleared: cleared.removed,
+            scene_id: None,
+            effect: None,
+            zone: None,
+        });
     }
 
     let effect_lookup = params
         .get("effect_id")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("effect_id".into()))?;
-    let effect = {
-        let registry = state.effect_registry.read().await;
-        let Some(effect) = resolve_effect_metadata(&registry, effect_lookup) else {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect not found: {effect_lookup}"),
-            });
-        };
-        if effect.category != EffectCategory::Display {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not a display face", effect.name),
-            });
-        }
-        if !matches!(
-            effect.source,
-            hypercolor_types::effect::EffectSource::Html { .. }
-        ) {
-            return Err(ToolError::InvalidParam {
-                param: "effect_id".into(),
-                reason: format!("effect '{}' is not an HTML display face", effect.name),
-            });
-        }
-        effect
-    };
+    let effect = resolve_effect_selector(state, "effect_id", effect_lookup).await?;
+    let controls = parse_controls_map(params.get("controls"), &effect)?;
 
-    {
-        let mut store = state.display_preferences.write().await;
-        store
-            .set(
+    // Blend over the live effect by default; Replace is opt-in via the REST
+    // composition endpoint for face-only looks.
+    let written = state
+        .domains
+        .display
+        .set_default_face(SetDefaultDisplayFace {
+            device_id,
+            effect,
+            controls,
+            target: DisplayFaceTarget {
+                blend_mode: BlendMode::Alpha,
                 device_id,
-                crate::display_preferences::DisplayPreference {
-                    // Blend over the live effect by default; Replace is opt-in
-                    // via the composition controls for face-only looks.
-                    blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
-                    controls,
-                    effect_id: effect.id,
-                    opacity: 1.0,
-                },
-            )
-            .map_err(|error| ToolError::Internal(error.to_string()))?;
-    }
-    let Some(group) =
-        crate::api::displays::apply_display_preference_overlay(state, device_id).await
-    else {
-        return Err(ToolError::Internal(
-            "failed to install the default face overlay".into(),
-        ));
-    };
-    let live_scope = live_scope_payload(state, device_id).await;
-    if live_scope == json!("default") {
-        let scene_id = {
-            let scene_manager = state.scene_manager.read().await;
-            scene_manager
-                .active_scene()
-                .map(|scene| scene.id)
-                .unwrap_or(hypercolor_types::scene::SceneId::DEFAULT)
-        };
-        publish_render_group_changed(state, scene_id, &group, ZoneChangeKind::Updated);
-    }
+                opacity: 1.0,
+            },
+        })
+        .await?;
 
-    Ok(json!({
-        "device": display_device_payload(info, surface),
-        "effect": effect,
-        "group": group,
-        "scope": "default",
-        "live_scope": live_scope,
-        "cleared": false,
-    }))
+    serialize_result(DisplayFaceResult {
+        device: display_device_payload(info, surface),
+        scope: hypercolor_types::api::displays::DisplayFaceScope::Default,
+        live_scope: live_scope_payload(state, device_id).await,
+        cleared: false,
+        scene_id: None,
+        effect: Some(crate::resource_summary::effect_summary_with_details(
+            &written.effect,
+        )),
+        zone: Some(crate::domain::scene_tree::zone_resource(&written.zone)),
+    })
 }
 
 fn parse_controls_map(
     value: Option<&Value>,
+    effect: &EffectMetadata,
 ) -> Result<std::collections::HashMap<String, ControlValue>, ToolError> {
     let Some(value) = value else {
         return Ok(std::collections::HashMap::new());
@@ -390,113 +237,43 @@ fn parse_controls_map(
 
     let mut controls = std::collections::HashMap::with_capacity(map.len());
     for (key, value) in map {
-        let Some(control) = control_value_from_json(value) else {
-            return Err(ToolError::InvalidParam {
+        let definition = effect
+            .control_by_id(key)
+            .ok_or_else(|| ToolError::InvalidParam {
                 param: "controls".into(),
-                reason: format!("unsupported control value for '{key}'"),
-            });
-        };
+                reason: format!("unknown control '{key}'"),
+            })?;
+        let control =
+            definition
+                .admit_effect_json(value)
+                .map_err(|error| ToolError::InvalidParam {
+                    param: "controls".into(),
+                    reason: format!("invalid control value for '{key}': {error}"),
+                })?;
         controls.insert(key.clone(), control);
     }
     Ok(controls)
-}
-
-fn control_value_from_json(value: &Value) -> Option<ControlValue> {
-    if let Some(flag) = value.as_bool() {
-        return Some(ControlValue::Boolean(flag));
-    }
-
-    if let Some(integer_value) = value.as_i64() {
-        let coerced = i32::try_from(integer_value).ok()?;
-        return Some(ControlValue::Integer(coerced));
-    }
-
-    if let Some(float_value) = value.as_f64() {
-        let finite = if float_value.is_finite() {
-            float_value
-        } else {
-            return None;
-        };
-        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let coerced = finite as f32;
-        return Some(ControlValue::Float(coerced));
-    }
-
-    if let Some(text) = value.as_str() {
-        return Some(ControlValue::Text(text.to_owned()));
-    }
-
-    if let Some(array) = value.as_array()
-        && array.len() == 4
-    {
-        let mut rgba = [0.0_f32; 4];
-        for (idx, component) in array.iter().enumerate() {
-            let number = component.as_f64()?;
-            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-            let number = number as f32;
-            rgba[idx] = number;
-        }
-        return Some(ControlValue::Color(rgba));
-    }
-
-    None
 }
 
 async fn resolve_display_device(
     state: &AppState,
     raw: &str,
 ) -> Result<(DeviceId, DeviceInfo, DisplaySurfaceInfo), ToolError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(ToolError::InvalidParam {
-            param: "device".into(),
-            reason: "must not be empty".into(),
-        });
-    }
-
-    if let Ok(device_id) = trimmed.parse::<DeviceId>() {
-        let Some(device) = state.device_registry.get(&device_id).await else {
-            return Err(ToolError::InvalidParam {
-                param: "device".into(),
-                reason: format!("display not found: {trimmed}"),
-            });
-        };
-        let Some(surface) = display_surface_info(&device.info) else {
-            return Err(ToolError::InvalidParam {
-                param: "device".into(),
-                reason: format!(
-                    "device does not support display faces: {}",
-                    device.info.name
-                ),
-            });
-        };
-        return Ok((device_id, device.info, surface));
-    }
-
-    let matches = state
+    let candidates = state
         .device_registry
         .list()
         .await
         .into_iter()
-        .filter(|tracked| tracked.info.name.eq_ignore_ascii_case(trimmed))
-        .collect::<Vec<_>>();
-    if matches.is_empty() {
-        return Err(ToolError::InvalidParam {
-            param: "device".into(),
-            reason: format!("display not found: {trimmed}"),
-        });
-    }
-    if matches.len() > 1 {
-        return Err(ToolError::InvalidParam {
-            param: "device".into(),
-            reason: format!("display name is ambiguous: {trimmed}"),
-        });
-    }
-
-    let device = matches
-        .into_iter()
-        .next()
-        .expect("match count already checked");
+        .map(|tracked| {
+            SelectorCandidate::named(
+                tracked.info.id.to_string(),
+                tracked.info.name.clone(),
+                tracked,
+            )
+        })
+        .collect();
+    let device = crate::mcp::selector::resolve(raw, candidates)
+        .map_err(|error| ToolError::selector("device", error))?;
     let Some(surface) = display_surface_info(&device.info) else {
         return Err(ToolError::InvalidParam {
             param: "device".into(),
@@ -509,14 +286,115 @@ async fn resolve_display_device(
     Ok((device.info.id, device.info, surface))
 }
 
-fn display_device_payload(info: &DeviceInfo, surface: DisplaySurfaceInfo) -> Value {
-    json!({
-        "id": info.id.to_string(),
-        "name": info.name.clone(),
-        "vendor": info.vendor.clone(),
-        "family": format!("{}", info.family),
-        "width": surface.width,
-        "height": surface.height,
-        "circular": surface.circular,
-    })
+fn display_device_payload(info: &DeviceInfo, surface: DisplaySurfaceInfo) -> DisplayDeviceResult {
+    DisplayDeviceResult {
+        id: info.id.to_string(),
+        name: info.name.clone(),
+        vendor: info.vendor.clone(),
+        family: info.family.to_string(),
+        width: surface.width,
+        height: surface.height,
+        circular: surface.circular,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hypercolor_types::control::ControlValue;
+    use hypercolor_types::effect::{
+        ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+        EffectSource,
+    };
+
+    use super::parse_controls_map;
+
+    fn metadata() -> EffectMetadata {
+        EffectMetadata {
+            id: EffectId::new(uuid::Uuid::now_v7()),
+            name: "display fixture".to_owned(),
+            author: "test".to_owned(),
+            version: "1".to_owned(),
+            description: String::new(),
+            category: EffectCategory::Display,
+            tags: Vec::new(),
+            controls: vec![
+                ControlDefinition {
+                    id: "accent".to_owned(),
+                    name: "Accent".to_owned(),
+                    kind: ControlKind::Color,
+                    control_type: ControlType::ColorPicker,
+                    default_value: ControlValue::linear_color([1.0, 1.0, 1.0, 1.0]),
+                    min: None,
+                    max: None,
+                    step: None,
+                    labels: Vec::new(),
+                    group: None,
+                    tooltip: None,
+                    aspect_lock: None,
+                    preview_source: None,
+                    binding: None,
+                },
+                ControlDefinition {
+                    id: "gain".to_owned(),
+                    name: "Gain".to_owned(),
+                    kind: ControlKind::Number,
+                    control_type: ControlType::Slider,
+                    default_value: ControlValue::Float(0.5),
+                    min: Some(0.0),
+                    max: Some(1.0),
+                    step: None,
+                    labels: Vec::new(),
+                    group: None,
+                    tooltip: None,
+                    aspect_lock: None,
+                    preview_source: None,
+                    binding: None,
+                },
+            ],
+            presets: Vec::new(),
+            audio_reactive: false,
+            screen_reactive: false,
+            input_reactive: false,
+            source: EffectSource::Html {
+                path: "fixture.html".into(),
+            },
+            license: None,
+        }
+    }
+
+    #[test]
+    fn display_controls_reject_f64_values_outside_the_effect_abi() {
+        let payload = serde_json::json!({
+            "gain": f64::from(f32::MAX) * 2.0,
+        });
+
+        let error = parse_controls_map(Some(&payload), &metadata())
+            .expect_err("f64 values beyond f32 must be rejected");
+        assert!(error.to_string().contains("within the f32 range"));
+    }
+
+    #[test]
+    fn display_controls_admit_checked_rgba_arrays() {
+        let payload = serde_json::json!({
+            "accent": [0.1, 0.2, 0.3, 0.4],
+        });
+
+        let controls =
+            parse_controls_map(Some(&payload), &metadata()).expect("valid RGBA should parse");
+        let ControlValue::ColorLinear(color) = controls["accent"] else {
+            panic!("expected linear color");
+        };
+        assert!((color.a - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn display_controls_reject_unknown_control_ids() {
+        let payload = serde_json::json!({
+            "missing": 0.5,
+        });
+
+        let error = parse_controls_map(Some(&payload), &metadata())
+            .expect_err("undeclared controls must be rejected");
+        assert!(error.to_string().contains("unknown control 'missing'"));
+    }
 }

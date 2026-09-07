@@ -37,7 +37,8 @@ pub fn MediaPreview(
     on_video_loaded: Option<Callback<VideoMeta>>,
 ) -> impl IntoView {
     let kind = asset_kind(&asset);
-    let blob_url = format!("/api/v1/assets/{}/blob", asset.id);
+    let blob_url = crate::api::client::daemon_url(&format!("/api/v1/assets/{}/blob", asset.id))
+        .unwrap_or_default();
 
     match kind {
         "video" => view! {

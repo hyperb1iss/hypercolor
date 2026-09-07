@@ -3,6 +3,87 @@
 // Headings, links, code, tables, blockquotes, lists, images
 // ═══════════════════════════════════════════════════════════════
 
+// ── Page header — title plus the front-matter lead ───────────
+// Every page carries a description; without its own type treatment the lead
+// paragraph is indistinguishable from the body copy that follows it.
+
+.doc__header {
+  margin-bottom: 32px;
+}
+
+.doc__description {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  text-wrap: pretty;
+}
+
+// ── Prev / next pagination ───────────────────────────────────
+// Sits outside <article class="doc">, so it inherits none of the content
+// column's width, padding or link colour and has to restate them.
+
+.doc__pagination {
+  display: flex;
+  gap: 16px;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 8px 24px 48px;
+}
+
+.doc__pagination-link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 14px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  background: var(--surface-raised);
+  text-decoration: none;
+  transition:
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
+
+  &:hover {
+    border-color: var(--accent-muted);
+    background: var(--surface-hover);
+    box-shadow: 0 0 16px var(--ambient-glow);
+  }
+
+  &--next {
+    align-items: flex-end;
+    text-align: right;
+  }
+}
+
+.doc__pagination-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.doc__pagination-title {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+@media (max-width: $bp-mobile - 1px) {
+  .doc__pagination {
+    flex-direction: column;
+    padding: 8px 20px 40px;
+  }
+
+  .doc__pagination-link--next {
+    align-items: flex-start;
+    text-align: left;
+  }
+}
+
 .doc {
   max-width: 800px;
   margin: 0 auto;
@@ -61,10 +142,73 @@
     }
   }
 
-  h4, h5, h6 {
-    margin-top: 24px;
+  // ── H4 — the deepest level in use, needs to outrank body bold ──
+
+  h4 {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-top: 28px;
     margin-bottom: 8px;
     color: var(--text-primary);
+  }
+
+  h5, h6 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-top: 24px;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+  }
+
+  // ── Heading anchors — margin '#', revealed on hover ────────
+  // Zola's default anchor template emits a bare 🔗 into the heading text.
+  // templates/anchor-link.html replaces it; this lifts it out of the text flow
+  // so it stops colliding with the H2 ◆ prefix and authored emoji.
+
+  h1, h2, h3, h4, h5, h6 {
+    position: relative;
+  }
+
+  .zola-anchor {
+    position: absolute;
+    right: 100%;
+    padding-right: 8px;
+    font-weight: 400;
+    color: var(--text-tertiary);
+    opacity: 0;
+
+    // H1 paints its text with a clipped gradient; the anchor must opt out of
+    // both that and the .doc link underline-grow.
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    transition:
+      opacity var(--duration-normal) var(--ease-silk),
+      color var(--duration-normal) var(--ease-silk);
+
+    &:hover {
+      color: var(--accent);
+      text-shadow: 0 0 12px var(--glow-accent-50);
+    }
+
+    &:focus-visible {
+      opacity: 1;
+    }
+  }
+
+  h1:hover, h2:hover, h3:hover,
+  h4:hover, h5:hover, h6:hover {
+    > .zola-anchor {
+      opacity: 1;
+    }
+  }
+
+  // No hover on touch, and the narrow gutter has no room for the marker.
+  @media (max-width: $bp-mobile - 1px) {
+    .zola-anchor {
+      display: none;
+    }
   }
 
   // ── Links — purple resting, purple underline-grow on hover ──
@@ -77,9 +221,9 @@
     background-position: 0% 100%;
     background-repeat: no-repeat;
     transition:
-      color var(--duration-medium) var(--ease-smooth),
-      background-size var(--duration-medium) var(--ease-smooth),
-      text-shadow var(--duration-medium) var(--ease-smooth);
+      color var(--duration-normal) var(--ease-silk),
+      background-size var(--duration-normal) var(--ease-silk),
+      text-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       color: var(--accent-hover);
@@ -114,8 +258,8 @@
     box-shadow: 0 0 1px var(--border-subtle),
                 inset 0 1px 0 oklch(1 0 0 / 0.03);
     transition:
-      border-color var(--duration-medium) var(--ease-smooth),
-      box-shadow var(--duration-medium) var(--ease-smooth);
+      border-color var(--duration-normal) var(--ease-silk),
+      box-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       border-color: var(--border-default);
@@ -135,9 +279,16 @@
 
   // ── Tables — accent headers, subtle row hover ─────────────
 
+  // Markdown gives no wrapper to scroll, so the table is its own scroll
+  // container: display:block is what makes overflow apply to a table element.
+  // Without this the wide hardware matrices push past the column and land on
+  // top of the TOC.
   table {
-    border-collapse: collapse;
+    display: block;
     width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
     margin: 16px 0;
   }
 
@@ -154,7 +305,7 @@
   td {
     border-bottom: 1px solid var(--border-subtle);
     padding: 10px 14px;
-    transition: background var(--duration-medium) var(--ease-smooth);
+    transition: background var(--duration-normal) var(--ease-silk);
   }
 
   tr:hover td {
@@ -171,8 +322,8 @@
     padding: 12px 20px;
     border-radius: 0 $radius-md $radius-md 0;
     transition:
-      border-left-color var(--duration-medium) var(--ease-smooth),
-      box-shadow var(--duration-medium) var(--ease-smooth);
+      border-left-color var(--duration-normal) var(--ease-silk),
+      box-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       border-left-color: var(--accent-hover);
@@ -206,6 +357,18 @@
     margin: 12px 0;
   }
 
+  // GFM task items ship their own marker, so the list bullet is a second one.
+  li:has(> input[type="checkbox"]) {
+    list-style: none;
+    margin-left: -20px;
+  }
+
+  input[type="checkbox"] {
+    accent-color: var(--accent);
+    margin-right: 8px;
+    vertical-align: baseline;
+  }
+
   li + li {
     margin-top: 4px;
   }
@@ -220,7 +383,7 @@
   img {
     border-radius: $radius-md;
     margin: 16px 0;
-    transition: box-shadow var(--duration-medium) var(--ease-smooth);
+    transition: box-shadow var(--duration-normal) var(--ease-silk);
 
     &:hover {
       box-shadow: 0 0 24px var(--ambient-glow);

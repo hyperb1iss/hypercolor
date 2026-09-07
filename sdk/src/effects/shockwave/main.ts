@@ -1,5 +1,5 @@
 import type { AudioData } from 'hypercolor'
-import { audio, canvas, combo, num } from 'hypercolor'
+import { audio, canvas, clamp, combo, num } from 'hypercolor'
 
 type SceneName = (typeof SCENES)[number]
 type PaletteName = (typeof PALETTE_NAMES)[number]
@@ -76,10 +76,6 @@ const LED_PALETTES: Record<PaletteName, readonly Rgb[]> = {
     ],
 }
 
-function clamp(v: number, lo: number, hi: number): number {
-    return Math.max(lo, Math.min(hi, v))
-}
-
 function fract(v: number): number {
     return v - Math.floor(v)
 }
@@ -128,7 +124,7 @@ function rgbCss(color: Rgb): string {
 }
 
 interface AudioState {
-    level: number
+    levelLinear: number
     bass: number
     treble: number
     pulse: number
@@ -138,13 +134,13 @@ interface AudioState {
 }
 
 function analyzeAudio(a: AudioData, synthPhase: number): AudioState {
-    const present = a.level > 0.025 || a.bass > 0.03 || a.mid > 0.03
+    const present = a.levelLinear > 0.025 || a.bass > 0.03 || a.mid > 0.03
 
     if (present) {
         const pulse = clamp(Math.max(a.beatPulse, a.onsetPulse * 0.8, a.bass * 0.6), 0, 1)
         return {
             bass: clamp(Math.max(a.bassEnv, a.bass), 0, 1),
-            level: clamp(Math.max(a.levelShort, a.level), 0, 1),
+            levelLinear: clamp(Math.max(a.levelShort, a.levelLinear), 0, 1),
             onset: clamp(a.onsetPulse, 0, 1),
             present: true,
             pulse,
@@ -157,7 +153,7 @@ function analyzeAudio(a: AudioData, synthPhase: number): AudioState {
     const synthBeat = Math.max(0, Math.sin(synthPhase * 1.65)) ** 7 * 0.78
     return {
         bass: 0.16 + Math.sin(synthPhase * 0.72) * 0.08,
-        level: 0.2 + Math.sin(synthPhase * 0.36) * 0.06,
+        levelLinear: 0.2 + Math.sin(synthPhase * 0.36) * 0.06,
         onset: synthBeat,
         present: false,
         pulse: synthBeat,
@@ -277,7 +273,7 @@ function drawBullseyeRing(args: RingDrawArgs): void {
         Math.sin(time * 0.4 + ringIndex * 0.45) * 0.028
 
     const ambient = 0.58 + (1 - t) * 0.38
-    const brightness = clamp((ambient + audio.level * 0.25 + mod.brightnessBoost) * intensityScale, 0, 1)
+    const brightness = clamp((ambient + audio.levelLinear * 0.25 + mod.brightnessBoost) * intensityScale, 0, 1)
 
     // Elliptical rings with independently rotating axes per ring.
     // Counter-rotation (alternating direction) produces shearing/shimmer motion.
@@ -586,7 +582,7 @@ export default canvas.stateful(
             }
             smBass = smoothAttackRelease(smBass, analysis.bass, 14, 3.2)
             smTreble = smoothAttackRelease(smTreble, analysis.treble, 12, 4)
-            smLevel = smoothAttackRelease(smLevel, analysis.level, 9, 3)
+            smLevel = smoothAttackRelease(smLevel, analysis.levelLinear, 9, 3)
             smPulse = smoothAttackRelease(smPulse, analysis.pulse, 22, 2.4)
 
             // Continuous drifts keep the image alive and flowing even in silence.
@@ -709,7 +705,7 @@ export default canvas.stateful(
             // pumping cleanly without visible steps on transients.
             const renderAudio: AudioState = {
                 bass: smBass,
-                level: smLevel,
+                levelLinear: smLevel,
                 onset: analysis.onset,
                 present: analysis.present,
                 pulse: smPulse,

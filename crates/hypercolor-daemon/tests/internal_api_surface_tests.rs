@@ -1,0 +1,1429 @@
+//! Source fences for the daemon's internal API ownership boundaries.
+
+use std::path::{Path, PathBuf};
+
+fn daemon_sources() -> Vec<(PathBuf, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut pending = vec![root.clone()];
+    let mut sources = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).expect("daemon source directory should read") {
+            let path = entry.expect("daemon source entry should read").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs")
+                && !path.ends_with("tests.rs")
+            {
+                let source = std::fs::read_to_string(&path)
+                    .expect("daemon Rust source should read as UTF-8");
+                sources.push((path, source));
+            }
+        }
+    }
+    sources
+}
+
+/// Every daemon source including the `tests.rs` modules the main walk skips.
+fn daemon_sources_with_tests() -> Vec<(PathBuf, String)> {
+    let mut sources = Vec::new();
+    let mut pending = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).expect("daemon source directory should read") {
+            let path = entry.expect("daemon source entry should read").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let source = std::fs::read_to_string(&path)
+                    .expect("daemon Rust source should read as UTF-8");
+                sources.push((path, source));
+            }
+        }
+    }
+    sources
+}
+
+/// Every Rust and TypeScript source in a sibling crate or workspace directory.
+fn sibling_sources(relative: &str) -> Vec<(PathBuf, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("daemon crate lives under the workspace crates directory")
+        .join(relative);
+    let mut pending = vec![root];
+    let mut sources = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.expect("source entry should read").path();
+            if path.is_dir() {
+                if path.file_name().is_none_or(|name| {
+                    !matches!(
+                        name.to_string_lossy().as_ref(),
+                        "target" | "node_modules" | "dist" | ".venv"
+                    )
+                }) {
+                    pending.push(path);
+                }
+                continue;
+            }
+            if !path
+                .extension()
+                .is_some_and(|extension| extension == "rs" || extension == "ts")
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("source should read as UTF-8");
+            sources.push((path, source));
+        }
+    }
+    sources
+}
+
+fn references_rust_member(source: &str, member: &str) -> bool {
+    source.match_indices(member).any(|(start, _)| {
+        let prefix = source[..start].trim_end();
+        let suffix = source[start + member.len()..].trim_start();
+        (prefix.ends_with("SceneStore::") || prefix.ends_with('.')) && suffix.starts_with('(')
+    })
+}
+
+#[test]
+fn persisted_scene_and_fallback_vocabulary_stays_zone_native() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let runtime_state = source("runtime_state.rs")
+        .split_once("\n#[cfg(test)]\nmod tests {")
+        .map_or(source("runtime_state.rs"), |(production, _)| production);
+
+    for production in [
+        runtime_state,
+        source("domain/effect.rs"),
+        source("domain/layout/publication.rs"),
+        source("startup/lifecycle.rs"),
+    ] {
+        for retired in ["default_scene_groups", "ClearGroups", "clear_groups"] {
+            assert!(
+                !production.contains(retired),
+                "daemon production source contains retired term {retired}"
+            );
+        }
+    }
+
+    let types = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hypercolor-types/src/config/effect_engine.rs"),
+    )
+    .expect("effect engine config source should read");
+    assert!(!types.contains("ClearGroups"));
+    assert!(!types.contains("clear_groups"));
+
+    let core = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../hypercolor-core/src/config/mod.rs"),
+    )
+    .expect("core config source should read");
+    assert_eq!(
+        core.matches("\"clear_groups\"").count(),
+        1,
+        "only the schema v4 migration may retain the old serialized value"
+    );
+}
+
+#[test]
+fn scene_domain_source_uses_zone_vocabulary() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in [
+        "../hypercolor-types/src/scene.rs",
+        "../hypercolor-core/src/scene/mod.rs",
+    ] {
+        let source = std::fs::read_to_string(manifest.join(relative))
+            .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"));
+        assert!(
+            !source.to_ascii_lowercase().contains("group"),
+            "scene domain source contains retired group vocabulary: {relative}"
+        );
+    }
+
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let retired = [
+        "|group| group.",
+        "let mut groups =",
+        "zones: groups",
+        "let Some(group) = scene.zones",
+        "group: &Zone",
+        "let (group, effect)",
+        "let (scene_id, group)",
+        "mut group: Zone",
+        "group.effect_ids()",
+        "group.layout",
+        "removed_groups",
+    ];
+    for relative in [
+        "api/config/live/audio.rs",
+        "domain/layout/convergence.rs",
+        "profile_import.rs",
+        "api/ws/session.rs",
+        "api/mod.rs",
+        "api/displays.rs",
+        "domain/display.rs",
+        "mcp/tools/displays.rs",
+    ] {
+        for term in retired {
+            assert!(
+                !source(relative).contains(term),
+                "daemon source {relative} contains retired scene-zone term {term}"
+            );
+        }
+    }
+}
+
+#[test]
+fn app_state_has_one_module_identity() {
+    let banned = [
+        "crate::api::AppState",
+        "hypercolor_daemon::api::AppState",
+        "pub use crate::app_state::AppState",
+    ];
+    let offenders = daemon_sources()
+        .into_iter()
+        .flat_map(|(path, source)| {
+            banned
+                .into_iter()
+                .filter(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{} contains {pattern}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "AppState belongs to app_state, not the transport API:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn driver_host_and_workers_reuse_the_discovery_context() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let host = source("network/host.rs");
+    assert!(host.contains("runtime: DiscoveryRuntime"));
+    assert!(!host.contains("clippy::too_many_arguments"));
+    assert!(!host.contains("DiscoveryRuntime {\n            device_registry:"));
+
+    let worker = source("startup/discovery_worker.rs");
+    assert!(worker.contains("discovery: DiscoveryRuntime"));
+    assert!(!worker.contains("DiscoveryRuntime {\n            device_registry:"));
+}
+
+#[test]
+fn application_state_reuses_one_domain_graph() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("pub domains: DomainContexts"));
+    assert!(app_state.contains("let domains = daemon.domains.clone();"));
+    assert!(!app_state.contains("pub effect_registry:"));
+    for retired_field in [
+        "pub scene: SceneContext",
+        "pub runtime_session: RuntimeSessionService",
+        "pub devices: DeviceContext",
+        "pub layout: LayoutContext",
+        "pub output: OutputContext",
+        "pub effects: EffectContext",
+        "pub scene_tree: SceneTreeContext",
+        "pub scene_library: SceneLibraryContext",
+    ] {
+        assert!(!app_state.contains(retired_field), "found {retired_field}");
+    }
+
+    let startup = source("startup/mod.rs");
+    assert!(startup.contains("pub domains: DomainContexts"));
+}
+
+#[test]
+fn application_state_dependencies_are_fixed_before_domain_assembly() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in ["src/app_state.rs", "src/startup/mod.rs"] {
+        let source = std::fs::read_to_string(manifest.join(relative))
+            .unwrap_or_else(|error| panic!("failed to read {relative}: {error}"));
+        for authority in [
+            "input_manager",
+            "driver_host",
+            "driver_registry",
+            "library_store",
+        ] {
+            assert!(
+                !source.lines().any(|line| {
+                    let line = line.trim_start();
+                    ["pub ", "pub(crate) ", "pub(super) "]
+                        .into_iter()
+                        .any(|visibility| line.starts_with(&format!("{visibility}{authority}:")))
+                }),
+                "{relative} publicly exposes replaceable authority {authority}"
+            );
+            assert!(
+                source.contains(&format!("pub const fn {authority}(&self)")),
+                "{relative} lacks a read-only accessor for {authority}"
+            );
+        }
+    }
+
+    for (_, source) in daemon_sources() {
+        assert!(!source.contains("fn install_config_manager("));
+        assert!(!source.contains("fn install_input_manager("));
+    }
+
+    let host = std::fs::read_to_string(manifest.join("src/network/host.rs"))
+        .expect("driver host source should read");
+    assert!(!host.contains("fn with_config_manager("));
+    assert!(!host.contains("fn with_driver_registry("));
+}
+
+#[test]
+fn input_status_projection_uses_platform_context() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let contexts = source("domain/context.rs");
+    let platform = contexts
+        .split_once("pub struct PlatformContext")
+        .and_then(|(_, source)| source.split_once("pub struct RuntimeSessionService"))
+        .map(|(platform, _)| platform)
+        .expect("platform context should remain structurally visible");
+    assert!(contexts.contains("pub platform: PlatformContext"));
+    assert!(platform.contains("input_status: SourceStatusRegistry"));
+    assert!(platform.contains("config_manager: Option<Arc<ConfigManager>>"));
+    assert!(!platform.contains("pub input_status:"));
+    assert!(!platform.contains("pub config_manager:"));
+
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("pub(crate) config_manager:"));
+    assert!(app_state.contains("pub struct AppStateBuilder"));
+    assert!(!app_state.contains("pub input_status:"));
+    assert!(!app_state.contains("pub(crate) input_status:"));
+    assert!(!app_state.contains("install_config_manager"));
+    assert!(!app_state.contains("install_input_manager"));
+    assert!(!contexts.contains("install_config_manager"));
+    assert!(!contexts.contains("install_input_status"));
+    assert!(!app_state.contains("state.config_manager ="));
+    assert!(!app_state.contains("state.input_status ="));
+
+    let projection = source("domain/input_status.rs");
+    assert!(projection.contains("use crate::domain::context::PlatformContext;"));
+    assert!(!projection.contains("AppState"));
+
+    for creditor in [source("api/system.rs"), source("mcp/payload.rs")] {
+        assert!(creditor.contains("&state.domains.platform"));
+    }
+    assert!(
+        source("domain/diagnostics.rs")
+            .contains("input_status_snapshot(&self.authorities.platform)")
+    );
+}
+
+#[test]
+fn output_static_hold_lifecycle_uses_output_context_directly() {
+    let sources = daemon_sources();
+    let lifecycle = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("startup/lifecycle.rs"))
+        .map(|(_, source)| source.as_str())
+        .expect("startup lifecycle source should exist");
+    let startup = lifecycle
+        .split("async fn start_inner")
+        .nth(1)
+        .and_then(|source| source.split("pub async fn shutdown").next())
+        .expect("startup body should remain structurally visible");
+    let worker = lifecycle
+        .split("fn spawn_output_static_hold_worker")
+        .nth(1)
+        .and_then(|source| source.split("fn spawn_effect_error_fallback_worker").next())
+        .expect("static hold worker should remain structurally visible");
+
+    assert!(startup.contains("self.domains.output.reconcile_static_hold().await;"));
+    assert!(worker.contains("let output = self.domains.output.clone();"));
+    assert!(
+        !lifecycle.contains("AppState"),
+        "daemon lifecycle workers must enter through the domain graph"
+    );
+}
+
+#[test]
+fn api_security_is_resolved_once_at_router_assembly() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let app_state = source("app_state.rs");
+    assert!(!app_state.contains("SecurityState::from_config"));
+    assert!(!app_state.contains("fn install_macos_daemon_session"));
+    assert_eq!(
+        app_state.matches("SecurityState::unserved()").count(),
+        2,
+        "both composition roots must build an unserved security posture"
+    );
+
+    let api_root = source("api/mod.rs");
+    assert!(api_root.contains("pub(crate) fn build_state("));
+    assert!(api_root.contains("SecurityState::from_config(&daemon.config_manager.get())"));
+    assert!(api_root.contains("security.install_macos_daemon_session(attestation)"));
+
+    let daemon = source("daemon.rs");
+    assert!(daemon.contains("api::build_state("));
+    assert!(!daemon.contains("AppState::from_daemon_state"));
+
+    let minters = sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("api/security.rs") && !path.ends_with("api/mod.rs"))
+        .filter(|(_, source)| {
+            source.contains("SecurityState::from_config(")
+                || source.contains("SecurityState::from_env(")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        minters.is_empty(),
+        "a serving security state escaped router assembly:\n{}",
+        minters.join("\n")
+    );
+}
+
+#[test]
+fn transports_use_the_effect_domain_authority() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "api" || component.as_os_str() == "mcp")
+        })
+        .filter(|(_, source)| source.contains("state.effect_registry"))
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "transport adapters bypassed EffectContext:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn transports_use_the_scene_domain_mutation_authority() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "api" || component.as_os_str() == "mcp")
+        })
+        .filter(|(_, source)| source.contains("scene_manager.begin_mutation"))
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "transport adapters bypassed SceneContext:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The one domain test module allowed to drive transport handlers, and why.
+///
+/// The effect identity tests prove the migration holds while REST
+/// handlers mutate the scene concurrently, which needs the real adapters
+/// and the crate-private test barriers at once. Every other domain test
+/// module must exercise domain services directly.
+const DOMAIN_TRANSPORT_TEST_EXEMPT: [&str; 1] = ["domain/effect/identity/tests.rs"];
+
+#[test]
+fn domain_modules_do_not_depend_on_transport_modules() {
+    let offenders = daemon_sources_with_tests()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+                && !DOMAIN_TRANSPORT_TEST_EXEMPT
+                    .iter()
+                    .any(|exempt| path.ends_with(exempt))
+        })
+        .filter_map(|(path, source)| {
+            ["crate::api::", "crate::mcp::"]
+                .into_iter()
+                .find(|pattern| source.contains(pattern))
+                .map(|pattern| format!("{} contains {pattern}", path.display()))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules depend on transport modules:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn effect_fallback_worker_uses_domain_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let startup = source("startup/lifecycle.rs");
+    let api_root = source("api/mod.rs");
+
+    assert!(
+        startup.contains("crate::domain::effect::apply_error_fallback"),
+        "effect fallback worker must enter through the effect domain"
+    );
+    assert!(
+        !startup.contains("crate::api::apply_effect_error_fallback"),
+        "effect fallback worker must not call a REST adapter"
+    );
+    assert!(
+        !api_root.contains("apply_effect_error_fallback"),
+        "REST router module must not own effect fallback policy"
+    );
+}
+
+#[test]
+fn active_effect_queries_use_domain_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let mcp_payload = source("mcp/payload.rs");
+    let system_api = source("api/system.rs");
+    let effect_api = source("api/effects.rs");
+
+    for adapter in [mcp_payload, system_api] {
+        assert!(adapter.contains(".active_primary_effect()"));
+        assert!(!adapter.contains("api::effects::active_primary_effect"));
+        assert!(!adapter.contains("api::effects::active_effect_metadata"));
+    }
+    assert!(!effect_api.contains("fn active_primary_effect"));
+    assert!(!effect_api.contains("fn active_effect_metadata"));
+}
+
+#[test]
+fn effect_registry_watcher_uses_domain_authority() {
+    let sources = daemon_sources();
+    let startup = sources
+        .iter()
+        .find(|(path, _)| path.ends_with("startup/lifecycle.rs"))
+        .map(|(_, source)| source.as_str())
+        .expect("startup lifecycle source should exist");
+
+    let watcher = startup
+        .split_once("async fn spawn_effect_watcher")
+        .and_then(|(_, source)| source.split_once("fn spawn_display_preference_sync_worker"))
+        .map(|(source, _)| source)
+        .expect("effect watcher implementation should exist");
+    assert!(watcher.contains("let effects = self.domains.effects.clone();"));
+    assert!(watcher.contains("effects.search_paths().await"));
+    assert!(watcher.contains("effects.reload_registry_file(&path).await"));
+    assert!(!watcher.contains("AppState::from_daemon_state"));
+    assert!(!watcher.contains("EffectRegistryUpdated"));
+    assert!(!startup.contains("crate::api::effects::invalidate"));
+    assert!(!startup.contains("reload_single(&path)"));
+    assert!(!startup.contains("invalidate_resolved_zones"));
+}
+
+#[test]
+fn domain_errors_do_not_render_transport_responses() {
+    let banned = [
+        "use axum",
+        "axum::",
+        "IntoResponse for DomainError",
+        "ApiErrorBody",
+        "ResponseMeta",
+        "StatusCode",
+    ];
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+        })
+        .flat_map(|(path, source)| {
+            let code = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            banned
+                .into_iter()
+                .filter(|pattern| code.contains(pattern))
+                .map(|pattern| format!("{} contains {pattern}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules render transport responses:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// `DomainErrorDetails::Adapter` is the one place a domain type names
+/// `serde_json::Value`: it carries whatever context a transport shaped
+/// for itself. Domain services cannot build one, because the ban below
+/// keeps `serde_json` out of every module that would.
+const DOMAIN_ADAPTER_DETAIL_LINES: [&str; 3] = [
+    "Adapter(serde_json::Value),",
+    "impl From<serde_json::Value> for DomainErrorDetails {",
+    "fn from(details: serde_json::Value) -> Self {",
+];
+
+#[test]
+fn domain_services_do_not_shape_wire_json() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+        })
+        .flat_map(|(path, source)| {
+            source
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let line = line.trim();
+                    let hatch = path.ends_with("domain/mod.rs")
+                        && DOMAIN_ADAPTER_DETAIL_LINES.contains(&line);
+                    !line.starts_with("//")
+                        && (line.contains("serde_json::Value")
+                            || line.contains("serde_json::json!"))
+                        && !hatch
+                })
+                .map(|(index, line)| {
+                    format!(
+                        "{}:{} shapes wire JSON: {}",
+                        path.display(),
+                        index + 1,
+                        line.trim()
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules must raise typed DomainErrorDetails, not JSON:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The one domain module still deriving wire traits, and why.
+///
+/// `macos_screen_parity.rs` compiles only on macOS with the Metal
+/// render path, so its report types cannot be moved or verified from
+/// any other host. Naming it here keeps the exemption visible instead
+/// of leaving the rule silently unenforced.
+const DOMAIN_WIRE_DERIVE_EXEMPT: [&str; 1] = ["macos_screen_parity.rs"];
+
+#[test]
+fn domain_services_do_not_derive_wire_traits() {
+    let offenders = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.components()
+                .any(|component| component.as_os_str() == "domain")
+                && !DOMAIN_WIRE_DERIVE_EXEMPT
+                    .iter()
+                    .any(|exempt| path.ends_with(exempt))
+        })
+        .flat_map(|(path, source)| {
+            source
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let line = line.trim();
+                    line.starts_with("#[derive(")
+                        && (line.contains("Serialize") || line.contains("ToSchema"))
+                })
+                .map(|(index, line)| {
+                    format!("{}:{} derives {}", path.display(), index + 1, line.trim())
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "domain modules must not shape the wire; move the type to hypercolor-types::api:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn diagnostics_reads_one_consistent_transaction() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let diagnostics = source("domain/diagnostics.rs");
+    assert!(diagnostics.contains("pub struct DiagnosticsContext"));
+    assert!(diagnostics.contains("struct DiagnosticsInputs"));
+    assert!(diagnostics.contains("async fn read_inputs(&self) -> DiagnosticsInputs"));
+    assert!(
+        !diagnostics.contains("AppState"),
+        "diagnostics must not project the API state"
+    );
+    let parity = source("domain/macos_screen_parity.rs");
+    assert!(
+        !parity.contains("AppState"),
+        "screen parity must not project the API state"
+    );
+
+    let contexts = source("domain/context.rs");
+    assert!(contexts.contains("pub diagnostics: DiagnosticsContext"));
+
+    let app_state = source("app_state.rs");
+    assert!(!app_state.contains("macos_screen_parity_diagnostics"));
+
+    let lifecycle = source("startup/lifecycle.rs");
+    assert_eq!(
+        lifecycle.matches("install_macos_screen_parity").count(),
+        2,
+        "the parity probe arms on render-thread start and disarms on stop"
+    );
+
+    let rest = source("api/diagnose.rs");
+    assert!(rest.contains("hypercolor_types::api::diagnose::DiagnoseResponse"));
+    let mcp = source("mcp/tools/system.rs");
+    assert!(mcp.contains("state.domains.diagnostics.collect_default()"));
+    assert!(mcp.contains("hypercolor_types::api::diagnose::DiagnoseResponse"));
+}
+
+#[test]
+fn output_has_one_brightness_percentage_projection() {
+    let definitions = daemon_sources()
+        .into_iter()
+        .filter(|(_, source)| {
+            source.lines().any(|line| {
+                let line = line.trim_start();
+                line.starts_with("fn brightness_percent(")
+                    || line.starts_with("pub(crate) fn brightness_percent(")
+            })
+        })
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
+
+    assert_eq!(definitions.len(), 1, "found {definitions:?}");
+    assert!(definitions[0].ends_with("output_power.rs"));
+}
+
+#[test]
+fn display_worker_delegates_delivery_policy_to_the_core_lane() {
+    let worker = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/display_output/worker.rs"),
+    )
+    .expect("display worker source should read");
+
+    assert!(worker.contains("output_lane.write("));
+    assert!(worker.contains("lane_is_active"));
+    for retired_pipeline in [
+        "RetryAfterFailure",
+        "retry_after",
+        "schedule_display_retry",
+        "schedule_cached_display_retry",
+        "BackendIo",
+    ] {
+        assert!(
+            !worker.contains(retired_pipeline),
+            "daemon display worker retained {retired_pipeline}"
+        );
+    }
+
+    let backend_io = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../hypercolor-core/src/device/manager/backend_io.rs"),
+    )
+    .expect("core backend I/O source should read");
+    for retired_bypass in [
+        "pub async fn write_display_frame(",
+        "pub async fn write_display_frame_owned(",
+        "pub async fn write_display_payload_owned(",
+    ] {
+        assert!(
+            !backend_io.contains(retired_bypass),
+            "BackendIo retained display bypass {retired_bypass}"
+        );
+    }
+}
+
+#[test]
+fn layout_transport_uses_the_layout_domain_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let app_state = source("app_state.rs");
+    for retired_field in [
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub layout_auto_exclusions_path:",
+        "pub layout_mutation_test_hooks:",
+    ] {
+        assert!(!app_state.contains(retired_field), "found {retired_field}");
+    }
+
+    let discovery = source("discovery/mod.rs");
+    assert!(discovery.contains("pub layout: LayoutContext"));
+    for bypass in [
+        "pub spatial_engine:",
+        "pub scene_manager:",
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub scene_transactions:",
+    ] {
+        assert!(
+            !discovery.contains(bypass),
+            "discovery runtime exposes {bypass}"
+        );
+    }
+
+    let startup = source("startup/mod.rs");
+    for bypass in [
+        "pub layouts:",
+        "pub layouts_path:",
+        "pub layout_auto_exclusions:",
+        "pub layout_auto_exclusions_path:",
+    ] {
+        assert!(!startup.contains(bypass), "daemon state exposes {bypass}");
+    }
+
+    let contexts = source("domain/context.rs");
+    let device_context = contexts
+        .split_once("pub struct DeviceContext")
+        .map(|(_, tail)| tail)
+        .expect("device context should exist");
+    for layout_authority in [
+        "layout_auto_exclusions",
+        "resolved_layout_device_id",
+        "layout_outputs_for",
+        "connected_display_surface_layouts",
+        "sync_connectivity",
+        "reconcile_zone_auto_exclusions",
+        "remove_zone_auto_exclusions",
+    ] {
+        assert!(
+            !device_context.contains(layout_authority),
+            "device context retains layout authority: {layout_authority}"
+        );
+    }
+
+    let layout_domain = source("domain/layout.rs");
+    assert!(!layout_domain.contains("catalog_for_test"));
+    assert!(!layout_domain.contains("catalog_path_for_test"));
+    assert!(!layout_domain.contains("OnceLock"));
+    assert!(!layout_domain.contains("Weak<DaemonDriverHost>"));
+    assert!(!layout_domain.contains("clippy::too_many_lines"));
+    assert!(
+        layout_domain
+            .contains("#[cfg(feature = \"persistence-test-hooks\")]\npub struct LayoutTestFixture")
+    );
+    assert!(layout_domain.contains("pub(crate) struct LayoutRuntime"));
+
+    for collaborator in [
+        "domain/layout/auto_layout.rs",
+        "domain/layout/catalog.rs",
+        "domain/layout/convergence.rs",
+        "domain/layout/exclusions.rs",
+        "domain/layout/publication.rs",
+        "domain/layout/workflows.rs",
+    ] {
+        let collaborator_source = source(collaborator);
+        assert!(
+            collaborator_source
+                .lines()
+                .all(|line| !line.starts_with("pub ") && !line.starts_with("pub(crate)")),
+            "layout collaborator exports a top-level item: {collaborator}"
+        );
+    }
+
+    let auto_layout = source("domain/layout/auto_layout.rs");
+    assert!(auto_layout.contains("pub(super) fn append_auto_layout_zones_for_device"));
+    assert!(auto_layout.contains("pub(super) fn reconcile_auto_layout_zones_for_device"));
+    assert!(!auto_layout.contains("\npub fn append_auto_layout_zones_for_device"));
+    assert!(!auto_layout.contains("\npub fn reconcile_auto_layout_zones_for_device"));
+
+    let adapter = source("api/layouts.rs");
+    for bypass in [
+        "state.layouts",
+        "state.layouts_path",
+        "state.spatial_engine",
+        "state.scene_transactions",
+        "state.layout_auto_exclusions",
+    ] {
+        assert!(
+            !adapter.contains(bypass),
+            "layout adapter contains {bypass}"
+        );
+    }
+    assert!(adapter.contains("state.domains.layout"));
+    assert!(!adapter.contains("pub use crate::domain::layout"));
+
+    let websocket = source("api/ws/session.rs");
+    assert!(!websocket.contains("crate::api::layouts"));
+}
+
+#[test]
+fn layout_mutation_capabilities_have_named_visibility_boundaries() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let library = source("lib.rs");
+    assert!(library.contains("pub(crate) mod scene_transactions;"));
+    assert!(!library.contains("pub mod scene_transactions;"));
+    assert!(library.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub use scene_transactions::{LayoutPublicationTestExecutor, LayoutTransactionRejection};"
+    ));
+    assert!(!library.contains("SceneTransactionConsumer"));
+    assert!(library.contains("SceneTransactionQueue"));
+
+    let layout_store = source("layout_store.rs");
+    assert!(layout_store.contains("pub(crate) fn save("));
+    assert!(!layout_store.contains("\npub fn save("));
+    let exclusions = source("layout_auto_exclusions.rs");
+    assert!(!exclusions.contains("fn save("));
+    assert!(exclusions.contains("pub(crate) fn serialize("));
+
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("pub(crate) scene_transactions: SceneTransactionQueue"));
+    assert!(!app_state.contains("pub scene_transactions: SceneTransactionQueue"));
+    assert!(app_state.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub fn layout_publication_test_executor("
+    ));
+
+    let layout = source("domain/layout.rs");
+    for gated_capability in [
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub struct LayoutTestWorkflows",
+        "#[cfg(feature = \"persistence-test-hooks\")]\nimpl LayoutTestWorkflows",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[allow(\n        clippy::too_many_arguments,\n        reason = \"the fixture mirrors the production composition boundary\"\n    )]\n    pub fn new_test_context(",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub const fn test_workflows(",
+        "#[cfg(feature = \"persistence-test-hooks\")]\n    #[doc(hidden)]\n    #[must_use]\n    pub fn layout_publication_test_executor(",
+    ] {
+        assert!(
+            layout.contains(gated_capability),
+            "layout test capability is not feature-gated: {gated_capability}"
+        );
+    }
+
+    let transactions = source("scene_transactions.rs");
+    assert!(transactions.contains(
+        "#[cfg(feature = \"persistence-test-hooks\")]\n#[doc(hidden)]\npub struct LayoutPublicationTestExecutor"
+    ));
+    assert!(
+        transactions.contains(
+            "#[cfg(feature = \"persistence-test-hooks\")]\nimpl LayoutPublicationTestExecutor {\n    #[must_use]\n    pub(crate) fn new("
+        )
+    );
+    assert!(transactions.contains("pub(crate) struct SceneTransactionConsumer"));
+    assert!(!transactions.contains("\npub struct SceneTransactionConsumer"));
+    assert!(transactions.contains("pub(crate) fn consumer(&self)"));
+    assert!(!transactions.contains("pub fn consumer(&self)"));
+    assert!(transactions.contains("pub(crate) fn close(&self)"));
+    assert!(!transactions.contains("pub fn close(&self)"));
+    assert!(transactions.contains("pub(crate) struct LayoutTransactionAuthority"));
+    assert!(transactions.contains("\nstruct PreparedLayoutUpdate"));
+    assert!(!transactions.contains("pub(crate) struct PreparedLayoutUpdate"));
+    assert!(transactions.contains("pub(crate) fn drain(&self)"));
+    assert!(!transactions.contains("pub fn drain(&self)"));
+    assert!(transactions.contains("pub(crate) fn accept(self)"));
+    assert!(!transactions.contains("\npub fn accept(self)"));
+    for removed_bypass in [
+        "accept_and_commit_for_test",
+        "accept_and_publish_for_test",
+        "apply_prepared_layout_update_under_guard",
+        "publish_prepared_layout_activation",
+    ] {
+        assert!(
+            !transactions.contains(removed_bypass),
+            "scene transaction bypass remains: {removed_bypass}"
+        );
+    }
+    assert!(transactions.contains("pub async fn execute_next_layout_publication("));
+    assert!(transactions.contains("pub async fn execute_next_layout_publication_with_hook"));
+    assert!(transactions.contains("pub fn reject_next_layout_publication"));
+
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("daemon manifest should read");
+    for test_target in [
+        "api_tests",
+        "attachment_api_tests",
+        "discovery_tests",
+        "display_output_tests",
+        "domain_scene_service_tests",
+        "render_thread_tests",
+        "simulator_tests",
+    ] {
+        let gate = format!(
+            "[[test]]\nname = \"{test_target}\"\nrequired-features = [\"persistence-test-hooks\"]"
+        );
+        assert!(
+            manifest.contains(&gate),
+            "layout integration target is not feature-gated: {test_target}"
+        );
+    }
+}
+
+#[test]
+fn registry_refreshes_share_the_effect_domain_identity_authority() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let effect_api = source("api/effects.rs");
+    assert!(effect_api.contains("state.domains.effects.rescan_registry().await"));
+    assert!(effect_api.contains(".install_registry_file(&installed_path, &html)"));
+    assert!(!effect_api.contains("EffectRegistryUpdated"));
+    assert!(!effect_api.contains("domains.effects.rescan()"));
+    assert!(!effect_api.contains("domains.effects.register("));
+
+    let lifecycle = source("startup/lifecycle.rs");
+    assert!(lifecycle.contains("effects.reload_registry_file(&path).await"));
+    assert!(!lifecycle.contains("reload_single(&path)"));
+
+    let identity = source("domain/effect/identity.rs");
+    assert!(!identity.contains("AppState"));
+    assert_eq!(
+        identity
+            .matches("self.publish_registry_update(&report)")
+            .count(),
+        2,
+        "both registry publication paths must emit through the domain helper"
+    );
+
+    let publishers = sources
+        .iter()
+        .filter_map(|(path, source)| {
+            let count = source
+                .match_indices(".publish(")
+                .filter(|(start, _)| {
+                    source[*start..]
+                        .chars()
+                        .take(200)
+                        .collect::<String>()
+                        .contains("EffectRegistryUpdated")
+                })
+                .count();
+            (count > 0).then_some((path, count))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(publishers.len(), 1, "registry events need one producer");
+    assert!(publishers[0].0.ends_with("domain/effect.rs"));
+    assert_eq!(publishers[0].1, 1, "registry events need one publish site");
+
+    let app_state = source("app_state.rs");
+    assert!(app_state.contains("playlist_runtime: Arc::clone(&daemon.playlist_runtime)"));
+    assert!(!app_state.contains("pub(crate) library_identity:"));
+    let startup = source("startup/mod.rs");
+    assert!(startup.contains("pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>"));
+    assert!(!startup.contains("pub(crate) library_identity:"));
+    let library = source("lib.rs");
+    assert!(!library.contains("mod effect_id_migration"));
+}
+
+#[test]
+fn runtime_state_writers_share_the_runtime_session_authority() {
+    let sources = daemon_sources();
+    let bypasses = sources
+        .iter()
+        .filter(|(path, _)| {
+            !path.ends_with("domain/context.rs")
+                && !path.ends_with("runtime_state.rs")
+                && !path.ends_with("startup/services.rs")
+        })
+        .filter(|(_, source)| {
+            source.contains("runtime_state::reserve_save")
+                || source.contains("runtime_state::save_reserved")
+                || source.contains("runtime_state::save(")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        bypasses.is_empty(),
+        "runtime-state writers bypassed RuntimeSessionProjection:\n{}",
+        bypasses.join("\n")
+    );
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let layout_publication = source("domain/layout/publication.rs");
+    assert!(layout_publication.contains("persist_snapshot_with"));
+    assert!(!layout_publication.contains("runtime_state::reserve_save"));
+    assert!(!layout_publication.contains("runtime_state::save_reserved"));
+
+    let lifecycle = source("startup/lifecycle.rs");
+    assert!(lifecycle.contains(".runtime_session\n            .persist_snapshot()"));
+    assert!(!lifecycle.contains("runtime_state::reserve_save"));
+    assert!(!lifecycle.contains("runtime_state::save_reserved"));
+}
+
+#[test]
+fn scene_store_writers_share_the_scene_service_authority() {
+    assert!(references_rust_member(
+        "snapshot_alias . reserve_save (scenes)",
+        "reserve_save"
+    ));
+    assert!(references_rust_member(
+        "snapshot_alias.save_reserved(pending)",
+        "save_reserved"
+    ));
+
+    let sources = daemon_sources();
+    let raw_writer_members = [
+        "reserve_save",
+        "save_reserved",
+        "save_reserved_stage_aware",
+        "replace_named_scenes",
+        "persist_normalization",
+        "kick_persistence",
+        "sync_from_manager",
+    ];
+    let bypasses = sources
+        .iter()
+        .filter(|(path, _)| {
+            !path.ends_with("domain/scene.rs")
+                && !path.ends_with("profile_import.rs")
+                && !path.ends_with("scene_store.rs")
+                && !path.ends_with("startup/services.rs")
+        })
+        .flat_map(|(path, source)| {
+            raw_writer_members
+                .into_iter()
+                .filter(|member| references_rust_member(source, member))
+                .map(|member| format!("{} references {member}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        bypasses.is_empty(),
+        "scene-store writers bypassed SceneService:\n{}",
+        bypasses.join("\n")
+    );
+
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let lifecycle = source("startup/lifecycle.rs");
+    assert!(lifecycle.contains("persist_scene_store_snapshot(&self.scene_manager)"));
+    assert!(!lifecycle.contains("self.scene_store"));
+    let watcher_shutdown = lifecycle
+        .split_once("if let Some(handle) = self.effect_watcher_task.take()")
+        .map(|(_, shutdown)| shutdown)
+        .expect("shutdown should stop the effect watcher");
+    let watcher_shutdown = watcher_shutdown
+        .split_once("if let Some(handle) = self.display_preference_sync_task.take()")
+        .map(|(shutdown, _)| shutdown)
+        .expect("watcher shutdown should precede preference sync shutdown");
+    assert!(watcher_shutdown.contains("handle.abort()"));
+    assert!(watcher_shutdown.contains("handle.await"));
+
+    let app_state = source("app_state.rs");
+    assert!(!app_state.contains("pub scene_store:"));
+    assert!(!app_state.contains("Arc::new(RwLock::new(scene_store))"));
+    let startup = source("startup/mod.rs");
+    assert!(!startup.contains("pub scene_store:"));
+
+    let scene_store = source("scene_store.rs");
+    assert!(scene_store.contains("pub(crate) struct SceneStore"));
+    assert!(!scene_store.contains("pub struct SceneStore {"));
+    assert!(!scene_store.contains("derive(Debug, Clone)\npub(crate) struct SceneStore"));
+    for public_writer in [
+        "pub fn new(",
+        "pub fn save(",
+        "pub fn reserve_save(",
+        "pub fn save_reserved(",
+        "pub fn replace_named_scenes(",
+        "pub fn migrate_effect_ids(",
+    ] {
+        assert!(
+            !scene_store.contains(public_writer),
+            "SceneStore retained public writer {public_writer}"
+        );
+    }
+
+    let scene_domain = source("domain/scene.rs");
+    assert!(scene_domain.contains("store: SceneStore"));
+    assert!(scene_domain.contains("Some(Arc::new(tokio::sync::RwLock::new(store)))"));
+    assert!(!scene_domain.contains("store.read().await.clone()"));
+
+    let raw_constructors = sources
+        .iter()
+        .filter(|(path, _)| {
+            !path.ends_with("app_state.rs")
+                && !path.ends_with("startup/services.rs")
+                && !path.ends_with("profile_import.rs")
+                && !path.ends_with("scene_store.rs")
+        })
+        .filter(|(_, source)| {
+            source.contains("SceneStore::new(") || source.contains("SceneStore::load(")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        raw_constructors.is_empty(),
+        "scene-store capability escaped startup ownership:\n{}",
+        raw_constructors.join("\n")
+    );
+
+    let library = source("lib.rs");
+    assert!(library.contains("pub(crate) mod profile_import;"));
+    assert!(!library.contains("pub mod profile_import;"));
+    let profile_import = source("profile_import.rs");
+    assert!(profile_import.contains("pub(crate) fn import_profiles("));
+    assert!(!profile_import.contains("pub fn import_profiles("));
+    let profile_import_callers = sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("startup/services.rs"))
+        .filter(|(_, source)| source.contains("profile_import::import_profiles("))
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        profile_import_callers.is_empty(),
+        "profile import escaped startup ownership:\n{}",
+        profile_import_callers.join("\n")
+    );
+}
+
+#[test]
+fn effect_mutations_require_generation_qualified_admission() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+    let effect_domain = source("domain/effect.rs");
+    assert!(effect_domain.contains("pub effect: ResolvedEffect"));
+    assert!(effect_domain.contains(".admit_resolved_controls(command.effect, &command.controls)"));
+    assert!(effect_domain.contains("pub(crate) struct AdmittedEffectControls"));
+    assert!(!effect_domain.contains("already normalized against the effect's schema"));
+    assert!(!effect_domain.contains("pub async fn admit_generation"));
+
+    let display_domain = source("domain/display.rs");
+    assert!(display_domain.contains("pub effect: ResolvedEffect"));
+    assert!(display_domain.contains("admit_display_face_controls"));
+    assert!(display_domain.contains("admit_current_display_face_controls"));
+
+    let effect_api = source("api/effects.rs");
+    assert!(effect_api.contains("resolve_for_mutation(&id)"));
+    let display_api = source("api/displays.rs");
+    assert!(display_api.contains("resolve_for_mutation(&body.effect_id)"));
+    assert!(display_api.contains(".set_default_face(SetDefaultDisplayFace {"));
+    let mcp_tools = source("mcp/tools/mod.rs");
+    assert!(mcp_tools.contains("all_for_mutation()"));
+    let mcp_displays = source("mcp/tools/displays.rs");
+    assert!(mcp_displays.contains(".set_default_face(SetDefaultDisplayFace {"));
+    for adapter in [display_api, mcp_displays] {
+        assert!(
+            !adapter.contains("display_preferences.write()"),
+            "display adapters must write preferences through DisplayContext"
+        );
+    }
+
+    let layer_domain = source("domain/layer.rs");
+    assert!(layer_domain.contains("admit_layer_sources"));
+    let scene_tree_domain = source("domain/scene_tree.rs");
+    assert!(scene_tree_domain.contains("admit_layer_sources"));
+    let scene_domain = source("domain/scene.rs");
+    assert!(scene_domain.contains("admit_layer_sources"));
+
+    let scene_api = source("api/scene.rs");
+    assert!(scene_api.contains("insert_layer(&state.domains.effects"));
+    assert!(!scene_api.contains("insert_layer(&state.domains.scene"));
+
+    let overlay = display_domain
+        .split_once("async fn apply_preference_overlay")
+        .map(|(_, body)| body)
+        .expect("default overlay reconciliation should remain structurally visible");
+    let admission = overlay
+        .find("resolve_display_face_controls_under_admission")
+        .expect("display overlay should resolve controls under admission");
+    let scene_commit = overlay
+        .find("set_default_display_overlay(&self.authorities.scene")
+        .expect("display overlay should commit under effect admission");
+    assert!(admission < scene_commit);
+}
+
+#[test]
+fn display_default_face_has_one_domain_home() {
+    let sources = daemon_sources();
+    let source = |suffix: &str| {
+        sources
+            .iter()
+            .find(|(path, _)| path.ends_with(suffix))
+            .map(|(_, source)| source.as_str())
+            .unwrap_or_else(|| panic!("missing daemon source {suffix}"))
+    };
+
+    let display_domain = source("domain/display.rs");
+    for capability in [
+        "pub struct DisplayContext",
+        "pub async fn set_default_face(",
+        "pub async fn clear_default_face(",
+        "pub async fn apply_preference_overlay(",
+        "pub async fn sync_preference_overlays(",
+        "pub async fn sync_connected_surfaces(",
+        "pub fn normalize_display_face_target(",
+    ] {
+        assert!(
+            display_domain.contains(capability),
+            "display domain lacks {capability}"
+        );
+    }
+
+    let contexts = source("domain/context.rs");
+    assert!(contexts.contains("pub display: DisplayContext"));
+
+    let app_state = source("app_state.rs");
+    for retired_field in ["pub display_preferences:", "pub display_frames:"] {
+        assert!(!app_state.contains(retired_field), "found {retired_field}");
+    }
+
+    let strays = sources
+        .iter()
+        .filter(|(path, _)| !path.ends_with("domain/display.rs"))
+        .filter(|(_, source)| {
+            source.contains("apply_display_preference_overlay")
+                || source.contains("sync_display_preference_overlays")
+                || source.contains("sync_connected_display_surfaces")
+                || source.contains("build_default_display_zone")
+        })
+        .map(|(path, _)| path.display().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        strays.is_empty(),
+        "default-face orchestration escaped the display domain:\n{}",
+        strays.join("\n")
+    );
+}
+
+#[test]
+fn shared_crates_and_sdk_keep_zone_vocabulary_canonical() {
+    let retired = [
+        "render_groups",
+        "render_group",
+        "RenderGroup",
+        "GroupDirect",
+        "group_direct",
+        "group_canvas",
+        "route_for_group",
+        "materialized_group",
+        "groups_revision",
+        "active_groups",
+        "for_groups",
+        "group_frame",
+        "sample_group",
+        "finalize_groups",
+    ];
+    // The daemon's own render and display-output paths are where the retired
+    // vocabulary originated; the shared crates and the SDK are where it kept
+    // reappearing after each rename, so they are scanned too.
+    let scanned = daemon_sources()
+        .into_iter()
+        .filter(|(path, _)| {
+            path.to_string_lossy().contains("/render_thread/")
+                || path.ends_with("display_output/mod.rs")
+        })
+        .chain(sibling_sources("crates/hypercolor-types/src"))
+        .chain(sibling_sources("crates/hypercolor-core/src"))
+        .chain(sibling_sources("crates/hypercolor-ui/src"))
+        .chain(sibling_sources("sdk/src"));
+
+    let offenders = scanned
+        .flat_map(|(path, source)| {
+            retired
+                .into_iter()
+                .filter(|term| source.contains(term))
+                .map(|term| format!("{} contains {term}", path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offenders.is_empty(),
+        "retired render-group vocabulary remains:\n{}",
+        offenders.join("\n")
+    );
+}

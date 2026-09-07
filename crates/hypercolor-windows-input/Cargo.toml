@@ -16,6 +16,8 @@ undocumented_unsafe_blocks = "deny"
 unwrap_used = "deny"
 
 [dependencies]
+hypercolor-types = { workspace = true }
+hypercolor-worker-retention = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

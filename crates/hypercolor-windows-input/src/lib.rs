@@ -10,9 +10,10 @@
 //! This crate is deliberately thin. It owns the message-only window, the
 //! registration, `RAWINPUT` decoding, device identity, hotplug, and cursor
 //! sampling, and hands out batches in a plain Rust vocabulary. Everything
-//! downstream — key naming, held-state folding, repeat classification, the
-//! pointer model — lives in `hypercolor-core` where it is pure and testable on
-//! every platform. It exists as its own crate because the workspace forbids
+//! downstream. Canonical key naming comes from `hypercolor-types`; held-state
+//! folding, repeat classification, and the pointer model live in
+//! `hypercolor-core`, where they are pure and testable on every platform. It
+//! exists as its own crate because the workspace forbids
 //! `unsafe_code` and Win32 interop cannot.
 //!
 //! One structural note worth carrying into any change here: the sink runs on
@@ -39,10 +40,12 @@ pub mod claim;
 pub mod decode;
 mod shared;
 
+pub use hypercolor_types::host_input::HostInputBatch;
+#[doc(hidden)]
+pub use hypercolor_worker_retention::retention_service_identity as worker_retention_service_identity;
 pub use shared::{
-    PendingEvents, RawButton, RawCursor, RawDeviceDescriptor, RawDeviceKind, RawInputBatch,
-    RawInputConfig, RawInputError, RawInputEvent, RawInputResult, RawKeyPrefix, SessionState,
-    WorkerState,
+    PendingEvents, RawInputConfig, RawInputError, RawInputResult, RawKeyPrefix, SessionState,
+    WorkerState, normalize_windows_key_event,
 };
 
 #[cfg(target_os = "windows")]
@@ -55,8 +58,6 @@ mod probe;
 mod pump;
 #[cfg(target_os = "windows")]
 mod session;
-#[cfg(target_os = "windows")]
-mod worker_retention;
 
 #[cfg(target_os = "windows")]
 pub use probe::interactive_session_state;

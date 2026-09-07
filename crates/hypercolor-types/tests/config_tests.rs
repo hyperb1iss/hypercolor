@@ -1,12 +1,11 @@
 //! Tests for configuration types — defaults, serde roundtrips, partial deserialization.
 
 use hypercolor_types::config::{
-    AudioConfig, CaptureConfig, CaptureConfigValidationError, CapturePlatform, DaemonConfig,
-    DbusConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
-    FeatureFlags, GoveeConfig, HypercolorConfig, InputConfig, InteractionRoutePolicy, LogLevel,
-    McpConfig, MediaConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
-    RenderAccelerationMode, RenderingConfig, ServoGpuImportConfig, ServoGpuImportMode,
-    ShutdownBehavior, TuiConfig, WebConfig, default_driver_configs,
+    AudioConfig, CaptureBackendId, CaptureCadenceMode, CaptureConfig, CaptureConfigValidationError,
+    DaemonConfig, DiscoveryConfig, DisplayConfig, EffectEngineConfig, EffectErrorFallbackPolicy,
+    HypercolorConfig, InputConfig, InteractionRoutePolicy, LogLevel, McpConfig, MediaConfig,
+    NetworkAccessMode, NetworkClientScope, NetworkConfig, RenderAccelerationMode, RenderingConfig,
+    ServoGpuImportConfig, ServoGpuImportMode, ShutdownBehavior, WebConfig, default_driver_configs,
 };
 use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
@@ -24,7 +23,7 @@ fn daemon_defaults_match_spec() {
     assert_eq!(d.max_devices, 32);
     assert_eq!(d.log_level, LogLevel::Info);
     assert_eq!(d.log_file, "");
-    assert_eq!(d.start_profile, "last");
+    assert_eq!(d.start_scene, "last");
     assert_eq!(d.shutdown_behavior, ShutdownBehavior::HardwareDefault);
     assert_eq!(d.shutdown_color, "#1a1a2e");
 }
@@ -101,6 +100,7 @@ fn capture_defaults_match_spec() {
     let c = CaptureConfig::default();
     assert_eq!(c.source, "auto");
     assert_eq!(c.capture_fps, 30);
+    assert_eq!(c.cadence, CaptureCadenceMode::Fixed);
     assert_eq!(c.grid_cols, 8);
     assert_eq!(c.grid_rows, 6);
     assert_eq!(c.publication_memory_bytes, None);
@@ -113,32 +113,115 @@ fn capture_defaults_match_spec() {
     assert!((c.saturation - 1.0).abs() < f32::EPSILON);
     assert!((c.brightness - 1.0).abs() < f32::EPSILON);
     assert!((c.gamma - 1.0).abs() < f32::EPSILON);
+    assert!((c.target_led_white_x - 0.3127).abs() < f32::EPSILON);
+    assert!((c.target_led_white_y - 0.3290).abs() < f32::EPSILON);
+    assert!((c.target_led_reference_white_nits - 203.0).abs() < f32::EPSILON);
+    assert!((c.target_led_peak_nits - 406.0).abs() < f32::EPSILON);
+    assert!(c.exposure_ev.abs() < f32::EPSILON);
     assert_eq!(c.restore_token, None);
 }
 
 #[test]
-fn capture_config_tolerates_legacy_monitor_key() {
-    let parsed: CaptureConfig =
-        toml::from_str("enabled = true\nmonitor = 2\n").expect("legacy capture config parses");
-    assert!(parsed.enabled);
-    assert_eq!(parsed.grid_cols, 8);
+fn capture_native_refresh_is_explicit_and_roundtrips_without_a_zero_sentinel() {
+    let config: CaptureConfig = toml::from_str("capture_fps = 30\ncadence = \"native_refresh\"\n")
+        .expect("native refresh capture config parses");
+    assert_eq!(config.capture_fps, 30);
+    assert_eq!(config.cadence, CaptureCadenceMode::NativeRefresh);
+    config
+        .validate_for_backend(Some(&CaptureBackendId::ScreenCaptureKit))
+        .expect("native refresh retains a valid analysis cadence");
+
+    let serialized = toml::to_string(&config).expect("capture config serializes");
+    let roundtrip: CaptureConfig =
+        toml::from_str(&serialized).expect("serialized capture config parses");
+    assert_eq!(roundtrip.cadence, CaptureCadenceMode::NativeRefresh);
+    assert_eq!(roundtrip.capture_fps, 30);
+}
+
+#[test]
+fn capture_tone_mapping_fields_default_when_omitted() {
+    let parsed: CaptureConfig = toml::from_str("").expect("empty capture config parses");
+    let expected = CaptureConfig::default();
+
+    assert_eq!(parsed.target_led_white_x, expected.target_led_white_x);
+    assert_eq!(parsed.target_led_white_y, expected.target_led_white_y);
+    assert_eq!(
+        parsed.target_led_reference_white_nits,
+        expected.target_led_reference_white_nits
+    );
+    assert_eq!(parsed.target_led_peak_nits, expected.target_led_peak_nits);
+    assert_eq!(parsed.exposure_ev, expected.exposure_ev);
+}
+
+#[test]
+fn capture_backend_matches_build_target() {
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        CaptureBackendId::current(),
+        Some(CaptureBackendId::DesktopDuplication)
+    );
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        CaptureBackendId::current(),
+        Some(CaptureBackendId::PipeWire)
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        CaptureBackendId::current(),
+        Some(CaptureBackendId::ScreenCaptureKit)
+    );
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    assert_eq!(CaptureBackendId::current(), None);
+}
+
+#[test]
+fn capture_backend_names_stay_stable_on_the_wire() {
+    assert_eq!(
+        CaptureBackendId::DesktopDuplication.wire_name(),
+        "dxgi_desktop_duplication"
+    );
+    assert_eq!(CaptureBackendId::PipeWire.wire_name(), "pipewire");
+    assert_eq!(
+        CaptureBackendId::ScreenCaptureKit.wire_name(),
+        "screen_capture_kit"
+    );
+    assert_eq!(
+        serde_json::to_value(CaptureBackendId::DesktopDuplication).expect("backend serializes"),
+        serde_json::json!("desktop_duplication")
+    );
+    assert_eq!(
+        serde_json::from_value::<CaptureBackendId>(serde_json::json!({ "other": "custom" }))
+            .expect("extensible backend deserializes"),
+        CaptureBackendId::Other("custom".into())
+    );
+}
+
+#[test]
+fn capture_config_rejects_retired_monitor_key() {
+    let error = toml::from_str::<CaptureConfig>("enabled = true\nmonitor = 2\n")
+        .expect_err("retired monitor key must be rejected");
+    assert!(
+        error.to_string().contains("unknown field `monitor`"),
+        "{error}"
+    );
 }
 
 #[test]
 fn capture_config_accepts_any_nonzero_backend_rate() {
     let mut config = CaptureConfig::default();
     for platform in [
-        CapturePlatform::WindowsDesktopDuplication,
-        CapturePlatform::LinuxPipeWire,
+        CaptureBackendId::DesktopDuplication,
+        CaptureBackendId::PipeWire,
+        CaptureBackendId::ScreenCaptureKit,
     ] {
         config.source = "auto".to_owned();
         config.capture_fps = 1;
         config
-            .validate_for_platform(platform)
+            .validate_for_backend(Some(&platform))
             .expect("minimum nonzero cadence should validate");
         config.capture_fps = u32::MAX;
         config
-            .validate_for_platform(platform)
+            .validate_for_backend(Some(&platform))
             .expect("configuration should not impose an arbitrary cadence ceiling");
     }
 }
@@ -150,33 +233,33 @@ fn capture_config_rejects_zero_cadence() {
         ..CaptureConfig::default()
     };
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        config.validate_for_backend(Some(&CaptureBackendId::DesktopDuplication)),
         Err(CaptureConfigValidationError::CaptureFps { value: 0 })
     ));
 }
 
 #[test]
 fn capture_config_accepts_arbitrary_nonzero_grid_dimensions() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let config = CaptureConfig {
         grid_cols: u32::MAX,
         grid_rows: 256,
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(platform)
+        .validate_for_backend(Some(&platform))
         .expect("grid dimensions are governed by byte admission, not axis caps");
 }
 
 #[test]
 fn capture_config_rejects_empty_grid_and_invalid_float_values() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let mut config = CaptureConfig {
         grid_cols: 0,
         ..CaptureConfig::default()
     };
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::GridDimension {
             field: "grid_cols",
             value: 0
@@ -186,7 +269,7 @@ fn capture_config_rejects_empty_grid_and_invalid_float_values() {
     config.grid_cols = 8;
     config.smoothing = f32::NAN;
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::FloatRange {
             field: "smoothing",
             ..
@@ -196,25 +279,114 @@ fn capture_config_rejects_empty_grid_and_invalid_float_values() {
     config.smoothing = 0.3;
     config.gamma = 0.19;
     assert!(matches!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::FloatRange { field: "gamma", .. })
     ));
 }
 
 #[test]
+fn capture_config_accepts_tone_mapping_boundaries() {
+    let platform = CaptureBackendId::DesktopDuplication;
+    let mut config = CaptureConfig {
+        target_led_white_x: 0.000_1,
+        target_led_white_y: 0.999_8,
+        target_led_reference_white_nits: 1.0,
+        target_led_peak_nits: 10_000.0,
+        exposure_ev: -8.0,
+        ..CaptureConfig::default()
+    };
+    config
+        .validate_for_backend(Some(&platform))
+        .expect("minimum tone-mapping boundaries should validate");
+
+    config.target_led_reference_white_nits = 5_000.0;
+    config.exposure_ev = 8.0;
+    config
+        .validate_for_backend(Some(&platform))
+        .expect("maximum tone-mapping boundaries should validate");
+}
+
+#[test]
+fn capture_config_rejects_invalid_target_white_point() {
+    let platform = CaptureBackendId::DesktopDuplication;
+    for (x, y) in [
+        (f32::NAN, 0.3290),
+        (0.3127, f32::INFINITY),
+        (0.0, 0.3290),
+        (0.3127, 0.0),
+        (0.4, 0.6),
+    ] {
+        let config = CaptureConfig {
+            target_led_white_x: x,
+            target_led_white_y: y,
+            ..CaptureConfig::default()
+        };
+        assert!(matches!(
+            config.validate_for_backend(Some(&platform)),
+            Err(CaptureConfigValidationError::WhitePointChromaticity { .. })
+        ));
+    }
+}
+
+#[test]
+fn capture_config_rejects_invalid_target_luminance_and_exposure() {
+    let platform = CaptureBackendId::DesktopDuplication;
+    let mut config = CaptureConfig {
+        target_led_reference_white_nits: 0.99,
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_backend(Some(&platform)),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "target_led_reference_white_nits",
+            ..
+        })
+    ));
+
+    config.target_led_reference_white_nits = 203.0;
+    config.target_led_peak_nits = 10_000.1;
+    assert!(matches!(
+        config.validate_for_backend(Some(&platform)),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "target_led_peak_nits",
+            ..
+        })
+    ));
+
+    config.target_led_peak_nits = 203.0;
+    assert!(matches!(
+        config.validate_for_backend(Some(&platform)),
+        Err(CaptureConfigValidationError::PeakNotAboveReference {
+            reference: 203.0,
+            peak: 203.0
+        })
+    ));
+
+    config.target_led_peak_nits = 406.0;
+    config.exposure_ev = 8.01;
+    assert!(matches!(
+        config.validate_for_backend(Some(&platform)),
+        Err(CaptureConfigValidationError::FloatRange {
+            field: "exposure_ev",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn capture_config_accepts_optional_nonzero_publication_memory_budget() {
-    let platform = CapturePlatform::WindowsDesktopDuplication;
+    let platform = CaptureBackendId::DesktopDuplication;
     let mut config = CaptureConfig {
         publication_memory_bytes: Some(1),
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(platform)
+        .validate_for_backend(Some(&platform))
         .expect("one-byte explicit budget is semantically valid");
 
     config.publication_memory_bytes = Some(0);
     assert_eq!(
-        config.validate_for_platform(platform),
+        config.validate_for_backend(Some(&platform)),
         Err(CaptureConfigValidationError::PublicationMemoryBudget { value: 0 })
     );
 }
@@ -229,21 +401,75 @@ fn capture_config_validates_source_by_backend() {
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(CapturePlatform::WindowsDesktopDuplication)
+        .validate_for_backend(Some(&CaptureBackendId::DesktopDuplication))
         .expect("stable Windows display identities should validate");
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::LinuxPipeWire),
+        config.validate_for_backend(Some(&CaptureBackendId::PipeWire)),
         Err(CaptureConfigValidationError::Source { .. })
     ));
     config.enabled = false;
     config
-        .validate_for_platform(CapturePlatform::LinuxPipeWire)
+        .validate_for_backend(Some(&CaptureBackendId::PipeWire))
         .expect("disabled cross-platform source identities should remain portable");
 
     config.enabled = true;
     config.source = "auto\0hidden".to_owned();
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::WindowsDesktopDuplication),
+        config.validate_for_backend(Some(&CaptureBackendId::DesktopDuplication)),
+        Err(CaptureConfigValidationError::Source { .. })
+    ));
+}
+
+#[test]
+fn macos_capture_source_accepts_only_persistable_picker_grammar() {
+    let platform = CaptureBackendId::ScreenCaptureKit;
+    let mut config = CaptureConfig {
+        enabled: true,
+        ..CaptureConfig::default()
+    };
+
+    for source in [
+        "auto",
+        "primary_display",
+        "session_scoped",
+        "display:7607E722-6D21-4812-8926-D93DBF8FDC58",
+        "display:7607e722-6d21-4812-8926-d93dbf8fdc58",
+    ] {
+        config.source = source.to_owned();
+        config
+            .validate_for_backend(Some(&platform))
+            .unwrap_or_else(|error| panic!("{source} should validate: {error}"));
+    }
+
+    for source in [
+        "display:1",
+        "display:not-a-uuid",
+        "display:{7607E722-6D21-4812-8926-D93DBF8FDC58}",
+        "window:42",
+        "application:com.example.editor",
+        "primary-display",
+        "AUTO",
+    ] {
+        config.source = source.to_owned();
+        assert!(
+            matches!(
+                config.validate_for_backend(Some(&platform)),
+                Err(CaptureConfigValidationError::Source { .. })
+            ),
+            "{source} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn macos_capture_source_is_validated_while_capture_is_disabled() {
+    let config = CaptureConfig {
+        enabled: false,
+        source: "monitor:legacy-windows-id".to_owned(),
+        ..CaptureConfig::default()
+    };
+    assert!(matches!(
+        config.validate_for_backend(Some(&CaptureBackendId::ScreenCaptureKit)),
         Err(CaptureConfigValidationError::Source { .. })
     ));
 }
@@ -255,17 +481,17 @@ fn unsupported_capture_platform_only_accepts_disabled_config() {
         ..CaptureConfig::default()
     };
     config
-        .validate_for_platform(CapturePlatform::Unsupported)
+        .validate_for_backend(None)
         .expect("dormant portable capture config should remain loadable");
     config.grid_rows = 0;
     assert!(matches!(
-        config.validate_for_platform(CapturePlatform::Unsupported),
+        config.validate_for_backend(None),
         Err(CaptureConfigValidationError::GridDimension { .. })
     ));
     config.grid_rows = 6;
     config.enabled = true;
     assert_eq!(
-        config.validate_for_platform(CapturePlatform::Unsupported),
+        config.validate_for_backend(None),
         Err(CaptureConfigValidationError::UnsupportedPlatform)
     );
 }
@@ -295,38 +521,6 @@ fn network_defaults_match_spec() {
 fn driver_registry_defaults_are_driver_agnostic() {
     let drivers = default_driver_configs();
     assert!(drivers.is_empty());
-}
-
-#[test]
-fn govee_defaults_match_spec() {
-    let g = GoveeConfig::default();
-    assert!(g.known_ips.is_empty());
-    assert!(!g.power_off_on_disconnect);
-    assert_eq!(g.lan_state_fps, 10);
-    assert_eq!(g.razer_fps, 25);
-}
-
-#[test]
-fn dbus_defaults_match_spec() {
-    let d = DbusConfig::default();
-    assert!(d.enabled);
-    assert_eq!(d.bus_name, "tech.hyperbliss.hypercolor1");
-}
-
-#[test]
-fn tui_defaults_match_spec() {
-    let t = TuiConfig::default();
-    assert_eq!(t.theme, "silkcircuit");
-    assert_eq!(t.preview_fps, 15);
-    assert_eq!(t.keybindings, "default");
-}
-
-#[test]
-fn feature_flags_all_false_by_default() {
-    let f = FeatureFlags::default();
-    assert!(!f.wasm_plugins);
-    assert!(!f.hue_entertainment);
-    assert!(!f.midi_input);
 }
 
 #[test]
@@ -389,8 +583,7 @@ fn display_config_defaults_and_clamps_face_fps_cap() {
 #[test]
 fn full_config_toml_roundtrip() {
     let original = HypercolorConfig {
-        schema_version: 4,
-        include: vec!["local.toml".into()],
+        schema_version: 5,
         daemon: DaemonConfig::default(),
         web: WebConfig::default(),
         mcp: McpConfig::default(),
@@ -404,17 +597,13 @@ fn full_config_toml_roundtrip() {
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
         drivers: default_driver_configs(),
-        dbus: DbusConfig::default(),
-        tui: TuiConfig::default(),
-        features: FeatureFlags::default(),
         session: SessionConfig::default(),
         extensions: std::collections::BTreeMap::new(),
     };
     let toml_str = toml::to_string(&original).expect("serialize HypercolorConfig");
     let restored: HypercolorConfig =
         toml::from_str(&toml_str).expect("deserialize HypercolorConfig");
-    assert_eq!(restored.schema_version, 4);
-    assert_eq!(restored.include, vec!["local.toml"]);
+    assert_eq!(restored.schema_version, 5);
     assert_eq!(restored.daemon.port, 9420);
     assert!(restored.web.enabled);
     assert_eq!(restored.mcp.base_path, "/mcp");
@@ -435,9 +624,6 @@ fn full_config_toml_roundtrip() {
     assert!(!restored.network.allow_unauthenticated_remote_access);
     assert!(restored.network.allowed_clients.is_empty());
     assert!(restored.drivers.is_empty());
-    assert!(restored.dbus.enabled);
-    assert_eq!(restored.tui.theme, "silkcircuit");
-    assert!(!restored.features.wasm_plugins);
 }
 
 #[test]
@@ -456,9 +642,9 @@ fn default_config_json_roundtrip() {
 
 #[test]
 fn minimal_toml_fills_defaults() {
-    let minimal = "schema_version = 4\n";
+    let minimal = "schema_version = 5\n";
     let config: HypercolorConfig = toml::from_str(minimal).expect("deserialize minimal config");
-    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.schema_version, 5);
     assert_eq!(config.daemon.port, 9420);
     assert!(config.web.enabled);
     assert_eq!(config.mcp.base_path, "/mcp");
@@ -473,7 +659,6 @@ fn minimal_toml_fills_defaults() {
         ServoGpuImportMode::Auto
     );
     assert_eq!(config.media.max_livestream_producers, 1);
-    assert_eq!(config.tui.theme, "silkcircuit");
     assert!(config.network.mdns_publish);
     assert!(!config.network.remote_access);
     assert!(!config.network.allow_unauthenticated_remote_access);
@@ -497,7 +682,7 @@ fn servo_gpu_import_mode_toml_roundtrip() {
 fn nested_servo_gpu_import_mode_deserializes() {
     let config: HypercolorConfig = toml::from_str(
         r#"
-schema_version = 4
+schema_version = 5
 
 [rendering.servo_gpu_import]
 mode = "on"
@@ -515,7 +700,7 @@ mode = "on"
 fn media_config_toml_deserializes_stream_policy() {
     let config: HypercolorConfig = toml::from_str(
         r#"
-schema_version = 4
+schema_version = 5
 
 [media]
 max_video_producers = 3
@@ -537,7 +722,7 @@ stream_private_network_allowlist = ["192.168.50.0/24", "fd00::/8"]
 fn driver_registry_toml_deserializes_unknown_driver_settings() {
     let config: HypercolorConfig = toml::from_str(
         r#"
-schema_version = 4
+schema_version = 5
 
 [drivers.openrgb]
 enabled = false
@@ -560,10 +745,12 @@ zones = ["keyboard", "mouse"]
 fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
     let original = EffectEngineConfig {
         compositor_acceleration_mode: RenderAccelerationMode::Auto,
-        effect_error_fallback: EffectErrorFallbackPolicy::ClearGroups,
+        effect_error_fallback: EffectErrorFallbackPolicy::ClearZones,
         ..EffectEngineConfig::default()
     };
     let toml_str = toml::to_string(&original).expect("serialize EffectEngineConfig");
+    assert!(toml_str.contains("effect_error_fallback = \"clear_zones\""));
+    assert!(!toml_str.contains("clear_groups"));
     let restored: EffectEngineConfig =
         toml::from_str(&toml_str).expect("deserialize EffectEngineConfig");
     assert_eq!(
@@ -572,44 +759,77 @@ fn effect_engine_compositor_acceleration_mode_toml_roundtrip() {
     );
     assert_eq!(
         restored.effect_error_fallback,
-        EffectErrorFallbackPolicy::ClearGroups
+        EffectErrorFallbackPolicy::ClearZones
     );
 }
 
 #[test]
-fn legacy_render_acceleration_mode_deserializes_as_compositor_acceleration_mode() {
-    let toml = r#"
-preferred_renderer = "auto"
-render_acceleration_mode = "gpu"
-"#;
-    let restored: EffectEngineConfig =
-        toml::from_str(toml).expect("legacy acceleration key should deserialize");
-
-    assert_eq!(
-        restored.compositor_acceleration_mode,
-        RenderAccelerationMode::Gpu
-    );
-}
-
-#[test]
-fn unknown_fields_ignored() {
+fn closed_nested_config_sections_reject_unknown_fields() {
     let toml_with_future_field = r#"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 port = 9420
 some_future_field = "hello from the future"
 "#;
-    let config: HypercolorConfig =
-        toml::from_str(toml_with_future_field).expect("deserialize with unknown fields");
-    assert_eq!(config.schema_version, 4);
-    assert_eq!(config.daemon.port, 9420);
+    let error = toml::from_str::<HypercolorConfig>(toml_with_future_field)
+        .expect_err("unknown nested field must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `some_future_field`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn every_closed_root_section_rejects_unknown_fields() {
+    for section in [
+        "audio",
+        "capture",
+        "daemon",
+        "discovery",
+        "display",
+        "effect_engine",
+        "input",
+        "mcp",
+        "media",
+        "network",
+        "rendering",
+        "session",
+        "web",
+    ] {
+        let source = format!("schema_version = 5\n[{section}]\nunrecognized_config_key = true\n");
+        let error = toml::from_str::<HypercolorConfig>(&source)
+            .expect_err("closed config section must reject unknown fields");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `unrecognized_config_key`"),
+            "section {section}: {error}"
+        );
+    }
+
+    let nested = r"
+schema_version = 5
+
+[rendering.servo_gpu_import]
+unrecognized_config_key = true
+";
+    let error = toml::from_str::<HypercolorConfig>(nested)
+        .expect_err("closed nested config object must reject unknown fields");
+    assert!(
+        error
+            .to_string()
+            .contains("unknown field `unrecognized_config_key`"),
+        "{error}"
+    );
 }
 
 #[test]
 fn override_specific_defaults() {
     let partial = r#"
-schema_version = 4
+schema_version = 5
 
 [daemon]
 port = 8080
@@ -736,7 +956,7 @@ fn input_config_defaults_to_disabled_with_both_kinds_on() {
     assert_eq!(parsed.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(parsed.preview_route, InteractionRoutePolicy::Browser);
 
-    let full: HypercolorConfig = toml::from_str("schema_version = 4").expect("minimal config");
+    let full: HypercolorConfig = toml::from_str("schema_version = 5").expect("minimal config");
     assert!(!full.input.enabled);
     assert_eq!(full.input.daemon_route, InteractionRoutePolicy::Host);
     assert_eq!(full.input.preview_route, InteractionRoutePolicy::Browser);

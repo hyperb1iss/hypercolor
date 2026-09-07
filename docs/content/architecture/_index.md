@@ -22,15 +22,15 @@ This section goes deep on how that works: the crate boundaries that keep the sys
 
 The project is split into focused crates with strict one-way dependency boundaries. The shared vocabulary lives at the bottom; application binaries sit at the top and never import each other.
 
-{% mermaid() %}
+{% <mermaid> %}
 graph TD
-    T[hypercolor-types] --> HAL[hypercolor-hal]
+    C[hypercolor-color] --> T[hypercolor-types]
+    T --> HAL[hypercolor-hal]
     T --> CORE[hypercolor-core]
-    T --> LGI[hypercolor-linux-gpu-interop]
-    T --> WPI[hypercolor-windows-pawnio]
+    GF[hypercolor-gpu-frame] --> LGI[hypercolor-linux-gpu-interop]
     HAL --> CORE
     LGI --> CORE
-    WPI --> CORE
+    WPI[hypercolor-windows-pawnio] --> HAL
     T & CORE --> DAPI[hypercolor-driver-api]
     DAPI --> HUE[hypercolor-driver-hue]
     DAPI --> NL[hypercolor-driver-nanoleaf]
@@ -41,35 +41,36 @@ graph TD
     CORE & HAL & DB & NET --> D[hypercolor-daemon]
     CORE --> CLI[hypercolor-cli]
     T --> TUI[hypercolor-tui]
-    CORE & T --> TRAY[hypercolor-tray]
-    APP[hypercolor-app] --> D & TRAY
+    CORE & T --> APP[hypercolor-app]
     T --> UI["hypercolor-ui (excluded from workspace)"]
     LE[hypercolor-leptos-ext] --> UI & D & TUI
-{% end %}
+{% </mermaid> %}
 
-**Golden rule:** `hypercolor-hal` must never depend on `hypercolor-core`; that would be circular. Network drivers depend on `driver-api`, not on `core` directly.
+**Golden rule:** `hypercolor-hal` must never depend on `hypercolor-core`; that would be circular. Network drivers depend on `driver-api`, not on `core` directly. `hypercolor-app` does not link the daemon: it supervises `hypercolor-daemon` as a subprocess.
+
+This graph shows the crates a reader needs to follow the render path. The workspace is larger: the platform crates (`macos-*`, `windows-*`, `linux-*`), `hypercolor-gpu-frame`, `hypercolor-pipewire-interop`, `hypercolor-worker-retention`, `hypercolor-persistence`, and `hypercolor-platform-fs` are omitted here. The repository's `CLAUDE.md` carries the full graph.
 
 | Crate | Role |
 |---|---|
-| `hypercolor-types` | Zero-dependency shared vocabulary: canvas, effect, color, and API types |
+| `hypercolor-types` | Shared vocabulary above `hypercolor-color`: canvas, effect, control, and API types |
 | `hypercolor-core` | Engine: render loop, effect registry, spatial sampler, input pipeline, scene management |
 | `hypercolor-hal` | Hardware abstraction: USB/HID/SMBus protocol encoding and transport |
+| `hypercolor-gpu-frame` | Neutral imported-GPU-frame vocabulary shared by every interop crate |
 | `hypercolor-linux-gpu-interop` | Linux zero-copy GL to wgpu texture import; stubbed on other platforms |
 | `hypercolor-windows-pawnio` | Windows SMBus via the PawnIO kernel driver; stubbed on other platforms |
 | `hypercolor-driver-api` | Stable trait boundary between the daemon and all driver implementations |
 | `hypercolor-driver-builtin` | Compile-time bundle of HAL and network drivers, assembled via feature flags |
-| Network drivers | `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network` |
+| Network drivers | `driver-hue`, `driver-nanoleaf`, `driver-wled`, `driver-govee`, `network`, plus the opt-in `driver-openrgb` bridge over `openrgb-sdk`, all layered on `driver-support` |
 | `hypercolor-daemon` | Daemon binary: render-loop host, SparkleFlinger compositor, REST/WebSocket/MCP server on `:9420` |
 | `hypercolor-cli` | The `hypercolor` CLI binary |
 | `hypercolor-tui` | Ratatui terminal UI library |
-| `hypercolor-tray` | System tray applet |
 | `hypercolor-app` | Unified desktop shell: supervises the daemon, owns the tray, handles autostart |
 | `hypercolor-leptos-ext` | Leptos 0.8 extension helpers for the web UI and TUI |
 | `hypercolor-ui` | Leptos 0.8 CSR web app compiled to WASM via Trunk; excluded from the workspace |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `hypercolor-ui` targets `wasm32-unknown-unknown` and is excluded from the Cargo workspace. `cargo check --workspace` does not cover it. Build the UI separately with `just ui-dev` or `just ui-build`.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -97,9 +98,9 @@ pub const DEFAULT_CANVAS_WIDTH: u32 = 640;
 pub const DEFAULT_CANVAS_HEIGHT: u32 = 480;
 ```
 
-At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent; tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries via `SceneTransaction::ResizeCanvas`; never hardcode pixel dimensions in effects or drivers.
+At 640x480 the buffer is roughly 1.17 MB per frame. Effects render in normalized `[0.0, 1.0]` spatial coordinates and remain resolution-independent; tune `daemon.canvas_width` / `daemon.canvas_height` in your config for your hardware density without touching effect code. Canvas dimensions retune at frame boundaries; never hardcode pixel dimensions in effects or drivers.
 
-Sampling from the canvas to LED positions supports three interpolation strategies: nearest-neighbor, bilinear (the default), and area averaging. Bilinear reads 4 surrounding pixels and blends by distance; it is gamma-correct via precomputed sRGB LUTs, which makes it essentially free in the hot path.
+Sampling from the canvas to LED positions supports four interpolation strategies: nearest-neighbor, bilinear (the default), area averaging, and Gaussian-weighted area. Bilinear reads 4 surrounding pixels and blends by distance; it is gamma-correct via precomputed sRGB LUTs, which makes it essentially free in the hot path.
 
 ### SparkleFlinger
 
@@ -107,7 +108,7 @@ SparkleFlinger is the frame compositor inside the daemon. Each active producer (
 
 This design decouples producer cadence from the render deadline. Servo might deliver frames at 30 fps while a native effect runs at 60 fps and a screen capture arrives whenever PipeWire hands one over. SparkleFlinger handles all of that without coupling or stalling.
 
-Blend modes available for layer compositing are defined in `BlendMode` (in `hypercolor-types/src/canvas.rs`): `Normal`, `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, and `Difference`. A single full-opacity layer with no transform takes a bypass fast path with no per-pixel work.
+Layer blend modes are defined by `BlendMode` in `hypercolor-types/src/layer.rs`: `Replace`, `Alpha` (the default), `Add`, `Screen`, `Multiply`, `Overlay`, `SoftLight`, `ColorDodge`, `Difference`, `Tint`, and `LumaReveal`. The eight alpha-composable ones map into the per-pixel kernel `PixelBlendMode` in `hypercolor-color/src/blend.rs`; `Replace`, `Tint`, and `LumaReveal` are handled by the compositor rather than the pixel kernel. A single full-opacity layer with no transform takes a bypass fast path with no per-pixel work.
 
 ### Adaptive FPS: five tiers
 
@@ -135,7 +136,7 @@ Hypercolor supports two rendering paths, both producing an RGBA `Canvas` that fe
 
 The primary authoring surface. An embedded Servo browser engine runs headlessly on a dedicated worker thread, keeping the `EffectRenderer` trait `Send` while Servo itself stays pinned to one OS thread. Effects are `.html` files that use Canvas 2D, WebGL2, and the `hypercolor` JavaScript API.
 
-**Startup cost:** The Servo worker initializes once per daemon session, not per effect load. Initial startup takes a few seconds; subsequent effect loads into the running worker are fast. The circuit breaker tracks consecutive failures with exponential cooldown so transient faults cannot poison the shared worker. A separate `ServoSessionHandle` manages `Idle → Loading → Running` state transitions.
+**Startup cost:** The Servo worker initializes once per daemon session, not per effect load. Initial startup takes a few seconds; subsequent effect loads into the running worker are fast. The circuit breaker tracks consecutive failures with exponential cooldown so transient faults cannot poison the shared worker. The `ServoWorkerClient` owns the `Idle → Loading → Running` state machine; a per-effect `ServoSessionHandle` bridges the renderer to it.
 
 GLSL effects in the SDK compile to WebGL2 and run inside Servo; there is no separate native GLSL lane. The `EffectSource::Shader` variant exists in the type system but bails immediately at renderer creation:
 
@@ -179,7 +180,7 @@ The daemon maintains a library of saved presets, favorites, and playlists. Playl
 |---|---|---|
 | Language | Rust | Performance for the render thread, safety for USB HID, ecosystem match for Servo and Ratatui |
 | Effect renderer | Servo HTML + native Rust | Web platform for authoring, compiled Rust for built-in utilities; the native shader-effect lane is future work (the compositor's GPU lane ships) |
-| Frame compositor | SparkleFlinger | Decouples producer cadence from frame deadlines; enables mixed-rate sources and render groups |
+| Frame compositor | SparkleFlinger | Decouples producer cadence from frame deadlines; enables mixed-rate sources and render zones |
 | Canvas resolution | 640x480 (configurable) | Resolution-independent normalized coordinates; tune per hardware density |
 | Adaptive FPS | Five tiers, 10-60 fps | Fast downshift on budget miss; slow upshift to prevent oscillation |
 | Event bus | `broadcast` + `watch` | Discrete events need history; high-frequency frame data needs only the latest value |

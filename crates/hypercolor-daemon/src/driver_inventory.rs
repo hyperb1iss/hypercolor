@@ -8,17 +8,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use hypercolor_driver_api::DriverHost;
 use hypercolor_network::DriverModuleRegistry;
 
+use crate::path_migration::{
+    MigratedStore, MigrationOutcome, PathMigrationEntry, PathMigrationError, VersionedDocument,
+    migrate,
+};
 use crate::persistence::{AtomicFileWriter, PersistenceError, serialize_json_pretty};
-use crate::runtime_state;
 
 const INVENTORY_SCHEMA_VERSION: u32 = 1;
+const STORE_SUBJECT: &str = "driver inventory";
 
-/// Durable driver inventory filename inside the daemon data directory.
+/// Durable driver inventory filename inside the daemon state directory.
 pub const DRIVER_INVENTORY_FILENAME: &str = "driver-inventory.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +47,9 @@ impl Default for DriverInventoryDocument {
 /// Errors produced while loading or persisting driver inventory.
 #[derive(Debug, thiserror::Error)]
 pub enum DriverInventoryError {
+    /// A legacy inventory could not be relocated to its canonical state path.
+    #[error(transparent)]
+    Migration(#[from] PathMigrationError),
     /// The inventory file could not be read.
     #[error("failed to read driver inventory at {path}: {source}")]
     Read {
@@ -96,42 +103,57 @@ pub struct DriverInventoryStore {
 }
 
 impl DriverInventoryStore {
-    /// Open durable inventory and migrate the legacy runtime cache once when needed.
+    /// Open durable inventory at its canonical path.
     ///
     /// # Errors
     ///
-    /// Returns an error when storage cannot be initialized, read, quarantined, or persisted.
-    pub fn open(
-        path: PathBuf,
-        legacy_runtime_state_path: &Path,
-    ) -> Result<Self, DriverInventoryError> {
+    /// Returns an error when storage cannot be initialized, read, or quarantined.
+    pub fn open(path: PathBuf) -> Result<Self, DriverInventoryError> {
         let writer =
             AtomicFileWriter::new(&path).map_err(|source| DriverInventoryError::Persist {
                 path: path.clone(),
                 source,
             })?;
-        let (document, migrated) = if path.exists() {
-            (load_document_or_quarantine(&path)?, false)
+        let document = if path.exists() {
+            load_document_or_quarantine(&path)?
         } else {
-            load_legacy_document(legacy_runtime_state_path)
+            DriverInventoryDocument::default()
         };
-        let store = Self {
+
+        Ok(Self {
             path,
             writer,
             operation_gate: AsyncMutex::new(()),
             document: StdMutex::new(document),
+        })
+    }
+
+    /// Relocate a legacy data-tier inventory and open the state-tier store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when storage cannot be initialized, read, migrated,
+    /// quarantined, or persisted.
+    pub fn open_migrated(
+        legacy_path: PathBuf,
+        canonical_path: PathBuf,
+    ) -> Result<(Self, MigrationOutcome), DriverInventoryError> {
+        let writer = AtomicFileWriter::new(&canonical_path).map_err(|source| {
+            DriverInventoryError::Persist {
+                path: canonical_path.clone(),
+                source,
+            }
+        })?;
+        let entry = PathMigrationEntry::new(STORE_SUBJECT, legacy_path, canonical_path.clone());
+        let migrated = migrate(&DriverInventoryCodec, &entry, &writer)?;
+        let outcome = migrated.outcome;
+        let store = Self {
+            path: canonical_path,
+            writer,
+            operation_gate: AsyncMutex::new(()),
+            document: StdMutex::new(migrated.document.unwrap_or_default()),
         };
-
-        if migrated {
-            store.persist_current()?;
-            info!(
-                path = %store.path.display(),
-                legacy_path = %legacy_runtime_state_path.display(),
-                "Migrated driver inventory from runtime session state"
-            );
-        }
-
-        Ok(store)
+        Ok((store, outcome))
     }
 
     /// Return the backing inventory path.
@@ -281,23 +303,6 @@ impl DriverInventoryStore {
         );
     }
 
-    fn persist_current(&self) -> Result<(), DriverInventoryError> {
-        let document = self
-            .document
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let bytes = serialize_json_pretty(&*document).map_err(DriverInventoryError::Serialize)?;
-        let pending = self.writer.reserve().admit(bytes);
-        if let Err(error) = pending.commit() {
-            warn!(
-                path = %self.path.display(),
-                %error,
-                "Failed to persist driver inventory; retry remains active"
-            );
-        }
-        Ok(())
-    }
-
     fn replace_driver_guarded(
         &self,
         _guard: &MutexGuard<'_, ()>,
@@ -345,12 +350,18 @@ impl DriverInventoryStore {
 fn load_document_or_quarantine(
     path: &Path,
 ) -> Result<DriverInventoryDocument, DriverInventoryError> {
+    Ok(read_document_or_quarantine(path)?.unwrap_or_default())
+}
+
+fn read_document_or_quarantine(
+    path: &Path,
+) -> Result<Option<DriverInventoryDocument>, DriverInventoryError> {
     let raw = std::fs::read_to_string(path).map_err(|source| DriverInventoryError::Read {
         path: path.to_path_buf(),
         source,
     })?;
     match serde_json::from_str(&raw) {
-        Ok(document) => Ok(document),
+        Ok(document) => Ok(Some(document)),
         Err(error) => {
             let quarantine = quarantine_path(path);
             std::fs::rename(path, &quarantine).map_err(|source| {
@@ -366,42 +377,38 @@ fn load_document_or_quarantine(
                 %error,
                 "Quarantined corrupt driver inventory"
             );
-            Ok(DriverInventoryDocument::default())
+            Ok(None)
         }
     }
 }
 
-fn load_legacy_document(path: &Path) -> (DriverInventoryDocument, bool) {
-    let snapshot = match runtime_state::load(path) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            warn!(
-                path = %path.display(),
-                %error,
-                "Legacy runtime cache could not seed driver inventory"
-            );
-            None
-        }
-    };
-    let Some(snapshot) = snapshot else {
-        return (DriverInventoryDocument::default(), false);
-    };
-    if snapshot.driver_runtime_cache.is_empty() {
-        return (DriverInventoryDocument::default(), false);
+struct DriverInventoryCodec;
+
+impl MigratedStore for DriverInventoryCodec {
+    type Document = DriverInventoryDocument;
+    type Error = DriverInventoryError;
+
+    fn decode_current(
+        &self,
+        path: &Path,
+    ) -> Result<VersionedDocument<Self::Document>, Self::Error> {
+        Ok(match read_document_or_quarantine(path)? {
+            Some(document) => VersionedDocument::new(document.schema_version, document),
+            None => VersionedDocument::unversioned(DriverInventoryDocument::default()),
+        })
     }
 
-    let drivers = snapshot
-        .driver_runtime_cache
-        .into_iter()
-        .map(|(driver_id, cache)| (driver_id, Value::Object(cache.into_iter().collect())))
-        .collect();
-    (
-        DriverInventoryDocument {
-            drivers,
-            ..DriverInventoryDocument::default()
-        },
-        true,
-    )
+    fn decode_legacy(
+        &self,
+        path: &Path,
+    ) -> Result<Option<VersionedDocument<Self::Document>>, Self::Error> {
+        Ok(read_document_or_quarantine(path)?
+            .map(|document| VersionedDocument::new(document.schema_version, document)))
+    }
+
+    fn encode(&self, document: &Self::Document) -> Result<Vec<u8>, Self::Error> {
+        serialize_json_pretty(document).map_err(DriverInventoryError::Serialize)
+    }
 }
 
 fn quarantine_path(path: &Path) -> PathBuf {

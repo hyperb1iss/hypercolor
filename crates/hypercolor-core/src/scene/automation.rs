@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::types::scene::{ActionKind, AutomationRule, TriggerSource};
+use hypercolor_types::scene::{ActionKind, AutomationRule, TriggerSource};
 
 // ── RuleId ──────────────────────────────────────────────────────────────
 

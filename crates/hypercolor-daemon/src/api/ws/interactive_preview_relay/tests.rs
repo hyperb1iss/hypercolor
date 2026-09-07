@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use hypercolor_core::input::{
-    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputPublicationId,
-    BrowserInputSource, BrowserPreviewId, InputSource,
+    BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputHandle,
+    BrowserInputPublicationId, BrowserPreviewId,
 };
 use hypercolor_leptos_ext::ws::PreviewStreamId;
 use hypercolor_types::canvas::PublishedSurface;
@@ -133,10 +133,8 @@ async fn wait_until(mut condition: impl FnMut() -> bool) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn slow_encode_keeps_tokio_live_coalesces_pending_frames_and_fences_generation() {
-    let mut browser = BrowserInputSource::new();
-    browser.start().expect("browser input should start");
+    let browser = BrowserInputHandle::new();
     let attachment = browser
-        .handle()
         .attach(BrowserInputChildKey::new(
             BrowserConnectionIncarnation::new(41),
             BrowserPreviewId::new("main"),
@@ -219,10 +217,8 @@ async fn slow_encode_keeps_tokio_live_coalesces_pending_frames_and_fences_genera
 
 #[tokio::test(flavor = "current_thread")]
 async fn graceful_cancel_joins_active_encode_and_suppresses_publication() {
-    let mut browser = BrowserInputSource::new();
-    browser.start().expect("browser input should start");
+    let browser = BrowserInputHandle::new();
     let attachment = browser
-        .handle()
         .attach(BrowserInputChildKey::new(
             BrowserConnectionIncarnation::new(42),
             BrowserPreviewId::new("close"),

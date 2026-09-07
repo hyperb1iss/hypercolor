@@ -6,8 +6,8 @@
 //! than occupying a permanent rail.
 
 mod composition_panel;
+pub mod device_assignment;
 mod device_card;
-pub mod device_grouping;
 mod face_composition;
 mod scene_selector;
 mod stage;
@@ -24,6 +24,7 @@ use leptos_icons::Icon;
 
 use crate::api;
 use crate::api::ComponentBindingSummary;
+use crate::app::WsContext;
 use crate::apply_target::ApplyTarget;
 use crate::components::layout_builder::ZoneLayoutProvider;
 use crate::components::page_header::{HeaderToolbar, HeaderTrailing, PageAccent, PageHeader};
@@ -32,7 +33,9 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::storage;
 
-use crate::zones::surface::{UNASSIGNED_SURFACE_ID, surfaces_from_groups};
+use crate::zones::surface::{
+    UNASSIGNED_SURFACE_ID, selected_screen_device_id, surfaces_from_zones,
+};
 use composition_panel::CompositionPanel;
 use scene_selector::SceneSelector;
 use stage::Stage;
@@ -50,6 +53,11 @@ pub fn hidden_outputs_storage_key(scene_id: &str, zone_id: &str) -> String {
     format!("{scene_id}::{zone_id}")
 }
 
+/// The zone half of a [`hidden_outputs_storage_key`].
+pub fn zone_id_from_storage_key(key: &str) -> Option<String> {
+    key.split_once("::").map(|(_, zone)| zone.to_owned())
+}
+
 fn load_hidden_outputs() -> HashMap<String, HashSet<String>> {
     storage::get(HIDDEN_OUTPUTS_KEY)
         .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -62,13 +70,13 @@ fn save_hidden_outputs(map: &HashMap<String, HashSet<String>>) {
     }
 }
 
-/// An empty layer stack at version 0 — the resource value for a selection
-/// that has no per-group layer endpoint (none selected, or the synthetic
+/// An empty layer stack at revision 0 — the resource value for a selection
+/// that has no per-zone layer endpoint (none selected, or the synthetic
 /// Unassigned entry).
 fn empty_layer_stack() -> api::LayerStackResponse {
     api::LayerStackResponse {
         items: Vec::new(),
-        layers_version: 0,
+        revision: 0,
     }
 }
 
@@ -77,13 +85,19 @@ fn empty_layer_stack() -> api::LayerStackResponse {
 #[derive(Clone, Copy)]
 pub struct StudioContext {
     pub selected_surface_id: RwSignal<Option<String>>,
-    pub active_scene: Signal<Option<api::ActiveSceneResponse>>,
+    pub active_scene: Signal<Option<api::SceneDocument>>,
     /// Re-fetch the active scene. Zone mutations call this so the tree and
-    /// Stage pick up the new group set and `groups_revision`.
+    /// Stage pick up the new zone set and scene revision.
     pub refresh_scene: Callback<()>,
     /// Whether the composition slide-over is open. The now-playing chip
     /// toggles it; the panel and its scrim read it.
     pub composition_open: RwSignal<bool>,
+    /// The selected Screen's live face: the scene's own assignment when it
+    /// has one, otherwise the display's stored default. `None` for Lights,
+    /// for Screens with no bound display, and for screens showing nothing.
+    pub screen_face: Signal<Option<api::DisplayFaceResponse>>,
+    /// Re-fetch the selected Screen's face after a face write.
+    pub refresh_screen_face: Callback<()>,
     /// Per-(scene, zone) sets of `Output` ids the user has hidden from
     /// the zone's device card. Keys are built by
     /// [`hidden_outputs_storage_key`]. Client UI state only; never
@@ -104,22 +118,61 @@ pub struct StudioContext {
     /// Header search term. Filters the zone tree's device rows by name,
     /// filling the header toolbar the way every other page's search does.
     pub device_search: Signal<String>,
+    /// The daemon's render canvas extent. Zone layouts carry placements
+    /// only, so anything fitting a footprint to the canvas reads this.
+    pub render_canvas_size: Memo<(u32, u32)>,
+    /// Which rail disclosure (zone menu, device kebab, add-device picker)
+    /// is open, by key. The rail rebuilds on scene events and search
+    /// keystrokes, so openness must outlive the DOM that renders it; one
+    /// shared slot also means opening a menu closes the previous one.
+    pub rail_disclosure: RwSignal<Option<String>>,
+    /// An in-flight zone rename: `(zone id, draft text)`. Lives here so a
+    /// rail rebuild mid-typing does not eat the field or the text.
+    pub zone_rename_draft: RwSignal<Option<(String, String)>>,
+    /// The output box under the pointer on the canvas, mirrored from the
+    /// editor so the rail can softly highlight the card that owns it.
+    pub pointer_output_id: RwSignal<Option<String>>,
+}
+
+/// A local open/closed signal whose truth lives in a shared keyed slot,
+/// so it survives its component being rebuilt. Opening claims the slot
+/// (closing whichever disclosure held it); closing releases it.
+pub(crate) fn keyed_disclosure(slot: RwSignal<Option<String>>, key: String) -> RwSignal<bool> {
+    let open = RwSignal::new(slot.with_untracked(|held| held.as_deref() == Some(key.as_str())));
+    Effect::new({
+        let key = key.clone();
+        move |_| {
+            let is_open = open.get();
+            if is_open {
+                if slot.with_untracked(|held| held.as_deref() != Some(key.as_str())) {
+                    slot.set(Some(key.clone()));
+                }
+            } else if slot.with_untracked(|held| held.as_deref() == Some(key.as_str())) {
+                slot.set(None);
+            }
+        }
+    });
+    Effect::new(move |_| {
+        let foreign = slot.with(|held| held.as_deref() != Some(key.as_str()));
+        if foreign && open.get_untracked() {
+            open.set(false);
+        }
+    });
+    open
 }
 
 #[component]
 pub fn StudioPage() -> impl IntoView {
-    let (layers_tick, set_layers_tick) = signal(0_u64);
-
     // The active scene is the app-wide shared resource — WS scene events
     // keep it fresh, so zone changes made from other pages, other
     // clients, or the CLI land here without a Studio-local refetch.
     let zones_ctx = expect_context::<crate::zones::ZonesContext>();
-    let active_scene: Signal<Option<api::ActiveSceneResponse>> = zones_ctx.active_scene.into();
+    let active_scene: Signal<Option<api::SceneDocument>> = zones_ctx.active_scene.into();
 
     let selected_surface_id = RwSignal::new(None::<String>);
 
-    // Keep the selection on a still-present group, defaulting to the first
-    // LED group so Studio always opens on a Light.
+    // Keep the selection on a still-present zone, defaulting to the first
+    // LED zone so Studio always opens on a Light.
     Effect::new(move |_| {
         let Some(scene) = active_scene.get() else {
             if selected_surface_id.get_untracked().is_some() {
@@ -128,22 +181,22 @@ pub fn StudioPage() -> impl IntoView {
             return;
         };
         let current = selected_surface_id.get_untracked();
-        // The synthetic Unassigned entry has no group; it is "present"
+        // The synthetic Unassigned entry has no zone; it is "present"
         // while the scene is genuinely multi-zone (§9.4).
-        let multi_zone = surface::led_zone_count(&scene.groups) > 1;
+        let multi_zone = surface::led_zone_count(&scene.zones) > 1;
         let still_present = current.as_ref().is_some_and(|id| {
             (id == UNASSIGNED_SURFACE_ID && multi_zone)
-                || scene.groups.iter().any(|group| group.id.to_string() == *id)
+                || scene.zones.iter().any(|zone| zone.id.to_string() == *id)
         });
         if still_present {
             return;
         }
         let next = scene
-            .groups
+            .zones
             .iter()
-            .find(|group| group.role != ZoneRole::Display)
-            .or_else(|| scene.groups.first())
-            .map(|group| group.id.to_string());
+            .find(|zone| zone.role != ZoneRole::Display)
+            .or_else(|| scene.zones.first())
+            .map(|zone| zone.id.to_string());
         selected_surface_id.set(next);
     });
 
@@ -158,9 +211,9 @@ pub fn StudioPage() -> impl IntoView {
         let selected_led_zone = selected_surface_id.get().filter(|id| {
             id != UNASSIGNED_SURFACE_ID
                 && scene
-                    .groups
+                    .zones
                     .iter()
-                    .any(|group| group.id.to_string() == *id && group.role != ZoneRole::Display)
+                    .any(|zone| zone.id.to_string() == *id && zone.role != ZoneRole::Display)
         });
         if let Some(zone_id) = selected_led_zone {
             zones_ctx.focused_zone.set(Some(zone_id.clone()));
@@ -169,9 +222,9 @@ pub fn StudioPage() -> impl IntoView {
             effects_ctx.apply_target.get_untracked(),
             ApplyTarget::Zone(ref target)
                 if !scene
-                    .groups
+                    .zones
                     .iter()
-                    .any(|group| group.id.to_string() == target.as_str())
+                    .any(|zone| zone.id.to_string() == target.as_str())
         ) {
             // A Screen / Unassigned selection holding a target left over
             // from a no-longer-active scene falls back to the default zone.
@@ -180,33 +233,97 @@ pub fn StudioPage() -> impl IntoView {
         }
     });
 
+    let ws = expect_context::<WsContext>();
+    // The shared scene already contains each zone's layers and revision.
+    // Project its stack without fetching the same document again.
     let layers_resource = LocalResource::new(move || {
-        let _ = layers_tick.get();
-        let scene = active_scene.get();
-        let group_id = selected_surface_id.get();
+        let zone_id = selected_surface_id.get();
+        let stack = active_scene.with(|scene| match (scene.as_ref(), zone_id.as_deref()) {
+            (_, Some(UNASSIGNED_SURFACE_ID)) => Ok(empty_layer_stack()),
+            (Some(scene), Some(zone_id)) => scene
+                .zones
+                .iter()
+                .find(|zone| zone.id.to_string() == zone_id)
+                .map(|zone| api::LayerStackResponse {
+                    items: zone.layers.clone(),
+                    revision: scene.revision,
+                })
+                .ok_or_else(|| {
+                    api::ApiError::Parse(format!("Zone {zone_id} is not present in the live scene"))
+                }),
+            _ => Ok(empty_layer_stack()),
+        });
+        // Control events intentionally leave the structural scene cache alone.
+        // On selection, recover fresh control values and an If-Match revision
+        // if the latest event invalidated that cache. Reading the hint untracked
+        // keeps slider-rate events from rebuilding the inspector.
+        let refresh_zone = zone_id.filter(|id| {
+            id != UNASSIGNED_SURFACE_ID
+                && active_scene.with_untracked(Option::is_some)
+                && ws.last_scene_event.with_untracked(|hint| {
+                    hint.as_ref().is_some_and(|hint| {
+                        hint.event_type == "zone_changed"
+                            && hint.zone_change_kind
+                                == Some(hypercolor_types::event::ZoneChangeKind::ControlsPatched)
+                    })
+                })
+        });
         async move {
-            match (scene, group_id) {
-                // The Unassigned entry is not a surface — it has no layer
-                // stack, so it never hits the per-group layer endpoint.
-                (_, Some(group_id)) if group_id == UNASSIGNED_SURFACE_ID => Ok(empty_layer_stack()),
-                (Some(scene), Some(group_id)) => api::list_layers(&scene.id, &group_id).await,
-                _ => Ok(empty_layer_stack()),
+            match refresh_zone {
+                Some(zone_id) => api::list_layers(&zone_id).await,
+                None => stack,
             }
         }
     });
 
     let on_layers_mutated = Callback::new(move |()| {
-        set_layers_tick.update(|tick| *tick = tick.wrapping_add(1));
         zones_ctx.refresh.run(());
     });
     let refresh_scene = zones_ctx.refresh;
 
+    // The selected Screen's face rides the display face endpoint, which
+    // reports the scene layer or the stored default, whichever is live.
+    // It refetches on selection, after every face write from this page,
+    // and on any scene event (the daemon publishes zone_changed for
+    // default-face writes too), so it never needs a timer.
+    let (face_tick, set_face_tick) = signal(0_u64);
+    let selected_screen_device = Memo::new(move |_| {
+        let selected = selected_surface_id.get()?;
+        let scene = active_scene.get()?;
+        selected_screen_device_id(&scene.zones, &selected)
+    });
+    let screen_face_resource = api::daemon_resource(move || {
+        let _ = face_tick.get();
+        let _ = ws.last_scene_event.get();
+        let device_id = selected_screen_device.get();
+        async move {
+            match device_id {
+                Some(device_id) => api::fetch_display_face(&device_id).await,
+                None => Ok(None),
+            }
+        }
+    });
+    // The resource keeps the previous screen's face while the next fetch is
+    // in flight; only a face for the currently selected display counts, so
+    // a fresh selection never wears, or acts on, its predecessor's face.
+    let screen_face = Signal::derive(move || {
+        let selected = selected_screen_device.get()?;
+        screen_face_resource
+            .get()
+            .and_then(Result::ok)
+            .flatten()
+            .filter(|face| face.device_id == selected)
+    });
+    let refresh_screen_face = Callback::new(move |()| {
+        set_face_tick.update(|tick| *tick = tick.wrapping_add(1));
+    });
+
     // The zone tree owns selection, so the layer panel shows the selected
-    // surface's name in its header rather than a redundant group selector.
+    // surface's name in its header rather than a redundant zone selector.
     let surface_label = Signal::derive(move || {
         let id = selected_surface_id.get()?;
         let scene = active_scene.get()?;
-        surfaces_from_groups(&scene.groups)
+        surfaces_from_zones(&scene.zones)
             .into_iter()
             .find(|surface| surface.id == id)
             .map(|surface| surface.name)
@@ -250,26 +367,42 @@ pub fn StudioPage() -> impl IntoView {
 
     // Rail-driven canvas highlight state. Switching surfaces clears it so a
     // stale highlight from the previous zone never lingers on the new one.
+    // Only a genuine switch clears: a card click re-asserts the surface it
+    // already lives in, and `set` notifies on equal values, so comparing
+    // against the previous id is what keeps that click's selection alive.
     let selected_output_ids = RwSignal::new(HashSet::<String>::new());
     let hovered_output_ids = RwSignal::new(HashSet::<String>::new());
-    Effect::new(move |_| {
-        let _ = selected_surface_id.get();
-        selected_output_ids.set(HashSet::new());
-        hovered_output_ids.set(HashSet::new());
+    Effect::new(move |previous: Option<Option<String>>| {
+        let current = selected_surface_id.get();
+        if previous.is_some_and(|previous| previous != current) {
+            selected_output_ids.set(HashSet::new());
+            hovered_output_ids.set(HashSet::new());
+        }
+        current
     });
 
     let (device_search, set_device_search) = signal(String::new());
+    let render_canvas_size = crate::render_canvas::use_render_canvas_size();
+    let rail_disclosure = RwSignal::new(None::<String>);
+    let zone_rename_draft = RwSignal::new(None::<(String, String)>);
+    let pointer_output_id = RwSignal::new(None::<String>);
 
     provide_context(StudioContext {
         selected_surface_id,
         active_scene,
         refresh_scene,
         composition_open,
+        screen_face,
+        refresh_screen_face,
         hidden_outputs,
         selected_output_ids,
         hovered_output_ids,
         attachment_cache,
         device_search: device_search.into(),
+        render_canvas_size,
+        rail_disclosure,
+        zone_rename_draft,
+        pointer_output_id,
     });
 
     view! {
@@ -340,8 +473,8 @@ pub fn StudioPage() -> impl IntoView {
                     </ZoneLayoutProvider>
                     <CompositionPanel
                         active_scene=active_scene
-                        selected_group_id=selected_surface_id.read_only()
-                        set_selected_group_id=selected_surface_id.write_only()
+                        selected_zone_id=selected_surface_id.read_only()
+                        set_selected_zone_id=selected_surface_id.write_only()
                         surface_label=surface_label
                         layers_resource=layers_resource
                         on_layers_mutated=on_layers_mutated

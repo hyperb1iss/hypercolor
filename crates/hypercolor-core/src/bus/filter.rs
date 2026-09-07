@@ -6,7 +6,7 @@
 
 use tokio::sync::broadcast;
 
-use crate::types::event::{EventCategory, EventPriority};
+use hypercolor_types::event::{EventCategory, EventPriority};
 
 use super::TimestampedEvent;
 

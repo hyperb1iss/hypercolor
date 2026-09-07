@@ -36,10 +36,9 @@ const LAYER_CONTROLS_DEBOUNCE_MS: f64 = 120.0;
 /// are coalesced and patched onto the layer's stored controls.
 #[component]
 pub fn EffectControlsSection(
-    scene_id: String,
-    group_id: String,
+    zone_id: String,
     layer: SceneLayer,
-    layers_version: u64,
+    on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     let LayerSource::Effect {
         effect_id,
@@ -51,7 +50,7 @@ pub fn EffectControlsSection(
     };
 
     let effect_id_str = effect_id.to_string();
-    let detail = LocalResource::new({
+    let detail = api::daemon_resource({
         let effect_id_str = effect_id_str.clone();
         move || {
             let effect_id_str = effect_id_str.clone();
@@ -74,37 +73,38 @@ pub fn EffectControlsSection(
         })
     });
 
-    // Optimistic local control values; the shared patch session owns the
-    // debounce, pending batch, and the live layers_version each patch
-    // carries and refreshes — so consecutive edits never go stale
-    // against the daemon.
+    // Optimistic local control values. Layer identity fences stale patches,
+    // so the canonical control route carries no revision token.
     let (values, set_values) = signal(controls);
     let layer_id = layer.id.to_string();
 
+    let session_target = Signal::stored(Some(format!("{zone_id}:{layer_id}")));
     let patch: ControlPatchFn = Arc::new({
-        let scene_id = scene_id.clone();
-        let group_id = group_id.clone();
-        move |payload: serde_json::Value, version: Option<u64>| -> ControlPatchFuture {
-            let scene_id = scene_id.clone();
-            let group_id = group_id.clone();
+        let zone_id = zone_id.clone();
+        move |_target: String,
+              payload: crate::optimistic_controls::ControlValueMap,
+              _version: Option<u64>|
+              -> ControlPatchFuture {
+            let zone_id = zone_id.clone();
             let layer_id = layer_id.clone();
             Box::pin(async move {
-                let outcome =
-                    api::patch_layer_controls(&scene_id, &group_id, &layer_id, &payload, version)
-                        .await?;
-                Ok(outcome.map(|stack| Some(stack.layers_version)))
+                api::patch_layer_controls(&zone_id, &layer_id, &payload).await?;
+                Ok(api::MutationOutcome::Applied(None))
             })
         }
     });
     let session = use_control_patch_session(ControlPatchConfig {
+        target: session_target,
         defs,
         set_values,
-        initial_version: Some(layers_version),
+        initial_version: None,
         debounce_ms: LAYER_CONTROLS_DEBOUNCE_MS,
         patch,
         on_error: Callback::new(|error: String| {
             toasts::toast_error(&format!("Effect controls failed: {error}"));
         }),
+        recover: on_layers_mutated,
+        on_committed: None,
         flush_guard: None,
     });
     let on_change = session.on_change;
@@ -146,10 +146,9 @@ pub fn EffectControlsSection(
 /// standard layer update.
 #[component]
 pub fn MediaPlaybackSection(
-    scene_id: String,
-    group_id: String,
+    zone_id: String,
     layer: SceneLayer,
-    layers_version: u64,
+    revision: u64,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     let LayerSource::Media { playback, .. } = layer.source.clone() else {
@@ -167,13 +166,7 @@ pub fn MediaPlaybackSection(
             if let LayerSource::Media { playback, .. } = &mut next.source {
                 mutate(playback);
             }
-            update_layer(
-                scene_id.clone(),
-                group_id.clone(),
-                next,
-                layers_version,
-                on_layers_mutated,
-            );
+            update_layer(zone_id.clone(), next, revision, on_layers_mutated);
         }
     };
     let push_speed = push.clone();

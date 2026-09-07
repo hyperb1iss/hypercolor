@@ -1,18 +1,19 @@
 //! Pure Razer protocol encoder/decoder.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
 
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, ScrollMode,
-    ZoneLayoutHint,
+    SegmentLayoutHint,
 };
 use tracing::warn;
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone,
 };
 
 use super::activation::CustomEffectActivationStyle;
@@ -52,7 +53,7 @@ pub struct RazerProtocol {
     activation_post_delay: Duration,
     supports_brightness: bool,
     supports_scroll_features: bool,
-    layout_hint: Option<ZoneLayoutHint>,
+    layout_hint: Option<SegmentLayoutHint>,
 }
 
 impl RazerProtocol {
@@ -234,7 +235,7 @@ impl RazerProtocol {
 
     /// Override the default generated layout shape for this protocol.
     #[must_use]
-    pub fn with_layout_hint(mut self, layout_hint: ZoneLayoutHint) -> Self {
+    pub fn with_layout_hint(mut self, layout_hint: SegmentLayoutHint) -> Self {
         self.layout_hint = Some(layout_hint);
         self
     }
@@ -769,7 +770,7 @@ impl Protocol for RazerProtocol {
         packet::parse_response(data)
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let total_leds = self.total_leds();
         let zone_matrix_size = self.reported_matrix_size.unwrap_or(self.matrix_size);
         let topology = match self.matrix_type {
@@ -783,7 +784,7 @@ impl Protocol for RazerProtocol {
             },
         };
 
-        vec![ProtocolZone {
+        vec![SegmentInfo {
             name: self.zone_name().to_owned(),
             led_count: total_leds,
             topology,
@@ -816,6 +817,7 @@ impl Protocol for RazerProtocol {
                 scroll_mode: self.supports_scroll_features,
                 scroll_smart_reel: self.supports_scroll_features,
                 scroll_acceleration: self.supports_scroll_features,
+                max_display_frame_len: None,
             },
         }
     }

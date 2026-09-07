@@ -1,25 +1,30 @@
-//! Mock device backend and transport scanner for integration testing.
+//! Mock device backend and discovery source for integration testing.
 //!
 //! Provides configurable mock implementations of [`DeviceBackend`],
-//! [`TransportScanner`], and [`EffectRenderer`] that simulate realistic
+//! discovery sources, and [`EffectRenderer`] that simulate realistic
 //! device behavior without real hardware. Every call is tracked for
 //! test assertions.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Result, bail};
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
-use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
-    DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+use hypercolor_color::Hsv;
+use hypercolor_driver_api::{
+    BackendInfo, DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior,
 };
-use hypercolor_types::effect::{ControlValue, EffectMetadata};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceFingerprint, DeviceId, DeviceInfo, DeviceOrigin, DeviceTopologyHint,
+    FingerprintNamespace, SegmentInfo,
+};
+use hypercolor_types::effect::EffectMetadata;
 use hypercolor_types::spatial::LedTopology;
 
-use super::traits::{BackendInfo, DeviceBackend};
-use crate::device::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use crate::effect::{EffectRenderer, FrameInput};
 
 // ── Call Tracking ───────────────────────────────────────────────────────────
@@ -29,8 +34,8 @@ use crate::effect::{EffectRenderer, FrameInput};
 pub enum MockCall {
     /// `info()` was called.
     Info,
-    /// `discover()` was called.
-    Discover,
+    /// A discovered device was adopted by the backend.
+    Adopt(DeviceId),
     /// `connect(id)` was called.
     Connect(DeviceId),
     /// `disconnect(id)` was called.
@@ -51,7 +56,7 @@ pub struct MockDeviceConfig {
     pub name: String,
     /// Number of LEDs.
     pub led_count: u32,
-    /// LED topology for the device zone.
+    /// LED topology for the device segment.
     pub topology: LedTopology,
     /// Pre-assigned device ID (generated if `None`).
     pub id: Option<DeviceId>,
@@ -68,24 +73,23 @@ pub struct MockDeviceConfig {
 ///
 /// ```rust,ignore
 /// let mut backend = MockDeviceBackend::new()
-///     .with_device("LED Strip", 60, LedTopology::Strip)
-///     .with_device("Matrix", 100, LedTopology::Matrix { rows: 10, cols: 10 });
+///     .with_device("LED Strip", 60, LedTopology::Strip {
+///         count: 60,
+///         direction: StripDirection::LeftToRight,
+///     })
+///     .with_device("Matrix", 100, LedTopology::Matrix {
+///         width: 10,
+///         height: 10,
+///         serpentine: false,
+///         start_corner: Corner::TopLeft,
+///     });
 /// ```
 pub struct MockDeviceBackend {
     /// Pre-configured devices this backend will "discover".
     devices: Vec<DeviceInfo>,
 
     /// Currently connected device IDs.
-    connected: HashSet<DeviceId>,
-
-    /// Last colors written per device.
-    last_colors: HashMap<DeviceId, Vec<[u8; 3]>>,
-
-    /// Total `write_colors` call count.
-    write_count: u64,
-
-    /// Ordered call log for assertions.
-    calls: Vec<MockCall>,
+    state: Mutex<MockDeviceState>,
 
     /// If `true`, `connect` calls will fail.
     pub fail_connect: bool,
@@ -94,16 +98,21 @@ pub struct MockDeviceBackend {
     pub fail_write: bool,
 }
 
+#[derive(Default)]
+struct MockDeviceState {
+    connected: HashSet<DeviceId>,
+    last_colors: HashMap<DeviceId, Vec<[u8; 3]>>,
+    write_count: u64,
+    calls: Vec<MockCall>,
+}
+
 impl MockDeviceBackend {
     /// Create a new empty mock backend with no pre-configured devices.
     #[must_use]
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
-            connected: HashSet::new(),
-            last_colors: HashMap::new(),
-            write_count: 0,
-            calls: Vec::new(),
+            state: Mutex::new(MockDeviceState::default()),
             fail_connect: false,
             fail_write: false,
         }
@@ -122,26 +131,42 @@ impl MockDeviceBackend {
 
     /// Returns the ordered call log for test assertions.
     #[must_use]
-    pub fn calls(&self) -> &[MockCall] {
-        &self.calls
+    pub fn calls(&self) -> Vec<MockCall> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .clone()
     }
 
     /// Returns the total number of `write_colors` calls across all devices.
     #[must_use]
     pub fn write_count(&self) -> u64 {
-        self.write_count
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write_count
     }
 
     /// Returns the last colors written to a specific device.
     #[must_use]
-    pub fn last_colors(&self, id: &DeviceId) -> Option<&Vec<[u8; 3]>> {
-        self.last_colors.get(id)
+    pub fn last_colors(&self, id: &DeviceId) -> Option<Vec<[u8; 3]>> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last_colors
+            .get(id)
+            .cloned()
     }
 
     /// Check whether a device is currently connected.
     #[must_use]
     pub fn is_connected(&self, id: &DeviceId) -> bool {
-        self.connected.contains(id)
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .connected
+            .contains(id)
     }
 
     /// Returns the list of configured device infos (for test setup).
@@ -167,66 +192,89 @@ impl DeviceBackend for MockDeviceBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        self.calls.push(MockCall::Discover);
-        Ok(self.devices.clone())
+    fn adopt_device(&self, discovered: &DiscoveredDevice) -> Result<(), DeviceError> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .calls
+            .push(MockCall::Adopt(discovered.info.id));
+        if self
+            .devices
+            .iter()
+            .any(|device| device.id == discovered.info.id)
+        {
+            Ok(())
+        } else {
+            Err(DeviceError::NotAdopted {
+                device_id: discovered.info.id,
+            })
+        }
     }
 
-    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        self.calls.push(MockCall::Connect(*id));
+    async fn connect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.calls.push(MockCall::Connect(*id));
 
         if self.fail_connect {
-            bail!("mock connect failure for device {id}");
+            return Err(DeviceError::connection(id, "mock connect failure"));
         }
-        if self.connected.contains(id) {
-            bail!("device {id} is already connected");
+        if state.connected.contains(id) {
+            return Err(DeviceError::connection(id, "device is already connected"));
         }
         // Verify the device is actually known
         if !self.devices.iter().any(|d| d.id == *id) {
-            bail!("device {id} not found in mock backend");
+            return Err(DeviceError::NotFound {
+                device: id.to_string(),
+            });
         }
-        self.connected.insert(*id);
+        state.connected.insert(*id);
         Ok(())
     }
 
-    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        self.calls.push(MockCall::Disconnect(*id));
+    async fn disconnect(&self, id: &DeviceId) -> Result<(), DeviceError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.calls.push(MockCall::Disconnect(*id));
 
-        if !self.connected.remove(id) {
-            bail!("device {id} is not connected");
+        if !state.connected.remove(id) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
-        self.last_colors.remove(id);
+        state.last_colors.remove(id);
         Ok(())
     }
 
-    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        self.calls.push(MockCall::WriteColors {
+    async fn write_colors(&self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<(), DeviceError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.calls.push(MockCall::WriteColors {
             device_id: *id,
             led_count: colors.len(),
         });
 
         if self.fail_write {
-            bail!("mock write failure for device {id}");
+            return Err(DeviceError::write(id, "mock write failure"));
         }
-        if !self.connected.contains(id) {
-            bail!("cannot write to disconnected device {id}");
+        if !state.connected.contains(id) {
+            return Err(DeviceError::Disconnected {
+                device: id.to_string(),
+            });
         }
 
-        self.write_count += 1;
-        self.last_colors.insert(*id, colors.to_vec());
+        state.write_count += 1;
+        state.last_colors.insert(*id, colors.to_vec());
         Ok(())
     }
 }
 
-// ── MockTransportScanner ────────────────────────────────────────────────────
+// ── MockDiscoverySource ─────────────────────────────────────────────────────
 
-/// A configurable mock [`TransportScanner`] for discovery tests.
+/// A configurable discovery source for tests.
 ///
 /// Returns a pre-built list of [`DiscoveredDevice`] entries on scan,
 /// or fails if configured to do so.
-pub struct MockTransportScanner {
+pub struct MockDiscoverySource {
     /// Scanner name for logging.
-    scanner_name: String,
+    source_name: String,
 
     /// Devices this scanner will "find".
     devices: Vec<DiscoveredDevice>,
@@ -235,12 +283,12 @@ pub struct MockTransportScanner {
     pub should_fail: bool,
 }
 
-impl MockTransportScanner {
-    /// Create a new mock scanner with no devices.
+impl MockDiscoverySource {
+    /// Create a new mock discovery source with no devices.
     #[must_use]
     pub fn new(name: &str) -> Self {
         Self {
-            scanner_name: name.to_owned(),
+            source_name: name.to_owned(),
             devices: Vec::new(),
             should_fail: false,
         }
@@ -258,7 +306,11 @@ impl MockTransportScanner {
         );
 
         self.devices.push(DiscoveredDevice {
-            fingerprint: DeviceFingerprint(fingerprint_key),
+            fingerprint: DeviceFingerprint::mint(
+                FingerprintNamespace::Bridge,
+                "mock",
+                &fingerprint_key,
+            ),
             connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
@@ -269,15 +321,17 @@ impl MockTransportScanner {
     }
 }
 
-#[async_trait::async_trait]
-impl TransportScanner for MockTransportScanner {
-    fn name(&self) -> &str {
-        &self.scanner_name
+impl MockDiscoverySource {
+    /// Return the source name used in discovery reports.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.source_name
     }
 
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+    /// Produce this source's configured discovery results.
+    pub fn scan(&self) -> Result<Vec<DiscoveredDevice>> {
         if self.should_fail {
-            bail!("mock scanner '{}' failed", self.scanner_name);
+            bail!("mock discovery source '{}' failed", self.source_name);
         }
         Ok(self.devices.clone())
     }
@@ -315,8 +369,8 @@ pub struct MockEffectRenderer {
     /// Whether `destroy()` has been called.
     pub destroyed: bool,
 
-    /// Total number of `tick()` calls.
-    pub tick_count: u64,
+    /// Total number of rendered frames.
+    pub render_count: u64,
 
     /// Current control values.
     pub controls: HashMap<String, ControlValue>,
@@ -333,7 +387,7 @@ impl MockEffectRenderer {
             mode,
             initialized: false,
             destroyed: false,
-            tick_count: 0,
+            render_count: 0,
             controls: HashMap::new(),
             init_error: None,
         }
@@ -394,7 +448,7 @@ impl EffectRenderer for MockEffectRenderer {
     }
 
     fn render_into(&mut self, input: &FrameInput<'_>, canvas: &mut Canvas) -> Result<()> {
-        self.tick_count += 1;
+        self.render_count += 1;
         if canvas.width() != input.canvas_width || canvas.height() != input.canvas_height {
             *canvas = Canvas::new(input.canvas_width, input.canvas_height);
         }
@@ -414,8 +468,14 @@ impl EffectRenderer for MockEffectRenderer {
         Ok(())
     }
 
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        self.controls.insert(name.to_owned(), value.clone());
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        self.controls.extend(
+            batch
+                .changes
+                .iter()
+                .map(|(control_id, value)| (control_id.to_string(), value.clone())),
+        );
+        Ok(())
     }
 
     fn destroy(&mut self) {
@@ -449,10 +509,10 @@ fn render_rainbow(canvas: &mut Canvas, input: &FrameInput) {
     let (first_row, remaining_rows) = pixels.split_at_mut(row_len);
     for (x, pixel) in first_row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
         let hue = ((x as f32 / w.max(1) as f32) * 360.0 + time_offset).rem_euclid(360.0);
-        let (r, g, b) = hsv_to_rgb(hue, 1.0, 1.0);
-        pixel[0] = r;
-        pixel[1] = g;
-        pixel[2] = b;
+        let rgb = Hsv::new(hue, 1.0, 1.0).to_rgb();
+        pixel[0] = rgb.r;
+        pixel[1] = rgb.g;
+        pixel[2] = rgb.b;
         pixel[3] = 255;
     }
 
@@ -474,41 +534,6 @@ fn render_audio_reactive(canvas: &mut Canvas, input: &FrameInput, base: [u8; 4])
     let g = (f32::from(base[1]) * level).round() as u8;
     let b = (f32::from(base[2]) * level).round() as u8;
     canvas.fill(Rgba::new(r, g, b, base[3]));
-}
-
-/// Simple HSV to RGB conversion. H in [0, 360), S and V in [0, 1].
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::many_single_char_names
-)]
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let c = v * s;
-    let h_prime = h / 60.0;
-    let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
-    let m = v - c;
-
-    #[allow(clippy::cast_precision_loss)]
-    let (r1, g1, b1) = if h_prime < 1.0 {
-        (c, x, 0.0)
-    } else if h_prime < 2.0 {
-        (x, c, 0.0)
-    } else if h_prime < 3.0 {
-        (0.0, c, x)
-    } else if h_prime < 4.0 {
-        (0.0, x, c)
-    } else if h_prime < 5.0 {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-
-    (
-        ((r1 + m) * 255.0).round() as u8,
-        ((g1 + m) * 255.0).round() as u8,
-        ((b1 + m) * 255.0).round() as u8,
-    )
 }
 
 // ── Shared Helpers ──────────────────────────────────────────────────────────
@@ -546,7 +571,7 @@ fn build_device_info(
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("mock", "mock", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: format!("{name} Zone"),
             led_count,
             topology: device_topology,

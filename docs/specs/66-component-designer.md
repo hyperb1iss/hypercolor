@@ -416,9 +416,9 @@ The modal opens on a **Start from** picker:
 - **This device's topology** — when launched from a device, seeds the
   canvas from that device's current attachment topology.
 
-Loading a component for editing requires its full topology, which
-means the frontend must consume `GET /attachments/templates/{id}` —
-an endpoint that ships today but is not yet called from the UI (§8).
+Loading a component for editing requires its full topology. The collection
+response from `GET /attachments/templates` carries each complete template, so
+the frontend selects the matching ID from that canonical response.
 
 ### 5.7 The Room-Mapping Walkthrough
 
@@ -676,34 +676,25 @@ Already shipped in `hypercolor-daemon/src/api/attachments.rs`,
 registered in `api/mod.rs` and documented in `api/openapi.rs`. Spec 66
 adds **no routes**.
 
-| Method | Path                                  | Handler            |
-| ------ | ------------------------------------- | ------------------ |
-| GET    | `/api/v1/attachments/templates`       | `list_templates`   |
-| POST   | `/api/v1/attachments/templates`       | `create_template`  |
-| GET    | `/api/v1/attachments/templates/{id}`  | `get_template`     |
-| PUT    | `/api/v1/attachments/templates/{id}`  | `update_template`  |
-| DELETE | `/api/v1/attachments/templates/{id}`  | `delete_template`  |
-| GET    | `/api/v1/attachments/categories`      | `list_categories`  |
-| GET    | `/api/v1/attachments/vendors`         | `list_vendors`     |
+| Method | Path                            | Handler           |
+| ------ | ------------------------------- | ----------------- |
+| GET    | `/api/v1/attachments/templates` | `list_templates`  |
+| POST   | `/api/v1/attachments/templates` | `create_template` |
 
-`list_templates` paginates and filters by category, vendor, origin,
-text query, and controller/slot compatibility. `create_template` and
-`update_template` force `origin = User` and write a TOML file;
-builtins 403 on write. `delete_template` 409s when a device profile
-still binds the template.
+`list_templates` returns complete template objects and supports the canonical
+collection filters. `create_template` forces `origin = User` and writes a new
+TOML file. Template item mutation is deliberately not public.
 
-Two backend tasks here. First, a **contract confirmation**: the
-`GET /attachments/templates/{id}` detail response must serialize the
-new `designer` field and the full `topology` (including `Path`). If
-the detail response type is the `AttachmentTemplate` itself, `designer`
-flows automatically; if it is a hand-mirrored struct, it must gain the
-field. BE-3 verifies and, if needed, extends it. This is the seam the
-frontend's Start-from flow (§5.6) depends on.
+Two backend tasks remain. First, a **contract confirmation**: the collection
+response must serialize the new `designer` field and the full `topology`
+(including `Path`) on every template. BE-3 verifies that the collection uses
+the canonical `AttachmentTemplate` contract. This is the seam the frontend's
+Start-from flow (§5.6) depends on.
 
 Second, a **write-path hardening**. The Component Designer becomes the
-primary writer of user templates, so the create/update path must be
-robust. Today `create_template` / `update_template` take the registry
-write lock and call `register_and_persist_template`, which registers
+primary writer of user templates, so the create path must be
+robust. The create handler takes the registry write lock and calls the
+persistence path, which registers
 the template into the live `Arc<RwLock<AttachmentRegistry>>` and
 *then* writes the TOML — a failed write leaves a ghost template
 registered in memory until the next daemon restart. BE-3 makes this

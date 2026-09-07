@@ -17,7 +17,7 @@ other lanes, see [GLSL shader effects](@/effects/glsl-effects.md) and
 [display faces](@/effects/display-faces.md). The native Rust lane is authored as a
 compiled-in `EffectRenderer` and registered in `crates/hypercolor-core/src/effect/builtin/mod.rs`.
 
-{{ img(path="img/ui/effects.webp", alt="The Hypercolor effects browser") }}
+{{< img path="img/ui/effects.webp" alt="The Hypercolor effects browser" />}}
 
 ## Pick a path 🎯
 
@@ -26,24 +26,24 @@ a single RGBA canvas (640×480 by default, configurable), samples it onto every 
 streams a live preview. There are four authoring lanes, and this page walks the most
 accessible one end to end.
 
-| Path | You write | Runs as | Start here |
-| --- | --- | --- | --- |
-| TypeScript canvas | A `canvas()` module, Canvas2D draw fn | JS bundle in the daemon | this page |
-| GLSL shader | A fragment shader + control declaration | WebGL2 inside Servo | [GLSL effects](@/effects/glsl-effects.md) |
-| Native Rust | A compiled-in `EffectRenderer` | CPU renderer in the engine | `core/src/effect/builtin/` |
-| Display face | A `face()` module for LCD modules | full-screen HTML via Servo | [display faces](@/effects/display-faces.md) |
+| Path              | You write                               | Runs as                    | Start here                                  |
+| ----------------- | --------------------------------------- | -------------------------- | ------------------------------------------- |
+| TypeScript canvas | A `canvas()` module, Canvas2D draw fn   | JS bundle in the daemon    | this page                                   |
+| GLSL shader       | A fragment shader + control declaration | WebGL2 inside Servo        | [GLSL effects](@/effects/glsl-effects.md)   |
+| Native Rust       | A compiled-in `EffectRenderer`          | CPU renderer in the engine | `core/src/effect/builtin/`                  |
+| Display face      | A `face()` module for LCD modules       | full-screen HTML via Servo | [display faces](@/effects/display-faces.md) |
 
 The TypeScript and GLSL lanes both ship through the SDK, so a Rust compiler is never
 required to author them. That is the path below.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The SDK is published to npm as
 [`hypercolor`](https://www.npmjs.com/package/hypercolor). Workspaces pull it from the
 registry by default; to author against a local engine checkout instead, pass
 `--sdk-spec file:../hypercolor/sdk/packages/core` or set the
 `HYPERCOLOR_SDK_PACKAGE_SPEC` environment variable. Full prerequisites live in
 [setup](@/effects/setup.md).
-{% end %}
+{% </callout> %}
 
 ## Scaffold a workspace
 
@@ -57,13 +57,13 @@ cd aurora-lab
 The scaffolder accepts four templates and a few flags. Run
 `bunx create-hypercolor-effect --help` for the canonical list:
 
-| Flag | Purpose |
-| --- | --- |
-| `--template <type>` | Starter template: `canvas`, `shader`, `face`, or `html` |
-| `--first <name>` | Name of the first effect (default `my-effect`) |
-| `--audio` | Include audio-reactive starter boilerplate |
-| `--sdk-spec <spec>` | Override the `hypercolor` dependency spec, e.g. a `file:` path to a local engine checkout; `HYPERCOLOR_SDK_PACKAGE_SPEC` sets the same override |
-| `--no-git` / `--no-install` | Skip git init / `bun install` |
+| Flag                        | Purpose                                                                                                                                         |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--template <type>`         | Starter template: `canvas`, `shader`, `face`, or `html`                                                                                         |
+| `--first <name>`            | Name of the first effect (default `my-effect`)                                                                                                  |
+| `--audio`                   | Include audio-reactive starter boilerplate                                                                                                      |
+| `--sdk-spec <spec>`         | Override the `hypercolor` dependency spec, e.g. a `file:` path to a local engine checkout; `HYPERCOLOR_SDK_PACKAGE_SPEC` sets the same override |
+| `--no-git` / `--no-install` | Skip git init / `bun install`                                                                                                                   |
 
 Omit the name or template and the scaffolder drops into interactive prompts instead.
 The result is a complete workspace:
@@ -103,46 +103,52 @@ controls inline and write a draw function that runs every frame.
 The `canvas` template scaffolds this:
 
 ```typescript
-import { canvas, combo, num } from 'hypercolor'
+import { canvas, combo, num } from "hypercolor";
 
 export default canvas(
-    'Aurora',
-    {
-        brightness: num('Brightness', [0, 100], 80, { group: 'Color' }),
-        palette: combo('Palette', ['Aurora', 'Fire', 'Ocean'], { group: 'Color' }),
-        speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
-    },
-    (ctx, time, controls) => {
-        const width = ctx.canvas.width
-        const height = ctx.canvas.height
-        const speed = (controls.speed as number) ?? 5
-        const brightness = ((controls.brightness as number) ?? 80) / 100
-        const palette = (controls.palette as string) ?? 'Aurora'
-        const baseHue = palette === 'Fire' ? 20 : palette === 'Ocean' ? 205 : 145
-        const drift = Math.sin(time * speed * 0.9) * 0.5 + 0.5
-        const hue = (baseHue + drift * 55 + time * speed * 24) % 360
+  "Aurora",
+  {
+    brightness: num("Brightness", [0, 100], 80, { group: "Color" }),
+    palette: combo("Palette", ["Aurora", "Fire", "Ocean"], { group: "Color" }),
+    speed: num("Speed", [1, 10], 5, { group: "Motion" }),
+  },
+  (ctx, time, controls) => {
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+    const speed = (controls.speed as number) ?? 5;
+    const brightness = ((controls.brightness as number) ?? 80) / 100;
+    const palette = (controls.palette as string) ?? "Aurora";
+    const baseHue = palette === "Fire" ? 20 : palette === "Ocean" ? 205 : 145;
+    const drift = Math.sin(time * speed * 0.9) * 0.5 + 0.5;
+    const hue = (baseHue + drift * 55 + time * speed * 24) % 360;
 
-        ctx.fillStyle = '#04050a'
-        ctx.fillRect(0, 0, width, height)
+    ctx.fillStyle = "#04050a";
+    ctx.fillRect(0, 0, width, height);
 
-        const gradient = ctx.createLinearGradient(0, 0, width, height)
-        gradient.addColorStop(0, `hsla(${hue}, 100%, ${36 + brightness * 10}%, 0.88)`)
-        gradient.addColorStop(1, `hsla(${(hue + 42) % 360}, 90%, ${22 + brightness * 12}%, 0.92)`)
-        ctx.fillStyle = gradient
-        ctx.fillRect(0, 0, width, height)
-    },
-    {
-        author: 'You',
-        description: 'A starter canvas effect',
-        presets: [
-            {
-                controls: { brightness: 80, palette: 'Aurora', speed: 5 },
-                description: 'Balanced motion and brightness.',
-                name: 'Default',
-            },
-        ],
-    },
-)
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(
+      0,
+      `hsla(${hue}, 100%, ${36 + brightness * 10}%, 0.88)`,
+    );
+    gradient.addColorStop(
+      1,
+      `hsla(${(hue + 42) % 360}, 90%, ${22 + brightness * 12}%, 0.92)`,
+    );
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, width, height);
+  },
+  {
+    author: "You",
+    description: "A starter canvas effect",
+    presets: [
+      {
+        controls: { brightness: 80, palette: "Aurora", speed: 5 },
+        description: "Balanced motion and brightness.",
+        name: "Default",
+      },
+    ],
+  },
+);
 ```
 
 A few rules keep effects correct on real LEDs:
@@ -170,33 +176,36 @@ an LED canvas. Its shape is different: `face()` takes `(name, controls, options,
 and the setup function builds the DOM **once** and returns the per-frame update function.
 
 ```typescript
-import { face, num } from 'hypercolor'
+import { face, num } from "hypercolor";
 
 export default face(
-    'Aurora Face',
-    {
-        glow: num('Glow', [0, 100], 68, { group: 'Style' }),
-    },
-    {
-        author: 'You',
-        description: 'A starter display face',
-        presets: [
-            { controls: { glow: 68 }, description: 'Balanced face glow.', name: 'Default' },
-        ],
-    },
-    (ctx) => {
-        const shell = document.createElement('div')
-        shell.className = 'hc-face-shell'
-        ctx.container.appendChild(shell)
+  "Aurora Face",
+  {
+    glow: num("Glow", [0, 100], 68, { group: "Style" }),
+  },
+  {
+    author: "You",
+    description: "A starter display face",
+    presets: [
+      {
+        controls: { glow: 68 },
+        description: "Balanced face glow.",
+        name: "Default",
+      },
+    ],
+  },
+  (ctx) => {
+    const shell = document.createElement("div");
+    shell.className = "hc-face-shell";
+    ctx.container.appendChild(shell);
 
-        return (time, controls) => {
-            const glow = ((controls.glow as number) ?? 68) / 100
-            const hue = (time * 42) % 360
-            shell.style.boxShadow =
-                `inset 0 0 ${32 + glow * 48}px hsla(${hue}, 100%, 70%, ${0.16 + glow * 0.18})`
-        }
-    },
-)
+    return (time, controls) => {
+      const glow = ((controls.glow as number) ?? 68) / 100;
+      const hue = (time * 42) % 360;
+      shell.style.boxShadow = `inset 0 0 ${32 + glow * 48}px hsla(${hue}, 100%, 70%, ${0.16 + glow * 0.18})`;
+    };
+  },
+);
 ```
 
 Faces render through Servo and target specific display hardware, so they have their own
@@ -204,13 +213,13 @@ contract: device-shape truth via `ctx.display`, a flexbox-only CSS subset, and o
 data sources for media, sensors, and audio. The dedicated guide is
 [display faces](@/effects/display-faces.md).
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The `shader` template authors a GLSL fragment shader that runs as **WebGL2 inside
 Servo**, not as a native GPU pipeline. There is no compiled wgpu shader lane today; that
 is future work. See [GLSL effects](@/effects/glsl-effects.md). For compiled-in Rust
 renderers, write an `EffectRenderer` in `crates/hypercolor-core/src/effect/builtin/`
 and register it in that crate's `builtin/mod.rs`.
-{% end %}
+{% </callout> %}
 
 ## Build
 
@@ -226,13 +235,14 @@ can load selected Google Fonts at runtime unless capture mode disables remote
 fonts. The build also extracts `<meta>` tags the daemon reads for controls,
 presets, and audio reactivity.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If your draw function reads audio (`audio()`, `ctx.audio`, `getAudioData()`, or
 `engine.audio`) you **must** set `audio: true` in the options object. The build fails
 hard otherwise with an audio-reactivity validation error; this flag is not cosmetic.
-The `--audio` scaffold flag wires it up for you. See
-[audio reactivity](@/effects/audio.md).
-{% end %}
+The `--audio` scaffold flag wires it up for you. Reading input
+(`getInputData()`, `engine.keyboard`, or `engine.mouse`) carries the identical rule
+with `input: true`. See [audio reactivity](@/effects/audio.md).
+{% </callout> %}
 
 ## Validate
 
@@ -297,13 +307,13 @@ including watch mode, is covered in [dev workflow](@/effects/dev-workflow.md).
 
 The whole loop in one picture:
 
-{% mermaid() %}
+{% <mermaid> %}
 graph LR
-  A["main.ts<br/>canvas()"] --> B["bun run build<br/>dist/aurora.html"]
-  B --> C["bun run validate<br/>Result: PASS"]
-  C --> D["bun run ship:daemon<br/>POST /api/v1/effects/install"]
-  D --> E["Live on :9420<br/>canvas preview + LEDs"]
-{% end %}
+A["main.ts<br/>canvas()"] --> B["bun run build<br/>dist/aurora.html"]
+B --> C["bun run validate<br/>Result: PASS"]
+C --> D["bun run ship:daemon<br/>POST /api/v1/effects/install"]
+D --> E["Live on :9420<br/>canvas preview + LEDs"]
+{% </mermaid> %}
 
 ## See it without hardware
 
@@ -321,18 +331,18 @@ Display faces get a dedicated path: the face dev loop spins up virtual display
 simulators automatically so you can iterate on round LCD and strip layouts without the
 physical panels. That workflow lives in [display faces](@/effects/display-faces.md).
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 When real devices are connected, your effect lights them the moment you apply it. Plug
 in hardware, [discover your devices](@/guide/finding-devices.md), and the same preview
 you were watching drives the LEDs.
-{% end %}
+{% </callout> %}
 
 ## Apply it from an agent
 
 Once your effect is installed, an AI agent can drive it over MCP. The shipped
 `list_effects` and `set_effect` tools discover and apply effects by name, and
 `get_status` reads current state first. MCP is **off by default**; enable it before
-configuring a client. The Agents section covers MCP setup, the 16 tools, 5 resources,
+configuring a client. The Agents section covers MCP setup, the 17 tools, 5 resources,
 and 3 prompts in full.
 
 ## Success checkpoint

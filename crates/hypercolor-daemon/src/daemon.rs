@@ -6,9 +6,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use axum::Router;
+use hypercolor_core::config::{BootConfig, ConfigManager, LoadedConfig};
+use hypercolor_core::session::SessionMonitor;
 use hypercolor_types::config::{
     HypercolorConfig, LogLevel, NetworkAccessMode, RenderAccelerationMode, ServoGpuImportMode,
 };
+use hypercolor_types::service::ServiceStatus;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -17,9 +20,11 @@ use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::api::{self, AppState};
+use crate::api;
+use crate::app_state::AppState;
+use crate::macos_owner::{MacosDaemonOwner, MacosDaemonSessionAttestation, MacosOwnerSnapshot};
 use crate::mdns::MdnsPublisher;
-use crate::startup::{DaemonState, load_config};
+use crate::startup::{DaemonState, config_sources};
 
 const MAIN_RUNTIME_WORKERS: usize = 4;
 const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
@@ -28,7 +33,7 @@ const API_LISTEN_BACKLOG: i32 = 1024;
 const API_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Runtime options for one daemon process.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct DaemonRunOptions {
     /// Path to the configuration file.
     pub config: Option<PathBuf>,
@@ -48,6 +53,146 @@ pub struct DaemonRunOptions {
     pub ui_dir: Option<PathBuf>,
     /// Bundled effects directory, overriding the install layout.
     pub effects_dir: Option<PathBuf>,
+    /// Explicit macOS daemon topology supplied by the local launcher.
+    pub macos_owner: Option<MacosDaemonOwner>,
+    /// Durable ownership snapshot published before input source construction.
+    pub macos_owner_snapshot: Option<MacosOwnerSnapshot>,
+    /// Exact private process session derived from canonical macOS ownership.
+    pub macos_daemon_session_attestation: Option<MacosDaemonSessionAttestation>,
+    /// Corroborated launcher identity resolved by the process host before
+    /// runtime startup. On macOS the durable owner snapshot supersedes it.
+    pub service_status: Option<ServiceStatus>,
+    /// Platform session monitors supplied by the process host.
+    pub session_monitors: Option<Vec<Box<dyn SessionMonitor>>>,
+}
+
+/// Ownership handle for the exact sockets bound during daemon preparation.
+///
+/// Each handle is a duplicate descriptor for the same listening socket used
+/// by Tokio. Keeping the lease alive prevents another process from binding the
+/// API address after serving stops and before process-level authority is
+/// invalidated.
+#[doc(hidden)]
+pub struct ApiListenerLease {
+    _listeners: Vec<std::net::TcpListener>,
+}
+
+/// Daemon startup state whose final API sockets are already bound.
+#[doc(hidden)]
+pub struct PreparedDaemon {
+    options: DaemonRunOptions,
+    config: BootConfig,
+    config_manager: Arc<ConfigManager>,
+    listen_addr: String,
+    listeners: Vec<TcpListener>,
+    listener_lease: Option<ApiListenerLease>,
+    advertised_bind: SocketAddr,
+}
+
+impl PreparedDaemon {
+    /// Resume a prepared daemon using its already-bound API listeners.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when subsystem startup, serving, or shutdown fails.
+    pub async fn run(self, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
+        Box::pin(self.run_with_extensions(shutdown_rx, &[])).await
+    }
+
+    /// Return the primary address owned by this prepared daemon.
+    #[must_use]
+    pub const fn advertised_bind(&self) -> SocketAddr {
+        self.advertised_bind
+    }
+
+    /// Attach the exact macOS process session published after socket binding.
+    pub fn install_macos_daemon_session_attestation(
+        &mut self,
+        attestation: MacosDaemonSessionAttestation,
+    ) {
+        self.options.macos_daemon_session_attestation = Some(attestation);
+    }
+
+    /// Transfer the socket lifetime lease to the process-level owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease was already transferred.
+    pub fn take_api_listener_lease(&mut self) -> Result<ApiListenerLease> {
+        self.listener_lease
+            .take()
+            .context("prepared API listener lease was already transferred")
+    }
+
+    pub(crate) async fn run_with_extensions(
+        mut self,
+        shutdown_rx: watch::Receiver<bool>,
+        extension_installers: &[&dyn DaemonExtensionInstaller],
+    ) -> Result<()> {
+        let macos_daemon_session_attestation =
+            self.options.macos_daemon_session_attestation.clone();
+        let listeners = std::mem::take(&mut self.listeners);
+        // Boot values are frozen into the subsystems that need them by this
+        // call, which consumes the config; anything read past this point
+        // reads live (Spec 76 §3.2).
+        let mut daemon_state = DaemonState::initialize_with_launcher(
+            self.config,
+            self.config_manager,
+            self.options.macos_owner_snapshot,
+            self.options.service_status.take(),
+        )?;
+        daemon_state.session_monitors = self.options.session_monitors.take();
+        for installer in extension_installers {
+            installer.install(&mut daemon_state)?;
+        }
+        Box::pin(daemon_state.start()).await?;
+
+        let ui_dir = resolve_ui_dir(self.options.ui_dir.clone());
+        let app_state = Arc::new(api::build_state(
+            &daemon_state,
+            macos_daemon_session_attestation.as_ref(),
+        ));
+        daemon_state.domains.display.sync_connected_surfaces().await;
+        daemon_state
+            .domains
+            .display
+            .sync_preference_overlays()
+            .await;
+        if let Err(error) = notify_api_ready_extensions(&daemon_state, &app_state).await {
+            if let Err(shutdown_error) = daemon_state.shutdown().await {
+                warn!(%shutdown_error, "Failed to roll back daemon after API-ready hook failure");
+            }
+            return Err(error);
+        }
+        let router = api::build_router(app_state, ui_dir.as_deref());
+
+        let mdns_publish = daemon_state.config_manager.live().network.mdns_publish;
+        let mdns_publisher = MdnsPublisher::new(
+            &daemon_state.server_identity,
+            self.advertised_bind,
+            mdns_publish,
+            api::security::api_auth_required_from_env(),
+        )?;
+
+        if ui_dir.is_some() {
+            info!(url = %format!("http://{}/", self.advertised_bind), "Web UI available");
+        }
+        info!(binds = %self.listen_addr, "API server listening");
+
+        hypercolor_linux_session::notify_ready();
+        hypercolor_linux_session::spawn_watchdog();
+
+        serve_api_listeners(listeners, router, shutdown_rx).await?;
+
+        if let Some(publisher) = mdns_publisher {
+            publisher.shutdown().await;
+        }
+
+        daemon_state.shutdown().await?;
+
+        info!("Hypercolor daemon exited cleanly");
+        Ok(())
+    }
 }
 
 pub trait DaemonExtensionInstaller: Send + Sync {
@@ -81,7 +226,7 @@ pub fn build_main_runtime() -> Result<tokio::runtime::Runtime> {
 ///
 /// Returns an error when startup, serving, or graceful shutdown fails.
 pub async fn run(options: DaemonRunOptions, shutdown_rx: watch::Receiver<bool>) -> Result<()> {
-    run_with_extensions(options, shutdown_rx, &[]).await
+    Box::pin(run_with_extensions(options, shutdown_rx, &[])).await
 }
 
 /// Run the daemon with downstream extension installers.
@@ -95,6 +240,19 @@ pub async fn run_with_extensions(
     shutdown_rx: watch::Receiver<bool>,
     extension_installers: &[&dyn DaemonExtensionInstaller],
 ) -> Result<()> {
+    let prepared = prepare(options).await?;
+    Box::pin(prepared.run_with_extensions(shutdown_rx, extension_installers)).await
+}
+
+/// Load configuration and bind every final API listener without starting the
+/// daemon subsystems or accepting connections.
+///
+/// # Errors
+///
+/// Returns an error when configuration, address resolution, authentication
+/// validation, or any final listener bind fails.
+#[doc(hidden)]
+pub async fn prepare(options: DaemonRunOptions) -> Result<PreparedDaemon> {
     // Must land before any registry scan, which resolves the bundled catalog
     // the first time it enumerates effects.
     if options.effects_dir.is_some() {
@@ -103,13 +261,17 @@ pub async fn run_with_extensions(
 
     // Load configuration before tracing so we can honor config-driven log
     // levels when the CLI flag is omitted.
-    let (mut config, config_path) = load_config(options.config.as_deref()).await?;
-    if let Some(mode) = options.compositor_acceleration_mode {
-        config.effect_engine.compositor_acceleration_mode = mode;
-    }
-    if let Some(mode) = options.servo_gpu_import_mode {
-        config.rendering.servo_gpu_import.mode = mode;
-    }
+    let LoadedConfig {
+        boot: config,
+        manager,
+        ..
+    } = ConfigManager::load_with_sources(config_sources(
+        options.config.clone(),
+        options.compositor_acceleration_mode,
+        options.servo_gpu_import_mode,
+    ))?;
+    let config_manager = Arc::new(manager);
+    info!(path = %config_manager.path().display(), "Resolved config path");
     let log_level = resolve_log_level(options.log_level.as_deref(), &config);
 
     // Initialize tracing with the requested log level + SilkCircuit theme.
@@ -162,48 +324,40 @@ pub async fn run_with_extensions(
             config.network.unauthenticated_remote_access_allowed(),
         )?;
     }
-    let listeners = bind_api_listeners(&binds)?;
+    let (listeners, listener_lease) = bind_api_listeners(&binds)?;
     let advertised_bind = listeners
         .first()
         .context("no API listeners were bound")?
         .local_addr()
         .context("failed to read API listener address")?;
 
-    let mut daemon_state = DaemonState::initialize(&config, config_path)?;
-    for installer in extension_installers {
-        installer.install(&mut daemon_state)?;
-    }
-    daemon_state.start().await?;
-
-    let ui_dir = resolve_ui_dir(options.ui_dir);
-    let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
-    api::displays::sync_display_preference_overlays(&app_state).await;
-    let router = api::build_router(app_state, ui_dir.as_deref());
-
-    let mdns_publisher = MdnsPublisher::new(
-        &daemon_state.server_identity,
+    Ok(PreparedDaemon {
+        options,
+        config,
+        config_manager,
+        listen_addr,
+        listeners,
+        listener_lease: Some(listener_lease),
         advertised_bind,
-        config.network.mdns_publish,
-        api::security::api_auth_required_from_env(),
-    )?;
+    })
+}
 
-    if ui_dir.is_some() {
-        info!(url = %format!("http://{advertised_bind}/"), "Web UI available");
+async fn notify_api_ready_extensions(daemon: &DaemonState, state: &Arc<AppState>) -> Result<()> {
+    for extension in daemon.lifecycle_extensions.clone() {
+        info!(
+            extension = extension.name(),
+            "Starting API-ready daemon extension hook"
+        );
+        extension
+            .api_ready(daemon, Arc::clone(state))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to start API-ready hook for daemon extension {}",
+                    extension.name()
+                )
+            })?;
     }
-    info!(binds = %listen_addr, "API server listening");
-
-    notify_ready();
-    spawn_watchdog();
-
-    serve_api_listeners(listeners, router, shutdown_rx).await?;
-
-    if let Some(publisher) = mdns_publisher {
-        publisher.shutdown().await;
-    }
-
-    daemon_state.shutdown().await?;
-
-    info!("Hypercolor daemon exited cleanly");
     Ok(())
 }
 
@@ -262,34 +416,6 @@ fn format_age(elapsed: std::time::Duration) -> String {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn notify_ready() {
-    if let Err(error) = sd_notify::notify(false, &[sd_notify::NotifyState::Ready]) {
-        tracing::warn!("failed to notify systemd: {error}");
-    } else {
-        tracing::debug!("notified systemd: READY=1");
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn notify_ready() {}
-
-#[cfg(target_os = "linux")]
-fn spawn_watchdog() {
-    tokio::spawn(async {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-            if let Err(error) = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]) {
-                tracing::debug!("failed to notify systemd watchdog: {error}");
-            }
-        }
-    });
-}
-
-#[cfg(not(target_os = "linux"))]
-fn spawn_watchdog() {}
-
 fn default_env_filter(log_level: &str) -> String {
     let normalized = log_level.trim().to_ascii_lowercase();
 
@@ -338,16 +464,18 @@ async fn resolve_bind_targets(targets: &[String]) -> Result<Vec<SocketAddr>> {
     Ok(resolved)
 }
 
-fn bind_api_listeners(binds: &[SocketAddr]) -> Result<Vec<TcpListener>> {
+fn bind_api_listeners(binds: &[SocketAddr]) -> Result<(Vec<TcpListener>, ApiListenerLease)> {
     let mut listeners = Vec::with_capacity(binds.len());
+    let mut leases = Vec::with_capacity(binds.len());
 
     for bind in binds {
-        let listener = bind_api_listener(*bind)
+        let (listener, lease) = bind_api_listener_with_lease(*bind)
             .with_context(|| format!("failed to bind API server to {bind}"))?;
         listeners.push(listener);
+        leases.push(lease);
     }
 
-    Ok(listeners)
+    Ok((listeners, ApiListenerLease { _listeners: leases }))
 }
 
 /// Construct one API TCP listener with the daemon's socket options.
@@ -358,6 +486,10 @@ fn bind_api_listeners(binds: &[SocketAddr]) -> Result<Vec<TcpListener>> {
 /// listened on, or converted into a Tokio listener.
 #[doc(hidden)]
 pub fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
+    bind_api_listener_with_lease(bind).map(|(listener, _lease)| listener)
+}
+
+fn bind_api_listener_with_lease(bind: SocketAddr) -> Result<(TcpListener, std::net::TcpListener)> {
     let socket = Socket::new(
         if bind.is_ipv4() {
             Domain::IPV4
@@ -382,7 +514,12 @@ pub fn bind_api_listener(bind: SocketAddr) -> Result<TcpListener> {
 
     let listener: std::net::TcpListener = socket.into();
     listener.set_nonblocking(true)?;
-    TcpListener::from_std(listener).context("failed to create async TCP listener")
+    let lease = listener
+        .try_clone()
+        .context("failed to duplicate API listener ownership handle")?;
+    let listener =
+        TcpListener::from_std(listener).context("failed to create async TCP listener")?;
+    Ok((listener, lease))
 }
 
 async fn serve_api_listeners(
@@ -708,8 +845,59 @@ fn unbracket_host(host: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_env_filter, resolve_log_level};
-    use hypercolor_types::config::{HypercolorConfig, LogLevel};
+    use std::sync::{Arc, Mutex};
+
+    use hypercolor_core::config::{BootConfig, ConfigManager};
+    use hypercolor_types::config::{HypercolorConfig, LogLevel, RenderAccelerationMode};
+
+    use super::{
+        bind_api_listener, bind_api_listener_with_lease, default_env_filter,
+        notify_api_ready_extensions, resolve_log_level, serve_api_listeners_with_shutdown_timeout,
+    };
+    use crate::app_state::AppState;
+    use crate::extensions::DaemonLifecycleExtension;
+    use crate::startup::{DaemonState, default_config};
+
+    struct DataDirOverride;
+
+    impl DataDirOverride {
+        fn install(path: std::path::PathBuf) -> Self {
+            ConfigManager::set_data_dir_override(Some(path));
+            Self
+        }
+    }
+
+    impl Drop for DataDirOverride {
+        fn drop(&mut self) {
+            ConfigManager::set_data_dir_override(None);
+        }
+    }
+
+    struct ApiReadyProbe {
+        name: &'static str,
+        expected_state: Arc<AppState>,
+        calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DaemonLifecycleExtension for ApiReadyProbe {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        async fn api_ready(
+            &self,
+            _daemon: &DaemonState,
+            state: Arc<AppState>,
+        ) -> anyhow::Result<()> {
+            assert!(Arc::ptr_eq(&state, &self.expected_state));
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(self.name);
+            Ok(())
+        }
+    }
 
     #[test]
     fn resolve_log_level_prefers_cli_flag() {
@@ -743,5 +931,86 @@ mod tests {
                 "level {level} should squelch mdns_sd"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn exact_prebound_listener_is_served_and_leased_until_explicit_release() {
+        let (listener, lease) = bind_api_listener_with_lease(
+            "127.0.0.1:0"
+                .parse()
+                .expect("ephemeral loopback address should parse"),
+        )
+        .expect("listener and lease should bind together");
+        let address = listener
+            .local_addr()
+            .expect("prepared listener address should resolve");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let router = axum::Router::new().route(
+            "/listener-identity",
+            axum::routing::get(|| async { "prepared-listener" }),
+        );
+        let server = tokio::spawn(serve_api_listeners_with_shutdown_timeout(
+            vec![listener],
+            router,
+            shutdown_rx,
+            tokio::time::Duration::from_secs(1),
+        ));
+
+        let response = reqwest::get(format!("http://{address}/listener-identity"))
+            .await
+            .expect("request should reach the prepared listener");
+        assert_eq!(
+            response.text().await.expect("response body should read"),
+            "prepared-listener"
+        );
+        shutdown_tx
+            .send(true)
+            .expect("shutdown signal should reach the listener");
+        server
+            .await
+            .expect("listener task should join")
+            .expect("listener shutdown should succeed");
+
+        bind_api_listener(address).expect_err("lease must keep the exact socket unavailable");
+        drop(lease);
+        let rebound =
+            bind_api_listener(address).expect("dropping the lease should release the port");
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn api_ready_hooks_receive_the_serving_state_in_registration_order() {
+        let directory = tempfile::tempdir().expect("daemon test directory should be created");
+        let _data_dir = DataDirOverride::install(directory.path().join("data"));
+        let mut config = default_config();
+        config.effect_engine.compositor_acceleration_mode = RenderAccelerationMode::Cpu;
+        let config_manager = Arc::new(ConfigManager::from_config_unchecked(
+            directory.path().join("hypercolor.toml"),
+            config.clone(),
+        ));
+        let mut daemon =
+            DaemonState::initialize(BootConfig::from_config_unchecked(config), config_manager)
+                .expect("daemon test state should initialize");
+        let state = Arc::new(AppState::new_with_data_dir(directory.path().join("api")));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        for name in ["first", "second"] {
+            daemon.register_lifecycle_extension(Arc::new(ApiReadyProbe {
+                name,
+                expected_state: Arc::clone(&state),
+                calls: Arc::clone(&calls),
+            }));
+        }
+
+        notify_api_ready_extensions(&daemon, &state)
+            .await
+            .expect("API-ready hooks should succeed");
+
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_slice(),
+            ["first", "second"]
+        );
     }
 }

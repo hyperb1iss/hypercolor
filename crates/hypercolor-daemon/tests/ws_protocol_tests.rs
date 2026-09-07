@@ -21,11 +21,19 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::Router;
-use hypercolor_daemon::api::{self, AppState};
+use axum::extract::ws::Message;
+use hypercolor_core::input::{
+    DataSource, DataSourceKind, DataSourceRole, InputData, InputSource, ManagedSourceRole,
+    SourceRoleBinding,
+};
+use hypercolor_daemon::api;
+use hypercolor_daemon::api::local::{TrustedLocalApi, TrustedLocalWebSocket};
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::device_metrics::{DeviceMetrics, DeviceMetricsSnapshot};
 use hypercolor_leptos_ext::ws::TimedInputEventPayload;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::library::PresetId;
 use hypercolor_types::sensor::SystemSnapshot;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,6 +44,48 @@ use uuid::Uuid;
 // ── Test Harness ─────────────────────────────────────────────────────────
 
 static TEST_DATA_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+struct FixedSensorSource {
+    snapshot: Arc<SystemSnapshot>,
+    running: bool,
+}
+
+impl InputSource for FixedSensorSource {
+    fn name(&self) -> &'static str {
+        "fixed-sensors"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(if self.running {
+            InputData::Sensors(Arc::clone(&self.snapshot))
+        } else {
+            InputData::None
+        })
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+impl SourceRoleBinding for FixedSensorSource {
+    type Role = DataSourceRole;
+}
+
+impl DataSource for FixedSensorSource {
+    fn data_source_kind(&self) -> DataSourceKind {
+        DataSourceKind::Sensors
+    }
+}
 
 fn test_data_dir() -> PathBuf {
     let counter = TEST_DATA_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -97,8 +147,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
         modified: std::time::SystemTime::now(),
         state: hypercolor_types::effect::EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -274,6 +323,27 @@ async fn recv_until_type(stream: &mut TcpStream, expected: &str) -> Result<Value
     bail!("did not receive a {expected} message within 16 attempts");
 }
 
+async fn recv_trusted_until_type(
+    socket: &mut TrustedLocalWebSocket,
+    expected: &str,
+) -> Result<Value> {
+    for _ in 0..16 {
+        let message = timeout(Duration::from_secs(2), socket.recv())
+            .await
+            .context("timed out waiting for trusted JSON server message")?
+            .context("trusted WebSocket closed before the expected message")?;
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let message: Value = serde_json::from_str(text.as_str())
+            .with_context(|| format!("parse trusted JSON: {text}"))?;
+        if message.get("type").and_then(Value::as_str) == Some(expected) {
+            return Ok(message);
+        }
+    }
+    bail!("did not receive a trusted {expected} message within 16 attempts");
+}
+
 // ── Scenario 5: Hello handshake success path ─────────────────────────────
 
 #[tokio::test]
@@ -329,23 +399,40 @@ async fn hello_handshake_returns_expected_capability_set() {
         .expect("subscriptions should be an array");
     // Default subscription set is exactly {events} per SubscriptionState::default.
     assert_eq!(subscriptions.len(), 1);
-    assert_eq!(subscriptions[0], "events");
+    assert_eq!(subscriptions[0]["topic"], "events");
+    assert!(
+        subscriptions[0].get("key").is_none(),
+        "events is unkeyed, so it reports no key"
+    );
+    assert!(
+        subscriptions[0].get("config").is_none(),
+        "events takes no config, so it reports none"
+    );
 }
 
 #[tokio::test]
-async fn hello_handshake_reports_scene_backed_active_effect() {
+async fn hello_handshake_names_the_scene_but_not_its_contents() {
     let state = test_app_state();
     let effect = insert_test_effect(&state, "Aurora").await;
+    let preset_id = PresetId::stable("calm");
     let layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
-    {
-        let mut scene_manager = state.scene_manager.write().await;
-        scene_manager
-            .upsert_primary_group(&effect, std::collections::HashMap::new(), None, layout)
-            .expect("hello test should install a primary group");
-    }
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            &effect,
+            std::collections::HashMap::new(),
+            Some(preset_id),
+            layout,
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("hello test should install a primary zone");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("hello test scene should commit");
 
     let addr = spawn_test_daemon_with_state(state).await;
     let mut stream = ws_connect(addr)
@@ -356,8 +443,15 @@ async fn hello_handshake_reports_scene_backed_active_effect() {
         .await
         .expect("hello message should arrive");
 
-    assert_eq!(hello["state"]["effect"]["id"], effect.id.to_string());
-    assert_eq!(hello["state"]["effect"]["name"], effect.name);
+    // The live tree is multi-zone, so one effect name could only ever
+    // describe a corner of it. Clients read /scene for content and
+    // follow the events channel for changes (Spec 78 §7.1).
+    for singleton in ["effect", "active_preset_id"] {
+        assert!(
+            hello["state"].get(singleton).is_none(),
+            "the handshake carries no {singleton}"
+        );
+    }
     assert_eq!(
         hello["state"]["scene"]["id"],
         hypercolor_types::scene::SceneId::DEFAULT.to_string()
@@ -412,6 +506,10 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
             last_transport_started_sequence: 64,
             last_transport_completed_sequence: 64,
             last_transport_failed_sequence: 0,
+            display_queue_generation: Some(10),
+            display_transport_started: 32,
+            display_transport_completed: 32,
+            display_transport_failed: 0,
         }],
     }));
     let addr = spawn_test_daemon_with_state(state).await;
@@ -424,8 +522,7 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["device_metrics"],
-            "config": { "device_metrics": { "interval_ms": 100 } }
+            "topics": [{ "topic": "device_metrics", "config": { "fps": 10.0 } }]
         })
         .to_string(),
     )
@@ -435,12 +532,10 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("device_metrics subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "device_metrics");
-    assert!(
-        ack["config"].get("device_metrics").is_some(),
-        "config should include device_metrics after subscribing"
+    let subscribed = subscription_map(&ack);
+    assert_eq!(
+        subscribed["device_metrics"]["fps"], 10.0,
+        "the ack echoes the live device_metrics config"
     );
 
     let message = recv_until_type(&mut stream, "device_metrics")
@@ -454,6 +549,13 @@ async fn device_metrics_subscription_streams_seeded_snapshot() {
     assert_eq!(message["data"]["items"][0]["transport_completed"], 64);
     assert_eq!(message["data"]["items"][0]["coalesced_target_cadence"], 1);
     assert_eq!(message["data"]["items"][0]["payload_bps_estimate"], 2_048);
+    assert_eq!(message["data"]["items"][0]["display_queue_generation"], 10);
+    assert_eq!(message["data"]["items"][0]["display_transport_started"], 32);
+    assert_eq!(
+        message["data"]["items"][0]["display_transport_completed"],
+        32
+    );
+    assert_eq!(message["data"]["items"][0]["display_transport_failed"], 0);
 }
 
 #[tokio::test]
@@ -463,12 +565,19 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     snapshot.cpu_load_percent = 37.5;
     snapshot.ram_used_percent = 64.0;
     snapshot.polled_at_ms = 8_901;
-    let (_sensor_tx, sensor_rx) = tokio::sync::watch::channel(Arc::new(snapshot));
-    state
-        .input_manager
-        .lock()
-        .await
-        .set_sensor_snapshot_receiver(sensor_rx);
+    {
+        let input_manager = state.input_manager();
+        input_manager
+            .add_source(ManagedSourceRole::data(Box::new(FixedSensorSource {
+                snapshot: Arc::new(snapshot),
+                running: false,
+            })))
+            .expect("fixed sensor source should register");
+        input_manager
+            .start_all()
+            .expect("fixed sensor source starts");
+        input_manager.sample_sources(0.0);
+    }
 
     let addr = spawn_test_daemon_with_state(state).await;
     let mut stream = ws_connect(addr)
@@ -480,7 +589,7 @@ async fn sensors_subscription_streams_seeded_snapshot() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["sensors"]
+            "topics": [{ "topic": "sensors" }]
         })
         .to_string(),
     )
@@ -490,9 +599,10 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("sensors subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "sensors");
+    assert!(
+        subscribed_topics(&ack).contains(&"sensors".to_owned()),
+        "the ack lists the sensors subscription"
+    );
 
     let message = recv_until_type(&mut stream, "sensors")
         .await
@@ -500,6 +610,30 @@ async fn sensors_subscription_streams_seeded_snapshot() {
     assert_eq!(message["data"]["cpu_load_percent"], 37.5);
     assert_eq!(message["data"]["ram_used_percent"], 64.0);
     assert_eq!(message["data"]["polled_at_ms"], 8_901);
+}
+
+/// The topics an acknowledgment reports as live, in the order it sent them.
+fn subscribed_topics(ack: &serde_json::Value) -> Vec<String> {
+    ack["topics"]
+        .as_array()
+        .expect("ack.topics is an array")
+        .iter()
+        .map(|entry| entry["topic"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// Unkeyed subscriptions from an acknowledgment, viewed as `{topic: config}`.
+fn subscription_map(ack: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    ack["topics"]
+        .as_array()
+        .expect("ack.topics is an array")
+        .iter()
+        .filter(|entry| entry.get("key").is_none())
+        .filter_map(|entry| {
+            let topic = entry["topic"].as_str()?.to_owned();
+            Some((topic, entry.get("config")?.clone()))
+        })
+        .collect()
 }
 
 // ── Scenario 1: Subscribe → Unsubscribe → Subscribe cycle ────────────────
@@ -513,7 +647,7 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     // Subscribe to `metrics`.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "subscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "subscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send subscribe");
@@ -521,18 +655,20 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "metrics");
+    assert_eq!(
+        subscribed_topics(&ack),
+        vec!["events".to_owned(), "metrics".to_owned()],
+        "the ack reports the whole live subscription set"
+    );
     assert!(
-        ack["config"].get("metrics").is_some(),
+        subscription_map(&ack).get("metrics").is_some(),
         "config should include metrics after subscribing"
     );
 
     // Unsubscribe from `metrics`. Default `events` stays subscribed.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "unsubscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "unsubscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send unsubscribe");
@@ -540,17 +676,8 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "unsubscribed")
         .await
         .expect("unsubscribed ack");
-    let removed = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0], "metrics");
-    let remaining = ack["remaining"]
-        .as_array()
-        .expect("ack.remaining is array")
-        .iter()
-        .map(|v| v.as_str().unwrap_or_default().to_owned())
-        .collect::<Vec<_>>();
     assert_eq!(
-        remaining,
+        subscribed_topics(&ack),
         vec!["events".to_owned()],
         "after unsubscribing metrics, only default events should remain"
     );
@@ -560,7 +687,7 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     // anything.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "subscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "subscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send re-subscribe");
@@ -568,11 +695,12 @@ async fn subscribe_unsubscribe_resubscribe_cycle_tracks_state() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("re-subscribed ack");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "metrics");
     assert!(
-        ack["config"].get("metrics").is_some(),
+        subscribed_topics(&ack).contains(&"metrics".to_owned()),
+        "re-subscribe reinstates the metrics subscription"
+    );
+    assert!(
+        subscription_map(&ack).get("metrics").is_some(),
         "re-subscribe should reinstate metrics config"
     );
 }
@@ -589,67 +717,162 @@ async fn multi_channel_subscribe_returns_all_requested_channels() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["events", "frames", "metrics"],
+            "topics": [
+                { "topic": "events" },
+                { "topic": "frames" },
+                { "topic": "metrics" }
+            ],
         })
         .to_string(),
     )
     .await
-    .expect("send multi-channel subscribe");
+    .expect("send multi-topic subscribe");
 
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
-        .expect("multi-channel subscribed ack");
-    let mut channels = ack["channels"]
-        .as_array()
-        .expect("ack.channels is array")
-        .iter()
-        .map(|v| v.as_str().unwrap_or_default().to_owned())
-        .collect::<Vec<_>>();
-    channels.sort();
+        .expect("multi-topic subscribed ack");
     assert_eq!(
-        channels,
+        subscribed_topics(&ack),
         vec![
-            "events".to_owned(),
             "frames".to_owned(),
+            "events".to_owned(),
             "metrics".to_owned()
         ],
-        "ack should echo the requested channels in sorted order"
+        "the ack lists live subscriptions in registry declaration order"
     );
 
-    // Config should include both frames and metrics stanzas (events has no
-    // per-channel config block by design — see ChannelConfig::filtered_json).
-    let config = &ack["config"];
-    assert!(
-        config.get("frames").is_some(),
-        "config should include frames stanza"
-    );
+    // Config rides each entry, and a configless topic reports none.
+    let config = subscription_map(&ack);
+    assert!(config.get("frames").is_some(), "frames reports its config");
     assert!(
         config.get("metrics").is_some(),
-        "config should include metrics stanza"
+        "metrics reports its config"
     );
     assert!(
         config.get("events").is_none(),
-        "events has no per-channel config block"
+        "events takes no config, so it reports none"
+    );
+}
+
+#[tokio::test]
+async fn keyed_display_previews_are_independent_subscriptions() {
+    let addr = spawn_test_daemon().await;
+    let mut stream = ws_connect(addr).await.expect("ws handshake");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "subscribe",
+            "topics": [
+                { "topic": "display_preview", "key": "device-a", "config": { "fps": 5 } },
+                { "topic": "display_preview", "key": "device-b", "config": { "fps": 25 } }
+            ]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send keyed subscribe");
+
+    let ack = recv_until_type(&mut stream, "subscribed")
+        .await
+        .expect("keyed subscribed ack");
+    let keyed: Vec<(String, i64)> = ack["topics"]
+        .as_array()
+        .expect("ack.topics is array")
+        .iter()
+        .filter(|entry| entry["topic"] == "display_preview")
+        .map(|entry| {
+            (
+                entry["key"].as_str().unwrap_or_default().to_owned(),
+                entry["config"]["fps"].as_i64().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        keyed,
+        vec![("device-a".to_owned(), 5), ("device-b".to_owned(), 25)],
+        "each device is its own subscription with its own cadence"
+    );
+
+    // Retiring one key leaves the other live.
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "unsubscribe",
+            "topics": [{ "topic": "display_preview", "key": "device-a" }]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send keyed unsubscribe");
+
+    let ack = recv_until_type(&mut stream, "unsubscribed")
+        .await
+        .expect("keyed unsubscribed ack");
+    let remaining: Vec<String> = ack["topics"]
+        .as_array()
+        .expect("ack.topics is array")
+        .iter()
+        .filter(|entry| entry["topic"] == "display_preview")
+        .map(|entry| entry["key"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(remaining, vec!["device-b".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_keyed_topic_refuses_a_subscribe_without_its_key() {
+    let addr = spawn_test_daemon().await;
+    let mut stream = ws_connect(addr).await.expect("ws handshake");
+    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+
+    ws_send_text(
+        &mut stream,
+        &json!({
+            "type": "subscribe",
+            "topics": [{ "topic": "display_preview" }]
+        })
+        .to_string(),
+    )
+    .await
+    .expect("send keyless subscribe");
+
+    let err = recv_until_type(&mut stream, "error")
+        .await
+        .expect("error response");
+    assert_eq!(err["code"], "malformed_request");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("display_preview"),
+        "the error names the topic: {err}"
     );
 }
 
 #[tokio::test]
 async fn input_event_subscription_receives_canonical_timed_payload() {
     let state = test_app_state();
-    let addr = spawn_test_daemon_with_state(Arc::clone(&state)).await;
-    let mut stream = ws_connect(addr).await.expect("ws handshake");
-    let _ = recv_until_type(&mut stream, "hello").await.expect("hello");
+    let api = TrustedLocalApi::new(Arc::clone(&state));
+    let mut socket = api
+        .open_websocket("/api/v1/ws")
+        .expect("trusted websocket should open");
+    let _ = recv_trusted_until_type(&mut socket, "hello")
+        .await
+        .expect("hello");
 
-    ws_send_text(
-        &mut stream,
-        &json!({ "type": "subscribe", "channels": ["input_events"] }).to_string(),
-    )
-    .await
-    .expect("send input event subscription");
-    let ack = recv_until_type(&mut stream, "subscribed")
+    socket
+        .send(Message::Text(
+            json!({ "type": "subscribe", "topics": [{ "topic": "input_events" }] })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send input event subscription");
+    let ack = recv_trusted_until_type(&mut socket, "subscribed")
         .await
         .expect("input event subscribed ack");
-    assert_eq!(ack["channels"], json!(["input_events"]));
+    assert!(subscribed_topics(&ack).contains(&"input_events".to_owned()));
 
     state
         .event_bus
@@ -667,7 +890,7 @@ async fn input_event_subscription_receives_canonical_timed_payload() {
             },
         });
 
-    let message = recv_until_type(&mut stream, "event")
+    let message = recv_trusted_until_type(&mut socket, "event")
         .await
         .expect("timed input event relay");
     assert_eq!(message["event"], "input_event_received");
@@ -680,6 +903,8 @@ async fn input_event_subscription_receives_canonical_timed_payload() {
     assert_eq!(decoded.event["source_id"], "host:integration-keyboard");
     assert_eq!(decoded.event["key"], "space");
     assert_eq!(decoded.event["state"], "repeated");
+
+    socket.shutdown().await;
 }
 
 // ── Scenario 3: Subscribe with an unsupported channel ────────────────────
@@ -694,7 +919,7 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
         &mut stream,
         &json!({
             "type": "subscribe",
-            "channels": ["lasers"],
+            "topics": [{ "topic": "lasers" }],
         })
         .to_string(),
     )
@@ -705,25 +930,18 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
         .await
         .expect("error response");
     assert_eq!(err["type"], "error");
-    // `parse_channels` rejects the unknown channel with `invalid_request`
-    // before ever reaching the `unsupported_channel` code path, so either
-    // error code is acceptable.
-    let code = err["code"].as_str().unwrap_or_default();
-    assert!(
-        code == "invalid_request" || code == "unsupported_channel",
-        "expected invalid_request or unsupported_channel, got: {code}"
-    );
+    assert_eq!(err["code"], "malformed_request");
     let message = err["message"].as_str().unwrap_or_default();
     assert!(
-        message.to_lowercase().contains("lasers") || message.to_lowercase().contains("channel"),
-        "error message should reference the channel; got: {message}"
+        message.to_lowercase().contains("lasers") || message.to_lowercase().contains("topic"),
+        "error message should reference the topic; got: {message}"
     );
 
     // Crucially, the connection must stay open. Issue a legitimate subscribe
     // and confirm the server is still speaking to us.
     ws_send_text(
         &mut stream,
-        &json!({ "type": "subscribe", "channels": ["metrics"] }).to_string(),
+        &json!({ "type": "subscribe", "topics": [{ "topic": "metrics" }] }).to_string(),
     )
     .await
     .expect("send follow-up subscribe");
@@ -731,9 +949,7 @@ async fn unsupported_channel_subscribe_returns_error_without_closing() {
     let ack = recv_until_type(&mut stream, "subscribed")
         .await
         .expect("connection should still be alive after an error");
-    let channels = ack["channels"].as_array().expect("ack.channels is array");
-    assert_eq!(channels.len(), 1);
-    assert_eq!(channels[0], "metrics");
+    assert!(subscribed_topics(&ack).contains(&"metrics".to_owned()));
 }
 
 // ── Deferred scenarios ───────────────────────────────────────────────────

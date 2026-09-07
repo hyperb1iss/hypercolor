@@ -7,13 +7,13 @@ template = "page.html"
 
 Studio is a two-column workspace. The zone tree lives on the left, the Stage fills the center, and the composition panel slides in over the Stage when you summon it. There is no permanent layer rail and no Preview/Layout toggle. This page walks every surface in order, so you know exactly what each control does before you start composing.
 
-{{ img(path="img/ui/studio.webp", alt="The Studio workspace: zone tree on the left, live Stage in the center") }}
+{{< img path="img/ui/studio.webp" alt="The Studio workspace: zone tree on the left, live Stage in the center" />}}
 
 If you want the conceptual model first (what a scene, zone, layer, and layout are), read the [Studio overview](@/studio/overview.md). This page is the literal UI tour.
 
 ## The header
 
-The page header runs across the top of Studio. It carries the title, a one-line tagline ("Compose scenes across zones"), the scene selector, and a device search box.
+The page header runs across the top of Studio. It carries the Studio title and the scene selector on the top row, and a device search box in the toolbar row below it.
 
 ### Scene selector
 
@@ -25,9 +25,9 @@ The active scene is shared app-wide. Studio reads it from the same source the da
 
 The search box in the header toolbar filters the zone tree. Type any part of a device name and the tree keeps only the matching device rows; an empty box leaves every row visible. The match is a case-insensitive substring on the device name, applied to both assigned and unassigned rows.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 The selected LED zone in Studio is also the app-wide effect apply-target. A quick-apply from the dashboard, sidebar, or command palette lands in the zone you are composing. Selecting a Screen or the Unassigned entry is not an apply target, so the target falls back to the default zone.
-{% end %}
+{% </callout> %}
 
 ## The zone tree (left column)
 
@@ -43,11 +43,11 @@ Each zone card has three interactive regions:
 
 - **The chevron** on the left expands or collapses the zone's nested device list. Collapsed state is remembered per browser.
 - **The zone header** selects the zone.
-- **The kebab** (the three-dot menu on the right) opens zone settings: rename, recolor, enable, make-default, and delete. The kebab is always present so even a single-zone scene can rename or recolor its Default zone. Make-default and delete stay gated for zones that are not eligible. See [Zones](@/studio/zones.md) for the full set.
+- **The kebab** (the three-dot menu on the right) opens zone settings: rename, recolor, enable, and delete. The kebab is always present so even a single-zone scene can rename or recolor its Default zone. Delete stays gated for zones that are not eligible. See [Zones](@/studio/zones.md) for the full set.
 
 A zone that has a failed or asset-missing layer shows a red warning triangle next to its name, so trouble is visible without opening the zone.
 
-Below the device list, each zone offers a way to add hardware. In a single-zone scene, devices that belong to no zone fold in here as one-tap "Available" rows; tap the plus to add one. See [Device grouping](@/studio/device-grouping.md) for the device card, channels, and output-level assignment.
+Below the device list, each zone offers a way to add hardware. In a single-zone scene, devices that belong to no zone fold in here as one-tap "Available" rows; tap the plus to add one. See [Device assignment](@/studio/device-assignment.md) for the device card, channels, and output-level assignment.
 
 An always-present **New zone** control sits at the bottom of the Zones section when the daemon supports zone creation.
 
@@ -80,15 +80,13 @@ The zone-canvas controls appear only once the zone has a layout:
 - **Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Shift+Z`) for layout edits.
 - **Revert** and **Save** for the zone's layout. Save doubles as the dirty indicator: it glows green when you have unsaved changes and dims when the layout is clean. Revert discards your in-progress edits.
 
-When a zone is genuinely multi-zone, a zone-assignment panel docks below the canvas so you can move individual outputs between zones.
-
 ### A Screen: the live face
 
 For a display-face screen, the Stage shows that device's live face. The header carries a Preview label and an external-link button that opens the face in a full-screen preview tab. A caption below the preview reports the screen's resolution as `width×height`.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Two screens of the same resolution are not yet fully distinguishable in the preview, because the preview frame stream does not carry a device id. The Stage accepts a frame only when its resolution matches the selected screen, which rejects in-flight frames from a previously selected screen. Daemon-side frame tagging is the planned fix.
-{% end %}
+{% </callout> %}
 
 ### Unassigned: the policy panel
 
@@ -98,7 +96,7 @@ Selecting the Unassigned entry shows the scene's unassigned-lights policy instea
 - **Hold last colors**: the outputs keep whatever they last showed.
 - **Follow `<zone>`**: the outputs mirror a chosen LED zone.
 
-This policy is editable only when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it renders as a read-only label. To give these outputs a real layer stack, assign them to a zone with the zone-assignment panel below the canvas.
+This policy is editable only when the daemon advertises the `scene-unassigned-behavior-write` capability; otherwise it renders as a read-only label. To give these outputs a real layer stack, assign them to a zone with the green `+` on a device card in the zone tree.
 
 ### The degraded banner
 
@@ -130,8 +128,8 @@ Tapping **Zones** slides the tree in from the left over a dark scrim. Picking a 
 
 - [Studio overview](@/studio/overview.md): the Scene → Zone → Layers + Layout model.
 - [Scenes](@/studio/scenes.md): switch, create, rename, and delete whole-rig configs.
-- [Zones](@/studio/zones.md): create, color, enable, make-default, and delete partitions.
-- [Device grouping](@/studio/device-grouping.md): the device card, channels, and assignment.
+- [Zones](@/studio/zones.md): create, color, enable, and delete partitions.
+- [Device assignment](@/studio/device-assignment.md): the device card, channels, and assignment.
 - [Layers](@/studio/layers.md): the layer stack, blend modes, and health.
 - [Layouts](@/studio/layouts.md): the spatial canvas, drag, resize, and save.
 - [Multi-zone walkthrough](@/studio/multi-zone-walkthrough.md): build a second zone end to end.

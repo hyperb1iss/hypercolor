@@ -8,12 +8,11 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use hypercolor_core::config::ConfigManager;
-use hypercolor_core::input::{BrowserInputSource, InputManager};
-use hypercolor_core::types::config::{RenderAccelerationMode, ServoGpuImportMode};
-use hypercolor_daemon::api::{self, AppState};
-use hypercolor_daemon::interaction_routing::InteractionRoutingControl;
+use hypercolor_core::config::{BootConfig, ConfigManager};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::startup::{DaemonState, default_config};
+use hypercolor_types::config::{RenderAccelerationMode, ServoGpuImportMode};
 use tempfile::TempDir;
 use tokio::sync::{Mutex, oneshot};
 
@@ -77,7 +76,7 @@ impl DaemonHarness {
         let mut config = default_config();
         "127.0.0.1".clone_into(&mut config.daemon.listen_address);
         config.daemon.port = port;
-        "none".clone_into(&mut config.daemon.start_profile);
+        "none".clone_into(&mut config.daemon.start_scene);
         config.audio.enabled = false;
         config.capture.enabled = false;
         config.input.enabled = false;
@@ -90,9 +89,15 @@ impl DaemonHarness {
         config.discovery.blocks_scan = false;
         config.network.mdns_publish = false;
 
-        let mut daemon_state = DaemonState::initialize(&config, paths.config_path())
-            .context("failed to initialize daemon state")?;
-        install_browser_only_input(&mut daemon_state);
+        let config_manager = Arc::new(ConfigManager::from_config_unchecked(
+            paths.config_path(),
+            config.clone(),
+        ));
+        let mut daemon_state = DaemonState::initialize(
+            BootConfig::from_config_unchecked(config.clone()),
+            config_manager,
+        )
+        .context("failed to initialize daemon state")?;
         daemon_state
             .start()
             .await
@@ -126,7 +131,7 @@ impl DaemonHarness {
         };
 
         if let Err(error) = wait_for_health(port, HEALTH_WAIT_TIMEOUT).await {
-            return match harness.shutdown().await {
+            return match Box::pin(harness.shutdown()).await {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(error.context(format!(
                     "daemon health failure cleanup also failed: {cleanup_error:#}"
@@ -176,26 +181,6 @@ impl DaemonHarness {
 
         first_error.map_or(Ok(()), Err)
     }
-}
-
-fn install_browser_only_input(daemon_state: &mut DaemonState) {
-    let config = daemon_state.config();
-    let browser_source = BrowserInputSource::new();
-    let browser_input = browser_source.handle();
-    let interaction_routing = InteractionRoutingControl::new(
-        browser_input.registry(),
-        1,
-        config.input.daemon_route,
-        config.input.preview_route,
-    );
-    let mut input_manager = InputManager::new();
-    input_manager.add_source(Box::new(browser_source));
-    let input_status = input_manager.source_status_registry();
-
-    daemon_state.input_manager = Arc::new(Mutex::new(input_manager));
-    daemon_state.input_status = input_status;
-    daemon_state.browser_input = browser_input;
-    daemon_state.interaction_routing = interaction_routing;
 }
 
 fn record_first_error(first_error: &mut Option<anyhow::Error>, error: anyhow::Error) {
@@ -257,7 +242,7 @@ async fn run_hyper_json(port: u16, args: &[&str]) -> Result<serde_json::Value> {
 
 #[tokio::test]
 async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
-    let harness = DaemonHarness::start().await?;
+    let harness = Box::pin(DaemonHarness::start()).await?;
     let port = harness.port();
 
     let test_result = async {
@@ -275,10 +260,14 @@ async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
         }
 
         let activation = run_hyper_json(port, &["effects", "activate", "audio_pulse"]).await?;
-        if activation["effect"]["name"] != serde_json::json!("Audio Pulse") {
+        let applied_effect_layer = activation["zone"]["layers"]
+            .as_array()
+            .and_then(|layers| layers.last())
+            .is_some_and(|layer| layer["source"]["type"] == serde_json::json!("effect"));
+        if !applied_effect_layer {
             bail!(
-                "expected active effect name Audio Pulse, got {}",
-                activation["effect"]["name"]
+                "expected apply response to carry the new effect layer, got {}",
+                activation["zone"]
             );
         }
 
@@ -291,14 +280,22 @@ async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
         }
 
         let stop = run_hyper_json(port, &["effects", "stop"]).await?;
-        if stop["stopped"] != serde_json::json!(true) {
-            bail!("expected stopped=true, got {}", stop["stopped"]);
+        let cleared = stop["zones"].as_array().is_some_and(|zones| {
+            zones.iter().all(|zone| {
+                zone["role"] == serde_json::json!("display")
+                    || zone["layers"]
+                        .as_array()
+                        .is_some_and(std::vec::Vec::is_empty)
+            })
+        });
+        if !cleared {
+            bail!("expected stop to return a cleared scene, got {stop}");
         }
 
         Ok(())
     }
     .await;
 
-    let shutdown_result = harness.shutdown().await;
+    let shutdown_result = Box::pin(harness.shutdown()).await;
     test_result.and(shutdown_result)
 }

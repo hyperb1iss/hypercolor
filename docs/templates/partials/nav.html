@@ -1,10 +1,19 @@
 <nav class="site-nav" aria-label="Main navigation">
   <div class="nav-container">
     <a class="nav-title" href="{{ get_url(path='@/_index.md') }}" aria-label="Hypercolor home">
+      <img
+        class="nav-title__mark"
+        src="{{ get_url(path='img/brand/mark-128.png') }}"
+        alt=""
+        width="128"
+        height="128"
+        aria-hidden="true"
+        draggable="false"
+      >
       <span class="nav-title__hyper">hyper</span><span class="nav-title__color">color</span>
     </a>
 
-    <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="nav-links">
+    <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="site-sidebar">
       <span class="nav-hamburger__bar"></span>
       <span class="nav-hamburger__bar"></span>
       <span class="nav-hamburger__bar"></span>
@@ -13,7 +22,7 @@
     <div class="nav-links" id="nav-links" role="menubar">
       {% set cp = current_path | default(value="") %}
       {% for item in config.extra.menu %}
-        {% set is_active = (item.prefix == "$home" and cp == "/") or (item.prefix != "$home" and cp is starting_with(item.prefix)) %}
+        {% set is_active = (item.prefix == "$home" and cp == "/") or (item.prefix != "$home" and cp is starting_with(pat=item.prefix)) %}
         <a class="nav-link{% if is_active %} nav-link--active{% endif %}" href="{{ config.base_url | safe }}{{ item.url }}" role="menuitem"{% if is_active %} aria-current="page"{% endif %}>{{ item.name }}</a>
       {% endfor %}
     </div>

@@ -196,7 +196,6 @@ fn decode_non_canvas_preview_channels_return_none() {
     for channel in [
         PreviewFrameChannel::ScreenCanvas,
         PreviewFrameChannel::WebViewportCanvas,
-        PreviewFrameChannel::DisplayPreview,
     ] {
         let data = PreviewFrame {
             channel,
@@ -329,15 +328,22 @@ fn decode_json_metrics() {
 
 #[test]
 fn decode_json_metrics_with_data_envelope() {
-    let json = r#"{"type":"metrics","data":{"fps":{"target":60,"actual":59.7},"devices":{"connected":2,"total_leds":180}}}"#;
+    let json = r#"{"type":"metrics","data":{"fps":{"target":60,"delivered":59.7},"devices":{"connected":2,"total_leds":180}}}"#;
     let msg = ws::decode_json(json);
     assert!(matches!(msg, Some(WsMessage::Metrics(_))));
 }
 
 #[test]
-fn decode_json_ack_returns_none() {
-    let json = r#"{"type": "subscribed"}"#;
-    assert!(ws::decode_json(json).is_none());
+fn decode_json_exposes_typed_subscription_acknowledgment() {
+    let json = serde_json::json!({
+        "type": "subscribed",
+        "topics": [{"topic": "events"}],
+    })
+    .to_string();
+    let Some(WsMessage::Subscribed(acknowledgment)) = ws::decode_json(&json) else {
+        panic!("expected subscribed acknowledgment");
+    };
+    assert_eq!(acknowledgment.topics.len(), 1);
 }
 
 #[test]

@@ -435,16 +435,16 @@ impl GpuReducer {
             .map_err(|_| GpuReductionError::operation("constant buffer size exceeds u64"))?;
         let reservation = reserve_capture_resource(
             resource_admission.as_ref(),
-            CaptureResourceKind::CompatibilityReductionConstantBuffer,
+            CaptureResourceKind::AnalysisReductionConstantBuffer,
             constant_buffer_bytes,
-            "reserve compatibility reduction constant buffer",
+            "reserve analysis reduction constant buffer",
         )
         .map_err(GpuReductionError::capture_resource)?;
         let params = create_constant_buffer(device)?;
         let constant_buffer_lease = commit_capture_resource(
             reservation,
             constant_buffer_bytes,
-            "commit compatibility reduction constant buffer",
+            "commit analysis reduction constant buffer",
         )
         .map_err(GpuReductionError::capture_resource)?;
         Ok(Self {
@@ -862,13 +862,13 @@ impl GpuReducer {
         let resource_admission = self
             .resource_admission
             .as_ref()
-            .expect("compatibility reduction carries source resource admission");
+            .expect("analysis reduction carries source resource admission");
         let retained_bytes = checked_resource_retained_bytes(key, READBACK_RING_LEN as u32)?;
         let reservation = reserve_capture_resource(
             resource_admission.as_ref(),
-            CaptureResourceKind::CompatibilityReductionTextures,
+            CaptureResourceKind::AnalysisReductionTextures,
             retained_bytes,
-            "reserve compatibility reduction textures",
+            "reserve analysis reduction textures",
         )
         .map_err(GpuReductionError::capture_resource)?;
         let mut replacement = create_resources(&self.device, key, READBACK_RING_LEN as u32)?;
@@ -876,7 +876,7 @@ impl GpuReducer {
             commit_capture_resource(
                 reservation,
                 retained_bytes,
-                "commit compatibility reduction textures",
+                "commit analysis reduction textures",
             )
             .map_err(GpuReductionError::capture_resource)?,
         );
@@ -1041,14 +1041,14 @@ fn checked_resource_retained_bytes(
         .checked_mul(u64::from(key.output_height))
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or(GpuReductionError::SizeOverflow {
-            context: "account compatibility reduction textures",
+            context: "account analysis reduction textures",
             width: key.output_width,
             height: key.output_height,
         })?;
     let texture_bytes = output_bytes
         .checked_mul(u64::from(slot_count).saturating_add(1))
         .ok_or(GpuReductionError::SizeOverflow {
-            context: "account compatibility reduction texture ring",
+            context: "account analysis reduction texture ring",
             width: key.output_width,
             height: key.output_height,
         })?;

@@ -108,7 +108,7 @@ resolve_artifact_dir() {
     [[ -n "${candidate}" ]] || continue
     if [[ -e "${candidate}/${target_dir}/hypercolor-daemon" \
       && -e "${candidate}/${target_dir}/hypercolor" \
-      && -e "${candidate}/${target_dir}/hypercolor-tray" ]]; then
+      && -e "${candidate}/${target_dir}/hypercolor-app" ]]; then
       printf '%s/%s' "${candidate}" "${target_dir}"
       return
     fi
@@ -150,7 +150,8 @@ build_ui() {
   info "building web UI"
   (
     cd "${ROOT_DIR}/crates/hypercolor-ui"
-    env -u NO_COLOR trunk build --release
+    HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR \
+      "${ROOT_DIR}/scripts/cargo-cache-build.sh" trunk build --release --locked
   )
 }
 
@@ -182,9 +183,9 @@ build_binaries() {
   "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
     cargo build -p hypercolor-cli --bin hypercolor "${cargo_profile_flag[@]}"
 
-  info "building hypercolor-tray"
+  info "building hypercolor app"
   "${ROOT_DIR}/scripts/cargo-cache-build.sh" \
-    cargo build -p hypercolor-tray --bin hypercolor-tray "${cargo_profile_flag[@]}"
+    cargo build -p hypercolor-app --bin hypercolor-app "${cargo_profile_flag[@]}"
 
   build_ui
   build_effects
@@ -221,7 +222,7 @@ install_user_files() {
 
   require_file "${artifact_dir}/hypercolor-daemon"
   require_file "${artifact_dir}/hypercolor"
-  require_file "${artifact_dir}/hypercolor-tray"
+  require_file "${artifact_dir}/hypercolor-app"
   require_file "${ROOT_DIR}/crates/hypercolor-ui/dist/index.html"
 
   info "using build artifacts from ${artifact_dir}"
@@ -235,8 +236,8 @@ install_user_files() {
     "${artifact_dir}/hypercolor" \
     "${BIN_DIR}/hypercolor"
   install -Dm755 \
-    "${artifact_dir}/hypercolor-tray" \
-    "${BIN_DIR}/hypercolor-tray"
+    "${artifact_dir}/hypercolor-app" \
+    "${BIN_DIR}/hypercolor-app"
   install -Dm755 \
     "${ROOT_DIR}/packaging/bin/hypercolor-tui" \
     "${BIN_DIR}/hypercolor-tui"

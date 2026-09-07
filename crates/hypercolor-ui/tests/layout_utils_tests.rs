@@ -40,17 +40,17 @@ fn ring_zone(
     }
 }
 
-fn sample_zone_summary(id: &str, name: &str, led_count: u32) -> api::ZoneSummary {
-    api::ZoneSummary {
+fn sample_zone_summary(id: &str, name: &str, led_count: u32) -> api::SegmentSummary {
+    api::SegmentSummary {
         id: id.to_owned(),
         name: name.to_owned(),
         led_count,
         topology: "ring".to_owned(),
-        topology_hint: Some(api::ZoneTopologySummary::Ring { count: led_count }),
+        topology_hint: Some(api::SegmentTopologySummary::Ring { count: led_count }),
     }
 }
 
-fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::DeviceSummary {
+fn sample_device_summary(name: &str, segments: Vec<api::SegmentSummary>) -> api::DeviceSummary {
     api::DeviceSummary {
         id: "physical:prism8".to_owned(),
         layout_device_id: "usb:prism8:test".to_owned(),
@@ -70,6 +70,7 @@ fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::Devic
         },
         status: "connected".to_owned(),
         brightness: 100,
+        display_rotation: None,
         firmware_version: None,
         connection: api::DeviceConnectionSummary {
             transport: "usb".to_owned(),
@@ -80,7 +81,8 @@ fn sample_device_summary(name: &str, zones: Vec<api::ZoneSummary>) -> api::Devic
         },
         total_leds: 20,
         auth: None,
-        zones,
+        segments,
+        attachments: None,
     }
 }
 
@@ -160,7 +162,6 @@ fn prism_attachment_layout() -> SpatialLayout {
         ],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -204,23 +205,23 @@ fn prism_seeded_attachment_layout() -> layout_geometry::SeededAttachmentLayout {
 
 #[test]
 fn zone_name_slot_alias_matching_is_symmetric() {
-    assert!(layout_utils::zone_name_matches_slot_alias(
+    assert!(layout_utils::channel_name_matches_slot_alias(
         Some("channel-1"),
         Some("Channel 1"),
     ));
-    assert!(layout_utils::zone_name_matches_slot_alias(
+    assert!(layout_utils::channel_name_matches_slot_alias(
         Some("Channel 1"),
         Some("channel-1"),
     ));
-    assert!(layout_utils::zone_name_matches_slot_alias(
+    assert!(layout_utils::channel_name_matches_slot_alias(
         Some("channel-01"),
         Some("Channel 1"),
     ));
-    assert!(layout_utils::zone_name_matches_slot_alias(
+    assert!(layout_utils::channel_name_matches_slot_alias(
         Some("gpu_strimer"),
         Some("GPU Strimer"),
     ));
-    assert!(!layout_utils::zone_name_matches_slot_alias(
+    assert!(!layout_utils::channel_name_matches_slot_alias(
         Some("channel-1"),
         Some("Channel 2"),
     ));
@@ -353,9 +354,9 @@ fn effective_zone_display_uses_physical_device_channel_override() {
     assert_eq!(display.default_label, "Prism 8 · Radiator");
     assert_eq!(
         display.identify_target,
-        Some(layout_utils::ZoneIdentifyTarget::Device {
+        Some(layout_utils::OutputIdentifyTarget::Segment {
             device_id: "physical:prism8".to_owned(),
-            zone_id: "channel-1".to_owned(),
+            segment: "channel-1".to_owned(),
         })
     );
 }
@@ -392,7 +393,7 @@ fn effective_zone_display_uses_attachment_binding_override() {
     assert_eq!(display.default_label, "Front Fan");
     assert_eq!(
         display.identify_target,
-        Some(layout_utils::ZoneIdentifyTarget::Attachment {
+        Some(layout_utils::OutputIdentifyTarget::Attachment {
             device_id: "physical:prism8".to_owned(),
             slot_id: "channel-1".to_owned(),
             binding_index: Some(0),
@@ -430,7 +431,6 @@ fn sync_device_display_name_in_layout_updates_plain_and_prefixed_defaults() {
         ],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 

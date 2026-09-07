@@ -1,4 +1,6 @@
-use hypercolor_types::device::DriverTransportKind;
+use hypercolor_types::device::{
+    DriverTransportAvailability, DriverTransportDescriptor, DriverTransportKind,
+};
 
 use crate::api::DriverSummary;
 use crate::label_utils::humanize_identifier_label;
@@ -8,6 +10,9 @@ pub struct DiscoveryDriverSetting {
     pub id: String,
     pub label: String,
     pub key: String,
+    /// Whether the driver is enabled, read from the driver inventory:
+    /// the generic config surface masks the whole `drivers` namespace.
+    pub enabled: bool,
     pub transport_labels: Vec<String>,
     pub supports_pairing: bool,
 }
@@ -28,12 +33,13 @@ fn discovery_driver_setting(driver: &DriverSummary) -> DiscoveryDriverSetting {
         id: descriptor.id.clone(),
         label: label.clone(),
         key: format!("{}.enabled", driver.config_key),
+        enabled: driver.enabled,
         transport_labels: transport_labels(&descriptor.transports),
         supports_pairing: descriptor.capabilities.pairing,
     }
 }
 
-fn transport_labels(transports: &[DriverTransportKind]) -> Vec<String> {
+fn transport_labels(transports: &[DriverTransportDescriptor]) -> Vec<String> {
     let labels = transports.iter().map(transport_label).collect::<Vec<_>>();
     if labels.is_empty() {
         vec!["Configured".to_owned()]
@@ -42,8 +48,8 @@ fn transport_labels(transports: &[DriverTransportKind]) -> Vec<String> {
     }
 }
 
-fn transport_label(transport: &DriverTransportKind) -> String {
-    match transport {
+fn transport_label(transport: &DriverTransportDescriptor) -> String {
+    let label = match &transport.kind {
         DriverTransportKind::Network => "Network".to_owned(),
         DriverTransportKind::Usb => "USB".to_owned(),
         DriverTransportKind::Smbus => "SMBus".to_owned(),
@@ -52,5 +58,12 @@ fn transport_label(transport: &DriverTransportKind) -> String {
         DriverTransportKind::Bridge => "Bridge".to_owned(),
         DriverTransportKind::Virtual => "Virtual".to_owned(),
         DriverTransportKind::Custom(label) => humanize_identifier_label(label),
+    };
+
+    match &transport.availability {
+        DriverTransportAvailability::Available => label,
+        DriverTransportAvailability::UnsupportedPlatform { platform } => {
+            format!("{label} (not available on {platform})")
+        }
     }
 }

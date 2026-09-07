@@ -80,7 +80,6 @@ Usage:
 
 Options:
   --api URL       Daemon base URL. Default: http://127.0.0.1:9420
-  --daemon URL    Alias for --api
   --checks LIST   Comma-separated diagnose checks to request
   --json          Print raw JSON response
   --no-system     Omit system uptime check
@@ -99,7 +98,6 @@ function parseArgs(argv: string[]): Config {
         const arg = argv[index]
         switch (arg) {
             case "--api":
-            case "--daemon":
                 config.api = requireValue(argv, (index += 1), arg)
                 break
             case "--checks":

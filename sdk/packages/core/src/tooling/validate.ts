@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 
-import { parseHtmlArtifact } from './html'
+import { normalizePresetKey, parseHtmlArtifact } from './html'
 import type { ValidationMessage, ValidationResult } from './types'
 
 const VALID_CONTROL_TYPES = new Set([
@@ -141,7 +141,21 @@ export function validateHtmlArtifact(html: string, filePath: string): Validation
         )
     }
 
+    const seenPresetKeys = new Set<string>()
     for (const preset of parsed.presets) {
+        const presetKey = normalizePresetKey(preset.id ?? preset.name)
+        if (seenPresetKeys.has(presetKey)) {
+            errors.push(
+                error(
+                    'preset_ids',
+                    'DUPLICATE_PRESET_ID',
+                    `Preset "${preset.name}" resolves to duplicate preset id "${presetKey}"`,
+                ),
+            )
+        } else {
+            seenPresetKeys.add(presetKey)
+        }
+
         if (preset.parseError) {
             errors.push(
                 error(

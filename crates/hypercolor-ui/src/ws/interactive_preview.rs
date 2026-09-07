@@ -5,9 +5,8 @@ use std::collections::{HashMap, VecDeque};
 use hypercolor_leptos_ext::ws::INTERACTIVE_PREVIEW_ID_MAX_BYTES;
 use serde_json::Value;
 
-use hypercolor_leptos_ext::ws::transport::send_websocket_json;
-
 use super::input::InputInjectEdge;
+use super::transport::{WebSocketConnection, send_json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractivePreviewRequest {
@@ -122,6 +121,12 @@ impl InteractivePreviewLifecycleTracker {
         self.previews.clear();
     }
 
+    /// Every preview id the tracker currently knows about.
+    #[must_use]
+    pub fn known_preview_ids(&self) -> Vec<String> {
+        self.previews.keys().cloned().collect()
+    }
+
     #[must_use]
     pub fn lifecycles(&self) -> HashMap<String, InteractivePreviewLifecycle> {
         self.previews
@@ -147,59 +152,127 @@ impl InteractivePreviewLifecycleTracker {
     }
 }
 
+/// Read every interactive preview state out of one acknowledgment.
+///
+/// A subscribe or unsubscribe acknowledgment reports the connection's
+/// whole live subscription set, so an interactive preview that is absent
+/// from it has been closed, and one that is present with a publication
+/// id is open. An addressed error is a rejection of whatever the client
+/// last asked for.
 #[must_use]
-pub fn server_update(message: &Value) -> Option<InteractivePreviewServerUpdate> {
-    let message_type = message.get("type")?.as_str()?;
-    let preview_id = match message_type {
-        "interactive_preview_opened" | "interactive_preview_closed" => {
-            message.get("preview_id")?.as_str()?
-        }
-        "error" => message.get("details")?.get("preview_id")?.as_str()?,
-        _ => return None,
+pub fn server_updates(message: &Value) -> Vec<InteractivePreviewServerUpdate> {
+    let Some(message_type) = message.get("type").and_then(Value::as_str) else {
+        return Vec::new();
     };
-    if preview_id.is_empty()
-        || preview_id.len() > INTERACTIVE_PREVIEW_ID_MAX_BYTES
-        || preview_id.chars().any(char::is_control)
-    {
-        return None;
+
+    if message_type == "error" {
+        return message
+            .get("details")
+            .and_then(|details| details.get("preview_id"))
+            .and_then(Value::as_str)
+            .filter(|preview_id| valid_preview_id(preview_id))
+            .map(|preview_id| {
+                vec![InteractivePreviewServerUpdate::Rejected {
+                    preview_id: preview_id.to_owned(),
+                }]
+            })
+            .unwrap_or_default();
     }
 
-    match message_type {
-        "interactive_preview_opened" => Some(InteractivePreviewServerUpdate::Opened {
-            preview_id: preview_id.to_owned(),
-            publication_id: message
-                .get("publication_id")?
-                .as_u64()
-                .filter(|id| *id > 0)?,
-        }),
-        "interactive_preview_closed" => Some(InteractivePreviewServerUpdate::Closed {
-            preview_id: preview_id.to_owned(),
-        }),
-        "error" => Some(InteractivePreviewServerUpdate::Rejected {
-            preview_id: preview_id.to_owned(),
-        }),
-        _ => None,
+    if !matches!(message_type, "subscribed" | "unsubscribed" | "hello") {
+        return Vec::new();
     }
+    let entries = if message_type == "hello" {
+        message.get("subscriptions")
+    } else {
+        message.get("topics")
+    };
+    let Some(entries) = entries.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    entries
+        .iter()
+        .filter(|entry| entry.get("topic").and_then(Value::as_str) == Some("interactive_preview"))
+        .filter_map(|entry| {
+            let preview_id = entry.get("key").and_then(Value::as_str)?;
+            if !valid_preview_id(preview_id) {
+                return None;
+            }
+            let publication_id = entry
+                .get("publication_id")
+                .and_then(Value::as_u64)
+                .filter(|id| *id > 0)?;
+            Some(InteractivePreviewServerUpdate::Opened {
+                preview_id: preview_id.to_owned(),
+                publication_id,
+            })
+        })
+        .collect()
+}
+
+/// The previews an acknowledgment says are no longer live, given the ones
+/// the client believes it opened.
+#[must_use]
+pub fn closed_previews(message: &Value, known: &[String]) -> Vec<InteractivePreviewServerUpdate> {
+    let Some(message_type) = message.get("type").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    if !matches!(message_type, "subscribed" | "unsubscribed") {
+        return Vec::new();
+    }
+    let live: Vec<&str> = message
+        .get("topics")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.get("topic").and_then(Value::as_str) == Some("interactive_preview")
+                })
+                .filter_map(|entry| entry.get("key").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    known
+        .iter()
+        .filter(|preview_id| !live.iter().any(|key| key == preview_id))
+        .map(|preview_id| InteractivePreviewServerUpdate::Closed {
+            preview_id: preview_id.clone(),
+        })
+        .collect()
+}
+
+fn valid_preview_id(preview_id: &str) -> bool {
+    !preview_id.is_empty()
+        && preview_id.len() <= INTERACTIVE_PREVIEW_ID_MAX_BYTES
+        && !preview_id.chars().any(char::is_control)
 }
 
 #[must_use]
 pub fn open_message(request: &InteractivePreviewRequest) -> Value {
     serde_json::json!({
-        "type": "interactive_preview_open",
-        "preview_id": request.preview_id,
-        "target": "active_scene",
-        "fps": request.fps,
-        "width": request.width,
-        "height": request.height,
-        "format": "jpeg",
+        "type": "subscribe",
+        "topics": [{
+            "topic": "interactive_preview",
+            "key": request.preview_id,
+            "config": {
+                "target": "active_scene",
+                "fps": request.fps,
+                "width": request.width,
+                "height": request.height,
+                "format": "jpeg",
+            }
+        }]
     })
 }
 
 #[must_use]
 pub fn close_message(preview_id: &str) -> Value {
     serde_json::json!({
-        "type": "interactive_preview_close",
-        "preview_id": preview_id,
+        "type": "unsubscribe",
+        "topics": [{ "topic": "interactive_preview", "key": preview_id }]
     })
 }
 
@@ -212,17 +285,21 @@ pub fn input_inject_message(preview_id: &str, events: &[InputInjectEdge]) -> Val
     })
 }
 
-pub(super) fn send_open(ws: &web_sys::WebSocket, request: &InteractivePreviewRequest) {
-    let _ = send_websocket_json(ws, &open_message(request));
+pub(super) fn send_open(ws: &dyn WebSocketConnection, request: &InteractivePreviewRequest) {
+    let _ = send_json(ws, &open_message(request));
 }
 
-pub(super) fn send_close(ws: &web_sys::WebSocket, preview_id: &str) {
-    let _ = send_websocket_json(ws, &close_message(preview_id));
+pub(super) fn send_close(ws: &dyn WebSocketConnection, preview_id: &str) {
+    let _ = send_json(ws, &close_message(preview_id));
 }
 
-pub(super) fn send_input(ws: &web_sys::WebSocket, preview_id: &str, events: &[InputInjectEdge]) {
+pub(super) fn send_input(
+    ws: &dyn WebSocketConnection,
+    preview_id: &str,
+    events: &[InputInjectEdge],
+) {
     if events.is_empty() {
         return;
     }
-    let _ = send_websocket_json(ws, &input_inject_message(preview_id, events));
+    let _ = send_json(ws, &input_inject_message(preview_id, events));
 }

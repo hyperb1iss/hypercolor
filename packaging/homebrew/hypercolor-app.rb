@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Homebrew cask for the Hypercolor desktop app.
-# Auto-updated by CI — do not edit SHA256 sums manually.
+# Updated manually after release artifacts pass signed acceptance.
 
 cask "hypercolor-app" do
   arch arm: "arm64", intel: "x86_64"
@@ -16,12 +16,20 @@ cask "hypercolor-app" do
   desc "Open-source RGB lighting orchestration"
   homepage "https://github.com/hyperb1iss/hypercolor"
 
+  depends_on macos: ">= :sequoia"
+
   app "Hypercolor.app"
+
+  preflight do
+    if MacOS.version < Version.new("15.2")
+      raise ::Cask::CaskError, "Hypercolor requires macOS 15.2 or newer."
+    end
+  end
 
   zap trash: [
     "~/Library/Application Support/hypercolor",
     "~/Library/Caches/hypercolor",
     "~/Library/Logs/Hypercolor",
-    "~/Library/LaunchAgents/tech.hyperbliss.hypercolor.app.plist",
+    "~/Library/LaunchAgents/Hypercolor.plist",
   ]
 end

@@ -14,12 +14,12 @@ use crate::app::{EffectsContext, FrameAnalysisContext, WsContext};
 use crate::async_helpers::spawn_api_call;
 use crate::color::{self, CanvasPalette};
 use crate::components::canvas_preview::CanvasPreview;
-use crate::components::zone_now_playing::{SidebarZoneRows, set_zone_enabled};
+use crate::components::zone_now_playing::SidebarZoneRows;
 use crate::config_state::ConfigContext;
 use crate::extensions::SidebarExtensionWidgets;
 use crate::icons::*;
 use crate::nav::{NavExtensionItems, nav_model};
-use crate::route_ui::{NowPlayingCanvasMode, now_playing_canvas_mode};
+use crate::route_ui::NowPlayingCanvasMode;
 use crate::style_utils::category_accent_rgb;
 use crate::tauri_bridge;
 use hypercolor_leptos_ext::events::Input;
@@ -59,7 +59,8 @@ pub fn Sidebar() -> impl IntoView {
                         .any(|state| state.effect_id.is_some() || state.zone.top_layer.is_some())
                 }))
     });
-    let canvas_mode = Signal::derive(move || now_playing_canvas_mode(&location.pathname.get()));
+    let canvas_mode =
+        Signal::derive(move || crate::route_ui::mounted_canvas_mode(&location.pathname.get()));
 
     // ── Live canvas + palette from WebSocket frames ────────────────────
     let ws = use_context::<WsContext>();
@@ -80,9 +81,13 @@ pub fn Sidebar() -> impl IntoView {
             Signal::derive(|| 0_u32),
         ),
     };
+    let output_paused = ws.map_or_else(
+        || Signal::derive(|| false),
+        |ctx| Signal::from(ctx.output_paused),
+    );
     let frame_analysis = use_context::<FrameAnalysisContext>();
     let (live_palette, set_live_palette) = signal(None::<CanvasPalette>);
-    let global_brightness_resource = LocalResource::new(api::fetch_global_brightness);
+    let global_brightness_resource = api::daemon_resource(api::fetch_global_brightness);
     let (global_brightness, set_global_brightness) = signal(100_u8);
 
     Effect::new(move |_| {
@@ -225,34 +230,36 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo — canonical mark, static, one compact 56px band in both
-            // states. The vertical hero lockup was the sidebar's single
-            // largest space spend; the horizontal lockup carries the same
-            // brand in a third of the height.
-            <div class="w-full h-14 border-b border-edge-subtle">
+            // Logo — canonical mark, static. The glow layer behind it drifts
+            // through brand hues; the mark itself doesn't move.
+            <div
+                class="w-full border-b border-edge-subtle transition-[height] duration-300"
+                class:h-14=move || collapsed.get()
+                class:h-32=move || !collapsed.get()
+            >
                 // Collapsed: static 32px trinity.
                 <div
                     class="items-center justify-center h-full logo-container"
                     style:display=move || if collapsed.get() { "flex" } else { "none" }
                 >
                     <img
-                        src="/assets/brand/mark-color.png"
+                        src=crate::route_ui::asset_href("/assets/brand/mark-color.png")
                         alt="Hypercolor"
                         class="w-8 h-8 select-none logo-mark-image"
                         draggable="false"
                     />
                 </div>
 
-                // Expanded: horizontal lockup, quiet aura behind.
+                // Expanded: full vertical lockup with chill aura behind.
                 <div
-                    class="items-center justify-start h-full px-4 overflow-hidden logo-container"
+                    class="flex-col items-center justify-center h-full px-3 overflow-hidden logo-container"
                     style:display=move || if collapsed.get() { "none" } else { "flex" }
                 >
                     <div class="logo-bg logo-bg-mark" />
                     <img
-                        src="/assets/brand/lockup-horizontal-color.png"
+                        src=crate::route_ui::asset_href("/assets/brand/lockup-vertical-color.png")
                         alt="Hypercolor"
-                        class="h-8 w-auto select-none object-contain logo-mark-image"
+                        class="h-24 w-auto select-none object-contain logo-mark-image"
                         draggable="false"
                     />
                 </div>
@@ -265,17 +272,13 @@ pub fn Sidebar() -> impl IntoView {
                         let path = item.path;
                         Memo::new(move |_| {
                             let current = location.pathname.get();
-                            if path == "/" {
-                                current == "/"
-                            } else {
-                                current.starts_with(path)
-                            }
+                            crate::route_ui::route_is_active(&current, path)
                         })
                     };
 
                     let link = view! {
                         <A
-                            href=item.path
+                            href=crate::route_ui::route_href(item.path)
                             attr:class=move || {
                                 let base = "flex items-center h-10 px-3 rounded-lg nav-item-hover group relative";
                                 if is_active.get() {
@@ -438,51 +441,12 @@ pub fn Sidebar() -> impl IntoView {
                             >
                                 <Icon icon=LuSkipBack width="16px" height="16px" />
                             </button>
-                            // In a multi-zone scene the pause toggle acts on
-                            // the focused zone (primary when none is focused)
-                            // and says so — it never silently stops only the
-                            // primary while other zones keep rendering.
-                            {move || if zones_ctx.multi_zone.get() {
-                                let Some(state) = fx.focused_zone_effect.get() else {
-                                    return ().into_any();
-                                };
-                                let zone_id = state.zone.id.clone();
-                                let zone_name = state.zone.name.clone();
-                                let enabled = state.zone.enabled;
-                                let label = if enabled {
-                                    format!("Pause {zone_name}")
-                                } else {
-                                    format!("Resume {zone_name}")
-                                };
-                                let icon_class = if enabled {
-                                    "p-1.5 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
-                                } else {
-                                    "p-1.5 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
-                                };
+                            {move || if !output_paused.get() {
                                 view! {
                                     <button
-                                        class=icon_class
-                                        title=label.clone()
-                                        aria-label=label
-                                        on:click=move |_| set_zone_enabled(
-                                            zones_ctx,
-                                            zone_id.clone(),
-                                            !enabled,
-                                        )
-                                    >
-                                        {if enabled {
-                                            view! { <Icon icon=LuPause width="16px" height="16px" /> }.into_any()
-                                        } else {
-                                            view! { <Icon icon=LuPlay width="16px" height="16px" /> }.into_any()
-                                        }}
-                                    </button>
-                                }.into_any()
-                            } else if fx.is_playing.get() {
-                                view! {
-                                    <button
-                                        class="p-1.5 rounded-lg text-neon-cyan hover:text-neon-cyan hover:bg-neon-cyan/[0.08] player-btn"
-                                        title="Pause effect"
-                                        aria-label="Pause effect"
+                                        class="p-1.5 rounded-lg text-cyan hover:text-cyan hover:bg-cyan/[0.08] player-btn"
+                                        title="Pause all output"
+                                        aria-label="Pause all output"
                                         on:click=move |_| fx.stop_effect()
                                     >
                                         <Icon icon=LuPause width="16px" height="16px" />
@@ -491,9 +455,9 @@ pub fn Sidebar() -> impl IntoView {
                             } else {
                                 view! {
                                     <button
-                                        class="p-1.5 rounded-lg text-neon-cyan/40 hover:text-neon-cyan hover:bg-neon-cyan/[0.06] player-btn"
-                                        title="Resume effect"
-                                        aria-label="Resume effect"
+                                        class="p-1.5 rounded-lg text-cyan/40 hover:text-cyan hover:bg-cyan/[0.06] player-btn"
+                                        title="Resume all output"
+                                        aria-label="Resume all output"
                                         on:click=move |_| fx.resume_effect()
                                     >
                                         <Icon icon=LuPlay width="16px" height="16px" />

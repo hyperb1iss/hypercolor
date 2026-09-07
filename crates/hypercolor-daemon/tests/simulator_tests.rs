@@ -6,17 +6,17 @@ use axum::body::Body;
 use http::{Method, Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::scene::make_scene;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_daemon::display_frames::DisplayFrameSnapshot;
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_transactions::{
-    SceneTransaction, SceneTransactionQueue, apply_layout_update,
-};
+use hypercolor_daemon::scene_store;
+use hypercolor_daemon::simulators::SimulatedDisplayExt;
 use hypercolor_daemon::simulators::{
     SimulatedDisplayConfig, SimulatedDisplayStore, activate_simulated_displays,
     default_layout_device_id, logical_device_ids_for_simulator,
 };
-use hypercolor_types::device::{DeviceId, DeviceState};
+use hypercolor_types::device::{DeviceId, DeviceState, OwnedDisplayFramePayload};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -26,28 +26,22 @@ use uuid::Uuid;
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-struct LayoutAcknowledger(tokio::task::JoinHandle<()>);
+struct LayoutPublisher(tokio::task::JoinHandle<()>);
 
-impl Drop for LayoutAcknowledger {
+impl Drop for LayoutPublisher {
     fn drop(&mut self) {
         self.0.abort();
     }
 }
 
-fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger {
-    LayoutAcknowledger(tokio::spawn(async move {
-        let _consumer = queue.consumer();
+fn spawn_layout_publisher(state: &Arc<AppState>) -> LayoutPublisher {
+    let executor = state.layout_publication_test_executor();
+    LayoutPublisher(tokio::spawn(async move {
         loop {
-            for transaction in queue.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        transaction.accept_and_commit_for_test();
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => queue
-                        .push(transaction)
-                        .expect("test transaction queue should remain open"),
-                }
-            }
+            executor
+                .execute_next_layout_publication()
+                .await
+                .expect("layout publication should succeed");
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     }))
@@ -95,7 +89,6 @@ fn simulated_display_face_layout(id: &str) -> SpatialLayout {
         zones: Vec::new(),
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -118,7 +111,7 @@ async fn publish_display_frame(
     config: &SimulatedDisplayConfig,
     jpeg: Vec<u8>,
 ) {
-    state.display_frames.write().await.set_frame(
+    state.domains.display.frames().write().await.set_frame(
         config.id,
         DisplayFrameSnapshot {
             jpeg_data: Arc::new(jpeg),
@@ -169,7 +162,7 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
         .upsert(config.clone());
 
     let activated = activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -186,13 +179,19 @@ async fn activate_simulated_displays_registers_virtual_display_in_runtime_surfac
     let logical_ids = logical_device_ids_for_simulator(&state.logical_devices, config.id).await;
     assert_eq!(logical_ids, vec![default_layout_device_id(&config)]);
 
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame("simulator", config.id, &[1, 2, 3])
-            .await
-            .expect("simulated backend should accept display writes");
-    }
+            .display_output_lane("simulator", config.id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::new(vec![1, 2, 3]),
+    )))
+    .await
+    .expect("simulated backend should accept display writes");
 
     let app = api::build_router(Arc::clone(&state), None);
 
@@ -242,20 +241,26 @@ async fn simulated_display_backend_reuses_owned_jpeg_payloads() {
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
     .expect("simulated displays should activate");
 
     let jpeg = Arc::new(vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame_owned("simulator", config.id, Arc::clone(&jpeg))
-            .await
-            .expect("simulated backend should retain owned display frames");
-    }
+            .display_output_lane("simulator", config.id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::clone(&jpeg),
+    )))
+    .await
+    .expect("simulated backend should retain owned display frames");
 
     let stored = state
         .simulated_display_runtime
@@ -280,7 +285,7 @@ async fn simulated_display_backend_ignores_empty_led_writes_but_rejects_real_led
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -301,6 +306,7 @@ async fn simulated_display_backend_ignores_empty_led_writes_but_rejects_real_led
             let message = cause.to_string();
             message.contains("failed to write 1 colors")
                 || message.contains("does not accept LED color writes")
+                || message.contains("does not support LED color output")
         }),
         "unexpected error: {error}"
     );
@@ -317,7 +323,7 @@ async fn activate_simulated_displays_keeps_disabled_simulator_non_renderable() {
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
@@ -396,7 +402,7 @@ async fn simulated_display_create_rejects_invalid_resource_dimensions() {
 #[tokio::test]
 async fn simulated_display_crud_routes_update_runtime_state() {
     let (state, _tempdir) = isolated_state();
-    let _layout_acknowledger = spawn_layout_acknowledger(state.scene_transactions.clone());
+    let _layout_publisher = spawn_layout_publisher(&state);
     let app = api::build_router(Arc::clone(&state), None);
 
     let created = body_json(
@@ -461,7 +467,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(tracked.state.is_renderable());
 
     let active_layout = {
-        let spatial = state.spatial_engine.read().await;
+        let spatial = state.spatial_engine.snapshot();
         spatial.layout().as_ref().clone()
     };
     let layout_device_id = default_layout_device_id(&preview_config);
@@ -488,29 +494,48 @@ async fn simulated_display_crud_routes_update_runtime_state() {
         attachment: None,
         brightness: None,
     });
-    {
-        let mut layouts = state.layouts.write().await;
-        layouts.insert(
-            active_layout_with_simulator.id.clone(),
-            active_layout_with_simulator.clone(),
-        );
-    }
-    apply_layout_update(
-        &state.spatial_engine,
-        &state.scene_manager,
-        &state.scene_transactions,
-        active_layout_with_simulator.clone(),
-    )
-    .await
-    .expect("valid simulator layout should apply");
+    let update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(format!("/api/v1/layouts/{}", active_layout.id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "zones": active_layout_with_simulator.zones.clone() })
+                        .to_string(),
+                ))
+                .expect("layout update request should build"),
+        )
+        .await
+        .expect("layout update should complete");
+    assert_eq!(update.status(), StatusCode::OK);
+    let apply = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/api/v1/layouts/{}/apply", active_layout.id))
+                .body(Body::empty())
+                .expect("layout apply request should build"),
+        )
+        .await
+        .expect("layout apply should complete");
+    assert_eq!(apply.status(), StatusCode::OK);
 
-    {
+    let lane = {
         let mut manager = state.backend_manager.lock().await;
         manager
-            .write_device_display_frame("simulator", device_id, &[9, 8, 7])
-            .await
-            .expect("simulated backend should capture frame bytes");
-    }
+            .display_output_lane("simulator", device_id)
+            .expect("simulated backend should expose a display lane")
+    };
+    lane.write(Arc::new(OwnedDisplayFramePayload::jpeg(
+        0,
+        0,
+        Arc::new(vec![9, 8, 7]),
+    )))
+    .await
+    .expect("simulated backend should capture frame bytes");
     publish_display_frame(&state, &preview_config, vec![7, 8, 9]).await;
     let frame = body_bytes(
         app.clone()
@@ -582,13 +607,22 @@ async fn simulated_display_crud_routes_update_runtime_state() {
             .get(device_id)
             .is_none()
     );
-    assert!(state.display_frames.read().await.frame(device_id).is_none());
     assert!(
         state
-            .layouts
+            .domains
+            .display
+            .frames()
             .read()
             .await
-            .get(&active_layout_with_simulator.id)
+            .frame(device_id)
+            .is_none()
+    );
+    assert!(
+        state
+            .domains
+            .layout
+            .resolve(&active_layout_with_simulator.id)
+            .await
             .expect("active layout should remain present")
             .zones
             .iter()
@@ -597,8 +631,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
     assert!(
         state
             .spatial_engine
-            .read()
-            .await
+            .snapshot()
             .layout()
             .zones
             .iter()
@@ -607,7 +640,7 @@ async fn simulated_display_crud_routes_update_runtime_state() {
 }
 
 #[tokio::test]
-async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cleanup() {
+async fn deleting_simulated_display_prunes_scene_display_zones_and_persists_cleanup() {
     let (state, _tempdir) = isolated_state();
     let app = api::build_router(Arc::clone(&state), None);
     let created = body_json(
@@ -640,35 +673,44 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
 
     let face = simulated_display_face_effect("Desk Clock");
     let named_scene_id = {
-        let mut manager = state.scene_manager.write().await;
-        manager
-            .upsert_display_group(
+        let mut mutation = state.scene_manager.begin_mutation().await;
+        mutation
+            .upsert_display_zone(
                 device_id,
                 "Desk Preview",
                 &face,
                 HashMap::new(),
                 simulated_display_face_layout("default"),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("default simulator face should be assigned");
 
         let named_scene = make_scene("Display Scene");
         let named_scene_id = named_scene.id;
-        manager
-            .create(named_scene)
+        mutation
+            .create_scene(named_scene)
             .expect("named scene should be created");
-        manager
-            .activate(&named_scene_id, None)
+        mutation
+            .activate(
+                named_scene_id,
+                None,
+                hypercolor_types::event::SceneChangeReason::UserActivate,
+            )
             .expect("named scene should activate");
-        manager
-            .upsert_display_group(
+        mutation
+            .upsert_display_zone(
                 device_id,
                 "Desk Preview",
                 &face,
                 HashMap::new(),
                 simulated_display_face_layout("named"),
+                hypercolor_types::scene::DisplayFaceTarget::new(device_id),
             )
             .expect("named simulator face should be assigned");
-        manager.deactivate_current();
+        mutation.deactivate_current(hypercolor_types::event::SceneChangeReason::UserDeactivate);
+        hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+            .await
+            .expect("simulator face scenes should commit");
         named_scene_id
     };
 
@@ -687,39 +729,38 @@ async fn deleting_simulated_display_prunes_scene_display_groups_and_persists_cle
     assert_eq!(deleted["data"]["deleted"], true);
 
     {
-        let manager = state.scene_manager.read().await;
+        let manager = state.scene_manager.snapshot().await;
         let default_scene = manager
             .active_scene()
             .expect("default scene should remain active");
-        assert!(default_scene.display_group_for(device_id).is_none());
+        assert!(default_scene.display_zone_for(device_id).is_none());
         let named_scene = manager
             .get(&named_scene_id)
             .expect("named scene should remain present");
-        assert!(named_scene.display_group_for(device_id).is_none());
+        assert!(named_scene.display_zone_for(device_id).is_none());
     }
 
     let persisted =
         runtime_state::load(&state.runtime_state_path).expect("runtime state should load");
     let persisted = persisted.expect("runtime state should exist");
     assert!(
-        persisted.default_scene_groups.iter().all(|group| {
-            group
-                .display_target
+        persisted.default_scene_zones.iter().all(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_none_or(|target| target.device_id != device_id)
         }),
         "deleted simulator should not survive in the persisted default scene"
     );
 
-    let scene_store = state.scene_store.read().await;
+    let scene_store =
+        scene_store::load(&state.data_dir.join("scenes.json")).expect("scene store should reload");
     let named_scene = scene_store
         .list()
         .find(|scene| scene.id == named_scene_id)
         .expect("named scene should be persisted");
     assert!(
-        named_scene.groups.iter().all(|group| {
-            group
-                .display_target
+        named_scene.zones.iter().all(|zone| {
+            zone.display_target
                 .as_ref()
                 .is_none_or(|target| target.device_id != device_id)
         }),
@@ -738,7 +779,7 @@ async fn simulated_display_frame_route_falls_back_to_display_preview_cache() {
         .upsert(config.clone());
 
     activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await

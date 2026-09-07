@@ -9,19 +9,23 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::Response;
-use serde::Deserialize;
 use tracing::warn;
 
 use hypercolor_types::canvas::SurfaceDescriptor;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 
-use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope;
+use crate::app_state::AppState;
+use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
-use crate::scene_transactions::{PreparedLayoutUpdate, apply_prepared_layout_update_under_guard};
 use crate::simulators::{
-    SimulatedDisplayConfig, activate_simulated_displays, logical_device_ids_for_simulator,
+    SimulatedDisplayConfig, SimulatedDisplayExt, activate_simulated_displays,
+    logical_device_ids_for_simulator,
+};
+
+pub use hypercolor_types::api::simulators::{
+    CreateSimulatedDisplayRequest, DeleteSimulatedDisplayResponse, UpdateSimulatedDisplayRequest,
 };
 
 struct OwnedDisplayJpeg(Arc<Vec<u8>>);
@@ -32,28 +36,9 @@ impl AsRef<[u8]> for OwnedDisplayJpeg {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateSimulatedDisplayRequest {
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    #[serde(default)]
-    pub circular: bool,
-    pub enabled: Option<bool>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct UpdateSimulatedDisplayRequest {
-    pub name: Option<String>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub circular: Option<bool>,
-    pub enabled: Option<bool>,
-}
-
 pub async fn list_simulated_displays(State(state): State<Arc<AppState>>) -> Response {
     let store = state.simulated_displays.read().await;
-    ApiResponse::ok(store.list())
+    envelope::ok(store.list())
 }
 
 pub async fn get_simulated_display(
@@ -62,13 +47,13 @@ pub async fn get_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let store = state.simulated_displays.read().await;
     match store.get(device_id) {
-        Some(config) => ApiResponse::ok(config),
-        None => ApiError::not_found(format!("Simulated display not found: {device_id}")),
+        Some(config) => envelope::ok(config),
+        None => DomainError::not_found(ResourceKind::SimulatedDisplay, device_id).into_response(),
     }
 }
 
@@ -86,7 +71,7 @@ pub async fn create_simulated_display(
     };
 
     if let Err(error) = validate_simulator_config(&config) {
-        return ApiError::validation(error);
+        return DomainError::validation(error).into_response();
     }
     let config = config.normalized();
 
@@ -97,15 +82,18 @@ pub async fn create_simulated_display(
     crate::api::persist_simulated_displays(&state).await;
 
     if let Err(error) = activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
     {
-        return ApiError::internal(format!("Failed to activate simulated display: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to activate simulated display: {error}"
+        ))
+        .into_response();
     }
 
-    ApiResponse::created(config)
+    envelope::created(config)
 }
 
 pub async fn patch_simulated_display(
@@ -115,13 +103,14 @@ pub async fn patch_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let updated = {
         let mut store = state.simulated_displays.write().await;
         let Some(existing) = store.get(device_id) else {
-            return ApiError::not_found(format!("Simulated display not found: {device_id}"));
+            return DomainError::not_found(ResourceKind::SimulatedDisplay, device_id)
+                .into_response();
         };
 
         let updated = SimulatedDisplayConfig {
@@ -134,7 +123,7 @@ pub async fn patch_simulated_display(
         };
 
         if let Err(error) = validate_simulator_config(&updated) {
-            return ApiError::validation(error);
+            return DomainError::validation(error).into_response();
         }
         let updated = updated.normalized();
 
@@ -144,15 +133,18 @@ pub async fn patch_simulated_display(
     crate::api::persist_simulated_displays(&state).await;
 
     if let Err(error) = activate_simulated_displays(
-        &state.driver_host.discovery_runtime(),
+        &state.driver_host().discovery_runtime(),
         &state.simulated_displays,
     )
     .await
     {
-        return ApiError::internal(format!("Failed to refresh simulated display: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to refresh simulated display: {error}"
+        ))
+        .into_response();
     }
 
-    ApiResponse::ok(updated)
+    envelope::ok(updated)
 }
 
 pub async fn delete_simulated_display(
@@ -161,14 +153,15 @@ pub async fn delete_simulated_display(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     match tokio::spawn(delete_simulated_display_workflow(state, device_id)).await {
         Ok(response) => response,
-        Err(error) => ApiError::internal(format!(
+        Err(error) => DomainError::Internal(anyhow::anyhow!(
             "Simulated display deletion workflow failed: {error}"
-        )),
+        ))
+        .into_response(),
     }
 }
 
@@ -178,13 +171,13 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
         store.remove(device_id)
     };
     if removed.is_none() {
-        return ApiError::not_found(format!("Simulated display not found: {device_id}"));
+        return DomainError::not_found(ResourceKind::SimulatedDisplay, device_id).into_response();
     }
     crate::api::persist_simulated_displays(&state).await;
 
     prune_simulator_layout_targets(&state, device_id).await;
 
-    let runtime = state.driver_host.discovery_runtime();
+    let runtime = state.driver_host().discovery_runtime();
     if let Err(error) = crate::discovery::disconnect_tracked_device(
         &runtime,
         device_id,
@@ -193,15 +186,40 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
     )
     .await
     {
-        return ApiError::internal(format!("Failed to disconnect simulated display: {error}"));
+        return DomainError::Internal(anyhow::anyhow!(
+            "Failed to disconnect simulated display: {error}"
+        ))
+        .into_response();
     }
 
-    {
+    let pending_logical_devices = {
         let mut store = state.logical_devices.write().await;
+        let before = store.len();
         store.retain(|_, entry| entry.physical_device_id != device_id);
-        if let Err(error) = logical_devices::save_segments(&state.logical_devices_path, &store) {
-            return ApiError::internal(format!("Failed to persist logical devices: {error}"));
+        if store.len() == before {
+            None
+        } else {
+            match logical_devices::reserve_save_segments(&state.logical_devices_path, &store) {
+                Ok(pending) => Some(pending),
+                Err(error) => {
+                    return DomainError::Internal(anyhow::anyhow!(
+                        "Failed to persist logical devices: {error}"
+                    ))
+                    .into_response();
+                }
+            }
         }
+    };
+
+    if let Some(pending) = pending_logical_devices {
+        if let Err(error) = logical_devices::save_reserved_segments(pending) {
+            return DomainError::Internal(anyhow::anyhow!(
+                "Failed to persist logical devices: {error}"
+            ))
+            .into_response();
+        }
+    } else if let Err(error) = logical_devices::kick_pending(&state.logical_devices_path) {
+        warn!("Failed to wake the logical-device retry worker: {error}");
     }
 
     let _ = state.device_registry.remove(&device_id).await;
@@ -210,21 +228,28 @@ async fn delete_simulated_display_workflow(state: Arc<AppState>, device_id: Devi
         .write()
         .await
         .remove(device_id);
-    state.display_frames.write().await.remove(device_id);
-    crate::api::prune_scene_display_groups_for_device(&state, device_id).await;
+    state
+        .domains
+        .display
+        .frames()
+        .write()
+        .await
+        .remove(device_id);
+    crate::api::prune_scene_display_zones_for_device(&state, device_id).await;
     #[cfg(feature = "persistence-test-hooks")]
     state
-        .layout_mutation_test_hooks
-        .wait(
-            crate::api::layouts::LayoutMutationTestPoint::AfterWorkflow,
-            crate::api::layouts::LayoutMutationTestOperation::SimulatorPrune,
+        .domains
+        .layout
+        .wait_test_hook(
+            crate::domain::layout::LayoutMutationTestPoint::AfterWorkflow,
+            crate::domain::layout::LayoutMutationTestOperation::SimulatorPrune,
             &device_id.to_string(),
         )
         .await;
-    ApiResponse::ok(serde_json::json!({
-        "id": device_id,
-        "deleted": true,
-    }))
+    envelope::ok(DeleteSimulatedDisplayResponse {
+        id: device_id,
+        deleted: true,
+    })
 }
 
 pub async fn get_simulated_display_frame(
@@ -233,7 +258,7 @@ pub async fn get_simulated_display_frame(
 ) -> Response {
     let device_id = match parse_simulator_id(&id) {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     if state
@@ -243,7 +268,7 @@ pub async fn get_simulated_display_frame(
         .get(device_id)
         .is_none()
     {
-        return ApiError::not_found(format!("Simulated display not found: {device_id}"));
+        return DomainError::not_found(ResourceKind::SimulatedDisplay, device_id).into_response();
     }
 
     if let Some(frame) = state
@@ -255,15 +280,13 @@ pub async fn get_simulated_display_frame(
         return jpeg_response(Bytes::from_owner(OwnedDisplayJpeg(frame.jpeg_data)));
     }
 
-    if let Some(frame) = state.display_frames.read().await.frame(device_id) {
+    if let Some(frame) = state.domains.display.frames().read().await.frame(device_id) {
         return jpeg_response(Bytes::from_owner(OwnedDisplayJpeg(Arc::clone(
             &frame.jpeg_data,
         ))));
     }
 
-    ApiError::not_found(format!(
-        "Simulated display frame not available: {device_id}"
-    ))
+    DomainError::not_found(ResourceKind::DisplayFrame, device_id).into_response()
 }
 
 fn jpeg_response(body: Bytes) -> Response {
@@ -275,13 +298,9 @@ fn jpeg_response(body: Bytes) -> Response {
         .into_response()
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "Axum handlers already return Response values directly, so this helper keeps the hot path linear"
-)]
-fn parse_simulator_id(raw: &str) -> Result<DeviceId, Response> {
+fn parse_simulator_id(raw: &str) -> Result<DeviceId, DomainError> {
     raw.parse::<DeviceId>()
-        .map_err(|_| ApiError::validation(format!("Invalid simulator id: {raw}")))
+        .map_err(|_| DomainError::validation(format!("Invalid simulator id: {raw}")))
 }
 
 fn validate_simulator_config(config: &SimulatedDisplayConfig) -> Result<(), String> {
@@ -296,16 +315,6 @@ fn validate_simulator_config(config: &SimulatedDisplayConfig) -> Result<(), Stri
 
 async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: DeviceId) {
     let physical_id = device_id.to_string();
-    #[cfg(feature = "persistence-test-hooks")]
-    state
-        .layout_mutation_test_hooks
-        .wait(
-            crate::api::layouts::LayoutMutationTestPoint::BeforeGuard,
-            crate::api::layouts::LayoutMutationTestOperation::SimulatorPrune,
-            &physical_id,
-        )
-        .await;
-    let guard = state.scene_transactions.acquire_layout_update_guard().await;
     let mut target_ids: HashSet<String> =
         logical_device_ids_for_simulator(&state.logical_devices, device_id)
             .await
@@ -313,57 +322,12 @@ async fn prune_simulator_layout_targets(state: &Arc<AppState>, device_id: Device
             .collect();
     target_ids.insert(physical_id.clone());
     target_ids.insert(format!("simulator:{physical_id}"));
-
-    let active_layout_id = {
-        let spatial = state.spatial_engine.read().await;
-        spatial.layout().id.clone()
-    };
-
-    let active_layout = {
-        let mut layouts = state.layouts.write().await;
-        let mut updated_active = None;
-
-        for layout in layouts.values_mut() {
-            let zone_count = layout.zones.len();
-            layout
-                .zones
-                .retain(|zone| !target_ids.contains(zone.device_id.as_str()));
-            if layout.zones.len() != zone_count && layout.id == active_layout_id {
-                updated_active = Some(layout.clone());
-            }
-        }
-
-        updated_active
-    };
-
-    #[cfg(feature = "persistence-test-hooks")]
-    state
-        .layout_mutation_test_hooks
-        .wait(
-            crate::api::layouts::LayoutMutationTestPoint::AfterMemoryMutation,
-            crate::api::layouts::LayoutMutationTestOperation::SimulatorPrune,
-            &physical_id,
-        )
-        .await;
-    if let Some(layout) = active_layout {
-        match PreparedLayoutUpdate::try_new(layout) {
-            Ok(prepared) => {
-                if let Err(error) = apply_prepared_layout_update_under_guard(
-                    Arc::clone(&state.spatial_engine),
-                    Arc::clone(&state.scene_manager),
-                    state.scene_transactions.clone(),
-                    &guard,
-                    prepared,
-                )
-                .await
-                {
-                    warn!(%error, "rejected active layout after simulator pruning");
-                }
-            }
-            Err(error) => warn!(%error, "rejected active layout after simulator pruning"),
-        }
+    if let Err(error) = state
+        .domains
+        .layout
+        .prune_targets(target_ids, &physical_id)
+        .await
+    {
+        warn!(%error, "rejected active layout after simulator pruning");
     }
-
-    crate::api::persist_layouts_best_effort(state).await;
-    drop(guard);
 }

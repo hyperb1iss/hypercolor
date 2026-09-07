@@ -7,21 +7,17 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use hypercolor_core::device::{
-    BackendManager, SmBusBackend, SmBusScanner, TransportScanner, UsbBackend,
-    UsbProtocolConfigStore, UsbScanner,
-};
-#[cfg(unix)]
-use hypercolor_core::device::{BlocksBackend, BlocksScanner};
+use hypercolor_core::device::BackendManager;
 #[cfg(not(feature = "builtin-drivers"))]
-use hypercolor_driver_api::CredentialStore;
+use hypercolor_core::device::UsbProtocolConfigStore;
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
+#[cfg(not(feature = "builtin-drivers"))]
+use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::config::{DriverConfigEntry, HypercolorConfig};
 use hypercolor_types::device::{
-    BLOCKS_OUTPUT_BACKEND_ID, DeviceClassHint, DeviceInfo, DriverModuleDescriptor,
-    DriverModuleKind, DriverPresentation, DriverProtocolDescriptor, DriverTransportKind,
-    SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
+    DeviceClassHint, DeviceInfo, DriverModuleDescriptor, DriverModuleKind, DriverPresentation,
+    DriverProtocolDescriptor, DriverTransportKind,
 };
 
 pub use host::DaemonDriverHost;
@@ -30,26 +26,11 @@ pub use hypercolor_driver_builtin::build_driver_module_registry as build_builtin
 #[cfg(feature = "builtin-drivers")]
 pub use hypercolor_driver_builtin::normalize_driver_config_entries as normalize_builtin_driver_config_entries;
 
-pub const USB_HOST_TRANSPORT_TARGET_ID: &str = USB_OUTPUT_BACKEND_ID;
-pub const SMBUS_HOST_TRANSPORT_TARGET_ID: &str = SMBUS_OUTPUT_BACKEND_ID;
-pub const BLOCKS_HOST_TRANSPORT_TARGET_ID: &str = BLOCKS_OUTPUT_BACKEND_ID;
-pub const HOST_TRANSPORT_TARGET_IDS: &[&str] = &[
-    USB_HOST_TRANSPORT_TARGET_ID,
-    SMBUS_HOST_TRANSPORT_TARGET_ID,
-    #[cfg(unix)]
-    BLOCKS_HOST_TRANSPORT_TARGET_ID,
-];
-pub const USB_HOST_DRIVER_TRANSPORTS: &[DriverTransportKind] = &[
-    DriverTransportKind::Usb,
-    DriverTransportKind::Midi,
-    DriverTransportKind::Serial,
-];
-pub const SMBUS_HOST_DRIVER_TRANSPORTS: &[DriverTransportKind] = &[DriverTransportKind::Smbus];
-
 #[cfg(not(feature = "builtin-drivers"))]
 pub fn build_builtin_driver_module_registry(
     _config: &HypercolorConfig,
     _credential_store: Arc<CredentialStore>,
+    _usb_protocol_configs: UsbProtocolConfigStore,
 ) -> Result<DriverModuleRegistry> {
     Ok(DriverModuleRegistry::new())
 }
@@ -80,6 +61,15 @@ pub fn driver_enabled_with_default(
 #[must_use]
 pub fn module_enabled(config: &HypercolorConfig, descriptor: &DriverModuleDescriptor) -> bool {
     driver_enabled_with_default(config, &descriptor.id, descriptor.default_enabled)
+}
+
+/// Whether a driver module exposes at least one transport runnable on this host.
+#[must_use]
+pub fn module_has_available_transport(descriptor: &DriverModuleDescriptor) -> bool {
+    descriptor
+        .transports
+        .iter()
+        .any(hypercolor_types::device::DriverTransportDescriptor::is_available)
 }
 
 /// Whether one registered driver module is enabled by the active config.
@@ -236,37 +226,11 @@ pub fn enabled_module_ids_for_transports(
             descriptor
                 .transports
                 .iter()
-                .any(|item| transports.iter().any(|transport| item == transport))
+                .any(|item| item.is_available() && transports.contains(&item.kind))
         })
         .filter(|descriptor| module_enabled(config, descriptor))
         .map(|descriptor| descriptor.id.clone())
         .collect()
-}
-
-/// Host-owned discovery target that services one driver transport category.
-#[must_use]
-pub const fn host_transport_target_for_driver_transport(
-    transport: &DriverTransportKind,
-) -> Option<&'static str> {
-    match transport {
-        DriverTransportKind::Usb | DriverTransportKind::Midi | DriverTransportKind::Serial => {
-            Some(USB_HOST_TRANSPORT_TARGET_ID)
-        }
-        DriverTransportKind::Smbus => Some(SMBUS_HOST_TRANSPORT_TARGET_ID),
-        DriverTransportKind::Bridge => {
-            #[cfg(unix)]
-            {
-                Some(BLOCKS_HOST_TRANSPORT_TARGET_ID)
-            }
-            #[cfg(not(unix))]
-            {
-                None
-            }
-        }
-        DriverTransportKind::Network
-        | DriverTransportKind::Virtual
-        | DriverTransportKind::Custom(_) => None,
-    }
 }
 
 /// Config key responsible for enabling a driver module.
@@ -281,6 +245,21 @@ pub fn driver_config_entry(config: &HypercolorConfig, driver_id: &str) -> Driver
     config.drivers.get(driver_id).cloned().unwrap_or_default()
 }
 
+pub fn enabled_driver_module_ids(
+    registry: &DriverModuleRegistry,
+    config: &HypercolorConfig,
+) -> BTreeSet<String> {
+    registry
+        .ids()
+        .into_iter()
+        .filter(|driver_id| {
+            module_descriptor(registry, driver_id).is_some_and(|descriptor| {
+                module_enabled(config, &descriptor) && module_has_available_transport(&descriptor)
+            })
+        })
+        .collect()
+}
+
 /// Register all enabled driver output backends with the backend manager.
 ///
 /// # Errors
@@ -292,27 +271,19 @@ pub fn register_enabled_driver_output_backends(
     host: &dyn DriverHost,
     config: &HypercolorConfig,
 ) -> Result<()> {
-    for driver_id in registry.ids() {
-        let Some(driver) = registry.get(&driver_id) else {
-            continue;
-        };
+    let enabled_driver_ids = enabled_driver_module_ids(registry, config);
+    let finalized = registry
+        .finalize_output_bindings(&enabled_driver_ids)
+        .context("failed to finalize driver output bindings")?;
 
-        let descriptor = driver.module_descriptor();
-        if !module_enabled(config, &descriptor) {
-            continue;
-        }
-        if !descriptor.capabilities.output_backend {
-            continue;
-        }
-
-        let config_entry = driver_config_entry(config, &driver_id);
+    for provider in finalized.providers() {
+        let driver_id = provider.driver_id();
+        let config_entry = driver_config_entry(config, driver_id);
         let config_view = DriverConfigView {
-            driver_id: &driver_id,
+            driver_id,
             entry: &config_entry,
         };
-        let Some(backend) = driver.build_output_backend(host, config_view)? else {
-            continue;
-        };
+        let backend = provider.build(host, config_view)?;
         backend_manager.register_backend(backend);
     }
 
@@ -329,83 +300,7 @@ pub fn register_enabled_device_backends(
     registry: &DriverModuleRegistry,
     host: &dyn DriverHost,
     config: &HypercolorConfig,
-    usb_protocol_configs: UsbProtocolConfigStore,
 ) -> Result<()> {
     register_enabled_driver_output_backends(backend_manager, registry, host, config)
-        .context("failed to register driver module output backends")?;
-
-    #[cfg(unix)]
-    if config.discovery.blocks_scan {
-        let socket_path = config
-            .discovery
-            .blocks_socket_path
-            .as_ref()
-            .map_or_else(BlocksBackend::default_socket_path, std::path::PathBuf::from);
-        backend_manager.register_backend(Box::new(BlocksBackend::new(socket_path)));
-    }
-
-    if !enabled_module_ids_for_transports(
-        registry,
-        config,
-        DriverModuleKind::Hal,
-        SMBUS_HOST_DRIVER_TRANSPORTS,
-    )
-    .is_empty()
-    {
-        backend_manager.register_backend(Box::new(SmBusBackend::new()));
-    }
-
-    let usb_driver_ids = enabled_module_ids_for_transports(
-        registry,
-        config,
-        DriverModuleKind::Hal,
-        USB_HOST_DRIVER_TRANSPORTS,
-    );
-    if !usb_driver_ids.is_empty() {
-        backend_manager.register_backend(Box::new(
-            UsbBackend::with_protocol_config_store_and_enabled_driver_ids(
-                usb_protocol_configs,
-                usb_driver_ids,
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Build one host-owned transport scanner by public discovery target id.
-#[must_use]
-pub fn host_transport_scanner(
-    target_id: &str,
-    registry: &DriverModuleRegistry,
-    config: &HypercolorConfig,
-) -> Option<Box<dyn TransportScanner>> {
-    match target_id {
-        USB_HOST_TRANSPORT_TARGET_ID => Some(Box::new(UsbScanner::with_enabled_driver_ids(
-            enabled_module_ids_for_transports(
-                registry,
-                config,
-                DriverModuleKind::Hal,
-                USB_HOST_DRIVER_TRANSPORTS,
-            ),
-        ))),
-        SMBUS_HOST_TRANSPORT_TARGET_ID => Some(Box::new(SmBusScanner::new())),
-        #[cfg(unix)]
-        BLOCKS_HOST_TRANSPORT_TARGET_ID => {
-            let socket_path = config
-                .discovery
-                .blocks_socket_path
-                .as_ref()
-                .map_or_else(BlocksBackend::default_socket_path, std::path::PathBuf::from);
-            Some(Box::new(BlocksScanner::new(socket_path)))
-        }
-        #[cfg(not(unix))]
-        BLOCKS_HOST_TRANSPORT_TARGET_ID => None,
-        _ => None,
-    }
-}
-
-#[must_use]
-pub fn is_host_transport_target(target_id: &str) -> bool {
-    HOST_TRANSPORT_TARGET_IDS.contains(&target_id)
+        .context("failed to register driver module output backends")
 }

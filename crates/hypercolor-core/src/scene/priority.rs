@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use crate::types::scene::{SceneId, ScenePriority};
+use hypercolor_types::scene::{SceneId, ScenePriority};
 
 // ── StackEntry ──────────────────────────────────────────────────────────
 

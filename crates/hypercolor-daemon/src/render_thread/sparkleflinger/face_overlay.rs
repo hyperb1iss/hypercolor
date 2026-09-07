@@ -1,11 +1,9 @@
+use hypercolor_color::LinearRgba;
 use hypercolor_core::blend_math::{
-    RgbaBlendMode, blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel,
-    screen_blend,
+    blend_rgba_pixels_in_place, decode_srgb_channel, encode_srgb_channel, screen_blend,
 };
-use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor,
-};
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::canvas::{Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor};
+use hypercolor_types::layer::BlendMode;
 
 #[allow(
     dead_code,
@@ -14,7 +12,7 @@ use hypercolor_types::scene::DisplayFaceBlendMode;
 pub(super) fn compose_face_overlay(
     scene: &PublishedSurface,
     face: &PublishedSurface,
-    blend_mode: DisplayFaceBlendMode,
+    blend_mode: BlendMode,
     opacity: f32,
     surface_pool: &mut RenderSurfacePool,
 ) -> PublishedSurface {
@@ -65,25 +63,20 @@ pub(super) fn compose_face_overlay(
 pub(super) fn blend_face_overlay_rgba(
     scene_rgba: &mut [u8],
     face_rgba: &[u8],
-    blend_mode: DisplayFaceBlendMode,
+    blend_mode: BlendMode,
     opacity: f32,
 ) {
     match blend_mode {
-        DisplayFaceBlendMode::Replace => {
+        BlendMode::Replace => {
             replace_face_rgba_in_place(scene_rgba, face_rgba, opacity);
         }
-        DisplayFaceBlendMode::Tint => blend_material_tint_rgba(scene_rgba, face_rgba, opacity),
-        DisplayFaceBlendMode::LumaReveal => blend_luma_reveal_rgba(scene_rgba, face_rgba, opacity),
+        BlendMode::Tint => blend_material_tint_rgba(scene_rgba, face_rgba, opacity),
+        BlendMode::LumaReveal => blend_luma_reveal_rgba(scene_rgba, face_rgba, opacity),
         _ => {
-            let Some(canvas_blend_mode) = blend_mode.standard_canvas_blend_mode() else {
+            let Some(pixel_mode) = blend_mode.pixel_mode() else {
                 return;
             };
-            blend_rgba_pixels_in_place(
-                scene_rgba,
-                face_rgba,
-                RgbaBlendMode::from(canvas_blend_mode),
-                opacity,
-            );
+            blend_rgba_pixels_in_place(scene_rgba, face_rgba, pixel_mode, opacity);
         }
     }
 
@@ -192,7 +185,9 @@ fn effect_tint_material(effect_rgb: [f32; 3], face_rgb: [f32; 3]) -> [f32; 3] {
 }
 
 fn linear_rgb_luma(rgb: [f32; 3]) -> f32 {
-    (rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722).clamp(0.0, 1.0)
+    LinearRgba::new(rgb[0], rgb[1], rgb[2], 1.0)
+        .luma()
+        .clamp(0.0, 1.0)
 }
 
 fn rgb_colorfulness(rgb: [f32; 3]) -> f32 {

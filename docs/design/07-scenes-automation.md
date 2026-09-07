@@ -2,6 +2,20 @@
 
 > Turning Hypercolor from a pretty light engine into an ambient intelligence system.
 
+**Status:** Design intent, largely unbuilt. Scenes shipped; the scheduling,
+trigger, and automation-rule engine described here did not.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** the daemon exposes no scheduling,
+trigger, or automation routes. The scene surface is
+`GET/PATCH /api/v1/scene`, the `/api/v1/scene/zones/...` tree, and
+`/api/v1/scenes` with `snapshot` and `{id}/activate`; nothing else. The only
+automation code in the tree is `AutomationEngine`
+(`crates/hypercolor-core/src/scene/automation.rs`, 222 lines) which has no
+daemon consumer. Scenes persist as `scenes.json` through `SceneStore`, not as
+the `.hyperscene.toml` format specified in §1 and §10; `hyperscene` returns zero
+hits across `crates/`. Profiles were folded into scenes in `e005ec782`, so the
+scene-plus-profile split assumed throughout no longer exists.
+
 ---
 
 ## Overview
@@ -2589,4 +2603,4 @@ This system is large. It ships incrementally, aligned with the roadmap in ARCHIT
 
 ---
 
-_This document is part of the Hypercolor design series. See also: [ARCHITECTURE.md](../../ARCHITECTURE.md), [DRIVERS.md](../../DRIVERS.md), [WEB_ENGINES.md](../../WEB_ENGINES.md)._
+_This document is part of the Hypercolor design series. See also: [ARCHITECTURE.md](../ARCHITECTURE.md)._

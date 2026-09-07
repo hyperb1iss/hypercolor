@@ -3,17 +3,20 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
+use hypercolor_hal::protocol::{
+    Protocol, ProtocolCommand, ProtocolError, ResponseStatus, ResponseTolerance,
+};
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceError, DeviceId, USB_OUTPUT_BACKEND_ID};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace, warn};
 
 use super::{
-    MAX_RETRIES, RETRY_BACKOFF, UsbBackend, UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload,
-    describe_packet, format_error_chain, format_hex_preview, map_transport_error,
+    AbortTaskOnDrop, DRAIN_REPORT_TIMEOUT, DeviceTransportOperation, MAX_RETRIES, RETRY_BACKOFF,
+    UsbBackend, UsbDeviceCommand, UsbDisplayPayload, UsbFramePayload, describe_packet,
+    format_error_chain, format_hex_preview, map_hal_transport_error, map_transport_error,
     record_usb_display_lane,
 };
 
@@ -24,6 +27,23 @@ pub(super) enum FrameWriteDisposition {
 }
 
 impl UsbBackend {
+    fn command_response(
+        device_id: DeviceId,
+        result: &Result<()>,
+    ) -> std::result::Result<(), DeviceError> {
+        result
+            .as_ref()
+            .map_err(|error| {
+                map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    error,
+                )
+            })
+            .copied()
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "actor bootstrap needs the transport, channels, ids, and shared error sink together"
@@ -37,53 +57,76 @@ impl UsbBackend {
         lifecycle_gate: Arc<StdMutex<()>>,
         frame_tx: watch::Sender<Option<Arc<UsbFramePayload>>>,
         frame_rx: watch::Receiver<Option<Arc<UsbFramePayload>>>,
+        display_tx: watch::Sender<Option<Arc<UsbDisplayPayload>>>,
         display_rx: watch::Receiver<Option<Arc<UsbDisplayPayload>>>,
         command_rx: mpsc::UnboundedReceiver<UsbDeviceCommand>,
-        last_async_error: Arc<StdMutex<Option<String>>>,
+        last_async_error: Arc<StdMutex<Option<DeviceError>>>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let transport_name = transport.name();
             let parallel_transfer_lanes = transport.supports_parallel_transfer_lanes();
-
-            let actor_result = if parallel_transfer_lanes {
-                Self::run_parallel_device_actor(
-                    device_id,
-                    device_name,
-                    protocol.clone(),
-                    transport.clone(),
-                    frame_rx,
-                    display_rx,
-                    command_rx,
-                )
+            let actor_protocol = Arc::clone(&protocol);
+            let actor_transport = Arc::clone(&transport);
+            let actor_task = tokio::spawn(async move {
+                if parallel_transfer_lanes {
+                    Self::run_parallel_device_actor(
+                        device_id,
+                        device_name,
+                        actor_protocol,
+                        actor_transport,
+                        frame_rx,
+                        display_rx,
+                        command_rx,
+                    )
+                    .await
+                } else {
+                    Self::run_device_actor(
+                        device_id,
+                        device_name,
+                        actor_protocol,
+                        actor_transport,
+                        frame_rx,
+                        display_rx,
+                        command_rx,
+                    )
+                    .await
+                }
+            });
+            let _actor_abort = AbortTaskOnDrop(actor_task.abort_handle());
+            let actor_result = actor_task
                 .await
-            } else {
-                Self::run_device_actor(
-                    device_id,
-                    device_name,
-                    protocol.clone(),
-                    transport.clone(),
-                    frame_rx,
-                    display_rx,
-                    command_rx,
-                )
-                .await
-            };
+                .unwrap_or_else(|error| Err(anyhow!("USB device actor task failed: {error}")));
 
-            let rejection = actor_result
-                .as_ref()
-                .map_or_else(ToString::to_string, |()| {
-                    "USB device actor stopped before transport started".to_owned()
+            let actor_error = actor_result.as_ref().err().map(|error| {
+                map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    error,
+                )
+            });
+            let rejection = actor_error
+                .clone()
+                .unwrap_or_else(|| DeviceError::Disconnected {
+                    device: device_id.to_string(),
                 });
-            {
+            let (pending_frame, pending_display) = {
                 let _gate = super::lock_lifecycle_gate(&lifecycle_gate);
                 active.store(false, Ordering::Release);
-                if let Some(pending) = frame_tx.send_replace(None) {
-                    pending.reject_pending(rejection);
-                }
+                (frame_tx.send_replace(None), display_tx.send_replace(None))
+            };
+            if let Some(pending) = pending_frame {
+                pending.reject_pending(rejection.clone());
+            }
+            if let Some(pending) = pending_display {
+                pending.reject_unacknowledged(rejection);
             }
 
             if let Err(error) = actor_result {
-                Self::store_actor_error(&last_async_error, error.to_string());
+                Self::store_actor_error(
+                    &last_async_error,
+                    actor_error.expect("failed actor result should have a typed error"),
+                );
                 warn!(
                     device_id = %device_id,
                     device = device_name,
@@ -97,7 +140,13 @@ impl UsbBackend {
             }
 
             if let Err(error) = transport.close().await.map_err(map_transport_error) {
-                Self::store_actor_error(&last_async_error, error.to_string());
+                let typed_error = map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Disconnect,
+                    &error,
+                );
+                Self::store_actor_error(&last_async_error, typed_error);
                 warn!(
                     device_id = %device_id,
                     device = device_name,
@@ -130,6 +179,8 @@ impl UsbBackend {
         let mut display_task = tokio::spawn(Self::run_device_display_actor(
             device_id, protocol, transport, display_rx,
         ));
+        let _control_abort = AbortTaskOnDrop(control_task.abort_handle());
+        let _display_abort = AbortTaskOnDrop(display_task.abort_handle());
 
         tokio::select! {
             result = &mut control_task => {
@@ -138,21 +189,9 @@ impl UsbBackend {
                 Self::flatten_actor_result(result, "USB control actor")
             }
             result = &mut display_task => {
-                match Self::flatten_actor_result(result, "USB display actor") {
-                    Ok(()) => debug!(
-                        device_id = %device_id,
-                        device = device_name,
-                        "USB display actor exited; control lane remains active"
-                    ),
-                    Err(error) => warn!(
-                        device_id = %device_id,
-                        device = device_name,
-                        error = %error,
-                        error_chain = %format_error_chain(&error),
-                        "USB display actor failed; keeping control lane active"
-                    ),
-                }
-                Self::flatten_actor_result(control_task.await, "USB control actor")
+                control_task.abort();
+                let _ = control_task.await;
+                Self::flatten_actor_result(result, "USB display actor")
             }
         }
     }
@@ -222,8 +261,7 @@ impl UsbBackend {
                             )
                             .await;
 
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             result?;
                         }
@@ -239,8 +277,7 @@ impl UsbBackend {
                                 transport.as_ref(),
                             )
                             .await;
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             return result;
                         }
@@ -446,8 +483,7 @@ impl UsbBackend {
                                 ))
                             };
 
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             result?;
                         }
@@ -463,8 +499,7 @@ impl UsbBackend {
                                 transport.as_ref(),
                             )
                             .await;
-                            let response =
-                                result.as_ref().map_err(ToString::to_string).copied();
+                            let response = Self::command_response(device_id, &result);
                             let _ = response_tx.send(response);
                             return result;
                         }
@@ -629,12 +664,18 @@ impl UsbBackend {
             Err(error)
                 if Self::classify_frame_write_error(&error) == FrameWriteDisposition::Transient =>
             {
+                let typed_error = map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    &error,
+                );
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(super::DeviceDeliveryAck::failed(
                         id,
                         true,
                         transport_started_at.elapsed(),
-                        error.to_string(),
+                        typed_error,
                     ));
                 }
                 warn!(
@@ -648,12 +689,18 @@ impl UsbBackend {
                 Ok(())
             }
             Err(error) => {
+                let typed_error = map_hal_transport_error(
+                    device_id,
+                    USB_OUTPUT_BACKEND_ID,
+                    DeviceTransportOperation::Write,
+                    &error,
+                );
                 if let Some(id) = frame.delivery_id {
                     frame.acknowledge(super::DeviceDeliveryAck::failed(
                         id,
                         true,
                         transport_started_at.elapsed(),
-                        error.to_string(),
+                        typed_error,
                     ));
                 }
                 Err(error)
@@ -666,37 +713,21 @@ impl UsbBackend {
             .chain()
             .find_map(|cause| cause.downcast_ref::<TransportError>())
         {
-            Some(TransportError::IoError { detail })
-                if Self::io_error_indicates_liveness_loss(detail) =>
-            {
-                FrameWriteDisposition::Fatal
-            }
-            Some(TransportError::Timeout { .. } | TransportError::IoError { .. }) => {
-                FrameWriteDisposition::Transient
-            }
+            Some(
+                TransportError::Timeout { .. }
+                | TransportError::NotReady { .. }
+                | TransportError::IoError { .. },
+            ) => FrameWriteDisposition::Transient,
             Some(
                 TransportError::NotFound { .. }
+                | TransportError::Disconnected { .. }
                 | TransportError::Closed
                 | TransportError::PermissionDenied { .. }
+                | TransportError::UnsupportedPlatform { .. }
                 | TransportError::UnsupportedTransfer { .. },
             )
             | None => FrameWriteDisposition::Fatal,
         }
-    }
-
-    fn io_error_indicates_liveness_loss(detail: &str) -> bool {
-        let detail = detail.to_ascii_lowercase();
-        [
-            "disconnected",
-            "not connected",
-            "device removed",
-            "no such device",
-            "permission denied",
-            "access denied",
-            "transport closed",
-        ]
-        .iter()
-        .any(|marker| detail.contains(marker))
     }
 
     async fn run_device_frame(
@@ -736,11 +767,28 @@ impl UsbBackend {
         frame: &UsbDisplayPayload,
         commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        protocol
+        if let Err(error) = protocol
             .encode_display_payload_into(frame.payload.as_borrowed(), commands)
-            .with_context(|| {
-                format!("USB protocol does not support display output for device {device_id}")
-            })?;
+            .with_context(|| format!("USB display encode failed for device {device_id}"))
+        {
+            if let Some(id) = frame.delivery_id {
+                frame.acknowledge(super::DeviceDeliveryAck::failed(
+                    id,
+                    false,
+                    Duration::ZERO,
+                    map_hal_transport_error(
+                        device_id,
+                        USB_OUTPUT_BACKEND_ID,
+                        DeviceTransportOperation::Write,
+                        &error,
+                    ),
+                ));
+            }
+            return Err(error);
+        }
+        if !frame.mark_transport_started() {
+            return Ok(());
+        }
         if tracing::enabled!(tracing::Level::TRACE) {
             let first_packet = commands.first().map_or_else(
                 || "<none>".to_owned(),
@@ -759,9 +807,37 @@ impl UsbBackend {
             );
         }
 
-        Self::run_commands(protocol, transport, commands.as_slice())
+        let transport_started_at = Instant::now();
+        let result = Self::run_commands(protocol, transport, commands.as_slice())
             .await
-            .with_context(|| format!("USB display write failed for device {device_id}"))
+            .with_context(|| format!("USB display write failed for device {device_id}"));
+        match &result {
+            Ok(()) => {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(super::DeviceDeliveryAck::completed(
+                        id,
+                        frame.payload.data.len(),
+                        transport_started_at.elapsed(),
+                    ));
+                }
+            }
+            Err(error) => {
+                if let Some(id) = frame.delivery_id {
+                    frame.acknowledge(super::DeviceDeliveryAck::failed(
+                        id,
+                        true,
+                        transport_started_at.elapsed(),
+                        map_hal_transport_error(
+                            device_id,
+                            USB_OUTPUT_BACKEND_ID,
+                            DeviceTransportOperation::Write,
+                            error,
+                        ),
+                    ));
+                }
+            }
+        }
+        result
     }
 
     async fn run_shutdown_sequence(
@@ -819,7 +895,10 @@ impl UsbBackend {
         Ok(())
     }
 
-    fn store_actor_error(last_async_error: &Arc<StdMutex<Option<String>>>, error: String) {
+    fn store_actor_error(
+        last_async_error: &Arc<StdMutex<Option<DeviceError>>>,
+        error: DeviceError,
+    ) {
         if let Ok(mut slot) = last_async_error.lock() {
             *slot = Some(error);
         }
@@ -945,52 +1024,205 @@ impl UsbBackend {
         total_commands: usize,
         attempt: &mut u8,
     ) -> Result<bool> {
-        let response = if command.response_delay.is_zero() {
-            trace!(
-                protocol = protocol.name(),
-                transport = transport.name(),
-                command_index = command_position,
+        // Per-command budget when the protocol set one; init reads and steady
+        // reads on the same device routinely want different budgets.
+        let plan = command.response;
+        let response_timeout = plan.timeout.unwrap_or_else(|| protocol.response_timeout());
+        // A responding command always reads at least once, so a protocol that
+        // leaves the count at zero still gets its reply.
+        let report_count = u16::from(plan.count.max(1));
+
+        for report_index in 0..report_count {
+            let read = if report_index > 0 {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    report_index,
+                    report_count,
+                    "usb reading additional response report"
+                );
+                transport
+                    .receive_logical(response_timeout, command.transfer_type, plan.capacity)
+                    .await
+            } else if command.response_delay.is_zero()
+                && plan.tolerance == ResponseTolerance::Required
+            {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    attempt = *attempt + 1,
+                    transfer_type = ?command.transfer_type,
+                    "usb send_receive starting"
+                );
+                transport
+                    .send_receive_logical(
+                        &command.data,
+                        response_timeout,
+                        command.transfer_type,
+                        plan.capacity,
+                    )
+                    .await
+            } else if command.response_delay.is_zero() {
+                // An optional reply forgives a quiet device, never a failed
+                // send: the combined send-and-receive folds an OUT timeout
+                // into the same error as an absent reply, so the two steps
+                // stay separate here and only the read is forgiven.
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    attempt = *attempt + 1,
+                    transfer_type = ?command.transfer_type,
+                    "usb send starting with optional response read"
+                );
+                transport
+                    .send_with_type(&command.data, command.transfer_type)
+                    .await
+                    .map_err(map_transport_error)?;
+                transport
+                    .receive_logical(response_timeout, command.transfer_type, plan.capacity)
+                    .await
+            } else {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    attempt = *attempt + 1,
+                    transfer_type = ?command.transfer_type,
+                    response_delay_us = command.response_delay.as_micros(),
+                    "usb send starting with delayed response read"
+                );
+                transport
+                    .send_with_type(&command.data, command.transfer_type)
+                    .await
+                    .map_err(map_transport_error)?;
+                tokio::time::sleep(command.response_delay).await;
+                transport
+                    .receive_logical(response_timeout, command.transfer_type, plan.capacity)
+                    .await
+            };
+
+            let response = match read {
+                Ok(response) => response,
+                // An optional reply that never came is the command completing
+                // normally: the device is allowed to stay quiet, and the
+                // reports it did send were already parsed.
+                Err(TransportError::Timeout { .. })
+                    if plan.tolerance == ResponseTolerance::Optional =>
+                {
+                    debug!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        report_index,
+                        report_count,
+                        "optional response report did not arrive; command complete"
+                    );
+                    return Ok(false);
+                }
+                Err(error) => return Err(map_transport_error(error)),
+            };
+
+            let remaining_reports = report_count.saturating_sub(report_index).saturating_sub(1);
+            let retry = match Self::parse_response_report(
+                protocol,
+                transport,
+                command,
+                command_position,
                 total_commands,
-                attempt = *attempt + 1,
-                transfer_type = ?command.transfer_type,
-                "usb send_receive starting"
-            );
-            transport
-                .send_receive_with_type(
-                    &command.data,
-                    protocol.response_timeout(),
+                attempt,
+                &response,
+            )
+            .await
+            {
+                Ok(retry) => retry,
+                // A parse failure aborts the batch, but the reports still
+                // queued for this command would otherwise answer whatever the
+                // next session asks first.
+                Err(error) => {
+                    Self::discard_queued_reports(transport, command, remaining_reports).await;
+                    return Err(error);
+                }
+            };
+
+            if retry {
+                // The retry resends the whole command, so any report this
+                // attempt left queued would be read as a reply to the
+                // resend and desync every read after it.
+                Self::discard_queued_reports(transport, command, remaining_reports).await;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Drop reports still queued for an attempt that is about to be resent.
+    ///
+    /// Best effort and deliberately impatient: the device may have sent
+    /// nothing further, and a resend is what recovers the exchange either
+    /// way, so this must not spend the command's full response budget per
+    /// report. The reports are discarded rather than parsed because they
+    /// belong to an attempt whose result was rejected.
+    async fn discard_queued_reports(
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        remaining: u16,
+    ) {
+        for index in 0..remaining {
+            match transport
+                .receive_logical(
+                    DRAIN_REPORT_TIMEOUT,
                     command.transfer_type,
+                    command.response.capacity,
                 )
                 .await
-                .map_err(map_transport_error)?
-        } else {
-            trace!(
-                protocol = protocol.name(),
-                transport = transport.name(),
-                command_index = command_position,
-                total_commands,
-                attempt = *attempt + 1,
-                transfer_type = ?command.transfer_type,
-                response_delay_us = command.response_delay.as_micros(),
-                "usb send starting with delayed response read"
-            );
-            transport
-                .send_with_type(&command.data, command.transfer_type)
-                .await
-                .map_err(map_transport_error)?;
-            tokio::time::sleep(command.response_delay).await;
-            transport
-                .receive_with_type(protocol.response_timeout(), command.transfer_type)
-                .await
-                .map_err(map_transport_error)?
-        };
+            {
+                Ok(report) => trace!(
+                    transport = transport.name(),
+                    report_index = index,
+                    remaining,
+                    report = %describe_packet(&report),
+                    "discarding queued report from a retried attempt"
+                ),
+                Err(error) => {
+                    debug!(
+                        transport = transport.name(),
+                        report_index = index,
+                        remaining,
+                        error = %error,
+                        "queued-report drain stopped early; device had nothing more to send"
+                    );
+                    break;
+                }
+            }
+        }
+    }
 
+    /// Parse one response report, answering whether the command should be
+    /// retried from the top.
+    async fn parse_response_report(
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        command_position: usize,
+        total_commands: usize,
+        attempt: &mut u8,
+        response: &[u8],
+    ) -> Result<bool> {
         trace!(
             protocol = protocol.name(),
             transport = transport.name(),
             command_index = command_position,
             total_commands,
-            response = %describe_packet(&response),
+            response = %describe_packet(response),
             "usb response received"
         );
         trace!(
@@ -998,11 +1230,11 @@ impl UsbBackend {
             transport = transport.name(),
             command_index = command_position,
             total_commands,
-            response_hex = %format_hex_preview(&response, 32),
+            response_hex = %format_hex_preview(response, 32),
             "usb response bytes"
         );
 
-        match protocol.parse_response(&response) {
+        match protocol.parse_response(response) {
             Ok(parsed) => {
                 trace!(
                     protocol = protocol.name(),
@@ -1053,8 +1285,8 @@ impl UsbBackend {
                     command_hex = %format_hex_preview(&command.data, 32),
                     response_len = response.len(),
                     error = %error,
-                    response = %describe_packet(&response),
-                    response_hex = %format_hex_preview(&response, 32),
+                    response = %describe_packet(response),
+                    response_hex = %format_hex_preview(response, 32),
                     "protocol response parse failed"
                 );
                 Err(anyhow!("protocol response parse failed: {error}"))

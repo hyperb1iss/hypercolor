@@ -6,9 +6,10 @@
 
 use std::path::PathBuf;
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Oklab, Oklch, RgbaF32};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, LinearRgba, Oklab, Oklch};
+use hypercolor_types::control::{ControlDeltaBatch, ControlValue};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
+    ControlDefinition, EffectCategory, EffectMetadata, EffectSource, PresetTemplate,
 };
 
 use super::common::{
@@ -103,7 +104,7 @@ impl EasingMode {
 
 #[derive(Debug, Clone, Copy)]
 enum PreparedGradientColor {
-    Direct(RgbaF32),
+    Direct(LinearRgba),
     Smooth(Oklab),
     Vivid(Oklch),
 }
@@ -117,19 +118,19 @@ impl PreparedGradientColor {
         }
     }
 
-    fn into_rgba(self) -> RgbaF32 {
+    fn into_rgba(self) -> LinearRgba {
         match self {
             Self::Direct(rgba) => rgba,
-            Self::Smooth(lab) => RgbaF32::from_oklab(lab),
-            Self::Vivid(lch) => RgbaF32::from_oklch(lch),
+            Self::Smooth(lab) => lab.to_linear(),
+            Self::Vivid(lch) => lch.to_linear(),
         }
     }
 
-    fn interpolate(self, other: Self, t: f32) -> RgbaF32 {
+    fn interpolate(self, other: Self, t: f32) -> LinearRgba {
         match (self, other) {
-            (Self::Direct(a), Self::Direct(b)) => RgbaF32::lerp(&a, &b, t),
-            (Self::Smooth(a), Self::Smooth(b)) => RgbaF32::from_oklab(Oklab::lerp(a, b, t)),
-            (Self::Vivid(a), Self::Vivid(b)) => RgbaF32::from_oklch(a.lerp(b, t)),
+            (Self::Direct(a), Self::Direct(b)) => a.lerp(b, t),
+            (Self::Smooth(a), Self::Smooth(b)) => a.lerp(b, t).to_linear(),
+            (Self::Vivid(a), Self::Vivid(b)) => a.lerp(b, t).to_linear(),
             _ => unreachable!("prepared stops always share the same interpolation mode"),
         }
     }
@@ -178,7 +179,7 @@ impl PreparedGradientStops {
         }
     }
 
-    fn sample(self, easing: EasingMode, raw_t: f32) -> RgbaF32 {
+    fn sample(self, easing: EasingMode, raw_t: f32) -> LinearRgba {
         let t = easing.apply(raw_t);
         let first = self.stops[0];
 
@@ -345,11 +346,11 @@ impl GradientRenderer {
     }
 
     /// Post-process: boost or reduce chroma in Oklch space.
-    fn apply_saturation(&self, mut rgba: RgbaF32) -> RgbaF32 {
+    fn apply_saturation(&self, mut rgba: LinearRgba) -> LinearRgba {
         if (self.saturation - 1.0).abs() > f32::EPSILON {
             let mut lch = rgba.to_oklch();
             lch.c *= self.saturation;
-            rgba = RgbaF32::from_oklch(lch);
+            rgba = lch.to_linear();
         }
         rgba
     }
@@ -429,8 +430,8 @@ impl EffectRenderer for GradientRenderer {
                 rgba.r *= self.brightness;
                 rgba.g *= self.brightness;
                 rgba.b *= self.brightness;
-                let encoded = rgba.to_srgb_u8();
-                pixel.copy_from_slice(&encoded);
+                let encoded = rgba.to_encoded();
+                pixel.copy_from_slice(&[encoded.r, encoded.g, encoded.b, encoded.a]);
             }
         }
 
@@ -447,114 +448,116 @@ impl EffectRenderer for GradientRenderer {
         clippy::too_many_lines,
         reason = "control dispatch mirrors the public schema and keeps cache invalidation local"
     )]
-    fn set_control(&mut self, name: &str, value: &ControlValue) {
-        match name {
-            "color_start" => {
-                if let ControlValue::Color(c) = value {
-                    self.color_start = *c;
-                    self.invalidate_cache();
+    fn apply_controls(&mut self, batch: &ControlDeltaBatch<'_>) -> anyhow::Result<()> {
+        for (control_id, value) in batch.changes {
+            match control_id.as_str() {
+                "color_start" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.color_start = [color.r, color.g, color.b, color.a];
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "color_mid" => {
-                if let ControlValue::Color(c) = value {
-                    self.color_mid = *c;
-                    self.invalidate_cache();
+                "color_mid" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.color_mid = [color.r, color.g, color.b, color.a];
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "color_end" => {
-                if let ControlValue::Color(c) = value {
-                    self.color_end = *c;
-                    self.invalidate_cache();
+                "color_end" => {
+                    if let ControlValue::ColorLinear(color) = value {
+                        self.color_end = [color.r, color.g, color.b, color.a];
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "use_mid_color" => {
-                if let ControlValue::Boolean(flag) = value {
-                    self.use_mid_color = *flag;
-                    self.invalidate_cache();
+                "use_mid_color" => {
+                    if let ControlValue::Bool(flag) = value {
+                        self.use_mid_color = *flag;
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "midpoint" => {
-                if let Some(v) = value.as_f32() {
-                    self.midpoint = v.clamp(0.05, 0.95);
-                    self.invalidate_cache();
+                "midpoint" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.midpoint = v.clamp(0.05, 0.95);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "mode" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.mode = GradientMode::from_str(choice);
-                    self.invalidate_cache();
+                "mode" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.mode = GradientMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "repeat_mode" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.repeat_mode = RepeatMode::from_str(choice);
-                    self.invalidate_cache();
+                "repeat_mode" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.repeat_mode = RepeatMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "angle" => {
-                if let Some(v) = value.as_f32() {
-                    self.angle_degrees = v.rem_euclid(360.0);
-                    self.invalidate_cache();
+                "angle" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.angle_degrees = v.rem_euclid(360.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "center_x" => {
-                if let Some(v) = value.as_f32() {
-                    self.center_x = v.clamp(0.0, 1.0);
-                    self.invalidate_cache();
+                "center_x" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.center_x = v.clamp(0.0, 1.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "center_y" => {
-                if let Some(v) = value.as_f32() {
-                    self.center_y = v.clamp(0.0, 1.0);
-                    self.invalidate_cache();
+                "center_y" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.center_y = v.clamp(0.0, 1.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "scale" => {
-                if let Some(v) = value.as_f32() {
-                    self.scale = v.max(0.1);
-                    self.invalidate_cache();
+                "scale" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.scale = v.max(0.1);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "offset" => {
-                if let Some(v) = value.as_f32() {
-                    self.offset = v;
-                    self.invalidate_cache();
+                "offset" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.offset = v;
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "speed" => {
-                if let Some(v) = value.as_f32() {
-                    self.speed = v;
-                    self.invalidate_cache();
+                "speed" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.speed = v;
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "brightness" => {
-                if let Some(v) = value.as_f32() {
-                    self.brightness = v.clamp(0.0, 1.0);
-                    self.invalidate_cache();
+                "brightness" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.brightness = v.clamp(0.0, 1.0);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "interpolation" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.interpolation = InterpolationMode::from_str(choice);
-                    self.invalidate_cache();
+                "interpolation" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.interpolation = InterpolationMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "saturation" => {
-                if let Some(v) = value.as_f32() {
-                    self.saturation = v.clamp(0.5, 1.5);
-                    self.invalidate_cache();
+                "saturation" => {
+                    if let Some(v) = value.as_effect_f32() {
+                        self.saturation = v.clamp(0.5, 1.5);
+                        self.invalidate_cache();
+                    }
                 }
-            }
-            "easing" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
-                    self.easing = EasingMode::from_str(choice);
-                    self.invalidate_cache();
+                "easing" => {
+                    if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                        self.easing = EasingMode::from_str(choice);
+                        self.invalidate_cache();
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        Ok(())
     }
-
     fn destroy(&mut self) {
         self.invalidate_cache();
     }
@@ -566,22 +569,22 @@ fn interpolate_stop_pair(
     left: PreparedGradientStop,
     right: PreparedGradientStop,
     t: f32,
-) -> RgbaF32 {
+) -> LinearRgba {
     let span = (right.position - left.position).max(f32::EPSILON);
     let local_t = ((t - left.position) / span).clamp(0.0, 1.0);
     left.color.interpolate(right.color, local_t)
 }
 
-fn color_to_rgba(color: [f32; 4]) -> RgbaF32 {
-    RgbaF32::new(color[0], color[1], color[2], color[3])
+fn color_to_rgba(color: [f32; 4]) -> LinearRgba {
+    LinearRgba::new(color[0], color[1], color[2], color[3])
 }
 
 fn rgba_to_oklab(color: [f32; 4]) -> Oklab {
-    RgbaF32::new(color[0], color[1], color[2], color[3]).to_oklab()
+    LinearRgba::new(color[0], color[1], color[2], color[3]).to_oklab()
 }
 
 fn rgba_to_oklch(color: [f32; 4]) -> Oklch {
-    RgbaF32::new(color[0], color[1], color[2], color[3]).to_oklch()
+    LinearRgba::new(color[0], color[1], color[2], color[3]).to_oklch()
 }
 
 // ── Geometry Helpers ─────────────────────────────────────────────────────────
@@ -783,10 +786,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Neon Blaze",
             "Electric SilkCircuit palette with vivid hue sweep",
             &[
-                ("color_start", ControlValue::Color([0.88, 0.08, 1.0, 1.0])),
-                ("color_end", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([1.0, 0.25, 0.55, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.88, 0.08, 1.0, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.0, 1.0, 0.85, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([1.0, 0.25, 0.55, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("speed", ControlValue::Float(0.2)),
                 ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
@@ -796,10 +808,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Sunset",
             "Warm horizon gradient",
             &[
-                ("color_start", ControlValue::Color([1.0, 0.3, 0.1, 1.0])),
-                ("color_end", ControlValue::Color([0.4, 0.0, 0.6, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([1.0, 0.6, 0.2, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([1.0, 0.3, 0.1, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.4, 0.0, 0.6, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([1.0, 0.6, 0.2, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("angle", ControlValue::Float(0.0)),
             ],
@@ -808,10 +829,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Aurora",
             "Northern lights with gentle motion",
             &[
-                ("color_start", ControlValue::Color([0.0, 1.0, 0.5, 1.0])),
-                ("color_end", ControlValue::Color([0.3, 0.0, 1.0, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([0.0, 0.8, 1.0, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 1.0, 0.5, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.3, 0.0, 1.0, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([0.0, 0.8, 1.0, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("speed", ControlValue::Float(0.15)),
                 ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
@@ -821,10 +851,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Molten Core",
             "Deep orange through red to dark, smooth interpolation",
             &[
-                ("color_start", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
-                ("color_end", ControlValue::Color([0.3, 0.0, 0.0, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([1.0, 0.15, 0.0, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([1.0, 0.7, 0.0, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.3, 0.0, 0.0, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([1.0, 0.15, 0.0, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Smooth".to_owned())),
                 ("saturation", ControlValue::Float(1.2)),
                 ("easing", ControlValue::Enum("Ease Out".to_owned())),
@@ -834,10 +873,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Cyberpunk Skyline",
             "Deep blue to magenta to electric pink",
             &[
-                ("color_start", ControlValue::Color([0.0, 0.02, 0.2, 1.0])),
-                ("color_end", ControlValue::Color([1.0, 0.08, 0.58, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([0.5, 0.0, 0.8, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 0.02, 0.2, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([1.0, 0.08, 0.58, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([0.5, 0.0, 0.8, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("angle", ControlValue::Float(90.0)),
             ],
@@ -846,10 +894,19 @@ fn presets() -> Vec<PresetTemplate> {
             "Forest Canopy",
             "Dark green through emerald to golden light",
             &[
-                ("color_start", ControlValue::Color([0.0, 0.15, 0.05, 1.0])),
-                ("color_end", ControlValue::Color([0.95, 0.85, 0.2, 1.0])),
-                ("use_mid_color", ControlValue::Boolean(true)),
-                ("color_mid", ControlValue::Color([0.0, 0.7, 0.3, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 0.15, 0.05, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.95, 0.85, 0.2, 1.0]),
+                ),
+                ("use_mid_color", ControlValue::Bool(true)),
+                (
+                    "color_mid",
+                    ControlValue::linear_color([0.0, 0.7, 0.3, 1.0]),
+                ),
                 ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("saturation", ControlValue::Float(1.1)),
             ],
@@ -857,8 +914,14 @@ fn presets() -> Vec<PresetTemplate> {
         preset(
             "Deep Ocean",
             &[
-                ("color_start", ControlValue::Color([0.0, 0.02, 0.15, 1.0])),
-                ("color_end", ControlValue::Color([0.0, 0.2, 0.5, 1.0])),
+                (
+                    "color_start",
+                    ControlValue::linear_color([0.0, 0.02, 0.15, 1.0]),
+                ),
+                (
+                    "color_end",
+                    ControlValue::linear_color([0.0, 0.2, 0.5, 1.0]),
+                ),
                 ("mode", ControlValue::Enum("Radial".to_owned())),
                 ("interpolation", ControlValue::Enum("Smooth".to_owned())),
                 ("speed", ControlValue::Float(0.08)),

@@ -5,12 +5,12 @@ use leptos::prelude::*;
 use serde_json::json;
 
 use hypercolor_leptos_ext::events::Input;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::control::ControlValue;
 
 use crate::components::color_wheel::ColorWheel;
 
 use super::{
-    QUICK_COLOR_SWATCHES, color_picker_panel_style, control_value_to_hex, hex_to_rgba,
+    QUICK_COLOR_SWATCHES, color_picker_panel_style, control_value_to_hex, hex_to_opaque_rgba,
     normalize_hex,
 };
 
@@ -47,7 +47,7 @@ pub(super) fn render_color_picker(
         if let Some(normalized) = normalize_hex(&hex) {
             set_color.set(normalized.clone());
             set_hex_input.set(normalized.clone());
-            if let Some(rgba) = hex_to_rgba(&normalized) {
+            if let Some(rgba) = hex_to_opaque_rgba(&normalized) {
                 on_change.run((control_name.get_value(), json!(rgba)));
             }
         }
@@ -131,7 +131,7 @@ pub(super) fn render_color_picker(
                                         set_hex_input.set(next.clone());
                                         if let Some(normalized) = normalize_hex(&next) {
                                             set_color.set(normalized.clone());
-                                            if let Some(rgba) = hex_to_rgba(&normalized) {
+                                            if let Some(rgba) = hex_to_opaque_rgba(&normalized) {
                                                 on_change.run((control_name.get_value(), json!(rgba)));
                                             }
                                         }
@@ -173,7 +173,7 @@ pub(super) fn render_color_picker(
                                                 let normalized = normalize_hex(&swatch_hex).expect("hardcoded swatches are valid");
                                                 set_color.set(normalized.clone());
                                                 set_hex_input.set(normalized.clone());
-                                                if let Some(rgba) = hex_to_rgba(&normalized) {
+                                                if let Some(rgba) = hex_to_opaque_rgba(&normalized) {
                                                     on_change.run((control_name.get_value(), json!(rgba)));
                                                 }
                                             }

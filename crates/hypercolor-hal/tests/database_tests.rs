@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use hypercolor_hal::drivers::asus::AURA_REPORT_PAYLOAD_LEN;
 use hypercolor_hal::drivers::asus::{
     ASUS_VID, AURA_REPORT_ID, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
@@ -17,9 +18,9 @@ use hypercolor_hal::drivers::corsair::{
 };
 use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
 use hypercolor_hal::drivers::lianli::{
-    LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_USAGE_PAGE, LIANLI_TL_VENDOR_ID,
-    PID_TL_FAN_HUB, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL_INFINITY, TL_PACKET_LEN,
-    TL_REPORT_ID,
+    LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_LCD_VENDOR_ID, LIANLI_TL_USAGE_PAGE,
+    LIANLI_TL_VENDOR_ID, PID_TL_FAN_HUB, PID_TL_LCD, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL,
+    PID_UNI_HUB_SL_INFINITY, TL_PACKET_LEN, TL_REPORT_ID,
 };
 use hypercolor_hal::drivers::nollie::{
     GEN1_HID_REPORT_SIZE, GEN2_COLOR_REPORT_SIZE, NOLLIE_GEN2_VENDOR_ID, NOLLIE_LEGACY_VENDOR_ID,
@@ -30,19 +31,19 @@ use hypercolor_hal::drivers::nollie::{
 use hypercolor_hal::drivers::prismrgb::{
     HID_REPORT_SIZE as PRISMRGB_REPORT_SIZE, PID_PRISM_MINI, PID_PRISM_S, PRISM_GCS_VENDOR_ID,
 };
-use hypercolor_hal::drivers::push2::{
-    ABLETON_VENDOR_ID, PID_PUSH_2, PUSH2_DISPLAY_ENDPOINT, PUSH2_DISPLAY_INTERFACE,
-    PUSH2_MIDI_INTERFACE,
-};
+use hypercolor_hal::drivers::push2::{ABLETON_VENDOR_ID, PID_PUSH_2};
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
     PID_BLADE_15_LATE_2021_ADVANCED, PID_BLADE_PRO_2016, PID_HUNTSMAN_V2, PID_MAMBA_ELITE,
     PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_REPORT_LEN, RAZER_VENDOR_ID,
 };
-use hypercolor_hal::registry::{HidRawReportMode, TransportType};
+use hypercolor_hal::registry::{
+    HidRawReportMode, TransportConnectExecution, TransportType, UsbTransportKind,
+};
+use hypercolor_hal::transport::TransportPlatform;
 use hypercolor_types::device::{
     DRIVER_MODULE_API_SCHEMA_VERSION, DeviceFamily, DeviceTopologyHint, DriverModuleKind,
-    DriverTransportKind,
+    DriverTransportAvailability, DriverTransportDescriptor, DriverTransportKind,
 };
 
 const PID_BLADE_14_2022: u16 = 0x028C;
@@ -68,7 +69,7 @@ fn expected_razer_shared_hid_transport(
 }
 
 fn expected_report_id_payload_hid_transport(interface: u8, max_report_len: usize) -> TransportType {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         TransportType::UsbHidApi {
             interface: Some(interface),
@@ -91,16 +92,10 @@ fn expected_report_id_payload_hid_transport(interface: u8, max_report_len: usize
             usage: None,
         }
     }
-
-    #[cfg(all(not(windows), not(target_os = "linux")))]
-    {
-        let _ = max_report_len;
-        TransportType::UsbHid { interface }
-    }
 }
 
 fn expected_asus_hid_transport(interface: u8) -> TransportType {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         TransportType::UsbHidApi {
             interface: Some(interface),
@@ -112,7 +107,7 @@ fn expected_asus_hid_transport(interface: u8) -> TransportType {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         TransportType::UsbHidRaw {
             interface,
@@ -129,7 +124,7 @@ fn expected_windows_hidapi_or_usb_hid(
     report_id: u8,
     max_report_len: usize,
 ) -> TransportType {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         TransportType::UsbHidApi {
             interface: Some(interface),
@@ -141,7 +136,7 @@ fn expected_windows_hidapi_or_usb_hid(
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         let _ = report_id;
         let _ = max_report_len;
@@ -254,6 +249,30 @@ fn lookup_returns_lianli_tl_fan_descriptor() {
 }
 
 #[test]
+fn lookup_returns_lianli_tl_lcd_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(LIANLI_TL_LCD_VENDOR_ID, PID_TL_LCD)
+        .expect("wired Uni Fan TL LCD descriptor should exist");
+
+    assert_eq!(descriptor.name, "Lian Li Uni Fan TL LCD");
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::new_static("lianli", "Lian Li")
+    );
+    assert_eq!(descriptor.protocol.id, "lianli/tl-lcd");
+    assert!(descriptor.firmware_predicate.is_none());
+    assert!(
+        descriptor.is_placeholder_serial("TL_LCDV0.1"),
+        "the panel's stock serial is a model string, not an identity"
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Lian Li Uni Fan TL LCD");
+    assert_eq!(protocol.total_leds(), 0);
+    assert_eq!(protocol.zones().len(), 1);
+    assert!(protocol.capabilities().has_display);
+}
+
+#[test]
 fn lookup_returns_lianli_original_descriptor() {
     let descriptor = ProtocolDatabase::lookup(LIANLI_ENE_VENDOR_ID, PID_UNI_HUB_ORIGINAL)
         .expect("original Lian Li UNI Hub descriptor should exist");
@@ -346,14 +365,20 @@ fn lookup_returns_push2_descriptor() {
     assert_eq!(descriptor.name, "Ableton Push 2");
     assert_eq!(descriptor.family, DeviceFamily::named("Ableton"));
     assert_eq!(descriptor.protocol.id, "push2/push-2");
+    let TransportType::DriverUsb { binding } = descriptor.transport else {
+        panic!("Push 2 should declare a driver-owned USB transport");
+    };
+    assert_eq!(binding.id, "push2/native-midi-display");
+    assert_eq!(binding.kind, UsbTransportKind::Midi);
     assert_eq!(
-        descriptor.transport,
-        TransportType::UsbMidi {
-            midi_interface: PUSH2_MIDI_INTERFACE,
-            display_interface: PUSH2_DISPLAY_INTERFACE,
-            display_endpoint: PUSH2_DISPLAY_ENDPOINT,
-        }
+        binding.lifecycle.connect_execution,
+        TransportConnectExecution::Background
     );
+    assert_eq!(
+        binding.lifecycle.connect_timeout,
+        Some(Duration::from_secs(30))
+    );
+    assert!(!binding.lifecycle.retry_on_connect_timeout);
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Ableton Push 2");
@@ -1116,7 +1141,10 @@ fn module_descriptors_group_hal_protocols_by_family() {
     assert_eq!(nollie.module_kind, DriverModuleKind::Hal);
     assert_eq!(
         nollie.transports,
-        vec![DriverTransportKind::Usb, DriverTransportKind::Serial]
+        vec![
+            DriverTransportDescriptor::available(DriverTransportKind::Usb),
+            DriverTransportDescriptor::available(DriverTransportKind::Serial),
+        ]
     );
     assert!(nollie.capabilities.protocol_catalog);
     assert!(!nollie.capabilities.output_backend);
@@ -1127,22 +1155,41 @@ fn module_descriptors_group_hal_protocols_by_family() {
         .iter()
         .find(|module| module.id == "asus")
         .expect("ASUS module descriptor should exist");
-    assert_eq!(
-        asus.transports,
-        vec![DriverTransportKind::Usb, DriverTransportKind::Smbus]
-    );
+    assert_eq!(asus.transports[0].kind, DriverTransportKind::Usb);
+    assert!(asus.transports[0].is_available());
+    assert_eq!(asus.transports[1].kind, DriverTransportKind::Smbus);
+    if cfg!(any(target_os = "linux", target_os = "windows")) {
+        assert!(asus.transports[1].is_available());
+    } else {
+        assert_eq!(
+            asus.transports[1].availability,
+            DriverTransportAvailability::UnsupportedPlatform {
+                platform: TransportPlatform::CURRENT.to_string(),
+            }
+        );
+    }
 
     let push2 = modules
         .iter()
         .find(|module| module.id == "push2")
         .expect("Push 2 module descriptor should exist");
-    assert_eq!(push2.transports, vec![DriverTransportKind::Midi]);
+    assert_eq!(
+        push2.transports,
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Midi
+        )]
+    );
 
     let dygma = modules
         .iter()
         .find(|module| module.id == "dygma")
         .expect("Dygma module descriptor should exist");
-    assert_eq!(dygma.transports, vec![DriverTransportKind::Serial]);
+    assert_eq!(
+        dygma.transports,
+        vec![DriverTransportDescriptor::available(
+            DriverTransportKind::Serial
+        )]
+    );
 }
 
 #[test]

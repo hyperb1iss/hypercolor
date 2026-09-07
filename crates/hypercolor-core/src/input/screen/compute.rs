@@ -8,7 +8,7 @@ use super::{
     PixelExtent, ResolvedScreenSource, ScreenCapturePlan, ScreenPhysicalReductionDescriptor,
     ScreenPublicationExecutor, ScreenReductionFilter, ScreenSourceSelector, fit_within,
 };
-use crate::types::canvas::SurfaceResourceError;
+use hypercolor_types::canvas::SurfaceResourceError;
 
 const SOURCE_REDUCTION_WEIGHT: u64 = 5;
 const SECTOR_FINALIZATION_WEIGHT: u64 = 32;
@@ -80,7 +80,7 @@ impl ScreenComputeCapacityPolicy {
     }
 }
 
-/// Caller-calibrated CPU capacity available to compatibility screen analysis.
+/// Caller-calibrated CPU capacity available to the reference screen analyzer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenAnalysisComputeCapacity {
     worker_count: NonZeroUsize,

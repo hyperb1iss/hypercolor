@@ -5,82 +5,27 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
-use serde::{Deserialize, Serialize};
+use axum::response::{IntoResponse, Response};
 use tracing::debug;
 
 use hypercolor_core::attachment::{effective_attachment_slots, normalize_attachment_profile_slots};
-use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::{
     ComponentBinding, ComponentSlot, ComponentSuggestedZone, ComponentTemplate,
     DeviceComponentProfile,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo};
-use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
-use crate::api::AppState;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope;
+use crate::app_state::AppState;
+use crate::domain::{DomainError, ResourceKind};
 use crate::logical_devices;
 
-use super::{ensure_default_logical_entry, resolve_device_id_or_response};
+use super::{ensure_default_logical_entry, resolve_device_id_or_error};
 
-#[derive(Debug, Deserialize, Default)]
-pub struct UpdateAttachmentsRequest {
-    #[serde(default)]
-    pub bindings: Vec<ComponentBinding>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DeviceComponentsResponse {
-    pub device_id: String,
-    pub device_name: String,
-    pub slots: Vec<ComponentSlot>,
-    pub bindings: Vec<ComponentBindingSummary>,
-    pub suggested_zones: Vec<ComponentSuggestedZone>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DeviceComponentsUpdateResponse {
-    pub device_id: String,
-    pub device_name: String,
-    pub slots: Vec<ComponentSlot>,
-    pub bindings: Vec<ComponentBindingSummary>,
-    pub suggested_zones: Vec<ComponentSuggestedZone>,
-    pub needs_layout_update: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ComponentBindingSummary {
-    pub slot_id: String,
-    pub template_id: String,
-    pub template_name: String,
-    pub name: Option<String>,
-    pub enabled: bool,
-    pub instances: u32,
-    pub led_offset: u32,
-    pub effective_led_count: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ComponentPreviewResponse {
-    pub device_id: String,
-    pub device_name: String,
-    pub zones: Vec<ComponentPreviewZone>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ComponentPreviewZone {
-    pub slot_id: String,
-    pub binding_index: usize,
-    pub instance: u32,
-    pub template_id: String,
-    pub template_name: String,
-    pub name: String,
-    pub led_start: u32,
-    pub led_count: u32,
-    pub topology: LedTopology,
-    pub led_positions: Vec<NormalizedPosition>,
-}
+pub use hypercolor_types::api::devices::{
+    ComponentBindingSummary, DeleteAttachmentsResponse, DeviceComponentsResponse,
+    DeviceComponentsUpdateResponse, UpdateAttachmentsRequest,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedComponentBinding {
@@ -91,18 +36,18 @@ pub(super) struct ResolvedComponentBinding {
     pub(super) effective_led_count: u32,
 }
 
-/// `GET /api/v1/devices/:id/attachments` — Get a device attachment profile.
+/// `GET /api/v1/devices/{id}/attachments` — Get a device attachment profile.
 pub async fn get_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let mut profile = {
@@ -112,33 +57,33 @@ pub async fn get_attachments(
     normalize_attachment_profile_slots(&tracked.info, &mut profile);
     let registry = state.attachment_registry.read().await;
 
-    ApiResponse::ok(summarize_attachment_profile(
+    envelope::ok(summarize_attachment_profile(
         &tracked.info,
         profile,
         &registry,
     ))
 }
 
-/// `PUT /api/v1/devices/:id/attachments` — Save a device attachment profile.
+/// `PUT /api/v1/devices/{id}/attachments` — Save a device attachment profile.
 pub async fn update_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<UpdateAttachmentsRequest>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
     let slots = effective_attachment_slots(&tracked.info, &body.bindings);
     let resolved = {
         let registry = state.attachment_registry.read().await;
         match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
             Ok(bindings) => bindings,
-            Err(response) => return response,
+            Err(error) => return error.into_response(),
         }
     };
 
@@ -149,21 +94,32 @@ pub async fn update_attachments(
         bindings: resolved.iter().map(|item| item.binding.clone()).collect(),
         suggested_zones: suggested_zones.clone(),
     };
-    let device_key = tracked.info.id.to_string();
-    {
-        let mut profiles = state.attachment_profiles.write().await;
-        profiles.update(&device_key, profile.clone());
-        if let Err(error) = profiles.save() {
-            return ApiError::internal(format!("Failed to persist attachment profile: {error}"));
+    let layout_device_id = if body.validate_only {
+        state
+            .domains
+            .layout
+            .resolved_layout_device_id(&state.domains.devices.layout_runtime(), &tracked.info)
+            .await
+    } else {
+        let device_key = tracked.info.id.to_string();
+        {
+            let mut profiles = state.attachment_profiles.write().await;
+            profiles.update(&device_key, profile.clone());
+            if let Err(error) = profiles.save() {
+                return DomainError::Internal(anyhow::anyhow!(
+                    "Failed to persist attachment profile: {error}"
+                ))
+                .into_response();
+            }
         }
-    }
-    sync_usb_protocol_config(state.as_ref(), device_id, &tracked.info, &profile).await;
+        sync_usb_protocol_config(state.as_ref(), device_id, &tracked.info, &profile).await;
 
-    let layout_device_id = ensure_default_logical_entry(&state, &tracked.info).await;
+        ensure_default_logical_entry(&state, &tracked.info).await
+    };
     let needs_layout_update =
         active_layout_targets_device(&state, tracked.info.id, &layout_device_id).await;
 
-    ApiResponse::ok(DeviceComponentsUpdateResponse {
+    envelope::ok(DeviceComponentsUpdateResponse {
         device_id: tracked.info.id.to_string(),
         device_name: tracked.info.name.clone(),
         slots,
@@ -173,66 +129,37 @@ pub async fn update_attachments(
     })
 }
 
-/// `POST /api/v1/devices/:id/attachments/preview` — Preview attachment zones.
-pub async fn preview_attachments(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(body): Json<UpdateAttachmentsRequest>,
-) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
-        Ok(id) => id,
-        Err(response) => return response,
-    };
-
-    let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
-    };
-    let slots = effective_attachment_slots(&tracked.info, &body.bindings);
-    let resolved = {
-        let registry = state.attachment_registry.read().await;
-        match validate_attachment_bindings(&tracked.info, &slots, &body.bindings, &registry) {
-            Ok(bindings) => bindings,
-            Err(response) => return response,
-        }
-    };
-
-    ApiResponse::ok(ComponentPreviewResponse {
-        device_id: tracked.info.id.to_string(),
-        device_name: tracked.info.name.clone(),
-        zones: preview_attachment_zones(&resolved),
-    })
-}
-
-/// `DELETE /api/v1/devices/:id/attachments` — Remove a stored attachment profile.
+/// `DELETE /api/v1/devices/{id}/attachments` — Remove a stored attachment profile.
 pub async fn delete_attachments(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let device_id = match resolve_device_id_or_response(&state, &id).await {
+    let device_id = match resolve_device_id_or_error(&state, &id).await {
         Ok(id) => id,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
-        return ApiError::not_found(format!("Device not found: {id}"));
+        return DomainError::not_found(ResourceKind::Device, &id).into_response();
     };
 
     let deleted = {
         let mut profiles = state.attachment_profiles.write().await;
         let deleted = profiles.remove(&tracked.info.id.to_string()).is_some();
         if deleted && let Err(error) = profiles.save() {
-            return ApiError::internal(format!(
+            return DomainError::Internal(anyhow::anyhow!(
                 "Failed to persist attachment profile deletion: {error}"
-            ));
+            ))
+            .into_response();
         }
         deleted
     };
     state.usb_protocol_configs.remove_device(device_id).await;
 
-    ApiResponse::ok(serde_json::json!({
-        "device_id": tracked.info.id.to_string(),
-        "deleted": deleted,
-    }))
+    envelope::ok(DeleteAttachmentsResponse {
+        device_id: tracked.info.id.to_string(),
+        deleted,
+    })
 }
 
 async fn sync_usb_protocol_config(
@@ -257,7 +184,7 @@ async fn sync_usb_protocol_config(
     }
 }
 
-fn summarize_attachment_profile(
+pub(super) fn summarize_attachment_profile(
     device: &DeviceInfo,
     mut profile: DeviceComponentProfile,
     registry: &hypercolor_core::attachment::ComponentRegistry,
@@ -319,37 +246,6 @@ fn summarize_resolved_bindings(
         .collect()
 }
 
-fn preview_attachment_zones(bindings: &[ResolvedComponentBinding]) -> Vec<ComponentPreviewZone> {
-    let mut zones = Vec::new();
-
-    for binding in bindings {
-        let led_positions = generate_positions(&binding.template.topology);
-        let template_led_count = binding.template.led_count();
-        for instance in 0..binding.binding.instances {
-            let led_start = binding
-                .slot
-                .led_start
-                .saturating_add(binding.binding.led_offset)
-                .saturating_add(instance.saturating_mul(template_led_count));
-            zones.push(ComponentPreviewZone {
-                slot_id: binding.binding.slot_id.clone(),
-                binding_index: binding.index,
-                instance,
-                template_id: binding.binding.template_id.clone(),
-                template_name: binding.template.name.clone(),
-                name: preview_attachment_zone_name(binding, instance),
-                led_start,
-                led_count: template_led_count,
-                topology: binding.template.topology.clone(),
-                led_positions: led_positions.clone(),
-            });
-        }
-    }
-
-    disambiguate_attachment_zone_names(&mut zones);
-    zones
-}
-
 pub(super) fn suggested_attachment_zones(
     bindings: &[ResolvedComponentBinding],
 ) -> Vec<ComponentSuggestedZone> {
@@ -367,7 +263,7 @@ pub(super) fn suggested_attachment_zones(
                 slot_id: binding.binding.slot_id.clone(),
                 template_id: binding.binding.template_id.clone(),
                 template_name: binding.template.name.clone(),
-                name: preview_attachment_zone_name(binding, instance),
+                name: attachment_zone_name(binding, instance),
                 instance,
                 led_start,
                 led_count: template_led_count,
@@ -383,7 +279,7 @@ pub(super) fn suggested_attachment_zones(
     zones
 }
 
-fn preview_attachment_zone_name(binding: &ResolvedComponentBinding, instance: u32) -> String {
+fn attachment_zone_name(binding: &ResolvedComponentBinding, instance: u32) -> String {
     match binding.binding.name.as_deref() {
         Some(name) if binding.binding.instances > 1 => {
             format!("{name} - {} {}", binding.template.name, instance + 1)
@@ -400,20 +296,6 @@ trait NamedComponentZone {
     fn slot_id(&self) -> &str;
     fn name(&self) -> &str;
     fn name_mut(&mut self) -> &mut String;
-}
-
-impl NamedComponentZone for ComponentPreviewZone {
-    fn slot_id(&self) -> &str {
-        &self.slot_id
-    }
-
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
 }
 
 impl NamedComponentZone for ComponentSuggestedZone {
@@ -460,16 +342,12 @@ fn resolve_profile_bindings(
     validate_attachment_bindings(device, &profile.slots, &profile.bindings, registry).ok()
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on validation failure"
-)]
 fn validate_attachment_bindings(
     device: &DeviceInfo,
     slots: &[ComponentSlot],
     bindings: &[ComponentBinding],
     registry: &hypercolor_core::attachment::ComponentRegistry,
-) -> Result<Vec<ResolvedComponentBinding>, Response> {
+) -> Result<Vec<ResolvedComponentBinding>, DomainError> {
     let slot_index = slots
         .iter()
         .map(|slot| (slot.id.as_str(), slot))
@@ -479,42 +357,42 @@ fn validate_attachment_bindings(
     for (index, binding) in bindings.iter().enumerate() {
         let slot_id = binding.slot_id.trim();
         if slot_id.is_empty() {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} has an empty slot_id"
             )));
         }
 
         let template_id = binding.template_id.trim();
         if template_id.is_empty() {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} has an empty template_id"
             )));
         }
 
         if binding.instances == 0 {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} must set instances to at least 1"
             )));
         }
 
         let Some(slot) = slot_index.get(slot_id).copied() else {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} targets unknown slot '{slot_id}'"
             )));
         };
         let Some(template) = registry.get(template_id) else {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} references unknown template '{template_id}'"
             )));
         };
 
         if !slot.supports_template(template) {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "template '{template_id}' is not allowed for slot '{slot_id}'"
             )));
         }
         if !template_supports_device_slot(template, device, slot_id) {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "template '{template_id}' is not compatible with {} slot '{slot_id}'",
                 device.name
             )));
@@ -522,12 +400,12 @@ fn validate_attachment_bindings(
 
         let effective_led_count = binding.effective_led_count(template);
         let Some(binding_end) = binding.led_offset.checked_add(effective_led_count) else {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} exceeds slot '{slot_id}' LED range"
             )));
         };
         if binding_end > slot.led_count {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "binding {index} exceeds slot '{slot_id}' capacity: {binding_end} > {}",
                 slot.led_count
             )));
@@ -580,11 +458,7 @@ fn push_unique_id(ids: &mut Vec<String>, id: String) {
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on validation failure"
-)]
-fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result<(), Response> {
+fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result<(), DomainError> {
     let mut enabled = bindings
         .iter()
         .filter(|binding| binding.binding.enabled)
@@ -610,7 +484,7 @@ fn validate_attachment_overlaps(bindings: &[ResolvedComponentBinding]) -> Result
             .led_offset
             .saturating_add(current.effective_led_count);
         if next.binding.led_offset < current_end {
-            return Err(ApiError::validation(format!(
+            return Err(DomainError::validation(format!(
                 "bindings {} and {} overlap within slot '{}'",
                 current.index, next.index, current.binding.slot_id
             )));
@@ -646,7 +520,7 @@ async fn active_layout_targets_device(
         logical_ids.push(physical_layout_id);
     }
 
-    let spatial = state.spatial_engine.read().await;
+    let spatial = state.spatial_engine.snapshot();
     spatial.layout().zones.iter().any(|zone| {
         logical_ids
             .iter()

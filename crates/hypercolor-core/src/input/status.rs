@@ -1,6 +1,7 @@
 //! Non-blocking latest-value reads for source health and sample freshness.
 
 use arc_swap::{ArcSwap, ArcSwapOption};
+use hypercolor_types::source_status::SourceDiagnosticsEnvelope;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -27,6 +28,8 @@ pub enum SourceKind {
     Media,
     /// Network-delivered input.
     Network,
+    /// System sensor telemetry.
+    Sensors,
 }
 
 /// Current lifecycle health of an input source.
@@ -295,6 +298,8 @@ pub struct SourceStatus {
     pub consented: bool,
     /// Whether the current render graph demands source data.
     pub demanded: bool,
+    /// Number of committed consumers currently reading this source domain.
+    pub active_consumer_count: usize,
     /// Lifecycle health, independent of sample freshness.
     pub state: SourceState,
     /// Freshness of the latest sampled data.
@@ -315,6 +320,10 @@ pub struct SourceStatus {
     pub issue: Option<SourceIssue>,
     /// Structured freshness problem details.
     pub freshness_issue: Option<SourceIssue>,
+    /// Neutral user action required before the source can become fully usable.
+    pub action_issue: Option<SourceIssue>,
+    /// Versioned backend diagnostics with bounded neutral display fields.
+    pub diagnostics: Option<Arc<SourceDiagnosticsEnvelope>>,
     /// Whether the source was permanently removed from its owning graph.
     pub retired: bool,
 }
@@ -335,6 +344,7 @@ impl SourceStatus {
             configured,
             consented,
             demanded,
+            active_consumer_count: 0,
             state: SourceState::Stopped,
             freshness: SourceFreshness::NotApplicable,
             source_graph_generation: 0,
@@ -345,28 +355,14 @@ impl SourceStatus {
             denied_resource_count: 0,
             issue: None,
             freshness_issue: None,
+            action_issue: None,
+            diagnostics: None,
             retired: false,
         }
     }
 
     fn eligible(&self) -> bool {
         self.configured && self.consented && self.demanded
-    }
-}
-
-pub(crate) struct SourceStatusPolicy {
-    configured: bool,
-    consented: bool,
-    demanded: bool,
-}
-
-impl SourceStatusPolicy {
-    pub(crate) const fn new(configured: bool, consented: bool, demanded: bool) -> Self {
-        Self {
-            configured,
-            consented,
-            demanded,
-        }
     }
 }
 
@@ -830,21 +826,27 @@ impl SourceStatusWriter {
         consented: bool,
         demanded: bool,
     ) -> (Self, SourceStatusHandle) {
-        let initial = Arc::new(SourceStatus::stopped(
+        let initial = SourceStatus::stopped(
             source_id.into(),
             kind,
             backend.into(),
             configured,
             consented,
             demanded,
-        ));
+        );
+        Self::from_initial(initial)
+    }
+
+    fn from_initial(initial: SourceStatus) -> (Self, SourceStatusHandle) {
+        let next_session = initial.session_generation;
+        let initial = Arc::new(initial);
         let (structural, _) = watch::channel(Arc::clone(&initial));
         let (sample_signals, _) = watch::channel(0);
         let shared = Arc::new(SourceStatusShared {
             latest: ArcSwap::from(initial),
             control: Mutex::new(SourceStatusControl {
                 active_session: None,
-                next_session: 0,
+                next_session,
                 sample_signal_generation: 0,
             }),
             structural,
@@ -919,6 +921,68 @@ impl SourceStatusWriter {
         Ok(())
     }
 
+    /// Publish the committed consumer count without disturbing lifecycle state.
+    pub fn set_active_consumer_count(
+        &self,
+        active_consumer_count: usize,
+    ) -> Result<(), SourceStatusError> {
+        let _control = lock_control(&self.shared);
+        let current = self.shared.latest.load_full();
+        if current.retired {
+            return Err(SourceStatusError::Retired);
+        }
+        if current.active_consumer_count == active_consumer_count {
+            return Ok(());
+        }
+        let mut status = (*current).clone();
+        status.active_consumer_count = active_consumer_count;
+        publish_structural(&self.shared, status);
+        Ok(())
+    }
+
+    /// Publish backend diagnostics without disturbing generic lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceStatusError::Retired`] after source removal.
+    pub fn set_diagnostics(
+        &self,
+        diagnostics: Option<SourceDiagnosticsEnvelope>,
+    ) -> Result<(), SourceStatusError> {
+        let diagnostics = diagnostics.map(Arc::new);
+        let _control = lock_control(&self.shared);
+        let current = self.shared.latest.load_full();
+        if current.retired {
+            return Err(SourceStatusError::Retired);
+        }
+        if current.diagnostics == diagnostics {
+            return Ok(());
+        }
+        let mut status = (*current).clone();
+        status.diagnostics = diagnostics;
+        publish_structural(&self.shared, status);
+        Ok(())
+    }
+
+    /// Publish a neutral user-action issue without disturbing lifecycle state.
+    pub fn set_action_issue(
+        &self,
+        action_issue: Option<SourceIssue>,
+    ) -> Result<(), SourceStatusError> {
+        let _control = lock_control(&self.shared);
+        let current = self.shared.latest.load_full();
+        if current.retired {
+            return Err(SourceStatusError::Retired);
+        }
+        if current.action_issue == action_issue {
+            return Ok(());
+        }
+        let mut status = (*current).clone();
+        status.action_issue = action_issue;
+        publish_structural(&self.shared, status);
+        Ok(())
+    }
+
     /// Begin a source session with a strictly newer graph generation.
     ///
     /// # Errors
@@ -984,6 +1048,7 @@ impl SourceStatusWriter {
         control.active_session = None;
         let mut status = (*current).clone();
         clear_stopped_state(&mut status);
+        status.action_issue = None;
         publish_structural(&self.shared, status);
         self.shared.samples.tombstone();
         self.shared.diagnostics.store(None);
@@ -1008,6 +1073,8 @@ impl SourceStatusWriter {
         control.active_session = None;
         let mut status = (*current).clone();
         clear_stopped_state(&mut status);
+        status.action_issue = None;
+        status.active_consumer_count = 0;
         status.source_graph_generation = removal_graph_generation;
         status.retired = true;
         publish_structural(&self.shared, status);
@@ -1084,6 +1151,33 @@ impl SourceStatusReporter {
         }
     }
 
+    pub(crate) fn new_successor(
+        predecessor: &SourceStatusHandle,
+        backend: impl Into<Arc<str>>,
+        configured: bool,
+        consented: bool,
+        demanded: bool,
+    ) -> Self {
+        let predecessor = predecessor.snapshot();
+        let mut initial = SourceStatus::stopped(
+            Arc::clone(&predecessor.source_id),
+            predecessor.kind,
+            backend.into(),
+            configured,
+            consented,
+            demanded,
+        );
+        initial.source_graph_generation = predecessor.source_graph_generation;
+        initial.session_generation = predecessor.session_generation;
+        let (writer, handle) = SourceStatusWriter::from_initial(initial);
+        Self {
+            writer,
+            handle,
+            source_graph_generation: predecessor.source_graph_generation,
+            session: None,
+        }
+    }
+
     /// Clone the source's lock-free read handle.
     #[must_use]
     pub fn handle(&self) -> SourceStatusHandle {
@@ -1097,71 +1191,6 @@ impl SourceStatusReporter {
             "source graph generation must never regress"
         );
         self.source_graph_generation = source_graph_generation;
-    }
-
-    pub(crate) fn reconfigure(
-        &mut self,
-        backend: impl Into<Arc<str>>,
-        policy: SourceStatusPolicy,
-        start_session: bool,
-    ) -> Result<Option<SourceSessionWriter>, SourceStatusError> {
-        let backend = backend.into();
-        let mut control = lock_control(&self.writer.shared);
-        let current = self.handle.snapshot();
-        if current.retired {
-            return Err(SourceStatusError::Retired);
-        }
-        let eligible = policy.configured && policy.consented && policy.demanded;
-        if start_session && !eligible {
-            return Err(SourceStatusError::Ineligible {
-                configured: policy.configured,
-                consented: policy.consented,
-                demanded: policy.demanded,
-            });
-        }
-        if start_session && self.source_graph_generation != 0 {
-            require_newer_graph(
-                self.source_graph_generation,
-                current.source_graph_generation,
-            )?;
-        }
-
-        let mut status = (*current).clone();
-        status.backend = backend;
-        status.configured = policy.configured;
-        status.consented = policy.consented;
-        status.demanded = policy.demanded;
-        let session = if start_session && self.source_graph_generation != 0 {
-            control.next_session = control
-                .next_session
-                .checked_add(1)
-                .expect("source session generation exhausted");
-            let session_generation = control.next_session;
-            control.active_session = Some(session_generation);
-            status.state = SourceState::Starting;
-            status.freshness = SourceFreshness::AwaitingSample;
-            status.source_graph_generation = self.source_graph_generation;
-            status.session_generation = session_generation;
-            status.last_sample_at = None;
-            status.freshness_deadline = None;
-            status.resource_count = 0;
-            status.denied_resource_count = 0;
-            status.issue = None;
-            status.freshness_issue = None;
-            Some(SourceSessionWriter {
-                shared: Arc::clone(&self.writer.shared),
-                session_generation,
-            })
-        } else {
-            control.active_session = None;
-            clear_stopped_state(&mut status);
-            None
-        };
-        self.writer.shared.diagnostics.store(None);
-        publish_structural(&self.writer.shared, status);
-        self.writer.shared.samples.tombstone();
-        self.session.clone_from(&session);
-        Ok(session)
     }
 
     /// Begin a generation-fenced session when the source belongs to a manager.
@@ -1200,6 +1229,30 @@ impl SourceStatusReporter {
     /// Publish the backend selected by a successfully committed configuration.
     pub fn set_backend(&mut self, backend: impl Into<Arc<str>>) -> Result<(), SourceStatusError> {
         self.writer.set_backend(backend)
+    }
+
+    /// Publish the committed consumer count without disturbing lifecycle state.
+    pub fn set_active_consumer_count(
+        &mut self,
+        active_consumer_count: usize,
+    ) -> Result<(), SourceStatusError> {
+        self.writer.set_active_consumer_count(active_consumer_count)
+    }
+
+    /// Publish backend diagnostics without disturbing generic lifecycle.
+    pub fn set_diagnostics(
+        &mut self,
+        diagnostics: Option<SourceDiagnosticsEnvelope>,
+    ) -> Result<(), SourceStatusError> {
+        self.writer.set_diagnostics(diagnostics)
+    }
+
+    /// Publish a neutral user-action issue without disturbing lifecycle state.
+    pub fn set_action_issue(
+        &mut self,
+        action_issue: Option<SourceIssue>,
+    ) -> Result<(), SourceStatusError> {
+        self.writer.set_action_issue(action_issue)
     }
 
     /// Stop and fence the current source session.
@@ -1245,6 +1298,23 @@ impl SourceSessionWriter {
         }
         self.shared.diagnostics.store(Some(Arc::new(diagnostics)));
         true
+    }
+
+    /// Publish platform diagnostics into the public source-status envelope.
+    ///
+    /// This method takes the blocking control mutex and must not run inside an
+    /// audio, graphics, or other real-time callback.
+    pub fn publish_status_diagnostics(
+        &self,
+        diagnostics: Option<SourceDiagnosticsEnvelope>,
+    ) -> bool {
+        let diagnostics = diagnostics.map(Arc::new);
+        self.publish(|status| status.diagnostics = diagnostics)
+    }
+
+    /// Publish a neutral user-action issue if this session is still active.
+    pub fn set_action_issue(&self, action_issue: Option<SourceIssue>) -> bool {
+        self.publish(|status| status.action_issue = action_issue)
     }
 
     /// Publish a sampled value with its mandatory freshness deadline.
@@ -1735,6 +1805,7 @@ fn is_canonical_stopped(status: &SourceStatus) -> bool {
         && status.denied_resource_count == 0
         && status.issue.is_none()
         && status.freshness_issue.is_none()
+        && status.action_issue.is_none()
 }
 
 fn stale_data_issue() -> SourceIssue {

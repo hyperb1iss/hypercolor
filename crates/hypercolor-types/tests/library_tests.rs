@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use hypercolor_types::effect::{ControlValue, EffectId};
+use hypercolor_types::api::library::{ActivePlaylistResponse, DeactivatePlaylistResponse};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::EffectId;
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, FavoriteEffect, PlaylistId, PlaylistItem, PlaylistItemId,
     PlaylistItemTarget, PresetId,
@@ -13,6 +15,28 @@ fn preset_id_round_trips_from_string() {
     let id = PresetId::new();
     let parsed = PresetId::from_str(&id.to_string()).expect("preset id should parse");
     assert_eq!(id, parsed);
+}
+
+#[test]
+fn authored_preset_id_is_stable_and_keyed() {
+    let first = PresetId::stable("deep-ocean");
+    let second = PresetId::stable("deep-ocean");
+
+    assert_eq!(first, second);
+    assert_ne!(first, PresetId::stable("northern-lights"));
+    assert_eq!(PresetId::from_str(&first.to_string()), Ok(first));
+}
+
+#[test]
+fn authored_preset_id_normalizes_cross_runtime_whitespace() {
+    let canonical = PresetId::stable("deep ocean");
+
+    assert_eq!(canonical, PresetId::stable("  deep\tocean\n"));
+    assert_eq!(canonical, PresetId::stable("deep\u{1c}ocean"));
+    assert_eq!(canonical, PresetId::stable("deep\u{1f}ocean"));
+    assert_eq!(canonical, PresetId::stable("deep\u{85}ocean"));
+    assert_eq!(canonical, PresetId::stable("deep\u{feff}ocean"));
+    assert_eq!(PresetId::normalize_key("\u{feff}\u{1c}"), "");
 }
 
 #[test]
@@ -45,7 +69,7 @@ fn favorite_effect_serde_roundtrip() {
 fn effect_preset_serde_roundtrip() {
     let mut controls = HashMap::new();
     controls.insert("speed".to_owned(), ControlValue::Float(0.75));
-    controls.insert("enabled".to_owned(), ControlValue::Boolean(true));
+    controls.insert("enabled".to_owned(), ControlValue::Bool(true));
 
     let preset = EffectPreset {
         id: PresetId::new(),
@@ -93,4 +117,22 @@ fn playlist_serde_roundtrip() {
     let json = serde_json::to_string(&playlist).expect("serialize playlist");
     let decoded: EffectPlaylist = serde_json::from_str(&json).expect("deserialize playlist");
     assert_eq!(playlist, decoded);
+}
+
+#[test]
+fn deactivate_playlist_response_uses_canonical_vocabulary() {
+    let response = DeactivatePlaylistResponse {
+        playlist: ActivePlaylistResponse {
+            id: PlaylistId::new().to_string(),
+            name: "Late Night".to_owned(),
+            loop_enabled: true,
+            item_count: 2,
+            started_at_ms: 42,
+        },
+        deactivated: true,
+    };
+
+    let json = serde_json::to_value(response).expect("serialize deactivate response");
+    assert_eq!(json["deactivated"], true);
+    assert!(json.get("stopped").is_none());
 }

@@ -1,5 +1,7 @@
 //! ASUS Aura USB motherboard/addressable/terminal protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -13,8 +15,8 @@ use hypercolor_types::device::{
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
-    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ResponseStatus,
+    TransferType,
 };
 
 use super::types::{
@@ -254,6 +256,7 @@ impl AuraUsbProtocol {
             response_delay: RESPONSE_DELAY,
             post_delay: RESPONSE_POST_DELAY,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 
@@ -264,6 +267,7 @@ impl AuraUsbProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 
@@ -468,7 +472,7 @@ impl Protocol for AuraUsbProtocol {
         RESPONSE_TIMEOUT
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
+    fn zones(&self) -> Vec<SegmentInfo> {
         let topology = self
             .topology
             .read()
@@ -478,7 +482,7 @@ impl Protocol for AuraUsbProtocol {
         if matches!(self.controller_gen, AuraControllerGen::Motherboard)
             && topology.mainboard_leds > 0
         {
-            zones.push(ProtocolZone {
+            zones.push(SegmentInfo {
                 name: "Mainboard".to_owned(),
                 led_count: topology.mainboard_leds,
                 topology: DeviceTopologyHint::Strip,
@@ -503,7 +507,7 @@ impl Protocol for AuraUsbProtocol {
                     )
                 };
 
-            zones.push(ProtocolZone {
+            zones.push(SegmentInfo {
                 name,
                 led_count: *led_count,
                 topology: topology_hint,

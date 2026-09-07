@@ -1,6 +1,7 @@
 export type ArtifactKind = 'effect' | 'face'
 
 export interface PresetDef {
+    id?: string
     name: string
     description?: string
     controls: Record<string, unknown>
@@ -110,6 +111,7 @@ export interface HtmlControlMetadata {
 }
 
 export interface HtmlPresetMetadata {
+    id?: string
     name: string
     description?: string
     controls: Record<string, string>

@@ -2,6 +2,18 @@
 
 > The bridge between beautiful pixels and physical photons.
 
+**Status:** Design intent. The mapping model and editor UX are still the shape we
+want; the type names and the per-effect override design below are not what shipped.
+
+**Drift, checked 2026-08-25 at `7620eae44`:** every type §4 specifies is absent
+from the tree. `LayoutOverride`, `ZoneOverride`, `CanvasTransform`, and
+`LayoutArrangement` return zero hits across `crates/`. `DeviceZone`, used in the
+§5 and §6 code blocks and the Rust module appendix, was renamed: the shipped type is
+`Output` (`crates/hypercolor-types/src/spatial.rs`). Per-effect layout selection
+now lives on the scene zone (`PUT /api/v1/scene/zones/{zone}/layout`) rather than
+in an override struct. Read `crates/hypercolor-types/src/spatial.rs` and the
+layout domain in `crates/hypercolor-daemon/src/domain/layout/` for current shape.
+
 ---
 
 ## Table of Contents
@@ -916,6 +928,13 @@ because the living room's effect is phase-shifted.
 ```
 
 ### Cross-Space Effect Continuity
+
+> **Deleted, 2026-08-22.** `SpaceDefinition`, `RoomDimensions`, `RoomAdjacency`,
+> `Wall`, and `SpatialLayout.spaces` shipped into `hypercolor-types` and were
+> never read by anything, so they were removed. Layouts are flat: every output
+> lives on one canvas. Nothing below this line describing multi-room state
+> reflects the tree.
+
 
 For the unified canvas mode to feel right, the spatial engine needs to understand adjacency:
 

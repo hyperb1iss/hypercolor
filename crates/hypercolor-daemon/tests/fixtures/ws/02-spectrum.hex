@@ -1,0 +1,19 @@
+# hypercolor websocket golden fixture
+# fixture: 02-spectrum
+# tag: 0x02 (SPECTRUM_FRAME_TAG)
+# encoder: hypercolor_daemon::api::ws::wire::encode_spectrum_binary
+# input: 4 bins requested, 4 source bins, beat = true
+# total-bytes: 43
+# stored-bytes: 43
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+02                                              # tag
+4e 61 bc 00                                     # timestamp_ms u32le
+04                                              # bin_count u8
+00 00 80 3e                                     # level f32le
+00 00 00 3f                                     # bass f32le
+00 00 40 3f                                     # mid f32le
+00 00 80 3f                                     # treble f32le
+01                                              # beat u8
+00 00 60 3f                                     # beat_confidence f32le
+00 00 00 00 00 00 80 3e 00 00 00 3f 00 00 80 3f # bins f32le

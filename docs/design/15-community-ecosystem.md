@@ -2,6 +2,11 @@
 
 > How Hypercolor becomes the default RGB lighting engine on Linux.
 
+**Status:** Strategy document, unstarted. Nothing here describes shipped
+behavior and nothing here has been contradicted by the code. The marketplace,
+plugin ecosystem, partnership, and funding tracks are all still ahead of us.
+Checked 2026-08-25 at `7620eae44`.
+
 ---
 
 ## Table of Contents

@@ -15,7 +15,9 @@ use hypercolor_types::config::ServoGpuImportMode;
 use hypercolor_types::effect::{
     ControlDefinition, ControlType, EffectCategory, EffectId, EffectSource,
 };
-use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+use hypercolor_types::event::{
+    InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+};
 use hypercolor_types::sensor::SystemSnapshot;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -29,6 +31,27 @@ static DEFAULT_INTERACTION: LazyLock<crate::input::InteractionData> =
 static EMPTY_SENSORS: LazyLock<SystemSnapshot> = LazyLock::new(SystemSnapshot::empty);
 static SOFT_STALL_TELEMETRY_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
     LazyLock::new(std::sync::Mutex::default);
+
+trait RenderFrameExt: EffectRenderer {
+    fn render_frame(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
+        let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
+        self.render_into(input, &mut canvas)?;
+        Ok(canvas)
+    }
+}
+
+impl<T: EffectRenderer + ?Sized> RenderFrameExt for T {}
+
+fn apply_control(renderer: &mut ServoRenderer, name: &str, value: ControlValue) {
+    let changes = [(hypercolor_types::control::ControlId::from(name), value)];
+    renderer
+        .apply_controls(&ControlDeltaBatch::new(
+            hypercolor_types::control::SetRevision::default(),
+            0,
+            &changes,
+        ))
+        .expect("Servo renderer should accept admitted controls");
+}
 
 fn frame_input(delta_secs: f32) -> FrameInput<'static> {
     FrameInput {
@@ -100,6 +123,20 @@ fn timed_event(event: InputEvent, seq: u64) -> TimedInputEvent {
         physical_code: None,
         repeat_count: 1,
     }
+}
+
+fn timed_line_scroll(source_id: &str, delta_line120: i64, seq: u64) -> TimedInputEvent {
+    timed_event(
+        InputEvent::PointerScroll {
+            source_id: source_id.into(),
+            delta_x_q16_16: 0,
+            delta_y_q16_16: delta_line120 << 16,
+            unit: PointerScrollUnit::Line120,
+            phase: PointerScrollPhase::None,
+            momentum_phase: PointerScrollPhase::None,
+        },
+        seq,
+    )
 }
 
 fn custom_audio(rms_level: f32) -> AudioData {
@@ -418,10 +455,10 @@ fn display_faces_submit_gpu_preferred_renders_when_import_is_on() {
 #[test]
 fn sensor_updates_are_limited_to_sensor_aware_metadata() {
     let plain = html_metadata(PathBuf::from("bubble.html"));
-    assert!(!effect_uses_sensor_data(&plain));
+    assert!(!plain.requires_sensors());
 
     let display = display_html_metadata(PathBuf::from("face.html"));
-    assert!(!effect_uses_sensor_data(&display));
+    assert!(!display.requires_sensors());
 
     let mut sensor_control = html_metadata(PathBuf::from("sensor.html"));
     sensor_control.category = EffectCategory::Display;
@@ -430,7 +467,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
         name: "Sensor".to_owned(),
         kind: ControlKind::Sensor,
         control_type: ControlType::Dropdown,
-        default_value: ControlValue::Enum("cpu_temp".to_owned()),
+        default_value: hypercolor_types::control::ControlValue::Enum("cpu_temp".to_owned()),
         min: None,
         max: None,
         step: None,
@@ -441,7 +478,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
         preview_source: None,
         binding: None,
     });
-    assert!(effect_uses_sensor_data(&sensor_control));
+    assert!(sensor_control.requires_sensors());
     assert_eq!(
         scoped_sensor_control_ids(&sensor_control),
         vec!["targetSensor".to_owned()]
@@ -449,7 +486,7 @@ fn sensor_updates_are_limited_to_sensor_aware_metadata() {
 
     let mut tagged = plain;
     tagged.tags.push("system-monitor".to_owned());
-    assert!(effect_uses_sensor_data(&tagged));
+    assert!(tagged.requires_sensors());
     assert!(scoped_sensor_control_ids(&tagged).is_empty());
 }
 
@@ -462,9 +499,11 @@ fn interaction_updates_are_limited_to_interaction_aware_metadata() {
     let interactive = html_metadata(PathBuf::from("interactive.html"));
     assert!(interactive.requires_interaction());
 
-    let mut tagged = ambient.clone();
-    tagged.tags.push("mouse".to_owned());
-    assert!(tagged.requires_interaction());
+    let mut tagged = ambient;
+    tagged
+        .tags
+        .extend(["interactive", "input", "mouse", "keyboard"].map(ToOwned::to_owned));
+    assert!(!tagged.requires_interaction());
 }
 
 #[test]
@@ -757,7 +796,12 @@ fn frame_payloads_track_animation_cap_without_js_throttle() {
     renderer.pending_frame_payloads.clear();
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 15.0));
     assert_eq!(renderer.last_animation_fps_cap, Some(20));
-    assert!(renderer.pending_scripts.is_empty());
+    assert!(
+        renderer
+            .pending_scripts
+            .first()
+            .is_some_and(|script| script.starts_with("window.__hypercolorApplyFrameTiming("))
+    );
     assert!(renderer.pending_frame_payloads.is_empty());
 }
 
@@ -792,11 +836,30 @@ fn host_driven_frames_use_fast_host_script_without_payload() {
 }
 
 #[test]
+fn raf_driven_capture_frames_publish_timing_without_host_render() {
+    let mut renderer = ServoRenderer::new();
+    renderer.include_audio_updates = false;
+    let mut input = frame_input(1.0 / 30.0);
+    input.time_secs = 2.5;
+    input.frame_number = 75;
+
+    renderer.enqueue_frame_payloads(&input);
+
+    assert!(renderer.pending_frame_payloads.is_empty());
+    let script = renderer
+        .pending_scripts
+        .first()
+        .expect("RAF-driven capture frame should publish host timing");
+    assert!(script.starts_with("window.__hypercolorApplyFrameTiming(2.5,"));
+    assert!(!script.contains("__hypercolorApplyHostFrame"));
+}
+
+#[test]
 fn host_driven_control_updates_still_use_full_payload() {
     let mut renderer = ServoRenderer::new();
     renderer.host_driven_animation = true;
     renderer.include_audio_updates = false;
-    renderer.set_control("speed", &ControlValue::Float(0.75));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.75));
 
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
 
@@ -833,7 +896,7 @@ fn display_frame_payloads_keep_fixed_animation_cap() {
 }
 
 #[test]
-fn html_effects_use_host_driven_animation() {
+fn html_effects_use_the_platform_animation_driver() {
     let html = html_metadata(PathBuf::from("effect.html"));
     let display = display_html_metadata(PathBuf::from("display.html"));
     let mut webgl = html_metadata(PathBuf::from("webgl.html"));
@@ -843,8 +906,8 @@ fn html_effects_use_host_driven_animation() {
 
     assert!(host_driven_animation(&html));
     assert!(host_driven_animation(&display));
-    assert!(!host_driven_animation(&webgl));
-    assert!(!host_driven_animation(&canvas2d));
+    assert_eq!(host_driven_animation(&webgl), cfg!(target_os = "macos"));
+    assert_eq!(host_driven_animation(&canvas2d), cfg!(target_os = "macos"));
 }
 
 #[test]
@@ -1052,7 +1115,12 @@ fn frame_payloads_skip_near_tier_jitter_updates() {
     renderer.pending_frame_payloads.clear();
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 58.0));
     assert_eq!(renderer.last_animation_fps_cap, Some(60));
-    assert!(renderer.pending_scripts.is_empty());
+    assert!(
+        renderer
+            .pending_scripts
+            .first()
+            .is_some_and(|script| script.starts_with("window.__hypercolorApplyFrameTiming("))
+    );
     assert!(renderer.pending_frame_payloads.is_empty());
 }
 
@@ -1068,7 +1136,12 @@ fn frame_payloads_skip_unchanged_input_updates() {
     renderer.pending_scripts.clear();
     renderer.pending_frame_payloads.clear();
     renderer.enqueue_frame_payloads(&frame_input(1.0 / 30.0));
-    assert!(renderer.pending_scripts.is_empty());
+    assert!(
+        renderer
+            .pending_scripts
+            .first()
+            .is_some_and(|script| script.starts_with("window.__hypercolorApplyFrameTiming("))
+    );
     assert!(renderer.pending_frame_payloads.is_empty());
 }
 
@@ -1143,14 +1216,14 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
     renderer.initialized = true;
     renderer.include_interaction_updates = true;
     renderer.enqueue_bootstrap_scripts();
-    renderer.set_control("speed", &ControlValue::Float(0.25));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.25));
 
     let first_audio = custom_audio(0.1);
     let mut first_interaction = custom_interaction(&["a"], &["a"]);
     first_interaction.batch.events = vec![timed_key("host", "a", InputButtonState::Pressed, 1, 1)];
     let first_frame = frame_input_with(1.0 / 30.0, 1, &first_audio, &first_interaction, 320, 200);
 
-    let first_output = renderer.tick(&first_frame).expect("first tick");
+    let first_output = renderer.render_frame(&first_frame).expect("first frame");
     assert_eq!(first_output.width(), 320);
     assert_eq!(first_output.height(), 200);
 
@@ -1172,19 +1245,19 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
     let first_payload = frame_payload_value(&first_render.frame_payloads);
     assert_eq!(first_payload["controls"]["speed"], serde_json::json!(0.25));
 
-    renderer.set_control("speed", &ControlValue::Float(0.75));
+    apply_control(&mut renderer, "speed", ControlValue::Float(0.75));
     let second_audio = custom_audio(0.6);
     let mut second_interaction = custom_interaction(&["b"], &["b"]);
     second_interaction.batch.events = vec![timed_key("host", "b", InputButtonState::Pressed, 2, 1)];
     let second_frame =
         frame_input_with(1.0 / 15.0, 2, &second_audio, &second_interaction, 640, 360);
-    renderer.tick(&second_frame).expect("second tick");
+    renderer.render_frame(&second_frame).expect("second frame");
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
     let mut third_interaction = custom_interaction(&["c"], &["c"]);
     third_interaction.batch.events = vec![timed_key("host", "c", InputButtonState::Pressed, 3, 1)];
     let third_frame = frame_input_with(1.0 / 15.0, 3, &second_audio, &third_interaction, 640, 360);
-    renderer.tick(&third_frame).expect("third tick");
+    renderer.render_frame(&third_frame).expect("third frame");
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
     result_tx
@@ -1194,7 +1267,7 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
         .recv_timeout(Duration::from_millis(100))
         .expect("first result delivery ack");
 
-    let resumed_output = renderer.tick(&third_frame).expect("resume tick");
+    let resumed_output = renderer.render_frame(&third_frame).expect("resumed frame");
     assert_eq!(resumed_output.get_pixel(0, 0), Rgba::new(9, 8, 7, 255));
 
     let second_render = render_rx
@@ -1236,7 +1309,10 @@ fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
 fn queued_frames_do_not_retain_undemanded_input_domains() {
     let audio = custom_audio(0.8);
     let interaction = custom_interaction(&["space"], &["space"]);
-    let screen = crate::input::ScreenData::from_zones(Vec::new(), 8, 6);
+    let screen = crate::input::SyntheticScreenPublisher::surface(
+        crate::input::screen::PixelExtent::new(8, 6).expect("fixture extent is non-empty"),
+    )
+    .publish_rgba(&[0_u8; 8 * 6 * 4]);
     let mut sensors = SystemSnapshot::empty();
     sensors.cpu_loads = vec![10.0, 20.0, 30.0];
     let media = hypercolor_types::media::MediaState {
@@ -1307,11 +1383,11 @@ fn queued_frames_merge_recent_keys_from_superseded_inputs() {
 }
 
 #[test]
-fn queued_device_query_transition_keeps_canonical_edges_and_latest_state() {
+fn queued_macos_transition_keeps_canonical_edges_and_latest_state() {
     let audio = custom_audio(0.0);
     let mut first_interaction = custom_interaction(&["legacy-a"], &["a"]);
     first_interaction.batch.events = vec![timed_key(
-        "host:device_query",
+        "host:macos",
         "a",
         InputButtonState::Pressed,
         1,
@@ -1319,8 +1395,8 @@ fn queued_device_query_transition_keeps_canonical_edges_and_latest_state() {
     )];
     let mut second_interaction = custom_interaction(&["legacy-b"], &["b"]);
     second_interaction.batch.events = vec![
-        timed_key("host:device_query", "a", InputButtonState::Released, 2, 1),
-        timed_key("host:device_query", "b", InputButtonState::Pressed, 3, 1),
+        timed_key("host:macos", "a", InputButtonState::Released, 2, 1),
+        timed_key("host:macos", "b", InputButtonState::Pressed, 3, 1),
     ];
     let first = frame_input_with(1.0 / 60.0, 1, &audio, &first_interaction, 320, 200);
     let second = frame_input_with(1.0 / 60.0, 2, &audio, &second_interaction, 320, 200);
@@ -1335,7 +1411,7 @@ fn queued_device_query_transition_keeps_canonical_edges_and_latest_state() {
         .queued_frame
         .as_ref()
         .and_then(QueuedFrameInput::queued_interaction)
-        .expect("coalesced device_query interaction");
+        .expect("coalesced macOS interaction");
     assert_eq!(interaction.keyboard.pressed_keys, ["b"]);
     assert_eq!(interaction.keyboard.recent_keys, ["a", "b"]);
     assert_eq!(
@@ -1363,16 +1439,10 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
             },
             2,
         ),
-        timed_event(
-            InputEvent::MouseWheel {
-                source_id: "test".into(),
-                delta_hi_res: 120,
-            },
-            3,
-        ),
+        timed_line_scroll("test", 120, 3),
         timed_key("test", "a", InputButtonState::Released, 4, 1),
     ];
-    first_interaction.batch.wheel_hi_res = 120;
+    first_interaction.batch.scroll.line120_y_q16_16 = 120 << 16;
     let mut second_interaction = custom_interaction(&[], &[]);
     second_interaction.batch.events = vec![
         timed_key("test", "a", InputButtonState::Pressed, 5, 4),
@@ -1384,15 +1454,9 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
             },
             6,
         ),
-        timed_event(
-            InputEvent::MouseWheel {
-                source_id: "test".into(),
-                delta_hi_res: -240,
-            },
-            7,
-        ),
+        timed_line_scroll("test", -240, 7),
     ];
-    second_interaction.batch.wheel_hi_res = -240;
+    second_interaction.batch.scroll.line120_y_q16_16 = -240 << 16;
 
     let first = frame_input_with(1.0 / 30.0, 1, &audio, &first_interaction, 320, 200);
     let second = frame_input_with(1.0 / 30.0, 2, &audio, &second_interaction, 320, 200);
@@ -1423,7 +1487,11 @@ fn queued_frames_append_event_batches_from_superseded_inputs() {
         "repeat multiplicity survives coalescing"
     );
     assert_eq!(interaction.keyboard.recent_keys, ["a", "a"]);
-    assert_eq!(interaction.batch.wheel_hi_res, -120, "wheel travel sums");
+    assert_eq!(
+        interaction.batch.scroll.line120_y_q16_16,
+        -120 << 16,
+        "scroll travel sums"
+    );
 }
 
 #[test]
@@ -1524,19 +1592,13 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
             },
             2,
         ),
-        timed_event(
-            InputEvent::MouseWheel {
-                source_id: "host-v1".into(),
-                delta_hi_res: 120,
-            },
-            3,
-        ),
+        timed_line_scroll("host-v1", 120, 3),
     ];
-    old_source.batch.wheel_hi_res = 120;
+    old_source.batch.scroll.line120_y_q16_16 = 120 << 16;
     let old_frame = frame_input_with(1.0 / 60.0, 3, &audio, &old_source, 320, 200);
 
     let error = renderer
-        .tick(&old_frame)
+        .render_frame(&old_frame)
         .expect_err("saturated render admission should report degradation");
     assert!(error.to_string().contains("render queue is saturated"));
 
@@ -1561,7 +1623,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
     ];
     let new_frame = frame_input_with(1.0 / 60.0, 4, &audio, &new_source, 320, 200);
     let error = renderer
-        .tick(&new_frame)
+        .render_frame(&new_frame)
         .expect_err("replacement frame should remain retained while saturated");
     assert!(error.to_string().contains("render queue is saturated"));
     assert_eq!(renderer.pending_scripts, ["persistent-control"]);
@@ -1583,7 +1645,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
             .collect::<Vec<_>>(),
         [1, 2, 3, 4, 5, 6]
     );
-    assert_eq!(interaction.batch.wheel_hi_res, 120);
+    assert_eq!(interaction.batch.scroll.line120_y_q16_16, 120 << 16);
     assert_eq!(interaction.mouse.buttons, ["right"]);
     assert!(interaction.mouse.injected);
     assert!(render_rx.try_recv().is_err());
@@ -1593,7 +1655,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
     ready_interaction.mouse.clone_from(&new_source.mouse);
     let ready_frame = frame_input_with(1.0 / 60.0, 5, &audio, &ready_interaction, 320, 200);
     renderer
-        .tick(&ready_frame)
+        .render_frame(&ready_frame)
         .expect("the retained frame should submit when capacity returns");
     let command = render_rx
         .recv_timeout(Duration::from_millis(100))
@@ -1630,7 +1692,7 @@ fn queue_saturation_preserves_runtime_deltas_until_admission() {
 }
 
 #[test]
-fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
+fn render_into_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
     let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
         spawn_render_test_worker();
 
@@ -1643,7 +1705,7 @@ fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
     let audio = custom_audio(0.0);
     let frame = frame_input_with(1.0 / 30.0, 1, &audio, &interaction, 320, 200);
 
-    renderer.tick(&frame).expect("initial tick");
+    renderer.render_frame(&frame).expect("initial frame");
     let _ = render_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("first render command");
@@ -1655,13 +1717,13 @@ fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
         .recv_timeout(Duration::from_millis(100))
         .expect("first result delivery ack");
 
-    let first_completed = renderer.tick(&frame).expect("completed tick");
+    let first_completed = renderer.render_frame(&frame).expect("completed frame");
     assert_eq!(first_completed.get_pixel(0, 0), Rgba::new(20, 40, 60, 255));
     let _ = render_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("second render command");
 
-    let reused = renderer.tick(&frame).expect("reused frame");
+    let reused = renderer.render_frame(&frame).expect("reused frame");
     assert_eq!(reused.get_pixel(0, 0), Rgba::new(20, 40, 60, 255));
     assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
 
@@ -1690,7 +1752,7 @@ fn destroy_detaches_in_flight_render_before_unloading_worker_page() {
     let audio = custom_audio(0.0);
     let frame = frame_input_with(1.0 / 30.0, 1, &audio, &interaction, 320, 200);
 
-    renderer.tick(&frame).expect("initial tick");
+    renderer.render_frame(&frame).expect("initial frame");
     let _ = render_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("first render command");

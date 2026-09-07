@@ -1,6 +1,5 @@
+use hypercolor_driver_api::OutputCadence;
 use hypercolor_types::device::DeviceId;
-
-use crate::device::traits::OutputCadence;
 
 use super::{BackendDeviceKey, BackendManager, DeviceFrameSinkHandle, DirectControlGuard};
 

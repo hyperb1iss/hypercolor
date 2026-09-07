@@ -1,16 +1,18 @@
 //! Razer Seiren V3 Chroma protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, ZoneLayoutHint,
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, SegmentLayoutHint,
 };
 use hypercolor_types::spatial::{NormalizedPosition, ZoneShape};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 const SEIREN_V3_PAYLOAD_LEN: usize = 63;
@@ -98,6 +100,7 @@ impl SeirenV3Protocol {
             response_delay: Duration::ZERO,
             post_delay,
             transfer_type: TransferType::Primary,
+            ..Default::default()
         }
     }
 }
@@ -178,14 +181,14 @@ impl Protocol for SeirenV3Protocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
-        vec![ProtocolZone {
+    fn zones(&self) -> Vec<SegmentInfo> {
+        vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 10,
             topology: DeviceTopologyHint::Custom,
             color_format: DeviceColorFormat::Rgb,
             layout_hint: Some(
-                ZoneLayoutHint::custom_grid(
+                SegmentLayoutHint::custom_grid(
                     6,
                     2,
                     &[

@@ -1,0 +1,183 @@
+{
+  "id": "lian-li-o11d-evo-rgb",
+  "name": "Lian Li O11 Dynamic EVO RGB",
+  "vendor": "Lian Li",
+  "sources": [
+    "https://lian-li.com/product/o11d-evo-rgb/"
+  ],
+  "units": "mm",
+  "envelope": {
+    "depth": 478,
+    "width": 290,
+    "height": 471
+  },
+  "coordinate_frame": "case-native: d = distance from the front outer face (0..depth), h = height above the bottom outer face (0..height). The layout view is chosen at generation time (standard = glass on the left, front to the viewer's right; reversed = glass on the right, front to the viewer's left, motherboard flipped 180 degrees in-plane).",
+  "mounts": {
+    "top": {
+      "kind": "fan_row",
+      "faces_viewer": false,
+      "fan_mm": 120,
+      "count": 3,
+      "h_center": 436,
+      "d_centers_rear_to_front": [
+        368,
+        243,
+        118
+      ],
+      "edge_thickness_mm": 28,
+      "edge_rotation": 0.0
+    },
+    "bottom": {
+      "kind": "fan_row",
+      "faces_viewer": false,
+      "fan_mm": 120,
+      "count": 3,
+      "h_center": 40,
+      "d_centers_rear_to_front": [
+        368,
+        243,
+        118
+      ],
+      "edge_thickness_mm": 28,
+      "edge_rotation": 3.141592653589793
+    },
+    "side": {
+      "kind": "fan_column",
+      "faces_viewer": true,
+      "fan_mm": 120,
+      "count": 3,
+      "d_center": 95,
+      "h_centers_top_to_bottom": [
+        355,
+        235,
+        115
+      ]
+    },
+    "rear": {
+      "kind": "fan_single",
+      "faces_viewer": false,
+      "fan_mm": 120,
+      "d_center": 444,
+      "edge_thickness_mm": 28,
+      "h_from_board": {
+        "v": 70
+      },
+      "edge_rotation": 4.71238898038469,
+      "rotate_with_view": true
+    },
+    "motherboard": {
+      "kind": "motherboard",
+      "form_factor": "ATX",
+      "board_mm": {
+        "u": 244,
+        "v": 305
+      },
+      "d_io_edge": 446,
+      "h_low": 88,
+      "h_high": 393,
+      "board_frame": "u = distance from the I/O edge toward the front, v = distance from the CPU-end edge toward the PCIe end",
+      "features": {
+        "cpu_socket": {
+          "u": 85,
+          "v": 100,
+          "w": 70,
+          "hgt": 70
+        },
+        "dimm_slots": {
+          "u": [
+            133,
+            143,
+            153,
+            163
+          ],
+          "v_center": 100,
+          "length": 133
+        },
+        "eps_header": {
+          "u": 20,
+          "v": 12,
+          "w": 20,
+          "hgt": 10
+        },
+        "atx24_header": {
+          "u": 238,
+          "v": 130,
+          "w": 10,
+          "hgt": 50
+        },
+        "pcie_x16_slot1": {
+          "v": 245
+        },
+        "io_shroud_accent": {
+          "u": 30,
+          "v": 40,
+          "w": 30,
+          "hgt": 30
+        },
+        "gpu_bay": {
+          "u_bracket": -15,
+          "length": 330,
+          "v_from": 245,
+          "v_to": 305
+        },
+        "dimm_slot_1": {
+          "u": 133,
+          "v": 100,
+          "w": 8,
+          "hgt": 133
+        },
+        "dimm_slot_2": {
+          "u": 143,
+          "v": 100,
+          "w": 8,
+          "hgt": 133
+        },
+        "dimm_slot_3": {
+          "u": 153,
+          "v": 100,
+          "w": 8,
+          "hgt": 133
+        },
+        "dimm_slot_4": {
+          "u": 163,
+          "v": 100,
+          "w": 8,
+          "hgt": 133
+        }
+      }
+    },
+    "strip_top": {
+      "kind": "l_strip",
+      "run": {
+        "h": 462,
+        "d_from": 18,
+        "d_to": 470,
+        "leds": 47
+      },
+      "leg": {
+        "d": 12,
+        "h_from": 462,
+        "h_to": 247,
+        "leds": 21
+      },
+      "chain_order": "leg from far end toward the corner, then run from the front corner toward the rear (assumed, verify with identify)"
+    },
+    "strip_bottom": {
+      "kind": "l_strip",
+      "run": {
+        "h": 9,
+        "d_from": 18,
+        "d_to": 470,
+        "leds": 47
+      },
+      "leg": {
+        "d": 12,
+        "h_from": 9,
+        "h_to": 224,
+        "leds": 21
+      },
+      "chain_order": "leg from far end toward the corner, then run from the front corner toward the rear (assumed, verify with identify)"
+    }
+  },
+  "schema": "hypercolor-case-spec/1"
+}

@@ -1,20 +1,27 @@
 //! Corsair LCD display streaming protocol.
 
+use hypercolor_types::device::SegmentInfo;
+
 use std::borrow::Cow;
-use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, DisplayFrameFormat,
+    DisplayFramePayload,
 };
 
+use crate::display::{
+    ChunkCommandPolicy, ChunkContext, DisplayChunkLayout, DisplayEncodeError, WireKeepalive,
+    encode_chunked_display_frame_into,
+};
 use crate::drivers::corsair::framing::{
-    LCD_DATA_PER_PACKET, LCD_PACKET_SIZE, append_lcd_display_packet, build_lcd_report,
+    LCD_DATA_PER_PACKET, LCD_DISPLAY_HEADER_SIZE, LCD_MAX_DISPLAY_CHUNKS, LCD_PACKET_SIZE,
+    build_lcd_report, write_lcd_display_header,
 };
 use crate::drivers::corsair::types::cooler_pump_lcd_layout_hint;
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
-    ProtocolZone, ResponseStatus, TransferType,
+    ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -41,6 +48,42 @@ struct CorsairLcdConfig {
     ring_led_count: u32,
 }
 
+/// Bulk packet framing for one Corsair LCD display zone.
+struct CorsairLcdDisplayLayout {
+    zone_byte: u8,
+}
+
+impl DisplayChunkLayout for CorsairLcdDisplayLayout {
+    fn packet_len(&self) -> usize {
+        LCD_PACKET_SIZE
+    }
+
+    fn max_payload(&self) -> usize {
+        LCD_DATA_PER_PACKET
+    }
+
+    fn payload_offset(&self) -> usize {
+        LCD_DISPLAY_HEADER_SIZE
+    }
+
+    fn write_header(&self, packet: &mut [u8], ctx: &ChunkContext<'_>) {
+        write_lcd_display_header(
+            packet,
+            self.zone_byte,
+            ctx.is_final,
+            u8::try_from(ctx.packet_index).unwrap_or(u8::MAX),
+        );
+    }
+
+    fn command_policy(&self, _ctx: &ChunkContext<'_>) -> ChunkCommandPolicy {
+        ChunkCommandPolicy::fire_and_forget(TransferType::Bulk)
+    }
+
+    fn max_chunks(&self) -> u32 {
+        LCD_MAX_DISPLAY_CHUNKS
+    }
+}
+
 /// JPEG streaming protocol for Corsair LCD devices.
 pub struct CorsairLcdProtocol {
     name: &'static str,
@@ -52,7 +95,8 @@ pub struct CorsairLcdProtocol {
     ring_led_count: u32,
     init_mode: CorsairLcdInitMode,
     shutdown_reports: Vec<Vec<u8>>,
-    last_keepalive_at: RwLock<Option<Instant>>,
+    display_layout: CorsairLcdDisplayLayout,
+    keepalive: WireKeepalive,
 }
 
 impl CorsairLcdProtocol {
@@ -118,7 +162,10 @@ impl CorsairLcdProtocol {
             ring_led_count: config.ring_led_count,
             init_mode,
             shutdown_reports,
-            last_keepalive_at: RwLock::new(None),
+            display_layout: CorsairLcdDisplayLayout {
+                zone_byte: config.data_zone_byte,
+            },
+            keepalive: WireKeepalive::new(LCD_KEEPALIVE_INTERVAL),
         }
     }
 
@@ -129,14 +176,8 @@ impl CorsairLcdProtocol {
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::HidReport,
+            ..Default::default()
         }
-    }
-
-    fn keepalive_due(&self) -> bool {
-        self.last_keepalive_at
-            .read()
-            .expect("LCD keepalive lock should not be poisoned")
-            .is_none_or(|last| last.elapsed() >= LCD_KEEPALIVE_INTERVAL)
     }
 
     fn keepalive_command(
@@ -145,10 +186,7 @@ impl CorsairLcdProtocol {
         packets_sent: u8,
         data_length: u16,
     ) -> ProtocolCommand {
-        *self
-            .last_keepalive_at
-            .write()
-            .expect("LCD keepalive lock should not be poisoned") = Some(Instant::now());
+        self.keepalive.mark_sent();
 
         Self::hid_report(
             &[
@@ -255,39 +293,27 @@ impl Protocol for CorsairLcdProtocol {
         buffer.finish();
     }
 
-    fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        let mut commands = Vec::new();
-        self.encode_display_frame_into(jpeg_data, &mut commands)?;
-        Some(commands)
-    }
-
-    fn encode_display_frame_into(
+    fn encode_display_payload_into(
         &self,
-        jpeg_data: &[u8],
+        payload: DisplayFramePayload<'_>,
         commands: &mut Vec<ProtocolCommand>,
-    ) -> Option<()> {
-        let chunk_count = jpeg_data.len().div_ceil(LCD_DATA_PER_PACKET);
-        let mut buffer = CommandBuffer::new(commands);
-        for (index, chunk) in jpeg_data.chunks(LCD_DATA_PER_PACKET).enumerate() {
-            let is_final = index + 1 == chunk_count;
-            buffer.push_fill(
-                false,
-                Duration::ZERO,
-                Duration::ZERO,
-                TransferType::Bulk,
-                |packet| {
-                    append_lcd_display_packet(
-                        packet,
-                        self.data_zone_byte,
-                        is_final,
-                        u8::try_from(index).unwrap_or(u8::MAX),
-                        chunk,
-                    );
-                },
-            );
+    ) -> Result<(), DisplayEncodeError> {
+        if payload.format != DisplayFrameFormat::Jpeg {
+            return Err(DisplayEncodeError::Unsupported {
+                format: payload.format,
+            });
         }
 
-        if self.keepalive_due() {
+        let jpeg_data = payload.data;
+        let mut buffer = CommandBuffer::new(commands);
+        let framed =
+            encode_chunked_display_frame_into(&self.display_layout, jpeg_data, &mut buffer);
+
+        // A frame past the one-byte sequence counter cannot be addressed on
+        // the wire; the error goes back to the actor, which fails the
+        // delivery instead of sending a saturated packet number.
+        if framed.is_ok() && self.keepalive.due() {
+            let chunk_count = jpeg_data.len().div_ceil(LCD_DATA_PER_PACKET);
             let packets_sent = u8::try_from(chunk_count).unwrap_or(u8::MAX);
             let keepalive = self.keepalive_command(
                 0x01,
@@ -304,7 +330,7 @@ impl Protocol for CorsairLcdProtocol {
         }
         buffer.finish();
 
-        Some(())
+        framed
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {
@@ -315,7 +341,7 @@ impl Protocol for CorsairLcdProtocol {
     }
 
     fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
-        if self.keepalive_due() {
+        if self.keepalive.due() {
             vec![self.keepalive_command(0x01, 0x00, 0x0000)]
         } else {
             Vec::new()
@@ -329,21 +355,23 @@ impl Protocol for CorsairLcdProtocol {
         })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
-        let mut zones = vec![ProtocolZone {
+    fn zones(&self) -> Vec<SegmentInfo> {
+        let mut zones = vec![SegmentInfo {
             name: "Display".to_owned(),
             led_count: 0,
             topology: DeviceTopologyHint::Display {
                 width: self.width,
                 height: self.height,
                 circular: self.circular,
+                format: DisplayFrameFormat::Jpeg,
             },
-            color_format: DeviceColorFormat::Jpeg,
+            // LED byte order has no meaning for a display segment.
+            color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
         }];
 
         if self.ring_led_count > 0 {
-            zones.push(ProtocolZone {
+            zones.push(SegmentInfo {
                 name: "RGB Ring".to_owned(),
                 led_count: self.ring_led_count,
                 topology: DeviceTopologyHint::Ring {

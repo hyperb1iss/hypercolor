@@ -3,6 +3,7 @@
 use hypercolor_leptos_ext::events::{Change, Input};
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
 use crate::async_helpers::spawn_identify;
@@ -11,9 +12,9 @@ use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
 use crate::style_utils::device_accent_colors;
 
-mod group_panel;
+mod compound_panel;
 
-use group_panel::GroupZoneProperties;
+use compound_panel::CompoundZoneProperties;
 
 /// Zone properties editor (bottom panel of layout builder).
 #[component]
@@ -115,13 +116,16 @@ pub fn LayoutZoneProperties() -> impl IntoView {
             current
                 .as_ref()
                 .map(|l| (l.canvas_width.max(1) as f32, l.canvas_height.max(1) as f32))
-                .unwrap_or((320.0, 200.0))
+                .unwrap_or_else(|| {
+                    let (w, h) = crate::render_canvas::DEFAULT_RENDER_CANVAS;
+                    (w as f32, h as f32)
+                })
         })
     });
 
     // ── Group transform state (accumulated deltas, reset on selection change) ──
-    let (group_rot_offset, set_group_rot_offset) = signal(0.0f32);
-    let (group_scale_factor, set_group_scale_factor) = signal(1.0f32);
+    let (compound_rot_offset, set_compound_rot_offset) = signal(0.0f32);
+    let (compound_scale_factor, set_compound_scale_factor) = signal(1.0f32);
     // Track the previous selection set to detect changes
     let (prev_selection, set_prev_selection) = signal(std::collections::HashSet::<String>::new());
 
@@ -150,10 +154,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id)
                 {
                     updater(zone);
+                    let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
                         zone.position,
                         zone.size,
                         &zone.topology,
+                        zone.shape.as_ref(),
+                        layout_geometry::canvas_pixel_aspect(canvas_w, canvas_h),
                     );
                 }
             });
@@ -166,10 +173,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let changed =
                     layout_geometry::set_zone_rotation(layout, &zone_id, rotation_radians);
                 if changed && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                    let (canvas_w, canvas_h) = (layout.canvas_width, layout.canvas_height);
                     zone.size = layout_geometry::normalize_zone_size_for_editor(
                         zone.position,
                         zone.size,
                         &zone.topology,
+                        zone.shape.as_ref(),
+                        layout_geometry::canvas_pixel_aspect(canvas_w, canvas_h),
                     );
                 }
             }
@@ -187,8 +197,42 @@ pub fn LayoutZoneProperties() -> impl IntoView {
             set_is_dirty.set(true);
         };
 
+    // A slider drag is one edit, not one per pixel: the press on a range
+    // input opens an interaction and the release (anywhere) closes it, so
+    // undo steps back over the whole drag. Keyboard nudges on a slider
+    // still record per step, which is what a keyboard user expects.
+    let slider_interaction = StoredValue::new(false);
+    let close_slider_interaction = move || {
+        if slider_interaction.get_value() {
+            slider_interaction.set_value(false);
+            set_layout.finish_interaction();
+        }
+    };
+    let release = window_event_listener(leptos::ev::pointerup, move |_| close_slider_interaction());
+    // A cancelled pointer (touch pan, window switch) never sends pointerup,
+    // so it must close the interaction too or history stays suspended.
+    let cancel = window_event_listener(leptos::ev::pointercancel, move |_| {
+        close_slider_interaction()
+    });
+    on_cleanup(move || {
+        release.remove();
+        cancel.remove();
+    });
+
     view! {
-        <div class="h-full px-5 py-2.5 overflow-y-auto">
+        <div
+            class="h-full px-5 py-2.5 overflow-y-auto"
+            on:pointerdown=move |ev: web_sys::PointerEvent| {
+                let is_range = ev
+                    .target()
+                    .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+                    .is_some_and(|input| input.type_() == "range");
+                if is_range {
+                    slider_interaction.set_value(true);
+                    set_layout.begin_interaction();
+                }
+            }
+        >
             {move || {
                 let ids = selected_zone_ids.get();
                 if ids.len() > 1 {
@@ -196,12 +240,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     let prev = prev_selection.get_untracked();
                     if prev != ids {
                         set_prev_selection.set(ids.clone());
-                        set_group_rot_offset.set(0.0);
-                        set_group_scale_factor.set(1.0);
+                        set_compound_rot_offset.set(0.0);
+                        set_compound_scale_factor.set(1.0);
                     }
 
                     return view! {
-                        <GroupZoneProperties
+                        <CompoundZoneProperties
                             ids=ids
                             layout=layout
                             canvas_dims=canvas_dims
@@ -211,10 +255,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             set_layout=set_layout
                             set_is_dirty=set_is_dirty
                             compound_depth=compound_depth
-                            group_rot_offset=group_rot_offset
-                            set_group_rot_offset=set_group_rot_offset
-                            group_scale_factor=group_scale_factor
-                            set_group_scale_factor=set_group_scale_factor
+                            compound_rot_offset=compound_rot_offset
+                            set_compound_rot_offset=set_compound_rot_offset
+                            compound_scale_factor=compound_scale_factor
+                            set_compound_scale_factor=set_compound_scale_factor
                         />
                     }.into_any();
                 }
@@ -233,8 +277,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                     .get_untracked()
                     .and_then(Result::ok)
                     .unwrap_or_default();
-                let attachment_profiles =
-                    zone_display_ctx.attachment_profiles.get().unwrap_or_default();
+                let attachment_profiles = zone_display_ctx.attachment_profiles.get();
                 let zone_display =
                     crate::layout_utils::effective_zone_display(&zone, &devices, &attachment_profiles);
 
@@ -483,13 +526,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                transition-colors btn-press"
                                         title="Identify output"
                                         on:click=move |_| match target.clone() {
-                                            crate::layout_utils::ZoneIdentifyTarget::Device { device_id, zone_id } => {
+                                            crate::layout_utils::OutputIdentifyTarget::Segment { device_id, segment } => {
                                                 spawn_identify(
                                                     "output",
-                                                    async move { crate::api::identify_zone(&device_id, &zone_id).await },
+                                                    async move { crate::api::identify_segment(&device_id, &segment).await },
                                                 );
                                             }
-                                            crate::layout_utils::ZoneIdentifyTarget::Attachment {
+                                            crate::layout_utils::OutputIdentifyTarget::Attachment {
                                                 device_id,
                                                 slot_id,
                                                 binding_index,
@@ -522,7 +565,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         let did = reset_device_id.clone();
                                         let zn = reset_zone_name.clone();
                                         let dname = reset_device_name.clone();
-                                        let zone_summary: Option<crate::api::ZoneSummary> = ctx
+                                        let zone_summary: Option<crate::api::SegmentSummary> = ctx
                                             .devices_resource
                                             .get_untracked()
                                             .and_then(|r| r.ok())
@@ -531,7 +574,10 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                     .find(|d| d.layout_device_id == did)
                                                     .and_then(|d| {
                                                         zn.as_ref().and_then(|name| {
-                                                            d.zones.iter().find(|z| z.name == *name).cloned()
+                                                            d.segments
+                                                                .iter()
+                                                                .find(|z| z.name == *name)
+                                                                .cloned()
                                                         })
                                                     })
                                             });
@@ -544,7 +590,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         let (canvas_width, canvas_height) = layout.with_untracked(|current| {
                                             current.as_ref()
                                                 .map(|l| (l.canvas_width.max(1), l.canvas_height.max(1)))
-                                                .unwrap_or((320, 200))
+                                                .unwrap_or(crate::render_canvas::DEFAULT_RENDER_CANVAS)
                                         });
                                         let defaults = crate::layout_geometry::default_zone_visuals(
                                             &dname,
@@ -561,6 +607,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                         zone.position,
                                                         defaults.size,
                                                         &defaults.topology,
+                                                        defaults.shape.as_ref(),
+                                                        crate::layout_geometry::canvas_pixel_aspect(canvas_width, canvas_height),
                                                     );
                                                     zone.rotation = 0.0;
                                                     zone.scale = 1.0;
@@ -587,6 +635,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                 }
                                         });
                                         set_selected_zone_ids.set(std::collections::HashSet::new());
+                                        editor.set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
                                         set_is_dirty.set(true);
                                     }
                                 >
@@ -842,7 +891,7 @@ fn layer_icon_button(
 
 /// Icon-only button for group align/distribute/pack/mirror operations.
 /// Slightly larger than layer buttons so alignment icons read at a glance.
-fn group_op_button(
+fn compound_op_button(
     icon: icondata_core::Icon,
     title: &'static str,
     on_click: impl Fn() + 'static,

@@ -18,7 +18,8 @@ pub mod ids {
     pub const OPEN_USER_EFFECTS_FOLDER: &str = "open_user_effects_folder";
     pub const EXPORT_DIAGNOSTICS: &str = "export_diagnostics";
     pub const SETTINGS: &str = "settings";
-    pub const PAUSE_RESUME: &str = "pause_resume";
+    pub const PAUSE_OUTPUT: &str = "pause_output";
+    pub const RESUME_OUTPUT: &str = "resume_output";
     pub const REFRESH_SERVERS: &str = "refresh_servers";
     pub const STOP_EFFECT: &str = "stop_effect";
     pub const QUIT: &str = "quit";
@@ -26,8 +27,8 @@ pub mod ids {
     /// Prefix for dynamically generated effect menu items.
     pub const EFFECT_PREFIX: &str = "effect:";
 
-    /// Prefix for dynamically generated profile menu items.
-    pub const PROFILE_PREFIX: &str = "profile:";
+    /// Prefix for dynamically generated scene menu items.
+    pub const SCENE_PREFIX: &str = "scene:";
 
     /// Prefix for dynamically generated server items.
     pub const SERVER_PREFIX: &str = "server:";
@@ -49,12 +50,12 @@ pub enum MenuAction {
     OpenUserEffectsFolder,
     ExportDiagnostics,
     Settings,
-    TogglePause,
+    SetPaused(bool),
     RefreshServers,
     StopEffect,
     Quit,
     ApplyEffect(String),
-    ApplyProfile(String),
+    ActivateScene(String),
     SwitchServer(usize),
     SetBrightness(u8),
 }
@@ -163,7 +164,8 @@ pub fn action_for_menu_id(id: &str) -> Option<MenuAction> {
         ids::OPEN_USER_EFFECTS_FOLDER => Some(MenuAction::OpenUserEffectsFolder),
         ids::EXPORT_DIAGNOSTICS => Some(MenuAction::ExportDiagnostics),
         ids::SETTINGS => Some(MenuAction::Settings),
-        ids::PAUSE_RESUME => Some(MenuAction::TogglePause),
+        ids::PAUSE_OUTPUT => Some(MenuAction::SetPaused(true)),
+        ids::RESUME_OUTPUT => Some(MenuAction::SetPaused(false)),
         ids::REFRESH_SERVERS => Some(MenuAction::RefreshServers),
         ids::STOP_EFFECT => Some(MenuAction::StopEffect),
         ids::QUIT => Some(MenuAction::Quit),
@@ -178,8 +180,8 @@ fn dynamic_action_for_menu_id(id: &str) -> Option<MenuAction> {
     if let Some(effect_id) = id.strip_prefix(ids::EFFECT_PREFIX) {
         return Some(MenuAction::ApplyEffect(effect_id.to_owned()));
     }
-    if let Some(profile_id) = id.strip_prefix(ids::PROFILE_PREFIX) {
-        return Some(MenuAction::ApplyProfile(profile_id.to_owned()));
+    if let Some(scene_id) = id.strip_prefix(ids::SCENE_PREFIX) {
+        return Some(MenuAction::ActivateScene(scene_id.to_owned()));
     }
     id.strip_prefix(ids::SERVER_PREFIX)
         .and_then(|index| index.parse::<usize>().ok())
@@ -187,11 +189,11 @@ fn dynamic_action_for_menu_id(id: &str) -> Option<MenuAction> {
 }
 
 fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
-    let effect_label = match &state.current_effect {
+    let effect_label = match &state.active_effect {
         Some(effect) => format!("\u{25b6} {}", effect.name),
         None => "No effect active".to_owned(),
     };
-    entries.push(item("current_effect", effect_label, false));
+    entries.push(item("active_effect", effect_label, false));
 
     if let Some(scene_name) = &state.active_scene_name {
         let scene_suffix = if state.scene_snapshot_locked {
@@ -200,7 +202,7 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
             ""
         };
         entries.push(item(
-            "current_scene",
+            "active_scene",
             format!("Scene: {scene_name}{scene_suffix}"),
             false,
         ));
@@ -225,16 +227,16 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
         )));
     }
 
-    if !state.profiles.is_empty() {
+    if !state.scenes.is_empty() {
         entries.push(MenuEntry::Submenu(SubmenuModel::new(
-            "Profiles",
+            "Scenes",
             state
-                .profiles
+                .scenes
                 .iter()
-                .map(|profile| {
+                .map(|scene| {
                     item(
-                        format!("{}{}", ids::PROFILE_PREFIX, profile.id),
-                        profile.name.clone(),
+                        format!("{}{}", ids::SCENE_PREFIX, scene.id),
+                        scene.name.clone(),
                         true,
                     )
                 })
@@ -249,7 +251,13 @@ fn build_connected_entries(entries: &mut Vec<MenuEntry>, state: &AppState) {
     entries.push(MenuEntry::Separator);
     entries.push(brightness_submenu(state));
 
-    if state.current_effect.is_some() {
+    if state.paused {
+        entries.push(item(ids::RESUME_OUTPUT, "Resume", true));
+    } else {
+        entries.push(item(ids::PAUSE_OUTPUT, "Pause", true));
+    }
+
+    if state.active_effect.is_some() {
         entries.push(item(ids::STOP_EFFECT, "Stop Effect", true));
     }
 

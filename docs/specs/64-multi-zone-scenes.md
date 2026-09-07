@@ -8,13 +8,25 @@
 > backend contract), and the engine hardening (unassigned-device behavior)
 > needed to ship it.
 
-**Status:** Implemented
+**Status:** Implemented. This spec owns the shipped zone model, but two things in it
+have gone stale: the route examples, and the `RenderGroup` vocabulary it inherits from
+Spec 27.
+**API status:** Historical scene API snapshot. The canonical live scene tree in
+[Spec 78](78-api-resource-model.md) supersedes its route and status examples.
 **Author:** Nova
 **Date:** 2026-05-17
 **Crates:** `hypercolor-types`, `hypercolor-core`, `hypercolor-daemon`
-**Evolves:** Render Groups (27)
+**Evolves:** Render Groups (27, historical)
 **Depends on:** Spatial Layout Engine (06), Effect System (07),
-Scenes & Automation (13), Render Groups (27), Canonical Render Pipeline (48)
+Scenes & Automation (13), Canonical Render Pipeline (48)
+
+> **Note (2026-08-25):** section 1 says "the `RenderGroup` type already exists and ships
+> in the tree". It does not, and the name is now rejected by a workspace guard test; the
+> shipped noun is `Zone` (`crates/hypercolor-types/src/scene.rs`). Every bare `RenderGroup`
+> or "render group" below should be read as `Zone`. Section 6's references to
+> `profiles::apply_profile_snapshot` and `crates/hypercolor-daemon/src/api/profiles.rs`
+> are also dead: profiles folded into scenes, and snapshot semantics now live on scenes
+> at `POST /api/v1/scenes/snapshot`.
 **Related:** User Media & Layer Stack (60), Studio Composition UI (65),
 SparkleFlinger (design/30), brainstorm decision `decision_626e122a924d`
 
@@ -738,14 +750,15 @@ pub enum DeviceZoneAssignment {
 Structural endpoints (`POST`, `DELETE`, the device endpoints,
 `PATCH /zones/{zone_id}` when it sets `make_primary`, and
 `PATCH /unassigned-behavior`) follow the **same precondition contract the
-layer endpoints use**: the response carries the scene's `groups_revision` as
+layer endpoints use**: the response carries the scene's `zones_revision` as
 an `ETag`, and a structural request may carry an `If-Match` header. A
-mismatch returns `412 Precondition Failed` with the current revision in the
-body. This matches the `api/layers.rs` endpoints. The legacy
-`PATCH /effects/current/controls` endpoint predates that contract and does
-not use it; new code follows the `412` plus `ETag` pattern. `412` is distinct
-from the `409 Conflict` this spec uses for snapshot-locked scenes.
-Metadata-only `PATCH` calls do not require `If-Match`.
+mismatch returns `412 Precondition Failed` carrying the canonical error
+envelope: `code` is `precondition_failed`, `details` holds `expected` and
+`current`, and the `ETag` repeats `current`. This matches the `api/layers.rs`
+endpoints and `PATCH /effects/active/controls`, which run the same contract
+against `controls_version`. `412` is distinct from the `409 Conflict` this spec
+uses for snapshot-locked scenes. Metadata-only `PATCH` calls do not require
+`If-Match`.
 
 ### 9.4 Error Cases
 
@@ -757,7 +770,7 @@ Metadata-only `PATCH` calls do not require `If-Match`.
 | Structural mutation on a `Snapshot` scene     | 409    | `blocks_runtime_mutation` is true           |
 | Delete a `Primary` or `Display` zone          | 409    | Use the dedicated lifecycle endpoints       |
 | Fallback behavior names a missing zone        | 404    | `Fallback(RenderGroupId)` must resolve      |
-| `If-Match` revision mismatch                  | 412    | Body carries current `groups_revision`      |
+| `If-Match` revision mismatch                  | 412    | `details` carries `expected` and `current`  |
 | Assignment that empties a zone                | 200    | An empty zone is valid                      |
 
 ### 9.5 Capability Advertisement
@@ -888,11 +901,11 @@ Studio turn on multi-zone affordances without unsafe probing.
 
 ### 11.1 Zone Rail Contract
 
-Studio reads the active scene's `groups` and the new `groups_revision`.
+Studio reads the active scene's `zones` and the new `zones_revision`.
 LED-role groups appear under Lights; display-role groups appear under
 Screens. Zone CRUD uses the `/api/v1/scenes/{id}/zones` endpoints and the
 `zone-crud` capability. Responses include the updated zone and
-`groups_revision`, with `ETag` carrying the same revision.
+`zones_revision`, with `ETag` carrying the same revision.
 
 ### 11.2 Device-Output Assignment Contract
 
@@ -910,7 +923,7 @@ The Studio Unassigned entry is synthetic and has no layer stack. It reads the
 active scene's `unassigned_behavior` and writes it through
 `PATCH /api/v1/scenes/{id}/unassigned-behavior`, gated by
 `scene-unassigned-behavior-write`. The response carries the updated behavior
-and `groups_revision`; the daemon publishes a scene-level change event so
+and `zones_revision`; the daemon publishes a scene-level change event so
 other clients know to refetch the active scene.
 
 ### 11.4 Per-Zone Panels

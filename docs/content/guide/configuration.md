@@ -9,11 +9,11 @@ Hypercolor reads its main configuration from a single TOML file. The daemon crea
 
 ## Config file location
 
-| Platform | Path |
-|---|---|
-| Linux | `~/.config/hypercolor/hypercolor.toml` |
-| Windows | `%APPDATA%\hypercolor\hypercolor.toml` |
-| macOS | `~/Library/Application Support/hypercolor/hypercolor.toml` |
+| Platform | Path                                                       |
+| -------- | ---------------------------------------------------------- |
+| Linux    | `~/.config/hypercolor/hypercolor.toml`                     |
+| Windows  | `%APPDATA%\hypercolor\hypercolor.toml`                     |
+| macOS    | `~/Library/Application Support/hypercolor/hypercolor.toml` |
 
 On Linux the path follows the XDG Base Directory spec (`$XDG_CONFIG_HOME/hypercolor/`, defaulting to `~/.config/hypercolor/`). Point the daemon at a different file with the `--config` flag:
 
@@ -35,25 +35,22 @@ The daemon creates the file on first run from compile-time defaults, then reads 
 
 The root `HypercolorConfig` struct has these sections:
 
-| Section | What it controls |
-|---|---|
-| `[daemon]` | Render loop, network binding, logging, canvas, lifecycle |
-| `[web]` | Embedded web UI and WebSocket preview server |
-| `[mcp]` | Model Context Protocol server (off by default) |
-| `[effect_engine]` | Renderer selection, hot-reload, extra effect paths |
-| `[rendering]` | Servo GPU import policy |
-| `[media]` | Video/stream producer limits |
-| `[audio]` | Audio capture device and FFT analysis |
-| `[capture]` | Screen capture for ambient lighting |
-| `[input]` | Host keyboard/mouse capture consent and routing |
-| `[display]` | LCD face FPS cap |
-| `[discovery]` | mDNS, scan interval, ROLI Blocks |
-| `[network]` | Remote access modes and client scope |
-| `[drivers.<id>]` | Per-driver enable/settings (keyed by driver ID) |
-| `[dbus]` | D-Bus session bus integration (Linux) |
-| `[tui]` | Terminal UI theme, preview FPS, keybindings |
-| `[session]` | Idle, lock, suspend, and lid lighting behavior (Linux) |
-| `[features]` | Opt-in experimental flags |
+| Section           | What it controls                                         |
+| ----------------- | -------------------------------------------------------- |
+| `[daemon]`        | Render loop, network binding, logging, canvas, lifecycle |
+| `[web]`           | Embedded web UI and WebSocket preview server             |
+| `[mcp]`           | Model Context Protocol server (off by default)           |
+| `[effect_engine]` | Renderer selection, hot-reload, extra effect paths       |
+| `[rendering]`     | Servo GPU import policy                                  |
+| `[media]`         | Video/stream producer limits                             |
+| `[audio]`         | Audio capture device and FFT analysis                    |
+| `[capture]`       | Screen capture for ambient lighting                      |
+| `[input]`         | Host keyboard/mouse capture consent and routing          |
+| `[display]`       | LCD face FPS cap                                         |
+| `[discovery]`     | mDNS, scan interval, ROLI Blocks                         |
+| `[network]`       | Remote access modes and client scope                     |
+| `[drivers.<id>]`  | Per-driver enable/settings (keyed by driver ID)          |
+| `[session]`       | Idle, lock, suspend, and lid lighting behavior           |
 
 ---
 
@@ -72,7 +69,7 @@ canvas_height    = 480                # Effect canvas height in pixels
 max_devices      = 32                 # Maximum simultaneous device connections
 log_level        = "info"            # trace | debug | info | warn | error
 log_file         = ""                 # Empty = stderr only; path enables file output
-start_profile    = "last"             # "last" | "default" | <profile name>
+start_scene      = "last"             # "last" | "default" | <scene name>
 shutdown_behavior = "hardware_default" # hardware_default | off | static
 shutdown_color   = "#1a1a2e"          # Hex color used when shutdown_behavior = "static"
 ```
@@ -81,7 +78,7 @@ shutdown_color   = "#1a1a2e"          # Hex color used when shutdown_behavior = 
 
 **`canvas_width` / `canvas_height`** are the render canvas dimensions. LED spatial positions are normalized to `[0.0, 1.0]`, so layouts remain valid across different canvas sizes. Canvas resizes take effect at the next frame boundary. Both keys support live reload.
 
-**`start_profile`**: `"last"` restores the profile that was active at shutdown. `"default"` loads a profile named "default". Any other string is treated as a profile name.
+**`start_scene`**: `"last"` restores the scene that was active at shutdown. `"default"` selects the auto-managed Default scene. Any other non-empty string is treated as a saved scene name or id.
 
 **`shutdown_behavior`**: `hardware_default` leaves LEDs on their last hardware frame (most controllers hold it). `off` sends a black frame to every device. `static` sends the color in `shutdown_color`.
 
@@ -107,6 +104,7 @@ enabled       = true    # Serve the web UI and REST API on the daemon port
 open_browser  = false   # Auto-open browser when the daemon starts
 cors_origins  = []      # Extra allowed CORS origins (only active with API key auth)
 websocket_fps = 30      # LED preview frame rate pushed to WebSocket clients
+interactive_preview_resource_bytes = 1073741824  # Byte budget for interactive preview resources (1 GiB)
 ```
 
 The web UI is served at `http://localhost:9420`. Disabling `web.enabled` removes the UI routes but leaves the REST and WebSocket API intact. `cors_origins` only matters when `HYPERCOLOR_API_KEY` authentication is active.
@@ -126,7 +124,7 @@ json_response       = false   # Use JSON responses instead of SSE framing
 sse_keep_alive_secs = 15      # SSE heartbeat interval
 ```
 
-Once enabled, the MCP server exposes 16 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
+Once enabled, the MCP server exposes 17 tools, 5 resources, and 3 prompts at `http://localhost:9420/mcp`.
 
 ---
 
@@ -140,7 +138,7 @@ preferred_renderer           = "auto"   # "auto" | "servo" | "wgpu"
 servo_enabled                = true     # Enable Servo path for HTML/Canvas effects
 wgpu_backend                 = "auto"   # "auto" | "vulkan" | "opengl"
 compositor_acceleration_mode = "auto"   # "cpu" | "auto" | "gpu"
-effect_error_fallback        = "none"   # "none" | "clear_groups"
+effect_error_fallback        = "none"   # "none" | "clear_zones"
 extra_effect_dirs            = []       # Additional directories scanned for effects
 watch_effects                = true     # Hot-reload effects on file change
 watch_config                 = true     # Hot-reload hypercolor.toml on file change
@@ -152,14 +150,15 @@ watch_config                 = true     # Hot-reload hypercolor.toml on file cha
 
 **`extra_effect_dirs`**: list of absolute or config-relative paths. Each directory is scanned for `.html` effect bundles on startup and watched for changes when `watch_effects = true`.
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 Add your effect development directory here to get live hot-reload without a daemon restart:
 
 ```toml
 [effect_engine]
 extra_effect_dirs = ["/home/you/dev/my-effects/dist"]
 ```
-{% end %}
+
+{% </callout> %}
 
 ---
 
@@ -207,18 +206,25 @@ beat_sensitivity = 0.6      # Beat detection threshold (0.0 = never, 1.0 = alway
 **`device`** special values: `"default"` captures from the system monitor (what you hear); `"microphone"` uses the default input device; any other string is matched against PulseAudio/PipeWire device names. List available devices:
 
 ```bash
-curl http://localhost:9420/api/v1/audio/devices | jq
+curl http://localhost:9420/api/v1/system/audio-devices | jq
 ```
 
 **`fft_size`** must be a power of two. Smaller values give faster response, larger values give better low-frequency resolution. 1024 is a good default for most music.
 
-Audio config changes applied via `config set --live` or the REST API take effect immediately, and the daemon reconfigures the input pipeline without restarting.
+Audio config changes take effect immediately through `config set` or the REST API, and the daemon reconfigures the input pipeline without restarting. Pass `--no-live` (or `?live=false`) to persist the value without disturbing the running pipeline.
 
 ---
 
 ## `[capture]`
 
-Screen capture for ambient lighting effects. On Windows it is on by default: DXGI Desktop Duplication asks for no permission, shows no picker, and draws no capture indicator, so an ambient effect works immediately. On Linux it is opt-in: Wayland capture goes through the XDG desktop portal and PipeWire, which opens a picker, and answering it on your behalf at daemon start would be an ambush. X11 sessions have no capture path. macOS has no screen capture at all, and setting `capture.enabled = true` there is rejected by config validation.
+Screen capture for ambient lighting effects. On Windows it is on by default:
+DXGI Desktop Duplication asks for no permission, shows no picker, and draws no
+capture indicator, so an ambient effect works immediately. On Linux it is
+opt-in: Wayland capture goes through the XDG desktop portal and PipeWire, which
+opens a picker, and answering it on your behalf at daemon start would be an
+ambush. X11 sessions have no capture path. On macOS, ScreenCaptureKit uses
+Apple's system picker and Screen Recording permission. Hypercolor presents the
+picker only after an explicit action.
 
 ```toml
 [capture]
@@ -234,16 +240,39 @@ letterbox_threshold    = 0.02     # Luminance threshold for bar detection
 saturation             = 1.0      # Saturation boost applied to zone colors
 brightness             = 1.0      # Brightness multiplier applied to zone colors
 gamma                  = 1.0      # Gamma shaping (1.0 = neutral, >1 darkens midtones)
+target_led_white_x     = 0.3127   # LED white point in CIE xy space
+target_led_white_y     = 0.3290
+target_led_reference_white_nits = 203.0
+target_led_peak_nits   = 406.0
+exposure_ev            = 0.0      # HDR exposure adjustment in stops (-8 to 8)
 # publication_memory_bytes        # Optional byte budget; unset snapshots host memory at startup
 ```
 
 **`enabled`** grants permission and nothing more. The capture backend opens on demand and stays closed until a screen-reactive effect actually asks for pixels.
 
-**`source`** must be `"auto"` on Linux: the XDG desktop portal owns the selection, and the chosen source is persisted in `restore_token` (written automatically) so it survives daemon restarts without re-prompting. On Windows the value addresses a display directly, either `"auto"` for the primary output or a monitor selector such as `monitor:<stable-id>`. A bare number or `display:<n>` is accepted as a legacy output index and rewritten to its stable form once resolved.
+**`source`** must be `"auto"` on Linux: the XDG desktop portal owns the
+selection, and the chosen source is persisted in `restore_token` (written
+automatically) so it survives daemon restarts without re-prompting. On Windows
+the value addresses a display directly, either `"auto"` for the primary output
+or a monitor selector such as `monitor:<stable-id>`. A bare number or
+`display:<n>` is accepted as a legacy output index and rewritten to its stable
+form once resolved.
+
+On macOS, use `"auto"`, `"primary_display"`, or
+`"display:<canonical-display-uuid>"`. A window, application, or multi-window
+choice is stored as `"session_scoped"` and requires a new picker choice after
+the owning process relaunches. A missing display UUID enters a needs-selection
+state instead of silently capturing another display.
+
+The LED white point, reference white, peak luminance, and exposure values form
+one calibrated HDR tone-mapping profile. The white point must lie inside the
+CIE xy triangle, reference white must be from 1 to 5000 nits, peak must be from
+1 to 10000 nits and above reference white, and exposure accepts -8 to 8 stops.
+Calibration changes take effect together at a frame boundary.
 
 **`letterbox`** is off by default. Ambient lighting almost always mirrors a desktop rather than a letterboxed film, and dark desktop content trips the bar detector into cropping real picture away. Turn it on when you are mirroring video that genuinely has bars.
 
-**`publication_memory_bytes`** is an optional process-memory byte budget shared by capture analysis and screen publications. Leave it unset and the daemon snapshots available host memory at startup. Capture dimensions are not capped by a fixed axis or pixel count: the analyzer reserves its peak first, publication plans consume the remainder, and checked memory and compute admission decide whether a requested configuration fits. A configuration that does not fit is rejected with a typed capacity error rather than silently clamped. `/api/v1/status` reports the installed fences under `screen_capture_capacity`, whose `admission_enforced` flag tells you whether the budget is active on this host.
+**`publication_memory_bytes`** is an optional process-memory byte budget shared by capture analysis and screen publications. Leave it unset and the daemon snapshots available host memory at startup. Capture dimensions are not capped by a fixed axis or pixel count: the analyzer reserves its peak first, publication plans consume the remainder, and checked memory and compute admission decide whether a requested configuration fits. A configuration that does not fit is rejected with a typed capacity error rather than silently clamped. `/api/v1/system` reports the installed fences under `status.screen_capture_capacity`, whose `admission_enforced` flag tells you whether the budget is active on this host.
 
 Capture config changes apply live: enabling/disabling adds or removes the source from the running pipeline; grid, smoothing, and color settings reconfigure the capture worker in place.
 
@@ -313,16 +342,16 @@ instance_name                     = ""              # mDNS instance name (defaul
 
 **Access modes:**
 
-| Mode | Binding | Auth required |
-|---|---|---|
-| `local_only` | Loopback only | No |
-| `lan_trusted` | All interfaces | No (anyone on the LAN can control it) |
-| `lan_protected` | All interfaces | Yes (API key required) |
-| `custom` | All interfaces | Controlled by `allow_unauthenticated_remote_access` and `allowed_clients` |
+| Mode            | Binding        | Auth required                                                             |
+| --------------- | -------------- | ------------------------------------------------------------------------- |
+| `local_only`    | Loopback only  | No                                                                        |
+| `lan_trusted`   | All interfaces | No (anyone on the LAN can control it)                                     |
+| `lan_protected` | All interfaces | Yes (API key required)                                                    |
+| `custom`        | All interfaces | Controlled by `allow_unauthenticated_remote_access` and `allowed_clients` |
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `lan_trusted` exposes full control to anyone on your network with no authentication. Use `lan_protected` and set `HYPERCOLOR_API_KEY` if you need LAN access with some protection.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -350,34 +379,11 @@ Driver IDs correspond to the names registered in the driver registry. Available 
 
 ---
 
-## `[dbus]`
-
-D-Bus integration for Linux desktop session events (screen lock, media players, power events).
-
-```toml
-[dbus]
-enabled  = true
-bus_name = "tech.hyperbliss.hypercolor1"
-```
-
----
-
-## `[tui]`
-
-Terminal UI preferences.
-
-```toml
-[tui]
-theme        = "silkcircuit"  # "silkcircuit" | "default" | "minimal"
-preview_fps  = 15             # LED preview refresh rate in the TUI canvas
-keybindings  = "default"      # "default" | "vim" | path to a custom keymap file
-```
-
----
-
 ## `[session]`
 
-Desktop session and power awareness: idle dimming, screen lock, suspend, and laptop lid behavior. Session events fire on Linux only today; on Windows and macOS these settings are inert.
+Desktop session and power awareness: screen lock, suspend, idle dimming, and laptop lid behavior.
+
+`on_screen_lock` and `on_suspend` fire on all three platforms. Linux reads the screensaver and logind D-Bus interfaces, Windows decodes `WM_POWERBROADCAST` plus session lock and unlock notifications, and macOS decodes session resign and activate alongside the system sleep and wake notifications. `on_lid_close` and the idle-dimming keys are accepted and validated, but no platform emits lid or idle events yet, so those settings are inert everywhere today.
 
 ```toml
 [session]
@@ -424,25 +430,12 @@ off_output_color    = "#000000"   # Frame held when off_output_behavior = "stati
 
 ---
 
-## `[features]`
-
-Opt-in experimental features. All default to `false`.
-
-```toml
-[features]
-wasm_plugins     = false  # Experimental WASM effect plugin system
-hue_entertainment = false  # Philips Hue Entertainment API (low-latency streaming)
-midi_input       = false  # MIDI controller input for effect control
-```
-
----
-
 ## Authentication
 
 When the `HYPERCOLOR_API_KEY` environment variable is set on the daemon, all API requests must include it:
 
 ```bash
-curl -H "Authorization: Bearer <your-key>" http://localhost:9420/api/v1/status
+curl -H "Authorization: Bearer <your-key>" http://localhost:9420/api/v1/system
 ```
 
 The CLI reads the same variable, or you can pass it via `--api-key`:
@@ -466,11 +459,11 @@ hypercolor config show
 # Read a dotted key
 hypercolor config get daemon.target_fps
 
-# Write a key (persisted to file)
+# Write a key (persisted, and applied live when the key allows it)
 hypercolor config set daemon.target_fps 60
 
-# Write and apply to the running daemon immediately
-hypercolor config set audio.device "alsa_output.usb-Focusrite-monitor" --live
+# Persist a key without touching the running daemon
+hypercolor config set audio.device "alsa_output.usb-Focusrite-monitor" --no-live
 
 # Reset one key to its default
 hypercolor config reset audio.smoothing
@@ -501,26 +494,27 @@ hypercolor config profile list
 curl http://localhost:9420/api/v1/config | jq
 
 # Read a single key
-curl "http://localhost:9420/api/v1/config/get?key=audio.device" | jq
+curl http://localhost:9420/api/v1/config/keys/audio.device | jq
 
-# Set a key (persisted; add "live": true to also apply immediately)
-curl -X POST http://localhost:9420/api/v1/config/set \
+# Set a key (the body is the value; add ?live=false to persist only)
+curl -X PUT http://localhost:9420/api/v1/config/keys/daemon.target_fps \
   -H "Content-Type: application/json" \
-  -d '{"key": "daemon.target_fps", "value": "60", "live": true}'
+  -d '60'
 
 # Reset a key to its default
-curl -X POST http://localhost:9420/api/v1/config/reset \
-  -H "Content-Type: application/json" \
-  -d '{"key": "audio.smoothing"}'
+curl -X DELETE http://localhost:9420/api/v1/config/keys/audio.smoothing
 
 # Full config reset
-curl -X POST http://localhost:9420/api/v1/config/reset \
-  -H "Content-Type: application/json" \
-  -d '{}'
+curl -X POST http://localhost:9420/api/v1/config/reset
+
+# Ask how every key applies, renders, and validates
+curl http://localhost:9420/api/v1/config/schema | jq
 ```
 
-Keys are addressed with dotted paths matching the TOML structure (`daemon.target_fps`, `audio.device`, `drivers.govee.known_ips`, etc.). The set endpoint returns the key's canonicalized effective value plus a `"live"` boolean indicating whether the change was applied to the running daemon.
+Keys are addressed with dotted paths matching the TOML structure (`daemon.target_fps`, `audio.device`, `drivers.govee.known_ips`, etc.), each a single path segment. A write returns the key's canonicalized effective value, a `"live"` boolean saying whether the running daemon re-applied it, a `"requires_restart"` boolean from the key registry, and `"pending_restart"`, the sections whose persisted values now differ from the ones the daemon booted with.
 
-{% callout(type="tip") %}
-`daemon.target_fps`, `daemon.canvas_width`, and `daemon.canvas_height` support live reload, and so do the `audio.*` and `capture.*` keys. Audio keys require `"live": true` in the request body (or `--live` on the CLI) to apply without a restart. Render and capture keys apply automatically whenever the dotted key matches (`daemon.target_fps`, `daemon.canvas_width`, `daemon.canvas_height`, or anything starting with `capture.`), regardless of the `live` flag.
-{% end %}
+Reads mask what the key registry classifies as secret. Every `drivers` entry renders as `{"redacted": true}` on `/api/v1/config` and on a key read; driver settings are read through `GET /api/v1/drivers/{id}/config`, and edited through the driver's control surface: read it from `GET /api/v1/drivers/{id}/controls`, then write with `PATCH /api/v1/control-surfaces/{id}/values`. That is exactly what `hypercolor drivers set-control` and `hypercolor drivers action` do.
+
+{% <callout type="tip"> %}
+Which keys reload live is the key registry's answer, not a list to memorize: `GET /api/v1/config/schema` reports `live` (with the subsystem the daemon re-applies), `live_on_read`, `next_scan`, `restart`, or `inert` for every key. Today the live sections are audio, screen capture, host input, and the render loop (`daemon.target_fps`, `daemon.canvas_width`, `daemon.canvas_height`). Every live section honors the same `?live=` flag, which defaults to applying; the CLI's `--live` maps onto it.
+{% </callout> %}

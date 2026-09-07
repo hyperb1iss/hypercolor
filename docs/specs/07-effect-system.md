@@ -2,7 +2,9 @@
 
 > Technical specification for the Hypercolor effect system -- the dual-path renderer, metadata model, control system, effect registry, and composition engine.
 
-**Status:** Draft
+**Status:** Draft. The "dual-path renderer" framing above is aspirational: the
+second path is section 6.3's `WgpuRenderer`, which was never built. See the note
+there before implementing anything shader-related.
 **Covers:** `hypercolor-core/src/effect/`
 
 ---
@@ -819,6 +821,16 @@ pub struct AudioUniforms {
 ```
 
 ### 6.3 WgpuRenderer
+
+> **Never built (noted 2026-08-25).** No `WgpuRenderer` type exists anywhere in the
+> workspace. `EffectSource::Shader` is rejected by the renderer factory with
+> "shader effect '{}' is not runnable yet"
+> (`crates/hypercolor-core/src/effect/factory.rs`), requesting `gpu` acceleration
+> errors, and `auto` falls back to CPU. GLSL effects ship today as
+> `EffectSource::Html` and run as WebGL2 inside Servo. wgpu is real in this project,
+> but as the SparkleFlinger compositor and the Servo frame-import path, not as an
+> effect renderer. This section is the unbuilt design; see
+> `docs/content/effects/glsl-effects.md` for how shader effects actually work.
 
 Renders WGSL and GLSL (transpiled) shaders via wgpu. Headless GPU execution, pixel readback to CPU.
 

@@ -45,6 +45,7 @@ export interface ShaderContext {
 
 /** A named preset with control overrides, defined by the effect author. */
 export interface PresetDef {
+    id?: string
     name: string
     description?: string
     controls: Record<string, unknown>

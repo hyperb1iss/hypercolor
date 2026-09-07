@@ -44,10 +44,10 @@ wire format.
 3. Write a spec in `docs/specs/` before implementing. The spec is the review artifact; the
    Rust code follows it.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Do not start implementing from a partial spec. An 80% correct spec produces subtle
 encoding bugs that are hard to bisect later because everything compiles clean.
-{% end %}
+{% </callout> %}
 
 The `.agents/skills/protocol-research/` skill documents the full research methodology,
 including USB capture workflow, checksum identification, and timing measurement.
@@ -81,10 +81,12 @@ mandatory, not optional. Manual offset indexing produces silent misalignment bug
 rejected in review.
 
 ```rust
-use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
+use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
 
 /// 64-byte command packet for My Family devices.
-#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+/// `FromBytes` because Step 5 parses device responses back into this type;
+/// a write-only packet can drop to `FromZeros`.
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 pub(super) struct MyFamilyPacket {
     pub report_id: u8,
@@ -134,11 +136,11 @@ use std::time::Duration;
 
 use hypercolor_types::device::{
     DeviceCapabilities, DeviceColorFormat, DeviceColorSpace,
-    DeviceFeatures, DeviceTopologyHint,
+    DeviceFeatures, DeviceTopologyHint, SegmentInfo,
 };
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError,
-    ProtocolResponse, ProtocolZone, ResponseStatus, TransferType,
+    ProtocolResponse, ResponseStatus, TransferType,
 };
 
 pub struct MyFamilyProtocol {
@@ -231,8 +233,8 @@ impl Protocol for MyFamilyProtocol {
         Ok(ProtocolResponse { status: ResponseStatus::Ok, data: Vec::new() })
     }
 
-    fn zones(&self) -> Vec<ProtocolZone> {
-        vec![ProtocolZone {
+    fn zones(&self) -> Vec<SegmentInfo> {
+        vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: self.led_count,
             topology: DeviceTopologyHint::Strip,
@@ -608,12 +610,12 @@ just test-crate hypercolor-hal      # HAL tests only
 just lint                           # Clippy with -D warnings
 ```
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `unsafe_code` is `forbid` in every driver crate (the only workspace exceptions are the
 audited platform-interop crates, which deny undocumented unsafe blocks). If a driver
 situation seems to require `unsafe`, it almost certainly does not: `zerocopy` provides
 everything needed for safe type-punning of wire-format buffers.
-{% end %}
+{% </callout> %}
 
 `just verify` must pass clean before submitting. A failing `just lint` is a blocker.
 

@@ -1,20 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
-from ..types import UNSET, Unset
-
 if TYPE_CHECKING:
-    from ..models.apply_effect_response_applied_controls import (
-        ApplyEffectResponseAppliedControls,
-    )
-    from ..models.apply_transition_response import ApplyTransitionResponse
-    from ..models.effect_layout_apply_result import EffectLayoutApplyResult
-    from ..models.effect_ref_summary import EffectRefSummary
+    from ..models.side_effect_outcome import SideEffectOutcome
+    from ..models.transition_type_type_0 import TransitionTypeType0
+    from ..models.zone_resource import ZoneResource
 
 
 T = TypeVar("T", bound="ApplyEffectResponse")
@@ -22,103 +17,79 @@ T = TypeVar("T", bound="ApplyEffectResponse")
 
 @_attrs_define
 class ApplyEffectResponse:
-    """Response for `POST /api/v1/effects/{id}/apply`.
+    """`POST /effects/{id}/apply` — the sugar response: the updated zone
+    resource carrying the new layer's id, and the applied transition.
 
-    Attributes:
-        applied_controls (ApplyEffectResponseAppliedControls):
-        effect (EffectRefSummary): `{ id, name }` reference to an effect.
-        transition (ApplyTransitionResponse): Transition actually applied by the daemon.
-        layout (EffectLayoutApplyResult | None | Unset):
-        warnings (list[str] | Unset):
+    Post-commit side-effect failures (power wake) are reported inside a
+    200 per Spec 78 §2.3; repair goes through the side effect's own
+    route (`PATCH /output`), never a blind re-apply, because apply
+    mints a fresh layer id and is deliberately not idempotent.
+
+        Attributes:
+            output (SideEffectOutcome): One post-commit side-effect outcome (Spec 78 §2.3, §3.2): the
+                commit stands, the outcome says whether the side effect landed,
+                and a failure carries its reason.
+            transition (TransitionTypeType0): The closed transition vocabulary (Spec 78 §2.3).
+
+                Grows when the engine does; the request field does not accept
+                aspirational values.
+            zone (ZoneResource): One authored zone inside the live document (Spec 78 §1.3).
     """
 
-    applied_controls: ApplyEffectResponseAppliedControls
-    effect: EffectRefSummary
-    transition: ApplyTransitionResponse
-    layout: EffectLayoutApplyResult | None | Unset = UNSET
-    warnings: list[str] | Unset = UNSET
+    output: SideEffectOutcome
+    transition: TransitionTypeType0
+    zone: ZoneResource
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        from ..models.effect_layout_apply_result import EffectLayoutApplyResult
+        from ..models.transition_type_type_0 import TransitionTypeType0
 
-        applied_controls = self.applied_controls.to_dict()
+        output = self.output.to_dict()
 
-        effect = self.effect.to_dict()
+        transition: dict[str, Any]
+        if isinstance(self.transition, TransitionTypeType0):
+            transition = self.transition.to_dict()
 
-        transition = self.transition.to_dict()
-
-        layout: dict[str, Any] | None | Unset
-        if isinstance(self.layout, Unset):
-            layout = UNSET
-        elif isinstance(self.layout, EffectLayoutApplyResult):
-            layout = self.layout.to_dict()
-        else:
-            layout = self.layout
-
-        warnings: list[str] | Unset = UNSET
-        if not isinstance(self.warnings, Unset):
-            warnings = self.warnings
+        zone = self.zone.to_dict()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "applied_controls": applied_controls,
-                "effect": effect,
+                "output": output,
                 "transition": transition,
+                "zone": zone,
             }
         )
-        if layout is not UNSET:
-            field_dict["layout"] = layout
-        if warnings is not UNSET:
-            field_dict["warnings"] = warnings
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
-        from ..models.apply_effect_response_applied_controls import (
-            ApplyEffectResponseAppliedControls,
-        )
-        from ..models.apply_transition_response import ApplyTransitionResponse
-        from ..models.effect_layout_apply_result import EffectLayoutApplyResult
-        from ..models.effect_ref_summary import EffectRefSummary
+        from ..models.side_effect_outcome import SideEffectOutcome
+        from ..models.transition_type_type_0 import TransitionTypeType0
+        from ..models.zone_resource import ZoneResource
 
         d = dict(src_dict)
-        applied_controls = ApplyEffectResponseAppliedControls.from_dict(
-            d.pop("applied_controls")
-        )
+        output = SideEffectOutcome.from_dict(d.pop("output"))
 
-        effect = EffectRefSummary.from_dict(d.pop("effect"))
+        def _parse_transition(data: object) -> TransitionTypeType0:
+            if not isinstance(data, dict):
+                raise TypeError()
+            componentsschemas_transition_type_type_0 = TransitionTypeType0.from_dict(
+                data
+            )
 
-        transition = ApplyTransitionResponse.from_dict(d.pop("transition"))
+            return componentsschemas_transition_type_type_0
 
-        def _parse_layout(data: object) -> EffectLayoutApplyResult | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, dict):
-                    raise TypeError()
-                layout_type_1 = EffectLayoutApplyResult.from_dict(data)
+        transition = _parse_transition(d.pop("transition"))
 
-                return layout_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(EffectLayoutApplyResult | None | Unset, data)
-
-        layout = _parse_layout(d.pop("layout", UNSET))
-
-        warnings = cast(list[str], d.pop("warnings", UNSET))
+        zone = ZoneResource.from_dict(d.pop("zone"))
 
         apply_effect_response = cls(
-            applied_controls=applied_controls,
-            effect=effect,
+            output=output,
             transition=transition,
-            layout=layout,
-            warnings=warnings,
+            zone=zone,
         )
 
         apply_effect_response.additional_properties = d

@@ -6,7 +6,7 @@ weight = 40
 
 Network RGB devices (Philips Hue, Nanoleaf, WLED, and Govee) connect over your local network rather than USB. Hypercolor handles discovery, pairing, and high-frequency streaming entirely on the LAN; no cloud services are required for any of the four built-in network drivers.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## How discovery works
 
@@ -50,15 +50,15 @@ The `--timeout` value is in seconds and defaults to 10. The daemon clamps it bet
 
 All three fields are optional. When `wait` is `false` (the default), the endpoint returns immediately with a `scan_id` and `"status": "scanning"`. Set `wait: true` to block until the scan completes and receive the full result in the response body.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Only one discovery scan can run at a time. A second `POST /api/v1/devices/discover` while a scan is active returns **409 Conflict**. Wait for the current scan to finish, or increase `timeout_ms` on the first call to cover the full window you need.
-{% end %}
+{% </callout> %}
 
 ### Device fingerprinting and IP changes
 
 Network devices are fingerprinted on stable hardware identity rather than their current IP address:
 
-- WLED: MAC address (`net:<mac>`)
+- WLED: MAC address (`net:wled:<mac>`)
 - Govee: MAC address (`net:govee:<mac>`)
 - Hue: Bridge ID
 - Nanoleaf: device serial key
@@ -84,15 +84,15 @@ To pair a device that was discovered but is not yet streaming:
 hypercolor devices pair "<device name or ID>"
 ```
 
-`hypercolor devices list` shows each device's state. A device stuck in `discovered` is waiting for credentials. A `connected` device is actively streaming.
+`hypercolor devices list` shows each device's state. A device stuck in `known` is waiting for credentials. A `connected` device has opened its transport; `active` means frames are flowing.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 Credentials survive daemon restarts. Re-pairing is only needed if you factory-reset the device or regenerate its API keys.
-{% end %}
+{% </callout> %}
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 If you're not sure which device is which, `hypercolor devices identify "<name>"` flashes a test pattern on that device for 5 seconds. Adjust the duration with `--duration`.
-{% end %}
+{% </callout> %}
 
 ---
 

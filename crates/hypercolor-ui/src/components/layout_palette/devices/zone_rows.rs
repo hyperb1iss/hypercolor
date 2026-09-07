@@ -13,7 +13,7 @@ use super::super::topology::topology_icon;
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn render_zone_rows(
     state: PaletteState,
-    entries: Vec<(Option<api::ZoneSummary>, String, usize)>,
+    entries: Vec<(Option<api::SegmentSummary>, String, usize)>,
     layout_device_id: String,
     channel_device_id: String,
     device_name: String,

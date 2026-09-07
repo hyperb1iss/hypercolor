@@ -3,8 +3,8 @@
 use hypercolor_tui::screen::ScreenId;
 
 #[test]
-fn all_screens_returns_six() {
-    assert_eq!(ScreenId::all().len(), 6);
+fn all_screens_returns_five() {
+    assert_eq!(ScreenId::all().len(), 5);
 }
 
 #[test]
@@ -17,7 +17,7 @@ fn from_key_lowercase() {
     assert_eq!(ScreenId::from_key('d'), Some(ScreenId::Dashboard));
     assert_eq!(ScreenId::from_key('e'), Some(ScreenId::EffectBrowser));
     assert_eq!(ScreenId::from_key('v'), Some(ScreenId::DeviceManager));
-    assert_eq!(ScreenId::from_key('p'), Some(ScreenId::Profiles));
+    assert_eq!(ScreenId::from_key('p'), None);
     assert_eq!(ScreenId::from_key('s'), Some(ScreenId::Settings));
     assert_eq!(ScreenId::from_key('b'), Some(ScreenId::Debug));
 }
@@ -84,5 +84,5 @@ fn screen_id_hash_eq() {
     for &screen in ScreenId::all() {
         assert!(set.insert(screen), "duplicate screen: {screen:?}");
     }
-    assert_eq!(set.len(), 6);
+    assert_eq!(set.len(), 5);
 }

@@ -7,7 +7,9 @@
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use hypercolor_color::Hsv as KernelHsv;
 use hypercolor_leptos_ext::canvas::{context_2d, image_data_rgba};
+use hypercolor_types::canvas::{Rgb, Rgba};
 
 // ── Canvas geometry ──────────────────────────────────────────────────────────
 
@@ -22,6 +24,9 @@ const TAU: f64 = std::f64::consts::TAU;
 
 // ── HSV math ─────────────────────────────────────────────────────────────────
 
+/// The wheel's working color. `hypercolor_color::Hsv` is the conversion
+/// kernel; this wrapper exists because the wheel geometry wants f64
+/// angles and the canvas API hands back f64 pointer coordinates.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Hsv {
     h: f64, // 0..360
@@ -30,82 +35,35 @@ struct Hsv {
 }
 
 impl Hsv {
-    fn to_rgb(self) -> (u8, u8, u8) {
-        let Hsv { h, s, v } = self;
-        let c = v * s;
-        let hp = h / 60.0;
-        let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
-        let m = v - c;
-        let (r1, g1, b1) = if hp < 1.0 {
-            (c, x, 0.0)
-        } else if hp < 2.0 {
-            (x, c, 0.0)
-        } else if hp < 3.0 {
-            (0.0, c, x)
-        } else if hp < 4.0 {
-            (0.0, x, c)
-        } else if hp < 5.0 {
-            (x, 0.0, c)
-        } else {
-            (c, 0.0, x)
-        };
-
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::as_conversions
-        )]
-        let to_u8 = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
-
-        (to_u8(r1), to_u8(g1), to_u8(b1))
+    #[allow(clippy::cast_possible_truncation)]
+    fn to_rgb(self) -> Rgb {
+        KernelHsv::new(self.h as f32, self.s as f32, self.v as f32).to_rgb()
     }
 
     fn to_hex(self) -> String {
-        let (r, g, b) = self.to_rgb();
-        format!("#{r:02x}{g:02x}{b:02x}")
+        self.to_rgb().to_hex()
     }
 
+    /// Parse the wheel's current color. A malformed value falls back to
+    /// full-saturation white, which is what this widget has always shown
+    /// for input it cannot read.
     fn from_hex(hex: &str) -> Self {
-        let hex = hex.trim().strip_prefix('#').unwrap_or(hex);
-        if hex.len() >= 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(255);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
-            Self::from_rgb(r, g, b)
-        } else {
+        Rgba::from_hex(hex.trim()).map_or(
             Self {
                 h: 0.0,
                 s: 1.0,
                 v: 1.0,
-            }
-        }
+            },
+            |color| Self::from_rgb(color.to_rgb()),
+        )
     }
 
-    fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        let rf = f64::from(r) / 255.0;
-        let gf = f64::from(g) / 255.0;
-        let bf = f64::from(b) / 255.0;
-
-        let max = rf.max(gf).max(bf);
-        let min = rf.min(gf).min(bf);
-        let delta = max - min;
-
-        let h = if delta < 1e-10 {
-            0.0
-        } else if (max - rf).abs() < 1e-10 {
-            60.0 * (((gf - bf) / delta) % 6.0)
-        } else if (max - gf).abs() < 1e-10 {
-            60.0 * ((bf - rf) / delta + 2.0)
-        } else {
-            60.0 * ((rf - gf) / delta + 4.0)
-        };
-
-        let s = if max < 1e-10 { 0.0 } else { delta / max };
-
-        Hsv {
-            h: (h + 360.0) % 360.0,
-            s,
-            v: max,
+    fn from_rgb(rgb: Rgb) -> Self {
+        let hsv = KernelHsv::from_rgb(rgb);
+        Self {
+            h: f64::from(hsv.h),
+            s: f64::from(hsv.s),
+            v: f64::from(hsv.v),
         }
     }
 }
@@ -150,23 +108,23 @@ fn render_wheel(ctx: &web_sys::CanvasRenderingContext2d, hsv: Hsv) -> Result<(),
             if (RING_INNER..=RING_OUTER).contains(&dist) {
                 let angle = y.atan2(x).to_degrees();
                 let hue = (angle + 360.0) % 360.0;
-                let (r, g, b) = (Hsv {
+                let rgb = (Hsv {
                     h: hue,
                     s: 1.0,
                     v: 1.0,
                 })
                 .to_rgb();
-                pixels[idx] = r;
-                pixels[idx + 1] = g;
-                pixels[idx + 2] = b;
+                pixels[idx] = rgb.r;
+                pixels[idx + 1] = rgb.g;
+                pixels[idx + 2] = rgb.b;
                 pixels[idx + 3] = 255;
             } else if x.abs() <= SQ_HALF && y.abs() <= SQ_HALF {
                 let s = (x + SQ_HALF) / (SQ_HALF * 2.0);
                 let v = 1.0 - (y + SQ_HALF) / (SQ_HALF * 2.0);
-                let (r, g, b) = (Hsv { h: hsv.h, s, v }).to_rgb();
-                pixels[idx] = r;
-                pixels[idx + 1] = g;
-                pixels[idx + 2] = b;
+                let rgb = (Hsv { h: hsv.h, s, v }).to_rgb();
+                pixels[idx] = rgb.r;
+                pixels[idx + 1] = rgb.g;
+                pixels[idx + 2] = rgb.b;
                 pixels[idx + 3] = 255;
             }
         }

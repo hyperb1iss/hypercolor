@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus, PreviewKind};
 use hypercolor_daemon::preview_runtime::{PreviewPixelFormat, PreviewRuntime, PreviewStreamDemand};
 use hypercolor_types::canvas::Canvas;
 
@@ -12,21 +12,23 @@ fn preview_runtime_snapshot_tracks_canvas_publication_and_receivers() {
     let runtime = PreviewRuntime::new(Arc::clone(&bus));
     let _canvas_rx = runtime.canvas_receiver();
     let frame = CanvasFrame::from_canvas(&Canvas::new(2, 1), 9, 33);
-    let _ = bus.canvas_sender().send(frame.clone());
+    let _ = bus.canvas_lane().send(frame.clone());
 
-    runtime.record_canvas_publication(frame.frame_number, frame.timestamp_ms);
+    runtime.note_canvas_frame(frame.frame_number, frame.timestamp_ms);
 
     let snapshot = runtime.snapshot();
-    assert_eq!(snapshot.canvas_receivers, 1);
-    assert_eq!(snapshot.screen_canvas_receivers, 0);
-    assert_eq!(snapshot.canvas_frames_published, 1);
-    assert_eq!(snapshot.screen_canvas_frames_published, 0);
-    assert_eq!(snapshot.latest_canvas_frame_number, 9);
-    assert_eq!(snapshot.latest_canvas_timestamp_ms, 33);
+    let canvas = snapshot.preview(PreviewKind::Canvas);
+    let screen = snapshot.preview(PreviewKind::ScreenCanvas);
+    assert_eq!(canvas.receivers, 1);
+    assert_eq!(screen.receivers, 0);
+    assert_eq!(canvas.frames_published, 1);
+    assert_eq!(screen.frames_published, 0);
+    assert_eq!(canvas.latest_frame_number, 9);
+    assert_eq!(canvas.latest_timestamp_ms, 33);
 }
 
 #[test]
-fn internal_canvas_receivers_stay_out_of_external_preview_telemetry() {
+fn internal_canvas_receivers_stay_out_of_external_preview_demand() {
     let bus = Arc::new(HypercolorBus::new());
     let runtime = PreviewRuntime::new(bus);
     let _internal = runtime.internal_canvas_receiver(PreviewStreamDemand {
@@ -37,7 +39,7 @@ fn internal_canvas_receivers_stay_out_of_external_preview_telemetry() {
     });
 
     let snapshot = runtime.snapshot();
-    assert_eq!(snapshot.canvas_receivers, 0);
+    assert_eq!(snapshot.preview(PreviewKind::Canvas).receivers, 1);
     assert_eq!(runtime.canvas_receiver_count(), 0);
     assert_eq!(runtime.tracked_canvas_receiver_count(), 1);
     assert_eq!(runtime.canvas_demand().subscribers, 0);
@@ -55,17 +57,19 @@ fn preview_runtime_snapshot_tracks_screen_publication_and_receivers() {
     let runtime = PreviewRuntime::new(Arc::clone(&bus));
     let _screen_rx = runtime.screen_canvas_receiver();
     let frame = CanvasFrame::from_canvas(&Canvas::new(1, 1), 17, 44);
-    let _ = bus.screen_canvas_sender().send(frame.clone());
+    let _ = bus.screen_canvas_lane().send(frame.clone());
 
-    runtime.record_screen_canvas_publication(frame.frame_number, frame.timestamp_ms);
+    runtime.note_screen_canvas_frame(frame.frame_number, frame.timestamp_ms);
 
     let snapshot = runtime.snapshot();
-    assert_eq!(snapshot.canvas_receivers, 0);
-    assert_eq!(snapshot.screen_canvas_receivers, 1);
-    assert_eq!(snapshot.canvas_frames_published, 0);
-    assert_eq!(snapshot.screen_canvas_frames_published, 1);
-    assert_eq!(snapshot.latest_screen_canvas_frame_number, 17);
-    assert_eq!(snapshot.latest_screen_canvas_timestamp_ms, 44);
+    let canvas = snapshot.preview(PreviewKind::Canvas);
+    let screen = snapshot.preview(PreviewKind::ScreenCanvas);
+    assert_eq!(canvas.receivers, 0);
+    assert_eq!(screen.receivers, 1);
+    assert_eq!(canvas.frames_published, 0);
+    assert_eq!(screen.frames_published, 1);
+    assert_eq!(screen.latest_frame_number, 17);
+    assert_eq!(screen.latest_timestamp_ms, 44);
 }
 
 #[test]
@@ -75,10 +79,10 @@ fn preview_runtime_snapshot_tracks_latest_canvas_frame_without_publication() {
 
     runtime.note_canvas_frame(23, 77);
 
-    let snapshot = runtime.snapshot();
-    assert_eq!(snapshot.canvas_frames_published, 0);
-    assert_eq!(snapshot.latest_canvas_frame_number, 23);
-    assert_eq!(snapshot.latest_canvas_timestamp_ms, 77);
+    let canvas = runtime.snapshot().preview(PreviewKind::Canvas);
+    assert_eq!(canvas.frames_published, 0);
+    assert_eq!(canvas.latest_frame_number, 23);
+    assert_eq!(canvas.latest_timestamp_ms, 77);
 }
 
 #[test]

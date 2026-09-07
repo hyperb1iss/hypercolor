@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 
 use hypercolor_types::effect::{EffectCategory, PreviewSource};
+use hypercolor_types::library::PresetId;
 
 /// Upper bound on an inline cover data URI.
 ///
@@ -70,6 +71,7 @@ pub struct HtmlControlMetadata {
 /// Parsed preset from a `<meta preset="..." ...>` tag.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HtmlPresetMetadata {
+    pub id: Option<String>,
     pub name: String,
     pub description: Option<String>,
     pub controls: HashMap<String, String>,
@@ -471,6 +473,9 @@ fn parse_preset_metadata(attrs: &HashMap<String, String>) -> Option<HtmlPresetMe
         .unwrap_or_default();
 
     Some(HtmlPresetMetadata {
+        id: attr_value(attrs, "preset-id")
+            .map(PresetId::normalize_key)
+            .filter(|id| !id.is_empty()),
         name: normalize_whitespace(name),
         description,
         controls,
@@ -1026,7 +1031,7 @@ mod tests {
 </head>
 <script>
   // Bundled SDK runtime includes audio infrastructure:
-  engine.audio.freq; audio.level; audio.density;
+  engine.audio.freq; audio.levelLinear; audio.density;
 </script>
 "#;
         let parsed = parse_html_effect_metadata(html);

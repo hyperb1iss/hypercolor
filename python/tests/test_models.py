@@ -2,24 +2,110 @@
 
 from __future__ import annotations
 
-import msgspec
+import pytest
 
-from hypercolor.models.device import Device
-from hypercolor.models.driver import Driver
-from hypercolor.models.effect import Effect
+from hypercolor import models
+from hypercolor._generated.api.devices import update_attachments
+from hypercolor._generated.models import (
+    ComponentBinding,
+    EdgeBehaviorFadeToBlack,
+    EdgeBehaviorType0,
+    EffectDetailResponse,
+    SpatialLayout,
+    UpdateAttachmentsRequest,
+)
+from hypercolor._generated.types import Unset
+from hypercolor.models import DeviceSummary, DriverSummary
 
 
-def test_device_model_decodes() -> None:
+def test_generated_attachment_update_sends_the_complete_request() -> None:
+    kwargs = update_attachments._get_kwargs(
+        "desk/controller",
+        body=UpdateAttachmentsRequest(
+            bindings=[
+                ComponentBinding(
+                    slot_id="channel-1",
+                    template_id="strip-60",
+                    instances=2,
+                )
+            ],
+            validate_only=True,
+        ),
+    )
+
+    assert kwargs["url"] == "/api/v1/devices/desk%2Fcontroller/attachments"
+    assert kwargs["json"] == {
+        "bindings": [
+            {
+                "slot_id": "channel-1",
+                "template_id": "strip-60",
+                "instances": 2,
+            }
+        ],
+        "validate_only": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("wire_value", "expected"),
+    [
+        ("clamp", EdgeBehaviorType0.CLAMP),
+        ("wrap", EdgeBehaviorType0.WRAP),
+        ("mirror", EdgeBehaviorType0.MIRROR),
+    ],
+)
+def test_spatial_layout_decodes_string_edge_behavior(
+    wire_value: str,
+    expected: EdgeBehaviorType0,
+) -> None:
+    layout = SpatialLayout.from_dict(
+        {
+            "canvas_height": 480,
+            "canvas_width": 640,
+            "id": "default",
+            "name": "Default",
+            "version": 1,
+            "zones": [],
+            "default_edge_behavior": wire_value,
+        }
+    )
+
+    assert layout.default_edge_behavior is expected
+    assert layout.to_dict()["default_edge_behavior"] == wire_value
+
+
+def test_spatial_layout_decodes_fade_edge_behavior() -> None:
+    wire_value = {"fade_to_black": {"falloff": 2.0}}
+
+    layout = SpatialLayout.from_dict(
+        {
+            "canvas_height": 480,
+            "canvas_width": 640,
+            "id": "default",
+            "name": "Default",
+            "version": 1,
+            "zones": [],
+            "default_edge_behavior": wire_value,
+        }
+    )
+
+    assert isinstance(layout.default_edge_behavior, EdgeBehaviorFadeToBlack)
+    assert layout.default_edge_behavior.fade_to_black.falloff == 2.0
+    assert layout.to_dict()["default_edge_behavior"] == wire_value
+
+
+def test_device_model_decodes_canonical_connection() -> None:
     payload = {
         "id": "keyboard",
         "layout_device_id": "keyboard",
         "name": "Keyboard",
-        "backend": "hid",
+        "origin": {"driver_id": "hid", "backend_id": "hid", "transport": "usb"},
+        "presentation": {"label": "HID"},
         "status": "connected",
         "brightness": 92,
         "firmware_version": "1.2.3",
         "total_leds": 104,
-        "zones": [
+        "segments": [
             {
                 "id": "main",
                 "name": "Main",
@@ -28,15 +114,18 @@ def test_device_model_decodes() -> None:
                 "topology_hint": {"type": "matrix", "rows": 6, "cols": 18},
             }
         ],
-        "connection_label": "USB HID",
+        "connection": {"transport": "usb", "label": "USB HID"},
     }
 
-    device = msgspec.convert(payload, type=Device)
+    device = DeviceSummary.from_dict(payload)
 
     assert device.name == "Keyboard"
-    assert device.connection_label == "USB HID"
-    assert device.zones[0].topology == "matrix"
-    assert device.enabled is True
+    connection = device.connection
+    assert not isinstance(connection, Unset)
+    assert connection.label == "USB HID"
+    assert not isinstance(device.segments, Unset)
+    assert device.segments[0].topology == "matrix"
+    assert device.status == "connected"
 
 
 def test_device_model_decodes_current_daemon_shape() -> None:
@@ -64,7 +153,7 @@ def test_device_model_decodes_current_daemon_shape() -> None:
             "hostname": "wled-studio.local",
         },
         "total_leds": 275,
-        "zones": [
+        "segments": [
             {
                 "id": "zone_0",
                 "name": "Main",
@@ -75,15 +164,17 @@ def test_device_model_decodes_current_daemon_shape() -> None:
         ],
     }
 
-    device = msgspec.convert(payload, type=Device)
+    device = DeviceSummary.from_dict(payload)
 
-    assert device.backend == "wled"
-    assert device.driver_id == "wled"
-    assert device.transport == "network"
-    assert device.connection_label == "wled-studio.local"
-    assert device.network_ip == "10.4.22.169"
-    assert device.network_hostname == "wled-studio.local"
-    assert device.presentation is not None
+    assert device.origin.driver_id == "wled"
+    assert device.origin.transport == "network"
+    assert device.origin.backend_id == "wled"
+    connection = device.connection
+    assert not isinstance(connection, Unset)
+    assert connection.transport == "network"
+    assert connection.endpoint == "wled-studio.local"
+    assert connection.ip == "10.4.22.169"
+    assert connection.hostname == "wled-studio.local"
     assert device.presentation.label == "WLED"
 
 
@@ -102,23 +193,30 @@ def test_effect_model_decodes() -> None:
         "controls": [
             {
                 "id": "effectSpeed",
-                "label": "Animation Speed",
-                "type": "number",
+                "name": "Animation Speed",
+                "control_type": "slider",
                 "min": 0,
                 "max": 100,
                 "step": 1,
-                "default": 40,
+                "default_value": {"kind": "int", "value": 40},
             }
         ],
-        "presets": [{"name": "Default", "is_default": True}],
-        "active_control_values": {"effectSpeed": 70},
+        "presets": [
+            {
+                "id": "default",
+                "name": "Default",
+                "controls": {"effectSpeed": {"kind": "int", "value": 40}},
+            }
+        ],
     }
 
-    effect = msgspec.convert(payload, type=Effect)
+    effect = EffectDetailResponse.from_dict(payload)
 
     assert effect.id == "aurora"
-    assert effect.active_control_values == {"effectSpeed": 70}
-    assert effect.presets[0].is_default is True
+    assert not isinstance(effect.controls, Unset)
+    assert effect.controls[0].name == "Animation Speed"
+    assert not isinstance(effect.presets, Unset)
+    assert effect.presets[0].id == "default"
 
 
 def test_driver_model_decodes_protocol_catalog() -> None:
@@ -127,7 +225,19 @@ def test_driver_model_decodes_protocol_catalog() -> None:
             "id": "nollie",
             "display_name": "Nollie",
             "module_kind": "hal",
-            "transports": ["usb"],
+            "transports": [
+                {
+                    "kind": "usb",
+                    "availability": {"status": "available"},
+                },
+                {
+                    "kind": "smbus",
+                    "availability": {
+                        "status": "unsupported_platform",
+                        "platform": "macOS",
+                    },
+                },
+            ],
             "capabilities": {
                 "config": False,
                 "discovery": True,
@@ -139,7 +249,7 @@ def test_driver_model_decodes_protocol_catalog() -> None:
                 "presentation": True,
                 "controls": False,
             },
-            "api_schema_version": 1,
+            "api_schema_version": 3,
             "config_version": 1,
             "default_enabled": True,
         },
@@ -161,10 +271,49 @@ def test_driver_model_decodes_protocol_catalog() -> None:
         ],
     }
 
-    driver = msgspec.convert(payload, type=Driver)
+    driver = DriverSummary.from_dict(payload)
 
     assert driver.descriptor.capabilities.protocol_catalog is True
-    assert driver.presentation is not None
+    assert driver.descriptor.api_schema_version == 3
+    assert [transport.to_dict() for transport in driver.descriptor.transports] == payload[
+        "descriptor"
+    ]["transports"]
     assert driver.presentation.label == "Nollie"
-    assert driver.protocols[0].protocol_id == "nollie_8"
-    assert driver.protocols[0].vendor_id == 0x2E8A
+    protocols = driver.protocols
+    assert not isinstance(protocols, Unset)
+    assert protocols[0].protocol_id == "nollie_8"
+    assert protocols[0].vendor_id == 0x2E8A
+
+
+def test_generated_device_model_rejects_a_dropped_required_field() -> None:
+    payload = {
+        "id": "keyboard",
+        "layout_device_id": "keyboard",
+        "name": "Keyboard",
+        "origin": {"driver_id": "hid", "backend_id": "hid", "transport": "usb"},
+        "status": "connected",
+        "brightness": 92,
+    }
+
+    with pytest.raises(KeyError):
+        DeviceSummary.from_dict(payload)
+
+
+def test_public_models_export_the_types_control_definition_is_typed_with() -> None:
+    control = models.ControlDefinition.from_dict(
+        {
+            "id": "speed",
+            "name": "Speed",
+            "control_type": "slider",
+            "default_value": {"kind": "float", "value": 50.0},
+        }
+    )
+
+    assert control.control_type is models.ControlType.SLIDER
+    assert isinstance(control.default_value, models.ControlValue)
+    assert control.default_value.kind is models.ControlValueKind.FLOAT
+    assert control.min_ is models.UNSET
+    assert isinstance(control.min_, models.Unset)
+    assert {"ControlType", "ControlValue", "ControlValueKind", "UNSET", "Unset"} <= set(
+        models.__all__
+    )

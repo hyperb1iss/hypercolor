@@ -5,6 +5,7 @@ set dotenv-load := false
 set positional-arguments := true
 
 workspace_args := "--workspace"
+test_features := "--features hypercolor-daemon/persistence-test-hooks"
 daemon_bind := env_var_or_default("HYPERCOLOR_DAEMON_BIND", "127.0.0.1:9420")
 
 # Bundled effects live where they are installed, which for a dev build would be
@@ -29,8 +30,35 @@ alias py := python-verify
 # ─── Core ─────────────────────────────────────────────────
 
 # Run all checks (boundary, format, lint, test)
-verify: oss-boundary-check-strict fmt-check lint test alloc-contracts
+verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
+
+# Verify target isolation and Cargo argument normalization on Linux, and
+# compiler-cache mode selection on Windows.
+[linux]
+build-wrapper-test:
+    ./scripts/tests/cargo-cache-build-tests.sh
+
+[macos]
+build-wrapper-test:
+    @echo 'Cargo wrapper fixture tests run only on Linux hosts'
+
+[windows]
+build-wrapper-test:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/tests/cargo-cache-mode-tests.ps1
+
+# Prove stale, recent, locked, and dirty target profiles are handled safely
+[linux]
+cargo-gc-test:
+    ./scripts/tests/cargo-target-gc-tests.sh
+
+[macos]
+cargo-gc-test:
+    @echo 'Cargo target GC is installed only on Linux hosts'
+
+[windows]
+cargo-gc-test:
+    @echo 'Cargo target GC is installed only on Linux hosts'
 
 # Check OSS/internal boundary guard scaffolding without strict enforcement
 oss-boundary-check:
@@ -40,10 +68,27 @@ oss-boundary-check:
 oss-boundary-check-strict:
     ./scripts/check-oss-boundary.sh --strict
 
+# Keep current documentation free of retired public API routes
+api-doc-route-check:
+    ./scripts/check-retired-api-docs.sh
+
+# Keep production macOS capture native-only while retaining fixture oracles
+macos-gpu-only-check:
+    ./scripts/check-macos-gpu-only.sh
+
 # Build the workspace with the daemon's full feature set
 [unix]
 build *args='':
     ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} {{ args }}
+
+# Build with full symbols for debugger sessions
+[unix]
+debug-build *args='':
+    ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --profile debugging {{ args }}
+
+[windows]
+debug-build *args='':
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build {{ workspace_args }} --profile debugging {{ args }}
 
 [windows]
 build *args='':
@@ -111,6 +156,14 @@ python-generate *args='':
 python-generate-check:
     cd python && uv run python scripts/generate_openapi_client.py --check
 
+# Regenerate the WebSocket protocol manifest from the topic registry
+ws-manifest:
+    ./scripts/cargo-cache-build.sh cargo run --locked -q -p hypercolor-daemon --no-default-features --bin hypercolor-ws-manifest
+
+# Verify the WebSocket protocol manifest matches the topic registry
+ws-manifest-check:
+    ./scripts/cargo-cache-build.sh cargo run --locked -q -p hypercolor-daemon --no-default-features --bin hypercolor-ws-manifest -- --check
+
 # Generate Python WebSocket protocol constants
 python-ws-protocol-generate:
     cd python && uv run python scripts/generate_ws_protocol.py
@@ -136,11 +189,11 @@ python-verify: python-lint python-fmt-check python-typecheck python-ws-protocol-
 # Run all tests
 [unix]
 test *args='':
-    ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ args }}
+    ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ test_features }} {{ args }}
 
 [windows]
 test *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ test_features }} {{ args }}
 
 # Run process-global allocation counters without concurrent test threads
 [unix]
@@ -158,20 +211,20 @@ alloc-contracts:
 # Run tests for a specific crate (iteration-shaped: keeps incremental rebuilds)
 [unix]
 test-crate crate *args='':
-    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ args }}
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks" } else { "" } }} {{ args }}
 
 [windows]
 test-crate crate *args='':
-    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ args }}
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test -p {{ crate }} {{ if crate == "hypercolor-daemon" { "--features persistence-test-hooks" } else { "" } }} {{ args }}
 
 # Run a specific test by name (iteration-shaped: keeps incremental rebuilds)
 [unix]
 test-one name *args='':
-    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
+    HYPERCOLOR_ITERATE=1 ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ test_features }} {{ name }} {{ args }}
 
 [windows]
 test-one name *args='':
-    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ name }} {{ args }}
+    HYPERCOLOR_ITERATE=1 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo test {{ workspace_args }} {{ test_features }} {{ name }} {{ args }}
 
 # Manually run the Cinder/Leptos extension design audit snapshot generator
 cinder-audit:
@@ -248,26 +301,26 @@ bench-gate *args='':
 
 # Save a named Criterion baseline for all benchmark suites
 bench-baseline name:
-    just bench-core -- --save-baseline {{ name }}
-    just bench-hal -- --save-baseline {{ name }}
-    just bench-daemon -- --save-baseline {{ name }}
+    just bench-core --save-baseline {{ name }}
+    just bench-hal --save-baseline {{ name }}
+    just bench-daemon --save-baseline {{ name }}
 
 # Compare all benchmark suites against a named Criterion baseline
 bench-compare name:
-    just bench-core -- --baseline {{ name }}
-    just bench-hal -- --baseline {{ name }}
-    just bench-daemon -- --baseline {{ name }}
+    just bench-core --baseline {{ name }}
+    just bench-hal --baseline {{ name }}
+    just bench-daemon --baseline {{ name }}
 
 # ─── Linting & Formatting ────────────────────────────────
 
 # Run clippy with deny warnings
 [unix]
 lint *args='':
-    ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} --all-targets -- -D warnings {{ args }}
+    ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} {{ test_features }} --all-targets -- -D warnings {{ args }}
 
 [windows]
 lint *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo clippy {{ workspace_args }} --all-targets -- -D warnings {{ args }}
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo clippy {{ workspace_args }} {{ test_features }} --all-targets -- -D warnings {{ args }}
 
 # Fix clippy suggestions automatically
 [unix]
@@ -298,6 +351,7 @@ fmt:
 [unix]
 fmt-check:
     cargo fmt --all -- --check
+    cargo fmt --manifest-path crates/hypercolor-ui/Cargo.toml -- --check
 
 [windows]
 fmt-check:
@@ -377,15 +431,6 @@ cli *args='':
 cli *args='':
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-cli --bin hypercolor -- {{ args }}
 
-# Run the system tray applet
-[unix]
-tray *args='':
-    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tray -- {{ args }}
-
-[windows]
-tray *args='':
-    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo run -p hypercolor-tray -- {{ args }}
-
 # Build UI + effects so tauri.conf.json's workspace-relative resource paths exist.
 # Both targets are incremental, so no-op rebuilds are cheap and we never bundle stale artifacts.
 app-assets:
@@ -411,22 +456,35 @@ app-build *args='': app-assets
 app-build *args='': app-assets
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-app --bin hypercolor-app {{ args }}
 
+# Build the native sidecars consumed by the Tauri bundle stage.
+[unix]
+app-bundle-binaries:
+    ./scripts/cargo-cache-build.sh cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-cli --bin hypercolor
+
+[windows]
+app-bundle-binaries:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build --release -p hypercolor-daemon --bin hypercolor-daemon -p hypercolor-cli --bin hypercolor -p hypercolor-windows-pawnio --bin hypercolor-smbus-service -p hypercolor-windows-helper --bin hypercolor-windows-helper
+
 # Stage triple-suffixed sidecars (and Windows-only PawnIO/SMBus payloads) under target/bundle-stage/
 [unix]
-app-bundle-assets *args='':
+app-bundle-assets *args='': app-bundle-binaries
     ./scripts/stage-app-bundle-assets.sh {{ args }}
 
 [windows]
-app-bundle-assets *args='':
+app-bundle-assets *args='': app-bundle-binaries
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/stage-app-bundle-assets.ps1 {{ args }}
 
-# Build native Tauri bundles for the unified desktop app
+# Build native Tauri bundles for the unified desktop app. On macOS the
+# bundle signs with APPLE_SIGNING_IDENTITY, falling back to the local
+# "Hypercolor Dev" certificate so TCC grants survive rebuilds (ad-hoc
+# signatures change identity every build); see docs/development/DEV_SETUP.md.
 [unix]
-app-bundle *args='': app-assets
-    cd crates/hypercolor-app && cargo tauri build --config tauri.bundle.conf.json {{ args }}
+app-bundle *args='': app-assets app-bundle-assets
+    cd crates/hypercolor-app && APPLE_SIGNING_IDENTITY="$(../../scripts/macos-dev-signing-identity.sh)" HYPERCOLOR_FORCE_SCCACHE=1 ../../scripts/cargo-cache-build.sh cargo tauri build --config tauri.bundle.conf.json {{ args }}
+    ./scripts/macos-dev-postsign.sh
 
 [windows]
-app-bundle *args='': app-assets
+app-bundle *args='': app-assets app-bundle-assets
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Set-Location crates/hypercolor-app; cargo tauri build --config tauri.bundle.conf.json --config tauri.windows.bundle.conf.json {{ args }}"
 
 # Build the full unsigned Windows NSIS installer package
@@ -439,8 +497,7 @@ windows-installer *args='':
 mac-installer *args='':
     ./scripts/build-mac-installer.sh {{ args }}
 
-# Regenerate the macOS icon ladder (.icns + PNG ladder) from packaging/icons/hypercolor.svg
-[macos]
+# Regenerate the app icon set from the brand masters (assets/brand)
 mac-icons:
     ./scripts/generate-mac-icons.sh
 
@@ -598,13 +655,16 @@ tui-dev *args='':
 
 # ─── UI ──────────────────────────────────────────────────
 
+ui-deps:
+    cd crates/hypercolor-ui && bun install --frozen-lockfile
+
 [private]
 prepare-dev-assets:
     cd sdk && bun scripts/build-effect.ts --all
 
 # Run Servo daemon + UI dev server together (daemon bind from config, UI on :9430)
 [unix]
-dev *args='':
+dev *args='': ui-deps
     #!/usr/bin/env bash
     set -euo pipefail
     daemon_pid=""
@@ -668,24 +728,34 @@ dev *args='':
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor-daemon --profile preview --features "servo wgpu servo-gpu-import" -- "${daemon_args[@]}" {{ args }} &
     daemon_pid=$!
     sleep 2
-    (cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev) &
+    (cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev) &
     trunk_pid=$!
     wait_for_first_exit
 
 [windows]
-dev *args='':
+dev *args='': ui-deps
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/dev-windows.ps1 {{ args }}
 
 # Start the UI dev server (Trunk + hot reload, :9430 by default). Pass a
 # port and optionally a bind address to run beside another stack:
 # `just ui-dev 9431`, or `just ui-dev 9431 0.0.0.0` to reach it from a
 # phone on the LAN. The API proxy target (:9420) is unaffected.
-ui-dev port='9430' host='127.0.0.1':
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
+[unix]
+ui-dev port='9430' host='127.0.0.1': ui-deps
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_ITERATE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk serve --dist .dist-dev --port {{ port }} --address {{ host }}
+
+[windows]
+ui-dev port='9430' host='127.0.0.1': ui-deps
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/ui-windows.ps1 -Mode Serve -Port {{ port }} -BindAddress {{ host }}
 
 # Build the UI for production
-ui-build:
-    cd crates/hypercolor-ui && env -u NO_COLOR trunk build --release
+[unix]
+ui-build: ui-deps
+    cd crates/hypercolor-ui && CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}" HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR ../../scripts/cargo-cache-build.sh trunk build --release --locked
+
+[windows]
+ui-build: ui-deps
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/ui-windows.ps1 -Mode Build
 
 # Build UI and copy dist for daemon embedding
 ui-dist: ui-build
@@ -700,8 +770,15 @@ e2e-browsers:
     cd e2e && npx playwright install chromium
 
 # Build the normal Servo daemon, CLI, generated effects, and production web UI for e2e
+[unix]
 e2e-build:
     ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon -p hypercolor-cli
+    just effects-build
+    just ui-build
+
+[windows]
+e2e-build:
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon -p hypercolor-cli
     just effects-build
     just ui-build
 
@@ -710,9 +787,17 @@ e2e-build:
 # differently from the daily builds, and letting it share target/ churns and
 # strands artifacts for the whole dependency graph on every alternation.
 # CI pins CARGO_TARGET_DIR per lane, so an ambient value wins.
+[unix]
 e2e-build-cpu:
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
     CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target/cpu-smoke}" ./scripts/cargo-cache-build.sh cargo build -p hypercolor-cli
+    just effects-build
+    just ui-build
+
+[windows]
+e2e-build-cpu:
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-daemon --no-default-features --features builtin-drivers
+    CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target/cpu-smoke}" powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/cargo-cache-build.ps1 cargo build -p hypercolor-cli
     just effects-build
     just ui-build
 
@@ -865,26 +950,34 @@ disk:
     @if [ -d "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}" ]; then du -sh "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/* 2>/dev/null | sort -rh | head -15 || true; else echo '(no target dir)'; fi
     @echo "── shared caches (${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}) ──"
     @if [ -d "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}" ]; then du -sh "${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"/* 2>/dev/null | sort -rh || true; else echo '(no cache dir)'; fi
-    @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
+    @if command -v sccache >/dev/null 2>&1; then echo '── sccache ──'; SCCACHE_SERVER_UDS="${SCCACHE_SERVER_UDS:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache.sock}" SCCACHE_DIR="${SCCACHE_DIR:-${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}/sccache}" sccache --show-stats | grep -E 'Cache hits|Cache misses|Cache size|Max cache' || true; fi
 
-# Sweep stale build artifacts (orphaned toolchains, then >14 days old) from this checkout
+# Preview pressure-triggered collection across public and proprietary worktrees
+[linux]
 gc:
-    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
-    cargo sweep --installed
-    cargo sweep --time 14
-    @echo '🧹 stale artifacts swept'
+    ./scripts/cargo-target-gc.sh --dry-run
 
-# Sweep every worktree of this repo (run after merges or when disk runs hot)
-gc-worktrees:
-    @command -v cargo-sweep >/dev/null 2>&1 || { echo 'cargo-sweep not found; install with: cargo install --locked cargo-sweep'; exit 1; }
-    git worktree prune
-    git worktree list --porcelain | sed -n 's/^worktree //p' | while read -r wt; do [ -d "$wt/target" ] || continue; echo "── sweeping $wt"; cargo sweep --installed "$wt" || true; cargo sweep --time 14 "$wt" || true; done
-    @echo '🧹 all worktree lanes swept'
+# Apply pressure-triggered collection across public and proprietary worktrees
+[linux]
+gc-apply:
+    ./scripts/cargo-target-gc.sh --apply
 
-# Deep clean: sweep, then drop incremental state and the CPU-smoke lane
-gc-deep: gc
-    rm -rf "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}"/*/incremental "${CARGO_TARGET_DIR:-{{ justfile_directory() }}/target}/cpu-smoke"
-    @echo '🧹 incremental state and cpu-smoke lane dropped'
+# Reclaim pressure immediately while preserving dirty and Cargo-locked profiles
+[linux]
+gc-reclaim:
+    ./scripts/cargo-target-gc.sh --reclaim-now
+
+# Install and enable the daily user timer
+[linux]
+gc-install *args='':
+    ./scripts/install-cargo-target-gc.sh {{ args }}
+
+# Show the next scheduled collection and the previous service result
+[linux]
+gc-status:
+    systemctl --user list-timers hypercolor-cargo-target-gc.timer --no-pager
+    systemctl --user show hypercolor-cargo-target-gc.service --property=Result,ExecMainStatus
+    @if [ -f "$HOME/.local/share/hypercolor/libexec/cargo-target-gc" ]; then sha256sum scripts/cargo-target-gc.sh "$HOME/.local/share/hypercolor/libexec/cargo-target-gc"; else echo '(collector is not installed)'; fi
 
 # Show workspace dependency tree
 deps:

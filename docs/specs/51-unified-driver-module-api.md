@@ -469,11 +469,11 @@ driver bundle lands.
 
 ```rust
 pub struct DriverModuleDescriptor {
-    pub id: &'static str,
-    pub display_name: &'static str,
-    pub vendor_name: Option<&'static str>,
+    pub id: String,
+    pub display_name: String,
+    pub vendor_name: Option<String>,
     pub module_kind: DriverModuleKind,
-    pub transports: &'static [DriverTransportKind],
+    pub transports: Vec<DriverTransportDescriptor>,
     pub capabilities: DriverCapabilitySet,
     pub api_schema_version: u32,
     pub config_version: u32,
@@ -510,6 +510,23 @@ pub enum DriverTransportKind {
 
 This is not a low-level transport descriptor. It is API-facing and stable
 enough for filters, UI, logs, and Wasm boundaries.
+
+```rust
+pub struct DriverTransportDescriptor {
+    pub kind: DriverTransportKind,
+    pub availability: DriverTransportAvailability,
+}
+
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DriverTransportAvailability {
+    Available,
+    UnsupportedPlatform { platform: String },
+}
+```
+
+The inventory preserves unavailable transports for truthful introspection.
+Discovery and output routing only consume descriptors whose availability is
+`Available`.
 
 ### 8.3 Capability Set
 
@@ -940,10 +957,12 @@ Descriptor:
 
 ```rust
 DriverModuleDescriptor {
-    id: "wled",
-    display_name: "WLED",
+    id: "wled".to_owned(),
+    display_name: "WLED".to_owned(),
     module_kind: DriverModuleKind::Network,
-    transports: &[DriverTransportKind::Network],
+    transports: vec![DriverTransportDescriptor::available(
+        DriverTransportKind::Network,
+    )],
     capabilities: DriverCapabilitySet {
         config: true,
         discovery: true,
@@ -1027,10 +1046,12 @@ Example:
 
 ```rust
 DriverModuleDescriptor {
-    id: "nollie",
-    display_name: "Nollie",
+    id: "nollie".to_owned(),
+    display_name: "Nollie".to_owned(),
     module_kind: DriverModuleKind::Hal,
-    transports: &[DriverTransportKind::Usb],
+    transports: vec![DriverTransportDescriptor::available(
+        DriverTransportKind::Usb,
+    )],
     capabilities: DriverCapabilitySet {
         config: true,
         protocol_catalog: true,
@@ -1228,7 +1249,12 @@ Response:
       "id": "nollie",
       "display_name": "Nollie",
       "module_kind": "hal",
-      "transports": ["usb"],
+      "transports": [
+        {
+          "kind": "usb",
+          "availability": { "status": "available" }
+        }
+      ],
       "enabled": true,
       "capabilities": {
         "config": true,

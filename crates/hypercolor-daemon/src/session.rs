@@ -2,56 +2,26 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
-use tokio::sync::watch;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::session::{SessionWatcher, SleepPolicy};
+use hypercolor_core::session::{SessionMonitor, SessionWatcher, SleepPolicy};
 use hypercolor_network::DriverModuleRegistry;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
 
 use crate::discovery::{self, DiscoveryRuntime, DiscoveryTarget};
 use crate::network::DaemonDriverHost;
-
-const FADE_STEP_MS: u64 = 16;
-
-/// Session-driven output scaling consumed by the render thread.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OutputPowerState {
-    pub global_brightness: f32,
-    pub session_brightness: f32,
-    pub sleeping: bool,
-    pub off_output_behavior: OffOutputBehavior,
-    pub off_output_color: [u8; 3],
-}
-
-impl Default for OutputPowerState {
-    fn default() -> Self {
-        Self {
-            global_brightness: 1.0,
-            session_brightness: 1.0,
-            sleeping: false,
-            off_output_behavior: OffOutputBehavior::Static,
-            off_output_color: [0, 0, 0],
-        }
-    }
-}
-
-impl OutputPowerState {
-    #[must_use]
-    pub fn effective_brightness(self) -> f32 {
-        (self.global_brightness * self.session_brightness).clamp(0.0, 1.0)
-    }
-}
+use crate::output_power::OutputPower;
 
 /// Owns the core session watcher and the daemon-side power policy task.
 pub struct SessionController {
     watcher: SessionWatcher,
+    cancel: CancellationToken,
     task: JoinHandle<()>,
 }
 
@@ -59,7 +29,7 @@ pub struct SessionController {
 struct SessionRuntime {
     config_manager: Arc<ConfigManager>,
     event_bus: Arc<HypercolorBus>,
-    power_tx: watch::Sender<OutputPowerState>,
+    output_power: OutputPower,
     discovery_runtime: DiscoveryRuntime,
     driver_host: Arc<DaemonDriverHost>,
     driver_registry: Arc<DriverModuleRegistry>,
@@ -70,43 +40,80 @@ impl SessionController {
     pub fn start(
         config_manager: Arc<ConfigManager>,
         event_bus: Arc<HypercolorBus>,
-        power_tx: watch::Sender<OutputPowerState>,
+        output_power: OutputPower,
         discovery_runtime: DiscoveryRuntime,
         driver_host: Arc<DaemonDriverHost>,
         driver_registry: Arc<DriverModuleRegistry>,
+        monitors: Vec<Box<dyn SessionMonitor>>,
     ) -> Self {
         let session_config = config_manager.get().session.clone();
-        let watcher = SessionWatcher::start(&session_config);
+        let watcher = SessionWatcher::start(&session_config, monitors);
         let event_rx = watcher.subscribe();
         let runtime = SessionRuntime {
             config_manager,
             event_bus,
-            power_tx,
+            output_power,
             discovery_runtime,
             driver_host,
             driver_registry,
         };
-        let task = tokio::spawn(run_session_loop(event_rx, runtime));
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(run_session_loop(event_rx, runtime, cancel.clone()));
 
-        Self { watcher, task }
+        Self {
+            watcher,
+            cancel,
+            task,
+        }
     }
 
     /// Stop the policy loop and shut down the underlying watcher.
     pub async fn shutdown(self) {
-        self.task.abort();
+        self.cancel.cancel();
         let _ = self.task.await;
         self.watcher.shutdown().await;
+    }
+}
+
+pub(crate) fn platform_session_monitors(
+    config: &hypercolor_types::session::SessionConfig,
+) -> Vec<Box<dyn SessionMonitor>> {
+    #[cfg(target_os = "linux")]
+    {
+        hypercolor_linux_session::monitors(config)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = config;
+        hypercolor_windows_session::standalone_monitors()
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = config;
+        hypercolor_macos_session::monitors()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = config;
+        Vec::new()
     }
 }
 
 async fn run_session_loop(
     mut rx: tokio::sync::broadcast::Receiver<SessionEvent>,
     runtime: SessionRuntime,
+    cancel: CancellationToken,
 ) {
     let mut transition_task: Option<JoinHandle<()>> = None;
 
     loop {
-        match rx.recv().await {
+        let Some(event) = receive_session_event(&mut rx, &cancel).await else {
+            break;
+        };
+        match event {
             Ok(event) => {
                 runtime
                     .event_bus
@@ -117,10 +124,7 @@ async fn run_session_loop(
                     continue;
                 }
 
-                if let Some(handle) = transition_task.take() {
-                    handle.abort();
-                    let _ = handle.await;
-                }
+                cancel_transition_task(&mut transition_task).await;
 
                 let policy = SleepPolicy::new(config);
                 if let Some(action) = policy.sleep_action(&event) {
@@ -136,7 +140,22 @@ async fn run_session_loop(
         }
     }
 
-    if let Some(handle) = transition_task {
+    cancel_transition_task(&mut transition_task).await;
+}
+
+async fn receive_session_event(
+    rx: &mut tokio::sync::broadcast::Receiver<SessionEvent>,
+    cancel: &CancellationToken,
+) -> Option<Result<SessionEvent, tokio::sync::broadcast::error::RecvError>> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        event = rx.recv() => Some(event),
+    }
+}
+
+async fn cancel_transition_task(transition_task: &mut Option<JoinHandle<()>>) {
+    if let Some(handle) = transition_task.take() {
         handle.abort();
         let _ = handle.await;
     }
@@ -148,19 +167,34 @@ fn spawn_sleep_transition(runtime: SessionRuntime, action: SleepAction) -> Optio
         SleepAction::Dim {
             brightness,
             fade_ms,
-        } => Some(tokio::spawn(async move {
-            ensure_awake(&runtime).await;
-            fade_session_to(&runtime.power_tx, brightness, fade_ms).await;
-        })),
+        } => {
+            let generation = begin_session_transition(&runtime);
+            Some(tokio::spawn(async move {
+                if ensure_awake(&runtime, generation).await {
+                    runtime
+                        .output_power
+                        .fade_session_to(brightness, fade_ms, generation)
+                        .await;
+                }
+            }))
+        }
         SleepAction::Off {
             fade_ms,
             output_behavior,
             static_color,
-        } => Some(tokio::spawn(async move {
-            ensure_awake(&runtime).await;
-            fade_session_to(&runtime.power_tx, 0.0, fade_ms).await;
-            pause_output(&runtime, output_behavior, static_color).await;
-        })),
+        } => {
+            let generation = begin_session_transition(&runtime);
+            Some(tokio::spawn(async move {
+                if ensure_awake(&runtime, generation).await
+                    && runtime
+                        .output_power
+                        .fade_session_to(0.0, fade_ms, generation)
+                        .await
+                {
+                    pause_output(&runtime, output_behavior, static_color, generation).await;
+                }
+            }))
+        }
         SleepAction::Scene {
             scene_name,
             fade_ms,
@@ -181,28 +215,24 @@ fn spawn_wake_transition(
     event: SessionEvent,
 ) -> Option<JoinHandle<()>> {
     match action {
-        WakeAction::Restore { fade_ms } => Some(tokio::spawn(async move {
-            let current = current_power_state(&runtime.power_tx);
-            if current.sleeping && current.off_output_behavior == OffOutputBehavior::Release {
-                run_full_reconnect_scan(&runtime).await;
-            } else if matches!(event, SessionEvent::Resumed) {
-                run_host_resume_scan(&runtime).await;
-            }
+        WakeAction::Restore { fade_ms } => {
+            let generation = begin_session_transition(&runtime);
+            Some(tokio::spawn(async move {
+                let current = runtime.output_power.snapshot();
+                if current.session_release_active() {
+                    run_full_reconnect_scan(&runtime).await;
+                } else if matches!(event, SessionEvent::Resumed) {
+                    run_host_resume_scan(&runtime).await;
+                }
 
-            if current.sleeping {
-                set_power_state(
-                    &runtime.power_tx,
-                    OutputPowerState {
-                        global_brightness: current.global_brightness,
-                        session_brightness: current.session_brightness,
-                        sleeping: false,
-                        off_output_behavior: current.off_output_behavior,
-                        off_output_color: current.off_output_color,
-                    },
-                );
-            }
-            fade_session_to(&runtime.power_tx, 1.0, fade_ms).await;
-        })),
+                if clear_session_sleep(&runtime, generation).await {
+                    runtime
+                        .output_power
+                        .fade_session_to(1.0, fade_ms, generation)
+                        .await;
+                }
+            }))
+        }
         WakeAction::Scene {
             scene_name,
             fade_ms,
@@ -217,36 +247,48 @@ fn spawn_wake_transition(
     }
 }
 
-async fn ensure_awake(runtime: &SessionRuntime) {
-    let current = current_power_state(&runtime.power_tx);
-    if !current.sleeping {
-        return;
+fn begin_session_transition(runtime: &SessionRuntime) -> u64 {
+    runtime.output_power.begin_session_transition()
+}
+
+async fn ensure_awake(runtime: &SessionRuntime, generation: u64) -> bool {
+    let current = runtime.output_power.snapshot();
+    if !current.session_sleeping {
+        return current.transition_generation == generation;
     }
 
-    if current.off_output_behavior == OffOutputBehavior::Release {
+    if current.session_release_active() {
         run_full_reconnect_scan(runtime).await;
     }
-    set_power_state(
-        &runtime.power_tx,
-        OutputPowerState {
-            global_brightness: current.global_brightness,
-            session_brightness: current.session_brightness,
-            sleeping: false,
-            off_output_behavior: current.off_output_behavior,
-            off_output_color: current.off_output_color,
-        },
-    );
+    clear_session_sleep(runtime, generation).await
+}
+
+async fn clear_session_sleep(runtime: &SessionRuntime, generation: u64) -> bool {
+    runtime
+        .output_power
+        .clear_session_sleep(&runtime.event_bus, generation)
+        .await
 }
 
 async fn run_host_resume_scan(runtime: &SessionRuntime) {
     let config_guard = runtime.config_manager.get();
     let config = Arc::clone(&*config_guard);
-    let Some(result) = discovery::execute_discovery_scan_if_idle(
+    let targets = match DiscoveryTarget::session_resume_targets(
+        config.as_ref(),
+        runtime.driver_registry.as_ref(),
+    ) {
+        Ok(targets) => targets,
+        Err(error) => {
+            warn!(%error, "Failed to resolve host resume discovery targets");
+            return;
+        }
+    };
+    let Some(result) = discovery::execute_discovery_scan_or_enqueue(
         runtime.discovery_runtime.clone(),
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
         config,
-        DiscoveryTarget::session_resume_targets(),
+        targets,
         discovery::default_timeout(),
     )
     .await
@@ -256,7 +298,7 @@ async fn run_host_resume_scan(runtime: &SessionRuntime) {
                 .discovery_runtime
                 .in_progress
                 .load(Ordering::Acquire),
-            "Skipping host resume recovery scan because discovery is already running"
+            "Queued host resume recovery scan behind active discovery"
         );
         return;
     };
@@ -280,7 +322,7 @@ async fn run_full_reconnect_scan(runtime: &SessionRuntime) {
         }
     };
 
-    let Some(result) = discovery::execute_discovery_scan_if_idle(
+    let Some(result) = discovery::execute_discovery_scan_or_enqueue(
         runtime.discovery_runtime.clone(),
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
@@ -295,7 +337,7 @@ async fn run_full_reconnect_scan(runtime: &SessionRuntime) {
                 .discovery_runtime
                 .in_progress
                 .load(Ordering::Acquire),
-            "Skipping output reconnect scan because discovery is already running"
+            "Queued output reconnect scan behind active discovery"
         );
         return;
     };
@@ -312,101 +354,75 @@ async fn pause_output(
     runtime: &SessionRuntime,
     output_behavior: OffOutputBehavior,
     static_color: [u8; 3],
-) {
-    let current = current_power_state(&runtime.power_tx);
-    set_power_state(
-        &runtime.power_tx,
-        OutputPowerState {
-            global_brightness: current.global_brightness,
-            session_brightness: 0.0,
-            sleeping: true,
-            off_output_behavior: output_behavior,
-            off_output_color: static_color,
-        },
-    );
+    generation: u64,
+) -> bool {
+    let applied = runtime
+        .output_power
+        .pause_for_session(
+            &runtime.event_bus,
+            generation,
+            output_behavior,
+            static_color,
+        )
+        .await;
 
-    if output_behavior == OffOutputBehavior::Release {
+    if applied && runtime.output_power.snapshot().session_release_active() {
         let released = discovery::release_renderable_devices(&runtime.discovery_runtime).await;
         debug!(
             released,
             "Temporarily released renderable devices for session sleep"
         );
     }
+    applied
 }
 
-async fn fade_session_to(power_tx: &watch::Sender<OutputPowerState>, target: f32, fade_ms: u64) {
-    let target = target.clamp(0.0, 1.0);
-    let current = current_power_state(power_tx);
-    let start = current.session_brightness;
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
 
-    if fade_ms == 0 || (start - target).abs() <= f32::EPSILON {
-        set_power_state(
-            power_tx,
-            OutputPowerState {
-                global_brightness: current.global_brightness,
-                session_brightness: target,
-                sleeping: current.sleeping,
-                off_output_behavior: current.off_output_behavior,
-                off_output_color: current.off_output_color,
-            },
-        );
-        return;
+    use tokio::sync::{broadcast, oneshot};
+    use tokio_util::sync::CancellationToken;
+
+    use super::{cancel_transition_task, receive_session_event};
+    use hypercolor_types::session::SessionEvent;
+
+    struct DropProbe(Option<oneshot::Sender<()>>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            if let Some(dropped) = self.0.take() {
+                let _ = dropped.send(());
+            }
+        }
     }
 
-    let steps = u16::try_from((fade_ms / FADE_STEP_MS).max(1)).unwrap_or(u16::MAX);
-    let step_delay = Duration::from_millis((fade_ms / u64::from(steps)).max(1));
+    #[tokio::test]
+    async fn cancellation_ends_event_wait_while_sender_remains_live() {
+        let (_event_tx, mut event_rx) = broadcast::channel::<SessionEvent>(1);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
 
-    for step in 1..=steps {
-        let progress = f32::from(step) / f32::from(steps);
-        let brightness = start + (target - start) * progress;
-        set_power_state(
-            power_tx,
-            OutputPowerState {
-                global_brightness: current.global_brightness,
-                session_brightness: brightness,
-                sleeping: false,
-                off_output_behavior: current.off_output_behavior,
-                off_output_color: current.off_output_color,
-            },
+        assert!(
+            receive_session_event(&mut event_rx, &cancel)
+                .await
+                .is_none()
         );
-        tokio::time::sleep(step_delay).await;
     }
 
-    set_power_state(
-        power_tx,
-        OutputPowerState {
-            global_brightness: current.global_brightness,
-            session_brightness: target,
-            sleeping: false,
-            off_output_behavior: current.off_output_behavior,
-            off_output_color: current.off_output_color,
-        },
-    );
-}
+    #[tokio::test]
+    async fn transition_cleanup_aborts_and_joins_child_task() {
+        let (started_tx, started_rx) = oneshot::channel();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let mut transition_task = Some(tokio::spawn(async move {
+            let _probe = DropProbe(Some(dropped_tx));
+            let _ = started_tx.send(());
+            pending::<()>().await;
+        }));
+        started_rx.await.expect("child task should start");
 
-pub fn set_global_brightness(power_tx: &watch::Sender<OutputPowerState>, brightness: f32) {
-    let current = current_power_state(power_tx);
-    set_power_state(
-        power_tx,
-        OutputPowerState {
-            global_brightness: brightness.clamp(0.0, 1.0),
-            session_brightness: current.session_brightness,
-            sleeping: current.sleeping,
-            off_output_behavior: current.off_output_behavior,
-            off_output_color: current.off_output_color,
-        },
-    );
-}
+        cancel_transition_task(&mut transition_task).await;
 
-#[must_use]
-pub fn current_global_brightness(power_tx: &watch::Sender<OutputPowerState>) -> f32 {
-    current_power_state(power_tx).global_brightness
-}
-
-fn current_power_state(power_tx: &watch::Sender<OutputPowerState>) -> OutputPowerState {
-    *power_tx.borrow()
-}
-
-fn set_power_state(power_tx: &watch::Sender<OutputPowerState>, state: OutputPowerState) {
-    power_tx.send_replace(state);
+        assert!(transition_task.is_none());
+        dropped_rx.await.expect("child task should be dropped");
+    }
 }

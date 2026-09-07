@@ -6,33 +6,36 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use hypercolor_core::asset::AssetLibrary;
 #[cfg(feature = "wgpu")]
-use hypercolor_core::bus::DisplayGroupOutputRoute;
+use hypercolor_core::bus::DisplayZoneOutputRoute;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::effect::{EffectRegistry, InputSourceAvailability};
 use hypercolor_core::engine::FpsTier;
-use hypercolor_core::input::browser::BrowserInputRegistrySnapshot;
 use hypercolor_core::input::routing::{
-    ConsumerIncarnation, InteractionRouteContext, InteractionRouteRequest, InteractionRouteSource,
-    InteractionRouteSourceClass, InteractionRouter, RoutedInteraction, SourceIncarnation,
+    ConsumerIncarnation, InteractionRouteCatalog, InteractionRouter, RoutedInteraction,
 };
-use hypercolor_core::input::screen::{
-    PixelExtent, ScreenBranchLease, ScreenBranchPublication, ScreenNativeExecutionTarget,
-    ScreenNativeExecutionTargetId, ScreenPlanGeneration, ScreenPublicationExecutorRequest,
+use hypercolor_core::input::screen::ScreenPublicationExecutorRequest;
+use hypercolor_core::input::screen::consumer::PixelExtent;
+use hypercolor_core::input::screen::implementer::ScreenBranchPublication;
+use hypercolor_core::input::screen::planner::{
+    ResolvedScreenPublicationDescriptor, ScreenBranchDeliveryState, ScreenBranchLease,
+    ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenPlanGeneration,
+};
+use hypercolor_core::input::screen::planner::{
+    ScreenNativeExecutionPolicy, ScreenNativeExecutionUnavailableReason,
+    ScreenRendererExecutionState,
 };
 use hypercolor_core::input::{
-    InputData, InputGraphSnapshot, InputSourceSlot, InteractionData, MotionAggregate, PointerMode,
-    SourceFreshness, SourceKind, SourceState, SourceStatusAvailability, SourceStatusHandle,
+    DataSourceKind, InputData, InputGraphSnapshot, InputSourceSlot, InteractionData,
+    MotionAggregate, PointerMode, SourceKind,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_core::types::canvas::{
-    Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
-};
-use hypercolor_core::types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
+use hypercolor_types::canvas::{Canvas, PublishedSurface, Rgba, SurfaceResourceError};
 use hypercolor_types::config::RenderAccelerationMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::device::DisplayFrameFormat;
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::event::{FrameData, HypercolorEvent};
 use hypercolor_types::scene::SceneId;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::scene::{DisplayFaceTarget, ZoneId};
@@ -48,18 +51,21 @@ use super::frame_policy::FramePolicy;
 use super::frame_policy::SkipDecision;
 #[cfg(feature = "wgpu")]
 use super::gpu_device::GpuRenderDevice;
+use super::input_publication::InputScreenBranchRequest;
 use super::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
-    InputPublicationReader, OwnedInputPublicationDemand,
+    InputPublicationDemandRegistration, InputPublicationReader, OwnedInputPublicationDemand,
 };
 use super::producer_queue::ProducerQueue;
-use super::render_groups::{
+use super::render_zones::{
     PreparedZoneReconcile, RenderSceneContext, ZoneFrameInputs, ZoneResult, ZoneRuntime,
 };
 use super::scene_dependency::SceneDependencyKey;
 use super::scene_snapshot::{EffectDemand, FrameSceneSnapshot, SceneSnapshotCache};
 use super::scene_state::RenderSceneState;
-use super::screen_canvas::screen_data_to_surface;
+use super::screen_canvas::ScreenZonesSnapshot;
+#[cfg(feature = "wgpu")]
+use super::screen_parity_diagnostics::ScreenParityDiagnosticMailbox;
 #[cfg(feature = "wgpu")]
 use super::sparkleflinger::PendingDisplayFinalization;
 use super::sparkleflinger::{
@@ -67,13 +73,11 @@ use super::sparkleflinger::{
     SparkleFlingerSamplingPreparation,
 };
 use super::{RenderThreadState, micros_u32};
-use crate::interaction_routing::InteractionRoutingControl;
+use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
 use crate::scene_transactions::{LayoutActivationControl, LayoutTransactionRejection};
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 100;
 const BACKGROUND_INPUT_HZ: u32 = 1;
-const DEFAULT_SCREEN_SURFACE_WIDTH: u32 = 1;
-const DEFAULT_SCREEN_SURFACE_HEIGHT: u32 = 1;
 const AUTHORITATIVE_INPUT_CONSUMER: ConsumerIncarnation = ConsumerIncarnation::new(1);
 
 /// Strictly increasing delivery order for input events across all frames.
@@ -87,8 +91,12 @@ pub(crate) struct FrameInputs {
     pub(crate) audio: AudioData,
     pub(crate) audio_was_published: bool,
     pub(crate) interaction: hypercolor_core::input::InteractionData,
-    pub(crate) screen_data: Option<hypercolor_core::input::ScreenData>,
     pub(crate) screen_publication: Option<Arc<ScreenBranchPublication>>,
+    pub(crate) screen_zones: Option<ScreenZonesSnapshot>,
+    pub(crate) screen_delivery_state: Option<ScreenBranchDeliveryState>,
+    pub(crate) screen_invalidation_epoch: u64,
+    pub(crate) screen_compositor_epoch: u64,
+    pub(crate) screen_descriptor: Option<ResolvedScreenPublicationDescriptor>,
     pub(crate) sensors: Arc<SystemSnapshot>,
     pub(crate) input_availability: InputSourceAvailability,
     empty_sensors: Arc<SystemSnapshot>,
@@ -99,9 +107,6 @@ pub(crate) struct FrameInputs {
     pub(crate) net: Option<Arc<hypercolor_types::net::NetStats>>,
     /// Lighting state assembled per frame by the executor before composing.
     pub(crate) lighting: Option<Arc<hypercolor_types::lighting::LightingState>>,
-    pub(crate) screen_surface: Option<PublishedSurface>,
-    pub(crate) screen_sector_grid: Vec<[u8; 3]>,
-    screen_surface_pool: Option<RenderSurfacePool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,6 +130,10 @@ impl Default for FrameClockState {
 }
 
 impl FrameClockState {
+    pub(crate) fn rebase(&mut self, frame_start: Instant) {
+        self.last_tick = frame_start;
+    }
+
     pub(crate) fn advance(&mut self, frame_start: Instant) -> FrameTick {
         let frame_interval = frame_start.saturating_duration_since(self.last_tick);
         self.last_tick = frame_start;
@@ -159,8 +168,14 @@ impl InputReuseState {
     ) -> ScreenPlanGeneration {
         let screen_extent = PixelExtent::new(state.canvas_dims.width(), state.canvas_dims.height())
             .expect("render canvas dimensions are non-empty");
-        let (generation, publication) = self.routes.read_screen(screen_target, screen_extent);
+        let (generation, publication, delivery_state) =
+            self.routes.read_screen(screen_target, screen_extent);
         self.cached_inputs.screen_publication = publication;
+        self.cached_inputs.screen_zones = self.routes.read_screen_zones();
+        self.cached_inputs.screen_invalidation_epoch =
+            delivery_state.map_or(0, ScreenBranchDeliveryState::invalidation_epoch);
+        self.cached_inputs.screen_delivery_state = delivery_state;
+        self.cached_inputs.screen_descriptor = self.routes.screen_descriptor().cloned();
         generation
     }
 
@@ -186,43 +201,32 @@ struct CachedInputRoute {
     slot: InputSourceSlot,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AvailabilityFingerprint {
-    structural_graph_generation: u64,
-    session_generation: u64,
-    effective: SourceStatusAvailability,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CachedInteractionAvailability {
-    incarnation: SourceIncarnation,
-    fingerprint: AvailabilityFingerprint,
-    revision: u64,
-}
-
 struct InputRouteCache {
     reader: InputPublicationReader,
     interaction_routing: InteractionRoutingControl,
     graph_generation: Option<u64>,
-    browser_registry_generation: Option<u64>,
     routes: Vec<CachedInputRoute>,
     audio_routes: Vec<usize>,
-    screen_routes: Vec<usize>,
     media_routes: Vec<usize>,
     network_routes: Vec<usize>,
-    untyped_routes: Vec<usize>,
-    interaction_sources: Vec<InteractionRouteSource>,
-    interaction_statuses: Vec<SourceStatusHandle>,
-    interaction_availability: Vec<CachedInteractionAvailability>,
+    sensor_routes: Vec<usize>,
+    interaction_catalog: InteractionRouteCatalog,
     interaction_router: InteractionRouter,
     routed_interaction: RoutedInteraction,
     screen_publication_route: Option<ScreenPublicationRoute>,
+    screen_zones_route: Option<ScreenZonesRoute>,
+    last_screen_observation: Option<(bool, bool, bool)>,
 }
 
 struct ScreenPublicationRoute {
     plan_generation: ScreenPlanGeneration,
     target_id: Option<ScreenNativeExecutionTargetId>,
     extent: PixelExtent,
+    lease: Option<ScreenBranchLease>,
+}
+
+struct ScreenZonesRoute {
+    plan_generation: ScreenPlanGeneration,
     lease: Option<ScreenBranchLease>,
 }
 
@@ -242,45 +246,44 @@ impl InputRouteCache {
             reader,
             interaction_routing,
             graph_generation: None,
-            browser_registry_generation: None,
             routes: Vec::new(),
             audio_routes: Vec::new(),
-            screen_routes: Vec::new(),
             media_routes: Vec::new(),
             network_routes: Vec::new(),
-            untyped_routes: Vec::new(),
-            interaction_sources: Vec::new(),
-            interaction_statuses: Vec::new(),
-            interaction_availability: Vec::new(),
+            sensor_routes: Vec::new(),
+            interaction_catalog: InteractionRouteCatalog::default(),
             interaction_router: InteractionRouter::default(),
             routed_interaction: RoutedInteraction::new(AUTHORITATIVE_INPUT_CONSUMER),
             screen_publication_route: None,
+            screen_zones_route: None,
+            last_screen_observation: None,
         }
     }
 
     fn read_into(&mut self, state: &RenderThreadState, inputs: &mut FrameInputs) {
-        let sensors = self.reader.latest_sensor_snapshot();
         let graph = self.reader.graph_snapshot();
         let graph_changed = self.graph_generation != Some(graph.generation());
         if graph_changed {
             self.rebuild_routes(&graph);
         }
         let browser_registry = self.interaction_routing.browser_registry_snapshot();
-        if graph_changed || self.browser_registry_generation != Some(browser_registry.generation())
-        {
-            self.rebuild_interaction_sources(&graph, &browser_registry);
-        }
+        self.interaction_catalog
+            .refresh(&graph, &browser_registry, Instant::now());
 
-        inputs.prepare_for_sample(sensors);
-        self.route_latest_into(inputs);
-        self.route_interaction_into(&state.event_bus, &graph, &browser_registry, inputs);
+        inputs.prepare_for_sample(None);
+        self.route_latest_into(&graph, inputs);
+        self.route_interaction_into(&state.event_bus, inputs);
     }
 
     fn read_screen(
         &mut self,
         target: Option<&ScreenNativeExecutionTarget>,
         extent: PixelExtent,
-    ) -> (ScreenPlanGeneration, Option<Arc<ScreenBranchPublication>>) {
+    ) -> (
+        ScreenPlanGeneration,
+        Option<Arc<ScreenBranchPublication>>,
+        Option<ScreenBranchDeliveryState>,
+    ) {
         let target_id = target.map(ScreenNativeExecutionTarget::id);
         let (plan_generation, observed_lease) = self.reader.screen_observation(target, extent);
         let route_is_current = self.screen_publication_route.as_ref().is_some_and(|route| {
@@ -296,47 +299,82 @@ impl InputRouteCache {
                 lease: observed_lease,
             });
         }
-        let publication = self
+        let observation = self
             .screen_publication_route
             .as_ref()
             .and_then(|route| route.lease.as_ref())
-            .and_then(ScreenBranchLease::read);
-        (plan_generation, publication)
+            .map(|lease| lease.observe(Instant::now()));
+        let (publication, delivery_state) = observation.unzip();
+        let publication = publication.flatten();
+        // Transition-only log: silent gaps between a healthy hub and a
+        // black compositor have cost hours; state changes here name the
+        // broken link (no lease = plan/observation mismatch, lease
+        // without publication = starved or stale deliveries).
+        let observed = (
+            target_id.is_some(),
+            self.screen_publication_route
+                .as_ref()
+                .is_some_and(|route| route.lease.is_some()),
+            publication.is_some(),
+        );
+        if self.last_screen_observation != Some(observed) {
+            self.last_screen_observation = Some(observed);
+            tracing::debug!(
+                target = observed.0,
+                lease = observed.1,
+                publication = observed.2,
+                "screen publication observation changed"
+            );
+        }
+        (plan_generation, publication, delivery_state)
     }
 
-    fn route_interaction_into(
-        &mut self,
-        event_bus: &HypercolorBus,
-        graph: &InputGraphSnapshot,
-        browser_registry: &BrowserInputRegistrySnapshot,
-        inputs: &mut FrameInputs,
-    ) {
-        self.refresh_interaction_availability_revisions();
+    /// Observe the exact zones branch leased for the WebSocket zones relay.
+    ///
+    /// The lease is re-resolved only when the committed plan generation
+    /// moves, so steady-state frames pay one atomic authority load.
+    fn read_screen_zones(&mut self) -> Option<ScreenZonesSnapshot> {
+        let (plan_generation, observed_lease) = self.reader.screen_zones_observation();
+        let route_is_current = self
+            .screen_zones_route
+            .as_ref()
+            .is_some_and(|route| route.plan_generation == plan_generation);
+        if !route_is_current {
+            self.screen_zones_route = Some(ScreenZonesRoute {
+                plan_generation,
+                lease: observed_lease,
+            });
+        }
+        let lease = self.screen_zones_route.as_ref()?.lease.as_ref()?;
+        let publication = lease.read()?;
+        Some(ScreenZonesSnapshot {
+            publication,
+            source_extent: lease.descriptor().source_extent(),
+        })
+    }
+
+    fn screen_descriptor(&self) -> Option<&ResolvedScreenPublicationDescriptor> {
+        self.screen_publication_route
+            .as_ref()
+            .and_then(|route| route.lease.as_ref())
+            .map(ScreenBranchLease::descriptor)
+    }
+
+    fn route_interaction_into(&mut self, event_bus: &HypercolorBus, inputs: &mut FrameInputs) {
         let routing = self.interaction_routing.snapshot();
-        let request = InteractionRouteRequest {
-            policy: routing.daemon_policy,
-            browser_source: routing
-                .authoritative_browser
-                .as_ref()
-                .map(|owner| SourceIncarnation::browser_child(owner.publication_id.get())),
-        };
-        self.interaction_router.resolve_into(
+        self.interaction_catalog.resolve_into(
+            &mut self.interaction_router,
             AUTHORITATIVE_INPUT_CONSUMER,
-            request,
-            &self.interaction_sources,
-            InteractionRouteContext {
-                config_generation: routing.config_generation,
-                source_graph_generation: graph.generation(),
-                browser_registry_generation: browser_registry.generation(),
-                now_ms: hypercolor_core::input::input_mono_ms(),
-            },
+            routing.daemon_request(),
+            routing.config_generation,
+            hypercolor_core::input::input_mono_ms(),
             &mut self.routed_interaction,
         );
         std::mem::swap(
             &mut inputs.interaction,
             &mut self.routed_interaction.interaction,
         );
-        inputs.input_availability = aggregate_interaction_availability(
+        inputs.input_availability = selected_input_availability(
             self.routed_interaction
                 .diagnostics
                 .selected
@@ -357,38 +395,30 @@ impl InputRouteCache {
         if self.graph_generation != Some(graph.generation()) {
             self.rebuild_routes(&graph);
         }
-        self.interaction_availability()
+        let browser = self.interaction_routing.browser_registry_snapshot();
+        let now = Instant::now();
+        self.interaction_catalog.refresh(&graph, &browser, now);
+        self.interaction_availability(now)
     }
 
-    fn interaction_availability(&self) -> InputSourceAvailability {
-        let handles = self
-            .routed_interaction
-            .diagnostics
-            .selected
-            .iter()
-            .filter_map(|source| source.status.as_ref());
-        aggregate_interaction_availability(handles, Instant::now())
+    fn interaction_availability(&self, now: Instant) -> InputSourceAvailability {
+        selected_input_availability(
+            self.routed_interaction
+                .diagnostics
+                .selected
+                .iter()
+                .filter_map(|source| source.status.as_ref()),
+            now,
+        )
     }
 
-    fn route_latest_into(&mut self, inputs: &mut FrameInputs) {
+    fn route_latest_into(&mut self, graph: &InputGraphSnapshot, inputs: &mut FrameInputs) {
         for &route_index in &self.audio_routes {
             if let Some(sample) = self.routes[route_index].slot.latest()
                 && let InputData::Audio(snapshot) = sample.as_ref()
             {
                 inputs.audio.clone_from(snapshot);
                 inputs.audio_was_published = true;
-            }
-        }
-        let mut screen_seen = false;
-        for &route_index in &self.screen_routes {
-            if let Some(sample) = self.routes[route_index].slot.latest()
-                && let InputData::Screen(snapshot) = sample.as_ref()
-            {
-                match &mut inputs.screen_data {
-                    Some(current) => current.clone_from(snapshot),
-                    None => inputs.screen_data = Some(snapshot.clone()),
-                }
-                screen_seen = true;
             }
         }
         for &route_index in &self.media_routes {
@@ -405,31 +435,11 @@ impl InputRouteCache {
                 inputs.net = Some(Arc::clone(snapshot));
             }
         }
-        for &route_index in &self.untyped_routes {
-            let Some(sample) = self.routes[route_index].slot.latest() else {
-                continue;
-            };
-            match sample.as_ref() {
-                InputData::Audio(snapshot) => {
-                    inputs.audio.clone_from(snapshot);
-                    inputs.audio_was_published = true;
-                }
-                InputData::Interaction(_) => {}
-                InputData::Media(snapshot) => inputs.media = Some(Arc::clone(snapshot)),
-                InputData::Net(snapshot) => inputs.net = Some(Arc::clone(snapshot)),
-                InputData::Screen(snapshot) => {
-                    match &mut inputs.screen_data {
-                        Some(current) => current.clone_from(snapshot),
-                        None => inputs.screen_data = Some(snapshot.clone()),
-                    }
-                    screen_seen = true;
-                }
-                InputData::Sensors(snapshot) => inputs.sensors = Arc::clone(snapshot),
-                InputData::None => {}
-            }
-        }
-        if !screen_seen {
-            inputs.screen_data = None;
+        if !self.sensor_routes.is_empty()
+            && let Some(sample) = graph.latest_data_source(DataSourceKind::Sensors)
+            && let InputData::Sensors(snapshot) = sample.as_ref()
+        {
+            inputs.sensors = Arc::clone(snapshot);
         }
     }
 
@@ -442,147 +452,27 @@ impl InputRouteCache {
             let route_index = self.routes.len();
             self.routes.push(CachedInputRoute { slot: slot.clone() });
             match slot.kind() {
-                Some(SourceKind::Audio) => self.audio_routes.push(route_index),
-                Some(SourceKind::Screen) => self.screen_routes.push(route_index),
-                Some(SourceKind::Interaction) => {}
-                Some(SourceKind::Media) => self.media_routes.push(route_index),
-                Some(SourceKind::Network) => self.network_routes.push(route_index),
-                None => self.untyped_routes.push(route_index),
+                SourceKind::Audio => self.audio_routes.push(route_index),
+                SourceKind::Screen | SourceKind::Interaction => {}
+                SourceKind::Media => self.media_routes.push(route_index),
+                SourceKind::Network => self.network_routes.push(route_index),
+                SourceKind::Sensors => self.sensor_routes.push(route_index),
             }
         }
         self.graph_generation = Some(graph.generation());
     }
 
-    fn rebuild_interaction_sources(
-        &mut self,
-        graph: &InputGraphSnapshot,
-        browser_registry: &BrowserInputRegistrySnapshot,
-    ) {
-        let previous_availability = std::mem::take(&mut self.interaction_availability);
-        self.interaction_sources.clear();
-        self.interaction_statuses.clear();
-        for slot in graph.slots() {
-            let status = slot.status().clone();
-            let descriptor = Arc::clone(&status.snapshot().source_id);
-            if let Some(mut source) =
-                InteractionRouteSource::manager_slot(descriptor, 1, slot.clone())
-            {
-                let availability =
-                    cached_availability(source.incarnation, &status, &previous_availability);
-                source.availability_revision = availability.revision;
-                self.interaction_sources.push(source);
-                self.interaction_statuses.push(status);
-                self.interaction_availability.push(availability);
-            }
-        }
-        for child in browser_registry.children() {
-            let status = child.status().clone();
-            let incarnation = SourceIncarnation::browser_child(child.publication_id().get());
-            let availability = cached_availability(incarnation, &status, &previous_availability);
-            self.interaction_sources.push(InteractionRouteSource::new(
-                incarnation,
-                Arc::<str>::from(child.source_id()),
-                InteractionRouteSourceClass::Browser,
-                availability.revision,
-                Arc::new(child.clone()),
-            ));
-            self.interaction_statuses.push(status);
-            self.interaction_availability.push(availability);
-        }
-        self.browser_registry_generation = Some(browser_registry.generation());
-    }
-
-    fn refresh_interaction_availability_revisions(&mut self) {
-        for ((source, status), availability) in self
-            .interaction_sources
-            .iter_mut()
-            .zip(&self.interaction_statuses)
-            .zip(&mut self.interaction_availability)
-        {
-            let fingerprint = availability_fingerprint(status);
-            if availability.fingerprint != fingerprint {
-                availability.fingerprint = fingerprint;
-                availability.revision = availability
-                    .revision
-                    .checked_add(1)
-                    .expect("interaction availability revision exhausted");
-            }
-            source.availability_revision = availability.revision;
-        }
-    }
-
     fn clear_typed_routes(&mut self) {
         self.audio_routes.clear();
-        self.screen_routes.clear();
         self.media_routes.clear();
         self.network_routes.clear();
-        self.untyped_routes.clear();
+        self.sensor_routes.clear();
     }
-}
-
-fn availability_fingerprint(status: &SourceStatusHandle) -> AvailabilityFingerprint {
-    let status = status.snapshot();
-    AvailabilityFingerprint {
-        structural_graph_generation: status.source_graph_generation,
-        session_generation: status.session_generation,
-        effective: SourceStatusAvailability {
-            kind: status.kind,
-            configured: status.configured,
-            consented: status.consented,
-            demanded: status.demanded,
-            state: status.state,
-            freshness: status.freshness,
-            retired: status.retired,
-        },
-    }
-}
-
-fn cached_availability(
-    incarnation: SourceIncarnation,
-    status: &SourceStatusHandle,
-    previous: &[CachedInteractionAvailability],
-) -> CachedInteractionAvailability {
-    previous
-        .iter()
-        .find(|cached| cached.incarnation == incarnation)
-        .copied()
-        .unwrap_or(CachedInteractionAvailability {
-            incarnation,
-            fingerprint: availability_fingerprint(status),
-            revision: 1,
-        })
 }
 
 fn reset_audio_vector(values: &mut Vec<f32>, len: usize) {
     values.resize(len, 0.0);
     values.fill(0.0);
-}
-
-fn aggregate_interaction_availability<'a>(
-    handles: impl IntoIterator<Item = &'a SourceStatusHandle>,
-    now: Instant,
-) -> InputSourceAvailability {
-    let mut availability = InputSourceAvailability::default();
-    for handle in handles {
-        let source = handle.availability_at(now);
-        if source.retired
-            || source.kind != SourceKind::Interaction
-            || !(source.configured && source.consented && source.demanded)
-        {
-            continue;
-        }
-
-        availability.routed = true;
-        let healthy = matches!(source.state, SourceState::Live | SourceState::Degraded);
-        availability.healthy |= healthy;
-        availability.degraded |= source.state == SourceState::Degraded;
-        availability.fresh |= healthy
-            && matches!(
-                source.freshness,
-                SourceFreshness::Fresh | SourceFreshness::NotApplicable
-            );
-    }
-    availability
 }
 
 impl FrameInputs {
@@ -617,14 +507,11 @@ impl FrameInputs {
         self.media = None;
         self.net = None;
         self.lighting = None;
-        self.screen_publication = None;
-        self.screen_surface = None;
-        self.screen_sector_grid.clear();
     }
 
     fn clear_transient_interaction(&mut self) {
         self.interaction.batch.events.clear();
-        self.interaction.batch.wheel_hi_res = 0;
+        self.interaction.batch.scroll = hypercolor_core::input::ScrollAggregate::default();
         self.interaction.batch.motion = MotionAggregate::default();
         self.interaction.batch.window_secs = 0.0;
         self.interaction.batch.dropped_events = 0;
@@ -636,52 +523,19 @@ impl FrameInputs {
             audio: AudioData::silence(),
             audio_was_published: false,
             interaction: InteractionData::default(),
-            screen_data: None,
             screen_publication: None,
+            screen_zones: None,
+            screen_delivery_state: None,
+            screen_invalidation_epoch: 0,
+            screen_compositor_epoch: 0,
+            screen_descriptor: None,
             sensors: Arc::clone(&empty_sensors),
             input_availability: InputSourceAvailability::default(),
             empty_sensors,
             media: None,
             net: None,
             lighting: None,
-            screen_surface: None,
-            screen_sector_grid: Vec::new(),
-            screen_surface_pool: Some(Self::new_screen_surface_pool()),
         }
-    }
-
-    pub(crate) fn screen_surface_for_frame(
-        &mut self,
-        width: u32,
-        height: u32,
-    ) -> Result<Option<PublishedSurface>> {
-        if self.screen_surface.is_none() {
-            let surface_pool = self
-                .screen_surface_pool
-                .get_or_insert_with(Self::new_screen_surface_pool);
-            self.screen_surface = match self.screen_data.as_ref() {
-                Some(data) => screen_data_to_surface(
-                    data,
-                    width,
-                    height,
-                    &mut self.screen_sector_grid,
-                    surface_pool,
-                )?,
-                None => None,
-            };
-        }
-
-        Ok(self.screen_surface.clone())
-    }
-
-    fn new_screen_surface_pool() -> RenderSurfacePool {
-        RenderSurfacePool::with_slot_count(
-            SurfaceDescriptor::rgba8888(
-                DEFAULT_SCREEN_SURFACE_WIDTH,
-                DEFAULT_SCREEN_SURFACE_HEIGHT,
-            ),
-            2,
-        )
     }
 }
 
@@ -1294,6 +1148,44 @@ pub(crate) struct FrameLoopState {
     pub(crate) lighting_feed: super::lighting_feed::LightingFeedState,
     pub(crate) input_demands: InputPublicationDemandHandle,
     pub(crate) authoritative_input_demand: OwnedInputPublicationDemand,
+    pub(crate) screen_native_demand: ScreenNativeDemandState,
+    _sensor_baseline_input_demand: InputPublicationDemandRegistration,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ScreenNativeUnavailable {
+    MissingTarget(InputScreenBranchRequest),
+}
+
+/// Renderer-side view of a required native screen execution demand.
+///
+/// Stays `Inactive` whenever the screen source only prefers native
+/// execution, because a missing target then falls back to CPU reduction
+/// instead of waiting.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ScreenNativeDemandState {
+    Inactive,
+    Ready(ScreenNativeExecutionTargetId),
+    Unavailable(ScreenNativeUnavailable),
+}
+
+impl ScreenNativeDemandState {
+    const fn renderer_execution_state(&self) -> ScreenRendererExecutionState {
+        match self {
+            Self::Inactive => ScreenRendererExecutionState::Inactive,
+            Self::Ready(target_id) => ScreenRendererExecutionState::NativeReady(*target_id),
+            Self::Unavailable(ScreenNativeUnavailable::MissingTarget(_)) => {
+                ScreenRendererExecutionState::NativeUnavailable(
+                    ScreenNativeExecutionUnavailableReason::MissingTarget,
+                )
+            }
+        }
+    }
+}
+
+struct AuthoritativeInputDemand {
+    demand: InputPublicationDemand,
+    screen_native: ScreenNativeDemandState,
 }
 
 impl FrameLoopState {
@@ -1304,17 +1196,37 @@ impl FrameLoopState {
         screen_extent: PixelExtent,
         screen_target: Option<&ScreenNativeExecutionTarget>,
     ) {
-        let authoritative =
-            authoritative_input_demand(effect_demand, requested_hz, screen_extent, screen_target);
-        self.authoritative_input_demand.publish(authoritative);
+        let authoritative = authoritative_input_demand(
+            effect_demand,
+            requested_hz,
+            screen_extent,
+            screen_target,
+            self.input_demands.native_execution_policy(),
+        );
+        self.authoritative_input_demand
+            .publish(authoritative.demand);
+        self.screen_native_demand = authoritative.screen_native;
     }
 
     pub(crate) fn clear_input_demands(&mut self) {
         self.authoritative_input_demand.clear();
+        self.screen_native_demand = ScreenNativeDemandState::Inactive;
     }
 
+    /// Whether any consumer needs the render loop awake for frame-rate input.
+    ///
+    /// Background telemetry (media, network, sensors) is pumped at its own
+    /// cadence independent of the frame loop, and the render thread itself
+    /// keeps a 1 Hz sensor baseline registered, so only the frame-rate
+    /// capture domains decide whether an idle scene may throttle.
     pub(crate) fn has_active_input_demand(&self) -> bool {
-        self.input_demands.is_active()
+        [
+            SourceKind::Audio,
+            SourceKind::Screen,
+            SourceKind::Interaction,
+        ]
+        .into_iter()
+        .any(|source| self.input_demands.requested_hz(source) > 0)
     }
 
     pub(crate) fn has_screen_input_demand(&self) -> bool {
@@ -1327,19 +1239,41 @@ fn authoritative_input_demand(
     requested_hz: u32,
     screen_extent: PixelExtent,
     screen_target: Option<&ScreenNativeExecutionTarget>,
-) -> InputPublicationDemand {
+    policy: ScreenNativeExecutionPolicy,
+) -> AuthoritativeInputDemand {
     let mut demand = InputPublicationDemand::default();
+    let mut screen_native = ScreenNativeDemandState::Inactive;
     if effect_demand.audio_capture_active {
         demand = demand.with_source(SourceKind::Audio, requested_hz);
     }
     if effect_demand.screen_capture_active {
-        demand = demand.with_screen_executor(
-            requested_hz,
-            screen_extent,
-            screen_target.map_or(ScreenPublicationExecutorRequest::Cpu, |target| {
-                ScreenPublicationExecutorRequest::SourceNative(target.clone())
-            }),
-        );
+        match policy {
+            ScreenNativeExecutionPolicy::Required => {
+                if let Some(request) =
+                    InputScreenBranchRequest::surface(requested_hz, screen_extent)
+                {
+                    if let Some(target) = screen_target {
+                        let target_id = target.id();
+                        demand =
+                            demand.with_screen_branches([request.bind_native_required(target)]);
+                        screen_native = ScreenNativeDemandState::Ready(target_id);
+                    } else {
+                        screen_native = ScreenNativeDemandState::Unavailable(
+                            ScreenNativeUnavailable::MissingTarget(request),
+                        );
+                    }
+                }
+            }
+            ScreenNativeExecutionPolicy::Preferred => {
+                demand = demand.with_screen_executor(
+                    requested_hz,
+                    screen_extent,
+                    screen_target.map_or(ScreenPublicationExecutorRequest::Cpu, |target| {
+                        ScreenPublicationExecutorRequest::SourceNative(target.clone())
+                    }),
+                );
+            }
+        }
     }
     if effect_demand.interaction_capture_active {
         demand = demand.with_source(SourceKind::Interaction, requested_hz);
@@ -1350,7 +1284,16 @@ fn authoritative_input_demand(
     if effect_demand.network_input_active {
         demand = demand.with_source(SourceKind::Network, BACKGROUND_INPUT_HZ);
     }
-    demand
+    if effect_demand.sensor_input_active {
+        demand = demand.with_source(SourceKind::Sensors, BACKGROUND_INPUT_HZ);
+    }
+    demand = demand
+        .with_screen_renderer_target(screen_target)
+        .with_screen_renderer_execution(screen_native.renderer_execution_state());
+    AuthoritativeInputDemand {
+        demand,
+        screen_native,
+    }
 }
 
 pub(crate) struct RenderCaches {
@@ -1358,19 +1301,21 @@ pub(crate) struct RenderCaches {
     pub(crate) composition_planner: CompositionPlanner,
     pub(crate) sparkleflinger: SparkleFlinger,
     #[cfg(feature = "wgpu")]
+    pub(crate) screen_parity_mailbox: ScreenParityDiagnosticMailbox,
+    #[cfg(feature = "wgpu")]
     pub(crate) display_sparkleflinger: SparkleFlinger,
     #[cfg(feature = "wgpu")]
     pub(crate) display_finalize_runtime: DisplayFinalizeRuntime,
     pub(crate) deferred_sampling: DeferredSamplingState,
     pub(crate) zone_transition_planner: ZoneTransitionPlanner,
-    pub(crate) render_group_runtime: ZoneRuntime,
+    pub(crate) render_zone_runtime: ZoneRuntime,
     pub(crate) output_artifacts: OutputArtifactsState,
     pub(crate) pending_layout_activation: Option<PreparedLayoutActivation>,
     effect_delta_clock: EffectDeltaClock,
 }
 
 pub(crate) struct PreparedCanvasResize {
-    render_group_runtime: super::render_groups::PreparedSceneResize,
+    render_zone_runtime: super::render_zones::PreparedSceneResize,
     static_surfaces: Vec<CachedStaticSurface>,
     sparkleflinger_preparation: SparkleFlingerCanvasPreparation,
     sampling_preparation: SparkleFlingerSamplingPreparation,
@@ -1389,7 +1334,7 @@ impl PreparedCanvasResize {
     }
 
     pub(crate) fn prepare_scene_cpu_backing(&mut self) -> Result<()> {
-        self.render_group_runtime.prepare_cpu_backing()?;
+        self.render_zone_runtime.prepare_cpu_backing()?;
         Ok(())
     }
 }
@@ -1398,10 +1343,11 @@ pub(crate) struct PreparedLayoutActivation {
     pub(crate) spatial_engine: SpatialEngine,
     pub(crate) expected_layout: SpatialLayout,
     pub(crate) active_scene_id: Option<SceneId>,
-    pub(crate) source_active_render_groups_revision: u64,
+    pub(crate) source_resolved_zones_revision: u64,
+    pub(crate) publication_mode: crate::scene_transactions::LayoutPublicationMode,
     pub(crate) prepared_resize: Option<PreparedCanvasResize>,
     pub(crate) sampling_preparation: Option<SparkleFlingerSamplingPreparation>,
-    pub(crate) prepared_groups: PreparedZoneReconcile,
+    pub(crate) prepared_zones: PreparedZoneReconcile,
     pub(crate) prepared_projected_scene:
         super::sparkleflinger::SparkleFlingerProjectedScenePreparation,
     pub(crate) activation: LayoutActivationControl,
@@ -1463,7 +1409,7 @@ pub(crate) struct ComposeRuntime<'a> {
     pub(crate) display_sparkleflinger: &'a mut SparkleFlinger,
     #[cfg(feature = "wgpu")]
     pub(crate) display_finalize_runtime: &'a mut DisplayFinalizeRuntime,
-    pub(crate) render_group_runtime: &'a mut ZoneRuntime,
+    pub(crate) render_zone_runtime: &'a mut ZoneRuntime,
     pub(crate) output_artifacts: &'a mut OutputArtifactsState,
     pub(crate) effect_delta_clock: &'a mut EffectDeltaClock,
 }
@@ -1472,7 +1418,7 @@ pub(crate) struct ComposeRuntime<'a> {
 pub(crate) struct PendingDisplayFinalizeWork {
     pub(crate) dependency_key: SceneDependencyKey,
     pub(crate) display_target: DisplayFaceTarget,
-    pub(crate) display_route: DisplayGroupOutputRoute,
+    pub(crate) display_route: DisplayZoneOutputRoute,
     pub(crate) frame_format: DisplayFrameFormat,
     pub(crate) pending: PendingDisplayFinalization,
 }
@@ -1483,7 +1429,7 @@ impl PendingDisplayFinalizeWork {
         &self,
         dependency_key: SceneDependencyKey,
         display_target: &DisplayFaceTarget,
-        display_route: &DisplayGroupOutputRoute,
+        display_route: &DisplayZoneOutputRoute,
         frame_format: DisplayFrameFormat,
     ) -> bool {
         self.dependency_key == dependency_key
@@ -1501,12 +1447,12 @@ pub(crate) struct DisplayFinalizeRuntime {
 
 #[cfg(feature = "wgpu")]
 impl DisplayFinalizeRuntime {
-    pub(crate) fn take(&mut self, group_id: ZoneId) -> Option<PendingDisplayFinalizeWork> {
-        self.pending.remove(&group_id)
+    pub(crate) fn take(&mut self, zone_id: ZoneId) -> Option<PendingDisplayFinalizeWork> {
+        self.pending.remove(&zone_id)
     }
 
-    pub(crate) fn insert(&mut self, group_id: ZoneId, work: PendingDisplayFinalizeWork) {
-        self.pending.insert(group_id, work);
+    pub(crate) fn insert(&mut self, zone_id: ZoneId, work: PendingDisplayFinalizeWork) {
+        self.pending.insert(zone_id, work);
     }
 
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = PendingDisplayFinalizeWork> + '_ {
@@ -1515,24 +1461,24 @@ impl DisplayFinalizeRuntime {
 
     pub(crate) fn take_inactive(
         &mut self,
-        active_group_ids: &[ZoneId],
+        active_zone_ids: &[ZoneId],
     ) -> Vec<PendingDisplayFinalizeWork> {
-        let inactive_group_ids = self
+        let inactive_zone_ids = self
             .pending
             .keys()
             .copied()
-            .filter(|group_id| !active_group_ids.iter().any(|active| active == group_id))
+            .filter(|zone_id| !active_zone_ids.iter().any(|active| active == zone_id))
             .collect::<Vec<_>>();
 
-        inactive_group_ids
+        inactive_zone_ids
             .into_iter()
-            .filter_map(|group_id| self.pending.remove(&group_id))
+            .filter_map(|zone_id| self.pending.remove(&zone_id))
             .collect()
     }
 }
 
 impl ComposeRuntime<'_> {
-    pub(crate) fn clear_inactive_groups(&mut self) {
+    pub(crate) fn clear_inactive_zones(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
             self.display_sparkleflinger
@@ -1540,22 +1486,19 @@ impl ComposeRuntime<'_> {
         }
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
-            .retain_display_finalize_groups(&[]);
-        self.render_group_runtime.clear_inactive_groups();
+            .retain_display_finalize_zones(&[]);
+        self.render_zone_runtime.clear_inactive_zones();
         self.effect_delta_clock.clear();
     }
 
     #[cfg(feature = "wgpu")]
-    pub(crate) fn discard_display_finalizations_except(&mut self, active_group_ids: &[ZoneId]) {
-        for pending in self
-            .display_finalize_runtime
-            .take_inactive(active_group_ids)
-        {
+    pub(crate) fn discard_display_finalizations_except(&mut self, active_zone_ids: &[ZoneId]) {
+        for pending in self.display_finalize_runtime.take_inactive(active_zone_ids) {
             self.display_sparkleflinger
                 .discard_pending_display_finalization(pending.pending);
         }
         self.display_sparkleflinger
-            .retain_display_finalize_groups(active_group_ids);
+            .retain_display_finalize_zones(active_zone_ids);
     }
 
     pub(crate) fn reuse_or_render_scene(
@@ -1568,7 +1511,7 @@ impl ComposeRuntime<'_> {
         inputs: &FrameInputs,
     ) -> (Result<ZoneResult>, bool) {
         if skip_decision == SkipDecision::ReuseCanvas
-            && let Some(retained) = self.render_group_runtime.reuse_scene(dependency_key)
+            && let Some(retained) = self.render_zone_runtime.reuse_scene(dependency_key)
         {
             self.effect_delta_clock
                 .record_retained_frame(dependency_key, frame_delta);
@@ -1579,14 +1522,12 @@ impl ComposeRuntime<'_> {
             .effect_delta_clock
             .take_render_delta(dependency_key, frame_delta);
 
-        if let Err(error) = self.render_group_runtime.admit_reconcile(
-            scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+        if let Err(error) = self.render_zone_runtime.admit_reconcile(
+            scene_snapshot.scene_runtime.resolved_zones.as_ref(),
             scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
             registry,
-            &scene_snapshot
-                .scene_runtime
-                .active_display_group_descriptors,
+            &scene_snapshot.scene_runtime.active_display_zone_descriptors,
             Some(&scene_snapshot.spatial_engine),
             self.sparkleflinger,
         ) {
@@ -1595,14 +1536,12 @@ impl ComposeRuntime<'_> {
 
         let zones = self.output_artifacts.zones_mut();
         let context = RenderSceneContext {
-            groups: scene_snapshot.scene_runtime.active_render_groups.as_ref(),
+            zones: scene_snapshot.scene_runtime.resolved_zones.as_ref(),
             active_scene_id: scene_snapshot.scene_runtime.active_scene_id,
             dependency_key,
             elapsed_ms: scene_snapshot.elapsed_ms,
-            display_group_target_fps: &scene_snapshot.scene_runtime.active_display_group_target_fps,
-            display_group_descriptors: &scene_snapshot
-                .scene_runtime
-                .active_display_group_descriptors,
+            display_zone_target_fps: &scene_snapshot.scene_runtime.active_display_zone_target_fps,
+            display_zone_descriptors: &scene_snapshot.scene_runtime.active_display_zone_descriptors,
             registry,
             authoritative_spatial_engine: Some(&scene_snapshot.spatial_engine),
             inputs: ZoneFrameInputs {
@@ -1610,7 +1549,7 @@ impl ComposeRuntime<'_> {
                 audio: &inputs.audio,
                 interaction: &inputs.interaction,
                 input_availability: inputs.input_availability,
-                screen: inputs.screen_data.as_ref(),
+                screen: inputs.screen_publication.as_ref(),
                 sensors: inputs.sensors.as_ref(),
                 media: inputs.media.as_deref(),
                 net: inputs.net.as_deref(),
@@ -1618,7 +1557,7 @@ impl ComposeRuntime<'_> {
             },
         };
         (
-            self.render_group_runtime
+            self.render_zone_runtime
                 .render_scene(context, self.sparkleflinger, zones),
             false,
         )
@@ -1768,21 +1707,17 @@ impl SceneSnapshotState {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct RenderSurfaceSnapshot {
-    pub(crate) slot_count: u32,
-    pub(crate) free_slots: u32,
-    pub(crate) published_slots: u32,
-    pub(crate) dequeued_slots: u32,
     pub(crate) canvas_receivers: u32,
-    /// Monotonic counter from the render-group runtime's scene surface pool:
+    /// Monotonic counter from the render-zone runtime's scene surface pool:
     /// how many times a dequeue had to reuse a still-shared Published
     /// slot and allocate a fresh canvas. Only fires at the pool's cap.
     pub(crate) scene_pool_saturation_reallocs: u64,
-    /// Same counter summed across per-group direct-canvas pools.
+    /// Same counter summed across per-zone direct-canvas pools.
     pub(crate) direct_pool_saturation_reallocs: u64,
     /// Current slot count above the scene surface pool's initial size. Grows
     /// once per high-water mark, then settles.
     pub(crate) scene_pool_grown_slots: u32,
-    /// Same gauge summed across per-group direct-canvas pools.
+    /// Same gauge summed across per-zone direct-canvas pools.
     pub(crate) direct_pool_grown_slots: u32,
     pub(crate) scene_pool_slot_count: u32,
     pub(crate) scene_pool_max_slots: u32,
@@ -1810,6 +1745,7 @@ pub(crate) struct RenderSurfaceSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SceneTransitionKey {
+    pub(crate) epoch: u64,
     pub(crate) from_scene: SceneId,
     pub(crate) to_scene: SceneId,
 }
@@ -1844,7 +1780,24 @@ impl ZoneTransitionPlanner {
 }
 
 impl RenderCaches {
-    pub(crate) fn clear_inactive_groups(&mut self) {
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn service_screen_parity(
+        &mut self,
+        render_device: &GpuRenderDevice,
+        publication: Option<&Arc<ScreenBranchPublication>>,
+        descriptor: Option<&ResolvedScreenPublicationDescriptor>,
+        spatial_engine: &SpatialEngine,
+    ) {
+        self.screen_parity_mailbox.service(
+            render_device,
+            &mut self.sparkleflinger,
+            publication,
+            descriptor,
+            spatial_engine,
+        );
+    }
+
+    pub(crate) fn clear_inactive_zones(&mut self) {
         #[cfg(feature = "wgpu")]
         for pending in self.display_finalize_runtime.drain() {
             self.display_sparkleflinger
@@ -1852,8 +1805,8 @@ impl RenderCaches {
         }
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
-            .retain_display_finalize_groups(&[]);
-        self.render_group_runtime.clear_inactive_groups();
+            .retain_display_finalize_zones(&[]);
+        self.render_zone_runtime.clear_inactive_zones();
         self.effect_delta_clock.clear();
     }
 
@@ -1866,7 +1819,7 @@ impl RenderCaches {
             display_sparkleflinger: &mut self.display_sparkleflinger,
             #[cfg(feature = "wgpu")]
             display_finalize_runtime: &mut self.display_finalize_runtime,
-            render_group_runtime: &mut self.render_group_runtime,
+            render_zone_runtime: &mut self.render_zone_runtime,
             output_artifacts: &mut self.output_artifacts,
             effect_delta_clock: &mut self.effect_delta_clock,
         }
@@ -1894,8 +1847,8 @@ impl RenderCaches {
         off_color: [u8; 3],
         spatial_engine: &SpatialEngine,
     ) -> Result<PreparedCanvasResize> {
-        let render_group_runtime = self
-            .render_group_runtime
+        let render_zone_runtime = self
+            .render_zone_runtime
             .prepare_scene_resize(width, height)?
             .expect("canvas resize preparation requires changed dimensions");
         let static_surfaces =
@@ -1925,7 +1878,7 @@ impl RenderCaches {
             spatial_engine.try_prepare_sampling_canvas(width, height)?;
         }
         Ok(PreparedCanvasResize {
-            render_group_runtime,
+            render_zone_runtime,
             static_surfaces,
             sparkleflinger_preparation,
             sampling_preparation,
@@ -1949,8 +1902,8 @@ impl RenderCaches {
         #[cfg(feature = "wgpu")]
         self.display_sparkleflinger
             .apply_canvas_resize(prepared.display_sparkleflinger_preparation);
-        self.render_group_runtime
-            .commit_scene_resize(prepared.render_group_runtime);
+        self.render_zone_runtime
+            .commit_scene_resize(prepared.render_zone_runtime);
         self.composition_planner = CompositionPlanner::new();
         self.zone_transition_planner = ZoneTransitionPlanner::default();
         self.output_artifacts
@@ -1999,8 +1952,8 @@ impl RenderCaches {
         &mut self,
         canvas_receiver_count: usize,
     ) -> RenderSurfaceSnapshot {
-        let scene_counts = self.render_group_runtime.scene_surface_pool_state_counts();
-        let direct_counts = self.render_group_runtime.direct_surface_pool_state_counts();
+        let scene_counts = self.render_zone_runtime.scene_surface_pool_state_counts();
+        let direct_counts = self.render_zone_runtime.direct_surface_pool_state_counts();
         let sparkleflinger_counts = self.sparkleflinger.surface_pool_counts();
         #[cfg(feature = "wgpu")]
         let sparkleflinger_counts =
@@ -2027,10 +1980,6 @@ impl RenderCaches {
                 .saturating_add(sparkleflinger_counts.compositor.dequeued),
         );
         let mut snapshot = RenderSurfaceSnapshot {
-            slot_count: scene_slot_count,
-            free_slots: count(scene_counts.free),
-            published_slots: count(scene_counts.published),
-            dequeued_slots: count(scene_counts.dequeued),
             canvas_receivers: u32::try_from(canvas_receiver_count).unwrap_or(u32::MAX),
             scene_pool_free_slots: count(scene_counts.free),
             scene_pool_published_slots: count(scene_counts.published),
@@ -2049,31 +1998,28 @@ impl RenderCaches {
             ..RenderSurfaceSnapshot::default()
         };
         snapshot.scene_pool_saturation_reallocs = self
-            .render_group_runtime
+            .render_zone_runtime
             .scene_surface_pool_saturation_reallocs();
         snapshot.direct_pool_saturation_reallocs = self
-            .render_group_runtime
+            .render_zone_runtime
             .direct_surface_pool_saturation_reallocs();
-        snapshot.scene_pool_grown_slots =
-            self.render_group_runtime.scene_surface_pool_grown_slots();
+        snapshot.scene_pool_grown_slots = self.render_zone_runtime.scene_surface_pool_grown_slots();
         snapshot.direct_pool_grown_slots =
-            self.render_group_runtime.direct_surface_pool_grown_slots();
+            self.render_zone_runtime.direct_surface_pool_grown_slots();
         snapshot.scene_pool_slot_count = scene_slot_count;
-        snapshot.scene_pool_max_slots = self.render_group_runtime.scene_surface_pool_max_slots();
-        snapshot.direct_pool_slot_count =
-            self.render_group_runtime.direct_surface_pool_slot_count();
-        snapshot.direct_pool_max_slots = self.render_group_runtime.direct_surface_pool_max_slots();
+        snapshot.scene_pool_max_slots = self.render_zone_runtime.scene_surface_pool_max_slots();
+        snapshot.direct_pool_slot_count = self.render_zone_runtime.direct_surface_pool_slot_count();
+        snapshot.direct_pool_max_slots = self.render_zone_runtime.direct_surface_pool_max_slots();
         snapshot.scene_pool_shared_published_slots = self
-            .render_group_runtime
+            .render_zone_runtime
             .scene_surface_pool_shared_published_slots();
         snapshot.scene_pool_max_ref_count =
-            self.render_group_runtime.scene_surface_pool_max_ref_count();
+            self.render_zone_runtime.scene_surface_pool_max_ref_count();
         snapshot.direct_pool_shared_published_slots = self
-            .render_group_runtime
+            .render_zone_runtime
             .direct_surface_pool_shared_published_slots();
-        snapshot.direct_pool_max_ref_count = self
-            .render_group_runtime
-            .direct_surface_pool_max_ref_count();
+        snapshot.direct_pool_max_ref_count =
+            self.render_zone_runtime.direct_surface_pool_max_ref_count();
 
         snapshot
     }
@@ -2087,12 +2033,50 @@ pub(crate) struct PipelineRuntime {
 }
 
 impl PipelineRuntime {
-    pub(crate) async fn from_state(
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn from_state(
         state: &RenderThreadState,
         input_reader: InputPublicationReader,
         input_demands: InputPublicationDemandHandle,
+        #[cfg(feature = "wgpu")] screen_parity_mailbox: ScreenParityDiagnosticMailbox,
     ) -> Result<Self> {
-        let initial_spatial_engine = state.spatial_engine.read().await.clone();
+        let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
+        let pipeline = Self::new_with_gpu_device(
+            state.canvas_dims.width(),
+            state.canvas_dims.height(),
+            initial_spatial_engine,
+            state.screen_capture_configured,
+            state.render_acceleration_mode,
+            #[cfg(feature = "wgpu")]
+            state.render_gpu_device.clone(),
+            #[cfg(feature = "wgpu")]
+            screen_parity_mailbox,
+            Some(Arc::clone(&state.asset_library)),
+            state.configured_max_fps_tier.get(),
+            input_reader,
+            input_demands,
+            state.interaction_routing.clone(),
+        )?;
+        for (feature, available) in pipeline
+            .render
+            .sparkleflinger
+            .screen_source_capability_features()
+        {
+            state
+                .input_manager
+                .set_source_capability_feature(feature, available)?;
+        }
+        Ok(pipeline)
+    }
+
+    #[cfg(not(all(target_os = "macos", feature = "wgpu", feature = "screen-capture")))]
+    pub(crate) fn from_state(
+        state: &RenderThreadState,
+        input_reader: InputPublicationReader,
+        input_demands: InputPublicationDemandHandle,
+        #[cfg(feature = "wgpu")] screen_parity_mailbox: ScreenParityDiagnosticMailbox,
+    ) -> Result<Self> {
+        let initial_spatial_engine = state.spatial_engine.snapshot().as_ref().clone();
         Self::new_with_gpu_device(
             state.canvas_dims.width(),
             state.canvas_dims.height(),
@@ -2101,6 +2085,8 @@ impl PipelineRuntime {
             state.render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             state.render_gpu_device.clone(),
+            #[cfg(feature = "wgpu")]
+            screen_parity_mailbox,
             Some(Arc::clone(&state.asset_library)),
             state.configured_max_fps_tier.get(),
             input_reader,
@@ -2118,7 +2104,10 @@ impl PipelineRuntime {
         render_acceleration_mode: RenderAccelerationMode,
         configured_max_fps_tier: FpsTier,
     ) -> Result<Self> {
-        let input_demands = InputPublicationDemandHandle::new();
+        let input_demands = InputPublicationDemandHandle::default();
+        #[cfg(feature = "wgpu")]
+        let (_, screen_parity_mailbox) =
+            super::screen_parity_diagnostics::screen_parity_diagnostic_channel();
         Self::new_with_gpu_device(
             canvas_width,
             canvas_height,
@@ -2127,6 +2116,8 @@ impl PipelineRuntime {
             render_acceleration_mode,
             #[cfg(feature = "wgpu")]
             None,
+            #[cfg(feature = "wgpu")]
+            screen_parity_mailbox,
             None,
             configured_max_fps_tier,
             InputPublicationReader::empty(),
@@ -2142,6 +2133,7 @@ impl PipelineRuntime {
         screen_capture_configured: bool,
         render_acceleration_mode: RenderAccelerationMode,
         #[cfg(feature = "wgpu")] render_gpu_device: Option<GpuRenderDevice>,
+        #[cfg(feature = "wgpu")] screen_parity_mailbox: ScreenParityDiagnosticMailbox,
         asset_library: Option<Arc<RwLock<AssetLibrary>>>,
         configured_max_fps_tier: FpsTier,
         input_reader: InputPublicationReader,
@@ -2183,6 +2175,10 @@ impl PipelineRuntime {
         sparkleflinger.apply_zone_sampling_plan(sampling_preparation);
         #[cfg(feature = "wgpu")]
         display_sparkleflinger.apply_canvas_resize(display_sparkleflinger_preparation);
+        let sensor_baseline_input_demand = input_demands.register(
+            InputPublicationConsumer::PassiveStream,
+            InputPublicationDemand::default().with_source(SourceKind::Sensors, BACKGROUND_INPUT_HZ),
+        );
 
         Ok(Self {
             scene: SceneSnapshotState::new(initial_spatial_engine, screen_capture_configured),
@@ -2198,18 +2194,22 @@ impl PipelineRuntime {
                     &input_demands,
                     InputPublicationConsumer::Authoritative,
                 ),
+                screen_native_demand: ScreenNativeDemandState::Inactive,
+                _sensor_baseline_input_demand: sensor_baseline_input_demand,
             },
             render: RenderCaches {
                 screen_queue: ProducerQueue::new(),
                 composition_planner: CompositionPlanner::new(),
                 sparkleflinger,
                 #[cfg(feature = "wgpu")]
+                screen_parity_mailbox,
+                #[cfg(feature = "wgpu")]
                 display_sparkleflinger,
                 #[cfg(feature = "wgpu")]
                 display_finalize_runtime: DisplayFinalizeRuntime::default(),
                 deferred_sampling: DeferredSamplingState::default(),
                 zone_transition_planner: ZoneTransitionPlanner::default(),
-                render_group_runtime: match asset_library {
+                render_zone_runtime: match asset_library {
                     Some(asset_library) => ZoneRuntime::try_with_asset_library(
                         canvas_width,
                         canvas_height,
@@ -2237,36 +2237,60 @@ mod tests {
     use hypercolor_core::bus::HypercolorBus;
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::browser::{
-        BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputSource,
+        BrowserConnectionIncarnation, BrowserInputChildKey, BrowserInputEdge, BrowserInputHandle,
         BrowserPreviewId,
     };
-    use hypercolor_core::input::screen::{
-        PixelExtent, PlatformGpuApi, ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId,
-        ScreenNativePreparationPayload, ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
-        ScreenPhysicalGpuDeviceIdentity, ScreenPublicationExecutorRequest,
+    use hypercolor_core::input::screen::consumer::PixelExtent;
+    use hypercolor_core::input::screen::implementer::PlatformGpuApi;
+    use hypercolor_core::input::screen::planner::{
+        ScreenNativeExecutionPolicy, ScreenNativeExecutionUnavailableReason,
+        ScreenRendererExecutionState,
+    };
+    use hypercolor_core::input::screen::planner::{
+        ScreenNativeExecutionTarget, ScreenNativeExecutionTargetId, ScreenNativePreparationPayload,
+        ScreenNativeTargetPreparation, ScreenNativeTargetPreparer, ScreenPhysicalGpuDeviceIdentity,
+        ScreenPublicationExecutorRequest,
     };
     use hypercolor_core::input::{
-        InputData, InputGraphSnapshot, InputManager, InputSource, InputSourceSlot, InteractionData,
-        MotionAggregate, SourceIssue, SourceKind, SourceStatusWriter,
+        DataSource, DataSourceKind, DataSourceRole, InputData, InputGraphSnapshot, InputManager,
+        InputSource, InputSourceSlot, InteractionData, InteractionSource, InteractionSourceRole,
+        ManagedSourceKey, ManagedSourceRole, MotionAggregate, Q16_16_SCALE, ScrollAggregate,
+        SourceIssue, SourceKind, SourceRoleBinding, SourceStatusWriter, SourceSwapTarget,
     };
     use hypercolor_core::spatial::{
         SpatialEngine, SpatialSamplingCapacity, SpatialSamplingWorkspaceUsage,
     };
     use hypercolor_types::config::{InteractionRoutePolicy, RenderAccelerationMode};
-    use hypercolor_types::event::{InputButtonState, InputEvent, TimedInputEvent};
+    use hypercolor_types::event::{
+        InputButtonState, InputEvent, PointerScrollPhase, PointerScrollUnit, TimedInputEvent,
+    };
     use hypercolor_types::sensor::SystemSnapshot;
     use hypercolor_types::spatial::{
         EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     };
 
     use super::{
-        EffectDeltaClock, FrameInputs, InputRouteCache, OutputFrameSource, OutputReuseKey,
-        OutputReuseState, PipelineRuntime, aggregate_interaction_availability,
-        authoritative_input_demand, should_publish_preview_frame,
+        EffectDeltaClock, FrameClockState, FrameInputs, InputRouteCache, OutputFrameSource,
+        OutputReuseKey, OutputReuseState, PipelineRuntime, authoritative_input_demand,
+        should_publish_preview_frame,
     };
-    use crate::interaction_routing::InteractionRoutingControl;
+    use super::{ScreenNativeDemandState, ScreenNativeUnavailable};
+    use crate::interaction_routing::{InteractionRoutingControl, selected_input_availability};
     use crate::render_thread::input_publication::{InputPublicationDemand, InputPublicationReader};
     use crate::render_thread::scene_snapshot::EffectDemand;
+
+    #[test]
+    fn frame_clock_rebase_excludes_paused_wall_time() {
+        let start = Instant::now();
+        let mut clock = FrameClockState { last_tick: start };
+        let resumed_at = start + Duration::from_secs(30);
+
+        clock.rebase(resumed_at);
+        let resumed = clock.advance(resumed_at);
+
+        assert_eq!(resumed.frame_interval, Duration::ZERO);
+        assert_eq!(resumed.delta_secs, 0.0);
+    }
 
     struct FixedInteractionSource {
         sample: InteractionData,
@@ -2274,7 +2298,7 @@ mod tests {
         running: bool,
     }
 
-    struct WarmingUntypedSensorSource {
+    struct WarmingSensorSource {
         snapshot: Arc<SystemSnapshot>,
         samples: usize,
         running: bool,
@@ -2349,13 +2373,15 @@ mod tests {
         fn drain_events(&mut self) -> Vec<TimedInputEvent> {
             std::mem::take(&mut self.events)
         }
-
-        fn is_interaction_source(&self) -> bool {
-            true
-        }
     }
 
-    impl WarmingUntypedSensorSource {
+    impl SourceRoleBinding for EventOnceSource {
+        type Role = InteractionSourceRole;
+    }
+
+    impl InteractionSource for EventOnceSource {}
+
+    impl WarmingSensorSource {
         fn new(snapshot: Arc<SystemSnapshot>) -> Self {
             Self {
                 snapshot,
@@ -2365,9 +2391,9 @@ mod tests {
         }
     }
 
-    impl InputSource for WarmingUntypedSensorSource {
+    impl InputSource for WarmingSensorSource {
         fn name(&self) -> &'static str {
-            "warming-untyped-sensor"
+            "warming-sensor"
         }
 
         fn start(&mut self) -> anyhow::Result<()> {
@@ -2393,6 +2419,16 @@ mod tests {
 
         fn is_running(&self) -> bool {
             self.running
+        }
+    }
+
+    impl SourceRoleBinding for WarmingSensorSource {
+        type Role = DataSourceRole;
+    }
+
+    impl DataSource for WarmingSensorSource {
+        fn data_source_kind(&self) -> DataSourceKind {
+            DataSourceKind::Sensors
         }
     }
 
@@ -2448,11 +2484,13 @@ mod tests {
         fn drain_events(&mut self) -> Vec<TimedInputEvent> {
             std::mem::take(&mut self.events)
         }
-
-        fn is_interaction_source(&self) -> bool {
-            true
-        }
     }
+
+    impl SourceRoleBinding for FixedInteractionSource {
+        type Role = InteractionSourceRole;
+    }
+
+    impl InteractionSource for FixedInteractionSource {}
 
     fn empty_layout() -> SpatialLayout {
         SpatialLayout {
@@ -2464,7 +2502,6 @@ mod tests {
             zones: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         }
     }
@@ -2502,7 +2539,6 @@ mod tests {
             }],
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
-            spaces: None,
             version: 1,
         }
     }
@@ -2525,12 +2561,12 @@ mod tests {
             routes.rebuild_routes(graph);
         }
         let registry = routes.interaction_routing.browser_registry_snapshot();
-        if graph_changed || routes.browser_registry_generation != Some(registry.generation()) {
-            routes.rebuild_interaction_sources(graph, &registry);
-        }
+        routes
+            .interaction_catalog
+            .refresh(graph, &registry, Instant::now());
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(inputs);
-        routes.route_interaction_into(event_bus, graph, &registry, inputs);
+        routes.route_latest_into(graph, inputs);
+        routes.route_interaction_into(event_bus, inputs);
     }
 
     #[test]
@@ -2548,8 +2584,7 @@ mod tests {
             .expect("eligible source should begin");
         assert!(session.mark_event_driven_live_without_deadline(1));
 
-        let idle =
-            aggregate_interaction_availability(std::slice::from_ref(&handle), Instant::now());
+        let idle = selected_input_availability(std::slice::from_ref(&handle), Instant::now());
         assert_eq!(
             idle,
             hypercolor_core::effect::InputSourceAvailability {
@@ -2565,7 +2600,7 @@ mod tests {
             "interaction worker stopped",
             true,
         )));
-        let failed = aggregate_interaction_availability(&[handle], Instant::now());
+        let failed = selected_input_availability(&[handle], Instant::now());
         assert_eq!(
             failed,
             hypercolor_core::effect::InputSourceAvailability {
@@ -2579,14 +2614,18 @@ mod tests {
 
     #[test]
     fn statusless_interaction_source_is_routed_through_its_graph_slot() {
-        let mut manager = InputManager::new();
-        manager.add_source(Box::new(EventOnceSource::new("KeyA")));
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                EventOnceSource::new("KeyA"),
+            )))
+            .expect("statusless interaction source should register");
         manager
             .start_all()
             .expect("statusless interaction source should start");
         let graph = manager.input_graph_handle().snapshot();
 
-        let availability = aggregate_interaction_availability(
+        let availability = selected_input_availability(
             graph.slots().iter().map(InputSourceSlot::status),
             Instant::now(),
         );
@@ -2604,11 +2643,13 @@ mod tests {
 
     #[test]
     fn authoritative_route_selects_host_exact_browser_and_merge_with_releases() {
-        let mut manager = InputManager::new();
-        manager.add_source(Box::new(FixedInteractionSource::new("KeyA", 7)));
-        let browser_source = BrowserInputSource::new();
-        let browser = browser_source.handle();
-        manager.add_source(Box::new(browser_source));
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                FixedInteractionSource::new("KeyA", 7),
+            )))
+            .expect("host interaction source should register");
+        let browser = BrowserInputHandle::new();
         manager.start_all().expect("input sources should start");
         manager
             .set_interaction_capture_active(true)
@@ -2698,38 +2739,45 @@ mod tests {
     }
 
     #[test]
-    fn untyped_source_is_routed_after_warming_up_without_a_graph_change() {
+    fn sensor_source_is_routed_after_warming_up_without_a_graph_change() {
         let snapshot = Arc::new(SystemSnapshot::empty());
-        let mut manager = InputManager::new();
-        manager.add_source(Box::new(WarmingUntypedSensorSource::new(Arc::clone(
-            &snapshot,
-        ))));
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::data(Box::new(WarmingSensorSource::new(
+                Arc::clone(&snapshot),
+            ))))
+            .expect("warming sensor source should register");
         manager.start_all().expect("sensor source should start");
         let graph = manager.input_graph_handle();
         let mut routes = InputRouteCache::default();
         let mut inputs = FrameInputs::silence();
 
         manager.sample_sources(1.0 / 60.0);
-        routes.rebuild_routes(&graph.snapshot());
+        let graph = graph.snapshot();
+        routes.rebuild_routes(&graph);
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(&mut inputs);
+        routes.route_latest_into(&graph, &mut inputs);
         assert!(!Arc::ptr_eq(&inputs.sensors, &snapshot));
 
         manager.sample_sources(1.0 / 60.0);
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(&mut inputs);
+        routes.route_latest_into(&graph, &mut inputs);
         assert!(Arc::ptr_eq(&inputs.sensors, &snapshot));
 
         manager.sample_sources(1.0 / 60.0);
         inputs.prepare_for_sample(None);
-        routes.route_latest_into(&mut inputs);
-        assert!(!Arc::ptr_eq(&inputs.sensors, &snapshot));
+        routes.route_latest_into(&graph, &mut inputs);
+        assert!(Arc::ptr_eq(&inputs.sensors, &snapshot));
     }
 
     #[test]
     fn source_replacement_and_availability_changes_invalidate_reuse_identity() {
-        let mut manager = InputManager::new();
-        manager.add_source(Box::new(FixedInteractionSource::new("KeyA", 7)));
+        let manager = InputManager::new();
+        manager
+            .add_source(ManagedSourceRole::interaction(Box::new(
+                FixedInteractionSource::new("KeyA", 7),
+            )))
+            .expect("host interaction source should register");
         manager.start_all().expect("first source should start");
         manager
             .set_interaction_capture_active(true)
@@ -2754,12 +2802,28 @@ mod tests {
         assert_ne!(inactive_reuse, live_reuse);
         assert!(!inputs.input_availability.routed);
 
-        let replacement =
-            manager.replace_source(0, Box::new(FixedInteractionSource::new("KeyB", 7)));
-        assert!(replacement.is_ok(), "replacement index should exist");
+        let plan = manager
+            .plan_source_swap(
+                ManagedSourceKey::Interaction,
+                SourceSwapTarget::Present { running: true },
+            )
+            .expect("host source has one exact replacement target");
+        let mut replacement = Some(ManagedSourceRole::interaction(Box::new(
+            FixedInteractionSource::new("KeyB", 7),
+        )));
+        replacement
+            .as_mut()
+            .expect("replacement exists")
+            .source_mut()
+            .start()
+            .expect("replacement source starts before graph commit");
+        let mut prepared = plan
+            .prepare(&mut replacement)
+            .expect("replacement binds to the planned host role");
         manager
-            .start_all()
-            .expect("replacement source should start");
+            .commit_source_swap(&mut prepared)
+            .expect("replacement graph fences remain current")
+            .retire();
         manager
             .set_interaction_capture_active(true)
             .expect("replacement demand should activate");
@@ -2777,14 +2841,12 @@ mod tests {
 
     #[test]
     fn browser_transients_and_wheel_are_delivered_once_across_superseded_publications() {
-        let mut manager = InputManager::new();
-        let browser_source = BrowserInputSource::new();
-        let browser = browser_source.handle();
-        manager.add_source(Box::new(browser_source));
+        let manager = InputManager::new();
+        let browser = BrowserInputHandle::new();
         manager.start_all().expect("browser source should start");
         manager
             .set_interaction_capture_active(true)
-            .expect("browser demand should activate");
+            .expect("empty manager should accept browser-only demand");
         let preview = browser
             .attach(preview_key(7, "motion"))
             .expect("preview should attach");
@@ -2815,7 +2877,13 @@ mod tests {
                     norm_x: 0.3,
                     norm_y: 0.4,
                 },
-                BrowserInputEdge::Wheel { delta_hi_res: 120 },
+                BrowserInputEdge::Scroll {
+                    delta_x_q16_16: 0,
+                    delta_y_q16_16: 120 * Q16_16_SCALE,
+                    unit: PointerScrollUnit::Line120,
+                    phase: PointerScrollPhase::None,
+                    momentum_phase: PointerScrollPhase::None,
+                },
             ])
             .expect("first transient batch should publish");
         preview
@@ -2824,28 +2892,36 @@ mod tests {
                     norm_x: 0.5,
                     norm_y: 0.6,
                 },
-                BrowserInputEdge::Wheel { delta_hi_res: -40 },
+                BrowserInputEdge::Scroll {
+                    delta_x_q16_16: 0,
+                    delta_y_q16_16: -40 * Q16_16_SCALE,
+                    unit: PointerScrollUnit::Line120,
+                    phase: PointerScrollPhase::None,
+                    momentum_phase: PointerScrollPhase::None,
+                },
             ])
             .expect("superseding transient batch should publish");
         resolve_authoritative(&mut routes, &graph, &event_bus, &mut inputs);
 
         assert!((inputs.interaction.batch.motion.dx - 0.4).abs() < 0.000_1);
         assert!((inputs.interaction.batch.motion.dy - 0.4).abs() < 0.000_1);
-        assert_eq!(inputs.interaction.batch.wheel_hi_res, 80);
+        assert_eq!(
+            inputs.interaction.batch.scroll.line120_y_q16_16,
+            80 * Q16_16_SCALE
+        );
         assert_eq!(
             inputs
                 .interaction
                 .batch
                 .events
                 .iter()
-                .filter(|event| matches!(event.event, InputEvent::MouseWheel { .. }))
+                .filter(|event| matches!(event.event, InputEvent::PointerScroll { .. }))
                 .count(),
             2
         );
-
         resolve_authoritative(&mut routes, &graph, &event_bus, &mut inputs);
         assert_eq!(inputs.interaction.batch.motion, MotionAggregate::default());
-        assert_eq!(inputs.interaction.batch.wheel_hi_res, 0);
+        assert_eq!(inputs.interaction.batch.scroll, ScrollAggregate::default());
         assert!(inputs.interaction.batch.events.is_empty());
     }
 
@@ -2858,19 +2934,68 @@ mod tests {
             interaction_capture_active: true,
             media_input_active: true,
             network_input_active: true,
+            sensor_input_active: true,
         };
 
         let screen_extent = PixelExtent::new(5_120, 2_160)
             .expect("test screen publication extent should be non-empty");
-        let demand = authoritative_input_demand(effect_demand, 60, screen_extent, None);
-        let expected = InputPublicationDemand::default()
+        let baseline = InputPublicationDemand::default()
             .with_source(SourceKind::Audio, 60)
-            .with_screen(60, screen_extent)
             .with_source(SourceKind::Interaction, 60)
             .with_source(SourceKind::Media, 1)
-            .with_source(SourceKind::Network, 1);
+            .with_source(SourceKind::Network, 1)
+            .with_source(SourceKind::Sensors, 1);
 
-        assert_eq!(demand, expected);
+        let preferred = authoritative_input_demand(
+            effect_demand,
+            60,
+            screen_extent,
+            None,
+            ScreenNativeExecutionPolicy::Preferred,
+        );
+        assert_eq!(
+            preferred.demand,
+            baseline.clone().with_screen(60, screen_extent)
+        );
+        assert_eq!(preferred.screen_native, ScreenNativeDemandState::Inactive);
+
+        let authoritative = authoritative_input_demand(
+            effect_demand,
+            60,
+            screen_extent,
+            None,
+            ScreenNativeExecutionPolicy::Required,
+        );
+        let expected = baseline.with_screen_renderer_execution(
+            ScreenRendererExecutionState::NativeUnavailable(
+                ScreenNativeExecutionUnavailableReason::MissingTarget,
+            ),
+        );
+        assert_eq!(authoritative.demand, expected);
+        {
+            let ScreenNativeDemandState::Unavailable(ScreenNativeUnavailable::MissingTarget(
+                request,
+            )) = authoritative.screen_native
+            else {
+                panic!("missing current Metal target must be typed as native unavailable");
+            };
+            assert_eq!(
+                request.kind(),
+                hypercolor_core::input::screen::ScreenPublicationKind::Surface
+            );
+            assert_eq!(request.requested_hz().get(), 60);
+            assert_eq!(
+                request.extent().bounded_extent().map(|bounded| (
+                    bounded.max_width().map(NonZeroU32::get),
+                    bounded.max_height().map(NonZeroU32::get),
+                )),
+                Some((Some(5_120), Some(2_160)))
+            );
+            assert!(matches!(
+                request.processing_profile().hdr(),
+                hypercolor_core::input::screen::ScreenHdrPolicy::ToneMap(_)
+            ));
+        }
     }
 
     #[test]
@@ -2882,28 +3007,60 @@ mod tests {
             interaction_capture_active: false,
             media_input_active: false,
             network_input_active: false,
+            sensor_input_active: false,
         };
         let screen_extent = PixelExtent::new(7_680, 4_320)
             .expect("test screen publication extent should be non-empty");
         let target = ScreenNativeExecutionTarget::new(
             ScreenNativeExecutionTargetId::new(NonZeroU64::MIN),
-            PlatformGpuApi::Direct3d11,
-            ScreenPhysicalGpuDeviceIdentity::Direct3dAdapterLuid {
-                low_part: 7,
-                high_part: 11,
-            },
+            PlatformGpuApi::Metal,
+            ScreenPhysicalGpuDeviceIdentity::MetalRegistryId(7),
             NonZeroU32::new(16_384).expect("test texture limit is non-zero"),
             Arc::new(InertNativeTargetPreparer),
         );
 
-        let demand = authoritative_input_demand(effect_demand, 144, screen_extent, Some(&target));
-        let expected = InputPublicationDemand::default().with_screen_executor(
+        let preferred = authoritative_input_demand(
+            effect_demand,
             144,
             screen_extent,
-            ScreenPublicationExecutorRequest::SourceNative(target),
+            Some(&target),
+            ScreenNativeExecutionPolicy::Preferred,
         );
+        let expected_preferred = InputPublicationDemand::default()
+            .with_screen_executor(
+                144,
+                screen_extent,
+                ScreenPublicationExecutorRequest::SourceNative(target.clone()),
+            )
+            .with_screen_renderer_target(Some(&target));
+        assert!(
+            preferred
+                .demand
+                .same_publication_request(&expected_preferred)
+        );
+        assert_eq!(preferred.screen_native, ScreenNativeDemandState::Inactive);
 
-        assert_eq!(demand, expected);
+        let authoritative = authoritative_input_demand(
+            effect_demand,
+            144,
+            screen_extent,
+            Some(&target),
+            ScreenNativeExecutionPolicy::Required,
+        );
+        let expected = InputPublicationDemand::default()
+            .with_screen_executor(
+                144,
+                screen_extent,
+                ScreenPublicationExecutorRequest::SourceNativeRequired(target.clone()),
+            )
+            .with_screen_renderer_execution(ScreenRendererExecutionState::NativeReady(target.id()))
+            .with_screen_renderer_target(Some(&target));
+
+        assert!(authoritative.demand.same_publication_request(&expected));
+        assert_eq!(
+            authoritative.screen_native,
+            ScreenNativeDemandState::Ready(target.id())
+        );
     }
 
     #[test]
@@ -3054,19 +3211,12 @@ mod tests {
 
         runtime
             .render
-            .render_group_runtime
+            .render_zone_runtime
             .try_resize_scene(321, 200)
             .expect("CPU scene resize should prepare its surface pool");
         let snapshot = runtime.render.render_surface_snapshot(3);
 
         assert_eq!(snapshot.canvas_receivers, 3);
-        assert_eq!(snapshot.slot_count, snapshot.scene_pool_slot_count);
-        assert_eq!(snapshot.free_slots, snapshot.scene_pool_free_slots);
-        assert_eq!(
-            snapshot.published_slots,
-            snapshot.scene_pool_published_slots
-        );
-        assert_eq!(snapshot.dequeued_slots, snapshot.scene_pool_dequeued_slots);
         assert_eq!(snapshot.scene_pool_slot_count, 8);
         assert_eq!(snapshot.scene_pool_free_slots, 8);
         assert_eq!(snapshot.direct_pool_slot_count, 0);

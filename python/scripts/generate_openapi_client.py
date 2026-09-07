@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import IO
+from typing import IO, cast
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PYTHON_ROOT.parent
@@ -123,11 +122,14 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
 
     schemas = spec.get("components", {}).get("schemas", {})
     for name in (
+        "AssetScanStatus",
         "ControlApplyError",
         "ControlOwner",
         "ControlSurfaceEvent",
         "ControlSurfaceScope",
-        "EdgeBehavior",
+        "DisplayFaceResponseOptional",
+        "EffectSource",
+        "LayerSource",
     ):
         schema = schemas.get(name)
         if isinstance(schema, dict):
@@ -136,9 +138,125 @@ def prepare_generator_spec(path: Path, temp_dir: Path) -> Path:
                 "description": schema.get("description", f"{name} payload"),
             }
 
+    normalize_edge_behavior_schema(schemas)
+    normalize_recursive_control_schemas(schemas)
+
+    normalize_binary_response_media_types(spec)
+
     generator_spec = temp_dir / "openapi-python-client.json"
     generator_spec.write_text(json.dumps(spec, indent=2), encoding="utf-8")
     return generator_spec
+
+
+def normalize_edge_behavior_schema(schemas: dict[str, object]) -> None:
+    schema = schemas.get("EdgeBehavior")
+    if not isinstance(schema, dict):
+        return
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list):
+        return
+
+    string_values = [
+        value
+        for variant in variants
+        if isinstance(variant, dict) and variant.get("type") == "string"
+        for enum_values in [variant.get("enum")]
+        if isinstance(enum_values, list)
+        for value in enum_values
+        if isinstance(value, str)
+    ]
+    fade_wrapper = None
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        properties = variant.get("properties")
+        if isinstance(properties, dict) and "fade_to_black" in properties:
+            fade_wrapper = variant
+            break
+    if not string_values or not isinstance(fade_wrapper, dict):
+        return
+    fade_properties = fade_wrapper.get("properties")
+    if not isinstance(fade_properties, dict):
+        return
+    fade_value = fade_properties.get("fade_to_black")
+    if not isinstance(fade_value, dict):
+        return
+
+    schemas["EdgeBehavior"] = {
+        "description": schema.get("description", "Edge behavior for out-of-bounds LED positions."),
+        "oneOf": [
+            {"type": "string", "enum": string_values},
+            {"$ref": "#/components/schemas/EdgeBehaviorFadeToBlack"},
+        ],
+    }
+    schemas["EdgeBehaviorFadeToBlack"] = {
+        "type": "object",
+        "description": fade_wrapper.get("description"),
+        "required": ["fade_to_black"],
+        "properties": {
+            "fade_to_black": {"$ref": "#/components/schemas/EdgeBehaviorFadeToBlackValue"}
+        },
+    }
+    schemas["EdgeBehaviorFadeToBlackValue"] = fade_value
+
+
+def normalize_recursive_control_schemas(schemas: dict[str, object]) -> None:
+    schema = schemas.get("ControlValue")
+    if not isinstance(schema, dict):
+        return
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list):
+        return
+    kinds = [
+        kind
+        for variant in variants
+        if isinstance(variant, dict)
+        for properties in [variant.get("properties")]
+        if isinstance(properties, dict)
+        for kind_schema in [properties.get("kind")]
+        if isinstance(kind_schema, dict)
+        for enum_values in [kind_schema.get("enum")]
+        if isinstance(enum_values, list)
+        for kind in enum_values
+        if isinstance(kind, str)
+    ]
+    schemas["ControlValue"] = {
+        "type": "object",
+        "description": schema.get("description", "ControlValue payload"),
+        "required": ["kind"],
+        "properties": {
+            "kind": {"type": "string", "enum": kinds},
+            "value": {},
+        },
+        "additionalProperties": False,
+    }
+
+
+def normalize_binary_response_media_types(spec: dict[str, object]) -> None:
+    paths = spec.get("paths")
+    if not isinstance(paths, dict):
+        return
+    for path_item in cast(dict[str, object], paths).values():
+        if not isinstance(path_item, dict):
+            continue
+        for operation in cast(dict[str, object], path_item).values():
+            if not isinstance(operation, dict):
+                continue
+            responses = cast(dict[str, object], operation).get("responses")
+            if not isinstance(responses, dict):
+                continue
+            for response in cast(dict[str, object], responses).values():
+                if not isinstance(response, dict):
+                    continue
+                content = cast(dict[str, object], response).get("content")
+                if not isinstance(content, dict):
+                    continue
+                content_by_media_type = cast(dict[str, object], content)
+                for media_type in list(content_by_media_type):
+                    if media_type.startswith("image/"):
+                        content_by_media_type["application/octet-stream"] = (
+                            content_by_media_type.pop(media_type)
+                        )
 
 
 def replace_generated(source: Path) -> None:
@@ -207,12 +325,9 @@ def run(
     cwd: Path,
     stdout: int | IO[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env.setdefault("CARGO_TARGET_DIR", str(Path.home() / ".cache" / "hypercolor" / "target"))
     return subprocess.run(
         command,
         cwd=cwd,
-        env=env,
         stdout=stdout,
         text=True,
         encoding="utf-8",

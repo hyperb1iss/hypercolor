@@ -11,7 +11,7 @@ use std::sync::Arc;
 use realfft::RealFftPlanner;
 use rustfft::num_complex::Complex;
 
-use crate::types::audio::SPECTRUM_BINS;
+use hypercolor_types::audio::SPECTRUM_BINS;
 
 // ── Constants ────────────────────────────────────────────────────────────
 

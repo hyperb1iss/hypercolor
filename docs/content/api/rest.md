@@ -18,12 +18,11 @@ the contract, not a curated subset. The same daemon also speaks
 http://localhost:9420
 ```
 
-Three paths sit outside the `/api/v1` tree:
+Two paths sit outside the `/api/v1` tree:
 
 | Path | Purpose |
 | --- | --- |
 | `/health` | Liveness check, no auth, returns `200 OK` when the daemon is up. |
-| `/preview` | Standalone canvas-preview HTML page. |
 | `/mcp` | MCP server (Streamable HTTP), mounted only when `mcp.enabled` is true. |
 
 Everything else lives under `/api/v1`. Axum 0.8 path parameters use brace
@@ -54,14 +53,41 @@ The `meta` fields are fixed by the daemon:
 | `request_id` | string `req_<uuid-v7>` | A `req_` prefix plus a time-ordered UUID v7. Quote it when filing a bug or correlating logs. |
 | `timestamp` | ISO 8601 UTC | Millisecond precision with a trailing `Z`. |
 
+### List responses
+
+Every route that returns a collection puts the same shape under `data`:
+`items`, a `total` count of everything that matched, and an optional
+`page` block.
+
+```json
+{
+  "data": {
+    "items": [],
+    "total": 0,
+    "page": {
+      "offset": 0,
+      "limit": 50,
+      "has_more": false
+    }
+  }
+}
+```
+
+`page` is present only where the route genuinely pages, so its absence
+means the response is complete rather than implying a page size nobody
+enforces. Three routes page today: `GET /api/v1/devices`,
+`GET /api/v1/layouts`, and `GET /api/v1/attachments/templates`. Each
+defaults `limit` to 50 and rejects a `limit` above 200 with
+`validation_error`. Read every item by following `page.has_more`,
+advancing `offset` by the number of items the last page returned.
+
 Error bodies replace `data` with `error`:
 
 ```json
 {
   "error": {
     "code": "validation_error",
-    "message": "brightness must be between 0 and 100",
-    "details": null
+    "message": "brightness must be between 0 and 100"
   },
   "meta": {
     "api_version": "1.0",
@@ -75,23 +101,27 @@ The `code` is a `snake_case` string that maps to an HTTP status. The full set:
 
 | `code` | HTTP status |
 | --- | --- |
-| `bad_request` | 400 |
+| `malformed_request` | 400 |
 | `unauthorized` | 401 |
 | `forbidden` | 403 |
-| `not_found` | 404 |
+| `{resource}_not_found` (`scene_not_found`, `zone_not_found`, `layer_not_found`, `device_not_found`, `effect_not_found`, `layout_not_found`, `route_not_found`, and so on, one per resource kind) | 404 |
 | `conflict` | 409 |
+| `control_bound` | 409 |
+| `precondition_failed` | 412 |
 | `payload_too_large` | 413 |
 | `unsupported_media_type` | 415 |
 | `validation_error` | **422** |
 | `rate_limited` | 429 |
 | `internal_error` | 500 |
+| `device_unavailable` | 503 |
+| `service_unavailable` | 503 |
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `validation_error` is **422 Unprocessable Entity**, not 400. A well-formed
 request that fails a business rule (out-of-range brightness, an effect that
 isn't runnable) lands here, while a structurally malformed request is
-`bad_request` / 400.
-{% end %}
+`malformed_request` / 400.
+{% </callout> %}
 
 ## Authentication
 
@@ -111,66 +141,79 @@ enabled. The auth and rate-limiting model is documented in full on the
 
 ## Concurrency: revisions and `If-Match`
 
-Scene-zone structural edits use optimistic concurrency. A `GET` on a scene's
-zones returns a `groups_revision` and an `ETag` header carrying the same
-revision. Send that value back as `If-Match` on the mutating request. If the
-revision is stale, the daemon rejects the write with `412 Precondition Failed`
-rather than clobbering a concurrent edit. The Studio zone editor relies on this
-to stay coherent across multiple clients.
+The live scene document has one concurrency token: `revision`. `GET /scene`
+returns it in the document and in the `ETag` header. Structural mutations may
+send that value as `If-Match`; a stale value returns `412 Precondition Failed`
+with the current revision instead of overwriting a concurrent edit.
+
+Control-value patches never use `If-Match`. They address a real layer id read
+from the live document. Replacing a layer mints a fresh id, so a stale control
+write returns `404 layer_not_found` rather than landing on the replacement.
 
 ---
 
 ## System
 
-{% api_endpoint(method="GET", path="/health") %}
+{% <api_endpoint method="GET" path="/health"> %}
 Liveness check. Returns `200 OK` when the daemon is running. No authentication,
 no envelope. Use this in your reconnect loop and readiness probes.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/status") %}
-Aggregate system status: the running effect, connected device count, audio
-availability, global brightness, and live render-loop timing.
+{% <api_endpoint method="GET" path="/api/v1/system"> %}
+Daemon identity plus authorized runtime status. `identity` is always present so
+discovery probes can verify the daemon. `status` is present for loopback clients
+and requests with a valid read or control key. Anonymous remote requests to a
+keyed daemon receive the public identity without the status block.
 
 **Response:**
 
 ```json
 {
   "data": {
-    "running": true,
-    "version": "0.1.0",
-    "device_count": 3,
-    "effect_count": 59,
-    "active_effect": "borealis",
-    "global_brightness": 85,
-    "audio_available": true,
-    "screen_capture_capacity": {
-      "admission_enforced": true,
-      "physical_transition_byte_capacity": 268435456,
-      "physical_transition_backend_capacity": 4,
-      "physical_reserved_bytes": 33177600,
-      "physical_available_bytes": 235257856,
-      "steady_total_byte_budget": 134217728,
-      "steady_total_backend_capacity": 2,
-      "steady_publication_byte_budget": 134217728,
-      "transition_publication_backend_capacity": 2
+    "identity": {
+      "instance_id": "studio-daemon",
+      "instance_name": "Studio",
+      "version": "0.3.2",
+      "device_count": 3,
+      "auth_required": true
     },
-    "input": {
-      "enabled": true,
-      "host_capture_registered": true,
-      "host_capturing": true,
-      "devices_opened": 3,
-      "devices_denied": 1,
-      "degraded": "access_denied",
-      "backends": ["evdev"],
-      "source_graph_generation": 2,
-      "sources": []
-    },
-    "render_loop": {
-      "state": "running",
-      "target_fps": 60,
-      "capacity_fps": 60.0,
-      "delivered_fps": 59.8,
-      "actual_fps": 60.0
+    "status": {
+      "running": true,
+      "version": "0.3.2",
+      "device_count": 3,
+      "effect_count": 59,
+      "active_effect": "borealis",
+      "global_brightness": 85,
+      "audio_available": true,
+      "screen_capture_capacity": {
+        "admission_enforced": true,
+        "physical_transition_byte_capacity": 268435456,
+        "physical_transition_backend_capacity": 4,
+        "physical_reserved_bytes": 33177600,
+        "physical_available_bytes": 235257856,
+        "steady_total_byte_budget": 134217728,
+        "steady_total_backend_capacity": 2,
+        "steady_publication_byte_budget": 134217728,
+        "transition_publication_backend_capacity": 2
+      },
+      "input": {
+        "enabled": true,
+        "host_capture_registered": true,
+        "host_capturing": true,
+        "devices_opened": 3,
+        "devices_denied": 1,
+        "degraded": "access_denied",
+        "backends": ["evdev"],
+        "source_graph_generation": 2,
+        "sources": []
+      },
+      "render_loop": {
+        "state": "running",
+        "target_fps": 60,
+        "capacity_fps": 60.0,
+        "delivered_fps": 59.8,
+        "actual_fps": 60.0
+      }
     }
   },
   "meta": {
@@ -181,11 +224,11 @@ availability, global brightness, and live render-loop timing.
 }
 ```
 
-`effect_count` reflects whatever the registry holds at request time (native
+`status.effect_count` reflects whatever the registry holds at request time (native
 built-ins plus discovered HTML effects); treat it as live, not a fixed product
 number.
 
-`screen_capture_capacity` reports the byte fences that gate screen-capture
+`status.screen_capture_capacity` reports the byte fences that gate screen-capture
 publication admission. The fences are installed on Linux and Windows, where
 `admission_enforced` is `true` and the capacity fields are populated; on other
 platforms the object collapses to `{ "admission_enforced": false }` with every
@@ -193,7 +236,7 @@ fence field omitted. When an analysis plan is active, additional
 `analysis_*` fields describe its resolution, byte budgets, and compute
 capacity.
 
-`input` is the host keyboard/mouse capture health snapshot. `enabled` is the
+`status.input` is the host keyboard/mouse capture health snapshot. `enabled` is the
 consent gate from config, `host_capturing` reports whether a host backend is
 actively reading input, and `devices_opened` versus `devices_denied` separates
 "input is off" from "input is on but blocked". The denied counter counts
@@ -202,30 +245,49 @@ rules missing); Windows has no per-node denial, so its session-level failure
 arrives through `degraded` instead, as one of `no_interactive_session`,
 `access_denied`, or `unavailable`. Each entry in `sources` carries per-source
 lifecycle, freshness, and issue detail.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/server") %}
-Stable server identity: instance ID, instance name, and version. This is the
-same identity advertised over discovery.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/system/sensors") %}
+{% <api_endpoint method="GET" path="/api/v1/system/sensors"> %}
 Latest hardware sensor snapshot: CPU temperature, GPU load, RAM usage, and raw
 component readings. These feed sensor-bound effect controls.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/system/sensors/{label}") %}
-A single named sensor reading. Common labels: `cpu_temp`, `gpu_load`,
-`ram_used`.
-{% end %}
+{% <api_endpoint method="GET" path="/api/v1/system/audio-devices"> %}
+List available audio capture devices for reactive effects. Pick the **monitor**
+of your output, not a microphone, if you want lights to follow what's playing.
+{% </api_endpoint> %}
+
+## Media
+
+{% <api_endpoint method="POST" path="/api/v1/media/authorize"> %}
+Request macOS Automation access for an already-running media application. The
+endpoint requires a control credential and accepts either Apple Music or
+Spotify:
+
+```json
+{
+  "adapter": "music"
+}
+```
+
+The response reports the selected adapter and whether access was authorized.
+The daemon returns `422` when the application is not running and `409` when
+Automation access is unavailable or denied.
+{% </api_endpoint> %}
 
 ## Effects
 
-{{ img(path="img/ui/effects.webp", alt="Browsing the effect catalog in the web UI") }}
+{{< img path="img/ui/effects.webp" alt="Browsing the effect catalog in the web UI" />}}
 
-{% api_endpoint(method="GET", path="/api/v1/effects") %}
-List the effect catalog. Returns `data.items` (effect summaries) plus
-`data.pagination`. Supports the standard `offset` / `limit` query params.
+{% <api_endpoint method="GET" path="/api/v1/effects"> %}
+List the effect catalog. Returns `data.items` (effect summaries) and
+`data.total`.
+
+Filter with `category`, `source`, `audio_reactive`, `screen_reactive`,
+`input_reactive`, and `q` (a case-insensitive substring match over name,
+description, author, and tags). Expand each summary with
+`include=controls,presets`. The catalog route answers complete, so it
+carries no `data.page` block.
 
 **Response:**
 
@@ -246,12 +308,7 @@ List the effect catalog. Returns `data.items` (effect summaries) plus
         "audio_reactive": false
       }
     ],
-    "pagination": {
-      "offset": 0,
-      "limit": 50,
-      "total": 59,
-      "has_more": false
-    }
+    "total": 59
   },
   "meta": {
     "api_version": "1.0",
@@ -262,141 +319,80 @@ List the effect catalog. Returns `data.items` (effect summaries) plus
 ```
 
 The catalog combines around a dozen native Rust built-ins with the HTML/GLSL
-effects discovered on disk. Don't hardcode the count; read `pagination.total`.
-{% end %}
+effects discovered on disk. Don't hardcode the count; read `data.total`.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/effects/{id}") %}
+{% <api_endpoint method="GET" path="/api/v1/effects/{id}"> %}
 Full detail for one effect, including its control definitions (types, ranges,
 defaults). The `controls` array is what a UI renders into sliders, color
 pickers, and dropdowns.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/effects/{id}/apply") %}
-Apply an effect to the active output. Optionally override control defaults.
+{% <api_endpoint method="POST" path="/api/v1/effects/{id}/apply"> %}
+Replace the target zone's layer stack with one new layer running this effect.
+The server validates the effect, zone, and controls before committing, mints a
+fresh layer id, then wakes paused output.
 
 **Request body (optional):**
 
 ```json
 {
+  "zone": "84b20af9-0700-4b82-8488-88314b87fb5c",
   "controls": {
-    "speed": 7,
-    "palette": "SilkCircuit"
-  }
+    "speed": { "kind": "float", "value": 7.0 },
+    "palette": { "kind": "enum", "value": "SilkCircuit" }
+  },
+  "transition": { "type": "cut" }
 }
 ```
 
-**Response:** the applied effect, the resolved control values, any layout
-binding, the resolved transition (`cut`, `0` today), and a `warnings` array.
-{% end %}
+Omit `zone` to target the primary zone, which the daemon creates if needed.
+The response contains the updated zone resource, including the new layer id,
+the applied transition, and the output-wake outcome. A post-commit wake failure
+is reported inside a `200` response. Repair output through `PATCH /output`
+instead of retrying apply, because every apply creates another layer id.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/effects/active") %}
-The currently active effect and its live control values.
-{% end %}
+{% <api_endpoint method="GET" path="/api/v1/effects/{id}/presets"> %}
+List bundled and saved presets available for one effect.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/effects/current/controls") %}
-Patch controls on the running effect. Changes take effect on the next frame.
-Note the path segment is `current`, not `active`.
+{% <api_endpoint method="POST" path="/api/v1/effects/{id}/presets/{preset}/apply"> %}
+Apply one effect-scoped preset through the same stack-replacement contract as
+`POST /effects/{id}/apply`. Preset CRUD remains under `/library/presets`, but
+the library does not expose a second apply route.
+{% </api_endpoint> %}
 
-**Request body:**
-
-```json
-{
-  "controls": {
-    "speed": 3,
-    "intensity": 90
-  }
-}
-```
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/effects/current/controls/{name}/binding") %}
-Bind one named control on the running effect to an input source (audio band,
-sensor reading, etc.) so it modulates live instead of holding a fixed value.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/current/reset") %}
-Reset every control on the running effect back to its default.
-{% end %}
-
-{% api_endpoint(method="PATCH", path="/api/v1/effects/{id}/controls") %}
-Patch controls on a specific effect by ID, whether or not it is the active one.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/stop") %}
-Stop the running effect. Output goes dark.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/pause") %}
-Pause output without clearing the active effect. The render loop pauses, and
-devices hold the configured static off color until a resume. Returns `404`
-when no effect is active.
-
-**Response:**
-
-```json
-{
-  "paused": true,
-  "effect": { "id": "borealis", "name": "Borealis" },
-  "off_output_behavior": "static",
-  "off_output_color": [0, 0, 0]
-}
-```
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/resume") %}
-Resume output for the preserved active effect after a pause. Returns `404`
-when no effect is active.
-
-**Response:**
-
-```json
-{
-  "resumed": true,
-  "effect": { "id": "borealis", "name": "Borealis" }
-}
-```
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/effects/rescan") %}
+{% <api_endpoint method="POST" path="/api/v1/effects/rescan"> %}
 Rescan the effects directory and pick up newly built effects without restarting
 the daemon. Call this after shipping an effect from the SDK.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/effects/install") %}
+{% <api_endpoint method="POST" path="/api/v1/effects/install"> %}
 Install an effect from an uploaded file via multipart form upload, so a freshly
 built HTML bundle reaches the library without a manual file copy.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/effects/{id}/cover") %}
+{% <api_endpoint method="GET" path="/api/v1/effects/{id}/cover"> %}
 Cover image for one effect.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/effects/active/cover") %}
-Cover image for the active effect.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/effects/{id}/layout") %}
-Get the layout bound to an effect.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/effects/{id}/layout") %}
-Bind an effect to a spatial layout.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/effects/{id}/layout") %}
-Clear an effect's layout binding.
-{% end %}
-
-Effect screenshots are served statically under
-`/api/v1/effects/screenshots/...` from the bundled screenshot root.
+Live effect state belongs to `GET /scene`. Patch controls through the real
+layer id embedded in that document, and clear the show through
+`POST /scene/clear`. Spatial layout selection belongs to `scene.layout_id`;
+effects do not carry layout associations.
 
 ## Devices
 
-{{ img(path="img/ui/ui-devices.webp", alt="The devices panel in the web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="The devices panel in the web UI" />}}
 
-{% api_endpoint(method="GET", path="/api/v1/devices") %}
-List discovered and connected devices. Returns `data.items` plus
-`data.pagination`.
+{% <api_endpoint method="GET" path="/api/v1/devices"> %}
+List discovered and connected devices. Returns `data.items`, `data.total`,
+and a `data.page` block, because this route genuinely pages: `limit`
+defaults to 50 and anything above 200 is rejected. Follow `page.has_more`,
+advancing `offset` by the number of items you received, until it reads
+`false`. Add `?include=attachments` to embed each device's attachment
+profile in the same response.
 
 **Response:**
 
@@ -411,13 +407,13 @@ List discovered and connected devices. Returns `data.items` plus
         "status": "connected",
         "brightness": 100,
         "total_leds": 126,
-        "zones": []
+        "segments": []
       }
     ],
-    "pagination": {
+    "total": 1,
+    "page": {
       "offset": 0,
       "limit": 50,
-      "total": 1,
       "has_more": false
     }
   },
@@ -428,175 +424,82 @@ List discovered and connected devices. Returns `data.items` plus
   }
 }
 ```
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/devices/{id}") %}
-Full detail for one device: zones, LED layout, firmware version, attachment
+{% <api_endpoint method="GET" path="/api/v1/devices/{id}"> %}
+Full detail for one device: segments, LED layout, firmware version, attachment
 configuration.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/devices/{id}") %}
-Update device settings (name, brightness, zone assignments).
-{% end %}
+{% <api_endpoint method="PUT" path="/api/v1/devices/{id}"> %}
+Update device settings: `name`, `enabled`, `brightness` (0 to 100), and, for
+display-capable devices, `display_rotation` (`deg0`, `deg90`, `deg180`,
+`deg270`), which is how the panel is mounted so everything drawn on it turns
+to read upright. Sending `display_rotation` for hardware without a panel
+answers 422.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/devices/{id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/devices/{id}"> %}
 Remove a device from tracking.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/devices/discover") %}
+{% <api_endpoint method="POST" path="/api/v1/devices/discover"> %}
 Trigger a discovery scan across every backend. Returns newly found devices.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/pair") %}
+{% <api_endpoint method="POST" path="/api/v1/devices/{id}/pair"> %}
 Initiate pairing for a device that requires authentication (Hue link button,
 Nanoleaf hold-to-pair token). This is the credential path for network devices;
 see the per-vendor hardware guides for the timed pairing windows.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/devices/{id}/pair") %}
+{% <api_endpoint method="DELETE" path="/api/v1/devices/{id}/pair"> %}
 Forget a device's stored pairing credentials.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/identify") %}
+{% <api_endpoint method="POST" path="/api/v1/devices/{id}/identify"> %}
 Flash a device's LEDs so you can spot it physically.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/zones/{zone_id}/identify") %}
-Flash one zone on a device to identify it.
-{% end %}
+{% <api_endpoint method="POST" path="/api/v1/devices/{id}/segments/{segment}/identify"> %}
+Flash one segment on a device to identify it.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/attachments/{slot_id}/identify") %}
+{% <api_endpoint method="POST" path="/api/v1/devices/{id}/attachments/{slot}/identify"> %}
 Flash one attachment slot's LEDs to identify it.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/devices/{id}/controls") %}
+{% <api_endpoint method="GET" path="/api/v1/devices/{id}/controls"> %}
 Control surface for a device: fields, types, and current values.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/devices/{id}/attachments") %}
+{% <api_endpoint method="GET" path="/api/v1/devices/{id}/attachments"> %}
 Attachment configuration for a device.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/devices/{id}/attachments") %}
-Update a device's attachment configuration.
-{% end %}
+{% <api_endpoint method="PUT" path="/api/v1/devices/{id}/attachments"> %}
+Update a device's attachment configuration. Send `"validate_only": true` to
+return the computed profile without persisting it, publishing events, or
+changing the live device.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/devices/{id}/attachments") %}
+{% <api_endpoint method="DELETE" path="/api/v1/devices/{id}/attachments"> %}
 Clear a device's attachment configuration.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/attachments/preview") %}
-Preview attachment placement without persisting it.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/devices/{id}/logical-devices") %}
-List logical-device segments carved out of one physical device.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/devices/{id}/logical-devices") %}
-Create a logical-device segment on a physical device.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/devices/metrics") %}
-Per-device output telemetry snapshot: frame counts, errors, latency.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/devices/bindings") %}
-New in 0.3.0. Surfaces the two halves of a re-bind decision: layout bindings
-that no attached device currently resolves, and attached devices that no
-layout references.
-
-**Response:**
-
-```json
-{
-  "unresolved": [
-    {
-      "layout_device_id": "wled-desk-strip",
-      "layout_ids": ["desk-ring"],
-      "rebindable": true
-    }
-  ],
-  "candidates": [
-    {
-      "device_id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90",
-      "name": "WLED Desk Strip",
-      "layout_device_id": "wled-desk-strip-2",
-      "status": "connected",
-      "portable_key": "net:aabbccddeeff"
-    }
-  ]
-}
-```
-
-`rebindable` reports whether a recorded identity exists for the binding, which
-is what a durable re-bind needs to inherit. A device that is reconnecting
-(hardware that vanished) is surfaced as an orphaned binding rather than a
-candidate, but its recorded identity remains inheritable. Candidates without a
-`portable_key` can only be re-bound by editing the layout.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/devices/rebind") %}
-New in 0.3.0. Executes a re-bind: re-pins the chosen device's portable key
-onto the orphaned binding's recorded identity, which heals the layouts without
-editing them and holds across restarts.
-
-**Request body:**
-
-```json
-{
-  "layout_device_id": "wled-desk-strip",
-  "device_id": "0197a2f4-6c1e-7d3a-9b02-4f8e1c5a7d90"
-}
-```
-
-**Response:** the `device_id`, the `layout_device_id` the device now resolves
-to, and the `portable_key` that was re-pinned.
-
-A binding can only be inherited within its driver; a cross-driver re-bind is
-rejected with `422` before anything mutates. When the binding's current device
-is still renderable, the call returns `409 Conflict` and nothing is replaced.
-An unknown device or a binding with no recorded identity returns `404`.
-{% end %}
-
-The router also exposes `/api/v1/devices/debug/queues` and
-`/api/v1/devices/debug/routing` for inspecting output queue and routing state
-while debugging.
-
-## Logical devices
-
-Logical devices are user-defined LED-range segments carved out of a physical
-device so one strip can act as several addressable units.
-
-{% api_endpoint(method="GET", path="/api/v1/logical-devices") %}
-List every logical-device segment across all physical devices.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/logical-devices/{id}") %}
-Get one logical-device segment.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/logical-devices/{id}") %}
-Update a logical-device segment.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/logical-devices/{id}") %}
-Delete a logical-device segment.
-{% end %}
+{% </api_endpoint> %}
 
 ## Drivers
 
-{% api_endpoint(method="GET", path="/api/v1/drivers") %}
+{% <api_endpoint method="GET" path="/api/v1/drivers"> %}
 List registered driver modules with their ID, name, and connection state.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/drivers/{id}/config") %}
+{% <api_endpoint method="GET" path="/api/v1/drivers/{id}/config"> %}
 Configuration for one driver module.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/drivers/{id}/controls") %}
+{% <api_endpoint method="GET" path="/api/v1/drivers/{id}/controls"> %}
 Control surface for one driver module: fields, types, current values.
-{% end %}
+{% </api_endpoint> %}
 
 ## Displays and faces
 
@@ -604,98 +507,78 @@ Display devices are physical screens (AIO LCD modules, Ableton Push 2) that show
 full-screen HTML faces. See [display faces](@/effects/display-faces.md) for the
 authoring contract.
 
-{% api_endpoint(method="GET", path="/api/v1/displays") %}
+{% <api_endpoint method="GET" path="/api/v1/displays"> %}
 List connected display devices.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/displays/{id}/preview.jpg") %}
+{% <api_endpoint method="GET" path="/api/v1/displays/{id}/frame"> %}
 A JPEG preview frame from a display device. Live frame streaming runs over the
 `display_preview` WebSocket channel.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/displays/{id}/face") %}
+{% <api_endpoint method="GET" path="/api/v1/displays/{id}/face"> %}
 The active face configuration on a display device.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/displays/{id}/face") %}
+{% <api_endpoint method="PUT" path="/api/v1/displays/{id}/face"> %}
 Set the face effect on a display device. Binds an HTML effect to the device in
 the active scene.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/displays/{id}/face") %}
+{% <api_endpoint method="DELETE" path="/api/v1/displays/{id}/face"> %}
 Remove the face assignment from a display device.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/displays/{id}/face/controls") %}
+{% <api_endpoint method="PATCH" path="/api/v1/displays/{id}/face/controls"> %}
 Patch control values on a display's active face.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/displays/{id}/face/composition") %}
+{% <api_endpoint method="PATCH" path="/api/v1/displays/{id}/face/composition"> %}
 Patch composition parameters (blend mode, z-order, opacity) for a face render
 group.
-{% end %}
+{% </api_endpoint> %}
 
 ## Simulators
 
 Virtual display simulators let you build and test face effects with no physical
 display attached.
 
-{% api_endpoint(method="GET", path="/api/v1/simulators/displays") %}
+{% <api_endpoint method="GET" path="/api/v1/simulators/displays"> %}
 List simulated displays.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/simulators/displays") %}
+{% <api_endpoint method="POST" path="/api/v1/simulators/displays"> %}
 Create a simulated display.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/simulators/displays/{id}") %}
+{% <api_endpoint method="GET" path="/api/v1/simulators/displays/{id}"> %}
 Get one simulated display.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/simulators/displays/{id}") %}
+{% <api_endpoint method="PATCH" path="/api/v1/simulators/displays/{id}"> %}
 Update a simulated display's configuration.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/simulators/displays/{id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/simulators/displays/{id}"> %}
 Delete a simulated display.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/simulators/displays/{id}/frame") %}
+{% <api_endpoint method="GET" path="/api/v1/simulators/displays/{id}/frame"> %}
 The latest composited frame from a simulated display.
-{% end %}
+{% </api_endpoint> %}
 
 ## Attachments
 
 Attachment templates describe physical accessories (keycaps, case panels,
 stands) that clip onto device slots and carry their own LED zones.
 
-{% api_endpoint(method="GET", path="/api/v1/attachments/templates") %}
+{% <api_endpoint method="GET" path="/api/v1/attachments/templates"> %}
 List attachment templates (built-in and user-defined).
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/attachments/templates") %}
+{% <api_endpoint method="POST" path="/api/v1/attachments/templates"> %}
 Create a user-defined attachment template.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/attachments/templates/{id}") %}
-Get one attachment template.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/attachments/templates/{id}") %}
-Update a user-defined attachment template.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/attachments/templates/{id}") %}
-Delete a user-defined attachment template.
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/attachments/categories") %}
-List attachment categories (keycap-set, case-panel, stand, etc.).
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/attachments/vendors") %}
-List attachment vendors that have templates available.
-{% end %}
+{% </api_endpoint> %}
 
 ## Control surfaces
 
@@ -703,45 +586,48 @@ Control surfaces expose typed fields and actions for dynamic device or driver
 configuration (WLED protocol selection, Hue bridge IP, and the like). The web
 UI reads these to render device-specific settings panels.
 
-{% api_endpoint(method="GET", path="/api/v1/control-surfaces") %}
+{% <api_endpoint method="GET" path="/api/v1/control-surfaces"> %}
 List every registered control surface across devices and drivers.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/control-surfaces/{surface_id}") %}
+{% <api_endpoint method="GET" path="/api/v1/control-surfaces/{id}"> %}
 Get one control surface with its current field values.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/control-surfaces/{surface_id}/values") %}
-Apply typed field values to a control surface.
+{% <api_endpoint method="PATCH" path="/api/v1/control-surfaces/{id}/values"> %}
+Apply typed field values to a control surface. The body is the same
+control-patch shape the layer-control route takes, keyed by field id. Control
+surfaces have no input bindings, so a non-empty `clear_bindings` is rejected
+here.
 
 **Request body:**
 
 ```json
 {
-  "fields": {
-    "protocol": { "type": "enum", "value": "ddp" },
-    "ip_address": { "type": "ip", "value": "10.0.0.50" }
+  "values": {
+    "protocol": { "kind": "enum", "value": "ddp" },
+    "ip": { "kind": "ip", "value": "10.0.0.50" }
   }
 }
 ```
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/control-surfaces/{surface_id}/actions/{action_id}") %}
+{% <api_endpoint method="POST" path="/api/v1/control-surfaces/{id}/actions/{action}"> %}
 Invoke a typed control-surface action (Discover, Sync, Reset, and so on).
-{% end %}
+{% </api_endpoint> %}
 
 ## Scenes
 
 Scenes are whole-rig configurations: the effects, zones, and assignments that
 define how your entire setup lights up. Switching scenes swaps the whole rig.
 
-{{ img(path="img/ui/ui-scenes.webp", alt="The scenes panel in the web UI") }}
+{{< img path="img/ui/ui-scenes.webp" alt="The scenes panel in the web UI" />}}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes") %}
+{% <api_endpoint method="GET" path="/api/v1/scenes"> %}
 List defined scenes.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes") %}
+{% <api_endpoint method="POST" path="/api/v1/scenes"> %}
 Create a named scene. New scenes are born with a default Primary zone, live
 mutation mode, and the engine's default scene transition.
 
@@ -755,49 +641,88 @@ mutation mode, and the engine's default scene transition.
   "mutation_mode": "live"
 }
 ```
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/active") %}
-The currently active scene.
-{% end %}
+{% <api_endpoint method="POST" path="/api/v1/scenes/snapshot"> %}
+Capture the complete live scene as a new snapshot-mode scene. The snapshot
+keeps the active scene's zones, members, layers, controls, display faces, and
+current named layout reference. Global output brightness is not captured.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}") %}
-One scene's configuration.
-{% end %}
+**Request body:**
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}") %}
-Update a scene.
-{% end %}
+```json
+{
+  "name": "Current Rig",
+  "description": "Captured after tuning the desk"
+}
+```
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}") %}
+{% <api_endpoint method="GET" path="/api/v1/scene"> %}
+Read the complete live scene document. The response always exists and embeds
+every authored zone, each zone's member device segments, and every layer with
+its real id. The document's `revision` is also returned as `ETag`.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="GET" path="/api/v1/scenes/{id}"> %}
+Read one stored scene as a complete document, including its zones, members,
+layouts, and layer stacks. The response carries the document's `revision` and
+the same value as an `ETag` header.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="PUT" path="/api/v1/scenes/{id}"> %}
+Replace one stored scene in full. Read the current document first, remove the
+server-owned `revision` and `is_default` fields, apply the intended edits, and
+send the result with the previous revision in `If-Match`.
+
+The route id is authoritative. If the body includes `id`, it must match the
+route or the daemon returns `422 Unprocessable Entity`. Existing zone and
+layer ids must already belong to this scene. Omit either id only when creating
+that resource, and the daemon mints it. Omitted optional fields are cleared,
+so partial update bodies are not accepted. A stale `If-Match` returns `412
+Precondition Failed` with the current revision.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="DELETE" path="/api/v1/scenes/{id}"> %}
 Delete a scene.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/activate") %}
+{% <api_endpoint method="POST" path="/api/v1/scenes/{id}/activate"> %}
 Activate a scene, applying its effects and controls with the configured
-transition.
-{% end %}
+transition. The response reports the post-commit layout and brightness
+outcomes separately, because either side effect may fail after the scene switch
+has committed. Send `{}` to use the scene's authored transition, or pass
+`{ "transition_ms": 250 }` to override its duration for this activation.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/deactivate") %}
-Deactivate the current scene, returning to the default free-running state.
-{% end %}
+{% <api_endpoint method="PATCH" path="/api/v1/scene"> %}
+Patch the live scene's name or `unassigned_behavior`. The default scene cannot
+be renamed. This structural write optionally accepts `If-Match`.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/scene/deactivate"> %}
+Return to the default scene and receive the new live scene document.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/scene/clear"> %}
+Clear every non-display layer stack, or pass `{ "zone": "<zone_uuid>" }` to
+clear one non-display zone. Display zones remain owned by the display API, and
+a targeted display clear is rejected. This is the canonical stop gesture and
+optionally accepts `If-Match`.
+{% </api_endpoint> %}
 
 ### Scene zones
 
-Zones are flexible partitions of the scene's canvas. Each zone owns a set of
-device outputs and renders its own effect. Zones live **under** a scene; there
-is no top-level `/zones` collection.
+Zones are flexible partitions of the live scene's canvas. Each zone owns member
+device segments and a layer stack. Fine-grained editing is live-tree-only under
+`/scene`; stored scenes use whole-document `PUT /scenes/{id}`.
 
-{{ img(path="img/ui/ui-studio-zones.webp", alt="Building zones in Studio") }}
+{{< img path="img/ui/ui-studio-zones.webp" alt="Building zones in Studio" />}}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones") %}
-List a scene's zones. The response includes `groups_revision` and an `ETag`
-header carrying the same revision for optimistic concurrency.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones") %}
-Create a zone in a scene. Send `If-Match` with the last seen `groups_revision`;
-a stale revision returns `412 Precondition Failed`.
+{% <api_endpoint method="POST" path="/api/v1/scene/zones"> %}
+Create a custom zone. Send `If-Match` with the last seen scene `revision` when
+you need optimistic concurrency; a stale revision returns
+`412 Precondition Failed`.
 
 **Request body:**
 
@@ -807,196 +732,126 @@ a stale revision returns `412 Precondition Failed`.
   "color": "#80ffea"
 }
 ```
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Get one scene zone.
-{% end %}
+{% <api_endpoint method="GET" path="/api/v1/scene/zones/{zone}"> %}
+Get one live zone resource.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
-Update zone metadata. Set `make_primary` to make a zone the default output
-zone; that structural edit should carry `If-Match`.
+{% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}"> %}
+Update a zone's name, enabled state, brightness, or color. The structural write
+optionally accepts `If-Match`.
 
 **Request body:**
 
 ```json
 {
   "name": "Desk halo",
-  "description": "Ambient strips behind the monitor",
   "brightness": 0.8,
   "enabled": true
 }
 ```
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}"> %}
 Delete a zone. The default and display zones cannot be deleted through this
 route.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/zones/{zone_id}/devices") %}
-Assign device outputs to a zone. Each item may reference an existing
-device-output ID or carry a full payload.
-
-**Request body:**
-
-```json
-{
-  "device_zones": [
-    { "id": "keyboard-left" }
-  ]
-}
-```
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/zones/{zone_id}/devices/{device_zone_id}") %}
-Unassign one device output from a zone.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/zones/{zone_id}/layout") %}
-Update one zone's spatial layout. The route takes a `SpatialLayout` payload and
-preserves the zone's existing output roster, so it is for placement edits only;
-add or remove outputs through the device routes above. Structural edits should
-carry `If-Match`.
+{% <api_endpoint method="POST" path="/api/v1/scene/zones/{zone}/members"> %}
+Assign one device's segments to a zone. The response carries the minted member
+ids, which are the resource identities for later removal.
 
 **Request body:**
 
 ```json
 {
-  "id": "default-zone-layout",
-  "name": "Default zone",
-  "canvas_width": 640,
-  "canvas_height": 480,
-  "zones": [],
-  "default_sampling_mode": { "type": "bilinear" },
-  "default_edge_behavior": "clamp",
-  "spaces": null,
-  "version": 1
+  "device_id": "razer:huntsman-v3",
+  "segments": ["left", "right"]
 }
 ```
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/unassigned-behavior") %}
-Set how outputs not claimed by any zone should render.
+{% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}/members/{member}"> %}
+Remove one membership by the member id returned in the live zone document.
+{% </api_endpoint> %}
 
-**Request body:**
-
-```json
-{
-  "unassigned_behavior": "off"
-}
-```
-
-Values are `"off"`, `"hold"`, or `{ "fallback": "<zone_uuid>" }`.
-{% end %}
+{% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layout"> %}
+Replace the zone-scoped spatial placement override. The compact body contains
+`placements`, keyed by member id. Add or remove members through the member
+routes. This structural write optionally accepts `If-Match`.
+{% </api_endpoint> %}
 
 ### Scene layers
 
-Each zone (render group) stacks layers: effects, faces, and media composited
-with a blend mode and opacity.
+Each zone stacks layers bottom to top. Clients use the layer ids returned by
+`GET /scene`; they never derive an id from the zone.
 
-{% api_endpoint(method="GET", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
+{% <api_endpoint method="GET" path="/api/v1/scene/zones/{zone}/layers"> %}
 List the layers in a zone.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/groups/{group_id}/layers") %}
-Add a layer to a zone.
-{% end %}
+{% <api_endpoint method="POST" path="/api/v1/scene/zones/{zone}/layers"> %}
+Append a layer to a zone. The server mints its id. This structural write
+optionally accepts `If-Match`.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/order") %}
-Reorder the layers in a zone.
-{% end %}
+{% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}/layers/order"> %}
+Reorder the stack with every layer id exactly once, from bottom to top.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
-Update one layer (blend mode, opacity, transform, color, source binding).
-{% end %}
+{% <api_endpoint method="PUT" path="/api/v1/scene/zones/{zone}/layers/{layer}"> %}
+Replace a whole layer. Every successful replacement mints a fresh layer id,
+even when the effect is unchanged.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/scene/zones/{zone}/layers/{layer}"> %}
 Delete a layer.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PATCH", path="/api/v1/scenes/{id}/groups/{group_id}/layers/{layer_id}/controls") %}
-Patch the control values on one layer's source effect.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/scenes/{id}/layers/broadcast-media") %}
-Broadcast a media layer across the scene's zones in one call.
-{% end %}
-
-## Profiles
-
-Profiles save a full state snapshot (effect, controls, brightness, assignments)
-that you can restore later.
-
-{% api_endpoint(method="GET", path="/api/v1/profiles") %}
-List saved profiles.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/profiles") %}
-Create a profile from the current state.
-
-**Request body:**
-
-```json
-{
-  "name": "Gaming"
-}
-```
-{% end %}
-
-{% api_endpoint(method="GET", path="/api/v1/profiles/{id}") %}
-Get one profile's saved state.
-{% end %}
-
-{% api_endpoint(method="PUT", path="/api/v1/profiles/{id}") %}
-Update a profile.
-{% end %}
-
-{% api_endpoint(method="DELETE", path="/api/v1/profiles/{id}") %}
-Delete a profile.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/profiles/{id}/apply") %}
-Apply a profile, restoring its effect, controls, and assignments.
-{% end %}
+{% <api_endpoint method="PATCH" path="/api/v1/scene/zones/{zone}/layers/{layer}/controls"> %}
+Patch an effect layer with `{ "values": {...}, "clear_bindings": [...] }`.
+Control patches never use `If-Match`. A vanished layer returns
+`404 layer_not_found`.
+{% </api_endpoint> %}
 
 ## Layouts
 
 Layouts define how the effect canvas maps onto physical LED positions, in
 normalized `[0.0, 1.0]` coordinates so effects stay resolution-independent.
 
-{% api_endpoint(method="GET", path="/api/v1/layouts") %}
+{% <api_endpoint method="GET" path="/api/v1/layouts"> %}
 List spatial layouts.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/layouts") %}
+{% <api_endpoint method="POST" path="/api/v1/layouts"> %}
 Create a spatial layout.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/layouts/active") %}
+{% <api_endpoint method="GET" path="/api/v1/layouts/active"> %}
 The active layout.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/layouts/active/preview") %}
+{% <api_endpoint method="PUT" path="/api/v1/layouts/active/preview"> %}
 Preview a layout without applying it. Returns the zone-to-LED mapping that would
 result, so a UI can render it visually.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/layouts/{id}") %}
-One layout's configuration: device zones, positions, LED mappings.
-{% end %}
+{% <api_endpoint method="GET" path="/api/v1/layouts/{id}"> %}
+One layout's configuration: device outputs, positions, LED mappings.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/layouts/{id}") %}
+{% <api_endpoint method="PUT" path="/api/v1/layouts/{id}"> %}
 Update a layout.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/layouts/{id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/layouts/{id}"> %}
 Delete a layout.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/layouts/{id}/apply") %}
+{% <api_endpoint method="POST" path="/api/v1/layouts/{id}/apply"> %}
 Apply a layout as the active spatial mapping.
-{% end %}
+{% </api_endpoint> %}
 
 ## Library
 
@@ -1004,11 +859,11 @@ The library holds favorites, presets, and playlists.
 
 ### Favorites
 
-{% api_endpoint(method="GET", path="/api/v1/library/favorites") %}
+{% <api_endpoint method="GET" path="/api/v1/library/favorites"> %}
 List favorited effects.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/favorites") %}
+{% <api_endpoint method="POST" path="/api/v1/library/favorites"> %}
 Add an effect to favorites.
 
 **Request body:**
@@ -1018,105 +873,147 @@ Add an effect to favorites.
   "effect_id": "borealis"
 }
 ```
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/library/favorites/{effect}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/library/favorites/{effect}"> %}
 Remove an effect from favorites. The path key is the effect ID, not a favorite
 ID.
-{% end %}
+{% </api_endpoint> %}
 
 ### Presets
 
-{% api_endpoint(method="GET", path="/api/v1/library/presets") %}
+{% <api_endpoint method="GET" path="/api/v1/library/presets"> %}
 List saved presets (effect plus control-value combinations).
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/presets") %}
+{% <api_endpoint method="POST" path="/api/v1/library/presets"> %}
 Save the current effect and controls as a named preset.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/library/presets/{id}") %}
+{% <api_endpoint method="GET" path="/api/v1/library/presets/{id}"> %}
 Get one preset.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/library/presets/{id}") %}
+{% <api_endpoint method="PUT" path="/api/v1/library/presets/{id}"> %}
 Update a preset.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/library/presets/{id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/library/presets/{id}"> %}
 Delete a preset.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/presets/{id}/apply") %}
-Apply a preset.
-{% end %}
+Apply a preset through
+`POST /api/v1/effects/{effect}/presets/{preset}/apply`. The effect-scoped route
+is the only apply contract; the library owns storage and CRUD.
 
 ### Playlists
 
-{% api_endpoint(method="GET", path="/api/v1/library/playlists") %}
+{% <api_endpoint method="GET" path="/api/v1/library/playlists"> %}
 List playlists.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/playlists") %}
+{% <api_endpoint method="POST" path="/api/v1/library/playlists"> %}
 Create a playlist of effects with transition timing.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/library/playlists/active") %}
+{% <api_endpoint method="GET" path="/api/v1/library/playlists/active"> %}
 The currently running playlist, if any.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/library/playlists/{id}") %}
+{% <api_endpoint method="GET" path="/api/v1/library/playlists/{id}"> %}
 Get one playlist.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/library/playlists/{id}") %}
+{% <api_endpoint method="PUT" path="/api/v1/library/playlists/{id}"> %}
 Update a playlist.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/library/playlists/{id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/library/playlists/{id}"> %}
 Delete a playlist.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/playlists/{id}/activate") %}
+{% <api_endpoint method="POST" path="/api/v1/library/playlists/{id}/activate"> %}
 Start a playlist. Effects cycle on the playlist's timing.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/library/playlists/stop") %}
-Stop the running playlist.
-{% end %}
+{% <api_endpoint method="POST" path="/api/v1/library/playlists/deactivate"> %}
+Deactivate the running playlist.
+{% </api_endpoint> %}
 
-## Settings and audio
+## Output
 
-{% api_endpoint(method="GET", path="/api/v1/settings/brightness") %}
-The current global brightness level.
-{% end %}
+Global output has one resource and two knobs. Pausing preserves the live
+scene, its effects, and their controls: devices hold the configured static
+off color until you set power back to `running`.
 
-{% api_endpoint(method="PUT", path="/api/v1/settings/brightness") %}
-Set global brightness as an integer percent, `0` to `100`. An out-of-range
-value returns `422` with the message `brightness must be between 0 and 100`.
+{% <api_endpoint method="GET" path="/api/v1/output"> %}
+Read global output power and brightness.
+
+**Response:**
+
+```json
+{
+  "power": "running",
+  "brightness": 0.8
+}
+```
+
+`power` is `running` or `paused`. A destructive stop leaves outputs dark, so
+it reads as `paused` here; the stop's other consequences are visible on the
+effect surface. `brightness` is a float on `0.0` to `1.0`.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="PATCH" path="/api/v1/output"> %}
+Set power, brightness, or both. Every field is optional, but a document that
+sets neither returns `422` rather than quietly succeeding, so a client that
+drops its payload hears about it. Use `GET` to read.
 
 **Request body:**
 
 ```json
 {
-  "brightness": 80
+  "power": "paused",
+  "brightness": 0.35
 }
 ```
-{% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/audio/devices") %}
-List available audio capture devices for reactive effects. Pick the **monitor**
-of your output, not a microphone, if you want lights to follow what's playing.
-{% end %}
+A brightness outside `0.0` to `1.0` returns `422` naming the offending field,
+and it is refused before power moves, so a rejected patch changes nothing.
+{% </api_endpoint> %}
 
 ## Screen capture
 
-{% api_endpoint(method="POST", path="/api/v1/capture/source/pick") %}
-Open the platform picker so the user can choose a screen or window capture
-source for screen-reactive effects.
-{% end %}
+The four protected capture operations below only accept local requests. A
+remote client receives `403 Forbidden` even when it presents a valid control
+key. The locality decision uses the socket peer and only trusts forwarded
+addresses from a loopback proxy.
 
-{% api_endpoint(method="GET", path="/api/v1/capture/monitors") %}
+The system status response keeps the selected session source identifier for a
+local request. Any remote response replaces application and window selection
+identifiers with `session_scoped`; stable display UUIDs remain available for
+diagnostics.
+
+{% <api_endpoint method="POST" path="/api/v1/input/authorize"> %}
+Request Input Monitoring authorization from the process that owns host keyboard
+capture. The response reports whether access is currently authorized and names
+the process topology that owns the grant.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/capture/authorize"> %}
+Request Screen Recording authorization from the process that owns screen
+capture. The response reports whether access is currently authorized and names
+the process topology that owns the grant.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="PUT" path="/api/v1/capture/source"> %}
+Open the platform picker so the user can choose a display, window, or application
+for screen-reactive effects. An accepted display persists by its stable display
+UUID. Window and application choices persist as `session_scoped`, so Hypercolor
+remembers the privacy boundary without writing the selected window ID or bundle
+ID to configuration. Cancelling the picker leaves the current source unchanged.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="GET" path="/api/v1/capture/monitors"> %}
 New in 0.3.0. List the display outputs the capture backend can address, for
 building a monitor picker. Each entry carries a ready-to-store `value` for the
 `capture.source` config key.
@@ -1140,88 +1037,97 @@ building a monitor picker. Each entry carries a ready-to-store `value` for the
 The list is empty on platforms where the backend picks its own source (the
 XDG portal on Linux); a UI uses that emptiness to decide between a monitor
 dropdown and the portal picker button.
-{% end %}
+{% </api_endpoint> %}
 
 ## Configuration
 
-{% api_endpoint(method="GET", path="/api/v1/config") %}
+{% <api_endpoint method="GET" path="/api/v1/config"> %}
 Show the full current configuration.
-{% end %}
 
-{% api_endpoint(method="GET", path="/api/v1/config/get?key=path.to.key") %}
-Get one configuration value by dotted key path.
-{% end %}
+Secret-classified sections render masked as `{"redacted": true}`: every
+`drivers` entry, plus any top-level section this build does not model. Driver
+settings are read and edited through `/api/v1/drivers/{id}/config`.
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/config/set") %}
-Set a configuration value.
+{% <api_endpoint method="GET" path="/api/v1/config/keys/{key}"> %}
+Read one configuration value. The dotted key is a single path segment.
+{% </api_endpoint> %}
 
-**Request body:**
-
-```json
-{
-  "key": "audio.enabled",
-  "value": true
-}
-```
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/config/reset") %}
-Reset a configuration value to its default.
-
-**Request body:**
+{% <api_endpoint method="PUT" path="/api/v1/config/keys/{key}"> %}
+Write one configuration value and persist it. The request body is the value
+itself:
 
 ```json
-{
-  "key": "audio.device_name"
-}
+true
 ```
-{% end %}
+
+Add `?live=false` to persist without re-applying the change to the running
+daemon; the default re-applies every live-classified key.
+
+The response carries the effective value, whether the daemon applied it live,
+whether the key is boot-frozen (`requires_restart`), and which sections are
+currently waiting on a restart (`pending_restart`).
+{% </api_endpoint> %}
+
+{% <api_endpoint method="DELETE" path="/api/v1/config/keys/{key}"> %}
+Restore one configuration value to its default. Takes the same `?live=` query
+parameter as the write.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="POST" path="/api/v1/config/reset"> %}
+Restore the whole configuration to defaults. The `drivers` map, unmodeled
+extension sections, and the include list survive the reset.
+{% </api_endpoint> %}
+
+{% <api_endpoint method="GET" path="/api/v1/config/schema"> %}
+Describe every configuration key: how a change applies (`live` with a section,
+`live_on_read`, `next_scan`, `restart`, or `inert`), how it renders on read
+surfaces, whether the daemon validates it beyond type checking, and which
+writes need a protected-control credential (`protection`: `open`,
+`section_root`, or `tree`). Clients derive their live and restart
+affordances from this table.
+{% </api_endpoint> %}
 
 ## Diagnostics
 
-{% api_endpoint(method="POST", path="/api/v1/diagnose") %}
+{% <api_endpoint method="POST" path="/api/v1/diagnose"> %}
 Run system diagnostics: device connectivity, audio capture, effect-engine
-health, and configuration validity. This is the same check the `diagnose` CLI
-command and MCP tool run.
-{% end %}
-
-{% api_endpoint(method="POST", path="/api/v1/diagnose/memory") %}
-A memory diagnostics snapshot: daemon RSS (which includes the in-process Servo
-renderer), canvas buffer size, and allocation counters. Useful when chasing slow
-memory growth.
-{% end %}
+health, memory, and configuration validity. Memory failures are reported as the
+named `memory` check in the same response. The `diagnose` CLI command and MCP
+tool use this exact check vocabulary.
+{% </api_endpoint> %}
 
 ## Assets
 
 User media (images, video) used by media layers.
 
-{% api_endpoint(method="GET", path="/api/v1/assets") %}
+{% <api_endpoint method="GET" path="/api/v1/assets"> %}
 List media assets.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="POST", path="/api/v1/assets") %}
+{% <api_endpoint method="POST" path="/api/v1/assets"> %}
 Upload a media asset.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/assets/{id}") %}
+{% <api_endpoint method="GET" path="/api/v1/assets/{id}"> %}
 Get asset metadata.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="PUT", path="/api/v1/assets/{id}") %}
+{% <api_endpoint method="PUT" path="/api/v1/assets/{id}"> %}
 Update asset metadata.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="DELETE", path="/api/v1/assets/{id}") %}
+{% <api_endpoint method="DELETE" path="/api/v1/assets/{id}"> %}
 Delete an asset.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/assets/{id}/blob") %}
+{% <api_endpoint method="GET" path="/api/v1/assets/{id}/blob"> %}
 Fetch the raw asset bytes.
-{% end %}
+{% </api_endpoint> %}
 
-{% api_endpoint(method="GET", path="/api/v1/assets/{id}/thumbnail") %}
+{% <api_endpoint method="GET" path="/api/v1/assets/{id}/thumbnail"> %}
 Fetch the asset thumbnail.
-{% end %}
+{% </api_endpoint> %}
 
 ---
 

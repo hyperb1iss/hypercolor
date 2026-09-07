@@ -21,6 +21,7 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) producer_full_frame_copy: FullFrameCopyMetrics,
     pub(crate) input_us: u32,
     pub(crate) deferred_sample_us: u32,
+    pub(crate) render_started_us: u32,
     pub(crate) producer_us: u32,
     pub(crate) producer_render_us: u32,
     pub(crate) producer_scene_compose_us: u32,
@@ -60,7 +61,7 @@ pub(crate) struct ActiveFrameMetricsInput<'a> {
     pub(crate) total_leds: u32,
     pub(crate) output_errors: u32,
     pub(crate) logical_layer_count: u32,
-    pub(crate) render_group_count: u32,
+    pub(crate) render_zone_count: u32,
     pub(crate) scene_active: bool,
     pub(crate) scene_transition_active: bool,
     pub(crate) effect_retained: bool,
@@ -100,6 +101,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         producer_full_frame_copy,
         input_us,
         deferred_sample_us,
+        render_started_us,
         producer_us,
         producer_render_us,
         producer_scene_compose_us,
@@ -139,7 +141,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         total_leds,
         output_errors,
         logical_layer_count,
-        render_group_count,
+        render_zone_count,
         scene_active,
         scene_transition_active,
         effect_retained,
@@ -163,6 +165,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
 
     LatestFrameMetrics {
         timestamp_ms: u64_to_u32(scene_snapshot.elapsed_ms),
+        input_sampled: !reused_inputs,
         input_us,
         deferred_sample_us,
         producer_us,
@@ -177,7 +180,7 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         postprocess_us,
         publish_us: publish_stats.elapsed_us,
         publish_frame_data_us: publish_stats.frame_data_us,
-        publish_group_canvas_us: publish_stats.group_canvas_us,
+        publish_zone_canvas_us: publish_stats.zone_canvas_us,
         publish_preview_us: publish_stats.preview_us,
         publish_events_us: publish_stats.events_us,
         overhead_us,
@@ -209,13 +212,9 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
         devices_written,
         total_leds,
         logical_layer_count,
-        render_group_count,
+        render_zone_count,
         scene_active,
         scene_transition_active,
-        render_surface_slot_count: render_surfaces.slot_count,
-        render_surface_free_slots: render_surfaces.free_slots,
-        render_surface_published_slots: render_surfaces.published_slots,
-        render_surface_dequeued_slots: render_surfaces.dequeued_slots,
         scene_pool_saturation_reallocs: render_surfaces.scene_pool_saturation_reallocs,
         direct_pool_saturation_reallocs: render_surfaces.direct_pool_saturation_reallocs,
         scene_pool_grown_slots: render_surfaces.scene_pool_grown_slots,
@@ -254,8 +253,8 @@ pub(crate) fn build_active_frame_metrics(input: ActiveFrameMetricsInput<'_>) -> 
             scene_snapshot,
             scene_snapshot_done_us,
             input_done_us,
-            input_done_us.saturating_add(producer_done_us),
-            input_done_us.saturating_add(composition_done_us),
+            render_started_us.saturating_add(producer_done_us),
+            render_started_us.saturating_add(composition_done_us),
             sample_done_us,
             output_done_us,
             publish_done_us,
@@ -292,6 +291,7 @@ pub(crate) fn build_throttle_frame_metrics(
     } = input;
     LatestFrameMetrics {
         timestamp_ms: u64_to_u32(scene_snapshot.elapsed_ms),
+        input_sampled: false,
         input_us: 0,
         deferred_sample_us: 0,
         producer_us: 0,
@@ -306,7 +306,7 @@ pub(crate) fn build_throttle_frame_metrics(
         postprocess_us: 0,
         publish_us: publish_stats.elapsed_us,
         publish_frame_data_us: publish_stats.frame_data_us,
-        publish_group_canvas_us: publish_stats.group_canvas_us,
+        publish_zone_canvas_us: publish_stats.zone_canvas_us,
         publish_preview_us: publish_stats.preview_us,
         publish_events_us: publish_stats.events_us,
         overhead_us,
@@ -338,13 +338,9 @@ pub(crate) fn build_throttle_frame_metrics(
         devices_written,
         total_leds,
         logical_layer_count: 0,
-        render_group_count: scene_snapshot.scene_runtime.active_render_group_count(),
+        render_zone_count: scene_snapshot.scene_runtime.active_render_zone_count(),
         scene_active: scene_snapshot.scene_runtime.active_scene_id.is_some(),
         scene_transition_active: scene_snapshot.scene_runtime.active_transition.is_some(),
-        render_surface_slot_count: render_surfaces.slot_count,
-        render_surface_free_slots: render_surfaces.free_slots,
-        render_surface_published_slots: render_surfaces.published_slots,
-        render_surface_dequeued_slots: render_surfaces.dequeued_slots,
         scene_pool_saturation_reallocs: render_surfaces.scene_pool_saturation_reallocs,
         direct_pool_saturation_reallocs: render_surfaces.direct_pool_saturation_reallocs,
         scene_pool_grown_slots: render_surfaces.scene_pool_grown_slots,
@@ -443,12 +439,12 @@ mod tests {
         ActiveFrameMetricsInput, PublishFrameStats, RenderSurfaceSnapshot,
         ThrottleFrameMetricsInput, build_throttle_frame_metrics, summarize_active_frame,
     };
+    use crate::output_power::OutputPowerState;
     use crate::performance::{CompositorBackendKind, FullFrameCopyMetrics, OutputFrameSourceKind};
     use crate::render_thread::scene_dependency::SceneDependencyKey;
     use crate::render_thread::scene_snapshot::{
         EffectDemand, FrameSceneSnapshot, SceneRuntimeSnapshot, SceneTransitionSnapshot,
     };
-    use crate::session::OutputPowerState;
 
     fn scene_snapshot() -> FrameSceneSnapshot {
         FrameSceneSnapshot {
@@ -463,25 +459,27 @@ mod tests {
                 interaction_capture_active: false,
                 media_input_active: false,
                 network_input_active: false,
+                sensor_input_active: false,
             },
             effect_dependency_key: SceneDependencyKey::new(3, 7),
             scene_runtime: SceneRuntimeSnapshot {
                 active_scene_id: None,
                 active_scene_name: None,
                 active_transition: Some(SceneTransitionSnapshot {
+                    epoch: 1,
                     from_scene: None,
                     to_scene: None,
                     progress: 0.25,
                     eased_progress: 0.5,
                     color_interpolation: ColorInterpolation::Srgb,
                 }),
-                active_render_groups: Arc::<[Zone]>::from(Vec::<Zone>::new()),
-                active_render_groups_revision: 3,
+                resolved_zones: Arc::<[Zone]>::from(Vec::<Zone>::new()),
+                resolved_zones_revision: 3,
                 zone_layout_preview_generation: 0,
-                active_render_group_count: 2,
-                active_display_group_target_fps: HashMap::new(),
-                active_display_group_output_routes: HashMap::new(),
-                active_display_group_descriptors: HashMap::new(),
+                active_render_zone_count: 2,
+                active_display_zone_target_fps: HashMap::new(),
+                active_display_zone_output_routes: HashMap::new(),
+                active_display_zone_descriptors: HashMap::new(),
                 unassigned_behavior: UnassignedBehavior::default(),
                 device_registry_generation: 0,
             },
@@ -494,7 +492,6 @@ mod tests {
                 zones: Vec::new(),
                 default_sampling_mode: SamplingMode::Nearest,
                 default_edge_behavior: EdgeBehavior::Clamp,
-                spaces: None,
                 version: 1,
             }),
         }
@@ -502,10 +499,6 @@ mod tests {
 
     fn render_surfaces() -> RenderSurfaceSnapshot {
         RenderSurfaceSnapshot {
-            slot_count: 8,
-            free_slots: 4,
-            published_slots: 2,
-            dequeued_slots: 1,
             canvas_receivers: 3,
             scene_pool_saturation_reallocs: 9,
             direct_pool_saturation_reallocs: 5,
@@ -545,7 +538,7 @@ mod tests {
                 reason: Some("publication_test"),
             },
             frame_data_us: 50,
-            group_canvas_us: 60,
+            zone_canvas_us: 60,
             preview_us: 70,
             events_us: 80,
         }
@@ -564,6 +557,7 @@ mod tests {
             },
             input_us: 120,
             deferred_sample_us: 60,
+            render_started_us: 100,
             producer_us: 220,
             producer_render_us: 140,
             producer_scene_compose_us: 80,
@@ -603,7 +597,7 @@ mod tests {
             total_leds: 321,
             output_errors: 3,
             logical_layer_count: 4,
-            render_group_count: 2,
+            render_zone_count: 2,
             scene_active: true,
             scene_transition_active: true,
             effect_retained: true,
@@ -623,6 +617,7 @@ mod tests {
         assert_eq!(summary.metrics.publication_full_frame_copy.count, 2);
         assert_eq!(summary.metrics.full_frame_copy_count, 3);
         assert_eq!(summary.metrics.full_frame_copy_bytes, 12_288);
+        assert!(!summary.metrics.input_sampled);
         assert!(summary.metrics.preview_surface);
         assert!(summary.metrics.scene_canvas_forced_surface);
         assert_eq!(
@@ -635,6 +630,9 @@ mod tests {
         assert_eq!(summary.metrics.devices_written, 5);
         assert_eq!(summary.metrics.total_leds, 321);
         assert_eq!(summary.metrics.output_errors, 3);
+        assert_eq!(summary.metrics.timeline.input_done_us, 60);
+        assert_eq!(summary.metrics.timeline.producer_done_us, 145);
+        assert_eq!(summary.metrics.timeline.composition_done_us, 155);
         assert_eq!(summary.admission.total_us, summary.metrics.total_us);
         assert_eq!(summary.admission.producer_us, summary.metrics.producer_us);
         assert_eq!(

@@ -1,15 +1,18 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use hypercolor_core::input::screen::{
-    CaptureColorimetry, CaptureEpoch, CaptureGeometry, CapturePixelFormat, CaptureRotation,
-    CaptureSourceId, InputPublicationDemandRevision, PhysicalOrigin, PixelExtent,
-    RegisteredScreenBranchDemand, ResolvedScreenSource, ResolvedScreenSourceConfig,
-    ScreenAdmissionCapacity, ScreenAspectPolicy, ScreenBackendResourceIdentity,
-    ScreenCaptureBackend, ScreenExtentRequest, ScreenInputGraphGeneration, ScreenPlanBuilder,
-    ScreenProcessingProfile, ScreenPublicationExecutorRequest, ScreenPublicationKind,
-    ScreenPublicationRequest, ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector,
-    ScreenUpscalePolicy, ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
+use hypercolor_core::input::screen::consumer::{CaptureEpoch, CaptureSourceId, PixelExtent};
+use hypercolor_core::input::screen::implementer::{
+    CaptureColorimetry, CaptureGeometry, CapturePixelFormat, CaptureRotation, PhysicalOrigin,
+    ScreenWorkerExactLedgerBuilder, ScreenWorkerLedgerBuildError, SourceScale,
+};
+use hypercolor_core::input::screen::planner::{
+    InputPublicationDemandRevision, RegisteredScreenBranchDemand, ResolvedScreenSource,
+    ResolvedScreenSourceConfig, ScreenAdmissionCapacity, ScreenAspectPolicy,
+    ScreenBackendResourceIdentity, ScreenCaptureBackend, ScreenExtentRequest,
+    ScreenInputGraphGeneration, ScreenPlanBuilder, ScreenProcessingProfile,
+    ScreenPublicationExecutorRequest, ScreenPublicationKind, ScreenPublicationRequest,
+    ScreenResourceApi, ScreenSourceReflection, ScreenSourceSelector, ScreenUpscalePolicy,
 };
 
 fn non_zero(value: u32) -> NonZeroU32 {
@@ -93,7 +96,6 @@ fn prepared() -> (
     let mut preparing = builder
         .prepare(
             [demand],
-            None,
             InputPublicationDemandRevision::new(1),
             ScreenInputGraphGeneration::new(1),
             ScreenAdmissionCapacity::new(u64::MAX, u64::MAX),

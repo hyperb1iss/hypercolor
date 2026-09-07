@@ -1,19 +1,17 @@
 //! Windows capture adapter-boundary fixture contracts.
+//!
+//! The deterministic fixture exercises the production demand, epoch, and
+//! session fencing without Desktop Duplication. Frames reach consumers only
+//! through the exact publication hub, so these contracts cover activation
+//! and fencing rather than pixels.
 
-#![cfg(all(target_os = "windows", feature = "windows-capture-fixtures"))]
+#![cfg(feature = "windows-capture-fixtures")]
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use hypercolor_core::input::screen::{
-    CaptureColorSpace, CaptureColorimetry, CaptureConfig, CaptureCursor, CaptureDamage,
-    CaptureDynamicRange, CaptureEpoch, CaptureFrame, CaptureFrameError, CaptureFrameMetadata,
-    CaptureGeometry, CaptureLuminanceContext, CapturePixelFormat, CapturePositiveScalar,
-    CaptureRotation, CaptureSourceId, CaptureStorage, CaptureTransferFunction, CpuCaptureStorage,
-    KnownCaptureColorimetry, PhysicalOrigin, PixelExtent, RawCaptureSurface, ScreenCaptureDemand,
-    SourceScale, WindowsScreenCaptureInput,
+use hypercolor_core::input::screen::consumer::{
+    CaptureConfig, CaptureEpoch, CaptureSourceId, ScreenCaptureDemand,
 };
-use hypercolor_core::input::{InputData, InputSource};
+use hypercolor_core::input::screen::implementer::WindowsScreenCaptureInput;
+use hypercolor_core::input::{InputData, InputSource, ScreenSource};
 use hypercolor_windows_capture::CaptureError;
 
 fn fixture_epoch() -> CaptureEpoch {
@@ -25,275 +23,95 @@ fn fixture_epoch() -> CaptureEpoch {
     }
 }
 
-fn fixture_frame(epoch: &CaptureEpoch) -> CaptureFrame<RawCaptureSurface> {
-    fixture_frame_with_colorimetry(epoch, CaptureColorimetry::SRGB)
-}
-
-fn fixture_frame_with_colorimetry(
-    epoch: &CaptureEpoch,
-    colorimetry: CaptureColorimetry,
-) -> CaptureFrame<RawCaptureSurface> {
-    let extent = PixelExtent::new(4, 2).expect("fixture extent is nonempty");
-    let captured_at = Instant::now();
-    let pixels: Arc<[u8]> = Arc::from([
-        255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255, 255, 0, 0, 255, 255, 0, 0,
-        255, 0, 0, 255, 255, 0, 0, 255, 255,
-    ]);
-    CaptureFrame::new(
-        CaptureFrameMetadata {
-            source_id: epoch.source_id.clone(),
-            topology_generation: epoch.topology_generation,
-            session_generation: epoch.session_generation,
-            sequence: 1,
-            captured_at,
-            fresh_until: captured_at + Duration::from_secs(1),
-            geometry: CaptureGeometry::new(
-                PhysicalOrigin::default(),
-                extent,
-                extent,
-                CaptureRotation::Identity,
-                None,
-                SourceScale::ONE,
-            )
-            .expect("fixture geometry is valid"),
-            colorimetry,
-            cursor: CaptureCursor::default(),
-        },
-        CaptureStorage::Cpu(CpuCaptureStorage::new(
-            pixels,
-            CapturePixelFormat::Rgba8,
-            16,
-            0,
-        )),
-        CaptureDamage::default(),
-    )
-    .expect("fixture frame is valid")
-}
-
-fn hdr_luminance() -> CaptureLuminanceContext {
-    CaptureLuminanceContext::new(
-        CapturePositiveScalar::try_new(203.0).expect("reference white is valid"),
-        CapturePositiveScalar::try_new(1_000.0).expect("peak luminance is valid"),
-    )
-    .expect("HDR luminance context is ordered")
-}
-
 #[test]
-fn unsupported_colorimetry_retains_the_last_good_windows_publication() {
-    let config = CaptureConfig {
-        target_fps: 60,
-        grid_cols: 2,
-        grid_rows: 1,
-        smoothing_alpha: 1.0,
-        ..CaptureConfig::default()
-    };
-    let epoch = fixture_epoch();
-    let (mut source, fixture) =
-        WindowsScreenCaptureInput::new_deterministic_fixture(config, epoch.clone())
-            .expect("deterministic Windows source is valid");
-    source.start().expect("deterministic source starts idle");
-    source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture extent is nonempty"),
-        ))
-        .expect("deterministic capture activates without hardware");
-    assert!(
-        fixture
-            .publish(fixture_frame(&epoch))
-            .expect("known sRGB frame is accepted")
-    );
-    let InputData::Screen(before) = source.sample().expect("last good sample is readable") else {
-        panic!("expected a published screen sample");
-    };
-
-    let rejected = [
-        CaptureColorimetry::unknown(),
-        CaptureColorimetry::from_known(
-            KnownCaptureColorimetry::try_new(
-                CaptureColorSpace::Rec2020,
-                CaptureTransferFunction::Pq,
-                CaptureDynamicRange::High,
-                Some(hdr_luminance()),
-            )
-            .expect("known PQ fixture is complete"),
-        ),
-        CaptureColorimetry::new(
-            CaptureColorSpace::Unknown,
-            CaptureTransferFunction::Pq,
-            None,
-            None,
-        )
-        .expect("partial PQ fixture is coherent"),
-        CaptureColorimetry::new(
-            CaptureColorSpace::Unknown,
-            CaptureTransferFunction::Hlg,
-            None,
-            None,
-        )
-        .expect("partial HLG fixture is coherent"),
-    ];
-    for colorimetry in rejected {
-        let error = fixture
-            .publish(fixture_frame_with_colorimetry(&epoch, colorimetry))
-            .expect_err("unsupported encoded samples must not reach legacy averaging");
-        assert!(matches!(
-            error.downcast_ref::<CaptureFrameError>(),
-            Some(CaptureFrameError::UnsupportedLegacyAnalysisColorimetry {
-                colorimetry: rejected
-            }) if *rejected == colorimetry
-        ));
-
-        let InputData::Screen(after) = source.sample().expect("last good sample remains readable")
-        else {
-            panic!("expected the retained screen sample");
-        };
-        assert_eq!(after.zone_colors, before.zone_colors);
-        assert_eq!(after.source_width, before.source_width);
-        assert_eq!(after.source_height, before.source_height);
-    }
-}
-
-#[test]
-fn deterministic_fixture_reuses_windows_analysis_and_publication() {
-    let config = CaptureConfig {
-        target_fps: 60,
-        grid_cols: 2,
-        grid_rows: 1,
-        smoothing_alpha: 1.0,
-        ..CaptureConfig::default()
-    };
-    let epoch = fixture_epoch();
-    let (mut source, fixture) =
-        WindowsScreenCaptureInput::new_deterministic_fixture(config, epoch.clone())
-            .expect("deterministic Windows source is valid");
+fn deterministic_fixture_activates_only_for_live_demand() {
+    let (mut source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(
+        CaptureConfig::default(),
+        fixture_epoch(),
+    )
+    .expect("deterministic Windows source is valid");
 
     source.start().expect("deterministic source starts idle");
     assert!(!fixture.is_active());
-    assert!(fixture.publish(fixture_frame(&epoch)).is_err());
+    assert!(!fixture.epoch_is_current());
+    assert!(matches!(source.sample(), Ok(InputData::None)));
+
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(
-            PixelExtent::new(4, 2).expect("fixture extent is nonempty"),
-        ))
-        .expect("deterministic capture activates without hardware");
-    assert!(fixture.is_active());
-    assert!(
-        fixture
-            .publish(fixture_frame(&epoch))
-            .expect("adapter frame is accepted")
-    );
-
-    let InputData::Screen(screen) = source
-        .sample()
-        .expect("published screen sample is readable")
-    else {
-        panic!("expected a published screen sample");
-    };
-    assert_eq!((screen.source_width, screen.source_height), (4, 2));
-    assert_eq!((screen.grid_width, screen.grid_height), (2, 1));
-    assert_eq!(screen.zone_colors[0].colors, [[255, 0, 0]]);
-    assert_eq!(screen.zone_colors[1].colors, [[0, 0, 255]]);
-
-    source.stop();
-    assert!(!fixture.is_active());
-    assert!(fixture.publish(fixture_frame(&epoch)).is_err());
-}
-
-#[test]
-fn active_extent_adoption_rolls_back_without_losing_last_good_frame() {
-    let epoch = fixture_epoch();
-    let (mut source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(
-        CaptureConfig::default(),
-        epoch.clone(),
-    )
-    .expect("deterministic Windows source is valid");
-    let admitted_extent = PixelExtent::new(4, 2).expect("fixture extent is nonempty");
-
-    source.start().expect("deterministic source starts idle");
-    source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(admitted_extent))
-        .expect("initial deterministic demand is admitted");
-    assert!(
-        fixture
-            .publish(fixture_frame(&epoch))
-            .expect("adapter frame is accepted")
-    );
-
-    let oversized_extent =
-        PixelExtent::new(u32::MAX, u32::MAX).expect("oversized extent remains nonempty");
-    assert!(
-        source
-            .set_screen_capture_demand(ScreenCaptureDemand::active(oversized_extent))
-            .is_err()
-    );
-    assert_eq!(
-        source.screen_capture_demand(),
-        ScreenCaptureDemand::active(admitted_extent)
-    );
-    assert_eq!(fixture.requested_extent(), admitted_extent);
-    assert!(matches!(
-        source.sample().expect("last good sample remains readable"),
-        InputData::Screen(_)
-    ));
-}
-
-#[test]
-fn resource_frame_failures_retain_last_good_publication() {
-    let epoch = fixture_epoch();
-    let (mut source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(
-        CaptureConfig::default(),
-        epoch.clone(),
-    )
-    .expect("deterministic Windows source is valid");
-    let extent = PixelExtent::new(4, 2).expect("fixture extent is nonempty");
-
-    source.start().expect("deterministic source starts idle");
-    source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(extent))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("deterministic demand is admitted");
-    assert!(
-        fixture
-            .publish(fixture_frame(&epoch))
-            .expect("adapter frame is accepted")
-    );
+    assert!(fixture.is_active());
+    assert!(fixture.epoch_is_current());
+    assert!(matches!(source.sample(), Ok(InputData::None)));
+
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::Inactive)
+        .expect("deterministic demand releases");
+    assert!(!fixture.is_active());
+    assert!(!fixture.epoch_is_current());
+}
+
+#[test]
+fn resource_frame_failures_keep_the_session_epoch_current() {
+    let (mut source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(
+        CaptureConfig::default(),
+        fixture_epoch(),
+    )
+    .expect("deterministic Windows source is valid");
+
+    source.start().expect("deterministic source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
+        .expect("deterministic demand is admitted");
+    assert!(fixture.epoch_is_current());
 
     fixture.inject_frame_failure(&CaptureError::ResourceExhausted {
         operation: "inject frame pressure",
         requested_bytes: usize::MAX,
     });
 
-    assert!(matches!(
-        source.sample().expect("last good sample remains readable"),
-        InputData::Screen(_)
-    ));
+    assert!(fixture.is_active());
+    assert!(fixture.epoch_is_current());
 }
 
 #[test]
 fn rebuild_resource_failures_fence_the_invalidated_session() {
-    let epoch = fixture_epoch();
     let (mut source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(
         CaptureConfig::default(),
-        epoch.clone(),
+        fixture_epoch(),
     )
     .expect("deterministic Windows source is valid");
-    let extent = PixelExtent::new(4, 2).expect("fixture extent is nonempty");
 
     source.start().expect("deterministic source starts idle");
     source
-        .set_screen_capture_demand(ScreenCaptureDemand::active(extent))
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
         .expect("deterministic demand is admitted");
-    assert!(
-        fixture
-            .publish(fixture_frame(&epoch))
-            .expect("adapter frame is accepted")
-    );
+    assert!(fixture.epoch_is_current());
 
     fixture.inject_frame_failure(&CaptureError::SessionResourceExhausted {
         operation: "inject rebuild pressure",
         requested_bytes: usize::MAX,
     });
 
-    assert!(matches!(
-        source.sample().expect("invalidated session samples idle"),
-        InputData::None
-    ));
+    assert!(fixture.is_active());
+    assert!(!fixture.epoch_is_current());
+}
+
+#[test]
+fn stopping_the_source_retires_the_fixture_epoch() {
+    let (mut source, fixture) = WindowsScreenCaptureInput::new_deterministic_fixture(
+        CaptureConfig::default(),
+        fixture_epoch(),
+    )
+    .expect("deterministic Windows source is valid");
+
+    source.start().expect("deterministic source starts idle");
+    source
+        .set_screen_capture_demand(ScreenCaptureDemand::active())
+        .expect("deterministic demand is admitted");
+    assert!(fixture.epoch_is_current());
+
+    source.stop();
+
+    assert!(!fixture.is_active());
+    assert!(!fixture.epoch_is_current());
 }

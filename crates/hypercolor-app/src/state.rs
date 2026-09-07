@@ -20,7 +20,7 @@ pub struct AppState {
     /// Global brightness percentage (0-100).
     pub brightness: u8,
     /// Currently active effect, if any.
-    pub current_effect: Option<EffectInfo>,
+    pub active_effect: Option<EffectInfo>,
     /// Currently active scene name, if known.
     pub active_scene_name: Option<String>,
     /// Whether the active scene blocks live mutation.
@@ -29,8 +29,8 @@ pub struct AppState {
     pub device_count: usize,
     /// All available effects from the daemon registry.
     pub effects: Vec<EffectInfo>,
-    /// All available profiles.
-    pub profiles: Vec<ProfileInfo>,
+    /// All available reusable scenes.
+    pub scenes: Vec<SceneInfo>,
     /// Connected server identity, when known.
     pub server_identity: Option<ServerIdentity>,
     /// Discovered Hypercolor servers on the local network.
@@ -48,12 +48,12 @@ impl AppState {
             running: false,
             paused: false,
             brightness: 0,
-            current_effect: None,
+            active_effect: None,
             active_scene_name: None,
             scene_snapshot_locked: false,
             device_count: 0,
             effects: Vec::new(),
-            profiles: Vec::new(),
+            scenes: Vec::new(),
             server_identity: None,
             servers: Vec::new(),
             active_server: None,
@@ -68,7 +68,7 @@ impl AppState {
                 self.connected = false;
                 self.running = false;
                 self.paused = false;
-                self.current_effect = None;
+                self.active_effect = None;
                 self.active_scene_name = None;
                 self.scene_snapshot_locked = false;
                 self.device_count = 0;
@@ -85,11 +85,12 @@ impl AppState {
     fn apply_state_update(&mut self, update: StateUpdate) {
         match update {
             StateUpdate::EffectChanged { id, name } => {
-                self.current_effect = Some(EffectInfo { id, name });
+                self.active_effect = Some(EffectInfo { id, name });
                 self.paused = false;
             }
             StateUpdate::EffectStopped => {
-                self.current_effect = None;
+                self.active_effect = None;
+                self.paused = false;
             }
             StateUpdate::SceneChanged {
                 name,
@@ -113,6 +114,20 @@ impl AppState {
             StateUpdate::EffectsRefreshed(effects) => {
                 self.effects = effects;
             }
+            StateUpdate::Snapshot {
+                running,
+                paused,
+                brightness,
+                device_count,
+            } => {
+                // The handshake says nothing about content: the live
+                // tree is multi-zone, so what is rendering arrives from
+                // the effect lifecycle events instead (Spec 78 §7.1).
+                self.running = running;
+                self.paused = paused;
+                self.brightness = brightness;
+                self.device_count = device_count;
+            }
         }
     }
 }
@@ -130,9 +145,9 @@ pub struct EffectInfo {
     pub name: String,
 }
 
-/// Lightweight profile information for display in the tray menu.
+/// Lightweight scene information for display in the tray menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProfileInfo {
+pub struct SceneInfo {
     pub id: String,
     pub name: String,
 }
@@ -180,6 +195,13 @@ pub enum StateUpdate {
     DeviceCountChanged(usize),
     /// Effect list was updated (rescan).
     EffectsRefreshed(Vec<EffectInfo>),
+    /// Authoritative state snapshot from the WebSocket hello message.
+    Snapshot {
+        running: bool,
+        paused: bool,
+        brightness: u8,
+        device_count: usize,
+    },
 }
 
 /// Commands from the tray UI thread to the async daemon client.
@@ -188,76 +210,25 @@ pub enum StateUpdate {
 pub enum TrayCommand {
     /// Apply the given effect by ID.
     ApplyEffect(String),
-    /// Apply the given profile by ID.
-    ApplyProfile(String),
+    /// Activate the given scene by ID.
+    ActivateScene(String),
     /// Stop the currently active effect.
     StopEffect,
     /// Set global brightness (0-100).
     SetBrightness(u8),
-    /// Toggle pause/resume.
-    TogglePause,
+    /// Set the reversible global output pause state.
+    SetPaused(bool),
     /// Open the web UI in the default browser.
     OpenWebUi,
     /// Switch the active daemon connection.
     SwitchServer(usize),
     /// Refresh the list of discoverable daemons.
     RefreshServers,
-    /// Quit the tray applet.
+    /// Quit the desktop app.
     Quit,
 }
 
-// ── Daemon API response types (deserialization only) ────────────────────
-
-/// Envelope wrapper for daemon API responses.
-#[derive(Debug, Deserialize)]
-pub struct ApiEnvelope<T> {
-    pub data: Option<T>,
-}
-
-/// Response from `GET /api/v1/status`.
-#[derive(Debug, Deserialize)]
-pub struct StatusResponse {
-    pub running: bool,
-    pub active_effect: Option<String>,
-    pub active_scene: Option<String>,
-    pub active_scene_snapshot_locked: bool,
-    pub global_brightness: u8,
-    pub device_count: usize,
-}
-
-/// Response from `GET /api/v1/server`.
-#[derive(Debug, Deserialize)]
-pub struct ServerResponse {
-    pub instance_id: String,
-    pub instance_name: String,
-    pub version: String,
-}
-
-/// Response from `GET /api/v1/effects`.
-#[derive(Debug, Deserialize)]
-pub struct EffectListResponse {
-    pub items: Vec<EffectSummary>,
-}
-
-/// A single effect from the effect list.
-#[derive(Debug, Deserialize)]
-pub struct EffectSummary {
-    pub id: String,
-    pub name: String,
-}
-
-/// Response from `GET /api/v1/profiles`.
-#[derive(Debug, Deserialize)]
-pub struct ProfileListResponse {
-    pub items: Vec<ProfileSummary>,
-}
-
-/// A single profile from the profile list.
-#[derive(Debug, Deserialize)]
-pub struct ProfileSummary {
-    pub id: String,
-    pub name: String,
-}
+// ── WebSocket response types (deserialization only) ────────────────────
 
 /// WebSocket hello message from the daemon.
 #[derive(Debug, Deserialize)]
@@ -278,14 +249,6 @@ pub struct WsHelloState {
     pub paused: bool,
     pub brightness: u8,
     pub device_count: usize,
-    pub effect: Option<WsNameRef>,
-}
-
-/// Name/ID reference used in WebSocket messages.
-#[derive(Debug, Deserialize)]
-pub struct WsNameRef {
-    pub id: String,
-    pub name: String,
 }
 
 /// A generic WebSocket event message from the daemon.
@@ -297,4 +260,26 @@ pub struct WsEventMessage {
     pub event: String,
     #[serde(default)]
     pub data: serde_json::Value,
+}
+
+impl WsEventMessage {
+    #[must_use]
+    pub fn requires_full_resync(&self) -> bool {
+        self.msg_type == "event" && self.event == "resync_required"
+    }
+
+    #[must_use]
+    pub fn is_destructive_effect_stop(&self) -> bool {
+        self.msg_type == "event"
+            && self.event == "effect_stopped"
+            && self.data.get("reason").and_then(serde_json::Value::as_str) == Some("stopped")
+    }
+
+    #[must_use]
+    pub fn targets_zone(&self, zone_id: &hypercolor_types::scene::ZoneId) -> bool {
+        self.data
+            .get("zone_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == zone_id.to_string())
+    }
 }

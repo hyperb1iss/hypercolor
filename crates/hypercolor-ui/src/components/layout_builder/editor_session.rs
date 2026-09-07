@@ -4,8 +4,7 @@ use leptos::prelude::*;
 
 use crate::api;
 use crate::compound_selection::CompoundDepth;
-use crate::layout_history::LayoutHistoryState;
-use crate::layout_utils::ZoneCache;
+use crate::layout_history::{LayoutHistoryState, RemovedOutputCache};
 use hypercolor_types::spatial::SpatialLayout;
 
 use super::LayoutWriteHandle;
@@ -29,8 +28,8 @@ pub(crate) struct LayoutEditorContext {
     pub set_is_dirty: WriteSignal<bool>,
     pub set_hidden_zones: WriteSignal<HashSet<String>>,
     pub set_keep_aspect_ratio: WriteSignal<bool>,
-    pub removed_zone_cache: Signal<ZoneCache>,
-    pub set_removed_zone_cache: WriteSignal<ZoneCache>,
+    pub removed_zone_cache: Signal<RemovedOutputCache>,
+    pub set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     /// Push the current in-flight layout to the daemon's preview engine.
     /// Used by the canvas during drag to keep the LED preview live without
     /// committing intermediate state to the layout signal.
@@ -39,48 +38,31 @@ pub(crate) struct LayoutEditorContext {
     /// host header drive its undo / redo buttons off this same context.
     pub can_undo: Signal<bool>,
     pub can_redo: Signal<bool>,
+    /// The zone box under the pointer on the canvas itself. The canvas
+    /// writes it; hosts (the Studio rail) read it to mirror the hover.
+    pub pointer_zone_id: RwSignal<Option<String>>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutZoneDisplayContext {
-    pub attachment_profiles: LocalResource<HashMap<String, api::DeviceComponentsResponse>>,
+    pub attachment_profiles: Memo<HashMap<String, api::DeviceComponentsResponse>>,
 }
 
-pub(super) fn attachment_profiles_resource(
-    layout: ReadSignal<Option<SpatialLayout>>,
-    devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
-) -> LocalResource<HashMap<String, api::DeviceComponentsResponse>> {
-    LocalResource::new(move || {
-        let current_layout = layout.get();
-        let devices = devices_resource
+pub(super) fn embedded_attachment_profiles(
+    devices_resource: LocalResource<api::ApiResult<Vec<api::DeviceSummary>>>,
+) -> Memo<HashMap<String, api::DeviceComponentsResponse>> {
+    Memo::new(move |_| {
+        devices_resource
             .get()
             .and_then(Result::ok)
-            .unwrap_or_default();
-
-        async move {
-            let mut device_ids = HashMap::<String, String>::new();
-            if let Some(current_layout) = current_layout {
-                for zone in current_layout.zones {
-                    if zone.attachment.is_none() {
-                        continue;
-                    }
-                    if let Some(device) = devices
-                        .iter()
-                        .find(|device| device.layout_device_id == zone.device_id)
-                    {
-                        device_ids.insert(zone.device_id, device.id.clone());
-                    }
-                }
-            }
-
-            let mut profiles = HashMap::new();
-            for (layout_device_id, device_id) in device_ids {
-                if let Ok(profile) = api::fetch_device_attachments(&device_id).await {
-                    profiles.insert(layout_device_id, profile);
-                }
-            }
-            profiles
-        }
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|device| {
+                device
+                    .attachments
+                    .map(|profile| (device.layout_device_id, profile))
+            })
+            .collect()
     })
 }
 
@@ -99,13 +81,14 @@ pub(super) struct LayoutEditorSession {
     pub(super) set_hidden_zones: WriteSignal<HashSet<String>>,
     pub(super) hovered_zone_ids: ReadSignal<HashSet<String>>,
     pub(super) set_hovered_zone_ids: WriteSignal<HashSet<String>>,
-    pub(super) removed_zone_cache: ReadSignal<ZoneCache>,
-    pub(super) set_removed_zone_cache: WriteSignal<ZoneCache>,
+    pub(super) removed_zone_cache: ReadSignal<RemovedOutputCache>,
+    pub(super) set_removed_zone_cache: WriteSignal<RemovedOutputCache>,
     pub(super) write: LayoutWriteHandle,
     pub(super) layout_signal: Signal<Option<SpatialLayout>>,
     pub(super) can_undo: Signal<bool>,
     pub(super) can_redo: Signal<bool>,
     pub(super) is_dirty: Signal<bool>,
+    pub(super) pointer_zone_id: RwSignal<Option<String>>,
 }
 
 impl LayoutEditorSession {
@@ -117,8 +100,9 @@ impl LayoutEditorSession {
         let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(keep_aspect_ratio_initial);
         let (hidden_zones, set_hidden_zones) = signal(HashSet::<String>::new());
         let (hovered_zone_ids, set_hovered_zone_ids) = signal(HashSet::<String>::new());
-        let (removed_zone_cache, set_removed_zone_cache) = signal(ZoneCache::new());
+        let (removed_zone_cache, set_removed_zone_cache) = signal(RemovedOutputCache::new());
         let (dirty, set_is_dirty) = signal(false);
+        let pointer_zone_id = RwSignal::new(None::<String>);
         let history = RwSignal::new(LayoutHistoryState::default());
         let write = LayoutWriteHandle {
             layout,
@@ -154,6 +138,7 @@ impl LayoutEditorSession {
             can_undo: Signal::derive(move || history.get().can_undo()),
             can_redo: Signal::derive(move || history.get().can_redo()),
             is_dirty: Signal::derive(move || dirty.get()),
+            pointer_zone_id,
         }
     }
 
@@ -177,6 +162,7 @@ impl LayoutEditorSession {
             push_preview,
             can_undo: self.can_undo,
             can_redo: self.can_redo,
+            pointer_zone_id: self.pointer_zone_id,
         });
     }
 }

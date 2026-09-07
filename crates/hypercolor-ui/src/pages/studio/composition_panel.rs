@@ -5,19 +5,18 @@
 //! now-playing chip is clicked, hosts the shared [`LayerPanel`], and
 //! dismisses on a scrim click, the close button, or `Escape`.
 
+use hypercolor_leptos_ext::events::target_is_text_entry;
 use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
-
-use hypercolor_types::scene::ZoneRole;
 
 use crate::api;
 use crate::components::layer_panel::LayerPanel;
 use crate::icons::*;
 
 use super::StudioContext;
-use super::face_composition::ScreenCompositionSection;
-use super::surface::UNASSIGNED_SURFACE_ID;
+use super::face_composition::{DefaultFaceCard, ScreenCompositionSection};
+use super::surface::{UNASSIGNED_SURFACE_ID, selected_screen_device_id};
 
 /// The right-edge composition slide-over. Stays mounted and animates via
 /// a transform; `inert` while closed keeps its controls out of the tab
@@ -25,11 +24,11 @@ use super::surface::UNASSIGNED_SURFACE_ID;
 /// Stage only, never the zone tree.
 #[component]
 pub fn CompositionPanel(
-    #[prop(into)] active_scene: Signal<Option<api::ActiveSceneResponse>>,
-    selected_group_id: ReadSignal<Option<String>>,
-    set_selected_group_id: WriteSignal<Option<String>>,
+    #[prop(into)] active_scene: Signal<Option<api::SceneDocument>>,
+    selected_zone_id: ReadSignal<Option<String>>,
+    set_selected_zone_id: WriteSignal<Option<String>>,
     #[prop(into)] surface_label: Signal<Option<String>>,
-    layers_resource: LocalResource<Result<api::LayerStackResponse, String>>,
+    layers_resource: LocalResource<api::ApiResult<api::LayerStackResponse>>,
     on_layers_mutated: Callback<()>,
 ) -> impl IntoView {
     let studio = expect_context::<StudioContext>();
@@ -41,28 +40,27 @@ pub fn CompositionPanel(
     // still in flight, which panics the reactive runtime when the stale
     // Suspense closure re-polls.
     let is_unassigned =
-        Memo::new(move |_| selected_group_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
+        Memo::new(move |_| selected_zone_id.get().as_deref() == Some(UNASSIGNED_SURFACE_ID));
 
     // A Screen surface's backing display device — present only while the
-    // selection is a display-role group with a bound target. Drives the
+    // selection is a display-role zone with a bound target. Drives the
     // face-composition section above the layer stack.
     let screen_device_id = Memo::new(move |_| {
-        let selected = selected_group_id.get()?;
+        let selected = selected_zone_id.get()?;
         let scene = active_scene.get()?;
-        scene
-            .groups
-            .iter()
-            .find(|group| group.id.to_string() == selected && group.role == ZoneRole::Display)
-            .and_then(|group| group.display_target.as_ref())
-            .map(|target| target.device_id.to_string())
+        selected_screen_device_id(&scene.zones, &selected)
     });
 
-    // Escape closes the panel while it is open.
-    let _keydown = window_event_listener(ev::keydown, move |event| {
-        if open.get_untracked() && event.key() == "Escape" {
+    // Escape closes the panel while it is open, unless a text field owns
+    // the key (a rename in the rail cancels with Escape too). The handle
+    // is removed with the page so the listener never outlives its signals.
+    let keydown = window_event_listener(ev::keydown, move |event| {
+        if open.get_untracked() && event.key() == "Escape" && !target_is_text_entry(event.target())
+        {
             open.set(false);
         }
     });
+    on_cleanup(move || keydown.remove());
 
     view! {
         <div
@@ -95,11 +93,15 @@ pub fn CompositionPanel(
                         view! { <UnassignedNote /> }.into_any()
                     } else {
                         view! {
+                            <DefaultFaceCard
+                                display_device_id=screen_device_id
+                                on_layers_mutated=on_layers_mutated
+                            />
                             <ScreenCompositionSection display_device_id=screen_device_id />
                             <LayerPanel
                                 active_scene=active_scene
-                                selected_group_id=selected_group_id
-                                set_selected_group_id=set_selected_group_id
+                                selected_zone_id=selected_zone_id
+                                set_selected_zone_id=set_selected_zone_id
                                 surface_label=surface_label
                                 layers_resource=layers_resource
                                 on_layers_mutated=on_layers_mutated
@@ -131,8 +133,8 @@ fn UnassignedNote() -> impl IntoView {
                 <div class="text-sm font-medium text-fg-secondary">"No layer stack"</div>
                 <div class="mt-1.5 text-[12px] leading-5 text-fg-tertiary/70">
                     "Unassigned lights belong to no zone, so there is nothing to
-                     compose here. Assign their outputs to a zone in the Layout
-                     view to give them a layer stack."
+                     compose here. Use the + on a device card in the rail to add it
+                     to a zone, and it follows that zone's layers."
                 </div>
             </div>
         </div>

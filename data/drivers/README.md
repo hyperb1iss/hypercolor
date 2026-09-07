@@ -23,6 +23,7 @@ Each vendor TOML file follows this structure:
 name = "Razer"
 vid = [0x1532]           # Primary USB vendor ID(s)
 website = "https://razer.com"
+notes = ""               # Optional vendor-level note
 
 [[devices]]
 pid = 0x026C
@@ -64,5 +65,28 @@ When adding a new driver to Hypercolor, update the corresponding vendor TOML:
 2. Set `driver` to the Hypercolor driver family name
 3. Set `transport` to the transport type used
 4. Add any `notes` about quirks discovered during implementation
+5. Run `just compat` to regenerate every downstream artifact, and commit the
+   regenerated files alongside your TOML change
 
 When researching a new vendor, create a new TOML file from the template above.
+
+## Generated Outputs
+
+Editing any vendor TOML makes four artifacts stale. `just compat` regenerates
+all of them from `data/drivers/vendors/*.toml`:
+
+| Artifact | What it feeds |
+| --- | --- |
+| `data/compat/compatibility.json` | Machine-readable matrix |
+| `docs/content/hardware/compatibility.md` | The full matrix on the docs site |
+| `data/compat/README-hardware.md` | Reusable hardware snippet |
+| The `<!-- BEGIN COMPAT -->` block in the root `README.md` | Front-door summary table |
+
+`just compat-check` verifies all four are current without writing anything, and
+it is a CI gate: the `compat` job runs `bun scripts/gen-compat.ts --check` on
+any pull request touching `data/drivers/vendors/**`, `data/compat/**`,
+`docs/content/hardware/compatibility.md`, or `scripts/gen-compat.ts`. Skipping
+the regeneration lands a red PR.
+
+Never hand-edit the generated files, including the block between the compat
+markers in the root `README.md`.

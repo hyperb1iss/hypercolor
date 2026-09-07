@@ -19,7 +19,7 @@ use crate::components::component_picker::ComponentPicker;
 use crate::components::device_card::topology_shape_svg;
 use crate::icons::*;
 use crate::layout_geometry;
-use crate::layout_utils::zone_name_matches_slot_alias;
+use crate::layout_utils::channel_name_matches_slot_alias;
 use crate::toasts;
 
 // ── Channel panel ───────────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ pub fn WiringPanel(
     // rather than refetching — that's what preserves scroll position and input
     // focus in the component editor. The resources still re-trigger naturally
     // when `device_id` changes (device switch).
-    let attachments = LocalResource::new(move || {
+    let attachments = api::daemon_resource(move || {
         let id = device_id.get();
         async move {
             if id.is_empty() {
@@ -53,7 +53,7 @@ pub fn WiringPanel(
         }
     });
 
-    let templates = LocalResource::new(move || async move {
+    let templates = api::daemon_resource(move || async move {
         api::fetch_attachment_templates(None)
             .await
             .unwrap_or_default()
@@ -62,7 +62,7 @@ pub fn WiringPanel(
     // Layout zone display-names — used as fallback when localStorage has no
     // custom channel name.  This picks up renames the user made in the layout
     // zone properties panel.
-    let layout_zone_names = LocalResource::new(move || {
+    let layout_zone_names = api::daemon_resource(move || {
         let dev = device.get();
         async move {
             let Some(dev) = dev else {
@@ -118,7 +118,10 @@ pub fn WiringPanel(
                 }>
                     {move || {
                         let all_templates = templates.get().map(|t| t.to_vec()).unwrap_or_default();
-                        let device_zones = device.get().map(|d| d.zones.clone()).unwrap_or_default();
+                        let device_zones = device
+                            .get()
+                            .map(|d| d.segments.clone())
+                            .unwrap_or_default();
                         let zone_names = layout_zone_names.get().unwrap_or_default();
                         let did = device_id.get();
 
@@ -144,13 +147,13 @@ pub fn WiringPanel(
                                             // Match zone for topology + identify
                                             let zone_match = device_zones.iter()
                                                 .find(|z| {
-                                                    zone_name_matches_slot_alias(
+                                                    channel_name_matches_slot_alias(
                                                         Some(slot.id.as_str()),
                                                         Some(z.id.as_str()),
-                                                    ) || zone_name_matches_slot_alias(
+                                                    ) || channel_name_matches_slot_alias(
                                                         Some(slot.id.as_str()),
                                                         Some(z.name.as_str()),
-                                                    ) || zone_name_matches_slot_alias(
+                                                    ) || channel_name_matches_slot_alias(
                                                         Some(slot.name.as_str()),
                                                         Some(z.name.as_str()),
                                                     )
@@ -337,7 +340,7 @@ pub fn WiringPanel(
                                                                             let zid = zid.clone();
                                                                             spawn_identify(
                                                                                 "channel",
-                                                                                async move { api::identify_zone(&did, &zid).await },
+                                                                                async move { api::identify_segment(&did, &zid).await },
                                                                             );
                                                                         }
                                                                     }
@@ -431,9 +434,9 @@ pub fn WiringPanel(
                                                                     }
                                                                     // Build bindings
                                                                     let current = api::fetch_device_attachments(&did).await?;
-                                                                    let mut bindings: Vec<api::ComponentBindingRequest> = current.bindings.iter()
+                                                                    let mut bindings: Vec<api::ComponentBinding> = current.bindings.iter()
                                                                         .filter(|b| b.slot_id != slot_id)
-                                                                        .map(|b| api::ComponentBindingRequest {
+                                                                        .map(|b| api::ComponentBinding {
                                                                             slot_id: b.slot_id.clone(), template_id: b.template_id.clone(),
                                                                             name: b.name.clone(), enabled: b.enabled, instances: b.instances, led_offset: b.led_offset,
                                                                         }).collect();
@@ -444,14 +447,17 @@ pub fn WiringPanel(
                                                                             _ => template_ids.get(&i).cloned().unwrap_or_default(),
                                                                         };
                                                                         let count = row.led_count(&templates).unwrap_or(0);
-                                                                        bindings.push(api::ComponentBindingRequest {
+                                                                        bindings.push(api::ComponentBinding {
                                                                             slot_id: slot_id.clone(), template_id: tid,
                                                                             name: if row.name.is_empty() { None } else { Some(row.name.clone()) },
                                                                             enabled: true, instances: 1, led_offset: offset,
                                                                         });
                                                                         offset += count;
                                                                     }
-                                                                    api::update_device_attachments(&did, &api::UpdateAttachmentsRequest { bindings }).await
+                                                                    api::update_device_attachments(&did, &api::UpdateAttachmentsRequest {
+                                                                        bindings,
+                                                                        validate_only: false,
+                                                                    }).await
                                                                 }.await;
                                                                 set_save_in_flight.set(false);
                                                                 match result {
@@ -617,7 +623,7 @@ pub fn WiringPanel(
                                                                                     type="number" min="1" max=slot_max_leds.to_string()
                                                                                     class="w-14 bg-surface-base/40 border border-edge-subtle rounded px-1.5 py-0.5
                                                                                            text-[11px] font-mono tabular-nums text-right shrink-0
-                                                                                           focus:outline-none focus:border-neon-cyan/30"
+                                                                                           focus:outline-none focus:border-cyan/30"
                                                                                     style="color: rgba(128, 255, 234, 0.8)"
                                                                                     prop:value=move || strip_led_count.get().to_string()
                                                                                     on:input=move |ev| {
@@ -638,7 +644,7 @@ pub fn WiringPanel(
                                                                                         type="number" min="1" max="64"
                                                                                         class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
                                                                                                text-[11px] font-mono tabular-nums text-right
-                                                                                               focus:outline-none focus:border-neon-cyan/30"
+                                                                                               focus:outline-none focus:border-cyan/30"
                                                                                         style="color: rgba(128, 255, 234, 0.8)"
                                                                                         prop:value=move || matrix_cols_sig.get().to_string()
                                                                                         on:input=move |ev| {
@@ -658,7 +664,7 @@ pub fn WiringPanel(
                                                                                         type="number" min="1" max="64"
                                                                                         class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
                                                                                                text-[11px] font-mono tabular-nums text-right
-                                                                                               focus:outline-none focus:border-neon-cyan/30"
+                                                                                               focus:outline-none focus:border-cyan/30"
                                                                                         style="color: rgba(128, 255, 234, 0.8)"
                                                                                         prop:value=move || matrix_rows_sig.get().to_string()
                                                                                         on:input=move |ev| {
@@ -721,7 +727,7 @@ pub fn WiringPanel(
                                                                         <button
                                                                             class="w-5 h-5 flex items-center justify-center rounded shrink-0
                                                                                    opacity-0 group-hover/row:opacity-100 transition-opacity
-                                                                                   text-fg-tertiary/40 hover:text-error-red btn-press"
+                                                                                   text-fg-tertiary/40 hover:text-status-error btn-press"
                                                                             on:click=move |_| {
                                                                                 set_drafts.update(|rows| { rows.retain(|r| r.row_id != row_id); });
                                                                             }
@@ -801,7 +807,7 @@ pub fn WiringPanel(
                                 }.into_any()
                             }
                             Err(error) => view! {
-                                <div class="text-[10px] text-error-red py-2">{error}</div>
+                                <div class="text-[10px] text-status-error py-2">{error.to_string()}</div>
                             }.into_any(),
                         })
                     }}
@@ -816,10 +822,10 @@ pub fn WiringPanel(
 pub fn sync_wiring_to_layout(
     device: api::DeviceSummary,
     suggested_zones: Vec<ComponentSuggestedZone>,
-    layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
+    layouts_resource: LocalResource<api::ApiResult<Vec<api::LayoutSummary>>>,
 ) {
     leptos::task::spawn_local(async move {
-        let result: Result<usize, String> = async {
+        let result: api::ApiResult<usize> = async {
             let mut layout = api::fetch_active_layout().await?;
             let layout_id = layout.id.clone();
             let mut seeded = layout_geometry::seeded_attachment_layout(
@@ -827,6 +833,7 @@ pub fn sync_wiring_to_layout(
                 &device.name,
                 &suggested_zones,
                 0,
+                layout_geometry::canvas_pixel_aspect(layout.canvas_width, layout.canvas_height),
             );
             let slot_display_names = suggested_zones
                 .iter()
@@ -846,7 +853,7 @@ pub fn sync_wiring_to_layout(
                 &device.layout_device_id,
                 seeded,
             );
-            let req = api::UpdateLayoutApiRequest {
+            let req = api::UpdateLayoutRequest {
                 name: None,
                 description: None,
                 canvas_width: None,
@@ -881,7 +888,7 @@ fn sync_channel_name_to_active_layout(
     }
 
     leptos::task::spawn_local(async move {
-        let result: Result<bool, String> = async {
+        let result: api::ApiResult<bool> = async {
             let mut layout = api::fetch_active_layout().await?;
             let layout_id = layout.id.clone();
             let changed = crate::layout_utils::sync_channel_display_name_in_layout(
@@ -897,7 +904,7 @@ fn sync_channel_name_to_active_layout(
                 return Ok(false);
             }
 
-            let req = api::UpdateLayoutApiRequest {
+            let req = api::UpdateLayoutRequest {
                 name: None,
                 description: None,
                 canvas_width: None,

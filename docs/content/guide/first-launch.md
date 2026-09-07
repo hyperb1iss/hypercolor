@@ -4,8 +4,6 @@ description = "What happens the first time Hypercolor runs: app starts, daemon b
 weight = 60
 +++
 
-# First launch ⚡
-
 The first time you open Hypercolor, several things happen in quick succession. The app
 shell starts, the daemon boots inside it, a single-instance guard fires, and a welcome
 wizard guides you through the three setup decisions that matter most. This page walks you
@@ -86,8 +84,10 @@ your system browser rather than opening additional in-app tabs.
 
 ## The first-run wizard
 
-On a fresh install the web UI detects that the first-run marker file does not exist and
-shows the **Welcome to Hypercolor** overlay before you reach the dashboard.
+On a fresh install the desktop app asks the Tauri backend whether the first-run marker
+file exists, and shows the **Welcome to Hypercolor** overlay before you reach the
+dashboard when it does not. The check is a Tauri command, so the wizard appears only
+inside the desktop app, never in a plain browser pointed at `:9420`.
 
 The wizard is a single centered card. It covers three orientation topics and one
 preference toggle.
@@ -130,14 +130,14 @@ broker service (`HypercolorSmBus`), and five kernel modules
 Installation requires a UAC elevation prompt (PowerShell running
 `install-windows-hardware-support.ps1`).
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If another RGB tool is running (SignalRGB, Corsair iCUE, ASUS Armoury Crate, MSI Center,
 Gigabyte RGB Fusion, Razer Synapse, and others), it may already hold the SMBus or the HID
 device open.
 The wizard detects and lists conflicting services so you can close them before clicking
 "Install support." Two RGB managers fighting for the same bus produces unpredictable
 behavior.
-{% end %}
+{% </callout> %}
 
 ### Start at sign in
 

@@ -7,11 +7,12 @@ use hypercolor_leptos_ext::prelude::now_ms;
 pub(super) use hypercolor_leptos_ext::ws::PreviewFrameChannel;
 pub use hypercolor_leptos_ext::ws::ScreenZonesFrame;
 use hypercolor_leptos_ext::ws::{
+    DISPLAY_PREVIEW_FRAME_TAG, DisplayPreviewFrame, DisplayPreviewFrameView,
     EXTENDED_SCREEN_ZONES_FRAME_TAG, INTERACTIVE_PREVIEW_FRAME_TAG, InteractivePreviewFrame,
     InteractivePreviewFrameView, PREVIEW_CANCEL_FRAME_TAG, PREVIEW_CHUNK_FRAME_TAG,
     PreviewCancelFrame, PreviewChunkReassembler, PreviewFrame, PreviewPublicationMetadata,
-    PreviewReassemblyLimits, PreviewStreamId, PreviewTransportCapability,
-    ReassembledPreviewPublication, SCREEN_ZONES_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
+    PreviewReassemblyLimits, PreviewStreamId, ReassembledPreviewPublication,
+    SCREEN_ZONES_FRAME_TAG, WIDE_DISPLAY_PREVIEW_FRAME_TAG, WIDE_INTERACTIVE_PREVIEW_FRAME_TAG,
     WIDE_SCREEN_ZONES_FRAME_TAG, WIDE_ZONE_PREVIEW_FRAME_TAG, ZONE_PREVIEW_FRAME_TAG,
     ZonePreviewFrame, ZonePreviewFrameView,
 };
@@ -24,7 +25,9 @@ use hypercolor_types::sensor::SystemSnapshot;
 use leptos::prelude::*;
 use serde::Deserialize;
 
-use crate::api::DeviceMetricsSnapshot;
+use crate::api::{DeviceMetricsSnapshot, ServiceStatus};
+
+use super::transport::WebSocketBinaryFrame;
 
 // ── Connection State ────────────────────────────────────────────────────────
 
@@ -47,13 +50,13 @@ impl std::fmt::Display for ConnectionState {
     }
 }
 
-pub const EFFECT_STARTED_EVENTS: &[&str] =
-    &["effect_started", "effect_activated", "effect_changed"];
-pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivated"];
+pub const EFFECT_STARTED_EVENTS: &[&str] = &["effect_started"];
+pub const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped"];
 pub const EFFECT_ERROR_EVENTS: &[&str] = &["effect_error"];
 pub const SCENE_EVENTS: &[&str] = &[
     "active_scene_changed",
-    "render_group_changed",
+    "effect_control_changed",
+    "zone_changed",
     "scene_library_changed",
     "scene_settings_changed",
 ];
@@ -75,6 +78,7 @@ pub const LAYER_HEALTH_EVENTS: &[&str] = &["layer_health_changed"];
 pub struct PerformanceMetrics {
     pub fps: MetricsFps,
     pub frame_time: MetricsFrameTime,
+    pub input_latency: MetricsSessionLatency,
     pub stages: MetricsStages,
     pub pacing: MetricsPacing,
     pub effect_health: MetricsEffectHealth,
@@ -90,20 +94,22 @@ pub struct PerformanceMetrics {
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
+pub struct MetricsSessionLatency {
+    pub sample_count: u64,
+    pub avg_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub max_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct MetricsFps {
     pub target: u32,
     pub ceiling: u32,
     pub capacity: f64,
-    pub delivered: Option<f64>,
-    pub actual: f64,
+    pub delivered: f64,
     pub dropped: u32,
-}
-
-impl MetricsFps {
-    #[must_use]
-    pub fn delivered_or_legacy(&self) -> f64 {
-        self.delivered.unwrap_or(self.actual)
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -130,7 +136,7 @@ pub struct MetricsStages {
     pub preview_postprocess_ms: f64,
     pub event_bus_ms: f64,
     pub publish_frame_data_ms: f64,
-    pub publish_group_canvas_ms: f64,
+    pub publish_zone_canvas_ms: f64,
     pub publish_preview_ms: f64,
     pub publish_events_ms: f64,
     pub coordination_overhead_ms: f64,
@@ -158,8 +164,6 @@ pub struct MetricsPacing {
     pub gpu_sample_queue_saturated: u32,
     pub gpu_sample_wait_blocked: u32,
     pub gpu_sample_cpu_fallback: u32,
-    pub cpu_sampling_late_readback: u32,
-    pub led_sampling_readback: u32,
     pub preview_surface: u32,
     pub scene_canvas_forced_surface: u32,
     pub gpu_readback_failed_frames: u32,
@@ -240,8 +244,6 @@ pub struct MetricsTimeline {
     pub gpu_sample_queue_saturated: bool,
     pub gpu_sample_wait_blocked: bool,
     pub gpu_sample_cpu_fallback: bool,
-    pub cpu_sampling_late_readback: bool,
-    pub led_sampling_readback: bool,
     pub preview_surface: bool,
     pub scene_canvas_forced_surface: bool,
     pub cpu_readback_skipped: bool,
@@ -249,7 +251,7 @@ pub struct MetricsTimeline {
     pub budget_ms: f64,
     pub wake_late_ms: f64,
     pub logical_layer_count: u32,
-    pub render_group_count: u32,
+    pub render_zone_count: u32,
     pub scene_active: bool,
     pub scene_transition_active: bool,
     pub scene_snapshot_done_ms: f64,
@@ -278,15 +280,9 @@ pub struct MetricsTimeline {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct MetricsRenderSurfaces {
-    pub slot_count: u32,
-    pub free_slots: u32,
-    pub published_slots: u32,
-    pub dequeued_slots: u32,
     pub canvas_receivers: u32,
-    #[serde(rename = "preview_pool_saturation_reallocs")]
     pub scene_pool_saturation_reallocs: u64,
     pub direct_pool_saturation_reallocs: u64,
-    #[serde(rename = "preview_pool_grown_slots")]
     pub scene_pool_grown_slots: u32,
     pub direct_pool_grown_slots: u32,
     pub scene_pool_slot_count: u32,
@@ -384,6 +380,9 @@ pub struct MetricsCopies {
     pub publication_full_frame_count: u32,
     pub publication_full_frame_kb: f64,
     pub publication_reason: Option<String>,
+    pub session_full_frame_count: u64,
+    pub session_full_frame_frames: u64,
+    pub session_full_frame_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -414,9 +413,9 @@ pub struct MetricsWebsocket {
 #[serde(default)]
 pub struct BackpressureNotice {
     pub dropped_frames: u32,
-    pub channel: String,
+    pub topic: String,
     pub recommendation: String,
-    pub suggested_fps: u32,
+    pub suggested_fps: Option<f64>,
 }
 
 /// Lightweight device event hint used to decide whether the devices list
@@ -430,19 +429,32 @@ pub struct DeviceEventHint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneEventHint {
+    pub generation: u64,
     pub event_type: String,
     pub scene_id: Option<String>,
-    /// Zone (render group) the event names, for zone-tagged events like
-    /// `render_group_changed` and `layer_stack_changed`.
-    pub group_id: Option<String>,
+    /// Zone (render zone) the event names, for zone-tagged events like
+    /// `zone_changed` and `layer_stack_changed`.
+    pub zone_id: Option<String>,
     pub scene_name: Option<String>,
     pub scene_kind: Option<SceneKind>,
     pub scene_mutation_mode: Option<SceneMutationMode>,
     pub scene_snapshot_locked: Option<bool>,
-    pub render_group_role: Option<ZoneRole>,
-    pub render_group_change_kind: Option<ZoneChangeKind>,
+    pub zone_role: Option<ZoneRole>,
+    pub zone_change_kind: Option<ZoneChangeKind>,
     /// How the saved-scene library changed, for `scene_library_changed`.
     pub library_change_kind: Option<SceneLibraryChangeKind>,
+}
+
+pub fn sequence_scene_event_hint(
+    previous: Option<&SceneEventHint>,
+    mut next: SceneEventHint,
+) -> SceneEventHint {
+    next.generation = previous.map_or(1, |hint| hint.generation.wrapping_add(1));
+    next
+}
+
+pub fn reset_layer_health_cache(layer_health: &mut HashMap<String, LayerHealth>) {
+    layer_health.clear();
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -476,6 +488,7 @@ pub struct InputSourceStatusEventHint {
     pub configured: bool,
     pub consented: bool,
     pub demanded: bool,
+    pub active_consumer_count: usize,
     pub state: String,
     pub freshness: String,
     pub source_graph_generation: u64,
@@ -487,6 +500,8 @@ pub struct InputSourceStatusEventHint {
     pub retired: bool,
 }
 
+/// Corroborated launcher identity snapshot used to invalidate REST status.
+pub type ServiceIdentityEventHint = ServiceStatus;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ControlSurfaceEventHint {
     pub event_type: String,
@@ -516,9 +531,16 @@ struct SensorsMessage {
 #[derive(Debug, Deserialize)]
 struct BackpressureMessage {
     dropped_frames: u32,
-    channel: String,
+    topic: String,
     recommendation: String,
-    suggested_fps: u32,
+    suggested_fps: Option<f64>,
+}
+
+fn whole_fps(fps: f64) -> Option<u32> {
+    if fps < 1.0 || fps.fract() != 0.0 {
+        return None;
+    }
+    fps.to_string().parse().ok()
 }
 
 // ── Audio Level ─────────────────────────────────────────────────────────────
@@ -539,6 +561,8 @@ pub(super) enum PreviewBinaryMessage {
     Frame(PreviewFrameChannel, CanvasFrame),
     Zone(ZonePreviewFrameView),
     Interactive(String, CanvasFrame),
+    /// One display's output frame, named by the device it came from.
+    Display(String, CanvasFrame),
     ScreenZones(ScreenZonesFrame),
 }
 
@@ -555,28 +579,12 @@ impl Default for PreviewBinaryDecoder {
 }
 
 impl PreviewBinaryDecoder {
-    pub(super) fn apply_hello_capabilities(&mut self, message: &serde_json::Value) {
-        let Some(capability) = message
-            .get("capabilities")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|capabilities| {
-                PreviewTransportCapability::from_capabilities(
-                    capabilities.iter().filter_map(serde_json::Value::as_str),
-                )
-            })
-        else {
-            return;
-        };
-        self.chunks = PreviewChunkReassembler::new(
-            PreviewReassemblyLimits::default().negotiated_with(capability),
-        );
-    }
-
     pub(super) fn decode_at(
         &mut self,
-        buffer: js_sys::ArrayBuffer,
+        frame: WebSocketBinaryFrame,
         now_ms: u64,
     ) -> Option<PreviewBinaryMessage> {
+        let buffer = frame.into_array_buffer();
         let bytes = js_sys::Uint8Array::new(&buffer);
         if bytes.length() > 0 && bytes.get_index(0) == PREVIEW_CHUNK_FRAME_TAG {
             let encoded = Bytes::from(bytes.to_vec());
@@ -620,6 +628,9 @@ fn decode_direct_preview(buffer: js_sys::ArrayBuffer) -> Option<PreviewBinaryMes
     let tag = js_sys::Uint8Array::new(&buffer).get_index(0);
     if let Some((preview_id, frame)) = decode_interactive_preview_frame(&buffer) {
         return Some(PreviewBinaryMessage::Interactive(preview_id, frame));
+    }
+    if let Some((device_id, frame)) = decode_display_preview_frame(&buffer) {
+        return Some(PreviewBinaryMessage::Display(device_id, frame));
     }
     if matches!(tag, ZONE_PREVIEW_FRAME_TAG | WIDE_ZONE_PREVIEW_FRAME_TAG) {
         return ZonePreviewFrameView::decode_array_buffer(&buffer)
@@ -690,6 +701,24 @@ fn decode_reassembled_preview(
                 },
             )
         }
+        PreviewStreamId::Display(expected_device_id) => {
+            let frame = DisplayPreviewFrame::decode_bytes(&publication.encoded).ok()?;
+            if frame.device_id != *expected_device_id {
+                return None;
+            }
+            PreviewBinaryMessage::Display(
+                frame.device_id,
+                CanvasFrame {
+                    channel: PreviewFrameChannel::Canvas,
+                    frame_number: frame.frame_number,
+                    timestamp_ms: frame.timestamp_ms,
+                    width: frame.width,
+                    height: frame.height,
+                    format: frame.format,
+                    payload: js_sys::Uint8Array::from(frame.payload.as_ref()),
+                },
+            )
+        }
         PreviewStreamId::ScreenZones => {
             PreviewBinaryMessage::ScreenZones(ScreenZonesFrame::decode(&publication.encoded).ok()?)
         }
@@ -708,7 +737,10 @@ fn preview_metadata_matches(
         (
             PreviewBinaryMessage::Interactive(preview_id, frame),
             PreviewStreamId::Interactive(expected),
-        ) => preview_id == expected && canvas_metadata_matches(frame, metadata),
+        )
+        | (PreviewBinaryMessage::Display(preview_id, frame), PreviewStreamId::Display(expected)) => {
+            preview_id == expected && canvas_metadata_matches(frame, metadata)
+        }
         (PreviewBinaryMessage::Zone(frame), PreviewStreamId::Zone { scene_id, zone_id }) => {
             frame.scene_id == *scene_id
                 && frame.zone_id == *zone_id
@@ -769,6 +801,31 @@ pub(super) fn decode_interactive_preview_frame(
     ))
 }
 
+pub(super) fn decode_display_preview_frame(
+    buffer: &js_sys::ArrayBuffer,
+) -> Option<(String, CanvasFrame)> {
+    let tag = js_sys::Uint8Array::new(buffer).get_index(0);
+    if !matches!(
+        tag,
+        DISPLAY_PREVIEW_FRAME_TAG | WIDE_DISPLAY_PREVIEW_FRAME_TAG
+    ) {
+        return None;
+    }
+    let frame = DisplayPreviewFrameView::decode_array_buffer(buffer).ok()?;
+    Some((
+        frame.device_id,
+        CanvasFrame {
+            channel: PreviewFrameChannel::Canvas,
+            frame_number: frame.frame_number,
+            timestamp_ms: frame.timestamp_ms,
+            width: frame.width,
+            height: frame.height,
+            format: frame.format,
+            payload: frame.payload,
+        },
+    ))
+}
+
 pub(super) fn decode_screen_zones_frame(buffer: &js_sys::ArrayBuffer) -> Option<ScreenZonesFrame> {
     let tag = js_sys::Uint8Array::new(buffer).get_index(0);
     if !matches!(
@@ -793,13 +850,54 @@ pub fn interactive_preview_supported(message: &serde_json::Value) -> bool {
             })
 }
 
+#[must_use]
+pub fn is_resync_required(message: &serde_json::Value) -> bool {
+    message.get("type").and_then(serde_json::Value::as_str) == Some("event")
+        && message.get("event").and_then(serde_json::Value::as_str) == Some("resync_required")
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OutputPowerReconciler {
+    generation: u64,
+}
+
+impl OutputPowerReconciler {
+    pub fn begin(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    #[must_use]
+    pub const fn accepts(self, generation: u64) -> bool {
+        self.generation == generation
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitialSubscriptionAdmission {
+    Pending,
+    Admitted,
+    Rejected,
+}
+
+#[must_use]
+pub fn initial_subscription_admission(message: &serde_json::Value) -> InitialSubscriptionAdmission {
+    match message.get("type").and_then(serde_json::Value::as_str) {
+        Some("subscribed") => InitialSubscriptionAdmission::Admitted,
+        Some("error") => InitialSubscriptionAdmission::Rejected,
+        _ => InitialSubscriptionAdmission::Pending,
+    }
+}
+
 // ── JSON Message Handler ────────────────────────────────────────────────────
 
 /// Handle incoming JSON events from the daemon.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle_json_message(
     msg: &serde_json::Value,
-    set_active: &WriteSignal<Option<String>>,
+    _set_active: &WriteSignal<Option<String>>,
+    set_output_paused: &WriteSignal<bool>,
+    output_power_reconciler: StoredValue<OutputPowerReconciler>,
     metrics: ReadSignal<Option<PerformanceMetrics>>,
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_device_metrics: &WriteSignal<Option<DeviceMetricsSnapshot>>,
@@ -812,11 +910,12 @@ pub(super) fn handle_json_message(
     set_last_control_surface_event: &WriteSignal<Option<ControlSurfaceEventHint>>,
     set_last_extension_event: &WriteSignal<Option<ExtensionEventHint>>,
     set_last_input_source_status_event: &WriteSignal<Option<InputSourceStatusEventHint>>,
+    set_last_service_identity_event: &WriteSignal<Option<ServiceIdentityEventHint>>,
     set_layer_health: &WriteSignal<HashMap<String, LayerHealth>>,
     set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
-    set_preview_transport_cap: &WriteSignal<u32>,
+    set_preview_backpressure_cap: &WriteSignal<u32>,
     set_last_backpressure_at_ms: &WriteSignal<Option<f64>>,
     set_backpressure_probe_epoch: &WriteSignal<u64>,
 ) {
@@ -824,9 +923,17 @@ pub(super) fn handle_json_message(
 
     match msg_type {
         "hello" => {
-            // Extract active effect from hello state
+            // The handshake carries no effect: the live tree is
+            // multi-zone, so what renders comes from /scene and the
+            // effect lifecycle events (Spec 78 §7.1).
             if let Some(state) = msg.get("state") {
-                set_active.set(extract_active_effect_name(state));
+                invalidate_output_power_reconciliation(output_power_reconciler);
+                set_output_paused.set(
+                    state
+                        .get("paused")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                );
 
                 let target = state
                     .get("fps")
@@ -834,28 +941,23 @@ pub(super) fn handle_json_message(
                     .and_then(|target| target.as_u64())
                     .and_then(|target| u32::try_from(target).ok())
                     .unwrap_or_default();
-                let actual = state
-                    .get("fps")
-                    .and_then(|fps| fps.get("actual"))
-                    .and_then(|actual| actual.as_f64())
-                    .unwrap_or_default();
                 let capacity = state
                     .get("fps")
                     .and_then(|fps| fps.get("capacity"))
                     .and_then(|capacity| capacity.as_f64())
-                    .unwrap_or(actual);
+                    .unwrap_or_default();
                 let delivered = state
                     .get("fps")
                     .and_then(|fps| fps.get("delivered"))
-                    .and_then(|delivered| delivered.as_f64());
+                    .and_then(|delivered| delivered.as_f64())
+                    .unwrap_or_default();
 
-                if target > 0 || actual > 0.0 {
+                if target > 0 || delivered > 0.0 {
                     set_metrics.update(|metrics| {
                         let mut next = metrics.clone().unwrap_or_default();
                         next.fps.target = target;
                         next.fps.capacity = capacity;
                         next.fps.delivered = delivered;
-                        next.fps.actual = actual;
                         *metrics = Some(next);
                     });
                 }
@@ -888,11 +990,19 @@ pub(super) fn handle_json_message(
             }
         }
         "subscribed" => {
+            // The acknowledgment reports every live subscription, so the
+            // canvas cadence is whichever entry names that topic.
             let preview_target = msg
-                .get("config")
-                .and_then(|config| config.get("canvas"))
+                .get("topics")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|topics| {
+                    topics.iter().find(|entry| {
+                        entry.get("topic").and_then(serde_json::Value::as_str) == Some("canvas")
+                    })
+                })
+                .and_then(|entry| entry.get("config"))
                 .and_then(|canvas| canvas.get("fps"))
-                .and_then(|fps| fps.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .and_then(|fps| u32::try_from(fps).ok())
                 .unwrap_or_default();
             if preview_target > 0 {
@@ -901,17 +1011,18 @@ pub(super) fn handle_json_message(
         }
         "backpressure" => {
             if let Ok(message) = BackpressureMessage::deserialize(msg) {
-                if message.channel == "canvas"
-                    && message.recommendation == "reduce_fps"
-                    && message.suggested_fps > 0
+                if let Some(suggested_fps) = message
+                    .suggested_fps
+                    .filter(|_| message.topic == "canvas" && message.recommendation == "reduce_fps")
+                    .and_then(whole_fps)
                 {
-                    set_preview_transport_cap
-                        .update(|current| *current = (*current).min(message.suggested_fps));
+                    set_preview_backpressure_cap
+                        .update(|current| *current = (*current).min(suggested_fps));
                     set_last_backpressure_at_ms.set(Some(now_ms()));
                 }
                 let notice = BackpressureNotice {
                     dropped_frames: message.dropped_frames,
-                    channel: message.channel,
+                    topic: message.topic,
                     recommendation: message.recommendation,
                     suggested_fps: message.suggested_fps,
                 };
@@ -922,12 +1033,18 @@ pub(super) fn handle_json_message(
         }
         "event" => {
             if let Some(event_type) = msg.get("event").and_then(|e| e.as_str()) {
-                if EFFECT_STARTED_EVENTS.contains(&event_type) {
-                    set_active.set(extract_effect_name_from_event(
-                        msg.get("data").unwrap_or(&serde_json::Value::Null),
-                    ));
-                } else if EFFECT_STOPPED_EVENTS.contains(&event_type) {
-                    set_active.set(None);
+                if EFFECT_STARTED_EVENTS.contains(&event_type)
+                    || EFFECT_STOPPED_EVENTS.contains(&event_type)
+                {
+                    let effect_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    update_scene_event_hint(set_last_scene_event, event_type, effect_data);
+                    reconcile_output_power(*set_output_paused, output_power_reconciler);
+                } else if event_type == "paused" {
+                    invalidate_output_power_reconciliation(output_power_reconciler);
+                    set_output_paused.set(true);
+                } else if event_type == "resumed" {
+                    invalidate_output_power_reconciliation(output_power_reconciler);
+                    set_output_paused.set(false);
                 } else if event_type == "audio_level_update" {
                     if let Some(data) = msg.get("data") {
                         let f = |key| data.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -941,8 +1058,7 @@ pub(super) fn handle_json_message(
                     }
                 } else if SCENE_EVENTS.contains(&event_type) {
                     let scene_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
-                    set_last_scene_event
-                        .set(Some(extract_scene_event_hint(event_type, scene_data)));
+                    update_scene_event_hint(set_last_scene_event, event_type, scene_data);
                 } else if EFFECT_ERROR_EVENTS.contains(&event_type) {
                     let effect_data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_effect_error.set(extract_effect_error_hint(event_type, effect_data));
@@ -969,6 +1085,9 @@ pub(super) fn handle_json_message(
                     let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
                     set_last_input_source_status_event
                         .set(extract_input_source_status_event_hint(data));
+                } else if event_type == "service_identity_changed" {
+                    let data = msg.get("data").unwrap_or(&serde_json::Value::Null);
+                    set_last_service_identity_event.set(extract_service_identity_event_hint(data));
                 } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
                     && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
                 {
@@ -987,11 +1106,42 @@ pub(super) fn handle_json_message(
     }
 }
 
+fn invalidate_output_power_reconciliation(reconciler: StoredValue<OutputPowerReconciler>) {
+    reconciler.update_value(|reconciler| {
+        reconciler.begin();
+    });
+}
+
+fn reconcile_output_power(
+    set_output_paused: WriteSignal<bool>,
+    reconciler: StoredValue<OutputPowerReconciler>,
+) {
+    let mut state = reconciler.get_value();
+    let generation = state.begin();
+    reconciler.set_value(state);
+    leptos::task::spawn_local(async move {
+        if let Ok(output) = crate::api::output::fetch_output().await
+            && reconciler.get_value().accepts(generation)
+        {
+            set_output_paused.set(matches!(
+                output.power,
+                hypercolor_types::api::output::OutputPowerMode::Paused
+            ));
+        }
+    });
+}
+
 pub fn extract_input_source_status_event_hint(
     data: &serde_json::Value,
 ) -> Option<InputSourceStatusEventHint> {
     let hint = InputSourceStatusEventHint::deserialize(data).ok()?;
     (!hint.source_id.is_empty()).then_some(hint)
+}
+
+pub fn extract_service_identity_event_hint(
+    data: &serde_json::Value,
+) -> Option<ServiceIdentityEventHint> {
+    ServiceIdentityEventHint::deserialize(data).ok()
 }
 
 pub fn extract_control_surface_event_hint(
@@ -1056,38 +1206,38 @@ pub fn extract_effect_error_hint(
 }
 
 /// Compose the health-map key for a layer. A `SceneLayerId` is unique only
-/// within its zone — two groups can carry the same layer id — and
-/// the daemon keys health by group as well, so scene and group ride along
-/// or one group's health would clobber another group's row.
-pub fn layer_health_key(scene_id: &str, group_id: &str, layer_id: &str) -> String {
-    format!("{scene_id}/{group_id}/{layer_id}")
+/// within its zone. Two zones can carry the same layer id, and the daemon
+/// keys health by zone as well, so scene and zone ride along or one zone's
+/// health would clobber another zone's row.
+pub fn layer_health_key(scene_id: &str, zone_id: &str, layer_id: &str) -> String {
+    format!("{scene_id}/{zone_id}/{layer_id}")
 }
 
 /// Decode a `layer_health_changed` event into its `(health-map key, health)`.
 /// All three identity fields are required: the daemon always sends them, and
-/// without scene + group the key would collide across zones.
+/// without scene and zone the key would collide across zones.
 pub fn extract_layer_health(data: &serde_json::Value) -> Option<(String, LayerHealth)> {
     let scene_id = data.get("scene_id")?.as_str()?;
-    let group_id = data.get("group_id")?.as_str()?;
+    let zone_id = data.get("zone_id")?.as_str()?;
     let layer_id = data.get("layer_id")?.as_str()?;
     let health = LayerHealth::deserialize(data.get("health")?).ok()?;
-    Some((layer_health_key(scene_id, group_id, layer_id), health))
+    Some((layer_health_key(scene_id, zone_id, layer_id), health))
 }
 
 /// Whether any *current* layer in a zone is in a degraded health
-/// state. "Degraded" is the alarming end of `LayerHealth` — a failed
+/// state. "Degraded" is the alarming end of `LayerHealth`: a failed
 /// producer or a missing asset; transient `Loading`/`Stalled` states do not
 /// count, so the §6.7 Screen-row and Stage indicators stay meaningful.
 ///
 /// The health map is append-only and the daemon drops a layer's runtime
 /// state on reconcile without a recovery event, so a removed-but-failed
-/// layer leaves a stale entry behind. `current_layer_ids` is the group's
+/// layer leaves a stale entry behind. `current_layer_ids` is the zone's
 /// live layer set; an entry for a layer no longer in it is ignored, so a
 /// deleted failed layer cannot keep the surface flagged.
-pub fn group_has_degraded_layer(
+pub fn zone_has_degraded_layer(
     layer_health: &HashMap<String, LayerHealth>,
     scene_id: &str,
-    group_id: &str,
+    zone_id: &str,
     current_layer_ids: &[String],
 ) -> bool {
     layer_health.iter().any(|(key, health)| {
@@ -1098,7 +1248,7 @@ pub fn group_has_degraded_layer(
             return false;
         }
         let mut parts = key.splitn(3, '/');
-        if parts.next() != Some(scene_id) || parts.next() != Some(group_id) {
+        if parts.next() != Some(scene_id) || parts.next() != Some(zone_id) {
             return false;
         }
         parts
@@ -1112,16 +1262,17 @@ pub fn extract_scene_event_hint(
     scene_data: &serde_json::Value,
 ) -> SceneEventHint {
     // `kind` is overloaded across the scene event family: a ZoneChangeKind
-    // on render_group_changed, a SceneLibraryChangeKind on
+    // on zone_changed, a SceneLibraryChangeKind on
     // scene_library_changed, and a SceneKind elsewhere. Scope each parse
     // to its event so the fields can't shadow one another.
-    let is_render_group_changed = event_type == "render_group_changed";
+    let is_zone_changed = event_type == "zone_changed";
     let is_library_changed = event_type == "scene_library_changed";
-    let generic_kind = (!is_render_group_changed && !is_library_changed)
+    let generic_kind = (!is_zone_changed && !is_library_changed)
         .then(|| scene_data.get("kind"))
         .flatten();
 
     SceneEventHint {
+        generation: 0,
         event_type: event_type.to_owned(),
         scene_id: scene_data
             .get("current")
@@ -1129,8 +1280,8 @@ pub fn extract_scene_event_hint(
             .or_else(|| scene_data.get("id"))
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
-        group_id: scene_data
-            .get("group_id")
+        zone_id: scene_data
+            .get("zone_id")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned),
         scene_name: scene_data
@@ -1153,11 +1304,11 @@ pub fn extract_scene_event_hint(
             .get("current_snapshot_locked")
             .or_else(|| scene_data.get("snapshot_locked"))
             .and_then(serde_json::Value::as_bool),
-        render_group_role: scene_data
+        zone_role: scene_data
             .get("role")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
-        render_group_change_kind: is_render_group_changed
+        zone_change_kind: is_zone_changed
             .then(|| scene_data.get("kind"))
             .flatten()
             .cloned()
@@ -1170,38 +1321,25 @@ pub fn extract_scene_event_hint(
     }
 }
 
+fn update_scene_event_hint(
+    set_last_scene_event: &WriteSignal<Option<SceneEventHint>>,
+    event_type: &str,
+    data: &serde_json::Value,
+) {
+    let next = extract_scene_event_hint(event_type, data);
+    set_last_scene_event.update(|previous| {
+        *previous = Some(sequence_scene_event_hint(previous.as_ref(), next));
+    });
+}
+
 pub fn scene_event_affects_active_effect(hint: &SceneEventHint) -> bool {
     match hint.event_type.as_str() {
         // Library CRUD and scene-settings tweaks never change what's
         // rendering right now.
         "scene_library_changed" | "scene_settings_changed" => false,
-        "render_group_changed" => hint.render_group_role != Some(ZoneRole::Display),
+        "zone_changed" => hint.zone_role != Some(ZoneRole::Display),
         _ => true,
     }
-}
-
-fn extract_active_effect_name(state: &serde_json::Value) -> Option<String> {
-    let active = state.get("effect").or_else(|| state.get("active_effect"))?;
-    active
-        .get("name")
-        .or_else(|| active.get("effect_name"))
-        .and_then(serde_json::Value::as_str)
-        .map(String::from)
-        .or_else(|| active.as_str().map(String::from))
-}
-
-fn extract_effect_name_from_event(data: &serde_json::Value) -> Option<String> {
-    data.get("name")
-        .or_else(|| data.get("effect_name"))
-        .or_else(|| data.get("effect").and_then(|effect| effect.get("name")))
-        .or_else(|| data.get("current").and_then(|effect| effect.get("name")))
-        .and_then(serde_json::Value::as_str)
-        .map(String::from)
-        .or_else(|| {
-            data.get("effect")
-                .and_then(serde_json::Value::as_str)
-                .map(String::from)
-        })
 }
 
 fn extract_device_event_hint(
@@ -1227,4 +1365,27 @@ fn extract_device_event_hint(
         device_id,
         found_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::extract_input_source_status_event_hint;
+
+    #[test]
+    fn input_status_hint_defaults_a_missing_optional_consumer_count() {
+        let current = extract_input_source_status_event_hint(&json!({
+            "source_id": "macos:session",
+            "active_consumer_count": 4
+        }))
+        .expect("current input status event should decode");
+        let partial = extract_input_source_status_event_hint(&json!({
+            "source_id": "macos:session"
+        }))
+        .expect("a missing optional count should still decode");
+
+        assert_eq!(current.active_consumer_count, 4);
+        assert_eq!(partial.active_consumer_count, 0);
+    }
 }

@@ -28,23 +28,24 @@ impl ProjectedLookupAllocationFixture {
 use anyhow::{Result, bail};
 #[cfg(feature = "wgpu")]
 use hypercolor_core::bus::DisplayYuv420Frame;
-#[cfg(all(feature = "wgpu", target_os = "windows"))]
+#[cfg(feature = "wgpu")]
 use hypercolor_core::input::screen::ScreenBranchPublication;
 use hypercolor_core::input::screen::ScreenNativeExecutionTarget;
 use hypercolor_core::spatial::PreparedZonePlan;
 #[cfg(feature = "wgpu")]
-use hypercolor_core::types::canvas::Rgba;
-use hypercolor_core::types::canvas::{
+use hypercolor_types::canvas::Rgba;
+use hypercolor_types::canvas::{
     Canvas, PublishedSurface, RenderSurfacePool, SurfaceDescriptor, SurfaceLease,
     SurfaceStateCounts,
 };
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::device::{DeviceId, DisplayFrameFormat};
 use hypercolor_types::event::ZoneColors;
+use hypercolor_types::layer::BlendMode;
 #[cfg(feature = "wgpu")]
 use hypercolor_types::layer::SceneLayerId;
 use hypercolor_types::layer::{LayerAdjust, LayerTransform};
-use hypercolor_types::scene::{DisplayFaceBlendMode, ZoneId};
+use hypercolor_types::scene::ZoneId;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition};
 use hypercolor_types::viewport::FitMode;
 
@@ -62,8 +63,8 @@ use crate::render_thread::sparkleflinger::gpu::{
 use super::producer_queue::ProducerFrame;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProjectedGroupTextureRequirement {
-    pub(crate) group_id: ZoneId,
+pub(crate) struct ProjectedZoneTextureRequirement {
+    pub(crate) zone_id: ZoneId,
     pub(crate) width: u32,
     pub(crate) height: u32,
 }
@@ -292,9 +293,6 @@ impl CompositionLayer {
     }
 
     fn is_bypass_candidate(&self) -> bool {
-        if matches!(self.frame, ProducerFrame::ScreenPublication(_)) {
-            return false;
-        }
         #[cfg(feature = "servo-gpu-import")]
         if matches!(self.frame, ProducerFrame::Gpu(_)) {
             return false;
@@ -474,7 +472,7 @@ impl MediaTextureSourceKey {
 #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DisplayFinalizeCacheKey {
-    pub(crate) group_id: ZoneId,
+    pub(crate) zone_id: ZoneId,
     pub(crate) device_id: DeviceId,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -495,7 +493,7 @@ pub(crate) struct DisplayFinalizeParams {
     pub(crate) viewport_rotation: f32,
     pub(crate) viewport_scale: f32,
     pub(crate) viewport_edge_behavior: EdgeBehavior,
-    pub(crate) blend_mode: DisplayFaceBlendMode,
+    pub(crate) blend_mode: BlendMode,
     pub(crate) opacity: f32,
 }
 
@@ -676,6 +674,17 @@ pub(crate) enum DisplayFinalizeFrame {
 pub(crate) struct PendingDisplayFinalization(PendingGpuDisplayFinalize);
 
 impl SparkleFlinger {
+    /// Capability features the native screen bridge reports for the
+    /// screen source, such as Metal 4 availability on macOS.
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn screen_source_capability_features(&self) -> Vec<(&'static str, bool)> {
+        match &self.backend {
+            #[cfg(feature = "wgpu")]
+            SparkleFlingerBackend::Gpu { gpu, .. } => gpu.screen_source_capability_features(),
+            _ => Vec::new(),
+        }
+    }
+
     #[cfg_attr(not(feature = "wgpu"), allow(unused_variables))]
     pub(crate) fn prepare_zone_sampling_plan(
         &mut self,
@@ -780,29 +789,40 @@ impl SparkleFlinger {
         changed
     }
 
-    pub(crate) fn screen_native_execution_target(&self) -> Option<&ScreenNativeExecutionTarget> {
-        #[cfg(all(feature = "wgpu", target_os = "windows"))]
-        if let SparkleFlingerBackend::Gpu { gpu, .. } = &self.backend {
+    pub(crate) fn screen_native_execution_target(
+        &mut self,
+    ) -> Option<&ScreenNativeExecutionTarget> {
+        #[cfg(feature = "wgpu")]
+        if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             return gpu.screen_native_execution_target();
         }
         None
     }
 
     pub(crate) fn release_native_screen_caches(&mut self) {
-        #[cfg(all(feature = "wgpu", target_os = "windows"))]
+        #[cfg(feature = "wgpu")]
         if let SparkleFlingerBackend::Gpu { gpu, .. } = &mut self.backend {
             gpu.release_native_screen_caches();
         }
     }
 
-    #[cfg(all(feature = "wgpu", target_os = "windows"))]
+    #[cfg(feature = "wgpu")]
     pub(crate) fn copy_screen_publication(
         &mut self,
         publication: &std::sync::Arc<ScreenBranchPublication>,
     ) -> Result<Option<GpuTextureFrame>> {
+        self.copy_screen_publication_outcome(publication)
+            .into_result()
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn copy_screen_publication_outcome(
+        &mut self,
+        publication: &std::sync::Arc<ScreenBranchPublication>,
+    ) -> gpu::NativeScreenCopyOutcome {
         match &mut self.backend {
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.copy_screen_publication(publication),
-            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            SparkleFlingerBackend::Cpu(_) => gpu::NativeScreenCopyOutcome::Ignored,
         }
     }
 
@@ -841,10 +861,11 @@ impl SparkleFlinger {
         )
     }
 
-    #[cfg(all(test, feature = "wgpu", target_os = "windows"))]
-    pub(crate) fn new_required_dx12_for_test() -> Result<Self> {
+    /// A GPU compositor on the backend mandatory GPU tests must exercise.
+    #[cfg(all(test, feature = "wgpu"))]
+    pub(crate) fn new_required_gpu_for_test() -> Result<Self> {
         let render_device =
-            GpuRenderDevice::new_dx12_required("SparkleFlinger required DX12 test compositor")?;
+            GpuRenderDevice::new_required_for_test("SparkleFlinger required GPU test compositor")?;
         Self::new_with_gpu_device(RenderAccelerationMode::Gpu, Some(render_device))
     }
 
@@ -1039,7 +1060,7 @@ impl SparkleFlinger {
 
     pub(crate) fn prepare_projected_scene_resources(
         &self,
-        requirements: &[ProjectedGroupTextureRequirement],
+        requirements: &[ProjectedZoneTextureRequirement],
         gpu_projection_admitted: bool,
         scene_width: u32,
         scene_height: u32,
@@ -1085,20 +1106,20 @@ impl SparkleFlinger {
         }
     }
 
-    pub(crate) fn has_projected_group_resource(
+    pub(crate) fn has_projected_zone_resource(
         &self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         width: u32,
         height: u32,
     ) -> bool {
         match &self.backend {
             SparkleFlingerBackend::Cpu(_) => {
-                let _ = (group_id, width, height);
+                let _ = (zone_id, width, height);
                 false
             }
             #[cfg(feature = "wgpu")]
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.has_projected_group_resource(group_id, width, height)
+                gpu.has_projected_zone_resource(zone_id, width, height)
             }
         }
     }
@@ -1107,9 +1128,9 @@ impl SparkleFlinger {
         clippy::unnecessary_wraps,
         reason = "the wrapper preserves the fallible GPU snapshot contract in CPU-only builds"
     )]
-    pub(crate) fn stabilize_projected_group_frame(
+    pub(crate) fn stabilize_projected_zone_frame(
         &mut self,
-        group_id: ZoneId,
+        zone_id: ZoneId,
         frame: ProducerFrame,
     ) -> Result<ProducerFrame> {
         #[cfg(feature = "wgpu")]
@@ -1121,7 +1142,7 @@ impl SparkleFlinger {
                 ) if gpu_frame.origin
                     == crate::render_thread::producer_queue::GpuTextureFrameOrigin::CompositorOutput =>
                 {
-                    gpu.snapshot_projected_group_frame(group_id, gpu_frame)
+                    gpu.snapshot_projected_zone_frame(zone_id, gpu_frame)
                         .map(ProducerFrame::GpuTexture)
                 }
                 (_, frame) => Ok(frame),
@@ -1129,7 +1150,7 @@ impl SparkleFlinger {
         }
         #[cfg(not(feature = "wgpu"))]
         {
-            let _ = group_id;
+            let _ = zone_id;
             Ok(frame)
         }
     }
@@ -1265,7 +1286,7 @@ impl SparkleFlinger {
         &mut self,
         scene: &PublishedSurface,
         face: &PublishedSurface,
-        blend_mode: DisplayFaceBlendMode,
+        blend_mode: BlendMode,
         opacity: f32,
     ) -> PublishedSurface {
         face_overlay::compose_face_overlay(
@@ -1280,7 +1301,7 @@ impl SparkleFlinger {
     pub(crate) fn blend_face_overlay_rgba(
         scene_rgba: &mut [u8],
         face_rgba: &[u8],
-        blend_mode: DisplayFaceBlendMode,
+        blend_mode: BlendMode,
         opacity: f32,
     ) {
         face_overlay::blend_face_overlay_rgba(scene_rgba, face_rgba, blend_mode, opacity);
@@ -1345,11 +1366,11 @@ impl SparkleFlinger {
     }
 
     #[cfg(feature = "wgpu")]
-    pub(crate) fn retain_display_finalize_groups(&mut self, active_group_ids: &[ZoneId]) {
+    pub(crate) fn retain_display_finalize_zones(&mut self, active_zone_ids: &[ZoneId]) {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => {}
             SparkleFlingerBackend::Gpu { gpu, .. } => {
-                gpu.retain_display_finalize_groups(active_group_ids);
+                gpu.retain_display_finalize_zones(active_zone_ids);
             }
         }
     }
@@ -1551,6 +1572,20 @@ impl SparkleFlinger {
         match &mut self.backend {
             SparkleFlingerBackend::Cpu(_) => Ok(None),
             SparkleFlingerBackend::Gpu { gpu, .. } => gpu.current_output_frame(),
+        }
+    }
+
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn sample_texture_zone_plan(
+        &mut self,
+        frame: &GpuTextureFrame,
+        prepared_zones: &[PreparedZonePlan],
+    ) -> Result<Option<Vec<ZoneColors>>> {
+        match &mut self.backend {
+            SparkleFlingerBackend::Cpu(_) => Ok(None),
+            SparkleFlingerBackend::Gpu { gpu, .. } => {
+                gpu.sample_texture_zone_plan(frame, prepared_zones)
+            }
         }
     }
 
@@ -1808,13 +1843,19 @@ fn preview_surface_for_frame(
                 preview_surface_pool,
             )
         }
-        ProducerFrame::ScreenPublication(_) => scaled_preview_surface_from_rgba(
-            frame.cpu_rgba_bytes()?,
-            frame.width(),
-            frame.height(),
-            request,
-            preview_surface_pool,
-        ),
+        ProducerFrame::ScreenPublication(publication) => {
+            let surface = publication.published_surface();
+            if preview_request_matches_dimensions(request, surface.width(), surface.height()) {
+                return Some(surface.clone());
+            }
+            scaled_preview_surface_from_rgba(
+                surface.rgba_bytes(),
+                surface.width(),
+                surface.height(),
+                request,
+                preview_surface_pool,
+            )
+        }
         #[cfg(feature = "servo-gpu-import")]
         ProducerFrame::Gpu(_) => {
             frame.record_cpu_materialization_blocked();

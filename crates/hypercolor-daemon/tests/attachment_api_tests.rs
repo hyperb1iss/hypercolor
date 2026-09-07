@@ -2,8 +2,8 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::time::Duration;
 
-use anyhow::Result;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -11,11 +11,13 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use hypercolor_core::config::ConfigManager;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::AppState;
 use hypercolor_driver_api::{BackendInfo, DeviceBackend};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFeatures, DeviceId, DeviceInfo, DeviceOrigin, DeviceState, DeviceTopologyHint,
+    SegmentInfo,
 };
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
@@ -23,6 +25,8 @@ use hypercolor_types::spatial::{
 };
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+type Result<T> = std::result::Result<T, DeviceError>;
 
 struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
@@ -82,19 +86,22 @@ impl DeviceBackend for RecordingBackend {
         }
     }
 
-    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(Vec::new())
-    }
-
-    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+    fn adopt_device(
+        &self,
+        _discovered: &hypercolor_driver_api::DiscoveredDevice,
+    ) -> std::result::Result<(), hypercolor_types::device::DeviceError> {
         Ok(())
     }
 
-    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+    async fn connect(&self, _id: &DeviceId) -> Result<()> {
         Ok(())
     }
 
-    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+    async fn disconnect(&self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
         self.writes
             .lock()
             .expect("recording backend mutex should not be poisoned")
@@ -120,7 +127,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         model: None,
         connection_type: ConnectionType::Network,
         origin: DeviceOrigin::native("wled", "wled", ConnectionType::Network),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Main".to_owned(),
             led_count: 60,
             topology: DeviceTopologyHint::Strip,
@@ -154,7 +161,7 @@ async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
             .with_protocol_id("nollie/prism-8"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Channel 1".to_owned(),
             led_count: 126,
             topology: DeviceTopologyHint::Strip,
@@ -188,8 +195,8 @@ async fn insert_nollie32_test_device(state: &Arc<AppState>) -> DeviceId {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
             .with_protocol_id("nollie/nollie-32"),
-        zones: (1..=20)
-            .map(|index| ZoneInfo {
+        segments: (1..=20)
+            .map(|index| SegmentInfo {
                 name: format!("Channel {index}"),
                 led_count: 256,
                 topology: DeviceTopologyHint::Strip,
@@ -316,12 +323,29 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     };
 
-    let mut spatial = state.spatial_engine.write().await;
-    spatial.update_layout(layout);
+    let preview =
+        api::layouts::preview_layout(axum::extract::State(Arc::clone(state)), axum::Json(layout));
+    tokio::pin!(preview);
+    let response = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            tokio::select! {
+                response = &mut preview => break response,
+                () = tokio::task::yield_now() => {
+                    state
+                        .layout_publication_test_executor()
+                        .execute_next_layout_publication()
+                        .await
+                        .expect("attachment layout should publish");
+                }
+            }
+        }
+    })
+    .await
+    .expect("attachment layout publication should finish");
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 async fn register_recording_backend(
@@ -329,11 +353,11 @@ async fn register_recording_backend(
     writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>,
 ) {
     let mut manager = state.backend_manager.lock().await;
-    manager.register_backend(Box::new(RecordingBackend::new(writes)));
+    manager.register_backend(Arc::new(RecordingBackend::new(writes)));
 }
 
 #[tokio::test]
-async fn attachment_catalog_and_metadata_endpoints_work() {
+async fn attachment_template_collection_lists_builtin_metadata() {
     let _guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new());
     let app = test_app_with_state(state);
@@ -351,51 +375,10 @@ async fn attachment_catalog_and_metadata_endpoints_work() {
         "generic-argb-fan-6-leds"
     );
     assert_eq!(list_json["data"]["items"][0]["vendor"], "Generic");
-
-    let detail_response = send_empty(
-        &app,
-        "GET",
-        "/api/v1/attachments/templates/generic-argb-fan-6-leds",
-    )
-    .await;
-    assert_eq!(detail_response.status(), StatusCode::OK);
-    let detail_json = body_json(detail_response).await;
-    assert_eq!(detail_json["data"]["origin"], "built_in");
-    assert_eq!(
-        detail_json["data"]["led_positions"]
-            .as_array()
-            .expect("led_positions should be an array")
-            .len(),
-        6
-    );
-
-    let categories_response = send_empty(&app, "GET", "/api/v1/attachments/categories").await;
-    assert_eq!(categories_response.status(), StatusCode::OK);
-    let categories_json = body_json(categories_response).await;
-    assert!(
-        categories_json["data"]["items"]
-            .as_array()
-            .expect("items should be an array")
-            .iter()
-            .any(|item| item["category"] == "fan"),
-        "expected at least one fan category entry"
-    );
-
-    let vendors_response = send_empty(&app, "GET", "/api/v1/attachments/vendors").await;
-    assert_eq!(vendors_response.status(), StatusCode::OK);
-    let vendors_json = body_json(vendors_response).await;
-    assert!(
-        vendors_json["data"]["items"]
-            .as_array()
-            .expect("items should be an array")
-            .iter()
-            .any(|item| item["vendor"] == "Generic"),
-        "expected Generic vendor to be present"
-    );
 }
 
 #[tokio::test]
-async fn user_template_crud_persists_to_overridden_data_dir() {
+async fn user_template_create_persists_to_overridden_data_dir() {
     let guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new());
     let app = test_app_with_state(state);
@@ -414,64 +397,50 @@ async fn user_template_crud_persists_to_overridden_data_dir() {
     assert_eq!(create_json["data"]["origin"], "user");
     assert!(template_path.exists(), "template file should be persisted");
 
-    let update_response = send_json(
-        &app,
-        "PUT",
-        format!("/api/v1/attachments/templates/{template_id}"),
-        json!({
-            "id": template_id,
-            "name": "Test Custom Strip Updated",
-            "vendor": "Test Vendor",
-            "category": "strip",
-            "description": "Updated strip template",
-            "default_size": {
-                "width": 0.5,
-                "height": 0.1
-            },
-            "topology": {
-                "type": "strip",
-                "count": 12,
-                "direction": "left_to_right"
-            },
-            "compatible_slots": [],
-            "tags": ["updated", "strip"]
-        }),
-    )
-    .await;
-    assert_eq!(update_response.status(), StatusCode::OK);
-
-    let get_response = send_empty(
+    let list_response = send_empty(
         &app,
         "GET",
-        format!("/api/v1/attachments/templates/{template_id}"),
+        format!("/api/v1/attachments/templates?q={template_id}"),
     )
     .await;
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let get_json = body_json(get_response).await;
-    assert_eq!(get_json["data"]["name"], "Test Custom Strip Updated");
-    assert_eq!(get_json["data"]["tags"], json!(["updated", "strip"]));
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["items"][0]["id"], template_id);
+    assert_eq!(list_json["data"]["items"][0]["name"], "Test Custom Strip");
+}
 
-    let delete_response = send_empty(
-        &app,
-        "DELETE",
-        format!("/api/v1/attachments/templates/{template_id}"),
-    )
-    .await;
-    assert_eq!(delete_response.status(), StatusCode::OK);
-    let delete_json = body_json(delete_response).await;
-    assert_eq!(delete_json["data"]["deleted"], true);
-    assert!(
-        !template_path.exists(),
-        "template file should be removed after delete"
-    );
+#[tokio::test]
+async fn attachment_template_item_and_facet_routes_are_absent() {
+    let _guard = TestDataDirGuard::new().await;
+    let app = test_app_with_state(Arc::new(AppState::new()));
+
+    for (method, path) in [
+        (
+            "GET",
+            "/api/v1/attachments/templates/generic-argb-fan-6-leds",
+        ),
+        (
+            "PUT",
+            "/api/v1/attachments/templates/generic-argb-fan-6-leds",
+        ),
+        (
+            "DELETE",
+            "/api/v1/attachments/templates/generic-argb-fan-6-leds",
+        ),
+        ("GET", "/api/v1/attachments/categories"),
+        ("GET", "/api/v1/attachments/vendors"),
+    ] {
+        let response = send_empty(&app, method, path).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+    }
 }
 
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "end-to-end API flow covers preview, save, conflict, and delete behavior together"
+    reason = "end-to-end API flow covers validation, save, fetch, and delete together"
 )]
-async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_deletes() {
+async fn device_attachment_profile_flow_persists_and_clears() {
     let guard = TestDataDirGuard::new().await;
     let state = Arc::new(AppState::new());
     let app = test_app_with_state(Arc::clone(&state));
@@ -481,7 +450,7 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
     create_template(&app, template_id, "Profile Test Strip", 12).await;
     set_active_layout_for_device(&state, device_id).await;
 
-    let preview_body = json!({
+    let update_body = json!({
         "bindings": [{
             "slot_id": "main",
             "template_id": template_id,
@@ -490,38 +459,73 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
             "led_offset": 0
         }]
     });
-    let preview_response = send_json(
+    let logical_device_count = state.logical_devices.read().await.len();
+    let layout_before = state.spatial_engine.snapshot().layout().clone();
+    let mut events = state.event_bus.subscribe_all();
+    let validation_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
-        preview_body.clone(),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": update_body["bindings"].clone(),
+            "validate_only": true
+        }),
     )
     .await;
-    assert_eq!(preview_response.status(), StatusCode::OK);
-    let preview_json = body_json(preview_response).await;
+    assert_eq!(validation_response.status(), StatusCode::OK);
+    let validation_json = body_json(validation_response).await;
     assert_eq!(
-        preview_json["data"]["zones"]
+        validation_json["data"]["suggested_zones"]
             .as_array()
-            .expect("zones should be an array")
+            .expect("suggested_zones should be an array")
             .len(),
         2
     );
-    assert_eq!(preview_json["data"]["zones"][0]["led_start"], 0);
-    assert_eq!(preview_json["data"]["zones"][1]["led_start"], 12);
-    assert_eq!(preview_json["data"]["zones"][0]["led_count"], 12);
+    assert_eq!(
+        validation_json["data"]["suggested_zones"][0]["led_start"],
+        0
+    );
+    assert_eq!(
+        validation_json["data"]["suggested_zones"][1]["led_start"],
+        12
+    );
+    assert_eq!(
+        validation_json["data"]["suggested_zones"][0]["led_count"],
+        12
+    );
     assert!(
-        preview_json["data"]["zones"][0]["name"]
+        validation_json["data"]["suggested_zones"][0]["name"]
             .as_str()
             .expect("zone name should be a string")
             .contains("Desk Edge"),
         "zone name should include the binding name"
     );
+    assert_eq!(validation_json["data"]["needs_layout_update"], true);
+    assert!(!guard.attachment_profiles_path().exists());
+    assert_eq!(
+        state.logical_devices.read().await.len(),
+        logical_device_count
+    );
+    assert_eq!(state.spatial_engine.snapshot().layout(), layout_before);
+    assert!(state.usb_protocol_configs.config(device_id).await.is_none());
+    assert!(events.try_recv().is_err());
+
+    let unpersisted_response = send_empty(
+        &app,
+        "GET",
+        format!("/api/v1/devices/{device_id}/attachments"),
+    )
+    .await;
+    assert_eq!(unpersisted_response.status(), StatusCode::OK);
+    let unpersisted_json = body_json(unpersisted_response).await;
+    assert_eq!(unpersisted_json["data"]["bindings"], json!([]));
 
     let overlap_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
         json!({
+            "validate_only": true,
             "bindings": [
                 {
                     "slot_id": "main",
@@ -547,7 +551,7 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
         &app,
         "PUT",
         format!("/api/v1/devices/{device_id}/attachments"),
-        preview_body,
+        update_body,
     )
     .await;
     assert_eq!(update_response.status(), StatusCode::OK);
@@ -598,16 +602,6 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
         "suggested zone name should preserve the binding name"
     );
 
-    let delete_template_while_bound = send_empty(
-        &app,
-        "DELETE",
-        format!("/api/v1/attachments/templates/{template_id}"),
-    )
-    .await;
-    assert_eq!(delete_template_while_bound.status(), StatusCode::CONFLICT);
-    let conflict_json = body_json(delete_template_while_bound).await;
-    assert_eq!(conflict_json["error"]["code"], "conflict");
-
     let delete_profile_response = send_empty(
         &app,
         "DELETE",
@@ -617,23 +611,6 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
     assert_eq!(delete_profile_response.status(), StatusCode::OK);
     let delete_profile_json = body_json(delete_profile_response).await;
     assert_eq!(delete_profile_json["data"]["deleted"], true);
-
-    let delete_template_response = send_empty(
-        &app,
-        "DELETE",
-        format!("/api/v1/attachments/templates/{template_id}"),
-    )
-    .await;
-    assert_eq!(delete_template_response.status(), StatusCode::OK);
-    let delete_template_json = body_json(delete_template_response).await;
-    assert_eq!(delete_template_json["data"]["deleted"], true);
-    assert!(
-        !guard
-            .attachments_dir()
-            .join(format!("{template_id}.toml"))
-            .exists(),
-        "template should be removed after the profile is cleared"
-    );
 }
 
 #[tokio::test]
@@ -663,23 +640,26 @@ async fn multiple_same_slot_bindings_are_named_and_suggested_distinctly() {
         ]
     });
 
-    let preview_response = send_json(
+    let validation_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
-        body.clone(),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": body["bindings"].clone(),
+            "validate_only": true
+        }),
     )
     .await;
-    assert_eq!(preview_response.status(), StatusCode::OK);
-    let preview_json = body_json(preview_response).await;
-    let preview_zones = preview_json["data"]["zones"]
+    assert_eq!(validation_response.status(), StatusCode::OK);
+    let validation_json = body_json(validation_response).await;
+    let validation_zones = validation_json["data"]["suggested_zones"]
         .as_array()
-        .expect("zones should be an array");
-    assert_eq!(preview_zones.len(), 2);
-    assert_eq!(preview_zones[0]["led_start"], 0);
-    assert_eq!(preview_zones[1]["led_start"], 12);
-    assert_eq!(preview_zones[0]["name"], "Stacked Strip 1");
-    assert_eq!(preview_zones[1]["name"], "Stacked Strip 2");
+        .expect("suggested_zones should be an array");
+    assert_eq!(validation_zones.len(), 2);
+    assert_eq!(validation_zones[0]["led_start"], 0);
+    assert_eq!(validation_zones[1]["led_start"], 12);
+    assert_eq!(validation_zones[0]["name"], "Stacked Strip 1");
+    assert_eq!(validation_zones[1]["name"], "Stacked Strip 2");
 
     let update_response = send_json(
         &app,
@@ -815,11 +795,14 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
     assert!(slots.iter().any(|slot| slot["id"] == "atx-strimer"));
     assert!(slots.iter().any(|slot| slot["id"] == "gpu-strimer"));
 
+    let logical_device_count = state.logical_devices.read().await.len();
+    let mut events = state.event_bus.subscribe_all();
     let gpu_only_response = send_json(
         &app,
-        "POST",
-        format!("/api/v1/devices/{device_id}/attachments/preview"),
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
         json!({
+            "validate_only": true,
             "bindings": [{
                 "slot_id": "gpu-strimer",
                 "template_id": "lian-li-gpu-strimer-4x27",
@@ -831,8 +814,21 @@ async fn nollie32_attachment_slots_support_cable_profiles() {
     .await;
     assert_eq!(gpu_only_response.status(), StatusCode::OK);
     let gpu_only_json = body_json(gpu_only_response).await;
-    assert_eq!(gpu_only_json["data"]["zones"][0]["led_start"], 5_120);
-    assert_eq!(gpu_only_json["data"]["zones"][0]["led_count"], 108);
+    assert_eq!(
+        gpu_only_json["data"]["suggested_zones"][0]["led_start"],
+        5_120
+    );
+    assert_eq!(
+        gpu_only_json["data"]["suggested_zones"][0]["led_count"],
+        108
+    );
+    assert!(state.usb_protocol_configs.config(device_id).await.is_none());
+    assert_eq!(
+        state.logical_devices.read().await.len(),
+        logical_device_count
+    );
+    assert!(!guard.attachment_profiles_path().exists());
+    assert!(events.try_recv().is_err());
 
     let full_response = send_json(
         &app,
@@ -952,4 +948,155 @@ async fn attachment_identify_indexes_multi_instance_rows_individually() {
     let lit_color = frame[6];
     assert_ne!(lit_color, [0, 0, 0]);
     assert!(frame[6..12].iter().all(|color| *color == lit_color));
+}
+
+/// The identify route separates an addressed resource that is absent from
+/// a supplied value the profile cannot satisfy.
+///
+/// An unknown slot is a missing sub-resource and answers `404`. A slot
+/// that exists but holds no enabled bindings, and a binding index past
+/// the end of the ones it does hold, are values the caller chose against
+/// a profile that resolved, so both answer `422` and name the field.
+#[tokio::test]
+async fn attachment_identify_separates_missing_slots_from_unusable_selections() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let writes = Arc::new(StdMutex::new(Vec::new()));
+    register_recording_backend(&state, Arc::clone(&writes)).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+
+    create_template(&app, "identify-bounds-fan", "Identify Bounds Fan", 6).await;
+    let update_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "identify-bounds-fan",
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
+
+    let missing_slot = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/no-such-slot/identify"),
+        json!({ "binding_index": 0 }),
+    )
+    .await;
+    assert_eq!(missing_slot.status(), StatusCode::NOT_FOUND);
+    let missing_slot_json = body_json(missing_slot).await;
+    assert_eq!(
+        missing_slot_json["error"]["code"],
+        "attachment_slot_not_found"
+    );
+    assert_eq!(
+        missing_slot_json["error"]["message"],
+        "attachment slot not found: no-such-slot"
+    );
+
+    let out_of_range = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/main/identify"),
+        json!({ "binding_index": 42 }),
+    )
+    .await;
+    assert_eq!(out_of_range.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let out_of_range_json = body_json(out_of_range).await;
+    assert_eq!(out_of_range_json["error"]["code"], "validation_error");
+    assert_eq!(
+        out_of_range_json["error"]["details"]["field"],
+        "binding_index"
+    );
+
+    // A slot that exists but holds only disabled bindings: the slot
+    // lookup resolves, so this is the caller's selection failing, not a
+    // missing resource.
+    let disable_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "identify-bounds-fan",
+                "instances": 1,
+                "led_offset": 0,
+                "enabled": false
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(disable_response.status(), StatusCode::OK);
+
+    let no_enabled = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/main/identify"),
+        json!({ "binding_index": 0 }),
+    )
+    .await;
+    assert_eq!(no_enabled.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let no_enabled_json = body_json(no_enabled).await;
+    assert_eq!(no_enabled_json["error"]["code"], "validation_error");
+    assert_eq!(no_enabled_json["error"]["details"]["field"], "slot_id");
+    assert_eq!(
+        no_enabled_json["error"]["message"],
+        "No enabled bindings in slot 'main'"
+    );
+}
+
+#[tokio::test]
+async fn device_list_embeds_attachments_only_when_requested() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+
+    create_template(&app, "embedded-list-strip", "Embedded List Strip", 12).await;
+    let update = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "embedded-list-strip",
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+
+    let default_response = send_empty(&app, "GET", "/api/v1/devices").await;
+    assert_eq!(default_response.status(), StatusCode::OK);
+    let default_json = body_json(default_response).await;
+    assert!(
+        default_json["data"]["items"][0]
+            .get("attachments")
+            .is_none()
+    );
+
+    let expanded_response = send_empty(&app, "GET", "/api/v1/devices?include=attachments").await;
+    assert_eq!(expanded_response.status(), StatusCode::OK);
+    let expanded_json = body_json(expanded_response).await;
+    let device = &expanded_json["data"]["items"][0];
+    assert_eq!(device["attachments"]["device_id"], device_id.to_string());
+    assert_eq!(
+        device["attachments"]["bindings"][0]["template_id"],
+        "embedded-list-strip"
+    );
 }

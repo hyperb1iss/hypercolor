@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hypercolor_core::input::screen::{
+use hypercolor_core::input::screen::planner::{
     ResolvedScreenPublicationDescriptor, ScreenNativePreparationPayload,
     ScreenNativeTargetPreparation, ScreenNativeTargetPreparer,
 };

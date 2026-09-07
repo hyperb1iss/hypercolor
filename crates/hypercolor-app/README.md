@@ -13,11 +13,12 @@ launch.
 
 ## Role in the Workspace
 
-Leaf binary. Depends on hypercolor-core and hypercolor-types for config path resolution, plus
-Tauri 2 and several Tauri plugins. Has no direct dependency on hypercolor-daemon. Included in
-the Cargo workspace; CI builds and tests this crate separately from the main workspace check
-(it is excluded from the default `cargo check --workspace` pass but included in its own Tauri
-build job).
+Leaf binary. Depends on hypercolor-core and hypercolor-types for config path resolution,
+hypercolor-macos-owner for the shared daemon-ownership handoff, hypercolor-linux-session on
+Linux and hypercolor-macos-input on macOS, plus Tauri 2 and several Tauri plugins. Has no
+direct dependency on hypercolor-daemon. It is a full workspace member, so `cargo check
+--workspace`, `just check`, `just lint`, and `just test` all cover it; the Tauri bundle is
+produced by a separate job.
 
 ## Binary
 
@@ -32,7 +33,10 @@ build job).
 | `supervisor` | Resolves daemon path candidates, probes health, defers to systemd, spawns child daemon |
 | `tray` | Registers tray icon and context menu |
 | `window` | Window show/hide helpers; hide-on-close behavior |
-| `resources` | Installs bundled runtime assets to the data directory |
+| `first_run` | Installs bundled runtime assets to the data directory on first launch |
+| `ownership` | macOS daemon-owner selection and durable handoff |
+| `helper_client` | Talks to the signed elevated Windows helper |
+| `diagnostics` | One-click support bundle: app and daemon logs, system identification, PawnIO status |
 | `cli` | `--quit` / `--minimized` / `--show` argument parsing |
 | `daemon_client` | Lightweight async daemon health client |
 
@@ -58,4 +62,4 @@ None defined in `[features]`. Platform-conditional behavior is wired via `[targe
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source RGB lighting
-orchestration for Linux. Apache-2.0 licensed.
+orchestration for Linux, Windows, and macOS. Apache-2.0 licensed.

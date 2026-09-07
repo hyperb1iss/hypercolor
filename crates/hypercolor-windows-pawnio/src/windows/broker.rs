@@ -60,6 +60,7 @@ use super::{
     WindowsSmBusBusInfo, check_pawnio_status, detect_cpu_vendor, direct_enumerate_smbus_buses,
     direct_open_smbus_bus, module_name_from_wire, resolve_module_path,
 };
+use crate::PawnIoErrorKind;
 
 const SERVICE_NAME: &str = "HypercolorSmBus";
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -175,14 +176,14 @@ pub(super) fn smbus_xfer_batch(
         return Err(unexpected_response("smbus_xfer_batch"));
     };
     if returned.len() != operations.len() {
-        return Err(PawnIoError::BrokerCall {
-            operation: "smbus_xfer_batch",
-            detail: format!(
+        return Err(PawnIoError::broker_call(
+            "smbus_xfer_batch",
+            format!(
                 "broker returned {} batch operations for {} requests",
                 returned.len(),
                 operations.len()
             ),
-        });
+        ));
     }
 
     for (target, returned) in operations.iter_mut().zip(returned) {
@@ -372,7 +373,9 @@ async fn handle_connected_client(mut server: NamedPipeServer, state: Arc<BrokerS
         let request = read_frame(&mut server).await?;
         let response = match serde_json::from_slice::<BrokerRequest>(&request) {
             Ok(request) => BrokerEnvelope::ok(state.handle_request(request)),
-            Err(error) => BrokerEnvelope::error(format!("invalid broker request: {error}")),
+            Err(error) => BrokerEnvelope::error(PawnIoError::InvalidInput {
+                detail: format!("invalid broker request: {error}"),
+            }),
         };
         let response_bytes =
             serde_json::to_vec(&response).context("failed to encode SMBus broker response")?;
@@ -432,16 +435,12 @@ async fn write_frame(stream: &mut NamedPipeServer, bytes: &[u8]) -> Result<()> {
 }
 
 fn send_request(request: BrokerRequest, operation: &'static str) -> PawnIoResult<BrokerResponse> {
-    let request_bytes = serde_json::to_vec(&request).map_err(|error| PawnIoError::BrokerCall {
-        operation,
-        detail: format!("failed to encode request: {error}"),
+    let request_bytes = serde_json::to_vec(&request).map_err(|error| {
+        PawnIoError::broker_call(operation, format!("failed to encode request: {error}"))
     })?;
     let response_bytes = send_request_bytes(&request_bytes)?;
     let envelope = serde_json::from_slice::<BrokerEnvelope>(&response_bytes).map_err(|error| {
-        PawnIoError::BrokerCall {
-            operation,
-            detail: format!("failed to decode response: {error}"),
-        }
+        PawnIoError::broker_call(operation, format!("failed to decode response: {error}"))
     })?;
 
     envelope.into_result(operation)
@@ -475,9 +474,11 @@ fn open_pipe_client() -> PawnIoResult<std::fs::File> {
 }
 
 fn write_blocking_frame(stream: &mut std::fs::File, bytes: &[u8]) -> PawnIoResult<()> {
-    let len = u32::try_from(bytes.len()).map_err(|error| PawnIoError::BrokerCall {
-        operation: "write_frame",
-        detail: format!("request frame is too large: {error}"),
+    let len = u32::try_from(bytes.len()).map_err(|error| {
+        PawnIoError::broker_call(
+            "write_frame",
+            format!("request frame is too large: {error}"),
+        )
     })?;
     stream
         .write_all(&len.to_le_bytes())
@@ -496,10 +497,10 @@ fn read_blocking_frame(stream: &mut std::fs::File) -> PawnIoResult<Vec<u8>> {
         })?;
     let len = u32::from_le_bytes(len_bytes) as usize;
     if len > MAX_FRAME_BYTES {
-        return Err(PawnIoError::BrokerCall {
-            operation: "read_frame",
-            detail: format!("response frame has {len} bytes, max is {MAX_FRAME_BYTES}"),
-        });
+        return Err(PawnIoError::broker_call(
+            "read_frame",
+            format!("response frame has {len} bytes, max is {MAX_FRAME_BYTES}"),
+        ));
     }
 
     let mut bytes = vec![0_u8; len];
@@ -821,7 +822,14 @@ unsafe impl Sync for CpuTempModule {}
 struct BrokerEnvelope {
     ok: bool,
     data: Option<BrokerResponse>,
-    error: Option<String>,
+    error: Option<BrokerError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BrokerError {
+    kind: PawnIoErrorKind,
+    hresult: Option<u32>,
+    detail: String,
 }
 
 impl BrokerEnvelope {
@@ -832,31 +840,42 @@ impl BrokerEnvelope {
                 data: Some(response),
                 error: None,
             },
-            Err(error) => Self::error(error.to_string()),
+            Err(error) => Self::error(error),
         }
     }
 
-    fn error(error: String) -> Self {
+    fn error(error: PawnIoError) -> Self {
         Self {
             ok: false,
             data: None,
-            error: Some(error),
+            error: Some(BrokerError {
+                kind: error.kind(),
+                hresult: error.hresult(),
+                detail: error.to_string(),
+            }),
         }
     }
 
     fn into_result(self, operation: &'static str) -> PawnIoResult<BrokerResponse> {
         if self.ok {
-            return self.data.ok_or_else(|| PawnIoError::BrokerCall {
-                operation,
-                detail: "success response did not include data".to_owned(),
+            return self.data.ok_or_else(|| {
+                PawnIoError::broker_call(
+                    operation,
+                    "success response did not include data".to_owned(),
+                )
             });
         }
 
+        let error = self.error.unwrap_or_else(|| BrokerError {
+            kind: PawnIoErrorKind::Io,
+            hresult: None,
+            detail: "broker returned failure without an error".to_owned(),
+        });
         Err(PawnIoError::BrokerCall {
             operation,
-            detail: self
-                .error
-                .unwrap_or_else(|| "broker returned failure without an error".to_owned()),
+            kind: error.kind,
+            hresult: error.hresult,
+            detail: error.detail,
         })
     }
 }
@@ -1006,10 +1025,10 @@ impl TryFrom<BrokerSmBusTransaction> for SmBusTransaction {
 }
 
 fn unexpected_response(operation: &'static str) -> PawnIoError {
-    PawnIoError::BrokerCall {
+    PawnIoError::broker_call(
         operation,
-        detail: "broker returned the wrong response type".to_owned(),
-    }
+        "broker returned the wrong response type".to_owned(),
+    )
 }
 
 struct PipeSecurity {
@@ -1075,10 +1094,11 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        BrokerBusInfo, BrokerSmBusBatchOperation, BrokerSmBusDirection, BrokerSmBusTransaction,
-        MAX_BATCH_DELAY_MS, PawnIoError, SmBusBatchOperation, SmBusBlockData, SmBusDirection,
-        SmBusTransaction, WindowsSmBusBusInfo,
+        BrokerBusInfo, BrokerEnvelope, BrokerError, BrokerSmBusBatchOperation,
+        BrokerSmBusDirection, BrokerSmBusTransaction, MAX_BATCH_DELAY_MS, PawnIoError,
+        SmBusBatchOperation, SmBusBlockData, SmBusDirection, SmBusTransaction, WindowsSmBusBusInfo,
     };
+    use crate::PawnIoErrorKind;
 
     #[test]
     fn transaction_dto_round_trips_block_data() {
@@ -1153,5 +1173,43 @@ mod tests {
         let error = super::validate_batch_delay_ms(MAX_BATCH_DELAY_MS + 1)
             .expect_err("delay above max should be rejected");
         assert!(matches!(error, PawnIoError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn broker_round_trip_preserves_hresult_and_kind() {
+        let envelope = BrokerEnvelope::ok(Err(PawnIoError::SmBusIo {
+            operation: "test",
+            bus_path: "pawnio:test".to_owned(),
+            address: 0x40,
+            hresult: 0x8007_0005,
+            detail: "harmless display text".to_owned(),
+        }));
+        let encoded = serde_json::to_vec(&envelope).expect("envelope should encode");
+        let decoded =
+            serde_json::from_slice::<BrokerEnvelope>(&encoded).expect("envelope should decode");
+        let error = decoded
+            .into_result("test")
+            .expect_err("broker result should fail");
+
+        assert_eq!(error.kind(), PawnIoErrorKind::PermissionDenied);
+        assert_eq!(error.hresult(), Some(0x8007_0005));
+    }
+
+    #[test]
+    fn broker_classification_ignores_adversarial_detail() {
+        let envelope = BrokerEnvelope {
+            ok: false,
+            data: None,
+            error: Some(BrokerError {
+                kind: PawnIoErrorKind::Io,
+                hresult: None,
+                detail: "access denied and module not found".to_owned(),
+            }),
+        };
+        let error = envelope
+            .into_result("test")
+            .expect_err("broker result should fail");
+
+        assert_eq!(error.kind(), PawnIoErrorKind::Io);
     }
 }

@@ -1,146 +1,100 @@
 //! System status API.
 
+pub use hypercolor_types::api::system::{
+    GpuCompositorProbeStatus, InputSourceIssueStatus, InputSourceStatus, InputStatus,
+    MacosCapabilityOwner, MacosDaemonHandoverPhase, MacosDaemonOwnerConflictStatus,
+    MacosDaemonOwnerRecoveryRequiredStatus, MacosDaemonOwnershipStatus, RenderAccelerationStatus,
+    RenderLoopStatus, ServerInfo, SystemResource, SystemStatus,
+};
 use hypercolor_types::sensor::SystemSnapshot;
-use serde::Deserialize;
+pub use hypercolor_types::service::{
+    DaemonRunMode, ServiceConflict, ServiceIdentity, ServiceManager, ServiceRecoveryRequired,
+    ServiceStatus,
+};
+pub use hypercolor_types::source_status::{
+    SOURCE_DIAGNOSTICS_ENVELOPE_MAX_BYTES, SourceDiagnosticsDisplayField, SourceDiagnosticsEnvelope,
+};
 
-use super::client;
+use super::{ApiError, ApiResult, client};
 
-// ── Types ───────────────────────────────────────────────────────────────────
-
-/// System status from `GET /api/v1/status`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct SystemStatus {
-    pub running: bool,
-    pub version: String,
-    #[serde(default)]
-    pub config_path: String,
-    pub uptime_seconds: u64,
-    pub device_count: usize,
-    pub effect_count: usize,
-    pub active_effect: Option<String>,
-    pub active_scene: Option<String>,
-    #[serde(default)]
-    pub active_scene_snapshot_locked: bool,
-    pub global_brightness: u8,
-    #[serde(default)]
-    pub compositor_acceleration: RenderAccelerationStatus,
-    #[serde(default)]
-    pub render_loop: RenderLoopStatus,
-    /// Named daemon capabilities (Spec 65 §9.6). Multi-zone Studio
-    /// affordances gate on the presence of their backing capability —
-    /// `zone-crud`, `multi-zone-sampling`, `zone-device-assignment`,
-    /// `scene-unassigned-behavior-write`.
-    #[serde(default)]
-    pub capabilities: Vec<String>,
-    /// Host input capture health — consent gate plus device-node
-    /// open/denied counts. Defaults tolerate daemons predating the field.
-    #[serde(default)]
-    pub input: InputStatus,
+/// Adapts canonical platform ownership into the launcher vocabulary used by
+/// native restart and owner-selection controls.
+pub trait SystemStatusServiceExt {
+    #[must_use]
+    fn service_status(&self) -> Option<ServiceStatus>;
 }
 
-/// Host keyboard/mouse capture health from the daemon status payload.
-///
-/// `enabled` is the consent config gate (`input.enabled`). `devices_denied`
-/// counts input nodes that exist but are unreadable (udev rules missing) —
-/// the signal that separates "input is off" from "input is on but blocked".
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct InputStatus {
-    pub enabled: bool,
-    pub host_capture_registered: bool,
-    pub host_capturing: bool,
-    pub devices_opened: usize,
-    pub devices_denied: usize,
-    /// Session-level failure code the counters cannot express, e.g. a Windows
-    /// daemon running without a visible window station.
-    pub degraded: Option<String>,
-    pub backends: Vec<String>,
-    pub source_graph_generation: u64,
-    pub sources: Vec<InputSourceStatus>,
+impl SystemStatusServiceExt for SystemStatus {
+    /// Adapt the canonical macOS ownership resource into the neutral launcher
+    /// vocabulary consumed by native restart and owner-selection controls.
+    fn service_status(&self) -> Option<ServiceStatus> {
+        let ownership = self.macos_daemon_ownership.as_ref()?;
+        let identity = service_identity(ownership.active_owner)?;
+        Some(ServiceStatus {
+            identity,
+            owner_epoch: ownership.owner_epoch,
+            conflict: ownership.conflict.as_ref().and_then(|conflict| {
+                Some(ServiceConflict {
+                    active: service_identity(conflict.active)?,
+                    contender: service_identity(conflict.contender)?,
+                    observed_at_ms: conflict.observed_at_ms,
+                })
+            }),
+            recovery_required: ownership.recovery_required.as_ref().and_then(|recovery| {
+                Some(ServiceRecoveryRequired {
+                    requested: service_identity(recovery.requested_owner)?,
+                    prior: service_identity(recovery.prior_owner)?,
+                    phase: macos_handover_phase(recovery.phase).to_owned(),
+                })
+            }),
+        })
+    }
 }
 
-/// Structured source issue from the daemon's operational status snapshot.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct InputSourceIssueStatus {
-    pub code: String,
-    pub message: String,
-    pub remediation: Option<String>,
-    pub retryable: bool,
+fn service_identity(owner: MacosCapabilityOwner) -> Option<ServiceIdentity> {
+    match owner {
+        MacosCapabilityOwner::AppSidecar => Some(ServiceIdentity::APP_SIDECAR),
+        MacosCapabilityOwner::LaunchdService => Some(ServiceIdentity::launchd_direct()),
+        MacosCapabilityOwner::HomebrewService => Some(ServiceIdentity::homebrew()),
+        MacosCapabilityOwner::Standalone => Some(ServiceIdentity::STANDALONE),
+        MacosCapabilityOwner::App | MacosCapabilityOwner::Broker => None,
+    }
 }
 
-/// Lock-free lifecycle and freshness status for one input source.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct InputSourceStatus {
-    pub source_id: String,
-    pub kind: String,
-    pub backend: String,
-    pub configured: bool,
-    pub consented: bool,
-    pub demanded: bool,
-    pub state: String,
-    pub freshness: String,
-    pub source_graph_generation: u64,
-    pub session_generation: u64,
-    pub last_sample_age_ms: Option<u64>,
-    pub freshness_remaining_ms: Option<u64>,
-    pub resource_count: usize,
-    pub denied_resource_count: usize,
-    pub issue: Option<InputSourceIssueStatus>,
-    pub lifecycle_issue: Option<InputSourceIssueStatus>,
-    pub freshness_issue: Option<InputSourceIssueStatus>,
-    pub retired: bool,
+const fn macos_handover_phase(phase: MacosDaemonHandoverPhase) -> &'static str {
+    match phase {
+        MacosDaemonHandoverPhase::Prepared => "prepared",
+        MacosDaemonHandoverPhase::AutostartsConfigured => "autostarts_configured",
+        MacosDaemonHandoverPhase::StopRequested => "stop_requested",
+        MacosDaemonHandoverPhase::OutgoingOwnerStopped => "outgoing_owner_stopped",
+        MacosDaemonHandoverPhase::AwaitingGuardRelease => "awaiting_guard_release",
+        MacosDaemonHandoverPhase::GuardReleased => "guard_released",
+        MacosDaemonHandoverPhase::StartRequested => "start_requested",
+        MacosDaemonHandoverPhase::RequestedOwnerStarted => "requested_owner_started",
+        MacosDaemonHandoverPhase::CommitPending => "commit_pending",
+        MacosDaemonHandoverPhase::Committed => "committed",
+        MacosDaemonHandoverPhase::RollbackPending => "rollback_pending",
+        MacosDaemonHandoverPhase::RollbackAutostartsRestored => "rollback_autostarts_restored",
+        MacosDaemonHandoverPhase::RollbackStopRequested => "rollback_stop_requested",
+        MacosDaemonHandoverPhase::RollbackOwnerStopped => "rollback_owner_stopped",
+        MacosDaemonHandoverPhase::RollbackAwaitingGuardRelease => "rollback_awaiting_guard_release",
+        MacosDaemonHandoverPhase::RollbackGuardReleased => "rollback_guard_released",
+        MacosDaemonHandoverPhase::RollbackStartRequested => "rollback_start_requested",
+        MacosDaemonHandoverPhase::PriorOwnerStarted => "prior_owner_started",
+        MacosDaemonHandoverPhase::RollbackCommitPending => "rollback_commit_pending",
+        MacosDaemonHandoverPhase::RolledBack => "rolled_back",
+    }
 }
-
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct RenderLoopStatus {
-    pub state: String,
-    pub fps_tier: String,
-    pub target_fps: u32,
-    pub ceiling_fps: u32,
-    pub consecutive_misses: u32,
-    pub total_frames: u64,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct RenderAccelerationStatus {
-    pub requested_mode: String,
-    pub effective_mode: String,
-    pub fallback_reason: Option<String>,
-    pub servo_gpu_import_mode: String,
-    pub servo_gpu_import_attempting: bool,
-    pub gpu_probe: Option<GpuCompositorProbeStatus>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct GpuCompositorProbeStatus {
-    pub adapter_name: String,
-    pub backend: String,
-    pub texture_format: String,
-    pub max_texture_dimension_2d: u32,
-    pub max_storage_textures_per_shader_stage: u32,
-    pub servo_gpu_import_backend_compatible: bool,
-    pub servo_gpu_import_backend_reason: Option<String>,
-    pub linux_servo_gpu_import_backend_compatible: bool,
-    pub linux_servo_gpu_import_backend_reason: Option<String>,
-}
-
-// ── Fetch Functions ─────────────────────────────────────────────────────────
 
 /// Fetch system status.
-pub async fn fetch_status() -> Result<SystemStatus, String> {
-    client::fetch_json("/api/v1/status")
-        .await
-        .map_err(Into::into)
+pub async fn fetch_status() -> ApiResult<SystemStatus> {
+    let system: SystemResource = client::fetch_json("/api/v1/system").await?;
+    system
+        .status
+        .ok_or_else(|| ApiError::Parse("System status requires daemon read access".to_owned()))
 }
 
 /// Fetch the latest system sensor snapshot.
-pub async fn fetch_system_sensors() -> Result<SystemSnapshot, String> {
-    client::fetch_json("/api/v1/system/sensors")
-        .await
-        .map_err(Into::into)
+pub async fn fetch_system_sensors() -> ApiResult<SystemSnapshot> {
+    client::fetch_json("/api/v1/system/sensors").await
 }

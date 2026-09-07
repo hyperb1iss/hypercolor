@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build a ready-to-ship Hypercolor release bundle.
-# Includes the daemon, CLI, unified desktop app, tray applet, TUI launcher, UI, bundled effects/faces,
+# Includes the daemon, CLI, unified desktop app, TUI launcher, UI, bundled effects/faces,
 # docs, agent skills, and host integration files in one directory.
 #
 # Usage:
@@ -26,9 +26,11 @@ BIN_DIR=""
 RUST_TARGET=""
 RELEASE_VERSION=""
 BUILD_ROOT=""
+TCC_CANARY=0
 
-CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${ROOT_DIR}/target}"
+CARGO_CACHE_BUILD="${ROOT_DIR}/scripts/cargo-cache-build.sh"
+MACOS_SIGNING_ACTOR="${ROOT_DIR}/scripts/sign-macos-artifacts.sh"
 
 info()  { printf '\033[38;2;128;255;234m→\033[0m %s\n' "$*"; }
 ok()    { printf '\033[38;2;80;250;123m✅\033[0m %s\n' "$*"; }
@@ -73,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     --ci)               CI_MODE=1; shift ;;
     --web-assets)       WEB_ASSETS_DIR="$2"; shift 2 ;;
     --bin-dir)          BIN_DIR="$2"; shift 2 ;;
+    --tcc-canary)       TCC_CANARY=1; shift ;;
     --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     --version)          RELEASE_VERSION="$2"; shift 2 ;;
     -h|--help)
@@ -88,8 +91,9 @@ Options:
   --ci                 CI mode (expect --web-assets for pre-built UI/effects)
   --web-assets <dir>   Path to pre-built web assets (ui/ + effects/)
   --bin-dir <dir>      Package pre-built binaries from <dir> instead of
-                       building them (absolute path; must contain the four
+                       building them (absolute path; must contain the three
                        release binaries)
+  --tcc-canary         Include the signed physical TCC canary surface
   -h, --help           Show this help
 EOF
       exit 0
@@ -102,7 +106,7 @@ if [[ -n "${BIN_DIR}" ]]; then
   [[ "${BIN_DIR}" == /* ]] || die "--bin-dir must be an absolute path (the script runs from the repo root): ${BIN_DIR}"
   [[ -d "${BIN_DIR}" ]] || die "--bin-dir does not exist: ${BIN_DIR}"
   MISSING_BINS=()
-  for bin in hypercolor-daemon hypercolor hypercolor-app hypercolor-tray; do
+  for bin in hypercolor-daemon hypercolor hypercolor-app; do
     [[ -f "${BIN_DIR}/${bin}" && -x "${BIN_DIR}/${bin}" ]] || MISSING_BINS+=("${bin}")
   done
   if [[ ${#MISSING_BINS[@]} -ne 0 ]]; then
@@ -141,6 +145,13 @@ case "${RUST_TARGET}" in
   *apple*|*darwin*) IS_MACOS=1 ;;
 esac
 
+if [[ "${TCC_CANARY}" -eq 1 && "${IS_MACOS}" -ne 1 ]]; then
+  die "--tcc-canary requires a macOS target"
+fi
+if [[ "${TCC_CANARY}" -eq 1 && -n "${BIN_DIR}" ]]; then
+  die "--tcc-canary cannot verify pre-built binaries from --bin-dir"
+fi
+
 TARGET_FLAG=()
 if [[ "${RUST_TARGET}" != "${HOST_TARGET}" ]]; then
   TARGET_FLAG=(--target "${RUST_TARGET}")
@@ -163,35 +174,14 @@ SITE_BUILD_DIR=""
 info "Building Hypercolor v${VERSION} for ${PLATFORM} (${RUST_TARGET})"
 info "Rust artifacts will land in ${CARGO_TARGET_DIR}"
 
-if [[ -n "${BIN_DIR}" ]]; then
-  info "Using pre-built binaries from ${BIN_DIR}"
-else
-  info "Building release binaries"
-  # The ${arr[@]+...} guard keeps macOS bash 3.2 from treating an empty
-  # array expansion as an unbound-variable error under set -u.
-  #
-  # Two invocations on purpose. Built together, feature unification turns
-  # on hypercolor-core's servo feature for every binary, so the CLI, tray,
-  # and app each fat-LTO-merge the full Servo bitcode only for the link to
-  # dead-strip it again (their shipped binaries are 10-18MB; the daemon,
-  # which actually uses Servo, is 144MB). Splitting keeps Servo's LTO cost
-  # to the daemon: one Servo-sized merge at peak instead of four racing.
-  # The daemon's merge alone still overruns a 15Gi arm64 runner into swap,
-  # so this trims the peak rather than eliminating it; CI provisions swap
-  # for the remainder.
-  ./scripts/cargo-cache-build.sh cargo build --release --locked \
-    -p hypercolor-daemon --bin hypercolor-daemon \
-    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
-  ./scripts/cargo-cache-build.sh cargo build --release --locked \
-    -p hypercolor-cli --bin hypercolor \
-    -p hypercolor-tray --bin hypercolor-tray \
-    -p hypercolor-app --bin hypercolor-app \
-    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
-fi
-
 if [[ "${CI_MODE}" -eq 1 ]]; then
   [[ -n "${WEB_ASSETS_DIR}" ]] || die "--ci requires --web-assets <dir>"
+  [[ -f "${WEB_ASSETS_DIR}/ui/index.html" ]] \
+    || die "pre-built web assets are missing ui/index.html: ${WEB_ASSETS_DIR}"
   info "Using pre-built web assets from ${WEB_ASSETS_DIR}"
+  rm -rf crates/hypercolor-ui/dist
+  mkdir -p crates/hypercolor-ui/dist
+  cp -R "${WEB_ASSETS_DIR}/ui/." crates/hypercolor-ui/dist/
 else
   require_cmd trunk
   require_cmd bun
@@ -203,7 +193,8 @@ else
     if command -v rustup >/dev/null 2>&1; then
       rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
     fi
-    env -u NO_COLOR trunk build --release
+    HYPERCOLOR_FORCE_SCCACHE=1 env -u NO_COLOR \
+      "${CARGO_CACHE_BUILD}" trunk build --release --locked
   )
 
   if [[ "${SKIP_EFFECTS}" -eq 0 ]]; then
@@ -216,6 +207,36 @@ else
   fi
 
   WEB_ASSETS_DIR=""
+fi
+
+if [[ -n "${BIN_DIR}" ]]; then
+  info "Using pre-built binaries from ${BIN_DIR}"
+else
+  info "Building release binaries"
+  # The ${arr[@]+...} guard keeps macOS bash 3.2 from treating an empty
+  # array expansion as an unbound-variable error under set -u.
+  #
+  # Two invocations on purpose. Built together, feature unification turns
+  # on hypercolor-core's servo feature for every binary, so the CLI and app
+  # each fat-LTO-merge the full Servo bitcode only for the link to
+  # dead-strip it again (their shipped binaries are 10-18MB; the daemon,
+  # which actually uses Servo, is 144MB). Splitting keeps Servo's LTO cost
+  # to the daemon: one Servo-sized merge at peak instead of four racing.
+  # The daemon's merge alone still overruns a 15Gi arm64 runner into swap,
+  # so this trims the peak rather than eliminating it; CI provisions swap
+  # for the remainder.
+  DAEMON_FEATURE_FLAG=()
+  if [[ "${TCC_CANARY}" -eq 1 ]]; then
+    DAEMON_FEATURE_FLAG=(--features macos-tcc-canary)
+  fi
+  ./scripts/cargo-cache-build.sh cargo build --release --locked \
+    -p hypercolor-daemon --bin hypercolor-daemon \
+    ${DAEMON_FEATURE_FLAG[@]+"${DAEMON_FEATURE_FLAG[@]}"} \
+    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
+  ./scripts/cargo-cache-build.sh cargo build --release --locked \
+    -p hypercolor-cli --bin hypercolor \
+    -p hypercolor-app --bin hypercolor-app \
+    ${TARGET_FLAG[@]+"${TARGET_FLAG[@]}"}
 fi
 
 if [[ "${SKIP_DOCS}" -eq 0 ]]; then
@@ -259,7 +280,7 @@ fi
 info "Assembling distribution at ${DIST_DIR}"
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}/bin"
-mkdir -p "${DIST_DIR}/share/hypercolor"/{ui,effects/bundled,docs,agents}
+mkdir -p "${DIST_DIR}/share/hypercolor"/{ui,effects/bundled,docs,site,agents/skills,agents/agents}
 mkdir -p "${DIST_DIR}/share"/{applications,bash-completion/completions,zsh/site-functions,fish/vendor_completions.d}
 mkdir -p "${DIST_DIR}/share/icons/hicolor"/{scalable,48x48,128x128,256x256}/apps
 
@@ -273,7 +294,6 @@ fi
 install -m755 "${RELEASE_DIR}/hypercolor-daemon" "${DIST_DIR}/bin/hypercolor-daemon"
 install -m755 "${RELEASE_DIR}/hypercolor" "${DIST_DIR}/bin/hypercolor"
 install -m755 "${RELEASE_DIR}/hypercolor-app" "${DIST_DIR}/bin/hypercolor-app"
-install -m755 "${RELEASE_DIR}/hypercolor-tray" "${DIST_DIR}/bin/hypercolor-tray"
 install -m755 packaging/bin/hypercolor-tui "${DIST_DIR}/bin/hypercolor-tui"
 install -m755 packaging/bin/hypercolor-open "${DIST_DIR}/bin/hypercolor-open"
 
@@ -298,14 +318,18 @@ else
 fi
 
 if [[ -d .agents/skills ]]; then
-  cp -R .agents/skills "${DIST_DIR}/share/hypercolor/agents/"
+  # -L dereferences the symlinks that point contributor skills at skills/,
+  # so the bundle carries real directories on hosts without symlink support.
+  cp -RL .agents/skills "${DIST_DIR}/share/hypercolor/agents/"
+fi
+if [[ -d skills ]]; then
+  cp -RL skills "${DIST_DIR}/share/hypercolor/skills"
 fi
 if [[ -d .agents/agents ]]; then
   cp -R .agents/agents "${DIST_DIR}/share/hypercolor/agents/"
 fi
 
 if [[ -n "${SITE_BUILD_DIR}" ]]; then
-  mkdir -p "${DIST_DIR}/share/hypercolor/site"
   cp -R "${SITE_BUILD_DIR}/." "${DIST_DIR}/share/hypercolor/site/"
 fi
 
@@ -341,34 +365,81 @@ fi
 if [[ "${IS_MACOS}" -eq 1 ]]; then
   cp packaging/launchd/tech.hyperbliss.hypercolor.plist \
     "${DIST_DIR}/share/hypercolor/launchd/"
+  info "Signing and notarizing standalone macOS artifacts"
+  "${MACOS_SIGNING_ACTOR}" standalone \
+    --directory "${DIST_DIR}" \
+    --target "${RUST_TARGET}"
 fi
 
 cp LICENSE NOTICE README.md "${DIST_DIR}/"
 
-cat > "${DIST_DIR}/manifest.json" <<EOF
-{
-  "name": "hypercolor",
-  "version": "${VERSION}",
-  "platform": "${PLATFORM}",
-  "rust_target": "${RUST_TARGET}",
-  "binaries": [
-    "hypercolor-daemon",
-    "hypercolor",
-    "hypercolor-app",
-    "hypercolor-tray",
-    "hypercolor-tui",
-    "hypercolor-open"
-  ],
-  "assets": {
-    "ui_files": $(count_files "${DIST_DIR}/share/hypercolor/ui"),
-    "bundled_effect_files": $(count_files "${DIST_DIR}/share/hypercolor/effects/bundled"),
-    "docs_files": $(count_files "${DIST_DIR}/share/hypercolor/docs"),
-    "skill_files": $(count_files "${DIST_DIR}/share/hypercolor/agents/skills"),
-    "agent_files": $(count_files "${DIST_DIR}/share/hypercolor/agents/agents"),
-    "site_files": $(count_files "${DIST_DIR}/share/hypercolor/site")
-  }
+DIST_DIR="${DIST_DIR}" VERSION="${VERSION}" PLATFORM="${PLATFORM}" \
+RUST_TARGET="${RUST_TARGET}" python3 - <<'PY'
+import hashlib
+import json
+import os
+import stat
+from pathlib import Path
+
+root = Path(os.environ["DIST_DIR"])
+members = []
+for path in sorted(root.rglob("*")):
+    relative = path.relative_to(root).as_posix()
+    if relative == "manifest.json":
+        continue
+    metadata = path.lstat()
+    mode = stat.S_IMODE(metadata.st_mode)
+    if stat.S_ISDIR(metadata.st_mode):
+        members.append({"path": relative, "type": "directory", "mode": mode})
+        continue
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit(f"release payload contains unsupported member: {relative}")
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    members.append(
+        {
+            "path": relative,
+            "type": "file",
+            "mode": mode,
+            "size": metadata.st_size,
+            "sha256": digest.hexdigest(),
+        }
+    )
+
+def count_files(relative: str) -> int:
+    directory = root / relative
+    return sum(1 for path in directory.rglob("*") if path.is_file())
+
+manifest = {
+    "name": "hypercolor",
+    "version": os.environ["VERSION"],
+    "platform": os.environ["PLATFORM"],
+    "rust_target": os.environ["RUST_TARGET"],
+    "binaries": [
+        "hypercolor-daemon",
+        "hypercolor",
+        "hypercolor-app",
+        "hypercolor-tui",
+        "hypercolor-open",
+    ],
+    "assets": {
+        "ui_files": count_files("share/hypercolor/ui"),
+        "bundled_effect_files": count_files("share/hypercolor/effects/bundled"),
+        "docs_files": count_files("share/hypercolor/docs"),
+        "skill_files": count_files("share/hypercolor/agents/skills"),
+        "user_skill_files": count_files("share/hypercolor/skills"),
+        "agent_files": count_files("share/hypercolor/agents/agents"),
+        "site_files": count_files("share/hypercolor/site"),
+    },
+    "members": members,
 }
-EOF
+(root / "manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
 
 info "Creating tarball"
 (cd dist && tar czf "${DIST_NAME}.tar.gz" "${DIST_NAME}")

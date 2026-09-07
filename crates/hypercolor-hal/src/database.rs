@@ -5,14 +5,17 @@ use std::sync::LazyLock;
 
 use hypercolor_types::device::{
     BLOCKS_OUTPUT_BACKEND_ID, DRIVER_MODULE_API_SCHEMA_VERSION, DriverCapabilitySet,
-    DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor, DriverTransportKind,
-    SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
+    DriverModuleDescriptor, DriverModuleKind, DriverProtocolDescriptor, DriverTransportDescriptor,
+    DriverTransportKind, SMBUS_OUTPUT_BACKEND_ID, USB_OUTPUT_BACKEND_ID,
 };
 
-pub use crate::registry::{DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType};
+pub use crate::registry::{
+    DeviceDescriptor, ProtocolBinding, ProtocolFactory, TransportType, UsbTransportKind,
+};
 
 use crate::drivers::{asus, corsair, dygma, lianli, nollie, prismrgb, push2, qmk, razer};
 use crate::smbus_registry::ASUS_AURA_SMBUS_PROTOCOL_ID;
+use crate::transport::{TransportError, TransportIntent, TransportPlatform, resolve_transport};
 
 static DEVICE_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     let mut descriptors = Vec::new();
@@ -54,10 +57,12 @@ static MODULE_DESCRIPTORS: LazyLock<Vec<DriverModuleDescriptor>> = LazyLock::new
         let entry = modules.entry(id.clone()).or_insert_with(|| {
             HalModuleAccumulator::new(id, descriptor.driver_display_name().into_owned())
         });
-        entry.add_transport(transport_kind(descriptor.transport));
+        entry.add_transport(DriverTransportDescriptor::available(transport_kind(
+            descriptor.transport,
+        )));
     }
     if let Some(module) = modules.get_mut("asus") {
-        module.add_transport(DriverTransportKind::Smbus);
+        module.add_transport(smbus_transport_descriptor());
     }
 
     modules
@@ -95,7 +100,7 @@ static PROTOCOL_DESCRIPTORS: LazyLock<Vec<DriverProtocolDescriptor>> = LazyLock:
 struct HalModuleAccumulator {
     id: String,
     display_name: String,
-    transports: Vec<DriverTransportKind>,
+    transports: Vec<DriverTransportDescriptor>,
 }
 
 impl HalModuleAccumulator {
@@ -107,15 +112,19 @@ impl HalModuleAccumulator {
         }
     }
 
-    fn add_transport(&mut self, transport: DriverTransportKind) {
-        if !self.transports.contains(&transport) {
+    fn add_transport(&mut self, transport: DriverTransportDescriptor) {
+        if !self
+            .transports
+            .iter()
+            .any(|existing| existing.kind == transport.kind)
+        {
             self.transports.push(transport);
         }
     }
 
     fn into_descriptor(self) -> DriverModuleDescriptor {
         let mut transports = self.transports;
-        transports.sort_by_key(transport_sort_key);
+        transports.sort_by_key(|transport| transport_sort_key(&transport.kind));
 
         DriverModuleDescriptor {
             id: self.id,
@@ -141,6 +150,22 @@ impl HalModuleAccumulator {
     }
 }
 
+fn smbus_transport_descriptor() -> DriverTransportDescriptor {
+    match resolve_transport(
+        TransportIntent::I2cSmBus { address: 0x40 },
+        TransportPlatform::CURRENT,
+    ) {
+        Ok(_) => DriverTransportDescriptor::available(DriverTransportKind::Smbus),
+        Err(TransportError::UnsupportedPlatform { platform, .. }) => {
+            DriverTransportDescriptor::unsupported_platform(
+                DriverTransportKind::Smbus,
+                platform.to_string(),
+            )
+        }
+        Err(_) => unreachable!("transport resolution only reports platform support"),
+    }
+}
+
 const fn transport_sort_key(transport: &DriverTransportKind) -> u8 {
     match transport {
         DriverTransportKind::Network => 0,
@@ -162,7 +187,10 @@ const fn transport_kind(transport: TransportType) -> DriverTransportKind {
         | TransportType::UsbHid { .. }
         | TransportType::UsbBulk { .. }
         | TransportType::UsbVendor => DriverTransportKind::Usb,
-        TransportType::UsbMidi { .. } => DriverTransportKind::Midi,
+        TransportType::DriverUsb { binding } => match binding.kind {
+            UsbTransportKind::Usb => DriverTransportKind::Usb,
+            UsbTransportKind::Midi => DriverTransportKind::Midi,
+        },
         TransportType::UsbSerial { .. } => DriverTransportKind::Serial,
         TransportType::I2cSmBus { .. } => DriverTransportKind::Smbus,
     }

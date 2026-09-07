@@ -1,223 +1,363 @@
 //! Effect-related API types and fetch functions.
 
-use serde::Deserialize;
 use std::collections::HashMap;
+use std::future::Future;
 
-use gloo_net::http::Request;
-use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
-use web_sys::{File, FormData};
+use hypercolor_types::api::scene::{
+    ApplyEffectResponse, ClearSceneRequest, ReplaceLayerRequest, SceneDocument, ZoneResource,
+};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::ZoneRole;
+use web_sys::File;
 
-use super::client;
+use super::http_transport::HttpMethod;
+use super::{ApiError, ApiResult, client};
+use crate::control_surface_api::path_segment;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-// Wire contracts are shared with the daemon (hypercolor-types::api::effects).
-// ActiveEffectResponse below stays UI-local: it is the non-optional
-// convenience shape derived from the shared wire response.
-use hypercolor_types::api::effects::ActiveEffectResponse as WireActiveEffectResponse;
 pub use hypercolor_types::api::effects::{
-    ApplyEffectRequest as ApplyEffectBody, EffectCapabilitySet, EffectDetailResponse,
-    EffectListResponse, EffectSummary, InstalledEffectResponse,
+    EffectCapabilitySet, EffectDetailResponse, EffectListResponse, EffectPresetListResponse,
+    EffectPresetOrigin, EffectPresetSummary, EffectSummary, InstalledEffectResponse,
 };
+pub use hypercolor_types::api::scene::ApplyEffectRequest;
 
-/// Active effect response from `GET /api/v1/effects/active`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct ActiveEffectResponse {
+/// UI projection of the top effect layer in the live scene.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PrimaryEffectView {
     pub id: String,
+    pub zone_id: String,
+    pub layer_id: String,
     pub name: String,
-    pub state: String,
-    #[serde(default)]
     pub controls: Vec<ControlDefinition>,
-    #[serde(default)]
     pub control_values: HashMap<String, ControlValue>,
-    #[serde(default)]
     pub active_preset_id: Option<String>,
-    #[serde(default)]
-    pub render_group_id: Option<String>,
-    /// Server-side controls version (matches the `ETag` header).
-    /// `Some` while an effect is running, `None` on the idle response.
-    /// Clients that want optimistic concurrency echo this back via
-    /// `If-Match` on the effect-id PATCH endpoint.
-    #[serde(default)]
-    pub controls_version: Option<u64>,
+    pub scene_revision: u64,
+}
+
+/// Immutable identity of one effect layer observed or created by the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectLayerTarget {
+    pub effect_id: String,
+    pub zone_id: String,
+    pub layer_id: String,
+}
+
+impl EffectLayerTarget {
+    #[must_use]
+    pub fn session_key(&self) -> String {
+        format!("{}:{}", self.zone_id, self.layer_id)
+    }
+
+    #[must_use]
+    pub fn session_ids(key: &str) -> Option<(&str, &str)> {
+        key.split_once(':')
+    }
+}
+
+impl PrimaryEffectView {
+    #[must_use]
+    pub fn target(&self) -> EffectLayerTarget {
+        EffectLayerTarget {
+            effect_id: self.id.clone(),
+            zone_id: self.zone_id.clone(),
+            layer_id: self.layer_id.clone(),
+        }
+    }
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
 /// Fetch all registered effects.
-pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
+pub async fn fetch_effects() -> ApiResult<Vec<EffectSummary>> {
     let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
-    Ok(list.items)
+    Ok(list.items.into_iter().map(route_effect_summary).collect())
 }
 
-/// Fetch effects filtered to a single category.
-///
-/// The daemon's `/api/v1/effects` endpoint doesn't currently honor a
-/// `category` query parameter, so we filter client-side after fetching
-/// the full catalog. Kept as a separate function so callers have a
-/// single clear entry point and we can move filtering server-side later
-/// without touching call sites.
-pub async fn fetch_effects_by_category(category: &str) -> Result<Vec<EffectSummary>, String> {
-    let list: EffectListResponse = client::fetch_json("/api/v1/effects").await?;
-    Ok(list
-        .items
-        .into_iter()
-        .filter(|effect| effect.category.eq_ignore_ascii_case(category))
-        .collect())
-}
-
-/// Fetch the currently active effect, if any.
-pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, String> {
-    let active = client::fetch_json::<Option<WireActiveEffectResponse>>("/api/v1/effects/active")
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(active.and_then(|effect| {
-        if effect.state == "idle" {
-            return None;
-        }
-        Some(ActiveEffectResponse {
-            id: effect.id?,
-            name: effect.name?,
-            state: effect.state,
-            controls: effect.controls,
-            control_values: effect.control_values,
-            active_preset_id: effect.active_preset_id,
-            render_group_id: effect.render_group_id,
-            controls_version: effect.controls_version,
-        })
+/// Project the primary zone's top effect layer from the live scene tree.
+pub async fn fetch_primary_effect_view() -> ApiResult<Option<PrimaryEffectView>> {
+    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
+    let Some((zone_id, layer_id, effect_id, values, _, preset_id)) = effect_target(&scene) else {
+        return Ok(None);
+    };
+    let detail = fetch_effect_detail(&effect_id.to_string()).await?;
+    Ok(Some(PrimaryEffectView {
+        id: effect_id,
+        zone_id,
+        layer_id,
+        name: detail.name,
+        controls: detail.controls,
+        control_values: values,
+        active_preset_id: preset_id,
+        scene_revision: scene.revision,
     }))
 }
 
 /// Fetch detailed metadata for one effect.
-pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, String> {
-    client::fetch_json(&format!("/api/v1/effects/{id}"))
-        .await
-        .map_err(Into::into)
+pub async fn fetch_effect_detail(id: &str) -> ApiResult<EffectDetailResponse> {
+    let mut detail: EffectDetailResponse =
+        client::fetch_json(&format!("/api/v1/effects/{}", path_segment(id))).await?;
+    detail.cover_image_url = route_cover_image_url(detail.cover_image_url);
+    Ok(detail)
 }
 
-/// Fetch the bundled (effect-defined) presets for an effect.
-pub async fn fetch_bundled_presets(id: &str) -> Result<Vec<PresetTemplate>, String> {
-    let detail = fetch_effect_detail(id).await?;
-    Ok(detail.presets)
+fn route_effect_summary(mut effect: EffectSummary) -> EffectSummary {
+    effect.cover_image_url = route_cover_image_url(effect.cover_image_url);
+    effect
+}
+
+fn route_cover_image_url(cover_image_url: Option<String>) -> Option<String> {
+    cover_image_url.and_then(|url| client::daemon_url(&url))
+}
+
+/// Fetch the bundled and saved preset stack for one effect.
+pub async fn fetch_effect_presets(id: &str) -> ApiResult<Vec<EffectPresetSummary>> {
+    let response: EffectPresetListResponse =
+        client::fetch_json(&format!("/api/v1/effects/{}/presets", path_segment(id))).await?;
+    Ok(response.items)
+}
+
+/// Apply a bundled or saved preset to an effect and optional render zone.
+pub async fn apply_effect_preset(
+    effect_id: &str,
+    preset_id: &str,
+    zone_id: Option<&str>,
+    expected_revision: u64,
+) -> ApiResult<EffectLayerTarget> {
+    let path = format!(
+        "/api/v1/effects/{}/presets/{}/apply",
+        path_segment(effect_id),
+        path_segment(preset_id)
+    );
+    let zone = zone_id
+        .map(|zone_id| {
+            uuid::Uuid::parse_str(zone_id)
+                .map(hypercolor_types::scene::ZoneId)
+                .map_err(|_| ApiError::Serialize("Target zone must be a UUID".to_owned()))
+        })
+        .transpose()?;
+    let body = ApplyEffectRequest {
+        zone,
+        ..ApplyEffectRequest::default()
+    };
+    apply_effect_preset_with(effect_id, expected_revision, move |revision| async move {
+        client::send_json_versioned::<_, ApplyEffectResponse>(
+            HttpMethod::Post,
+            &path,
+            Some(&body),
+            Some(revision),
+        )
+        .await
+    })
+    .await
+}
+
+async fn apply_effect_preset_with<Send, SendFuture>(
+    effect_id: &str,
+    expected_revision: u64,
+    send: Send,
+) -> ApiResult<EffectLayerTarget>
+where
+    Send: FnOnce(u64) -> SendFuture,
+    SendFuture: Future<Output = ApiResult<client::MutationOutcome<ApplyEffectResponse>>>,
+{
+    match send(expected_revision).await? {
+        client::MutationOutcome::Applied(response) => {
+            effect_target_from_apply(effect_id, &response)
+        }
+        client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
+            "Scene changed from revision {expected_revision} to {current} before preset apply"
+        ))),
+    }
 }
 
 /// Apply an effect by ID or name. Pass `None` for a bare start; pass
 /// `Some(body)` to deliver preferences atomically.
-pub async fn apply_effect(id: &str, body: Option<&ApplyEffectBody>) -> Result<(), String> {
-    let path = format!("/api/v1/effects/{id}/apply");
-    match body {
-        Some(body) => client::post_json_discard(&path, body)
-            .await
-            .map_err(Into::into),
-        None => client::post_empty(&path).await.map_err(Into::into),
-    }
+pub async fn apply_effect(
+    id: &str,
+    body: Option<&ApplyEffectRequest>,
+) -> ApiResult<EffectLayerTarget> {
+    let path = format!("/api/v1/effects/{}/apply", path_segment(id));
+    let body = body.cloned().unwrap_or_default();
+    apply_effect_with(id, || async {
+        client::post_json::<_, ApplyEffectResponse>(&path, &body).await
+    })
+    .await
 }
 
-/// Pause output while preserving the currently active effect and controls.
-pub async fn pause_effect() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/pause")
-        .await
-        .map_err(Into::into)
-}
-
-/// Resume output for the preserved active effect.
-pub async fn resume_effect() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/resume")
-        .await
-        .map_err(Into::into)
+async fn apply_effect_with<Send, SendFuture>(
+    effect_id: &str,
+    send: Send,
+) -> ApiResult<EffectLayerTarget>
+where
+    Send: FnOnce() -> SendFuture,
+    SendFuture: Future<Output = ApiResult<ApplyEffectResponse>>,
+{
+    let response = send().await?;
+    effect_target_from_apply(effect_id, &response)
 }
 
 /// Stop the currently active effect.
-pub async fn stop_effect() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/stop")
-        .await
-        .map_err(Into::into)
+pub async fn stop_effect() -> ApiResult<()> {
+    client::post_json_discard("/api/v1/scene/clear", &ClearSceneRequest::default()).await
 }
 
-/// Update effect control parameters.
-pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
-    let body = serde_json::json!({ "controls": controls });
-    client::patch_json_discard("/api/v1/effects/current/controls", &body)
-        .await
-        .map_err(Into::into)
-}
-
-/// Outcome of a scoped control PATCH against an effect id.
-///
-/// The `Stale` variant is surfaced separately from generic errors so
-/// the Viewport Designer modal can drive its reconciliation dialog off
-/// a real type rather than HTTP-status string-matching. Kept as a named
-/// enum (rather than a bare [`client::MutationOutcome`]) because the
-/// applied payload here is the version token itself, not a resource.
-pub enum UpdateControlsOutcome {
-    /// Applied; the `new_version` is what the caller should echo as the
-    /// next `If-Match` header on a subsequent PATCH.
-    Applied { new_version: u64 },
-    /// Server's current version no longer matches the `If-Match` we
-    /// sent. `current` is the fresh version token to rebase against.
-    Stale { current: u64 },
-}
-
-/// Successful control-PATCH payload — the envelope data carries the new
-/// `controls_version` (also present in the `ETag` header; the body is
-/// simpler to extract with `gloo_net`).
-#[derive(Debug, Deserialize)]
-struct ControlsVersionResponse {
-    controls_version: u64,
-}
-
-/// Scoped control PATCH against a specific effect id with optional
-/// optimistic-concurrency precondition.
-///
-/// See Spec 46 § 9.1. Pass `None` for `expected_version` to skip the
-/// `If-Match` header (the server then applies unconditionally).
-pub async fn update_effect_controls(
-    effect_id: &str,
-    controls: &serde_json::Value,
-    expected_version: Option<u64>,
-) -> Result<UpdateControlsOutcome, String> {
-    use gloo_net::http::Method;
-
-    let url = format!("/api/v1/effects/{effect_id}/controls");
-    let body = serde_json::json!({ "controls": controls });
-    let outcome = client::send_json_versioned::<_, ControlsVersionResponse>(
-        Method::PATCH,
-        &url,
-        Some(&body),
-        expected_version,
+/// Reset one observed effect layer to its defaults.
+pub async fn reset_effect_controls(
+    target: &EffectLayerTarget,
+    expected_revision: u64,
+) -> ApiResult<EffectLayerTarget> {
+    let scene: SceneDocument = client::fetch_json("/api/v1/scene").await?;
+    if scene.revision != expected_revision {
+        return Err(ApiError::precondition_failed(format!(
+            "Scene changed from revision {expected_revision} to {} before controls reset",
+            scene.revision
+        )));
+    }
+    let zone = scene
+        .zones
+        .iter()
+        .find(|zone| zone.id.to_string() == target.zone_id)
+        .ok_or_else(|| {
+            ApiError::Parse("The observed effect zone is no longer present".to_owned())
+        })?;
+    let layer = zone
+        .layers
+        .iter()
+        .find(|layer| layer.id.to_string() == target.layer_id)
+        .ok_or_else(|| {
+            ApiError::Parse("The observed effect layer is no longer present".to_owned())
+        })?;
+    let LayerSource::Effect {
+        effect_id,
+        control_bindings,
+        ..
+    } = &layer.source
+    else {
+        return Err(ApiError::Parse(
+            "The observed layer no longer runs an effect".to_owned(),
+        ));
+    };
+    if effect_id.to_string() != target.effect_id {
+        return Err(ApiError::Parse(
+            "The observed layer no longer runs the requested effect".to_owned(),
+        ));
+    }
+    let detail = fetch_effect_detail(&effect_id.to_string()).await?;
+    let values: std::collections::HashMap<_, _> = detail
+        .controls
+        .into_iter()
+        .map(|control| (control.control_id().to_owned(), control.default_value))
+        .collect();
+    let outcome = client::send_json_versioned::<_, ZoneResource>(
+        HttpMethod::Put,
+        &format!("/api/v1/scene/zones/{}/layers/{}", zone.id, layer.id),
+        Some(&ReplaceLayerRequest {
+            source: LayerSource::Effect {
+                effect_id: *effect_id,
+                controls: values,
+                control_bindings: control_bindings.clone(),
+                preset_id: None,
+            },
+            name: layer.name.clone(),
+            blend: Some(layer.blend),
+            opacity: Some(layer.opacity),
+            transform: Some(layer.transform),
+            adjust: Some(layer.adjust),
+            bindings: Some(layer.bindings.clone()),
+            enabled: Some(layer.enabled),
+        }),
+        Some(expected_revision),
     )
     .await?;
-    Ok(match outcome {
-        client::MutationOutcome::Applied(data) => UpdateControlsOutcome::Applied {
-            new_version: data.controls_version,
-        },
-        client::MutationOutcome::Stale { current } => UpdateControlsOutcome::Stale { current },
+    match outcome {
+        client::MutationOutcome::Applied(zone) => effect_target_from_zone(&target.effect_id, &zone),
+        client::MutationOutcome::Stale { current } => Err(ApiError::precondition_failed(format!(
+            "Scene changed from revision {expected_revision} to {current} before controls reset"
+        ))),
+    }
+}
+
+type EffectTarget = (
+    String,
+    String,
+    String,
+    HashMap<String, ControlValue>,
+    Vec<String>,
+    Option<String>,
+);
+
+fn effect_target(scene: &SceneDocument) -> Option<EffectTarget> {
+    scene
+        .zones
+        .iter()
+        .find(|zone| zone.role == ZoneRole::Primary)
+        .and_then(effect_target_in_zone)
+        .or_else(|| scene.zones.iter().find_map(effect_target_in_zone))
+}
+
+fn effect_target_in_zone(
+    zone: &hypercolor_types::api::scene::ZoneResource,
+) -> Option<EffectTarget> {
+    zone.layers.iter().rev().find_map(|layer| {
+        let LayerSource::Effect {
+            effect_id: current_effect_id,
+            controls,
+            control_bindings,
+            preset_id,
+        } = &layer.source
+        else {
+            return None;
+        };
+        Some((
+            zone.id.to_string(),
+            layer.id.to_string(),
+            current_effect_id.to_string(),
+            controls.clone(),
+            control_bindings.keys().cloned().collect(),
+            preset_id.map(|preset| preset.to_string()),
+        ))
     })
 }
 
-/// Reset all controls on the active effect to their defaults.
-pub async fn reset_controls() -> Result<(), String> {
-    client::post_empty("/api/v1/effects/current/reset")
-        .await
-        .map_err(Into::into)
+fn effect_target_from_apply(
+    effect_id: &str,
+    response: &ApplyEffectResponse,
+) -> ApiResult<EffectLayerTarget> {
+    effect_target_from_zone(effect_id, &response.zone)
 }
 
-pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String> {
-    let form_data = FormData::new().map_err(|error| format!("{error:?}"))?;
-    form_data
-        .append_with_blob_and_filename("file", &file, &file.name())
-        .map_err(|error| format!("{error:?}"))?;
+fn effect_target_from_zone(effect_id: &str, zone: &ZoneResource) -> ApiResult<EffectLayerTarget> {
+    let layer = zone
+        .layers
+        .iter()
+        .rev()
+        .find(|layer| {
+            matches!(
+                &layer.source,
+                LayerSource::Effect { effect_id: current, .. }
+                    if current.to_string() == effect_id
+            )
+        })
+        .ok_or_else(|| {
+            ApiError::Parse("Effect apply response did not contain the created layer".to_owned())
+        })?;
+    Ok(EffectLayerTarget {
+        effect_id: effect_id.to_owned(),
+        zone_id: zone.id.to_string(),
+        layer_id: layer.id.to_string(),
+    })
+}
 
-    let response = client::with_auth(Request::post("/api/v1/effects/install"))
-        .body(form_data)
-        .map_err(|error| error.to_string())?
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+pub async fn upload_effect(file: File) -> ApiResult<InstalledEffectResponse> {
+    let part = client::multipart_file_part("file", &file).await?;
+    let response = client::send_multipart("/api/v1/effects/install", vec![part]).await?;
 
-    if !(200..300).contains(&response.status()) {
-        let fallback = format!("HTTP {}", response.status());
-        let payload = response.json::<serde_json::Value>().await.ok();
+    if !(200..300).contains(&response.status) {
+        let status = response.status;
+        let payload = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
         let detail_errors = payload
             .as_ref()
             .and_then(|value| value["error"]["details"]["errors"].as_array())
@@ -236,13 +376,165 @@ pub async fn upload_effect(file: File) -> Result<InstalledEffectResponse, String
                     .and_then(|value| value["error"]["message"].as_str())
                     .map(str::to_owned)
             })
-            .unwrap_or(fallback);
-        return Err(message);
+            .filter(|message| !message.is_empty());
+        return Err(ApiError::http(status, message));
     }
 
-    response
-        .json::<super::ApiEnvelope<InstalledEffectResponse>>()
-        .await
-        .map(|payload| payload.data)
-        .map_err(|error| error.to_string())
+    client::parse_envelope(&response)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll, Waker};
+
+    use hypercolor_types::api::scene::{
+        ApplyEffectResponse, SceneDocument, SideEffectOutcome, TransitionType,
+    };
+
+    use super::{apply_effect_preset_with, apply_effect_with};
+    use crate::api::{ApiResult, MutationOutcome};
+
+    struct SuspendedApply {
+        response: Option<ApplyEffectResponse>,
+        observed_layer: Rc<RefCell<String>>,
+        next_layer: String,
+        suspended: bool,
+    }
+
+    impl Future for SuspendedApply {
+        type Output = ApiResult<ApplyEffectResponse>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            if !self.suspended {
+                self.suspended = true;
+                self.observed_layer.replace(self.next_layer.clone());
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            Poll::Ready(Ok(self.response.take().expect("response is returned once")))
+        }
+    }
+
+    struct SuspendedPresetApply {
+        apply: SuspendedApply,
+    }
+
+    impl Future for SuspendedPresetApply {
+        type Output = ApiResult<MutationOutcome<ApplyEffectResponse>>;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            match Pin::new(&mut self.get_mut().apply).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(response)) => Poll::Ready(Ok(MutationOutcome::Applied(response))),
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            }
+        }
+    }
+
+    fn apply_response(effect_id: &str, layer_ids: &[&str]) -> ApplyEffectResponse {
+        let scene: SceneDocument = serde_json::from_value(serde_json::json!({
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "live",
+            "kind": "ephemeral",
+            "is_default": true,
+            "revision": 2,
+            "zones": [{
+                "id": "00000000-0000-0000-0000-000000000002",
+                "name": "primary",
+                "role": "primary",
+                "enabled": true,
+                "brightness": 1.0,
+                "members": [],
+                "layers": layer_ids.iter().map(|layer_id| serde_json::json!({
+                    "id": layer_id,
+                    "source": {"type": "effect", "effect_id": effect_id, "controls": {}}
+                })).collect::<Vec<_>>()
+            }]
+        }))
+        .expect("apply response fixture should deserialize");
+        ApplyEffectResponse {
+            zone: scene.zones[0].clone(),
+            transition: TransitionType::Cut,
+            output: SideEffectOutcome::applied(),
+        }
+    }
+
+    fn poll_twice<T>(future: impl Future<Output = T>) -> T {
+        let mut future = std::pin::pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+        assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+        let Poll::Ready(output) = future.as_mut().poll(&mut context) else {
+            panic!("suspended request should resolve on its second poll");
+        };
+        output
+    }
+
+    #[test]
+    fn direct_same_effect_reapply_returns_the_new_layer_identity() {
+        let effect = "00000000-0000-0000-0000-00000000000a";
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let observed_layer = Rc::new(RefCell::new(old_layer.to_owned()));
+        let request_observed_layer = Rc::clone(&observed_layer);
+        let result = poll_twice(apply_effect_with(effect, move || SuspendedApply {
+            response: Some(apply_response(effect, &[old_layer, new_layer])),
+            observed_layer: request_observed_layer,
+            next_layer: new_layer.to_owned(),
+            suspended: false,
+        }))
+        .expect("same-effect reapply should return its layer target");
+
+        assert_eq!(observed_layer.borrow().as_str(), new_layer);
+        assert_eq!(result.effect_id, effect);
+        assert_eq!(result.layer_id, new_layer);
+    }
+
+    #[test]
+    fn preset_same_effect_apply_returns_the_replacement_layer_identity() {
+        let effect = "00000000-0000-0000-0000-00000000000a";
+        let old_layer = "00000000-0000-0000-0000-000000000003";
+        let new_layer = "00000000-0000-0000-0000-000000000004";
+        let observed_layer = Rc::new(RefCell::new(old_layer.to_owned()));
+        let request_observed_layer = Rc::clone(&observed_layer);
+        let result = poll_twice(apply_effect_preset_with(effect, 7, move |_| {
+            SuspendedPresetApply {
+                apply: SuspendedApply {
+                    response: Some(apply_response(effect, &[old_layer, new_layer])),
+                    observed_layer: request_observed_layer,
+                    next_layer: new_layer.to_owned(),
+                    suspended: false,
+                },
+            }
+        }))
+        .expect("preset apply should return its replacement target");
+
+        assert_eq!(observed_layer.borrow().as_str(), new_layer);
+        assert_eq!(result.effect_id, effect);
+        assert_eq!(result.layer_id, new_layer);
+    }
+
+    #[test]
+    fn effect_cover_urls_require_verified_native_route_and_preserve_browser_same_origin() {
+        crate::api::client::reset_daemon_transport_for_test();
+        let route = Some("/api/v1/effects/prism/cover".to_owned());
+        assert_eq!(super::route_cover_image_url(route.clone()), route);
+
+        crate::api::client::begin_native_daemon_verification();
+        assert_eq!(super::route_cover_image_url(route.clone()), None);
+
+        crate::api::client::install_verified_daemon_connection(
+            "http://127.0.0.1:9420",
+            Some("protected"),
+        );
+        assert_eq!(
+            super::route_cover_image_url(route),
+            Some("http://127.0.0.1:9420/api/v1/effects/prism/cover".to_owned())
+        );
+        crate::api::client::reset_daemon_transport_for_test();
+    }
 }

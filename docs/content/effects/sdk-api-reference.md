@@ -18,7 +18,7 @@ Scaffolded workspaces pull it from the registry by default; pass
 `--sdk-spec file:...` to the scaffolder to resolve against a local checkout
 instead. See [Setup](@/effects/setup.md) for how that wires up.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The narrative guides cover the common surface in depth:
 [TypeScript canvas effects](@/effects/typescript-effects.md),
 [Controls](@/effects/controls.md), [Palettes](@/effects/palettes.md),
@@ -26,7 +26,7 @@ The narrative guides cover the common surface in depth:
 [Display faces](@/effects/display-faces.md). This page is the flat index: reach
 for it when you want every signature in one place, including the math, layout,
 motion, and gauge helper families the guides do not enumerate.
-{% end %}
+{% </callout> %}
 
 ## Declarative API
 
@@ -80,6 +80,7 @@ interface CanvasFnOptions {
     author?: string
     audio?: boolean      // required when you read audio (enforced at build time)
     screen?: boolean     // opt into screen-zone sampling
+    input?: boolean      // required when you read keyboard/mouse (enforced at build time)
     category?: string
     builtinId?: string
     designBasis?: DesignBasis  // author against a fixed grid, scale automatically
@@ -87,11 +88,14 @@ interface CanvasFnOptions {
 }
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 `audio: true` is not cosmetic. If your source touches `audio(`, `ctx.audio`,
 `getAudioData(`, or `engine.audio` without it, the build **fails** with an audio
-reactivity validation error. Same contract for `effect()` shaders.
-{% end %}
+reactivity validation error. `input: true` carries the same contract: reading
+`getInputData(`, `engine.keyboard`, or `engine.mouse` without it fails the build
+with "effect uses input helpers but is missing input: true". Both apply to
+`effect()` shaders too.
+{% </callout> %}
 
 ### effect
 
@@ -119,6 +123,7 @@ interface EffectFnOptions {
     author?: string
     audio?: boolean
     screen?: boolean
+    input?: boolean
     category?: string
     builtinId?: string
     presets?: PresetDef[]
@@ -165,7 +170,7 @@ handle.
 type ControlMap        // record of control key → shorthand or ControlSpec
 type ControlShorthand  // [min,max,default] | [min,max,default,step] | string[] | bool | "#hex" | string | number
 type ControlSpec       // the resolved spec a factory produces
-type PresetDef = { name: string; description?: string; controls: Record<string, unknown> }
+type PresetDef = { id?: string; name: string; description?: string; controls: Record<string, unknown> }
 ```
 
 ## Control factories
@@ -214,7 +219,7 @@ type MediaKind = 'any' | 'image' | 'video' | 'lottie'
 getControlValue<T>(propertyName: string, defaultValue: T): T
 getAllControls<T extends Record<string, unknown>>(controls: T): T
 normalizeSpeed(speed: number): number        // max(0.2, (speed/5) ** 1.5)
-normalizePercentage(value: number, defaultValue?: number, minValue?: number): number  // value / 100
+normalizePercentage(value: number, defaultValue?: number, minValue?: number): number  // max(minValue, value / 100); defaults 100 / 0.01
 comboboxValueToIndex(value: string | number, options: string[], defaultIndex?: number): number
 boolToInt(value: boolean | number): number
 ```
@@ -246,7 +251,7 @@ const PITCH_CLASSES = 12   // chromagram length (C..B)
 ```
 
 `AudioData` is a wide per-frame struct. Key fields (all `0-1` unless noted):
-`level`, `levelRaw` (dB), `bass`, `mid`, `treble`, `beat`, `beatPulse`
+`levelLinear`, `levelDb`, `bass`, `mid`, `treble`, `beat`, `beatPulse`
 (decaying, prefer this over raw `beat`), `beatPhase`, `beatConfidence`, `tempo`
 (BPM), `frequency` (200, `Float32Array`), `frequencyRaw` (200, `Int8Array`),
 `frequencyWeighted` (200), `melBands` / `melBandsNormalized` (24), `chromagram`
@@ -255,13 +260,13 @@ major), `brightness` (spectral centroid), `spectralFlux`, `onset`, `onsetPulse`,
 `bassEnv` / `midEnv` / `trebleEnv`, `swell`, `momentum`. See
 [Audio](@/effects/audio.md) for the full table and idioms.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The TypeScript field names here (camelCase, `tempo`, `frequency`) differ from the
 **Rust** `AudioData` used by native effects (snake_case, `bpm`, `spectrum`).
 Shaders also see only a subset: no `chromagram`, `melBands`, or `dominantPitch`
 uniforms. See [Native Rust effects](@/effects/native-rust-effects.md) for the
 Rust-side names.
-{% end %}
+{% </callout> %}
 
 ### Audio helpers
 
@@ -276,14 +281,15 @@ getPitchClassName(pitchClass: number): string
 getPitchClassIndex(name: string): number
 pitchClassToHue(pitchClass: number): number              // Circle of Fifths → hue
 getHarmonicColor(audio: AudioData, saturation?: number, lightness?: number): [number, number, number]
-getMoodColor(audio: AudioData, ...): [number, number, number]
+getMoodColor(majorColor: [number, number, number], minorColor: [number, number, number], audio: AudioData): [number, number, number]
 getBeatAnticipation(audio: AudioData, anticipation?: number): number
 isOnBeat(audio: AudioData, division?: number, tolerance?: number): boolean
-normalizeAudioLevel(level: number): number
 normalizeFrequencyBin(value: number, max?: number): number
 smoothValue(currentValue: number, previousValue: number, smoothing?: number): number
-hslToRgb(h: number, s: number, l: number): [number, number, number]
 ```
+
+`getHarmonicColor` and `getMoodColor` return unit floats, `0.0` to `1.0` per
+channel. For encoded bytes, see [Color](#color) below.
 
 ## Input
 
@@ -307,26 +313,20 @@ availability, empty keyboard, idle mouse). The snapshot carries:
   like `"A"` and `"KeyA"`), `recent` (newly pressed since last frame), and
   `events` (ordered `KeyInputEvent`s).
 - `mouse: MouseInputState`: `x`/`y` in platform pixels, `nx`/`ny` normalized to
-  `[0, 1]`, `down`, `buttons`, `wheel` (accumulated notches this frame),
-  `velocity`, `mode`, and ordered `events` (`MouseInputEvent`s).
+  `[0, 1]`, `down`, `buttons`, exact two-axis `scroll` totals, `velocity`,
+  `mode`, `available`, and ordered `events` (`MouseInputEvent`s).
 - Lifecycle fields from `InputAvailability`: `declared`, `routed`, `healthy`,
   `fresh`, and `degraded`.
 - `dropped`: count of input events dropped this frame due to overflow.
-
-{% callout(type="warning") %}
-`InputData.available` is **deprecated**. It now means exactly
-`routed && healthy`, and the alias will be removed in SDK 0.4.0. Read the
-explicit lifecycle fields (`declared`, `routed`, `healthy`, `fresh`,
-`degraded`) instead.
-{% end %}
 
 Events carry a monotonic capture timestamp (`atMs`), a strictly increasing
 `seq`, the producing `source` device, an optional backend-neutral
 `physicalCode`, and a `repeatCount` collapsing equivalent ordered events.
 `KeyInputEvent` adds `key` and `state` (`KeyEventState`:
-`'pressed' | 'released' | 'repeated'`); `MouseInputEvent` covers both button
-events (`button`, `state`) and wheel events (`delta` in notches). `MouseMode`
-is `'none' | 'absolute' | 'virtual'`.
+`'pressed' | 'released' | 'repeated'`); `MouseInputEvent` covers button events
+(`button`, `state`) and exact scroll events (`deltaX`, `deltaY`, `unit`,
+`phase`, `momentumPhase`). `MouseMode` is
+`'none' | 'absolute' | 'virtual'`.
 
 `EngineKeyboard` and `EngineMouse` describe the injected globals themselves,
 including the helper methods the runtime pre-installs: `isKeyDown(key)`,
@@ -361,7 +361,9 @@ keyToGridPosition(key: string): { x: number; y: number } | null
 
 Exported input types: `InputData`, `EngineKeyboard`, `EngineMouse`,
 `KeyboardInputState`, `MouseInputState`, `MouseMode`, `KeyInputEvent`,
-`MouseInputEvent`, `KeyEventState`, `PressEnvelopeOptions`, `TypingRateOptions`.
+`MouseInputEvent`, `MouseButtonInputEvent`, `MouseScrollInputEvent`,
+`MouseScrollPhase`, `MouseScrollState`, `MouseScrollUnit`, `KeyEventState`,
+`PressEnvelopeOptions`, `TypingRateOptions`.
 
 ## Palettes
 
@@ -372,8 +374,8 @@ createPaletteFn(name: string): PaletteFn                       // t in [0,1] →
 samplePalette(name: string, t: number): [number, number, number]
 samplePaletteCSS(name: string, t: number, alpha?: number): string
 
-type PaletteFn = (t: number) => string
-type PaletteEntry  // { stops, background, ... }, the registry shape
+type PaletteFn = (t: number, alpha?: number) => string
+type PaletteEntry  // { id, name, mood, stops, iq, accent, background }, the registry shape
 ```
 
 Palette interpolation is **Oklab** (256-entry LUT, cached per name). An unknown
@@ -398,6 +400,57 @@ type UniformValue
 
 The declarative functions generate subclasses of these; reach for the classes only
 when you need lifecycle control the functions do not expose.
+
+## Color
+
+The color kernel. Every conversion here mirrors the `hypercolor-color` Rust
+crate, and the two are held together by a shared vector table, so an effect and
+the engine resolve a color identically.
+
+Hue is degrees and wraps into `[0, 360)` at every entry point. Saturation,
+value, lightness and alpha are `0.0` to `1.0`. Byte channels are `0` to `255`,
+converted by rounding then clamping.
+
+```typescript
+interface Rgb  { r: number; g: number; b: number }
+interface Rgba { r: number; g: number; b: number; a: number }
+interface Hsl  { h: number; s: number; l: number }
+interface Hsv  { h: number; s: number; v: number }
+interface LinearRgba { r: number; g: number; b: number; a: number }   // linear light
+interface Oklab { l: number; a: number; b: number; alpha: number }
+
+hexToRgb(source: string, fallback: Rgb): Rgb      // 3 or 6 digits, optional '#'
+hexToRgba(source: string, fallback: Rgba): Rgba   // 3, 4, 6 or 8 digits
+rgbToHex(rgb: Rgb): string                        // lowercase '#rrggbb'
+
+hsvToRgb(h: number, s: number, v: number): Rgb
+hslToRgb(h: number, s: number, l: number): Rgb
+hslToRgbUnit(h: number, s: number, l: number): [number, number, number]
+rgbToHsv(rgb: Rgb): Hsv
+rgbToHsl(rgb: Rgb): Hsl
+
+scaleRgb(rgb: Rgb, factor: number): Rgb           // brightness, round then clamp
+wrapHue(hue: number): number
+unitToByte(value: number): number
+
+srgbToLinear(c: number): number
+linearToSrgb(c: number): number
+rgbToLinear(rgb: Rgb): LinearRgba
+linearToRgba(linear: LinearRgba): Rgba
+linearLuma(linear: LinearRgba): number            // BT.709 on linear values
+linearToOklab(linear: LinearRgba): Oklab
+oklabToLinear(lab: Oklab): LinearRgba
+```
+
+`hexToRgb` takes the fallback as a required argument. A malformed string returns
+exactly what you pass, so a typo in a color control can never masquerade as a
+color someone chose. The 4- and 8-digit forms are rejected by `hexToRgb` rather
+than silently losing their alpha; parse those with `hexToRgba`.
+
+Shaders get the same helpers. `hsv2rgb`, `rgb2hsv`, `saturateColor`,
+`limitWhiteness`, `softClip`, `blendOverlay` and `blendSoftLight` are injected
+into a fragment shader automatically when it calls them, so a `.glsl` file uses
+them without declaring them. Define one yourself and yours wins.
 
 ## Math
 
@@ -491,11 +544,11 @@ type EasingFn
 type SpringOptions
 ```
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 FPS is adaptive across five tiers. Always drive motion off a time or delta
 (`time_secs`, `performance.now()` deltas, `dt`), never off frame counts, so the
 animation is correct at 15, 30, and 60 FPS alike.
-{% end %}
+{% </callout> %}
 
 ## Gauges
 
@@ -513,7 +566,7 @@ createArcGauge(base: Omit<ArcGaugeOptions, 'value'>, animate?: GaugeAnimateOptio
 createBarGauge(base: Omit<BarGaugeOptions, 'value'>, animate?: GaugeAnimateOptions): AnimatedBarGauge
 createRingGauge(base, animate?: GaugeAnimateOptions): AnimatedRingGauge
 
-class ValueHistory   // rolling buffer for sparklines; push(value), values(), min, max
+class ValueHistory   // rolling buffer for sparklines; push(value), values(), latest(), length
 
 type ArcGaugeOptions; type BarGaugeOptions; type RingGaugeOptions
 type SparklineOptions; type SparklineBand; type GaugeAnimateOptions
@@ -559,7 +612,7 @@ type HSLColor; type RGBColor; type UpdateFunction
 // Initialization (called for you by canvas/effect/face; rarely needed directly)
 initializeEffect(initFunction: () => void, options?: InitOptions): void
 type InitializationMode = 'immediate' | 'deferred' | 'metadata-only'
-interface InitOptions { mode?: InitializationMode; instance?: unknown }
+interface InitOptions { mode?: InitializationMode; onReady?: () => void; instance?: object }
 ```
 
 `metadata-only` mode is what the build harness sets to extract control and preset

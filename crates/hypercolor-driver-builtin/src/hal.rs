@@ -1,12 +1,10 @@
-use anyhow::Result;
-use hypercolor_driver_api::{
-    DeviceBackend, DriverConfigView, DriverDescriptor, DriverHost, DriverModule,
-    DriverProtocolCatalog,
-};
+use hypercolor_driver_api::{DriverDescriptor, DriverModule, DriverProtocolCatalog, OutputBinding};
 use hypercolor_hal::ProtocolDatabase;
 use hypercolor_types::device::{
-    DriverModuleDescriptor, DriverProtocolDescriptor, DriverTransportKind,
+    DriverModuleDescriptor, DriverProtocolDescriptor, DriverTransportKind, SMBUS_OUTPUT_BACKEND_ID,
+    USB_OUTPUT_BACKEND_ID,
 };
+use hypercolor_types::identity::BackendId;
 
 pub struct HalCatalogDriverModule {
     descriptor: &'static DriverDescriptor,
@@ -21,8 +19,10 @@ impl HalCatalogDriverModule {
     ) -> Self {
         let transport = module_descriptor
             .transports
-            .first()
-            .cloned()
+            .iter()
+            .find(|transport| transport.is_available())
+            .or_else(|| module_descriptor.transports.first())
+            .map(|transport| transport.kind.clone())
             .unwrap_or(DriverTransportKind::Usb);
         let descriptor = DriverDescriptor::new(
             leak_string(module_descriptor.id.clone()),
@@ -56,17 +56,28 @@ impl DriverModule for HalCatalogDriverModule {
         self.module_descriptor.clone()
     }
 
-    fn build_output_backend(
-        &self,
-        host: &dyn DriverHost,
-        config: DriverConfigView<'_>,
-    ) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = (host, config);
-        Ok(None)
-    }
-
-    fn has_output_backend(&self) -> bool {
-        false
+    fn output(&self) -> OutputBinding<'_> {
+        if self.module_descriptor.transports.iter().any(|transport| {
+            transport.is_available() && matches!(&transport.kind, DriverTransportKind::Smbus)
+        }) {
+            return OutputBinding::Shared(
+                BackendId::new(SMBUS_OUTPUT_BACKEND_ID).expect("SMBus backend ID must be valid"),
+            );
+        }
+        if self.module_descriptor.transports.iter().any(|transport| {
+            transport.is_available()
+                && matches!(
+                    &transport.kind,
+                    DriverTransportKind::Usb
+                        | DriverTransportKind::Midi
+                        | DriverTransportKind::Serial
+                )
+        }) {
+            return OutputBinding::Shared(
+                BackendId::new(USB_OUTPUT_BACKEND_ID).expect("USB backend ID must be valid"),
+            );
+        }
+        OutputBinding::None
     }
 
     fn protocol_catalog(&self) -> Option<&dyn DriverProtocolCatalog> {

@@ -33,3 +33,16 @@
     X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Slug renames: the old paths stay reachable for bookmarks and search results.
+[[redirects]]
+  from = "/guide/profiles-and-scenes/"
+  to = "/guide/scenes-and-snapshots/"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/studio/device-grouping/"
+  to = "/studio/device-assignment/"
+  status = 301
+  force = true

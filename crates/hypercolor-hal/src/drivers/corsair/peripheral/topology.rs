@@ -1,13 +1,13 @@
 //! Zone helpers for Corsair peripheral devices.
 
-use hypercolor_types::device::{DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::SegmentInfo;
 
-use crate::protocol::ProtocolZone;
+use hypercolor_types::device::{DeviceColorFormat, DeviceTopologyHint};
 
 use super::types::{BragiDeviceConfig, CorsairPeripheralTopology};
 
 #[must_use]
-pub fn zones_for_bragi(config: &BragiDeviceConfig) -> Vec<ProtocolZone> {
+pub fn zones_for_bragi(config: &BragiDeviceConfig) -> Vec<SegmentInfo> {
     let led_count = u32::try_from(config.led_count).unwrap_or(u32::MAX);
     if led_count == 0 || config.topology == CorsairPeripheralTopology::None {
         return Vec::new();
@@ -18,7 +18,7 @@ pub fn zones_for_bragi(config: &BragiDeviceConfig) -> Vec<ProtocolZone> {
         other => other.hint(),
     };
 
-    vec![ProtocolZone {
+    vec![SegmentInfo {
         name: config.class.zone_name().to_owned(),
         led_count,
         topology,

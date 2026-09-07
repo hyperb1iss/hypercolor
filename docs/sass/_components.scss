@@ -189,10 +189,10 @@
   text-decoration: none;
   transition:
     transform var(--duration-fast) var(--ease-spring),
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    filter var(--duration-medium) var(--ease-smooth),
-    border-color var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    box-shadow var(--duration-normal) var(--ease-silk),
+    filter var(--duration-normal) var(--ease-silk),
+    border-color var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &--primary {
     background: linear-gradient(135deg, var(--accent), var(--color-coral));
@@ -327,10 +327,10 @@
   opacity: 0;
   animation: fadeInUp 0.4s var(--ease-silk) both;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow 0.4s var(--ease-smooth),
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow 0.4s var(--ease-silk),
     transform var(--duration-fast) var(--ease-spring),
-    background var(--duration-medium) var(--ease-smooth);
+    background var(--duration-normal) var(--ease-silk);
 
   // Staggered entrance — 0.06s delay per card
   @for $i from 1 through 12 {
@@ -370,7 +370,7 @@
     margin-bottom: 16px;
     filter: drop-shadow(0 0 12px var(--glow-accent-50));
     line-height: 1;
-    transition: filter var(--duration-medium) var(--ease-smooth);
+    transition: filter var(--duration-normal) var(--ease-silk);
   }
 
   &__title {
@@ -378,7 +378,7 @@
     font-weight: 600;
     font-size: 1.05rem;
     margin-bottom: 8px;
-    transition: text-shadow var(--duration-medium) var(--ease-smooth);
+    transition: text-shadow var(--duration-normal) var(--ease-silk);
   }
 
   &__desc {
@@ -398,7 +398,7 @@
       color: var(--accent);
       font-weight: 600;
       font-size: 0.85rem;
-      transition: text-shadow var(--duration-medium) var(--ease-smooth);
+      transition: text-shadow var(--duration-normal) var(--ease-silk);
     }
 
     &:hover .feature-card__cta {
@@ -435,16 +435,34 @@ a.feature-card {
   gap: 16px;
 }
 
+// The card is an <a> holding an <h3> and a <p>, both of which land inside
+// .doc and would otherwise inherit the content heading's 32px top margin and
+// the content link's accent colour. Two classes to outrank `.doc h3`.
+.doc .section-page-card__title {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.doc .section-page-card__desc {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .section-page-card {
+  display: block;
   background: var(--surface-raised);
   border: 1px solid var(--border-default);
   border-radius: $radius-lg;
   padding: 20px;
   color: var(--text-primary);
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow 0.4s var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth),
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow 0.4s var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk),
     transform var(--duration-fast) var(--ease-spring);
 
   &:hover {
@@ -476,8 +494,8 @@ a.feature-card {
   margin: 16px 0;
   font-size: 0.95rem;
   transition:
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    border-left-color var(--duration-medium) var(--ease-smooth);
+    box-shadow var(--duration-normal) var(--ease-silk),
+    border-left-color var(--duration-normal) var(--ease-silk);
 
   &:hover {
     box-shadow: -2px 0 16px var(--ambient-glow);
@@ -540,20 +558,34 @@ a.feature-card {
 // Search Modal — glass overlay + glass dialog
 // ---------------------------------------------------------------------------
 
-.search-modal__backdrop {
+// The overlay owns positioning and centering; the dialog owns the glass. The
+// [hidden] rule has to be explicit because `display: flex` here would
+// otherwise beat the user-agent `[hidden] { display: none }`.
+.search-modal {
   position: fixed;
   inset: 0;
   z-index: 200;
-  background: oklch(0 0 0 / 0.60);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 15vh;
+
+  &[hidden] {
+    display: none;
+  }
+}
+
+.search-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: oklch(0 0 0 / 0.60);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .search-modal__dialog {
+  position: relative;
+  z-index: 1;
   width: 90%;
   max-width: 560px;
   background: var(--glass-bg-dense);
@@ -566,31 +598,48 @@ a.feature-card {
   animation: scaleIn 0.2s var(--ease-spring) both;
 }
 
-// Legacy class support (templates may use .search-modal directly)
-.search-modal {
-  @extend .search-modal__dialog;
+.search-modal__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  background: var(--surface-overlay);
+  border-bottom: 1px solid var(--border-subtle);
+  transition: border-color var(--duration-normal) var(--ease-silk);
+
+  &:focus-within {
+    border-bottom-color: var(--accent);
+    box-shadow: inset 0 -2px 0 0 var(--glow-accent-50);
+  }
+}
+
+.search-modal__icon {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.search-modal__esc {
+  flex-shrink: 0;
 }
 
 .search-input {
-  width: 100%;
-  padding: 14px 20px;
+  flex: 1;
+  min-width: 0;
+  padding: 14px 0;
   font-family: var(--font-sans);
   font-size: 1rem;
   border: none;
   outline: none;
-  background: var(--surface-overlay);
+  background: none;
   color: var(--text-primary);
-  border-bottom: 1px solid var(--border-subtle);
-  transition: border-color var(--duration-normal) var(--ease-silk),
-              box-shadow var(--duration-normal) var(--ease-silk);
 
   &::placeholder {
     color: var(--text-tertiary);
   }
 
-  &:focus {
-    border-bottom-color: var(--accent);
-    box-shadow: inset 0 -2px 0 0 var(--glow-accent-50);
+  // The header carries the focus treatment for the whole row.
+  &::-webkit-search-cancel-button {
+    -webkit-appearance: none;
   }
 }
 
@@ -600,15 +649,24 @@ a.feature-card {
   padding: 8px;
 }
 
+.search-results__empty {
+  padding: 20px 16px;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-tertiary);
+}
+
 .search-result {
+  display: block;
   padding: 10px 16px;
   border-radius: $radius-sm;
   cursor: pointer;
   transition:
-    background var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth);
+    background var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk);
 
-  &:hover {
+  &:hover,
+  &--active {
     background: var(--surface-hover);
     box-shadow: inset 3px 0 0 var(--accent);
   }
@@ -618,10 +676,39 @@ a.feature-card {
     color: var(--text-primary);
   }
 
-  &__preview {
+  &__section {
+    margin-top: 2px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+  }
+
+  &__snippet {
     font-size: 0.85rem;
     color: var(--text-tertiary);
     margin-top: 2px;
+  }
+
+  mark {
+    background: var(--accent-subtle);
+    color: var(--accent);
+    border-radius: 2px;
+    padding: 0 2px;
+  }
+
+  // The empty/unavailable state reuses .search-result for layout but is not
+  // interactive, so it must not read as a hoverable row.
+  &--empty {
+    cursor: default;
+    color: var(--text-tertiary);
+    text-align: center;
+
+    &:hover {
+      background: none;
+      box-shadow: none;
+    }
   }
 }
 
@@ -656,10 +743,10 @@ a.feature-card {
   padding: 4px 12px;
   border-left: 3px solid transparent;
   transition:
-    color var(--duration-medium) var(--ease-smooth),
-    border-left-color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    color var(--duration-normal) var(--ease-silk),
+    border-left-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &:hover {
     color: var(--text-primary);
@@ -699,8 +786,8 @@ kbd {
   color: var(--accent);
   line-height: 1.4;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk);
 
   &:hover {
     border-color: var(--accent);
@@ -720,9 +807,9 @@ kbd {
   padding: 16px 20px;
   margin: 12px 0;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow 0.4s var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow 0.4s var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &:hover {
     border-color: var(--ambient-border);

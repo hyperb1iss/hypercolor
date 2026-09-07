@@ -6,16 +6,16 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.api_error_response import ApiErrorResponse
-from ...models.api_response_apply_effect_response import ApiResponseApplyEffectResponse
+from ...models.api_error_body import ApiErrorBody
 from ...models.apply_effect_request import ApplyEffectRequest
+from ...models.apply_effect_response_200 import ApplyEffectResponse200
 from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     id: str,
     *,
-    body: ApplyEffectRequest | None | Unset = UNSET,
+    body: ApplyEffectRequest | Unset = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -26,10 +26,8 @@ def _get_kwargs(
         ),
     }
 
-    if isinstance(body, ApplyEffectRequest):
+    if not isinstance(body, Unset):
         _kwargs["json"] = body.to_dict()
-    else:
-        _kwargs["json"] = body
 
     headers["Content-Type"] = "application/json"
 
@@ -39,29 +37,54 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
+) -> ApiErrorBody | ApplyEffectResponse200 | None:
     if response.status_code == 200:
-        response_200 = ApiResponseApplyEffectResponse.from_dict(response.json())
+        response_200 = ApplyEffectResponse200.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 400:
-        response_400 = ApiErrorResponse.from_dict(response.json())
+        response_400 = ApiErrorBody.from_dict(response.json())
 
         return response_400
 
+    if response.status_code == 401:
+        response_401 = ApiErrorBody.from_dict(response.json())
+
+        return response_401
+
+    if response.status_code == 403:
+        response_403 = ApiErrorBody.from_dict(response.json())
+
+        return response_403
+
     if response.status_code == 404:
-        response_404 = ApiErrorResponse.from_dict(response.json())
+        response_404 = ApiErrorBody.from_dict(response.json())
 
         return response_404
 
+    if response.status_code == 409:
+        response_409 = ApiErrorBody.from_dict(response.json())
+
+        return response_409
+
+    if response.status_code == 412:
+        response_412 = ApiErrorBody.from_dict(response.json())
+
+        return response_412
+
     if response.status_code == 422:
-        response_422 = ApiErrorResponse.from_dict(response.json())
+        response_422 = ApiErrorBody.from_dict(response.json())
 
         return response_422
 
+    if response.status_code == 429:
+        response_429 = ApiErrorBody.from_dict(response.json())
+
+        return response_429
+
     if response.status_code == 500:
-        response_500 = ApiErrorResponse.from_dict(response.json())
+        response_500 = ApiErrorBody.from_dict(response.json())
 
         return response_500
 
@@ -73,7 +96,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
+) -> Response[ApiErrorBody | ApplyEffectResponse200]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -86,20 +109,25 @@ def sync_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest | None | Unset = UNSET,
-) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
-    """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
+    body: ApplyEffectRequest | Unset = UNSET,
+) -> Response[ApiErrorBody | ApplyEffectResponse200]:
+    """Apply effect
 
     Args:
         id (str):
-        body (ApplyEffectRequest | None | Unset):
+        body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
+            §2.3).
+
+            Replaces the target zone's layer stack with a single new layer
+            running this effect; a projection of the same `SceneMutation` a
+            layer-stack replacement performs, never a second code path.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseApplyEffectResponse]
+        Response[ApiErrorBody | ApplyEffectResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -118,20 +146,25 @@ def sync(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest | None | Unset = UNSET,
-) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
-    """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
+    body: ApplyEffectRequest | Unset = UNSET,
+) -> ApiErrorBody | ApplyEffectResponse200 | None:
+    """Apply effect
 
     Args:
         id (str):
-        body (ApplyEffectRequest | None | Unset):
+        body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
+            §2.3).
+
+            Replaces the target zone's layer stack with a single new layer
+            running this effect; a projection of the same `SceneMutation` a
+            layer-stack replacement performs, never a second code path.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseApplyEffectResponse
+        ApiErrorBody | ApplyEffectResponse200
     """
 
     return sync_detailed(
@@ -145,20 +178,25 @@ async def asyncio_detailed(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest | None | Unset = UNSET,
-) -> Response[ApiErrorResponse | ApiResponseApplyEffectResponse]:
-    """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
+    body: ApplyEffectRequest | Unset = UNSET,
+) -> Response[ApiErrorBody | ApplyEffectResponse200]:
+    """Apply effect
 
     Args:
         id (str):
-        body (ApplyEffectRequest | None | Unset):
+        body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
+            §2.3).
+
+            Replaces the target zone's layer stack with a single new layer
+            running this effect; a projection of the same `SceneMutation` a
+            layer-stack replacement performs, never a second code path.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ApiErrorResponse | ApiResponseApplyEffectResponse]
+        Response[ApiErrorBody | ApplyEffectResponse200]
     """
 
     kwargs = _get_kwargs(
@@ -175,20 +213,25 @@ async def asyncio(
     id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ApplyEffectRequest | None | Unset = UNSET,
-) -> ApiErrorResponse | ApiResponseApplyEffectResponse | None:
-    """`POST /api/v1/effects/:id/apply` — Start rendering an effect.
+    body: ApplyEffectRequest | Unset = UNSET,
+) -> ApiErrorBody | ApplyEffectResponse200 | None:
+    """Apply effect
 
     Args:
         id (str):
-        body (ApplyEffectRequest | None | Unset):
+        body (ApplyEffectRequest | Unset): `POST /effects/{id}/apply` — the sugar request (Spec 78
+            §2.3).
+
+            Replaces the target zone's layer stack with a single new layer
+            running this effect; a projection of the same `SceneMutation` a
+            layer-stack replacement performs, never a second code path.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ApiErrorResponse | ApiResponseApplyEffectResponse
+        ApiErrorBody | ApplyEffectResponse200
     """
 
     return (

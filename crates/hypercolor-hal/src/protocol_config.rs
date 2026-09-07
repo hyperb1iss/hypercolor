@@ -155,7 +155,7 @@ fn nollie32_config_for_attachment_profile(
     mut binding_led_count: impl FnMut(&ComponentBinding) -> Option<u32>,
 ) -> Nollie32Config {
     let mut config =
-        nollie32_config_from_device_zones(device).unwrap_or(Nollie32Config::OFFICIAL_DEFAULT);
+        nollie32_config_from_device_segments(device).unwrap_or(Nollie32Config::OFFICIAL_DEFAULT);
 
     for binding in &profile.bindings {
         match binding.slot_id.as_str() {
@@ -175,27 +175,27 @@ fn nollie32_config_for_attachment_profile(
     config
 }
 
-fn nollie32_config_from_device_zones(device: &DeviceInfo) -> Option<Nollie32Config> {
+fn nollie32_config_from_device_segments(device: &DeviceInfo) -> Option<Nollie32Config> {
     let mut config = Nollie32Config::default();
-    let mut has_cable_zone = false;
+    let mut has_cable_segment = false;
 
-    for zone in &device.zones {
-        match zone.name.as_str() {
+    for segment in &device.segments {
+        match segment.name.as_str() {
             "ATX Strimer" => {
                 config.atx_cable_present = true;
-                has_cable_zone = true;
+                has_cable_segment = true;
             }
             "GPU Strimer" => {
-                if let Some(cable_type) = gpu_cable_type_for_led_count(Some(zone.led_count)) {
+                if let Some(cable_type) = gpu_cable_type_for_led_count(Some(segment.led_count)) {
                     config.gpu_cable_type = cable_type;
-                    has_cable_zone = true;
+                    has_cable_segment = true;
                 }
             }
             _ => {}
         }
     }
 
-    has_cable_zone.then_some(config)
+    has_cable_segment.then_some(config)
 }
 
 fn gpu_cable_type_for_led_count(led_count: Option<u32>) -> Option<GpuCableType> {

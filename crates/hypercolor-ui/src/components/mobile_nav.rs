@@ -29,17 +29,13 @@ pub fn MobileNav() -> impl IntoView {
                         let path = item.path;
                         Memo::new(move |_| {
                             let current = location.pathname.get();
-                            if path == "/" {
-                                current == "/"
-                            } else {
-                                current.starts_with(path)
-                            }
+                            crate::route_ui::route_is_active(&current, path)
                         })
                     };
 
                     view! {
                         <A
-                            href=item.path
+                            href=crate::route_ui::route_href(item.path)
                             attr:class=move || {
                                 let base = "relative flex-1 flex flex-col items-center \
                                             justify-center gap-1 min-w-0 btn-press";

@@ -8,16 +8,16 @@ use std::time::Duration;
 use axum::body::Body;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::display_preferences::{DisplayPreference, DisplayPreferencesStore};
-use hypercolor_daemon::effect_layouts;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_daemon::library::{JsonLibraryStore, LibraryStore};
 use hypercolor_daemon::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
+use hypercolor_daemon::path_migration::MigrationOutcome;
 use hypercolor_daemon::persistence::{
     AtomicFileWriter, AtomicWriteOutcome, PersistenceError, write_atomic,
 };
-#[cfg(feature = "persistence-test-hooks")]
-use hypercolor_daemon::profile_store::{Profile, ProfileStore};
-use hypercolor_daemon::runtime_state::{RuntimeSessionSnapshot, load, reserve_save, save_reserved};
+use hypercolor_daemon::runtime_state::{
+    RuntimeSessionSnapshot, load, load_migrated, reserve_save, save, save_reserved,
+};
 use hypercolor_types::device::DeviceId;
 #[cfg(feature = "persistence-test-hooks")]
 use hypercolor_types::effect::EffectId;
@@ -119,29 +119,6 @@ fn concurrent_distinct_payloads_commit_only_the_newest_generation() {
     assert_eq!(
         fs::read_to_string(&path).expect("read newest payload"),
         "generation=15"
-    );
-}
-
-#[test]
-fn effect_layout_save_rejects_an_overtaken_snapshot() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("effect-layouts.json");
-    let older = HashMap::from([("effect".to_owned(), "older".to_owned())]);
-    let newer = HashMap::from([("effect".to_owned(), "newer".to_owned())]);
-    let older_save = effect_layouts::reserve_save(&path, &older).expect("reserve older snapshot");
-    let newer_save = effect_layouts::reserve_save(&path, &newer).expect("reserve newer snapshot");
-
-    assert_eq!(
-        effect_layouts::save_reserved(newer_save).expect("save newer snapshot"),
-        AtomicWriteOutcome::Written
-    );
-    assert_eq!(
-        effect_layouts::save_reserved(older_save).expect("reject older snapshot"),
-        AtomicWriteOutcome::Superseded
-    );
-    assert_eq!(
-        effect_layouts::load(&path).expect("reload effect layouts"),
-        newer
     );
 }
 
@@ -379,6 +356,50 @@ fn runtime_reservations_prevent_stale_snapshot_resurrection() {
 }
 
 #[test]
+fn runtime_snapshot_moves_to_state_with_a_durable_backup() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let legacy = directory.path().join("data/runtime-state.json");
+    let canonical = directory.path().join("state/runtime-state.json");
+    let expected = RuntimeSessionSnapshot {
+        active_scene_id: Some("active".to_owned()),
+        ..RuntimeSessionSnapshot::default()
+    };
+    save(&legacy, &expected).expect("seed legacy runtime snapshot");
+
+    let (loaded, outcome) = load_migrated(&legacy, &canonical).expect("runtime migration succeeds");
+    let MigrationOutcome::Imported {
+        backup: Some(backup),
+    } = outcome
+    else {
+        panic!("expected an imported backup, got {outcome:?}");
+    };
+
+    let loaded = loaded.expect("runtime snapshot exists");
+    assert_eq!(loaded.active_scene_id, expected.active_scene_id);
+    assert!(canonical.exists());
+    assert!(!legacy.exists());
+    assert!(backup.exists());
+
+    let (_, second) = load_migrated(&legacy, &canonical).expect("restart is idempotent");
+    assert_eq!(second, MigrationOutcome::AlreadyMigrated);
+}
+
+#[test]
+fn invalid_legacy_runtime_snapshot_never_replaces_state() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let legacy = directory.path().join("data/runtime-state.json");
+    let canonical = directory.path().join("state/runtime-state.json");
+    fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+    fs::write(&legacy, b"not json").expect("write invalid legacy snapshot");
+
+    let error = load_migrated(&legacy, &canonical).expect_err("invalid legacy is refused");
+
+    assert!(error.to_string().contains("failed to parse"));
+    assert_eq!(fs::read(&legacy).expect("legacy survives"), b"not json");
+    assert!(!canonical.exists());
+}
+
+#[test]
 fn flush_reports_clean_after_a_direct_success() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("state.json");
@@ -547,7 +568,7 @@ fn dropped_admitted_payload_is_retained_by_the_shared_supervisor() {
 async fn scene_creation_rolls_back_when_serialization_fails_before_admission() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let data_dir = directory.path().join("data");
-    let state = Arc::new(hypercolor_daemon::api::AppState::new_with_data_dir(
+    let state = Arc::new(hypercolor_daemon::app_state::AppState::new_with_data_dir(
         data_dir,
     ));
     let app = hypercolor_daemon::api::build_router(Arc::clone(&state), None);
@@ -566,7 +587,7 @@ async fn scene_creation_rolls_back_when_serialization_fails_before_admission() {
         .expect("scene response");
 
     assert_eq!(response.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
-    let manager = state.scene_manager.read().await;
+    let manager = state.scene_manager.snapshot().await;
     assert!(
         manager
             .list()
@@ -605,25 +626,6 @@ async fn library_mutation_rolls_back_when_serialization_fails_before_admission()
 
 #[cfg(feature = "persistence-test-hooks")]
 #[test]
-fn profile_mutation_rolls_back_when_serialization_fails_before_admission() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("profiles.json");
-    let mut store = ProfileStore::new(path).expect("profile store");
-    store
-        .insert(Profile::named("retained", "Retained"))
-        .expect("seed profile");
-    hypercolor_daemon::persistence::set_injected_serialization_failures(1);
-
-    store
-        .insert(Profile::named("rejected", "Rejected"))
-        .expect_err("serialization failure should reject mutation");
-
-    assert!(store.get("retained").is_some());
-    assert!(store.get("rejected").is_none());
-}
-
-#[cfg(feature = "persistence-test-hooks")]
-#[test]
 fn display_preference_rolls_back_when_serialization_fails_before_admission() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("display-preferences.json");
@@ -636,7 +638,7 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
             DisplayPreference {
                 effect_id: retained_effect,
                 controls: HashMap::new(),
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Alpha,
+                blend_mode: hypercolor_types::layer::BlendMode::Alpha,
                 opacity: 1.0,
             },
         )
@@ -649,7 +651,7 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
             DisplayPreference {
                 effect_id: EffectId::new(uuid::Uuid::now_v7()),
                 controls: HashMap::new(),
-                blend_mode: hypercolor_types::scene::DisplayFaceBlendMode::Replace,
+                blend_mode: hypercolor_types::layer::BlendMode::Replace,
                 opacity: 1.0,
             },
         )
@@ -670,7 +672,7 @@ fn writer_construction_failure_occurs_before_candidate_mutation() {
     let mut candidate = live.clone();
     candidate.insert("effect".to_owned(), "rejected".to_owned());
 
-    let error = effect_layouts::writer(&blocked_parent.join("links.json"))
+    let error = AtomicFileWriter::new(&blocked_parent.join("state.json"))
         .expect_err("writer construction should fail");
 
     assert!(matches!(error, PersistenceError::CreateDirectory { .. }));
@@ -744,8 +746,12 @@ fn failed_logical_device_delete_does_not_resurrect_after_reload() {
         enabled: true,
         kind: LogicalDeviceKind::Segment,
     };
-    logical_devices::save_segments(&path, &HashMap::from([("segment".to_owned(), entry)]))
-        .expect("seed logical devices");
+    let seed = logical_devices::reserve_save_segments(
+        &path,
+        &HashMap::from([("segment".to_owned(), entry)]),
+    )
+    .expect("reserve logical device seed");
+    logical_devices::save_reserved_segments(seed).expect("seed logical devices");
     let writer = AtomicFileWriter::new(&path).expect("atomic writer");
     writer.set_injected_replace_failures(usize::MAX);
 
@@ -797,7 +803,7 @@ fn failed_runtime_snapshot_create_eventually_converges() {
 
 #[cfg(feature = "persistence-test-hooks")]
 #[tokio::test]
-async fn library_no_op_retriggers_a_failed_delete() {
+async fn library_failed_delete_returns_error_and_retry_converges() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("library.json");
     let store = JsonLibraryStore::open(path.clone()).expect("library store");
@@ -809,18 +815,23 @@ async fn library_no_op_retriggers_a_failed_delete() {
     let writer = AtomicFileWriter::new(&path).expect("atomic writer");
     writer.set_injected_replace_failures(usize::MAX);
 
+    assert!(store.remove_favorite(effect_id).await.is_err());
+    assert_eq!(store.list_favorites().await.len(), 1);
+    let before_retry = JsonLibraryStore::open(path.clone()).expect("reload retained favorite");
+    assert_eq!(before_retry.list_favorites().await.len(), 1);
+
+    writer.set_injected_replace_failures(0);
     assert!(
         store
             .remove_favorite(effect_id)
             .await
-            .expect("remove favorite")
+            .expect("retry favorite removal")
     );
-    writer.set_injected_replace_failures(0);
     assert!(
         !store
             .remove_favorite(effect_id)
             .await
-            .expect("remove missing favorite")
+            .expect("remove missing favorite after durable retry")
     );
     writer
         .flush(Duration::from_secs(5))
@@ -829,4 +840,33 @@ async fn library_no_op_retriggers_a_failed_delete() {
 
     let reloaded = JsonLibraryStore::open(path).expect("reload library store");
     assert!(reloaded.list_favorites().await.is_empty());
+}
+
+#[test]
+fn app_state_fixtures_resolve_state_tier_stores_beside_the_data_tier() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let data_dir = directory.path().join("data");
+    let state_dir = data_dir.join("state");
+    let state = hypercolor_daemon::app_state::AppState::new_with_data_dir(data_dir.clone());
+
+    assert_eq!(
+        state.runtime_state_path,
+        state_dir.join("runtime-state.json")
+    );
+    assert!(
+        state_dir.is_dir(),
+        "state tier should be created for the fixture"
+    );
+    for state_file in [
+        "device-settings.json",
+        "display-preferences.json",
+        "runtime-state.json",
+        hypercolor_daemon::driver_inventory::DRIVER_INVENTORY_FILENAME,
+        hypercolor_daemon::device_aliases::DEVICE_ALIASES_FILE,
+    ] {
+        assert!(
+            !data_dir.join(state_file).exists(),
+            "{state_file} should not land on the data tier"
+        );
+    }
 }

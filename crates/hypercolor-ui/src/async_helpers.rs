@@ -16,10 +16,10 @@
 /// pair it with [`toast_on_err`] for the standard error toast, and wrap
 /// the error arm in [`with_rollback`] when an optimistic update needs to
 /// be undone first.
-pub fn spawn_mutation<T: 'static>(
-    fut: impl std::future::Future<Output = Result<T, String>> + 'static,
+pub fn spawn_mutation<T: 'static, E: 'static>(
+    fut: impl std::future::Future<Output = Result<T, E>> + 'static,
     on_ok: impl FnOnce(T) + 'static,
-    on_err: impl FnOnce(String) + 'static,
+    on_err: impl FnOnce(E) + 'static,
 ) {
     leptos::task::spawn_local(async move {
         match fut.await {
@@ -31,7 +31,7 @@ pub fn spawn_mutation<T: 'static>(
 
 /// Build an error arm for [`spawn_mutation`] that toasts
 /// `"{prefix}: {error}"`.
-pub fn toast_on_err(prefix: &'static str) -> impl FnOnce(String) + 'static {
+pub fn toast_on_err<E: std::fmt::Display>(prefix: &'static str) -> impl FnOnce(E) + 'static {
     move |error| crate::toasts::toast_error(&format!("{prefix}: {error}"))
 }
 
@@ -39,10 +39,10 @@ pub fn toast_on_err(prefix: &'static str) -> impl FnOnce(String) + 'static {
 /// for optimistic updates. `undo` restores the captured pre-mutation
 /// state, then the error is handed to `on_err` (typically
 /// [`toast_on_err`]).
-pub fn with_rollback(
+pub fn with_rollback<E>(
     undo: impl FnOnce() + 'static,
-    on_err: impl FnOnce(String) + 'static,
-) -> impl FnOnce(String) + 'static {
+    on_err: impl FnOnce(E) + 'static,
+) -> impl FnOnce(E) + 'static {
     move |error| {
         undo();
         on_err(error);
@@ -50,10 +50,11 @@ pub fn with_rollback(
 }
 
 /// Spawn an API call. If it returns an `Err`, shows `"{err_prefix}: {e}"`.
-pub fn spawn_api_call<T, Fut>(err_prefix: &'static str, future: Fut)
+pub fn spawn_api_call<T, Fut, E>(err_prefix: &'static str, future: Fut)
 where
     T: 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + 'static,
+    Fut: std::future::Future<Output = Result<T, E>> + 'static,
+    E: std::fmt::Display,
 {
     leptos::task::spawn_local(async move {
         if let Err(e) = future.await {
@@ -65,9 +66,10 @@ where
 /// Spawn a flash/identify call.
 ///
 /// On `Ok`, shows `"Flashing {what}"`. On `Err`, shows `"Identify failed: {e}"`.
-pub fn spawn_identify<Fut>(what: &'static str, future: Fut)
+pub fn spawn_identify<Fut, E>(what: &'static str, future: Fut)
 where
-    Fut: std::future::Future<Output = Result<(), String>> + 'static,
+    Fut: std::future::Future<Output = Result<(), E>> + 'static,
+    E: std::fmt::Display,
 {
     leptos::task::spawn_local(async move {
         match future.await {

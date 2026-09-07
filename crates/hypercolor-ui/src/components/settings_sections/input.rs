@@ -1,17 +1,71 @@
 use hypercolor_types::config::{HypercolorConfig, InteractionRoutePolicy};
 use leptos::prelude::*;
 
-use super::read_config;
-use crate::api::{self, InputSourceStatus, InputStatus};
+use super::{MacosCaptureOwnerRestartAction, read_config, validate_macos_restart_owner};
+use crate::api::{self, InputStatus, SourceDiagnosticsDisplayField, SystemStatusServiceExt};
 use crate::app::WsContext;
 use crate::components::settings_controls::{
     AdvancedDisclosure, SectionHeader, SectionReset, SettingDropdown, SettingToggle,
 };
 use crate::icons::LuKeyboard;
-use crate::input_access::{
-    InputPipelineState, input_pipeline_state, input_status_epoch, input_status_remediation,
-    primary_input_source_issue,
-};
+use crate::input_access::{StatusLineTone, input_status_epoch, input_status_line};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MacosSystemSettingsRemedy {
+    label: &'static str,
+    pane: crate::tauri_bridge::MacosSystemSettingsPane,
+}
+
+pub(super) const fn macos_system_settings_remedy(
+    pane: crate::tauri_bridge::MacosSystemSettingsPane,
+) -> MacosSystemSettingsRemedy {
+    match pane {
+        crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring => {
+            MacosSystemSettingsRemedy {
+                label: "Open Input Monitoring",
+                pane,
+            }
+        }
+        crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording => {
+            MacosSystemSettingsRemedy {
+                label: "Open Screen Recording",
+                pane,
+            }
+        }
+    }
+}
+
+#[component]
+pub(super) fn MacosSystemSettingsButton(
+    pane: crate::tauri_bridge::MacosSystemSettingsPane,
+) -> impl IntoView {
+    let remedy = macos_system_settings_remedy(pane);
+    let native_available = crate::tauri_bridge::is_tauri_available();
+    let open_settings = move |_| {
+        leptos::task::spawn_local(async move {
+            match crate::tauri_bridge::open_macos_system_settings(remedy.pane).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    leptos::logging::warn!("macOS System Settings opener is unavailable");
+                }
+                Err(error) => {
+                    leptos::logging::warn!("macOS System Settings opener failed: {error}");
+                }
+            }
+        });
+    };
+
+    view! {
+        <button
+            type="button"
+            class="inline-flex shrink-0 items-center rounded-md border border-edge-subtle bg-surface-overlay/60 px-2.5 py-1.5 text-xs text-fg-secondary hover:border-accent-muted hover:text-accent disabled:opacity-50"
+            disabled=move || !native_available
+            on:click=open_settings
+        >
+            {remedy.label}
+        </button>
+    }
+}
 
 #[component]
 pub fn InputSection(
@@ -48,14 +102,31 @@ pub fn InputSection(
     let input_status = LocalResource::new(move || {
         let connection_generation = ws.connection_generation.get();
         let source_event = ws.last_input_source_status_event.get();
+        let owner_event = ws.last_service_identity_event.get();
         let epoch = config.with(|current| {
             input_status_epoch(connection_generation, source_event, current.as_ref())
         });
         async move {
-            let _ = epoch;
-            api::fetch_status().await.map(|status| status.input)
+            let _ = (epoch, owner_event);
+            api::fetch_status().await
         }
     });
+    let (authorizing, set_authorizing) = signal(false);
+    let (authorization_error, set_authorization_error) = signal(None::<String>);
+    let authorize_keyboard = move |_| {
+        if authorizing.get_untracked() {
+            return;
+        }
+        set_authorizing.set(true);
+        set_authorization_error.set(None);
+        leptos::task::spawn_local(async move {
+            match api::authorize_input_monitoring().await {
+                Ok(()) => input_status.refetch(),
+                Err(error) => set_authorization_error.set(Some(error.to_string())),
+            }
+            set_authorizing.set(false);
+        });
+    };
 
     view! {
         <section id="section-input" class="pt-5 pb-3 space-y-0">
@@ -98,22 +169,68 @@ pub fn InputSection(
                     options=route_options
                     on_change=on_change
                 />
+                {move || {
+                    let status = input_status.get().and_then(Result::ok)?;
+                    source_diagnostics_view(source_diagnostics_fields(
+                        &status.input,
+                        "interaction",
+                    ))
+                }}
             </AdvancedDisclosure>
 
-            <div class="mt-3 rounded-xl border border-edge-subtle bg-surface-sunken/40 px-4 py-3">
-                <div class="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-fg-tertiary">
-                    "Source health"
+            <Show when=move || {
+                input_status
+                    .get()
+                    .and_then(Result::ok)
+                    .is_some_and(|status| keyboard_needs_authorization(&status.input))
+            }>
+                <div class="flex items-center justify-between gap-4 border-b border-edge-subtle/40 py-3">
+                    <div class="min-w-0">
+                        <div class="text-[13px] text-fg-primary">"Input Monitoring"</div>
+                        <div class="text-xs text-fg-tertiary">
+                            "Open Input Monitoring in System Settings, enable Hypercolor, then return here."
+                        </div>
+                    </div>
+                    <div class="flex shrink-0 items-center gap-2">
+                        <MacosSystemSettingsButton
+                            pane=crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring
+                        />
+                        <button
+                            type="button"
+                            class="glow-ring inline-flex shrink-0 items-center rounded-md border border-accent-muted bg-accent-subtle px-2.5 py-1.5 text-xs text-accent hover:bg-accent-muted/20 disabled:opacity-50"
+                            disabled=move || authorizing.get()
+                            on:click=authorize_keyboard
+                        >
+                            {move || if authorizing.get() { "Requesting…" } else { "Authorize" }}
+                        </button>
+                    </div>
                 </div>
-                {move || match input_status.get() {
-                    None => view! {
-                        <div class="text-xs text-fg-tertiary">"Reading input health..."</div>
-                    }.into_any(),
-                    Some(Err(error)) => view! {
-                        <div class="text-xs text-status-error">{format!("Input health unavailable: {error}")}</div>
-                    }.into_any(),
-                    Some(Ok(status)) => input_status_view(status).into_any(),
-                }}
-            </div>
+            </Show>
+            {move || input_status
+                .get()
+                .and_then(Result::ok)
+                .and_then(|status| macos_keyboard_restart_coordinates(&status))
+                .map(|(owner, epoch)| view! {
+                    <MacosCaptureOwnerRestartAction
+                        owner=owner
+                        epoch=epoch
+                        on_complete=Callback::new(move |()| input_status.refetch())
+                    />
+                })}
+            {move || authorization_error.get().map(|error| view! {
+                <div class="mt-2 rounded-lg border border-status-error/24 bg-status-error/8 px-3 py-2 text-xs text-status-error">
+                    {error}
+                </div>
+            })}
+
+            {move || {
+                let status = input_status.get().and_then(Result::ok)?;
+                if keyboard_needs_authorization(&status.input) {
+                    return None;
+                }
+                input_status_line(&status.input)
+                    .map(|(tone, text)| status_line_view(tone, text))
+            }}
             <SectionReset
                 section_label="Input"
                 on_reset=Callback::new(move |()| on_reset.run("input".to_owned()))
@@ -122,129 +239,95 @@ pub fn InputSection(
     }
 }
 
-fn input_status_view(status: InputStatus) -> impl IntoView {
-    let pipeline_state = input_pipeline_state(&status);
-    let (label, detail, class) = match pipeline_state {
-        InputPipelineState::ConsentOff => (
-            "Consent off",
-            "No host input backend opens until access is enabled.",
-            "border-edge-subtle bg-surface-overlay/40 text-fg-tertiary",
-        ),
-        InputPipelineState::Live => (
-            "Capturing",
-            "A demanded input source is live.",
-            "border-status-success/30 bg-status-success/10 text-status-success",
-        ),
-        InputPipelineState::Ready => (
-            "Ready, idle",
-            "Permission is granted; capture starts only when an effect demands it.",
-            "border-status-info/30 bg-status-info/10 text-status-info",
-        ),
-        InputPipelineState::Degraded => (
-            "Needs attention",
-            "A configured or demanded source is degraded.",
-            "border-status-warning/30 bg-status-warning/10 text-status-warning",
-        ),
-        InputPipelineState::Unavailable => (
-            "Unavailable",
-            "No host input backend is available in this session.",
-            "border-status-error/30 bg-status-error/10 text-status-error",
-        ),
+pub(super) fn status_line_view(tone: StatusLineTone, text: String) -> impl IntoView {
+    let (dot_class, text_class) = match tone {
+        StatusLineTone::Active => ("bg-status-success", "text-fg-secondary"),
+        StatusLineTone::Ready => ("bg-fg-tertiary/50", "text-fg-tertiary"),
+        StatusLineTone::Warn => ("bg-status-warning", "text-status-warning"),
     };
-    let remediation = input_status_remediation(&status);
-    let sources = status
-        .sources
-        .into_iter()
-        .filter(|source| !source.retired)
-        .collect::<Vec<_>>();
-
     view! {
-        <div class="space-y-2.5">
-            <div class="flex flex-wrap items-center gap-2">
-                <span class=format!("rounded-md border px-2 py-1 text-[11px] font-medium {class}")>
-                    {label}
-                </span>
-                <span class="text-xs text-fg-secondary">{detail}</span>
-            </div>
-            {remediation.map(|message| view! {
-                <div class="rounded-lg border border-status-warning/24 bg-status-warning/8 px-3 py-2 text-xs text-status-warning">
-                    {message}
-                </div>
-            })}
-            {if sources.is_empty() {
-                view! {
-                    <div class="text-xs text-fg-tertiary">
-                        "No input sources are registered for this platform session."
-                    </div>
-                }.into_any()
-            } else {
-                view! {
-                    <div class="space-y-2">
-                        {sources.into_iter().map(input_source_view).collect_view()}
-                    </div>
-                }.into_any()
-            }}
+        <div class="mt-3 flex items-center gap-2 py-1 text-xs">
+            <span class=format!("h-1.5 w-1.5 shrink-0 rounded-full {dot_class}") />
+            <span class=text_class>{text}</span>
         </div>
     }
 }
 
-fn input_source_view(source: InputSourceStatus) -> impl IntoView {
-    let issue = primary_input_source_issue(&source);
-    let issue_message = issue.map(|issue| issue.message.clone());
-    let source_remediation = issue.and_then(|issue| issue.remediation.clone());
-    let state_class = if issue.is_some()
-        || matches!(source.state.as_str(), "failed" | "degraded" | "unavailable")
-        || (source.demanded && source.freshness == "stale")
-    {
-        "text-status-warning"
-    } else if source.demanded && source.state == "live" {
-        "text-status-success"
-    } else {
-        "text-fg-tertiary"
-    };
-    let demand = if source.demanded { "demanded" } else { "idle" };
-    let consent = if source.consented {
-        "consented"
-    } else {
-        "not consented"
-    };
-    let configured = if source.configured {
-        "configured"
-    } else {
-        "disabled"
-    };
-    let age = source
-        .last_sample_age_ms
-        .map(|age| format!(" · sample {age} ms ago"))
-        .unwrap_or_default();
+const AUTHORIZATION_ACTION_CODES: [&str; 3] = [
+    "authorization_required",
+    "authorization_denied",
+    "authorization_revoked",
+];
 
-    view! {
-        <div class="rounded-lg border border-edge-subtle/60 bg-surface-overlay/30 px-3 py-2.5">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-                <div class="min-w-0">
-                    <div class="truncate text-xs font-medium text-fg-primary">{source.source_id}</div>
-                    <div class="text-[11px] text-fg-tertiary">
-                        {format!("{} · {}", source.kind, source.backend)}
-                    </div>
+pub(super) fn source_needs_action(
+    status: &InputStatus,
+    source_kind: &str,
+    action_codes: &[&str],
+) -> bool {
+    status.sources.iter().any(|source| {
+        !source.retired
+            && source.kind == source_kind
+            && source
+                .action_issue
+                .as_ref()
+                .is_some_and(|issue| action_codes.contains(&issue.code.as_str()))
+    })
+}
+
+pub(super) fn keyboard_needs_authorization(status: &InputStatus) -> bool {
+    source_needs_action(status, "interaction", &AUTHORIZATION_ACTION_CODES)
+}
+
+pub(super) fn source_diagnostics_fields(
+    status: &InputStatus,
+    source_kind: &str,
+) -> Vec<SourceDiagnosticsDisplayField> {
+    status
+        .sources
+        .iter()
+        .filter(|source| !source.retired && source.kind == source_kind)
+        .filter_map(|source| source.diagnostics.as_ref())
+        .flat_map(|diagnostics| diagnostics.display().iter().cloned())
+        .collect()
+}
+
+pub(super) fn source_diagnostics_view(
+    fields: Vec<SourceDiagnosticsDisplayField>,
+) -> Option<impl IntoView> {
+    (!fields.is_empty()).then(|| {
+        view! {
+            <div class="mt-3 border-t border-edge-subtle/40 pt-3">
+                <div class="text-sm font-medium text-fg-primary">"Source diagnostics"</div>
+                <div class="mt-1">
+                    {fields
+                        .into_iter()
+                        .map(|field| view! {
+                            <div class="flex items-start justify-between gap-4 py-1.5 text-xs">
+                                <span class="text-fg-tertiary">{field.label}</span>
+                                <span class="text-right text-fg-secondary">{field.value}</span>
+                            </div>
+                        })
+                        .collect_view()}
                 </div>
-                <span class=format!("text-[11px] font-medium {state_class}")>
-                    {humanize(&source.state)}
-                </span>
             </div>
-            <div class="mt-1.5 text-[11px] text-fg-tertiary">
-                {format!(
-                    "{configured} · {consent} · {demand} · freshness {}{age}",
-                    humanize(&source.freshness),
-                )}
-            </div>
-            {issue_message.map(|message| view! {
-                <div class="mt-1.5 text-[11px] text-status-warning">{message}</div>
-            })}
-            {source_remediation.map(|message| view! {
-                <div class="mt-1 text-[11px] text-fg-secondary">{message}</div>
-            })}
-        </div>
-    }
+        }
+    })
+}
+
+fn macos_keyboard_restart_coordinates(
+    status: &crate::api::SystemStatus,
+) -> Option<(crate::api::ServiceIdentity, u64)> {
+    let needs_restart =
+        source_needs_action(&status.input, "interaction", &["process_restart_required"]);
+    needs_restart
+        .then(|| status.service_status())
+        .flatten()
+        .and_then(|service| {
+            Some((
+                validate_macos_restart_owner(service.identity)?,
+                service.owner_epoch,
+            ))
+        })
 }
 
 fn route_value(route: InteractionRoutePolicy) -> String {
@@ -256,10 +339,234 @@ fn route_value(route: InteractionRoutePolicy) -> String {
     .to_owned()
 }
 
-fn humanize(value: &str) -> String {
-    let mut words = value.replace('_', " ");
-    if let Some(first) = words.get_mut(0..1) {
-        first.make_ascii_uppercase();
+#[cfg(test)]
+mod tests {
+    use crate::api::{
+        InputSourceIssueStatus, InputSourceStatus, InputStatus, MacosCapabilityOwner,
+        MacosDaemonOwnershipStatus, SourceDiagnosticsDisplayField, SourceDiagnosticsEnvelope,
+        SystemStatus,
+    };
+    use serde_json::json;
+
+    use super::{
+        keyboard_needs_authorization, macos_keyboard_restart_coordinates,
+        macos_system_settings_remedy, source_diagnostics_fields,
+    };
+
+    fn action_issue(code: &str) -> InputSourceIssueStatus {
+        InputSourceIssueStatus {
+            code: code.to_owned(),
+            message: "Action required".to_owned(),
+            remediation: None,
+            retryable: true,
+        }
     }
-    words
+
+    fn diagnostics(
+        schema: &str,
+        fields: &[(&str, &str, &str)],
+        payload: serde_json::Value,
+    ) -> SourceDiagnosticsEnvelope {
+        SourceDiagnosticsEnvelope::try_new(
+            schema,
+            1,
+            fields
+                .iter()
+                .map(|(key, label, value)| SourceDiagnosticsDisplayField::new(*key, *label, *value))
+                .collect(),
+            payload,
+        )
+        .expect("fixture diagnostics should be bounded")
+    }
+
+    fn system_status(
+        input: InputStatus,
+        macos_daemon_ownership: Option<MacosDaemonOwnershipStatus>,
+    ) -> SystemStatus {
+        SystemStatus {
+            running: true,
+            version: "test".to_owned(),
+            config_path: String::new(),
+            uptime_seconds: 1,
+            device_count: 0,
+            effect_count: 0,
+            active_effect: None,
+            active_scene: None,
+            active_scene_snapshot_locked: false,
+            global_brightness: 100,
+            compositor_acceleration: crate::api::RenderAccelerationStatus::default(),
+            render_loop: crate::api::RenderLoopStatus::default(),
+            capabilities: Vec::new(),
+            input,
+            macos_daemon_ownership,
+            ..SystemStatus::default()
+        }
+    }
+
+    #[test]
+    fn keyboard_authorization_action_uses_only_neutral_kind_and_action_code() {
+        let mut status = InputStatus {
+            sources: vec![InputSourceStatus {
+                kind: "interaction".to_owned(),
+                action_issue: Some(action_issue("authorization_required")),
+                ..InputSourceStatus::default()
+            }],
+            ..InputStatus::default()
+        };
+        assert!(keyboard_needs_authorization(&status));
+
+        status.sources[0].retired = true;
+        assert!(!keyboard_needs_authorization(&status));
+        status.sources[0].retired = false;
+
+        status.sources[0].kind = "screen".to_owned();
+        assert!(!keyboard_needs_authorization(&status));
+        status.sources[0].kind = "interaction".to_owned();
+
+        for code in ["authorization_denied", "authorization_revoked"] {
+            status.sources[0].action_issue = Some(action_issue(code));
+            assert!(keyboard_needs_authorization(&status));
+        }
+
+        status.sources[0].action_issue = None;
+        status.sources[0].diagnostics = Some(diagnostics(
+            "fixture.input",
+            &[("permission", "Permission", "Denied")],
+            json!({"authorization": "denied"}),
+        ));
+        assert!(!keyboard_needs_authorization(&status));
+    }
+
+    #[test]
+    fn screen_authorization_action_tracks_only_screen_recording_state() {
+        let mut status = InputStatus {
+            sources: vec![InputSourceStatus {
+                kind: "screen".to_owned(),
+                action_issue: Some(action_issue("authorization_denied")),
+                ..InputSourceStatus::default()
+            }],
+            ..InputStatus::default()
+        };
+        assert!(super::super::macos_screen_needs_authorization(&status));
+
+        status.sources[0].retired = true;
+        assert!(!super::super::macos_screen_needs_authorization(&status));
+        status.sources[0].retired = false;
+
+        status.sources[0].action_issue = None;
+        assert!(!super::super::macos_screen_needs_authorization(&status));
+    }
+
+    #[test]
+    fn diagnostics_keep_source_and_display_order_while_filtering_retired_sources() {
+        let status = InputStatus {
+            sources: vec![
+                InputSourceStatus {
+                    kind: "interaction".to_owned(),
+                    diagnostics: Some(diagnostics(
+                        "fixture.first",
+                        &[("first", "First", "1"), ("second", "Second", "2")],
+                        json!({"ignored": true}),
+                    )),
+                    ..InputSourceStatus::default()
+                },
+                InputSourceStatus {
+                    kind: "screen".to_owned(),
+                    diagnostics: Some(diagnostics(
+                        "fixture.screen",
+                        &[("screen", "Screen", "excluded")],
+                        json!({}),
+                    )),
+                    ..InputSourceStatus::default()
+                },
+                InputSourceStatus {
+                    kind: "interaction".to_owned(),
+                    diagnostics: Some(diagnostics(
+                        "fixture.retired",
+                        &[("retired", "Retired", "excluded")],
+                        json!({}),
+                    )),
+                    retired: true,
+                    ..InputSourceStatus::default()
+                },
+                InputSourceStatus {
+                    kind: "interaction".to_owned(),
+                    diagnostics: Some(diagnostics(
+                        "fixture.last",
+                        &[("third", "Third", "3")],
+                        json!({}),
+                    )),
+                    ..InputSourceStatus::default()
+                },
+            ],
+            ..InputStatus::default()
+        };
+
+        let fields = source_diagnostics_fields(&status, "interaction");
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| (
+                    field.key.as_str(),
+                    field.label.as_str(),
+                    field.value.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("first", "First", "1"),
+                ("second", "Second", "2"),
+                ("third", "Third", "3"),
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_permission_remedies_keep_exact_labels_and_deep_links() {
+        let input = macos_system_settings_remedy(
+            crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring,
+        );
+        assert_eq!(input.label, "Open Input Monitoring");
+        assert_eq!(
+            input.pane,
+            crate::tauri_bridge::MacosSystemSettingsPane::InputMonitoring
+        );
+
+        let screen = macos_system_settings_remedy(
+            crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording,
+        );
+        assert_eq!(screen.label, "Open Screen Recording");
+        assert_eq!(
+            screen.pane,
+            crate::tauri_bridge::MacosSystemSettingsPane::ScreenRecording
+        );
+    }
+
+    #[test]
+    fn restart_coordinates_require_exact_state_owner_and_epoch() {
+        let mut status = system_status(
+            InputStatus {
+                sources: vec![InputSourceStatus {
+                    kind: "interaction".to_owned(),
+                    action_issue: Some(action_issue("process_restart_required")),
+                    ..InputSourceStatus::default()
+                }],
+                ..InputStatus::default()
+            },
+            Some(MacosDaemonOwnershipStatus {
+                active_owner: MacosCapabilityOwner::HomebrewService,
+                owner_epoch: 29,
+                ..MacosDaemonOwnershipStatus::default()
+            }),
+        );
+
+        assert_eq!(
+            macos_keyboard_restart_coordinates(&status),
+            Some((crate::api::ServiceIdentity::homebrew(), 29))
+        );
+        status.input.sources[0].retired = true;
+        assert_eq!(macos_keyboard_restart_coordinates(&status), None);
+        status.input.sources[0].retired = false;
+        status.input.sources[0].action_issue = Some(action_issue("authorization_denied"));
+        assert_eq!(macos_keyboard_restart_coordinates(&status), None);
+    }
 }

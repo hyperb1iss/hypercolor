@@ -1,3 +1,5 @@
+use hypercolor_types::api::effects::EffectSourceKind;
+use hypercolor_types::effect::EffectCategory;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -16,8 +18,8 @@ use ratatui::widgets::Widget;
 #[allow(clippy::struct_excessive_bools)]
 pub struct EffectCard<'a> {
     name: &'a str,
-    category: &'a str,
-    source: &'a str,
+    category: EffectCategory,
+    source: EffectSourceKind,
     audio_reactive: bool,
     is_active: bool,
     is_favorite: bool,
@@ -38,8 +40,8 @@ impl<'a> EffectCard<'a> {
     #[allow(clippy::fn_params_excessive_bools)]
     pub fn new(
         name: &'a str,
-        category: &'a str,
-        source: &'a str,
+        category: EffectCategory,
+        source: EffectSourceKind,
         audio_reactive: bool,
         is_active: bool,
         is_favorite: bool,
@@ -111,10 +113,10 @@ impl Widget for EffectCard<'_> {
 
         // -- Right-side badges --
         // Build the badge string so we can right-align it.
-        let source_badge = if self.source == "native" {
-            "\u{2726} native" // ✦ native
-        } else {
-            "\u{25C8} web" // ◈ web
+        let source_badge = match self.source {
+            EffectSourceKind::Native => "\u{2726} native", // ✦ native
+            EffectSourceKind::Html => "\u{25C8} web",      // ◈ web
+            EffectSourceKind::Shader => "\u{25C6} shader", // ◆ shader
         };
 
         let audio_badge = if self.audio_reactive { " \u{266A}" } else { "" }; // ♪
@@ -125,11 +127,7 @@ impl Widget for EffectCard<'_> {
         };
 
         // Category in parentheses.
-        let category_str = if self.category.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", self.category)
-        };
+        let category_str = format!(" {}", self.category.as_str());
 
         let right_text = format!("{category_str}  {source_badge}{audio_badge}{fav_badge}");
         let right_len = right_text.chars().count() as u16;
@@ -149,21 +147,19 @@ impl Widget for EffectCard<'_> {
 
         // -- Render right-side text with per-segment styles --
         // Category (muted).
-        if !self.category.is_empty() {
-            let cat_style = Style::default().fg(MUTED);
-            x += write_str(buf, x, y, max_x, " ", cat_style);
-            x += write_str(buf, x, y, max_x, self.category, cat_style);
-        }
+        let cat_style = Style::default().fg(MUTED);
+        x += write_str(buf, x, y, max_x, " ", cat_style);
+        x += write_str(buf, x, y, max_x, self.category.as_str(), cat_style);
 
         // Double-space separator.
         let sep_style = Style::default();
         x += write_str(buf, x, y, max_x, "  ", sep_style);
 
         // Source badge.
-        let source_style = if self.source == "native" {
-            Style::default().fg(Color::Rgb(180, 140, 255))
-        } else {
-            Style::default().fg(Color::Rgb(255, 180, 80))
+        let source_style = match self.source {
+            EffectSourceKind::Native => Style::default().fg(Color::Rgb(180, 140, 255)),
+            EffectSourceKind::Html => Style::default().fg(Color::Rgb(255, 180, 80)),
+            EffectSourceKind::Shader => Style::default().fg(Color::Rgb(128, 255, 234)),
         };
         x += write_str(buf, x, y, max_x, source_badge, source_style);
 
@@ -191,8 +187,8 @@ mod tests {
     fn make_card(selected: bool, active: bool, favorite: bool, audio: bool) -> EffectCard<'static> {
         EffectCard::new(
             "Rainbow Wave",
-            "ambient",
-            "native",
+            EffectCategory::Ambient,
+            EffectSourceKind::Native,
             audio,
             active,
             favorite,
@@ -278,7 +274,15 @@ mod tests {
 
     #[test]
     fn web_source_shows_diamond() {
-        let card = EffectCard::new("Test", "fx", "web", false, false, false, false);
+        let card = EffectCard::new(
+            "Test",
+            EffectCategory::Ambient,
+            EffectSourceKind::Html,
+            false,
+            false,
+            false,
+            false,
+        );
         let area = Rect::new(0, 0, 60, 1);
         let mut buf = Buffer::empty(area);
         card.render(area, &mut buf);

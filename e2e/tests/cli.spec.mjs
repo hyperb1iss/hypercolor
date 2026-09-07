@@ -13,11 +13,19 @@ test("cli can inspect status and run an effect lifecycle against the live daemon
   expect(runnableEffect).toBeTruthy();
 
   const activation = await callCli(["effects", "activate", runnableEffect.id]);
-  expect(activation.parsed.effect.id).toBe(runnableEffect.id);
+  expect(
+    activation.parsed.zone.layers.some(
+      (layer) => layer.source.effect_id === runnableEffect.id,
+    ),
+  ).toBe(true);
 
   const afterActivation = await callCli(["status"]);
   expect(afterActivation.parsed.active_effect).toBe(runnableEffect.name);
 
   const stop = await callCli(["effects", "stop"]);
-  expect(stop.parsed.stopped).toBe(true);
+  expect(
+    stop.parsed.zones.every(
+      (zone) => zone.role === "display" || zone.layers.length === 0,
+    ),
+  ).toBe(true);
 });

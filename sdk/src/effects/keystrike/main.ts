@@ -131,8 +131,9 @@ export default canvas(
                 }
             }
 
-            // Wheel rotates the palette phase so scrolling recolors the rig.
-            hueOffset = (hueOffset + input.mouse.wheel * 0.04) % 1
+            // Line scroll rotates the palette phase so one physical notch
+            // swings the hue by 0.04.
+            hueOffset = (hueOffset + (input.mouse.scroll.line120Y / 120) * 0.04) % 1
             if (hueOffset < 0) hueOffset += 1
 
             const lifeSeconds = 0.6 + (decay / 100) * 2.4

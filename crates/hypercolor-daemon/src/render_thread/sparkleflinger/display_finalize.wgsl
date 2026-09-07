@@ -335,10 +335,19 @@ fn display_srgba8_at(pixel: vec2<u32>, output_width: u32, output_height: u32) ->
         edge_behavior,
         fade_falloff,
     );
+    // The face is drawn at the panel's native size, so only the viewport's
+    // turn applies to it: a screen mounted upside down or on its side reads
+    // upright once the face turns with the scene underneath it.
+    let fx = local.x - 0.5;
+    let fy = local.y - 0.5;
+    let face_position = vec2<f32>(
+        0.5 + fx * viewport_cos - fy * viewport_sin,
+        0.5 + fx * viewport_sin + fy * viewport_cos,
+    );
     let face_srgba = sample_srgba(
         face_texture,
         params.source_sizes.zw,
-        local,
+        face_position,
         EDGE_CLAMP,
         0.0,
     );

@@ -4,18 +4,16 @@ description = "The OpenRGB SDK bridge: a user-run server on :6742, ownership mod
 weight = 90
 +++
 
-# OpenRGB fallback
-
 Hypercolor ships a bridge driver that talks to a running [OpenRGB](https://openrgb.org)
 server over the OpenRGB SDK wire protocol on TCP port 6742. The bridge lets you control
 hardware that OpenRGB already supports but Hypercolor does not yet have a native driver
 for, without writing any code.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 The OpenRGB driver ships compiled in but is **disabled in config by default**. You must
 enable it and choose an ownership mode before any devices appear. OpenRGB is not bundled
 or managed by Hypercolor; you install, configure, and run it separately.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -53,8 +51,8 @@ ss -tlnp | grep 6742
 ```
 
 The server binds to `127.0.0.1:6742` by default. Hypercolor connects on demand during
-discovery and reconnects automatically with exponential backoff (250 ms initial, 5 s cap)
-if the connection drops.
+discovery and reconnects automatically with exponential backoff (1 s initial, doubling to a
+60 s cap with 10% jitter, up to 6 attempts) if the connection drops.
 
 ---
 
@@ -160,12 +158,12 @@ native_claimed_detector_classes = ["smbus", "hid"]
 Controllers in the claimed classes are discovered but disabled for output: they appear
 in the device list but are not writable through the bridge.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 Low-confidence `hid` and `smbus` controllers are always output-disabled, regardless of
 `allow_low_confidence`. Index-based identity is not stable enough for contention-prone
 devices. A controller falls to low confidence when OpenRGB reports it without a serial
 number and without a location string, or without a usable vendor and name.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -260,12 +258,12 @@ allow_insecure_remote = true
 mode = "open_rgb_owned"
 ```
 
-{% callout(type="danger") %}
+{% <callout type="danger"> %}
 The OpenRGB SDK protocol carries no authentication or encryption. Never expose port 6742
 to untrusted networks without a firewall rule or VPN tunnel. Setting
 `allow_insecure_remote = true` is required for any non-loopback endpoint and is an
 explicit opt-in to the associated risk.
-{% end %}
+{% </callout> %}
 
 ---
 
@@ -337,7 +335,7 @@ plugin for those devices.
 device-list-updated notification, but an explicit discovery pass is required after a full
 OpenRGB restart.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ---
 

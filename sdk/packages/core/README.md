@@ -90,13 +90,14 @@ Full docs live at [the Hypercolor documentation site](https://github.com/hyperb1
 
 ## Prerequisites
 
-- Bun 1.2 or newer
+- Bun 1.4 or newer
 - Node 24 or newer if invoking the scaffolder's `create-hypercolor-effect` bin from a Node shell
 
 ## Status
 
-Early release (0.1.x): the API tracks the Hypercolor engine and may change between minor
-versions. Install straight from npm:
+Pre-1.0: the package version moves in lockstep with the Hypercolor engine, stamped by
+`just set-version`, and the API may change between minor versions. Install straight from
+npm:
 
 ```bash
 bun add -d hypercolor

@@ -16,13 +16,13 @@ exit codes make this CLI a clean tool surface. See
 [Agents & MCP](@/agents/_index.md) for both the CLI-scripting angle and the MCP
 server alternative.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 **The daemon must be running.** The CLI talks to the daemon on `:9420`. If
 nothing is listening, you will get a connection error. Start it with
 `hypercolor service start`, or launch the desktop app, and verify with
 `hypercolor status`. The one exception is `hypercolor service`, which manages
 the daemon process directly and never touches the API.
-{% end %}
+{% </callout> %}
 
 ## Global flags
 
@@ -47,13 +47,13 @@ hypercolor [OPTIONS] <COMMAND>
 | `--theme <NAME>` | `HYPERCOLOR_THEME` | | Color theme name. |
 | `-v`, `--verbose` | | | Increase log verbosity. Repeatable: `-v` info, `-vv` debug, `-vvv` trace. |
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 `--format` hides its allowed values in `--help`, so they are easy to miss. The
 three valid formats are **`table`** (the styled default), **`json`** (machine
 output: the daemon's `data` payload with the envelope stripped), and
 **`plain`** (one bare value per line, ideal for piping into `cut`, `grep`, or
 a shell loop).
-{% end %}
+{% </callout> %}
 
 ### Loopback needs no key
 
@@ -82,14 +82,13 @@ hypercolor
 │   ├── rescan
 │   └── layout {show | set | clear}
 ├── brightness        {get | set}
-├── scenes            {list | active | create | activate | deactivate | delete | info}
+├── scenes            {list | active | create | snapshot | activate | deactivate | delete | info}
 ├── devices           Discovery, pairing, hardware control
 │   ├── list
 │   ├── discover
 │   ├── pair
 │   ├── info
 │   ├── identify
-│   ├── set-color
 │   ├── controls
 │   ├── set-control
 │   └── action
@@ -101,7 +100,6 @@ hypercolor
 │   ├── favorites     {list | add | remove}
 │   ├── presets       {create | list | info | update | apply | delete}
 │   └── playlists     {create | list | info | update | activate | active | stop | delete}
-├── profiles          {list | create | apply | delete | info}
 ├── server            {info | health}
 ├── servers           {discover | adopt}
 ├── service           {start | stop | restart | status | enable | disable | logs}
@@ -111,7 +109,7 @@ hypercolor
 └── tui               Launch the interactive terminal dashboard
 ```
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 **`server`, `servers`, and `service` are three different commands.**
 
 - `hypercolor server` (singular) queries the **one daemon you are connected
@@ -120,7 +118,7 @@ hypercolor
   mDNS and saves them as connection profiles.
 - `hypercolor service` manages the **local daemon process** through `systemctl`
   (Linux) or `launchctl` (macOS). It does not call the API at all.
-{% end %}
+{% </callout> %}
 
 ## Lighting
 
@@ -167,10 +165,15 @@ hypercolor effects list --search aurora
 
 | Flag | Purpose |
 | --- | --- |
-| `--engine <TYPE>` | Filter by engine: `native`, `web`, `wasm`. |
+| `--source <KIND>` | Filter by rendering source: `native`, `html`, `shader`. |
 | `--audio` | Audio-reactive effects only. |
-| `--search <TEXT>` | Match name or description. |
+| `--search <TEXT>` | Match name, description, author, or tags. |
 | `--category <NAME>` | Filter by category. |
+
+The daemon narrows the catalog, so every flag above is one query parameter on
+`GET /api/v1/effects` and the payload carries only the matching rows. A flag
+naming a category or source that does not exist answers with a validation
+error rather than an empty list.
 
 Activate an effect by name or slug (fuzzy-matched). Tune it with repeatable
 `--param key=value` pairs, or the `--speed` / `--intensity` shorthands.
@@ -188,13 +191,12 @@ hypercolor effects activate plasma-engine --param hue_shift=120 --param density=
 | `-p`, `--param <KEY=VALUE>` | | Arbitrary control value. Repeatable. Values parse as JSON when valid, otherwise as a string. |
 | `--speed <0-100>` | | Speed-control shorthand. |
 | `--intensity <0-100>` | | Intensity-control shorthand. |
-| `--transition <MS>` | `0` | Reserved for effect crossfades. Only `0` is accepted today. |
 
-{% callout(type="tip") %}
+{% <callout type="tip"> %}
 `--param` values are parsed as JSON first. So `--param density=0.8` sends a
 number, `--param wrap=true` sends a boolean, and `--param label=neon` falls back
 to a string. Quote anything with shell-special characters.
-{% end %}
+{% </callout> %}
 
 The remaining `effects` subcommands act on the **currently running** effect or
 on effect metadata:
@@ -207,20 +209,17 @@ hypercolor effects reset                  # Restore controls to defaults
 hypercolor effects rescan                 # Re-scan the library for new effects
 ```
 
-`effects patch` updates the live effect without re-applying it; it targets
-`PATCH /api/v1/effects/current/controls` and requires at least one `--param`.
+`effects patch` updates the live effect without re-applying it. The CLI reads
+`GET /api/v1/scene`, resolves the real zone and layer ids, then calls
+`PATCH /api/v1/scene/zones/{zone}/layers/{layer}/controls`. The command requires
+at least one `--param`. `effects reset` follows the same path with the effect's
+default values, and `effects stop` calls `POST /api/v1/scene/clear`.
+
 Run `hypercolor effects rescan` after dropping a freshly built HTML effect into
-the effects directory so the daemon picks it up.
+the effects directory so the daemon picks it up. Spatial layout selection lives
+on scenes through `scene.layout_id`; effects do not carry layout associations.
 
-Effects can be pinned to a specific spatial layout:
-
-```bash
-hypercolor effects layout show borealis           # Show the linked layout
-hypercolor effects layout set borealis desk-ring  # Pin to a layout
-hypercolor effects layout clear borealis          # Remove the association
-```
-
-{{ img(path="img/ui/effects.webp", alt="The effects gallery in the Hypercolor web UI") }}
+{{< img path="img/ui/effects.webp" alt="The effects gallery in the Hypercolor web UI" />}}
 
 ### brightness
 
@@ -241,7 +240,8 @@ finer-grained partition of the canvas.
 hypercolor scenes list
 hypercolor scenes active
 hypercolor scenes create "Movie Night" --description "Dim and warm"
-hypercolor scenes activate "Movie Night"
+hypercolor scenes snapshot "Current Rig" --description "Captured live state"
+hypercolor scenes activate "Movie Night" --transition 250
 hypercolor scenes deactivate          # Return to the Default scene
 hypercolor scenes info "Movie Night"
 hypercolor scenes delete "Movie Night" --yes
@@ -254,6 +254,9 @@ hypercolor scenes delete "Movie Night" --yes
 | `--description <TEXT>` | | Human-readable description. |
 | `--enabled <BOOL>` | `true` | Whether the scene starts enabled. |
 | `--mutation-mode <MODE>` | `live` | `live` lets runtime actions rewrite the scene; `snapshot` freezes it. |
+
+`scenes snapshot` captures the current runtime scene into a new snapshot-mode
+scene. It takes a name and optional `--description`.
 
 ## Devices
 
@@ -269,7 +272,6 @@ hypercolor devices list --status connected --driver razer
 hypercolor devices discover --target wled --target hue --timeout 15
 hypercolor devices info "Razer Huntsman"
 hypercolor devices identify "Razer Huntsman" --duration 8
-hypercolor devices set-color "Lian Li Strip" "#ff00aa"
 ```
 
 `devices list` filters by `--status`, `--backend-id`, and `--driver`.
@@ -302,7 +304,7 @@ typed, for example `enum:grb`, `bool:true`, or `duration:1500`. Add
 without applying. `action` takes a `<device> <action>` pair with repeatable
 `-i`/`--input` assignments and `--yes` to confirm guarded actions.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Connected devices in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Connected devices in the Hypercolor web UI" />}}
 
 ### controls
 
@@ -405,22 +407,6 @@ the form `effect:<name>` or `preset:<name>`, optionally suffixed with
 `:duration_ms` and `:duration_ms:transition_ms`. Playlists loop by default; pass
 `--no-loop` to play through once.
 
-### profiles
-
-A profile saves your **full system state** (active effect, controls, brightness,
-layout) so you can restore it later.
-
-```bash
-hypercolor profiles list
-hypercolor profiles create "My Setup" --description "Desk default"
-hypercolor profiles apply "My Setup"
-hypercolor profiles info "My Setup"
-hypercolor profiles delete "My Setup" --yes
-```
-
-`create` accepts `--force` to overwrite an existing profile. Profile apply is
-immediate; `--transition` is reserved for crossfades and only accepts `0` today.
-
 ## Network
 
 ### server
@@ -481,15 +467,17 @@ are dotted paths into the config tree (for example `daemon.fps`, `audio.gain`,
 hypercolor config show
 hypercolor config get daemon.canvas_width
 hypercolor config set audio.gain 1.5
-hypercolor config set daemon.fps 60 --live    # Hot-reload into the running daemon
+hypercolor config set daemon.fps 60 --no-live  # Persist without touching the daemon
 hypercolor config reset audio.gain
 hypercolor config reset --yes                  # Full reset
 hypercolor config path                         # Print the config file location
 ```
 
-`config set --live` applies the change to the running daemon immediately rather
-than only on next restart. The full configuration schema is documented in the
-[Guide](@/guide/_index.md).
+A write applies to the running daemon immediately whenever the key registry
+says the daemon can re-apply it; `--no-live` persists the value and leaves the
+running daemon alone, and `--live` states the default request explicitly. Ask
+`GET /api/v1/config/schema` how any key behaves. The full configuration schema
+is documented in the [Guide](@/guide/_index.md).
 
 Connection profiles for the CLI itself live under `config profile`:
 
@@ -502,12 +490,12 @@ hypercolor config profile default studio
 hypercolor config profile remove studio
 ```
 
-{% callout(type="info") %}
-There are two unrelated "profile" concepts. **`hypercolor profiles`** saves
-lighting state on the daemon. **`hypercolor config profile`** saves CLI
-connection settings (host, port, key) locally so you can switch which daemon you
-talk to. The global `--profile` flag selects the latter.
-{% end %}
+{% <callout type="info"> %}
+`hypercolor config profile` stores CLI connection settings (host, port, key)
+locally so you can switch which daemon you talk to. The global `--profile` flag
+selects one of those connection profiles. Lighting snapshots live under
+`hypercolor scenes snapshot`.
+{% </callout> %}
 
 ### diagnose
 

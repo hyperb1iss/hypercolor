@@ -11,12 +11,14 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::effect::{ControlValue, EffectId};
+use crate::control::ControlValue;
+use crate::effect::EffectId;
 
 // ── Strong IDs ─────────────────────────────────────────────────────────────
 
-/// Opaque identifier for a saved effect preset.
+/// Opaque identifier for an effect preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PresetId(pub Uuid);
 
 impl PresetId {
@@ -24,6 +26,33 @@ impl PresetId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
+    }
+
+    /// Derive a stable identifier for an effect-authored preset.
+    #[must_use]
+    pub fn stable(key: &str) -> Self {
+        let key = Self::normalize_key(key);
+        let mut hash: u128 = 0x52a2_4f6d_0959_4929_82b3_c28a_d44a_a910;
+        for byte in b"hypercolor:preset:".iter().chain(key.as_bytes()) {
+            hash ^= u128::from(*byte);
+            hash = hash.wrapping_mul(0x1000_0000_01b3);
+        }
+
+        let mut bytes = hash.to_be_bytes();
+        bytes[6] = (bytes[6] & 0x0f) | 0x80;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        Self(Uuid::from_bytes(bytes))
+    }
+
+    /// Normalize an authored preset key before identity derivation.
+    #[must_use]
+    pub fn normalize_key(key: &str) -> String {
+        key.split(|character: char| {
+            character.is_whitespace() || matches!(character, '\u{1c}'..='\u{1f}' | '\u{feff}')
+        })
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
     }
 }
 
@@ -49,6 +78,7 @@ impl FromStr for PresetId {
 
 /// Opaque identifier for a playlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PlaylistId(pub Uuid);
 
 impl PlaylistId {
@@ -81,6 +111,7 @@ impl FromStr for PlaylistId {
 
 /// Opaque identifier for a playlist item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PlaylistItemId(pub Uuid);
 
 impl PlaylistItemId {
@@ -115,6 +146,7 @@ impl FromStr for PlaylistItemId {
 
 /// A single favorited effect.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct FavoriteEffect {
     /// Canonical effect identifier.
     pub effect_id: EffectId,
@@ -126,6 +158,7 @@ pub struct FavoriteEffect {
 
 /// A saved parameter snapshot for one effect.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectPreset {
     pub id: PresetId,
     pub name: String,
@@ -135,7 +168,9 @@ pub struct EffectPreset {
     pub controls: HashMap<String, ControlValue>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
     pub created_at_ms: u64,
+    #[serde(default)]
     pub updated_at_ms: u64,
 }
 
@@ -143,6 +178,7 @@ pub struct EffectPreset {
 
 /// Target entity for one playlist slot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PlaylistItemTarget {
     /// Run an effect directly.
@@ -153,6 +189,7 @@ pub enum PlaylistItemTarget {
 
 /// One item in a playlist sequence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct PlaylistItem {
     pub id: PlaylistItemId,
     pub target: PlaylistItemTarget,
@@ -162,6 +199,7 @@ pub struct PlaylistItem {
 
 /// A user-defined effect sequence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct EffectPlaylist {
     pub id: PlaylistId,
     pub name: String,

@@ -12,7 +12,7 @@ Every interface in Hypercolor talks to one thing: the daemon, which runs on port
 
 The daemon binds to `127.0.0.1:9420` by default. A clean install exposes the web UI from that same port because `web.enabled` is true by default; no separate process is needed for the browser interface. The only time you see `:9430` is when developing the web UI itself (`just ui-dev`), where Trunk runs a hot-reload dev server that proxies API calls back to `:9420`.
 
-The daemon enforces a single-instance lock. If you try to start a second one, it exits immediately with "hypercolor-daemon is already running; exiting."
+The daemon enforces a single-instance lock. If you try to start a second one, it exits immediately with "hypercolor-daemon is already running; exiting".
 
 You can run the daemon directly:
 
@@ -33,9 +33,9 @@ The app supervises the daemon: it spawns and watches `hypercolor-daemon` as a ch
 
 The window hosts the web UI at `http://127.0.0.1:9420` (or whatever `HYPERCOLOR_URL` points to). It is a Tauri webview loading the same page any browser would show at that address. New links open in your system browser rather than inside the app window.
 
-{{ img(path="img/ui/dashboard.webp", alt="The Hypercolor dashboard") }}
+{{< img path="img/ui/dashboard.webp" alt="The Hypercolor dashboard" />}}
 
-The app's tray icon reflects daemon state: active, paused, or disconnected. The tray menu gives you quick access to effects, profiles, pause/resume, brightness presets, and server switching without opening the full window.
+The app's tray icon reflects daemon state: active, paused, or disconnected. The tray menu gives you quick access to effects, scenes, pause/resume, brightness presets, and server switching without opening the full window.
 
 App flags (forwarded to the running instance via the single-instance plugin):
 
@@ -51,7 +51,7 @@ Autostart is registered via the Tauri autostart plugin with `--minimized`; on ma
 
 The Leptos web UI is served directly by the daemon at `:9420`. There is no separate web server. Once the daemon (or app) is running, opening `http://localhost:9420` in any browser gives you the full Studio interface: the effect library, layout editor, scene manager, audio visualizer, and settings.
 
-{{ img(path="img/ui/dashboard.webp", alt="Hypercolor dashboard in the web browser") }}
+{{< img path="img/ui/dashboard.webp" alt="Hypercolor dashboard in the web browser" />}}
 
 The web UI uses a binary WebSocket connection to `:9420/api/v1/ws` for real-time canvas previews, spectrum data, and event delivery. If the WebSocket channel fails to connect, the preview panel will appear dark while the API remains functional.
 
@@ -59,7 +59,7 @@ The web UI uses a binary WebSocket connection to `:9420/api/v1/ws` for real-time
 
 The Ratatui terminal UI gives you a live instrument panel without leaving the shell: effects, device status, canvas preview, and a spectrum visualizer, all rendered in your terminal.
 
-{{ img(path="img/tui/tui-dashboard.png", alt="TUI dashboard view") }}
+{{< img path="img/tui/tui-dashboard.png" alt="TUI dashboard view" />}}
 
 Launch it through the CLI:
 
@@ -84,7 +84,7 @@ hypercolor effects activate borealis --speed 80
 hypercolor brightness set 75
 hypercolor scenes list
 hypercolor devices list
-hypercolor profiles apply "night mode"
+hypercolor scenes activate "night mode"
 ```
 
 Global flags let you point the CLI at any daemon on the network:
@@ -102,17 +102,9 @@ The three top-level commands that look similar but do different things:
 
 For the full CLI reference, see [CLI reference](@/api/cli.md).
 
-## The standalone tray is for daemon-only setups
+## The desktop app owns the tray
 
-`hypercolor-tray` is a separate, lightweight binary that adds system tray presence without the full app shell. It communicates with the daemon exclusively over REST and WebSocket at `localhost:9420`. The tray menu lets you switch effects, adjust brightness, pause/resume, and open the web UI.
-
-```bash
-just tray    # or run hypercolor-tray directly
-```
-
-Use the standalone tray when you are running the daemon as a service and do not want or need the Tauri window. On a Linux system where autostart brings up the daemon via systemd and you want tray presence without a full native window, `hypercolor-tray` is the right tool.
-
-If you installed the desktop app, you already have a tray icon: the app registers its own tray and you do not need the standalone binary. The two are not meant to run simultaneously.
+`hypercolor-app` provides the system tray on every desktop platform. Its tray menu communicates with the daemon over REST and WebSocket at `localhost:9420`, and lets you switch effects, adjust brightness, pause or resume output, and open the web UI. Start the app minimized when you want tray presence without opening its window.
 
 ## How they connect
 
@@ -125,9 +117,9 @@ ws://127.0.0.1:9420/api/v1/ws   WebSocket (events, frames, spectrum)
 
 The daemon also optionally exposes an MCP server at `/mcp` for AI agent integration, but this is disabled by default (`[mcp] enabled = false` in `hypercolor.toml`). See the [MCP server](@/api/mcp.md) reference to enable it.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 The only port a normal install uses is **9420**. Port 9430 is the Leptos hot-reload dev server (`just ui-dev`) and is only relevant if you are developing the web UI. Do not point users at :9430 in a packaged install.
-{% end %}
+{% </callout> %}
 
 ## Choosing what to open
 
@@ -137,7 +129,7 @@ The only port a normal install uses is **9420**. Port 9430 is the Leptos hot-rel
 | Quick effect or brightness change | Tray menu |
 | Terminal dashboard with live preview | `hypercolor tui` |
 | Script, cron, or shell pipeline | `hypercolor <command>` |
-| Run headless (no window) | Daemon + standalone tray |
+| Run headless (no window) | Daemon only, or desktop app started minimized for tray access |
 | AI agent integration | Enable MCP in config, then connect your agent |
 
 In most cases, the desktop app is the right answer. It starts the daemon for you, shows up in your tray, and opens the full web UI when you click the window: everything from one install.

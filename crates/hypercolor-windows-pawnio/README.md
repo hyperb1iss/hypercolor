@@ -34,8 +34,8 @@ are both set as compensating controls.
 `serde`, `serde_json`, `tokio`, `tracing-subscriber`, `windows-registry`,
 `windows-service`, `windows-sys`.
 
-**Depended on by:** `hypercolor-hal` (Windows only, via
-`[target.'cfg(target_os = "windows")'.dependencies]`).
+**Depended on by:** `hypercolor-hal` and `hypercolor-windows-telemetry` (both
+Windows only, via `[target.'cfg(target_os = "windows")'.dependencies]`).
 
 **Ships:** `hypercolor-smbus-service` — the Windows Service broker binary.
 
@@ -81,4 +81,5 @@ None.
 ---
 
 Part of [Hypercolor](https://github.com/hyperb1iss/hypercolor) — open-source
-RGB lighting orchestration for Linux. Licensed under Apache-2.0.
+RGB lighting orchestration for Linux, Windows, and macOS. Licensed under
+Apache-2.0.

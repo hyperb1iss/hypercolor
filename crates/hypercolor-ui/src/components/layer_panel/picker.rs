@@ -2,6 +2,7 @@
 //! a layer draft for the panel to commit.
 
 use hypercolor_leptos_ext::events::Input;
+use hypercolor_types::asset::AssetId;
 use hypercolor_types::layer::LayerSource;
 use hypercolor_types::scene::ZoneRole;
 use leptos::prelude::*;
@@ -9,7 +10,7 @@ use leptos_icons::Icon;
 
 use super::source::{
     AddLayerScope, EffectPickerMode, LayerSourceKind, effect_category_label, effect_layer_source,
-    effect_picker_matches_query, effect_picker_mode, media_layer_source,
+    effect_picker_matches_query, effect_picker_mode, media_layer_source_for,
 };
 use crate::api;
 use crate::components::media_grid::MediaGrid;
@@ -58,7 +59,7 @@ pub fn AddLayerPicker(
     let emit = Callback::new(move |draft: NewLayerDraft| {
         on_pick.run((draft, scope.get()));
     });
-    let effects = LocalResource::new(api::fetch_effects);
+    let effects = api::daemon_resource(api::fetch_effects);
 
     view! {
         <Modal
@@ -186,7 +187,7 @@ fn PickerSearch(placeholder: &'static str, value: RwSignal<String>) -> impl Into
 
 #[component]
 fn EffectTab(
-    effects: LocalResource<Result<Vec<api::EffectSummary>, String>>,
+    effects: LocalResource<api::ApiResult<Vec<api::EffectSummary>>>,
     #[prop(into)] mode: Signal<EffectPickerMode>,
     on_pick: Callback<NewLayerDraft>,
 ) -> impl IntoView {
@@ -200,10 +201,10 @@ fn EffectTab(
         let mut items = items
             .into_iter()
             .filter(|effect| effect.runnable)
-            .filter(|effect| mode.includes_category(&effect.category))
-            .filter(|effect| effect_picker_matches_query(&effect.name, &effect.category, &query))
+            .filter(|effect| mode.includes_category(effect.category))
+            .filter(|effect| effect_picker_matches_query(&effect.name, effect.category, &query))
             .collect::<Vec<_>>();
-        items.sort_by_key(|item| (mode.sort_bucket(&item.category), item.name.to_lowercase()));
+        items.sort_by_key(|item| (mode.sort_bucket(item.category), item.name.to_lowercase()));
         items
     });
 
@@ -214,7 +215,7 @@ fn EffectTab(
         <Suspense fallback=move || view! { <PickerLoading /> }>
             {move || match effects.get() {
                 None => view! { <PickerLoading /> }.into_any(),
-                Some(Err(error)) => view! { <PickerError detail=error /> }.into_any(),
+                Some(Err(error)) => view! { <PickerError detail=error.to_string() /> }.into_any(),
                 Some(Ok(_)) => {
                     let items = filtered.get();
                     if items.is_empty() {
@@ -225,7 +226,7 @@ fn EffectTab(
                                 {items.into_iter().map(|effect| {
                                     let id = effect.id.clone();
                                     let name = effect.name.clone();
-                                    let category = effect_category_label(&effect.category);
+                                    let category = effect_category_label(effect.category);
                                     let pick = move |_| {
                                         match effect_layer_source(&id) {
                                             Ok(source) => on_pick.run(NewLayerDraft::named(name.clone(), source)),
@@ -278,16 +279,16 @@ fn MediaTab(
 
     // A click on a media card is an immediate add, so resolve the asset's
     // name for the layer and emit a draft — no persistent selection.
-    let pick_media = Callback::new(move |id: String| match media_layer_source(&id) {
-        Ok(source) => {
-            let name = assets.with_untracked(|list| {
-                list.iter()
-                    .find(|asset| asset.id == id)
-                    .map(|asset| asset.name.clone())
-            });
-            on_pick.run(NewLayerDraft { name, source });
-        }
-        Err(error) => toasts::toast_error(&error),
+    let pick_media = Callback::new(move |id: AssetId| {
+        let name = assets.with_untracked(|list| {
+            list.iter()
+                .find(|asset| asset.id == id)
+                .map(|asset| asset.name.clone())
+        });
+        on_pick.run(NewLayerDraft {
+            name,
+            source: media_layer_source_for(id),
+        });
     });
 
     view! {
@@ -301,7 +302,7 @@ fn MediaTab(
                 view! {
                     <MediaGrid
                         assets=filtered
-                        selected_id=Signal::derive(|| None::<String>)
+                        selected_id=Signal::derive(|| None::<AssetId>)
                         on_select=pick_media
                     />
                 }.into_any()

@@ -1,6 +1,7 @@
 use std::ops::Range;
 use std::sync::OnceLock;
 
+use hypercolor_color::LinearRgba;
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use tracing::warn;
 
@@ -209,7 +210,7 @@ fn apply_led_perceptual_compensation_channels(red: &mut f32, green: &mut f32, bl
     }
 
     let min_channel = (*red).min(*green).min(*blue);
-    let luma = red.mul_add(0.2126, green.mul_add(0.7152, *blue * 0.0722));
+    let luma = LinearRgba::new(*red, *green, *blue, 1.0).luma();
     let headroom = 1.0 - max_channel;
     if headroom <= f32::EPSILON {
         return;

@@ -1,6 +1,13 @@
 # Graphics Pipeline Unification Plan
 
-**Status:** Draft plan
+**Status:** Executed in substantial part, not a draft. Re-checked 2026-08-25 at
+`7620eae44`: Wave 1's non-blocking Servo lifecycle shipped as `ServoLoadTask`
+with session recycling, and the GPU compositor Waves 4 and 6 aimed at is real
+(`crates/hypercolor-daemon/src/render_thread/sparkleflinger/gpu/`, with its own
+WGSL shaders). `PublishedSurface` and `RenderSurfacePool`, listed in §3 as
+strengths to preserve, are load-bearing across the daemon. Per-wave completion
+was not re-audited wave by wave, so treat individual task lists as unverified
+rather than open. Design 56 carries the follow-on compositor state-machine work.
 **Date:** 2026-04-24
 **Scope:** Servo HTML rendering, render-thread composition, display faces, display output, LED output, preview streaming, timing, backpressure, concurrency, and zero-copy behavior.
 

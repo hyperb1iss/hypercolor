@@ -1,0 +1,19 @@
+# hypercolor websocket golden fixture
+# fixture: 0b-wide-preview
+# tag: 0x0b (WIDE_PREVIEW_FRAME_TAG)
+# encoder: hypercolor_leptos_ext::ws::PreviewFrame::try_encode
+# input: canvas channel, 65536x1 rgb (wide layout)
+# total-bytes: 196627
+# stored-bytes: 35
+# note: the remaining 196592 payload bytes are a deterministic fill and are
+#       asserted by the test rather than committed here.
+#
+# Regenerating any byte below is a wire-format change. See README.md.
+0b                                              # tag (wide passive preview)
+03                                              # channel tag
+78 56 34 12                                     # frame_number u32le
+4e 61 bc 00                                     # timestamp_ms u32le
+00 00 01 00                                     # width u32le
+01 00 00 00                                     # height u32le
+00                                              # format u8 (0=rgb, 1=rgba, 2=jpeg)
+40 47 4e 55 5c 63 6a 71 78 7f 86 8d 94 9b a2 a9 # payload (first 16 bytes)

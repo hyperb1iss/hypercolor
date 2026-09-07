@@ -1,10 +1,9 @@
-//! Realtime-mode lifecycle and HTTP health probes for WLED backends.
+//! Realtime-mode lifecycle for WLED backends.
 //!
 //! WLED's realtime receiver (UDP DDP/E1.31) will only accept frames while
 //! the device is in "realtime mode". This module covers the entry/exit
-//! HTTP dance on `/json/state`, the three-frame priming flush, the clear
-//! frame sent at disconnect, and the `/json/info` reachability probe used
-//! for cheap health checks.
+//! HTTP dance on `/json/state`, the three-frame priming flush, and the
+//! clear frame sent at disconnect.
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -20,21 +19,6 @@ use super::protocol::{
 pub(super) const REALTIME_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 const REALTIME_PRIME_FRAMES: usize = 3;
 const REALTIME_PRIME_DELAY: Duration = Duration::from_millis(50);
-
-/// Check if a WLED device responds to `/json/info`.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP client cannot be built.
-pub(super) async fn probe_device_reachable(ip: IpAddr) -> Result<bool> {
-    let url = format!("http://{ip}/json/info");
-    let client = reqwest::Client::builder()
-        .timeout(REALTIME_HTTP_TIMEOUT)
-        .build()
-        .context("Failed to build WLED HTTP client")?;
-
-    Ok(client.get(url).send().await.is_ok())
-}
 
 async fn post_realtime_state(ip: IpAddr, body: serde_json::Value) -> Result<()> {
     let client = reqwest::Client::builder()

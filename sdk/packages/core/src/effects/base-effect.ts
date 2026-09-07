@@ -13,6 +13,7 @@
  */
 
 import { type DesignBasis, type ScaleContext, scaleContext } from '../math/scale'
+import { hostFrameTimeSeconds } from '../runtime'
 import { createDebugLogger } from '../utils/debug'
 
 /**
@@ -146,8 +147,9 @@ export abstract class BaseEffect<T> {
         }
 
         this.syncCanvasSizeFromEngine()
-        this.render(timestamp / 1000)
-        this.onFrame(timestamp / 1000)
+        const time = hostFrameTimeSeconds(timestamp / 1000)
+        this.render(time)
+        this.onFrame(time)
     }
 
     private renderHostFrame(): void {
@@ -168,7 +170,7 @@ export abstract class BaseEffect<T> {
                 : typeof browserPerformance?.now === 'function'
                   ? browserPerformance.now()
                   : Date.now()
-        const time = timestamp / 1000
+        const time = hostFrameTimeSeconds(timestamp / 1000)
         this.render(time)
         this.onFrame(time)
     }

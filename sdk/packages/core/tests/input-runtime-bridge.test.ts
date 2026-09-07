@@ -55,9 +55,26 @@ describe('LightScript input availability bridge', () => {
                         source: 'mouse0',
                         state: 'pressed',
                     },
+                    {
+                        atMs: 1002,
+                        deltaX: 0.5,
+                        deltaY: -0.25,
+                        kind: 'scroll',
+                        momentumPhase: 'began',
+                        phase: 'changed',
+                        physicalCode: 'macos:scroll',
+                        repeatCount: 1,
+                        seq: 3,
+                        source: 'mouse0',
+                        unit: 'pixels',
+                    },
                 ],
                 keyboard: { keys: ['a'], recent: ['a'] },
-                mouse: { buttons: ['left'], mode: 'virtual' },
+                mouse: {
+                    buttons: ['left'],
+                    mode: 'virtual',
+                    scroll: { line120X: 0.5, line120Y: -2, pixelX: 1.5, pixelY: -0.25 },
+                },
             },
             timing: { deltaSecs: 1 / 60, frameNumber: 8, timeSecs: 1 },
         })
@@ -87,10 +104,24 @@ describe('LightScript input availability bridge', () => {
                 source: 'mouse0',
                 state: 'pressed',
             },
+            {
+                atMs: 1002,
+                deltaX: 0.5,
+                deltaY: -0.25,
+                kind: 'scroll',
+                momentumPhase: 'began',
+                phase: 'changed',
+                physicalCode: 'macos:scroll',
+                repeatCount: 1,
+                seq: 3,
+                source: 'mouse0',
+                unit: 'pixels',
+            },
         ])
+        expect(input.mouse.scroll).toEqual({ line120X: 0.5, line120Y: -2, pixelX: 1.5, pixelY: -0.25 })
     })
 
-    test('keeps an idle healthy routed source available', () => {
+    test('keeps an idle source healthy and routed', () => {
         runtime.__hypercolorApplyFramePayload?.({
             canvas: { height: 200, width: 320 },
             inputAvailability: {
@@ -105,7 +136,6 @@ describe('LightScript input availability bridge', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeTrue()
         expect(input.declared).toBeTrue()
         expect(input.routed).toBeTrue()
         expect(input.healthy).toBeTrue()
@@ -144,7 +174,6 @@ describe('LightScript input availability bridge', () => {
 
         const input = getInputData()
 
-        expect(input.available).toBeFalse()
         expect(input.healthy).toBeFalse()
         expect(input.fresh).toBeFalse()
         expect(input.keyboard.events).toHaveLength(1)

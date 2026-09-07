@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::Response;
-use serde::{Deserialize, Serialize};
+use axum::response::{IntoResponse, Response};
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -16,86 +15,48 @@ use hypercolor_types::library::{
     EffectPlaylist, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
 };
 
-use crate::api::AppState;
-use crate::api::effects::resolve_effect_metadata;
-use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::envelope;
+use crate::app_state::AppState;
+use crate::domain::{DomainError, ResourceKind};
 use crate::playlist_runtime::ActivePlaylistRuntime;
 
-use super::{
-    activate_effect_with_controls, metadata_for_effect_id, resolve_preset_id,
-    store_error_to_response, unix_epoch_ms,
+use super::{metadata_for_effect_id, resolve_preset_id, store_error, unix_epoch_ms};
+
+// Wire contracts live in hypercolor-types::api::library — shared with
+// the web UI and the TUI.
+pub use hypercolor_types::api::library::{
+    ActivatePlaylistResponse, ActivePlaylistResponse, ActivePlaylistStateResponse,
+    DeactivatePlaylistResponse, DeletePlaylistResponse, PlaylistItemRequest, PlaylistListResponse,
+    PlaylistTargetRequest, SavePlaylistRequest,
 };
 
 const DEFAULT_PLAYLIST_ITEM_DURATION_MS: u64 = 30_000;
-
-// ── Request / Response Types ────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct PlaylistListResponse {
-    pub items: Vec<EffectPlaylist>,
-    pub pagination: crate::api::devices::Pagination,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ActivePlaylistResponse {
-    pub id: String,
-    pub name: String,
-    pub loop_enabled: bool,
-    pub item_count: usize,
-    pub started_at_ms: u64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PlaylistTargetRequest {
-    Effect { effect: String },
-    Preset { preset_id: String },
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PlaylistItemRequest {
-    pub target: PlaylistTargetRequest,
-    pub duration_ms: Option<u64>,
-    pub transition_ms: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SavePlaylistRequest {
-    pub name: String,
-    pub description: Option<String>,
-    pub loop_enabled: Option<bool>,
-    pub items: Option<Vec<PlaylistItemRequest>>,
-}
 
 // ── Handlers ────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/library/playlists` — list all playlists.
 pub async fn list_playlists(State(state): State<Arc<AppState>>) -> Response {
-    let items = state.library_store.list_playlists().await;
+    let items = state.library_store().list_playlists().await;
     let total = items.len();
 
-    ApiResponse::ok(PlaylistListResponse {
+    envelope::ok(PlaylistListResponse {
         items,
-        pagination: crate::api::devices::Pagination {
-            offset: 0,
-            limit: 50,
-            total,
-            has_more: false,
-        },
+        total: u64::try_from(total).expect("playlist count fits in u64"),
+        page: None,
     })
 }
 
-/// `GET /api/v1/library/playlists/:id` — fetch one playlist.
+/// `GET /api/v1/library/playlists/{id}` — fetch one playlist.
 pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
-    let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+    let Some(playlist) = state.library_store().get_playlist(playlist_id).await else {
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
-    ApiResponse::ok(playlist)
+    envelope::ok(playlist)
 }
 
 /// `POST /api/v1/library/playlists` — create a new playlist.
@@ -104,12 +65,13 @@ pub async fn create_playlist(
     Json(body): Json<SavePlaylistRequest>,
 ) -> Response {
     if body.name.trim().is_empty() {
-        return ApiError::validation("Playlist name must not be empty");
+        return DomainError::validation("Playlist name must not be empty").into_response();
     }
 
+    let _admission = state.domains.effects.admit_current().await;
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
     let now = unix_epoch_ms();
     let playlist = EffectPlaylist {
@@ -122,8 +84,12 @@ pub async fn create_playlist(
         updated_at_ms: now,
     };
 
-    if let Err(error) = state.library_store.insert_playlist(playlist.clone()).await {
-        return store_error_to_response(&error);
+    if let Err(error) = state
+        .library_store()
+        .insert_playlist(playlist.clone())
+        .await
+    {
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -133,28 +99,29 @@ pub async fn create_playlist(
             kind: LibraryChangeKind::Upserted,
         });
 
-    ApiResponse::created(playlist)
+    envelope::created(playlist)
 }
 
-/// `PUT /api/v1/library/playlists/:id` — update an existing playlist.
+/// `PUT /api/v1/library/playlists/{id}` — update an existing playlist.
 pub async fn update_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<SavePlaylistRequest>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     if body.name.trim().is_empty() {
-        return ApiError::validation("Playlist name must not be empty");
+        return DomainError::validation("Playlist name must not be empty").into_response();
     }
 
-    let Some(existing) = state.library_store.get_playlist(playlist_id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+    let Some(existing) = state.library_store().get_playlist(playlist_id).await else {
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
+    let _admission = state.domains.effects.admit_current().await;
     let items = match build_playlist_items(&state, body.items.as_deref()).await {
         Ok(items) => items,
-        Err(error) => return ApiError::validation(error),
+        Err(error) => return DomainError::validation(error).into_response(),
     };
 
     let playlist = EffectPlaylist {
@@ -167,8 +134,12 @@ pub async fn update_playlist(
         updated_at_ms: unix_epoch_ms(),
     };
 
-    if let Err(error) = state.library_store.update_playlist(playlist.clone()).await {
-        return store_error_to_response(&error);
+    if let Err(error) = state
+        .library_store()
+        .update_playlist(playlist.clone())
+        .await
+    {
+        return store_error(&error).into_response();
     }
     state
         .event_bus
@@ -192,24 +163,24 @@ pub async fn update_playlist(
     };
     stop_runtime(active);
 
-    ApiResponse::ok(playlist)
+    envelope::ok(playlist)
 }
 
-/// `DELETE /api/v1/library/playlists/:id` — remove a playlist.
+/// `DELETE /api/v1/library/playlists/{id}` — remove a playlist.
 pub async fn delete_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
 
-    let removed = match state.library_store.remove_playlist(playlist_id).await {
+    let removed = match state.library_store().remove_playlist(playlist_id).await {
         Ok(removed) => removed,
-        Err(error) => return store_error_to_response(&error),
+        Err(error) => return store_error(&error).into_response(),
     };
     if !removed {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     }
     state
         .event_bus
@@ -233,25 +204,25 @@ pub async fn delete_playlist(
     };
     stop_runtime(active);
 
-    ApiResponse::ok(serde_json::json!({
-        "id": playlist_id.to_string(),
-        "deleted": true,
-    }))
+    envelope::ok(DeletePlaylistResponse {
+        id: playlist_id.to_string(),
+        deleted: true,
+    })
 }
 
-/// `POST /api/v1/library/playlists/:id/activate` — start playlist playback.
+/// `POST /api/v1/library/playlists/{id}/activate` — start playlist playback.
 pub async fn activate_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
-    let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
-        return ApiError::not_found(format!("Playlist not found: {id}"));
+    let Some(mut playlist) = state.library_store().get_playlist(playlist_id).await else {
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
     };
     if playlist.items.is_empty() {
-        return ApiError::validation("Playlist must contain at least one item");
+        return DomainError::validation("Playlist must contain at least one item").into_response();
     }
 
     let previous = {
@@ -263,11 +234,18 @@ pub async fn activate_playlist(
     if let Some(first_item) = playlist.items.first()
         && let Err(error) = activate_playlist_item(&state, first_item).await
     {
-        return ApiError::internal(format!(
+        return DomainError::Internal(anyhow::anyhow!(
             "Failed to activate first playlist item for '{}': {error}",
             playlist.name
-        ));
+        ))
+        .into_response();
     }
+
+    let _admission = state.domains.effects.admit_current().await;
+    let Some(current_playlist) = state.library_store().get_playlist(playlist_id).await else {
+        return DomainError::not_found(ResourceKind::Playlist, &id).into_response();
+    };
+    playlist = current_playlist;
 
     let generation;
     let started_at_ms = unix_epoch_ms();
@@ -278,9 +256,10 @@ pub async fn activate_playlist(
     }
 
     let state_for_task = Arc::clone(&state);
-    let playlist_for_task = playlist.clone();
+    let playlist_for_task = Arc::new(tokio::sync::RwLock::new(playlist.clone()));
+    let worker_playlist = Arc::clone(&playlist_for_task);
     let task = tokio::spawn(async move {
-        run_playlist_task(state_for_task, playlist_for_task, generation, stop_rx, true).await;
+        run_playlist_task(state_for_task, worker_playlist, generation, stop_rx, true).await;
     });
 
     let response_payload;
@@ -294,48 +273,49 @@ pub async fn activate_playlist(
             item_count: playlist.items.len(),
             started_at_ms,
             stop_tx,
+            playlist: playlist_for_task,
             task,
         };
         response_payload = active_playlist_payload(&active);
         runtime.active = Some(active);
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": response_payload,
-        "active": true,
-    }))
+    envelope::ok(ActivatePlaylistResponse {
+        playlist: response_payload,
+        active: true,
+    })
 }
 
 /// `GET /api/v1/library/playlists/active` — inspect the active playlist runtime.
 pub async fn get_active_playlist(State(state): State<Arc<AppState>>) -> Response {
     let runtime = state.playlist_runtime.lock().await;
     let Some(active) = runtime.active.as_ref() else {
-        return ApiError::not_found("No playlist is currently active");
+        return DomainError::not_found(ResourceKind::Playlist, "active").into_response();
     };
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": active_playlist_payload(active),
-        "state": "running",
-    }))
+    envelope::ok(ActivePlaylistStateResponse {
+        playlist: active_playlist_payload(active),
+        state: "running".to_owned(),
+    })
 }
 
-/// `POST /api/v1/library/playlists/stop` — stop playlist playback if active.
-pub async fn stop_playlist(State(state): State<Arc<AppState>>) -> Response {
+/// `POST /api/v1/library/playlists/deactivate` — end playlist playback if active.
+pub async fn deactivate_playlist(State(state): State<Arc<AppState>>) -> Response {
     let active = {
         let mut runtime = state.playlist_runtime.lock().await;
         runtime.active.take()
     };
     let Some(active) = active else {
-        return ApiError::not_found("No playlist is currently active");
+        return DomainError::not_found(ResourceKind::Playlist, "active").into_response();
     };
 
     let payload = active_playlist_payload(&active);
     stop_runtime(Some(active));
 
-    ApiResponse::ok(serde_json::json!({
-        "playlist": payload,
-        "stopped": true,
-    }))
+    envelope::ok(DeactivatePlaylistResponse {
+        playlist: payload,
+        deactivated: true,
+    })
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -356,7 +336,7 @@ async fn resolve_playlist_id(state: &Arc<AppState>, id_or_name: &str) -> Option<
     }
 
     state
-        .library_store
+        .library_store()
         .list_playlists()
         .await
         .iter()
@@ -374,46 +354,61 @@ fn stop_runtime(active: Option<ActivePlaylistRuntime>) {
 
 async fn run_playlist_task(
     state: Arc<AppState>,
-    playlist: EffectPlaylist,
+    playlist: Arc<tokio::sync::RwLock<EffectPlaylist>>,
     generation: u64,
     mut stop_rx: watch::Receiver<bool>,
     first_item_already_applied: bool,
 ) {
     let mut index = 0usize;
     if first_item_already_applied {
-        let first_duration = playlist
+        let playlist_snapshot = playlist.read().await;
+        let first_duration = playlist_snapshot
             .items
             .first()
             .and_then(|item| item.duration_ms)
             .unwrap_or(DEFAULT_PLAYLIST_ITEM_DURATION_MS)
             .max(1);
+        drop(playlist_snapshot);
         if wait_for_item_window(first_duration, &mut stop_rx).await {
             clear_runtime_if_generation_matches(&state, generation).await;
             return;
         }
         index = 1;
-        if index >= playlist.items.len() {
-            if playlist.loop_enabled {
+        let playlist_snapshot = playlist.read().await;
+        if index >= playlist_snapshot.items.len() {
+            if playlist_snapshot.loop_enabled {
                 index = 0;
             } else {
+                drop(playlist_snapshot);
                 clear_runtime_if_generation_matches(&state, generation).await;
                 return;
             }
         }
+        drop(playlist_snapshot);
     }
 
-    while index < playlist.items.len() {
+    loop {
         if *stop_rx.borrow() {
             break;
         }
 
-        let Some(item) = playlist.items.get(index) else {
+        let (playlist_id, playlist_name, item, item_count, loop_enabled) = {
+            let playlist = playlist.read().await;
+            (
+                playlist.id,
+                playlist.name.clone(),
+                playlist.items.get(index).cloned(),
+                playlist.items.len(),
+                playlist.loop_enabled,
+            )
+        };
+        let Some(item) = item else {
             break;
         };
-        if let Err(error) = activate_playlist_item(&state, item).await {
+        if let Err(error) = activate_playlist_item(&state, &item).await {
             warn!(
-                playlist_id = %playlist.id,
-                playlist = %playlist.name,
+                playlist_id = %playlist_id,
+                playlist = %playlist_name,
                 item_index = index,
                 %error,
                 "Playlist item activation failed"
@@ -429,8 +424,8 @@ async fn run_playlist_task(
         }
 
         index += 1;
-        if index >= playlist.items.len() {
-            if playlist.loop_enabled {
+        if index >= item_count {
+            if loop_enabled {
                 index = 0;
             } else {
                 break;
@@ -461,57 +456,39 @@ async fn clear_runtime_if_generation_matches(state: &Arc<AppState>, generation: 
     }
 }
 
-async fn activate_playlist_item(state: &Arc<AppState>, item: &PlaylistItem) -> Result<(), String> {
-    match &item.target {
+pub(crate) async fn activate_playlist_item(
+    state: &Arc<AppState>,
+    item: &PlaylistItem,
+) -> Result<(), String> {
+    let (metadata, requested_controls, preset_id) = match &item.target {
         PlaylistItemTarget::Effect { effect_id } => {
             let metadata = metadata_for_effect_id(state, *effect_id).await?;
-            let controls = HashMap::new();
-            let activation = activate_effect_with_controls(state, &metadata, &controls)
-                .await
-                .map_err(|error| error.to_string())?;
-            if !activation.rejected.is_empty() {
-                warn!(
-                    effect_id = %metadata.id,
-                    effect = %metadata.name,
-                    rejected = ?activation.rejected,
-                    "Rejected controls while activating playlist effect item"
-                );
-            }
-            if !activation.warnings.is_empty() {
-                warn!(
-                    effect_id = %metadata.id,
-                    effect = %metadata.name,
-                    warnings = ?activation.warnings,
-                    "Effect activation emitted warnings while activating playlist effect item"
-                );
-            }
+            (metadata, HashMap::new(), None)
         }
         PlaylistItemTarget::Preset { preset_id } => {
-            let Some(preset) = state.library_store.get_preset(*preset_id).await else {
+            let Some(preset) = state.library_store().get_preset(*preset_id).await else {
                 return Err(format!("playlist references missing preset: {preset_id}"));
             };
             let metadata = metadata_for_effect_id(state, preset.effect_id).await?;
-            let activation = activate_effect_with_controls(state, &metadata, &preset.controls)
-                .await
-                .map_err(|error| error.to_string())?;
-            if !activation.rejected.is_empty() {
-                warn!(
-                    preset_id = %preset.id,
-                    preset = %preset.name,
-                    rejected = ?activation.rejected,
-                    "Rejected controls while activating playlist preset item"
-                );
-            }
-            if !activation.warnings.is_empty() {
-                warn!(
-                    preset_id = %preset.id,
-                    preset = %preset.name,
-                    warnings = ?activation.warnings,
-                    "Effect activation emitted warnings while activating playlist preset item"
-                );
-            }
+            (metadata, preset.controls, Some(preset.id))
         }
-    }
+    };
+
+    crate::domain::effect::apply_effect(
+        &state.domains.effects,
+        crate::domain::effect::ApplyEffect {
+            effect: metadata,
+            controls: requested_controls,
+            preset_id,
+            target_zone: None,
+            expected_revision: None,
+            transition: crate::domain::effect::RequestedTransition::cut(),
+            wake_output: false,
+        },
+        crate::domain::MutationContext::api(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok(())
 }
@@ -528,10 +505,7 @@ async fn build_playlist_items(
     for item in items_payload {
         let target = match &item.target {
             PlaylistTargetRequest::Effect { effect } => {
-                let resolved = {
-                    let registry = state.effect_registry.read().await;
-                    resolve_effect_metadata(&registry, effect)
-                };
+                let resolved = state.domains.effects.resolve_metadata(effect).await;
                 let Some(resolved) = resolved else {
                     return Err(format!("Playlist references unknown effect: {effect}"));
                 };
@@ -543,7 +517,7 @@ async fn build_playlist_items(
                 let Some(parsed) = resolve_preset_id(state, preset_id).await else {
                     return Err(format!("Playlist references unknown preset: {preset_id}"));
                 };
-                if state.library_store.get_preset(parsed).await.is_none() {
+                if state.library_store().get_preset(parsed).await.is_none() {
                     return Err(format!("Playlist references unknown preset: {preset_id}"));
                 }
                 PlaylistItemTarget::Preset { preset_id: parsed }

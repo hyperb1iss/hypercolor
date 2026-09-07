@@ -3,79 +3,59 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::input::{
-    InputData, InputSource, SourceIssue, SourceKind, SourceStatusHandle, SourceStatusReporter,
+    AudioSource, AudioSourceRole, InputData, InputSource, ManagedSourceRole, SourceIssue,
+    SourceKind, SourceRoleBinding, SourceStatusHandle, SourceStatusReporter,
 };
 use hypercolor_core::scene::OutputPlacement;
-use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::api;
+use hypercolor_daemon::app_state::{AppState, AppStateBuilder};
+use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
 };
 use hypercolor_daemon::mcp::resources::{
-    build_resource_definitions, is_valid_resource_uri, read_resource, read_resource_with_state,
+    build_resource_definitions, is_valid_resource_uri, read_resource_with_state,
 };
-use hypercolor_daemon::mcp::tools::{
-    ToolError, build_tool_definitions, execute_tool, execute_tool_with_state,
-};
-use hypercolor_daemon::profile_store::{Profile, ProfilePrimary};
+use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool_with_state};
 use hypercolor_daemon::runtime_state;
-use hypercolor_daemon::scene_store::SceneStore;
-use hypercolor_daemon::scene_transactions::{SceneTransaction, SceneTransactionQueue};
+use hypercolor_daemon::scene_store;
 use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
+use hypercolor_types::control::ControlValue;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceOrigin, DeviceTopologyHint, DisplayFrameFormat, SegmentInfo,
 };
 use hypercolor_types::effect::{
-    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource,
+    ControlDefinition, ControlKind, ControlType, EffectCategory, EffectId, EffectMetadata,
+    EffectSource,
 };
 use hypercolor_types::event::{
     ChangeTrigger, EffectStopReason, HypercolorEvent, SceneChangeReason, ZoneChangeKind,
 };
-use hypercolor_types::scene::SceneId;
+use hypercolor_types::layer::LayerSource;
+use hypercolor_types::scene::{SceneId, Zone};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
 };
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
+use strum::VariantNames;
 use tempfile::TempDir;
 use uuid::Uuid;
 
 const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
-static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-struct LayoutAcknowledger(tokio::task::JoinHandle<()>);
-
-impl Drop for LayoutAcknowledger {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-fn spawn_layout_acknowledger(queue: SceneTransactionQueue) -> LayoutAcknowledger {
-    LayoutAcknowledger(tokio::spawn(async move {
-        let _consumer = queue.consumer();
-        loop {
-            for transaction in queue.drain() {
-                match transaction {
-                    SceneTransaction::PrepareLayout(transaction) => {
-                        transaction.accept_and_commit_for_test();
-                    }
-                    transaction @ SceneTransaction::SetScreenCaptureConfigured(_) => queue
-                        .push(transaction)
-                        .expect("test transaction queue should remain open"),
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    }))
+fn effect_controls(zone: &Zone) -> Option<&HashMap<String, ControlValue>> {
+    zone.layers.iter().find_map(|layer| match &layer.source {
+        LayerSource::Effect { controls, .. } => Some(controls),
+        _ => None,
+    })
 }
 
 async fn spawn_router(router: axum::Router) -> (Client, String) {
@@ -105,23 +85,15 @@ fn stateless_mcp_config() -> McpConfig {
 }
 
 fn isolated_state_with_tempdir() -> (AppState, TempDir) {
-    let _lock = DATA_DIR_LOCK
-        .lock()
-        .expect("data dir lock should not be poisoned");
+    let (builder, tempdir) = isolated_state_builder_with_tempdir();
+    (builder.build(), tempdir)
+}
+
+fn isolated_state_builder_with_tempdir() -> (AppStateBuilder, TempDir) {
     let tempdir = TempDir::new().expect("create temp dir");
     let data_dir = tempdir.path().join("data");
     fs::create_dir_all(&data_dir).expect("create temp data dir");
-    ConfigManager::set_data_dir_override(Some(data_dir));
-    let state = AppState::new();
-    ConfigManager::set_data_dir_override(None);
-    (state, tempdir)
-}
-
-fn fresh_app_state() -> AppState {
-    let _lock = DATA_DIR_LOCK
-        .lock()
-        .expect("data dir lock should not be poisoned");
-    AppState::new()
+    (AppStateBuilder::new(data_dir), tempdir)
 }
 
 struct FailedInputSource {
@@ -186,24 +158,128 @@ impl InputSource for FailedInputSource {
     }
 }
 
+impl SourceRoleBinding for FailedInputSource {
+    type Role = AudioSourceRole;
+}
+
+impl AudioSource for FailedInputSource {}
+
 #[tokio::test]
-async fn diagnose_exposes_capacity_and_delivered_fps_separately() {
-    let state = fresh_app_state();
-    let result = execute_tool_with_state("diagnose", &json!({}), &state)
+async fn diagnose_matches_rest_defaults_and_excludes_protected_parity() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let state = Arc::new(state);
+    let tool_payload = execute_tool_with_state("diagnose", &json!({}), state.as_ref())
         .await
         .expect("diagnose should succeed");
+    let (client, base_url) = spawn_router(api::build_router(Arc::clone(&state), None)).await;
+    let response = client
+        .post(format!("{base_url}/api/v1/diagnose"))
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("REST diagnose should complete");
+    assert!(response.status().is_success());
+    let rest_payload: Value = response
+        .json()
+        .await
+        .expect("REST diagnose should return JSON");
 
-    assert_eq!(result["metrics"]["fps"], result["metrics"]["capacity_fps"]);
-    assert!(result["metrics"]["capacity_fps"].is_number());
-    assert!(result["metrics"]["delivered_fps"].is_number());
+    assert_eq!(tool_payload, rest_payload["data"]);
+    assert!(tool_payload["checks"].as_array().is_some_and(|checks| {
+        checks.iter().all(|check| {
+            check["name"] != "macos_screen_parity" && check["name"] != "uptime_seconds"
+        })
+    }));
+    assert!(
+        tool_payload["snapshot"]
+            .get("macos_screen_parity")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn effect_and_scene_listings_match_their_rest_summaries() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+
+    let created =
+        execute_tool_with_state("create_scene", &json!({ "name": "Parity" }), state.as_ref())
+            .await
+            .expect("scene creation should succeed");
+    assert!(created["scene_id"].is_string());
+
+    let (client, base_url) = spawn_router(api::build_router(Arc::clone(&state), None)).await;
+
+    let rest_effects: Value = client
+        .get(format!(
+            "{base_url}/api/v1/effects?include=controls,presets&limit=200"
+        ))
+        .send()
+        .await
+        .expect("REST effects should complete")
+        .json()
+        .await
+        .expect("REST effects should return JSON");
+    let tool_effects =
+        execute_tool_with_state("list_effects", &json!({ "limit": 100 }), state.as_ref())
+            .await
+            .expect("list_effects should succeed");
+    assert_eq!(tool_effects["effects"], rest_effects["data"]["items"]);
+
+    let resource_effects = read_resource_with_state("hypercolor://effects", &state)
+        .await
+        .expect("effects resource should exist");
+    let rest_catalog: Value = client
+        .get(format!("{base_url}/api/v1/effects?limit=200"))
+        .send()
+        .await
+        .expect("REST catalog should complete")
+        .json()
+        .await
+        .expect("REST catalog should return JSON");
+    assert_eq!(resource_effects["effects"], rest_catalog["data"]["items"]);
+
+    let rest_scenes: Value = client
+        .get(format!("{base_url}/api/v1/scenes"))
+        .send()
+        .await
+        .expect("REST scenes should complete")
+        .json()
+        .await
+        .expect("REST scenes should return JSON");
+    let tool_scenes = execute_tool_with_state("list_scenes", &json!({}), state.as_ref())
+        .await
+        .expect("list_scenes should succeed");
+    let resource_scenes = read_resource_with_state("hypercolor://scenes", &state)
+        .await
+        .expect("scenes resource should exist");
+    assert_eq!(tool_scenes["scenes"], resource_scenes["scenes"]);
+    for (tool_row, rest_row) in tool_scenes["scenes"]
+        .as_array()
+        .expect("tool scenes")
+        .iter()
+        .zip(
+            rest_scenes["data"]["items"]
+                .as_array()
+                .expect("rest scenes"),
+        )
+    {
+        let mut expected = rest_row.clone();
+        expected["active"] = tool_row["active"].clone();
+        assert_eq!(tool_row, &expected);
+    }
 }
 
 #[tokio::test]
 async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
-    let state = fresh_app_state();
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
     {
-        let mut manager = state.input_manager.lock().await;
-        manager.add_source(Box::new(FailedInputSource::new()));
+        let manager = state.input_manager();
+        manager
+            .add_source(ManagedSourceRole::audio(Box::new(FailedInputSource::new())))
+            .expect("failed audio source should register");
         manager.start_all().expect("test input graph should start");
     }
 
@@ -211,37 +287,40 @@ async fn diagnose_reports_demanded_input_failure_as_unhealthy() {
         .await
         .expect("diagnose should succeed");
 
-    assert_eq!(result["overall_status"], "unhealthy");
-    assert!(result["findings"].as_array().is_some_and(|findings| {
-        findings.iter().any(|finding| {
-            finding["severity"] == "error"
-                && finding["source_id"] == "failed_mcp_audio"
-                && finding["message"]
+    assert!(result["checks"].as_array().is_some_and(|checks| {
+        checks.iter().any(|check| {
+            check["category"] == "input"
+                && check["name"] == "failed_mcp_audio"
+                && check["status"] == "fail"
+                && check["detail"]
                     .as_str()
-                    .is_some_and(|message| message.contains("capture_worker_exited"))
+                    .is_some_and(|detail| detail.contains("capture_worker_exited"))
         })
     }));
+    assert!(
+        result["summary"]["failed"]
+            .as_u64()
+            .is_some_and(|failed| failed > 0)
+    );
 }
 
 #[tokio::test]
-async fn mcp_input_status_surfaces_do_not_wait_for_input_manager() {
-    let state = fresh_app_state();
+async fn mcp_status_surfaces_are_exact_with_running_input_manager() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
     state
-        .input_manager
-        .lock()
-        .await
+        .input_manager()
         .start_all()
-        .expect("browser input source should start");
-    let manager_guard = state.input_manager.lock().await;
+        .expect("input manager should start");
 
     let status = tokio::time::timeout(
         Duration::from_secs(1),
         execute_tool_with_state("get_status", &json!({}), &state),
     )
     .await
-    .expect("get_status must not wait for the input manager")
+    .expect("get_status should respond promptly")
     .expect("get_status should succeed");
-    assert_eq!(status["inputs"]["sources"][0]["source_id"], "browser_input");
+    assert_eq!(status["inputs"]["sources"], json!([]));
     assert!(status["inputs"]["source_graph_generation"].is_number());
 
     let resource = tokio::time::timeout(
@@ -249,31 +328,67 @@ async fn mcp_input_status_surfaces_do_not_wait_for_input_manager() {
         read_resource_with_state("hypercolor://state", &state),
     )
     .await
-    .expect("state resource must not wait for the input manager")
+    .expect("state resource should respond promptly")
     .expect("state resource should exist");
-    assert_eq!(
-        resource["inputs"]["input"]["sources"][0]["source_id"],
-        "browser_input"
-    );
+    assert_eq!(status, resource, "tool and resource payloads must be exact");
+    assert_eq!(resource["inputs"]["sources"], json!([]));
 
     let diagnose = tokio::time::timeout(
         Duration::from_secs(1),
         execute_tool_with_state("diagnose", &json!({}), &state),
     )
     .await
-    .expect("diagnose must not wait for the input manager")
+    .expect("diagnose should respond promptly")
     .expect("diagnose should succeed");
-    drop(manager_guard);
 
-    assert_eq!(
-        diagnose["metrics"]["inputs"]["sources"][0]["source_id"],
-        "browser_input"
-    );
-    assert!(diagnose["findings"].as_array().is_some_and(|findings| {
-        findings
-            .iter()
-            .all(|finding| finding["source_id"] != "browser_input")
-    }));
+    assert_eq!(diagnose["snapshot"]["input"]["sources"], json!([]));
+}
+
+#[tokio::test]
+async fn mcp_status_surfaces_report_effective_session_pause() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let generation = state.output_power.begin_session_transition();
+
+    state
+        .output_power
+        .pause_for_session(
+            &state.event_bus,
+            generation,
+            hypercolor_types::session::OffOutputBehavior::Static,
+            [0, 0, 0],
+        )
+        .await;
+
+    let status = execute_tool_with_state("get_status", &json!({}), &state)
+        .await
+        .expect("get_status should succeed");
+    assert_eq!(status["running"], false);
+    assert_eq!(status["paused"], true);
+
+    let resource = read_resource_with_state("hypercolor://state", &state)
+        .await
+        .expect("state resource should exist");
+    assert_eq!(resource["running"], false);
+    assert_eq!(resource["paused"], true);
+
+    state
+        .output_power
+        .set_output_stopped(&state.event_bus)
+        .await;
+
+    let stopped_status = execute_tool_with_state("get_status", &json!({}), &state)
+        .await
+        .expect("stopped status should succeed");
+    assert_eq!(stopped_status["running"], false);
+    // Paused is the exact complement of running on every surface now, so
+    // MCP no longer contradicts GET /output about a stop (Spec 78 §7.1).
+    assert_eq!(stopped_status["paused"], true);
+
+    let stopped_resource = read_resource_with_state("hypercolor://state", &state)
+        .await
+        .expect("stopped state resource should exist");
+    assert_eq!(stopped_resource["running"], false);
+    assert_eq!(stopped_resource["paused"], true);
 }
 
 async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> DeviceId {
@@ -286,13 +401,14 @@ async fn insert_test_display_device(state: &Arc<AppState>, name: &str) -> Device
         model: Some("LCD".to_owned()),
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("wled", "usb", ConnectionType::Usb),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "LCD".to_owned(),
             led_count: 320 * 320,
             topology: DeviceTopologyHint::Display {
                 width: 320,
                 height: 320,
                 circular: true,
+                format: DisplayFrameFormat::Jpeg,
             },
             color_format: DeviceColorFormat::Rgb,
             layout_hint: None,
@@ -337,6 +453,22 @@ fn test_html_effect_metadata(name: &str) -> EffectMetadata {
 fn test_display_face_effect_metadata(name: &str) -> EffectMetadata {
     let mut metadata = test_html_effect_metadata(name);
     metadata.category = EffectCategory::Display;
+    metadata.controls.push(ControlDefinition {
+        id: "title".to_owned(),
+        name: "Title".to_owned(),
+        kind: ControlKind::Text,
+        control_type: ControlType::TextInput,
+        default_value: ControlValue::Text("System".to_owned()),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some("General".to_owned()),
+        tooltip: None,
+        aspect_lock: None,
+        preview_source: None,
+        binding: None,
+    });
     metadata
 }
 
@@ -348,8 +480,7 @@ async fn insert_test_display_face_effect(state: &Arc<AppState>, name: &str) -> E
         modified: std::time::SystemTime::now(),
         state: hypercolor_types::effect::EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -393,8 +524,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) -> EffectMetadata
         modified: std::time::SystemTime::now(),
         state: hypercolor_types::effect::EffectState::Loading,
     };
-    let mut registry = state.effect_registry.write().await;
-    let _ = registry.register(entry);
+    let _ = state.domains.effects.register(entry).await;
     metadata
 }
 
@@ -435,7 +565,6 @@ fn test_layout(id: &str, zones: Vec<Output>) -> SpatialLayout {
         zones,
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
-        spaces: None,
         version: 1,
     }
 }
@@ -446,53 +575,72 @@ async fn seed_multi_zone_primary_assignment(
 ) -> SpatialLayout {
     let primary_layout = test_layout("primary-layout", vec![test_device_zone("primary-zone")]);
     let custom_zone = test_device_zone("custom-zone");
-    let mut manager = state.scene_manager.write().await;
-    manager
-        .upsert_primary_group(metadata, HashMap::new(), None, primary_layout.clone())
-        .expect("primary group should be seeded");
-    let custom_id = manager
-        .create_render_group(&SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
-        .expect("custom group should be created");
-    manager
-        .assign_device_zone(
-            &SceneId::DEFAULT,
+    let mut mutation = state.scene_manager.begin_mutation().await;
+    mutation
+        .upsert_primary_zone(
+            metadata,
+            HashMap::new(),
+            None,
+            primary_layout.clone(),
+            hypercolor_types::event::ChangeTrigger::System,
+            None,
+        )
+        .expect("primary zone should be seeded");
+    let custom_id = mutation
+        .create_zone(SceneId::DEFAULT, "Custom".to_owned(), None, (320, 200))
+        .expect("custom zone should be created");
+    mutation
+        .assign_output(
+            SceneId::DEFAULT,
             custom_id,
             custom_zone,
             OutputPlacement::AutoGrid,
         )
-        .expect("custom group should claim a zone");
+        .expect("custom zone should claim a zone");
+    hypercolor_daemon::domain::scene::commit_scene(&state.domains.scene, mutation)
+        .await
+        .expect("multi-zone scene should commit");
     primary_layout
 }
 
-async fn insert_test_profile(
-    state: &Arc<AppState>,
-    id: &str,
-    name: &str,
-    effect: Option<&EffectMetadata>,
-) {
-    let mut profiles = state.profiles.write().await;
-    let mut controls = HashMap::new();
-    if effect.is_some() {
-        controls.insert("speed".to_owned(), ControlValue::Float(12.0));
-    }
-    let mut profile = Profile::named(id, name);
-    profile.description = Some(format!("{name} profile"));
-    profile.brightness = Some(75);
-    profile.primary = effect.map(|metadata| ProfilePrimary {
-        effect_id: metadata.id,
-        controls,
-        active_preset_id: None,
-    });
-    profile.layout_id = None;
-    profiles.insert(profile).expect("seed profile");
+fn scenes_path(state: &AppState) -> PathBuf {
+    state.data_dir.join("scenes.json")
 }
 
-fn scenes_path(state: &AppState) -> PathBuf {
-    state
-        .runtime_state_path
-        .parent()
-        .expect("runtime-state.json should live under a data dir")
-        .join("scenes.json")
+#[derive(Debug, PartialEq)]
+struct McpMutationSnapshot {
+    power: hypercolor_daemon::output_power::OutputPowerState,
+    active_scene_id: Option<SceneId>,
+    revision: u64,
+    scenes: Value,
+}
+
+async fn mcp_mutation_snapshot(state: &AppState) -> McpMutationSnapshot {
+    let manager = state.scene_manager.snapshot().await;
+    McpMutationSnapshot {
+        power: state.output_power.snapshot(),
+        active_scene_id: manager.active_scene_id().copied(),
+        revision: state.scene_manager.revision(),
+        scenes: serde_json::to_value(manager.list()).expect("scenes should serialize"),
+    }
+}
+
+async fn assert_schema_refusal_preserves_state(
+    state: &AppState,
+    tool: &str,
+    params: Value,
+    parameter: &str,
+) {
+    let before = mcp_mutation_snapshot(state).await;
+    let error = execute_tool_with_state(tool, &params, state)
+        .await
+        .expect_err(&format!("{tool} should reject malformed {parameter}"));
+    assert_eq!(error.error_code(), -32602);
+    match error {
+        ToolError::InvalidParam { param, .. } => assert_eq!(param, parameter),
+        other => panic!("expected invalid {parameter} error, got {other:?}"),
+    }
+    assert_eq!(mcp_mutation_snapshot(state).await, before);
 }
 
 async fn post_raw(client: &Client, url: &str, body: &str, session_id: Option<&str>) -> Response {
@@ -554,7 +702,9 @@ fn extract_jsonrpc_payload(body: &str) -> Value {
 
 #[tokio::test]
 async fn mcp_http_initialize_returns_json_in_stateless_mode() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
 
@@ -583,7 +733,11 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
 
 #[tokio::test]
 async fn mcp_http_tools_list_and_call_return_structured_results() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Aurora Glow").await;
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -604,7 +758,7 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let tools = list_payload["result"]["tools"]
         .as_array()
         .expect("tools list array");
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 17);
     assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
     assert!(tools.iter().any(|tool| tool["name"] == "set_display_face"));
 
@@ -651,11 +805,41 @@ async fn mcp_http_tools_list_and_call_return_structured_results() {
     let error_result = error_payload.get("result").expect("tool error result");
     assert_eq!(error_result["isError"], true);
     assert_eq!(error_result["structuredContent"]["code"], -32602);
+
+    let selector_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "tools/call",
+            "params": {
+                "name": "set_effect",
+                "arguments": { "query": "auro" }
+            }
+        }),
+        None,
+    )
+    .await;
+    let (_session_id, selector_payload, _content_type, _body) =
+        parse_jsonrpc_response(selector_response).await;
+    let selector_error = &selector_payload["result"]["structuredContent"];
+    assert_eq!(selector_error["code"], -32602);
+    assert_eq!(selector_error["details"]["kind"], "ambiguous");
+    assert_eq!(selector_error["details"]["parameter"], "query");
+    assert_eq!(selector_error["details"]["query"], "auro");
+    assert_eq!(selector_error["details"]["candidates"][0]["name"], "Aurora");
+    assert_eq!(
+        selector_error["details"]["candidates"][1]["name"],
+        "Aurora Glow"
+    );
 }
 
 #[tokio::test]
 async fn mcp_http_resources_and_prompts_roundtrip() {
-    let state = Arc::new(fresh_app_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -677,6 +861,11 @@ async fn mcp_http_resources_and_prompts_roundtrip() {
         .as_array()
         .expect("resource list array");
     assert_eq!(resources.len(), 5);
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["uri"] == "hypercolor://scenes")
+    );
 
     let read_response = post_json(
         &client,
@@ -753,7 +942,9 @@ async fn mcp_http_stateful_mode_uses_session_headers_and_sse() {
         json_response: true,
         ..McpConfig::default()
     };
-    let state = Arc::new(fresh_app_state());
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let state = Arc::new(state);
     let router = mcp::build_router(Arc::clone(&state), &config).with_state(state);
     let (client, base_url) = spawn_router(router).await;
     let mcp_url = format!("{base_url}/mcp");
@@ -820,8 +1011,8 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
     .expect("write config file");
 
     let manager = Arc::new(ConfigManager::new(config_path).expect("load config manager"));
-    let mut state = fresh_app_state();
-    state.config_manager = Some(manager);
+    let (builder, _state_tempdir) = isolated_state_builder_with_tempdir();
+    let state = builder.with_config_manager(manager).build();
 
     let router = api::build_router(Arc::new(state), None);
     let (client, base_url) = spawn_router(router).await;
@@ -838,17 +1029,12 @@ async fn api_router_mounts_mcp_when_enabled_in_config() {
 async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
-    insert_test_profile(&state, "focus-profile", "Focus Profile", None).await;
 
     let create_result = execute_tool_with_state(
         "create_scene",
         &json!({
             "name": "Focus",
-            "description": "Deep work lighting",
-            "profile_id": "focus-profile",
-            "trigger": {
-                "type": "schedule"
-            }
+            "description": "Deep work lighting"
         }),
         state.as_ref(),
     )
@@ -866,24 +1052,17 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     assert_eq!(list_result["scenes"][0]["name"], "Focus");
     assert_eq!(list_result["scenes"][0]["active"], false);
 
-    let store = SceneStore::load(&scenes_path(state.as_ref())).expect("scene store should load");
+    let store = scene_store::load(&scenes_path(state.as_ref())).expect("scene store should load");
     assert_eq!(store.len(), 1);
     let stored_scene = store.list().next().expect("named scene should persist");
-    assert_eq!(
-        stored_scene.metadata.get("profile_id"),
-        Some(&"focus-profile".to_owned())
-    );
-    assert_eq!(
-        stored_scene.metadata.get("trigger_type"),
-        Some(&"schedule".to_owned())
-    );
+    assert!(stored_scene.metadata.is_empty());
 
     let mut events = state.event_bus.subscribe_all();
     let activate_result = execute_tool_with_state(
         "activate_scene",
         &json!({
             "name": "Focus",
-            "transition_ms": 250
+            "transition_ms": 250.0
         }),
         state.as_ref(),
     )
@@ -891,6 +1070,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
     .expect("scene activation should succeed");
     assert_eq!(activate_result["activated"], true);
     assert_eq!(activate_result["scene"]["id"], scene_id);
+    assert_eq!(activate_result["transition_ms"], 250);
 
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -920,7 +1100,7 @@ async fn stateful_scene_tools_persist_named_scenes_and_activation_state() {
 }
 
 #[tokio::test]
-async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
+async fn stateful_display_face_tool_assigns_and_clears_face_zones() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let display_id = insert_test_display_device(&state, "Pump LCD").await;
@@ -944,11 +1124,14 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(assign_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert_eq!(assign_result["group"]["layout"]["canvas_width"], 320);
-    assert_eq!(assign_result["group"]["controls"]["title"]["text"], "CPU");
+    assert_eq!(assign_result["device"]["width"], 320);
+    assert_eq!(
+        assign_result["zone"]["layers"][0]["source"]["controls"]["title"]["value"],
+        "CPU"
+    );
 
     let assign_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
@@ -957,11 +1140,11 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
         assign_snapshot.active_scene_id,
         Some(SceneId::DEFAULT.to_string())
     );
-    assert_eq!(assign_snapshot.default_scene_groups.len(), 2);
+    assert_eq!(assign_snapshot.default_scene_zones.len(), 2);
 
     let mut saw_assign_event = false;
     while let Ok(timestamped) = assign_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -991,30 +1174,29 @@ async fn stateful_display_face_tool_assigns_and_clears_face_groups() {
     assert_eq!(clear_result["scene_id"], SceneId::DEFAULT.to_string());
     assert_eq!(clear_result["cleared"], true);
     assert_eq!(
-        clear_result["group"]["display_target"]["device_id"],
+        clear_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
-    assert!(clear_result["group"]["effect_id"].is_null());
     assert_eq!(
-        clear_result["group"]["layers"].as_array().map(Vec::len),
+        clear_result["zone"]["layers"].as_array().map(Vec::len),
         Some(0)
     );
 
     let clear_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(clear_snapshot.default_scene_groups.len(), 2);
-    let display_group = clear_snapshot
-        .default_scene_groups
+    assert_eq!(clear_snapshot.default_scene_zones.len(), 2);
+    let display_zone = clear_snapshot
+        .default_scene_zones
         .iter()
-        .find(|group| group.role == hypercolor_types::scene::ZoneRole::Display)
+        .find(|zone| zone.role == hypercolor_types::scene::ZoneRole::Display)
         .expect("display screen surface should survive face clear");
-    assert_eq!(display_group.effect_id, None);
-    assert!(display_group.layers.is_empty());
+    assert_eq!(display_zone.effect_ids().next(), None);
+    assert!(display_zone.layers.is_empty());
 
     let mut saw_clear_event = false;
     while let Ok(timestamped) = clear_events.try_recv() {
-        if let HypercolorEvent::RenderGroupChanged {
+        if let HypercolorEvent::ZoneChanged {
             scene_id,
             kind,
             role,
@@ -1049,21 +1231,709 @@ async fn stateful_set_effect_rejects_display_faces() {
     assert!(format!("{error}").contains("display face"));
 }
 
+#[test]
+fn set_effect_advertises_only_the_closed_cut_transition() {
+    let tools = build_tool_definitions();
+    let set_effect = tools
+        .iter()
+        .find(|tool| tool.name == "set_effect")
+        .expect("set_effect should be registered");
+
+    let properties = set_effect.input_schema["properties"]
+        .as_object()
+        .expect("set_effect should declare properties");
+    let mut declared = properties.keys().cloned().collect::<Vec<_>>();
+    declared.sort();
+    assert_eq!(
+        declared,
+        vec![
+            "controls".to_owned(),
+            "query".to_owned(),
+            "transition".to_owned()
+        ]
+    );
+    let transition = &set_effect.input_schema["properties"]["transition"];
+    assert_eq!(transition["additionalProperties"], json!(false));
+    assert_eq!(transition["properties"]["type"]["enum"], json!(["cut"]));
+    assert_eq!(
+        set_effect.input_schema["additionalProperties"],
+        json!(false),
+        "the closed shape is what stops a client sending a deleted parameter"
+    );
+}
+
+#[test]
+fn adjust_controls_advertises_recursive_canonical_values() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    assert_eq!(
+        adjust.input_schema["properties"]["values"]["additionalProperties"]["$ref"],
+        "#/$defs/controlValue"
+    );
+
+    let variants = adjust.input_schema["$defs"]["controlValue"]["oneOf"]
+        .as_array()
+        .expect("ControlValue should be a tagged union");
+    let tags = variants
+        .iter()
+        .map(|variant| {
+            variant["properties"]["kind"]["const"]
+                .as_str()
+                .expect("every variant should pin its tag")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tags,
+        vec![
+            "null",
+            "bool",
+            "int",
+            "float",
+            "text",
+            "secret_ref",
+            "ip",
+            "mac",
+            "duration",
+            "color_rgb",
+            "color_rgba",
+            "color_linear",
+            "gradient",
+            "rect",
+            "enum",
+            "flags",
+            "list",
+            "map",
+            "unknown",
+        ]
+    );
+    let variant = |kind: &str| {
+        variants
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == kind)
+            .unwrap_or_else(|| panic!("{kind} should be advertised"))
+    };
+    assert_eq!(
+        variant("list")["properties"]["value"]["items"]["$ref"],
+        "#/$defs/controlValue"
+    );
+    assert_eq!(
+        variant("map")["properties"]["value"]["additionalProperties"]["$ref"],
+        "#/$defs/controlValue"
+    );
+
+    let validator = jsonschema::validator_for(&adjust.input_schema)
+        .expect("adjust_controls schema should compile");
+    let valid = json!({
+        "zone": "primary",
+        "layer": "layer-1",
+        "values": {
+            "nested": {
+                "kind": "map",
+                "value": {
+                    "items": {
+                        "kind": "list",
+                        "value": [
+                            { "kind": "float", "value": 0.5 },
+                            { "kind": "unknown" }
+                        ]
+                    }
+                }
+            }
+        }
+    });
+    assert!(validator.is_valid(&valid));
+    for invalid in [
+        json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "speed": 0.5 }
+        }),
+        json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "future": { "kind": "vector3", "value": [0, 0, 0] } }
+        }),
+    ] {
+        assert!(!validator.is_valid(&invalid));
+    }
+}
+
+#[test]
+fn adjust_controls_schema_matches_canonical_value_boundaries() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&adjust.input_schema)
+        .expect("adjust_controls schema should compile with format assertions");
+    let assert_parity = |label: &str, value: Value, expected: bool| {
+        let input = json!({
+            "zone": "primary",
+            "layer": "layer-1",
+            "values": { "candidate": value.clone() }
+        });
+        let schema_accepts = validator.is_valid(&input);
+        let canonical_accepts = serde_json::from_value::<ControlValue>(value).is_ok();
+        assert_eq!(schema_accepts, expected, "schema result for {label}");
+        assert_eq!(canonical_accepts, expected, "canonical result for {label}");
+        assert_eq!(
+            schema_accepts, canonical_accepts,
+            "schema and canonical admission diverged for {label}"
+        );
+    };
+
+    for (label, value) in [
+        ("i64 minimum", json!({ "kind": "int", "value": i64::MIN })),
+        ("i64 maximum", json!({ "kind": "int", "value": i64::MAX })),
+        ("IPv4", json!({ "kind": "ip", "value": "192.0.2.1" })),
+        ("IPv6", json!({ "kind": "ip", "value": "2001:db8::1" })),
+        (
+            "colon MAC",
+            json!({ "kind": "mac", "value": "aa:bb:cc:dd:ee:ff" }),
+        ),
+        (
+            "hyphen MAC",
+            json!({ "kind": "mac", "value": "AA-BB-CC-DD-EE-FF" }),
+        ),
+        (
+            "bare MAC",
+            json!({ "kind": "mac", "value": "aabbccddeeff" }),
+        ),
+        (
+            "dotted MAC",
+            json!({ "kind": "mac", "value": "aabb.ccdd.eeff" }),
+        ),
+        (
+            "gradient channel bounds",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [0.0, 0.0, 0.0, 0.0] },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "recursive list and map",
+            json!({
+                "kind": "map",
+                "value": {
+                    "items": {
+                        "kind": "list",
+                        "value": [
+                            { "kind": "ip", "value": "::1" },
+                            { "kind": "unknown" }
+                        ]
+                    }
+                }
+            }),
+        ),
+        (
+            "maximum duration",
+            json!({ "kind": "duration", "value": u64::MAX }),
+        ),
+        (
+            "maximum finite f32 channel",
+            json!({
+                "kind": "color_linear",
+                "value": {
+                    "r": f64::from(f32::MAX),
+                    "g": 0.0,
+                    "b": 0.0,
+                    "a": 1.0
+                }
+            }),
+        ),
+    ] {
+        assert_parity(label, value, true);
+    }
+
+    let above_i64 = serde_json::from_str::<Value>(r#"{"kind":"int","value":9223372036854775808}"#)
+        .expect("above-i64 fixture should parse as JSON");
+    let below_i64 = serde_json::from_str::<Value>(r#"{"kind":"int","value":-9223372036854777856}"#)
+        .expect("below-i64 fixture should parse as JSON");
+    let above_u64 =
+        serde_json::from_str::<Value>(r#"{"kind":"duration","value":18446744073709551616}"#)
+            .expect("above-u64 fixture should parse as JSON");
+    for (label, value) in [
+        ("above i64", above_i64),
+        ("below i64", below_i64),
+        (
+            "invalid IPv4",
+            json!({ "kind": "ip", "value": "999.1.2.3" }),
+        ),
+        ("invalid IPv6", json!({ "kind": "ip", "value": "2001:::1" })),
+        (
+            "mixed MAC separators",
+            json!({ "kind": "mac", "value": "aa:bb-cc:dd:ee:ff" }),
+        ),
+        (
+            "short MAC",
+            json!({ "kind": "mac", "value": "aa:bb:cc:dd:ee" }),
+        ),
+        (
+            "gradient channel below zero",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [-0.001, 0.0, 0.0, 1.0] },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "gradient channel above one",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    { "position": 0.0, "color": [0.0, 0.0, 0.0, 1.0] },
+                    { "position": 1.0, "color": [1.001, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+        (
+            "invalid nested IP",
+            json!({
+                "kind": "map",
+                "value": { "address": { "kind": "ip", "value": "nope" } }
+            }),
+        ),
+        (
+            "channel above f32 range",
+            json!({
+                "kind": "color_linear",
+                "value": { "r": 1.0e40, "g": 0.0, "b": 0.0, "a": 1.0 }
+            }),
+        ),
+        ("above u64 duration", above_u64),
+        (
+            "unknown payload",
+            json!({ "kind": "unknown", "value": null }),
+        ),
+        (
+            "unknown tag",
+            json!({ "kind": "vector3", "value": [0.0, 0.0, 0.0] }),
+        ),
+        (
+            "unknown color payload field",
+            json!({
+                "kind": "color_rgb",
+                "value": { "r": 1, "g": 2, "b": 3, "future": 4 }
+            }),
+        ),
+        (
+            "unknown gradient stop field",
+            json!({
+                "kind": "gradient",
+                "value": [
+                    {
+                        "position": 0.0,
+                        "color": [0.0, 0.0, 0.0, 1.0],
+                        "future": true
+                    },
+                    { "position": 1.0, "color": [1.0, 1.0, 1.0, 1.0] }
+                ]
+            }),
+        ),
+    ] {
+        assert_parity(label, value, false);
+    }
+}
+
+#[test]
+fn gradient_order_remains_a_semantic_admission_invariant() {
+    let tools = build_tool_definitions();
+    let adjust = tools
+        .iter()
+        .find(|tool| tool.name == "adjust_controls")
+        .expect("adjust_controls should be registered");
+    let validator = jsonschema::options()
+        .should_validate_formats(true)
+        .build(&adjust.input_schema)
+        .expect("adjust_controls schema should compile");
+    let descending = json!({
+        "kind": "gradient",
+        "value": [
+            { "position": 0.8, "color": [1.0, 0.0, 0.0, 1.0] },
+            { "position": 0.2, "color": [0.0, 0.0, 1.0, 1.0] }
+        ]
+    });
+    let input = json!({
+        "zone": "primary",
+        "layer": "layer-1",
+        "values": { "palette": descending.clone() }
+    });
+
+    assert!(
+        validator.is_valid(&input),
+        "JSON Schema cannot express ordering across adjacent array items"
+    );
+    let error = serde_json::from_value::<ControlValue>(descending)
+        .expect_err("canonical admission must reject descending gradient stops");
+    assert!(error.to_string().contains("nondecreasing order"));
+    assert!(
+        adjust.input_schema.to_string().contains(
+            "JSON Schema validates each stop shape and range; canonical value admission enforces ordering"
+        ),
+        "the published schema must identify the semantic ordering boundary"
+    );
+}
+
+/// A deleted parameter is refused, not quietly dropped.
+///
+/// `additionalProperties: false` is enforced in the dispatch path
+/// because nothing under `rmcp` validates a call against the schema.
+/// Without that, a caller who kept sending `transition_ms` would get a
+/// cut and no indication the request had been ignored, which is the
+/// same silence the phantom-parameter deletion exists to end.
+#[tokio::test]
+async fn deleted_parameters_are_refused_rather_than_dropped() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    for (tool, params, phantom) in [
+        (
+            "set_effect",
+            json!({ "query": "aurora", "transition_ms": 500 }),
+            "transition_ms",
+        ),
+        (
+            "set_effect",
+            json!({ "query": "aurora", "devices": ["strip-1"] }),
+            "devices",
+        ),
+        (
+            "set_color",
+            json!({ "color": "#ff6ac1", "transition_ms": 300 }),
+            "transition_ms",
+        ),
+        (
+            "set_brightness",
+            json!({ "brightness": 42, "device_id": "strip-1" }),
+            "device_id",
+        ),
+        (
+            "clear_zone",
+            json!({ "transition_ms": 300 }),
+            "transition_ms",
+        ),
+        ("diagnose", json!({ "checks": ["connectivity"] }), "checks"),
+    ] {
+        let result = execute_tool_with_state(tool, &params, state.as_ref()).await;
+        let error = result.expect_err(&format!(
+            "{tool} must refuse the deleted parameter '{phantom}' rather than drop it"
+        ));
+        assert!(
+            format!("{error}").contains(phantom),
+            "{tool}'s refusal should name '{phantom}': {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn every_tool_validates_the_root_argument_shape_before_dispatch() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+
+    for tool in build_tool_definitions() {
+        let error = execute_tool_with_state(&tool.name, &json!([]), &state)
+            .await
+            .expect_err(&format!("{} should reject array arguments", tool.name));
+        assert_eq!(error.error_code(), -32602);
+        match error {
+            ToolError::InvalidParam { param, .. } => assert_eq!(param, "arguments"),
+            other => panic!("expected invalid arguments error, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_declared_arguments_never_reach_mutating_handlers() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let current = insert_test_effect(&state, "Current").await;
+    let next = insert_test_effect(&state, "Aurora").await;
+    insert_test_effect(&state, "Solid Color").await;
+
+    execute_tool_with_state(
+        "set_effect",
+        &json!({ "query": current.id.to_string() }),
+        state.as_ref(),
+    )
+    .await
+    .expect("baseline effect should apply");
+
+    let (zone_id, layer_id) = {
+        let manager = state.scene_manager.snapshot().await;
+        let zone = manager
+            .active_scene()
+            .and_then(|scene| scene.primary_zone())
+            .expect("baseline primary zone should exist");
+        let layer = zone.layers.first().expect("baseline layer should exist");
+        (zone.id.to_string(), layer.id.to_string())
+    };
+
+    let created =
+        execute_tool_with_state("create_scene", &json!({ "name": "Focus" }), state.as_ref())
+            .await
+            .expect("activation target should be created");
+    let focus_id = created["scene_id"]
+        .as_str()
+        .expect("created scene id should be a string");
+
+    for (tool, params, parameter) in [
+        (
+            "set_effect",
+            json!({ "query": next.id.to_string(), "controls": [] }),
+            "controls",
+        ),
+        (
+            "set_effect",
+            json!({ "query": next.id.to_string(), "transition": { "type": 1 } }),
+            "transition.type",
+        ),
+        (
+            "set_color",
+            json!({ "color": "coral", "brightness": "bright" }),
+            "brightness",
+        ),
+        ("set_output_power", json!({ "state": false }), "state"),
+        ("clear_zone", json!({ "zone": false }), "zone"),
+        (
+            "adjust_controls",
+            json!({ "zone": zone_id, "layer": layer_id, "values": [] }),
+            "values",
+        ),
+        (
+            "adjust_controls",
+            json!({ "zone": zone_id, "layer": layer_id, "clear_bindings": {} }),
+            "clear_bindings",
+        ),
+        ("set_brightness", json!({ "brightness": -1 }), "brightness"),
+        (
+            "activate_scene",
+            json!({ "name": focus_id, "transition_ms": "instant" }),
+            "transition_ms",
+        ),
+        (
+            "create_scene",
+            json!({ "name": "Invalid description", "description": [] }),
+            "description",
+        ),
+        (
+            "create_scene",
+            json!({ "name": "Invalid enabled", "enabled": "yes" }),
+            "enabled",
+        ),
+        (
+            "create_scene",
+            json!({ "name": "Invalid mode", "mutation_mode": false }),
+            "mutation_mode",
+        ),
+    ] {
+        assert_schema_refusal_preserves_state(state.as_ref(), tool, params, parameter).await;
+    }
+
+    let display_id = insert_test_display_device(&state, "Pump LCD").await;
+    let face = insert_test_display_face_effect(&state, "System Monitor").await;
+    for (params, parameter) in [
+        (
+            json!({
+                "device": display_id.to_string(),
+                "effect_id": face.id.to_string(),
+                "clear": "yes"
+            }),
+            "clear",
+        ),
+        (
+            json!({
+                "device": display_id.to_string(),
+                "effect_id": face.id.to_string(),
+                "scope": null
+            }),
+            "scope",
+        ),
+        (
+            json!({
+                "device": display_id.to_string(),
+                "effect_id": face.id.to_string(),
+                "controls": []
+            }),
+            "controls",
+        ),
+    ] {
+        assert_schema_refusal_preserves_state(
+            state.as_ref(),
+            "set_display_face",
+            params,
+            parameter,
+        )
+        .await;
+        assert!(
+            state
+                .domains
+                .display
+                .preferences()
+                .read()
+                .await
+                .get(display_id)
+                .is_none()
+        );
+    }
+}
+
+/// A refused call changes nothing.
+#[tokio::test]
+async fn a_refused_deleted_parameter_leaves_the_scene_untouched() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let error = execute_tool_with_state(
+        "set_effect",
+        &json!({ "query": "aurora", "transition_ms": 500 }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("set_effect no longer accepts a transition argument");
+    assert!(
+        format!("{error}").contains("transition_ms"),
+        "the refusal names the parameter: {error}"
+    );
+
+    let manager = state.scene_manager.snapshot().await;
+    assert!(
+        manager
+            .active_scene()
+            .and_then(|scene| scene.primary_zone())
+            .and_then(|zone| zone.effect_ids().next())
+            .is_none(),
+        "a refused call must not load the effect"
+    );
+}
+
+#[tokio::test]
+async fn stateful_set_effect_echoes_the_transition_it_actually_applied() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let result =
+        execute_tool_with_state("set_effect", &json!({ "query": "aurora" }), state.as_ref())
+            .await
+            .expect("an apply with no transition should succeed");
+
+    assert_eq!(result["transition"]["type"], "cut");
+    assert!(result["zone"]["layers"].is_array());
+    assert_eq!(result["output"]["applied"], true);
+}
+
+#[tokio::test]
+async fn adjust_controls_resolves_the_zone_and_requires_an_id_for_unnamed_layers() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let applied =
+        execute_tool_with_state("set_effect", &json!({ "query": "aurora" }), state.as_ref())
+            .await
+            .expect("set_effect should succeed");
+    let zone_name = applied["zone"]["name"]
+        .as_str()
+        .expect("the canonical zone carries its name")
+        .to_owned();
+    let layer_id = applied["zone"]["layers"][0]["id"]
+        .as_str()
+        .expect("the canonical zone carries the real layer id")
+        .to_owned();
+
+    let unnamed_error = execute_tool_with_state(
+        "adjust_controls",
+        &json!({
+            "zone": zone_name,
+            "layer": "aurora",
+            "values": { "speed": { "kind": "float", "value": 8.5 } }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect_err("an unnamed layer must not resolve through its effect name");
+    assert_eq!(
+        unnamed_error.details().expect("selector details")["kind"],
+        "no_match"
+    );
+
+    let adjusted = execute_tool_with_state(
+        "adjust_controls",
+        &json!({
+            "zone": zone_name,
+            "layer": layer_id,
+            "values": { "speed": { "kind": "float", "value": 8.5 } }
+        }),
+        state.as_ref(),
+    )
+    .await
+    .expect("the canonical control patch should succeed");
+    assert!(adjusted["revision"].is_number());
+    assert_eq!(
+        adjusted["zone"]["layers"][0]["source"]["controls"]["speed"]["value"],
+        json!(8.5)
+    );
+
+    let cleared =
+        execute_tool_with_state("clear_zone", &json!({ "zone": zone_name }), state.as_ref())
+            .await
+            .expect("a selected non-display zone should clear");
+    assert_eq!(cleared["zones"][0]["layers"], json!([]));
+}
+
+#[tokio::test]
+async fn stateful_set_effect_rejects_unknown_transition_fields_and_types() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    insert_test_effect(&state, "Aurora").await;
+
+    let applied = execute_tool_with_state(
+        "set_effect",
+        &json!({ "query": "aurora", "transition": { "type": "cut" } }),
+        state.as_ref(),
+    )
+    .await
+    .expect("the explicit cut transition should succeed");
+    assert_eq!(applied["transition"]["type"], "cut");
+
+    for transition in [
+        json!({ "type": "fade" }),
+        json!({ "type": "cut", "duration_ms": 400 }),
+        json!("cut"),
+    ] {
+        let error = execute_tool_with_state(
+            "set_effect",
+            &json!({ "query": "aurora", "transition": transition }),
+            state.as_ref(),
+        )
+        .await
+        .expect_err("only the closed cut transition is accepted");
+        assert!(format!("{error}").contains("transition"));
+    }
+}
+
 #[tokio::test]
 async fn stateful_set_effect_conflicts_when_snapshot_scene_is_active() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
-    insert_test_profile(&state, "focus-profile", "Focus Profile", None).await;
     insert_test_effect(&state, "Aurora").await;
 
     let create_result = execute_tool_with_state(
         "create_scene",
         &json!({
             "name": "Focus",
-            "profile_id": "focus-profile",
-            "trigger": {
-                "type": "schedule"
-            },
             "mutation_mode": "snapshot"
         }),
         state.as_ref(),
@@ -1102,7 +1972,7 @@ async fn stateful_set_effect_conflicts_when_snapshot_scene_is_active() {
 }
 
 #[tokio::test]
-async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
+async fn stateful_set_effect_and_clear_zone_sync_scene_runtime_and_events() {
     let (state, _tmp) = isolated_state_with_tempdir();
     let state = Arc::new(state);
     let effect = insert_test_effect(&state, "Aurora").await;
@@ -1120,16 +1990,15 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     )
     .await
     .expect("set_effect should succeed");
-    assert_eq!(apply_result["applied"], true);
-    assert_eq!(apply_result["matched_effect"]["id"], effect.id.to_string());
+    assert_eq!(apply_result["transition"]["type"], "cut");
+    assert_eq!(apply_result["output"]["applied"], true);
     assert_eq!(
-        apply_result["applied_controls"]["speed"]["float"],
-        json!(7.5)
+        apply_result["zone"]["layers"][0]["source"]["effect_id"],
+        effect.id.to_string()
     );
-    assert_eq!(apply_result["rejected_controls"], json!([]));
 
-    let (scene_id, active_group) = {
-        let manager = state.scene_manager.read().await;
+    let (scene_id, active_zone) = {
+        let manager = state.scene_manager.snapshot().await;
         (
             manager
                 .active_scene_id()
@@ -1137,29 +2006,28 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 .expect("default scene should stay active"),
             manager
                 .active_scene()
-                .and_then(|scene| scene.primary_group())
+                .and_then(|scene| scene.primary_zone())
                 .cloned()
-                .expect("primary group should exist after MCP set_effect"),
+                .expect("primary zone should exist after MCP set_effect"),
         )
     };
-    assert_eq!(active_group.effect_id, Some(effect.id));
+    assert_eq!(active_zone.effect_ids().next(), Some(effect.id));
     assert_eq!(
-        active_group.controls.get("speed"),
+        effect_controls(&active_zone).and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
 
     let active_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(active_snapshot.default_scene_groups.len(), 1);
+    assert_eq!(active_snapshot.default_scene_zones.len(), 1);
     assert_eq!(
-        active_snapshot.default_scene_groups[0].effect_id,
+        active_snapshot.default_scene_zones[0].effect_ids().next(),
         Some(effect.id)
     );
     assert_eq!(
-        active_snapshot.default_scene_groups[0]
-            .controls
-            .get("speed"),
+        effect_controls(&active_snapshot.default_scene_zones[0])
+            .and_then(|controls| controls.get("speed")),
         Some(&ControlValue::Float(7.5))
     );
 
@@ -1176,7 +2044,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
     assert_eq!(resource_state["effect"]["name"], effect.name);
 
     let mut saw_started_event = false;
-    let mut saw_group_event = false;
+    let mut saw_zone_event = false;
     while let Ok(timestamped) = start_events.try_recv() {
         match timestamped.event {
             HypercolorEvent::EffectStarted {
@@ -1188,7 +2056,7 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(trigger, ChangeTrigger::Mcp);
                 saw_started_event = true;
             }
-            HypercolorEvent::RenderGroupChanged {
+            HypercolorEvent::ZoneChanged {
                 scene_id: event_scene_id,
                 kind,
                 role,
@@ -1197,41 +2065,39 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(event_scene_id, scene_id);
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
                 assert_eq!(kind, ZoneChangeKind::Updated);
-                saw_group_event = true;
+                saw_zone_event = true;
             }
             _ => {}
         }
     }
     assert!(saw_started_event, "expected MCP effect-start event");
-    assert!(saw_group_event, "expected MCP render-group event");
+    assert!(saw_zone_event, "expected MCP render-zone event");
 
     let mut stop_events = state.event_bus.subscribe_all();
-    let stop_result = execute_tool_with_state("stop_effect", &json!({}), state.as_ref())
+    let clear_result = execute_tool_with_state("clear_zone", &json!({}), state.as_ref())
         .await
-        .expect("stop_effect should succeed");
-    assert_eq!(stop_result["stopped"], true);
-    assert_eq!(stop_result["effect"]["id"], effect.id.to_string());
+        .expect("clear_zone should succeed");
+    assert_eq!(clear_result["id"], scene_id.to_string());
+    assert!(clear_result["revision"].is_number());
 
     let stopped_snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(stopped_snapshot.default_scene_groups.len(), 1);
-    assert_eq!(stopped_snapshot.default_scene_groups[0].effect_id, None);
-    assert!(stopped_snapshot.default_scene_groups[0].controls.is_empty());
+    assert_eq!(stopped_snapshot.default_scene_zones.len(), 1);
+    assert!(stopped_snapshot.default_scene_zones[0].layers.is_empty());
 
-    let cleared_group = {
-        let manager = state.scene_manager.read().await;
+    let cleared_zone = {
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
-            .expect("primary group should remain present after stop")
+            .expect("primary zone should remain present after stop")
     };
-    assert_eq!(cleared_group.effect_id, None);
-    assert!(cleared_group.controls.is_empty());
+    assert!(cleared_zone.layers.is_empty());
 
     let mut saw_stopped_event = false;
-    let mut saw_updated_group = false;
+    let mut saw_updated_zone = false;
     while let Ok(timestamped) = stop_events.try_recv() {
         match timestamped.event {
             HypercolorEvent::EffectStopped {
@@ -1243,16 +2109,16 @@ async fn stateful_set_effect_and_stop_effect_sync_scene_runtime_and_events() {
                 assert_eq!(reason, EffectStopReason::Stopped);
                 saw_stopped_event = true;
             }
-            HypercolorEvent::RenderGroupChanged { kind, role, .. } => {
+            HypercolorEvent::ZoneChanged { kind, role, .. } => {
                 assert_eq!(role, hypercolor_types::scene::ZoneRole::Primary);
                 assert_eq!(kind, ZoneChangeKind::Updated);
-                saw_updated_group = true;
+                saw_updated_zone = true;
             }
             _ => {}
         }
     }
     assert!(saw_stopped_event, "expected MCP effect-stop event");
-    assert!(saw_updated_group, "expected MCP group-clear event");
+    assert!(saw_updated_zone, "expected MCP zone-clear event");
 }
 
 #[tokio::test]
@@ -1276,16 +2142,16 @@ async fn stateful_set_effect_preserves_primary_assignment_when_custom_zones_exis
     .await
     .expect("set_effect should succeed");
 
-    let active_group = {
-        let manager = state.scene_manager.read().await;
+    let active_zone = {
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
-            .expect("primary group should exist after MCP set_effect")
+            .expect("primary zone should exist after MCP set_effect")
     };
-    assert_eq!(active_group.effect_id, Some(next.id));
-    assert_eq!(active_group.layout, expected_layout);
+    assert_eq!(active_zone.effect_ids().next(), Some(next.id));
+    assert_eq!(active_zone.layout, expected_layout);
 }
 
 #[tokio::test]
@@ -1298,30 +2164,40 @@ async fn stateful_set_color_syncs_scene_runtime_state() {
         "set_color",
         &json!({
             "color": "#ff6ac1",
-            "brightness": 50
+            "brightness": 50.0
         }),
         state.as_ref(),
     )
     .await
     .expect("set_color should succeed");
-    assert_eq!(result["applied"], true);
-    assert_eq!(result["resolved_color"]["hex"], "#ff6ac1");
+    assert_eq!(result["transition"]["type"], "cut");
+    assert_eq!(result["output"]["applied"], true);
+    assert_eq!(
+        result["zone"]["layers"][0]["source"]["effect_id"],
+        solid_effect.id.to_string()
+    );
 
     let snapshot = runtime_state::load(&state.runtime_state_path)
         .expect("runtime snapshot should load")
         .expect("runtime snapshot should exist");
-    assert_eq!(snapshot.default_scene_groups.len(), 1);
+    assert_eq!(snapshot.default_scene_zones.len(), 1);
     assert_eq!(
-        snapshot.default_scene_groups[0].effect_id,
+        snapshot.default_scene_zones[0].effect_ids().next(),
         Some(solid_effect.id)
     );
     assert_eq!(
-        snapshot.default_scene_groups[0].controls.get("brightness"),
+        effect_controls(&snapshot.default_scene_zones[0])
+            .and_then(|controls| controls.get("brightness")),
         Some(&ControlValue::Float(0.5))
     );
-    match snapshot.default_scene_groups[0].controls.get("color") {
-        Some(ControlValue::Color([r, g, b, a])) => {
-            assert_eq!((*r, *g, *b, *a), (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0));
+    match effect_controls(&snapshot.default_scene_zones[0])
+        .and_then(|controls| controls.get("color"))
+    {
+        Some(ControlValue::ColorLinear(color)) => {
+            assert_eq!(
+                (color.r, color.g, color.b, color.a),
+                (1.0, 106.0 / 255.0, 193.0 / 255.0, 1.0)
+            );
         }
         other => panic!("expected RGBA control value, got {other:?}"),
     }
@@ -1346,155 +2222,455 @@ async fn stateful_set_color_preserves_primary_assignment_when_custom_zones_exist
     .await
     .expect("set_color should succeed");
 
-    let active_group = {
-        let manager = state.scene_manager.read().await;
+    let active_zone = {
+        let manager = state.scene_manager.snapshot().await;
         manager
             .active_scene()
-            .and_then(|scene| scene.primary_group())
+            .and_then(|scene| scene.primary_zone())
             .cloned()
-            .expect("primary group should exist after MCP set_color")
+            .expect("primary zone should exist after MCP set_color")
     };
-    assert_eq!(active_group.effect_id, Some(solid_effect.id));
-    assert_eq!(active_group.layout, expected_layout);
+    assert_eq!(active_zone.effect_ids().next(), Some(solid_effect.id));
+    assert_eq!(active_zone.layout, expected_layout);
 }
 
 #[tokio::test]
-async fn stateful_set_profile_persists_runtime_snapshot() {
-    let (state, _tmp) = isolated_state_with_tempdir();
+async fn read_only_tool_results_match_their_declared_schemas() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
     let state = Arc::new(state);
-    let effect = insert_test_effect(&state, "Movie Night").await;
-    insert_test_profile(&state, "movie-profile", "Movie Profile", Some(&effect)).await;
+    insert_test_effect(&state, "Aurora").await;
 
-    let result = execute_tool_with_state(
-        "set_profile",
-        &json!({
-            "query": "movie profile"
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("set_profile should succeed");
-    assert_eq!(result["applied"], true);
-    assert_eq!(result["profile"]["id"], "movie-profile");
-
-    let snapshot = runtime_state::load(&state.runtime_state_path)
-        .expect("runtime snapshot should load")
-        .expect("runtime snapshot should exist");
-    assert_eq!(snapshot.default_scene_groups.len(), 1);
-    assert_eq!(snapshot.default_scene_groups[0].effect_id, Some(effect.id));
-    assert_eq!(
-        snapshot.default_scene_groups[0].controls.get("speed"),
-        Some(&ControlValue::Float(12.0))
-    );
-}
-
-#[tokio::test]
-async fn stateful_set_profile_preserves_primary_assignment_when_custom_zones_exist() {
-    let (state, _tmp) = isolated_state_with_tempdir();
-    let state = Arc::new(state);
-    let _layout_acknowledger = spawn_layout_acknowledger(state.scene_transactions.clone());
-    let existing = insert_test_effect(&state, "Current").await;
-    let effect = insert_test_effect(&state, "Movie Night").await;
-    let expected_layout = seed_multi_zone_primary_assignment(&state, &existing).await;
-    let profile_layout = test_layout(
-        "profile-layout",
-        vec![
-            test_device_zone("primary-zone"),
-            test_device_zone("custom-zone"),
-        ],
-    );
-    {
-        let mut layouts = state.layouts.write().await;
-        layouts.insert(profile_layout.id.clone(), profile_layout.clone());
+    for (name, params) in [
+        ("list_effects", json!({})),
+        ("get_audio_state", json!({})),
+        ("get_sensor_data", json!({})),
+        ("get_layout", json!({})),
+    ] {
+        execute_tool_with_state(name, &params, state.as_ref())
+            .await
+            .unwrap_or_else(|error| panic!("{name} should match its output schema: {error}"));
     }
-    {
-        let mut profiles = state.profiles.write().await;
-        let mut profile = Profile::named("movie-profile", "Movie Profile");
-        profile.primary = Some(ProfilePrimary {
-            effect_id: effect.id,
-            controls: HashMap::from([("speed".to_owned(), ControlValue::Float(12.0))]),
-            active_preset_id: None,
-        });
-        profile.layout_id = Some(profile_layout.id);
-        profiles.insert(profile).expect("seed profile");
-    }
-
-    execute_tool_with_state(
-        "set_profile",
-        &json!({
-            "query": "movie profile"
-        }),
-        state.as_ref(),
-    )
-    .await
-    .expect("set_profile should succeed");
-
-    let active_group = {
-        let manager = state.scene_manager.read().await;
-        manager
-            .active_scene()
-            .and_then(|scene| scene.primary_group())
-            .cloned()
-            .expect("primary group should exist after MCP set_profile")
-    };
-    assert_eq!(active_group.effect_id, Some(effect.id));
-    assert_eq!(active_group.layout, expected_layout);
 }
 
 #[test]
 fn tool_definitions_have_valid_schemas() {
     let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 17);
     assert!(
         tools
             .iter()
             .all(|tool| tool.input_schema["type"] == "object")
     );
-    assert!(tools.iter().all(|tool| tool.output_schema.is_object()));
+    for tool in &tools {
+        assert!(tool.output_schema.is_object(), "{} output", tool.name);
+        assert!(
+            jsonschema::validator_for(&tool.output_schema).is_ok(),
+            "{} must publish a valid, self-contained output schema",
+            tool.name
+        );
+        assert_eq!(
+            tool.output_schema["additionalProperties"],
+            json!(false),
+            "{} must close its typed output shape",
+            tool.name
+        );
+        assert!(
+            tool.output_schema["properties"].is_object(),
+            "{} must publish field-level output properties",
+            tool.name
+        );
+        assert!(
+            !tool
+                .output_schema
+                .to_string()
+                .contains("intentionally broad"),
+            "{} still advertises the deleted fallback schema",
+            tool.name
+        );
+    }
     assert!(tools.iter().any(|tool| tool.name == "set_display_face"));
+    assert!(tools.iter().any(|tool| tool.name == "clear_zone"));
+    assert!(tools.iter().any(|tool| tool.name == "adjust_controls"));
+    assert!(tools.iter().all(|tool| tool.name != "stop_effect"));
     let diagnose = tools
         .iter()
         .find(|tool| tool.name == "diagnose")
         .expect("diagnose tool should be registered");
     assert_eq!(
-        diagnose.output_schema["properties"]["overall_status"]["enum"],
-        json!(["healthy", "warning", "unhealthy"])
+        diagnose.input_schema,
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        })
+    );
+    assert!(
+        diagnose.output_schema["properties"]
+            .get("overall_status")
+            .is_none()
     );
 }
 
+/// Every tool's top-level argument set is closed.
+///
+/// The dispatch gate only refuses undeclared arguments for tools whose
+/// schema says `additionalProperties: false`, so a tool without the
+/// marker silently drops whatever it is handed. That is the same
+/// decoration-instead-of-enforcement failure the phantom deletions
+/// exist to end, one layer up, and it is why this sweeps all of them
+/// rather than naming the ones that were fixed: tool eighteen cannot
+/// ship open.
+///
+/// Nested objects are deliberately exempt. `set_effect.controls` and
+/// the display-face payload carry per-effect keys the schema cannot
+/// enumerate, so they stay open on purpose.
 #[test]
-fn set_color_tool_executes_and_validates() {
-    let result = execute_tool("set_color", &json!({ "color": "#ff6ac1" }))
-        .expect("set_color should succeed");
-    assert_eq!(result["resolved_color"]["hex"], "#ff6ac1");
+fn every_tool_closes_its_top_level_argument_set() {
+    for tool in build_tool_definitions() {
+        assert_eq!(
+            tool.input_schema["additionalProperties"],
+            json!(false),
+            "{} must declare additionalProperties: false, or the dispatch \
+             gate will silently drop arguments it does not declare",
+            tool.name
+        );
+    }
+}
 
-    let error =
-        execute_tool("set_color", &json!({})).expect_err("missing color should return an error");
+/// The gate refuses an undeclared argument on every tool.
+///
+/// Closing the schemas and enforcing them are two different things, so
+/// this drives the real dispatch path rather than reading the schema.
+#[tokio::test]
+async fn undeclared_arguments_are_refused_on_every_tool() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+
+    for tool in build_tool_definitions() {
+        let mut params = json!({ "hypercolor_not_a_real_argument": 1 });
+        // Satisfy required arguments so the refusal is provably about
+        // the undeclared key rather than a missing one.
+        if let Some(required) = tool.input_schema["required"].as_array() {
+            let object = params.as_object_mut().expect("params is an object");
+            for name in required.iter().filter_map(Value::as_str) {
+                object.insert(name.to_owned(), json!("placeholder"));
+            }
+        }
+
+        let error = execute_tool_with_state(&tool.name, &params, state.as_ref())
+            .await
+            .expect_err(&format!(
+                "{} should refuse an undeclared argument",
+                tool.name
+            ));
+        assert!(
+            format!("{error}").contains("hypercolor_not_a_real_argument"),
+            "{}'s refusal should name the undeclared argument: {error}",
+            tool.name
+        );
+    }
+}
+
+/// A parameter exists only when its behavior does (Spec 78 §6.1).
+///
+/// Each entry below was advertised in a tool's schema while the handler
+/// either never read it or read it only to echo it back. They are named
+/// here rather than described so that reintroducing one fails loudly.
+#[test]
+fn deleted_phantom_parameters_stay_deleted() {
+    let phantoms: &[(&str, &str)] = &[
+        ("set_effect", "devices"),
+        ("set_effect", "transition_ms"),
+        ("set_color", "devices"),
+        ("set_brightness", "device_id"),
+        ("set_brightness", "transition_ms"),
+        ("diagnose", "device_id"),
+        ("diagnose", "checks"),
+        ("clear_zone", "transition_ms"),
+        ("create_scene", "transition_ms"),
+        ("create_scene", "profile_id"),
+        ("create_scene", "trigger"),
+    ];
+
+    let tools = build_tool_definitions();
+    for (tool_name, param) in phantoms {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == *tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} should be registered"));
+        let mut node = &tool.input_schema["properties"];
+        for (depth, segment) in param.split('.').enumerate() {
+            if depth > 0 {
+                node = &node["properties"];
+            }
+            let Some(next) = node.get(segment) else {
+                node = &Value::Null;
+                break;
+            };
+            node = next;
+        }
+        assert!(
+            node.is_null(),
+            "{tool_name} must not advertise the phantom parameter {param}"
+        );
+    }
+}
+
+/// The category filter's advertised vocabulary comes from the type.
+#[test]
+fn list_effects_advertises_the_real_effect_categories() {
+    let tools = build_tool_definitions();
+    let list_effects = tools
+        .iter()
+        .find(|tool| tool.name == "list_effects")
+        .expect("list_effects should be registered");
+
+    let advertised = list_effects.input_schema["properties"]["category"]["enum"]
+        .as_array()
+        .expect("the category filter should advertise an enum")
+        .iter()
+        .map(|value| value.as_str().expect("categories are strings").to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(advertised, EffectCategory::VARIANTS);
+    for fabricated in ["reactive", "gaming", "productivity"] {
+        assert!(
+            !advertised.iter().any(|value| value == fabricated),
+            "'{fabricated}' is not an EffectCategory and must not be advertised"
+        );
+    }
+}
+
+/// `destructive` is a per-tool fact, not a hardcoded false.
+#[test]
+fn tool_annotations_report_what_each_tool_actually_does() {
+    let tools = build_tool_definitions();
+    let annotation = |name: &str| {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} should be registered"));
+        (tool.read_only, tool.destructive, tool.idempotent)
+    };
+
+    // Tools that discard state the caller cannot recover.
+    for name in [
+        "clear_zone",
+        "set_effect",
+        "set_color",
+        "activate_scene",
+        "set_display_face",
+    ] {
+        let expected_idempotent = !matches!(name, "set_effect" | "set_color" | "set_display_face");
+        assert_eq!(
+            annotation(name),
+            (false, true, expected_idempotent),
+            "{name}"
+        );
+    }
+
+    // Reversible value writes and pure creations.
+    for name in [
+        "set_brightness",
+        "set_output_power",
+        "adjust_controls",
+        "create_scene",
+    ] {
+        let expected_idempotent = name != "create_scene";
+        assert_eq!(
+            annotation(name),
+            (false, false, expected_idempotent),
+            "{name}"
+        );
+    }
+
+    // Read-only tools never claim to destroy anything.
+    for tool in tools.iter().filter(|tool| tool.read_only) {
+        assert!(!tool.destructive, "{} is read-only", tool.name);
+    }
+}
+
+#[tokio::test]
+async fn set_color_tool_rejects_missing_color() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let error = execute_tool_with_state("set_color", &json!({}), &state)
+        .await
+        .expect_err("missing color should return an error");
     assert!(matches!(error, ToolError::MissingParam(_)));
 }
 
 #[test]
-fn resource_definitions_are_readable() {
+fn fuzzy_color_shorthand_hex_requires_an_explicit_hash() {
+    let word = mcp::fuzzy::resolve_color("bed").expect("a hex-digit word reaches the name matcher");
+    assert_ne!(
+        word.hex, "#bbeedd",
+        "hashless shorthand must not shadow named colors"
+    );
+
+    let shorthand = mcp::fuzzy::resolve_color("#bed").expect("hash-prefixed shorthand is hex");
+    assert_eq!(shorthand.hex, "#bbeedd");
+    assert_eq!((shorthand.r, shorthand.g, shorthand.b), (0xbb, 0xee, 0xdd));
+
+    let hashless = mcp::fuzzy::resolve_color("ff8800").expect("hashless six-digit hex is hex");
+    assert_eq!(hashless.hex, "#ff8800");
+    assert_eq!((hashless.r, hashless.g, hashless.b), (0xff, 0x88, 0x00));
+}
+
+#[tokio::test]
+async fn set_output_power_tool_validates_desired_state() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let error = execute_tool_with_state("set_output_power", &json!({ "state": "off" }), &state)
+        .await
+        .expect_err("unknown output state should be rejected");
+    assert!(matches!(error, ToolError::InvalidParam { .. }));
+}
+
+#[tokio::test]
+async fn stateful_set_output_power_is_reversible_and_idempotent() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let state = Arc::new(state);
+
+    let paused = execute_tool_with_state(
+        "set_output_power",
+        &json!({ "state": "paused" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("pause should succeed");
+    assert_eq!(paused["state"], "paused");
+    assert!(state.output_power.snapshot().manually_paused());
+
+    let paused_again = execute_tool_with_state(
+        "set_output_power",
+        &json!({ "state": "paused" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("repeated pause should succeed");
+    assert_eq!(paused_again["state"], "paused");
+
+    let running = execute_tool_with_state(
+        "set_output_power",
+        &json!({ "state": "running" }),
+        state.as_ref(),
+    )
+    .await
+    .expect("resume should succeed");
+    assert_eq!(running["state"], "running");
+    assert!(!state.output_power.snapshot().sleeping());
+}
+
+/// `set_brightness` is a projection of the output service, so the tool
+/// moves the same live state `GET /output` reports and persists the
+/// same store the REST route does.
+#[tokio::test]
+async fn set_brightness_tool_projects_the_output_service() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+
+    let response =
+        execute_tool_with_state("set_brightness", &json!({ "brightness": 35.0 }), &state)
+            .await
+            .expect("brightness should be accepted");
+    assert_eq!(response["brightness"], 35);
+    assert_eq!(response["previous_brightness"], 100);
+    assert!((state.output_power.global_brightness() - 0.35).abs() < 1e-6);
+    assert_eq!(
+        DeviceSettingsStore::load(&state.state_dir.join("device-settings.json"))
+            .expect("device settings should reload")
+            .global_brightness(),
+        0.35,
+        "the tool must persist through the same store the REST route writes"
+    );
+
+    let error = execute_tool_with_state("set_brightness", &json!({ "brightness": 150 }), &state)
+        .await
+        .expect_err("out-of-range brightness should be rejected");
+    assert!(matches!(error, ToolError::InvalidParam { .. }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_brightness_tools_report_serialized_predecessors() {
+    let (state, _tmp) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let first_state = Arc::clone(&state);
+    let second_state = Arc::clone(&state);
+
+    let first = tokio::spawn(async move {
+        execute_tool_with_state(
+            "set_brightness",
+            &json!({ "brightness": 25 }),
+            first_state.as_ref(),
+        )
+        .await
+        .expect("first brightness should succeed")
+    });
+    let second = tokio::spawn(async move {
+        execute_tool_with_state(
+            "set_brightness",
+            &json!({ "brightness": 75 }),
+            second_state.as_ref(),
+        )
+        .await
+        .expect("second brightness should succeed")
+    });
+    let first = first.await.expect("first brightness task should join");
+    let second = second.await.expect("second brightness task should join");
+    let transitions = [
+        (
+            first["previous_brightness"]
+                .as_u64()
+                .expect("first predecessor should be numeric"),
+            first["brightness"]
+                .as_u64()
+                .expect("first brightness should be numeric"),
+        ),
+        (
+            second["previous_brightness"]
+                .as_u64()
+                .expect("second predecessor should be numeric"),
+            second["brightness"]
+                .as_u64()
+                .expect("second brightness should be numeric"),
+        ),
+    ];
+
+    assert!(
+        transitions.contains(&(100, 25)) && transitions.contains(&(25, 75))
+            || transitions.contains(&(100, 75)) && transitions.contains(&(75, 25))
+    );
+}
+
+#[test]
+fn resource_definitions_match_live_uri_validation() {
     let resources = build_resource_definitions();
     assert_eq!(resources.len(), 5);
     assert!(
         resources
             .iter()
-            .all(|resource| resource.uri.starts_with("hypercolor://"))
+            .all(|resource| is_valid_resource_uri(&resource.uri))
     );
     assert!(is_valid_resource_uri("hypercolor://state"));
-    assert!(read_resource("hypercolor://state").is_some());
-    assert!(read_resource("hypercolor://nope").is_none());
+    assert!(is_valid_resource_uri("hypercolor://scenes"));
+    assert!(!is_valid_resource_uri("hypercolor://profiles"));
 }
 
 #[tokio::test]
-async fn mcp_device_inventory_exposes_driver_origin_and_presentation() {
-    let state = Arc::new(fresh_app_state());
+async fn mcp_device_inventory_surfaces_are_exact_and_filterable() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+
+    let state = Arc::new(state);
     let device_id = insert_test_display_device(&state, "Case Display").await;
 
     let resource = read_resource_with_state("hypercolor://devices", state.as_ref())
         .await
         .expect("devices resource should exist");
+    let tool = execute_tool_with_state("get_devices", &json!({}), state.as_ref())
+        .await
+        .expect("get_devices should succeed");
+    assert_eq!(tool, resource, "tool and resource payloads must be exact");
     let resource_device = &resource["devices"][0];
     assert_eq!(resource_device["id"], device_id.to_string());
     assert_eq!(resource_device["origin"]["driver_id"], "wled");
@@ -1537,9 +2713,145 @@ fn prompt_definitions_and_messages_are_valid() {
     let prompts = build_prompt_definitions();
     assert_eq!(prompts.len(), 3);
     assert!(is_valid_prompt("mood_lighting"));
-    let messages = get_prompt_messages("mood_lighting", &json!({ "mood": "cozy evening" }))
-        .expect("prompt should build messages");
+    let messages = get_prompt_messages(
+        "mood_lighting",
+        &json!({ "mood": "cozy evening", "audio_reactive": "no" }),
+    )
+    .expect("prompt should build messages");
     assert!(messages["messages"].is_array());
+    let mood = messages.to_string();
+    assert!(mood.contains("Exclude catalog effects marked audio_reactive"));
+    assert!(mood.contains("Call set_effect exactly once"));
+    assert!(mood.contains("adjust_controls"));
+    assert!(!mood.contains("top 2-3"));
+
+    let troubleshoot = get_prompt_messages("troubleshoot", &json!({ "issue": "offline" }))
+        .expect("troubleshoot prompt should build messages")
+        .to_string();
+    assert!(troubleshoot.contains("canonical safe diagnostic report"));
+    assert!(!troubleshoot.contains("reconnecting a device"));
+    assert!(!troubleshoot.contains("adjusting settings"));
+
+    let automation = get_prompt_messages("setup_automation", &json!({}))
+        .expect("automation prompt should build messages");
+    let encoded = automation.to_string();
+    assert!(encoded.contains("hypercolor://scenes"));
+    assert!(encoded.contains("hypercolor://effects"));
+    assert!(!encoded.contains("hypercolor://profiles"));
+    assert!(encoded.contains("does not schedule or trigger scenes"));
+    assert!(encoded.contains("create_scene"));
+    assert!(encoded.contains("Activate that scene"));
+    assert!(encoded.contains("call set_effect once"));
+    assert!(encoded.contains("adjust_controls"));
+    assert!(encoded.contains("does not capture the current output"));
+}
+
+#[tokio::test]
+async fn display_face_assignment_agrees_across_rest_and_mcp() {
+    let (rest_state, _rest_tmp) = isolated_state_with_tempdir();
+    let rest_state = Arc::new(rest_state);
+    let rest_display = insert_test_display_device(&rest_state, "Pump LCD").await;
+    let rest_face = insert_test_display_face_effect(&rest_state, "System Monitor").await;
+
+    let (client, base) = spawn_router(api::build_router(Arc::clone(&rest_state), None)).await;
+    let response = client
+        .put(format!("{base}/api/v1/displays/{rest_display}/face"))
+        .json(&json!({
+            "effect_id": rest_face.id.to_string(),
+            "scope": "default",
+        }))
+        .send()
+        .await
+        .expect("REST default-face assignment should send");
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "REST default-face assignment should succeed"
+    );
+    let rest_body: Value = response
+        .json()
+        .await
+        .expect("REST face response should be JSON");
+    let rest_face_payload = &rest_body["data"];
+
+    let (mcp_state, _mcp_tmp) = isolated_state_with_tempdir();
+    let mcp_state = Arc::new(mcp_state);
+    let mcp_display = insert_test_display_device(&mcp_state, "Pump LCD").await;
+    let mcp_face = insert_test_display_face_effect(&mcp_state, "System Monitor").await;
+    let mcp_face_payload = execute_tool_with_state(
+        "set_display_face",
+        &json!({
+            "device": mcp_display.to_string(),
+            "effect_id": mcp_face.id.to_string(),
+        }),
+        mcp_state.as_ref(),
+    )
+    .await
+    .expect("MCP default-face assignment should succeed");
+
+    let rest_preference = rest_state
+        .domains
+        .display
+        .preferences()
+        .read()
+        .await
+        .get(rest_display)
+        .cloned()
+        .expect("REST assignment should store a preference");
+    let mcp_preference = mcp_state
+        .domains
+        .display
+        .preferences()
+        .read()
+        .await
+        .get(mcp_display)
+        .cloned()
+        .expect("MCP assignment should store a preference");
+    assert_eq!(rest_preference.blend_mode, mcp_preference.blend_mode);
+    assert!((rest_preference.opacity - mcp_preference.opacity).abs() <= f32::EPSILON);
+    assert_eq!(rest_preference.controls, mcp_preference.controls);
+    assert_eq!(rest_preference.effect_id, rest_face.id);
+    assert_eq!(mcp_preference.effect_id, mcp_face.id);
+
+    assert_eq!(
+        rest_face_payload["live_scope"],
+        mcp_face_payload["live_scope"]
+    );
+    for field in ["role", "brightness", "enabled"] {
+        assert_eq!(
+            rest_face_payload["zone"][field], mcp_face_payload["zone"][field],
+            "overlay zone field {field} diverged between REST and MCP"
+        );
+    }
+    for field in ["blend_mode", "opacity"] {
+        assert_eq!(
+            rest_face_payload["zone"]["display_target"][field],
+            mcp_face_payload["zone"]["display_target"][field],
+            "overlay composition field {field} diverged between REST and MCP"
+        );
+    }
+
+    let rest_zones = rest_state
+        .scene_manager
+        .snapshot()
+        .await
+        .resolved_zones()
+        .iter()
+        .filter(|zone| zone.has_effect(rest_face.id))
+        .count();
+    let mcp_zones = mcp_state
+        .scene_manager
+        .snapshot()
+        .await
+        .resolved_zones()
+        .iter()
+        .filter(|zone| zone.has_effect(mcp_face.id))
+        .count();
+    assert_eq!(
+        rest_zones, mcp_zones,
+        "both transports should materialize the same overlay zone count"
+    );
+    assert_eq!(rest_zones, 1);
 }
 
 #[tokio::test]
@@ -1563,14 +2875,16 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert_eq!(assign_result["live_scope"], "default");
     assert_eq!(assign_result["effect"]["id"], face.id.to_string());
     assert_eq!(
-        assign_result["group"]["display_target"]["device_id"],
+        assign_result["zone"]["display_target"]["device_id"],
         display_id.to_string()
     );
 
-    // The preference persists and the overlay reaches the render groups.
+    // The preference persists and the overlay reaches the render zones.
     assert!(
         state
-            .display_preferences
+            .domains
+            .display
+            .preferences()
             .read()
             .await
             .get(display_id)
@@ -1579,11 +2893,11 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert!(
         state
             .scene_manager
-            .read()
+            .snapshot()
             .await
-            .active_render_groups()
+            .resolved_zones()
             .iter()
-            .any(|zone| zone.effect_id == Some(face.id))
+            .any(|zone| zone.has_effect(face.id))
     );
 
     let clear_result = execute_tool_with_state(
@@ -1601,7 +2915,9 @@ async fn stateful_display_face_tool_defaults_to_the_persistent_scope() {
     assert!(clear_result["live_scope"].is_null());
     assert!(
         state
-            .display_preferences
+            .domains
+            .display
+            .preferences()
             .read()
             .await
             .get(display_id)

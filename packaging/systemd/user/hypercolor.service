@@ -12,6 +12,7 @@ Restart=on-failure
 RestartSec=3
 Environment=HYPERCOLOR_LOG=info
 Environment=RUST_BACKTRACE=1
+Environment=HYPERCOLOR_SERVICE_IDENTITY=user_service:systemd:hypercolor.service
 
 # Resource limits
 MemoryMax=512M

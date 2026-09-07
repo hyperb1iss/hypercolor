@@ -32,6 +32,19 @@
   font-size: 1.1rem;
   letter-spacing: -0.01em;
   display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+
+  // The trinity mark at the same 32px the app's collapsed sidebar uses, so the
+  // docs and the desktop app read as one product. Margin rather than a flex
+  // gap, which would also push the two wordmark spans apart.
+  &__mark {
+    width: 32px;
+    height: 32px;
+    margin: 0 9px 0 0;
+    user-select: none;
+    transition: filter var(--duration-normal) var(--ease-silk);
+  }
 
   &__hyper {
     background: linear-gradient(
@@ -49,7 +62,16 @@
 
   &__color {
     color: var(--text-primary);
-    transition: color var(--duration-medium) var(--ease-smooth);
+    transition: color var(--duration-normal) var(--ease-silk);
+  }
+
+  // Below the desktop breakpoint the mark carries the brand on its own so the
+  // wordmark's width goes back to the destinations.
+  @media (min-width: $bp-mobile) and (max-width: $bp-desktop - 1px) {
+    &__hyper,
+    &__color {
+      display: none;
+    }
   }
 
   &:hover {
@@ -61,6 +83,10 @@
     .nav-title__color {
       color: var(--accent);
       text-shadow: 0 0 12px var(--glow-accent-50);
+    }
+
+    .nav-title__mark {
+      filter: drop-shadow(0 0 10px var(--glow-accent-50));
     }
   }
 }
@@ -77,20 +103,51 @@
   display: flex;
   align-items: center;
   gap: 4px;
+
+  // Eleven destinations plus the brand lockup and the action cluster do not fit
+  // a 1280px viewport at full spacing. min-width lets the row give way instead
+  // of shoving .nav-actions past the edge and clipping the GitHub link.
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+
+  // Reclaim the mark's width from the inter-link gaps before the row has to
+  // scroll, which would hide the last destination.
+  @media (max-width: $bp-desktop + 120px) {
+    gap: 2px;
+  }
+
+  // Eleven destinations cannot fit between the brand and the actions much below
+  // 1280px, so the row scrolls. Fade the trailing edge, otherwise the overflow
+  // reads as a missing destination rather than more to scroll.
+  @media (min-width: $bp-mobile) and (max-width: $bp-desktop - 1px) {
+    mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+  }
 }
 
 .nav-link {
   color: var(--text-primary);
   font-weight: 500;
   font-size: 0.875rem;
+  white-space: nowrap;
   padding: 6px 12px;
+
+  // Tighten before the row has to scroll: this is the width band where the
+  // full menu is one item away from fitting.
+  @media (max-width: $bp-desktop + 120px) {
+    padding: 6px 6px;
+  }
   border-radius: $radius-sm;
   position: relative;
   transition:
-    color var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth),
-    text-shadow var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth);
+    color var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk),
+    text-shadow var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk);
 
   &:hover {
     color: var(--accent);
@@ -139,10 +196,10 @@
   font-size: 0.85rem;
   cursor: pointer;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk);
 
   &:hover {
     border-color: var(--border-default);
@@ -178,10 +235,10 @@
   color: var(--text-secondary);
   cursor: pointer;
   transition:
-    color var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth),
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth),
+    color var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk),
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk),
     transform var(--duration-fast) var(--ease-spring);
 
   &:hover {
@@ -216,9 +273,9 @@
   color: var(--text-secondary);
   border-radius: $radius-sm;
   transition:
-    color var(--duration-medium) var(--ease-smooth),
-    background var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth);
+    color var(--duration-normal) var(--ease-silk),
+    background var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk);
 
   &:hover {
     color: var(--accent);
@@ -253,8 +310,8 @@
   padding: 8px;
   cursor: pointer;
   transition:
-    border-color var(--duration-medium) var(--ease-smooth),
-    box-shadow var(--duration-medium) var(--ease-smooth);
+    border-color var(--duration-normal) var(--ease-silk),
+    box-shadow var(--duration-normal) var(--ease-silk);
 
   &:hover {
     border-color: var(--border-default);
@@ -266,7 +323,7 @@
     height: 2px;
     background: var(--text-secondary);
     border-radius: 1px;
-    transition: transform var(--duration-medium) var(--ease-spring),
+    transition: transform var(--duration-normal) var(--ease-spring),
                 opacity var(--duration-fast) ease;
   }
 

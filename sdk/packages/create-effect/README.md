@@ -70,7 +70,7 @@ bunx hypercolor add flicker --template html
 
 ## Prerequisites
 
-- Bun 1.2 or newer
+- Bun 1.4 or newer
 
 ## Documentation
 

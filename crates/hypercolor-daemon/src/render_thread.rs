@@ -10,7 +10,7 @@
 //! loop {
 //!     RenderLoop::tick()                 // timing gate + FPS control
 //!     read immutable input graph         // shared frame inputs
-//!     render active scene groups         // Servo/native/media producers
+//!     render active scene zones          // Servo/native/media producers
 //!     SparkleFlinger::compose_frame()    // canonical scene canvas
 //!     sample LED output                  // CPU or prepared GPU sampler
 //!     publish scene/display canvases     // latest-value bus/watch streams
@@ -42,11 +42,13 @@ mod lighting_feed;
 mod pipeline_driver;
 mod pipeline_runtime;
 mod producer_queue;
-mod render_groups;
+mod render_zones;
 mod scene_dependency;
 mod scene_snapshot;
 mod scene_state;
 mod screen_canvas;
+#[cfg(feature = "wgpu")]
+mod screen_parity_diagnostics;
 #[doc(hidden)]
 pub mod sparkleflinger;
 mod unassigned_output;
@@ -62,6 +64,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+pub(crate) use self::input_publication::InputScreenBranchRequest;
 pub use self::input_publication::{
     InputPublicationConsumer, InputPublicationDemand, InputPublicationDemandHandle,
     InputPublicationDemandRegistration, InputPublicationStatus, InputScreenBranchDemand,
@@ -69,15 +72,24 @@ pub use self::input_publication::{
 use self::input_publication::{InputPublicationMonitor, InputPublicationPump};
 use self::pipeline_driver::run_pipeline;
 pub(crate) use self::producer_queue::ProducerFrame;
-pub(crate) use self::render_groups::{RenderSceneContext, ZoneFrameInputs};
+pub(crate) use self::render_zones::{RenderSceneContext, ZoneFrameInputs};
 pub(crate) use self::scene_dependency::SceneDependencyKey;
-use crate::device_settings::DeviceSettingsStore;
+#[cfg(feature = "wgpu")]
+#[allow(
+    unused_imports,
+    reason = "the snapshot types are consumed by platform diagnostic endpoints only"
+)]
+pub(crate) use self::screen_parity_diagnostics::{
+    ScreenParityDiagnosticHandle, ScreenParityLiveSnapshot, ScreenParitySnapshotError,
+};
 use crate::discovery::DiscoveryRuntime;
+use crate::domain::scene::{ScenePlanReader, SceneService};
+use crate::domain::spatial::SpatialService;
 use crate::interaction_routing::InteractionRoutingControl;
+use crate::output_power::OutputPowerState;
 use crate::performance::PerformanceTracker;
 use crate::preview_runtime::PreviewRuntime;
 use crate::scene_transactions::SceneTransactionQueue;
-use crate::session::OutputPowerState;
 use crate::zone_layout_preview::ZoneLayoutPreviewStore;
 use hypercolor_core::asset::AssetLibrary;
 use hypercolor_core::bus::HypercolorBus;
@@ -85,16 +97,14 @@ use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::EffectRegistry;
 use hypercolor_core::engine::{FpsTier, RenderLoop};
 use hypercolor_core::input::InputManager;
-use hypercolor_core::scene::SceneManager;
-use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::RenderAccelerationMode;
 use hypercolor_types::event::ZoneColors;
 
-pub(crate) struct InteractivePreviewZoneRuntime(render_groups::ZoneRuntime);
+pub(crate) struct InteractivePreviewZoneRuntime(render_zones::ZoneRuntime);
 
 impl InteractivePreviewZoneRuntime {
     pub(crate) fn new(scene_width: u32, scene_height: u32) -> Result<Self> {
-        Ok(Self(render_groups::ZoneRuntime::try_new_preview(
+        Ok(Self(render_zones::ZoneRuntime::try_new_preview(
             scene_width,
             scene_height,
         )?))
@@ -106,7 +116,7 @@ impl InteractivePreviewZoneRuntime {
         asset_library: Arc<RwLock<AssetLibrary>>,
     ) -> Result<Self> {
         Ok(Self(
-            render_groups::ZoneRuntime::try_with_asset_library_preview(
+            render_zones::ZoneRuntime::try_with_asset_library_preview(
                 scene_width,
                 scene_height,
                 asset_library,
@@ -126,11 +136,11 @@ impl InteractivePreviewZoneRuntime {
         zones: &mut Vec<ZoneColors>,
     ) -> anyhow::Result<ProducerFrame> {
         self.0.admit_reconcile(
-            context.groups,
+            context.zones,
             context.active_scene_id,
             context.dependency_key,
             context.registry,
-            context.display_group_descriptors,
+            context.display_zone_descriptors,
             context.authoritative_spatial_engine,
             sparkleflinger,
         )?;
@@ -239,6 +249,8 @@ pub struct RenderThread {
     cancel: CancellationToken,
     input_publication_demands: InputPublicationDemandHandle,
     input_publication_monitor: InputPublicationMonitor,
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    screen_parity_diagnostics: ScreenParityDiagnosticHandle,
 }
 
 /// All shared state the render thread needs.
@@ -248,14 +260,14 @@ pub struct RenderThread {
 /// duration of each pipeline stage.
 #[derive(Clone)]
 pub struct RenderThreadState {
-    /// Effect catalog used to resolve render-group assignments.
+    /// Effect catalog used to resolve render-zone assignments.
     pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// User media asset library used by media-backed scene layers.
     pub asset_library: Arc<RwLock<AssetLibrary>>,
 
     /// Spatial sampling engine — maps canvas pixels to LED positions.
-    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+    pub spatial_engine: SpatialService,
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
@@ -282,19 +294,19 @@ pub struct RenderThreadState {
     pub render_loop: Arc<RwLock<RenderLoop>>,
 
     /// Active scene stack and transition runtime.
-    pub scene_manager: Arc<RwLock<SceneManager>>,
+    pub scene_manager: SceneService,
+
+    /// Lock-free scene plan projection read once per frame.
+    pub scene_plan: ScenePlanReader,
 
     /// Input orchestrator owned by the dedicated publication pump and demand control.
-    pub input_manager: Arc<Mutex<InputManager>>,
+    pub input_manager: InputManager,
 
     /// Coherent route policy and authoritative browser-source selection.
     pub interaction_routing: InteractionRoutingControl,
 
     /// Session policy output state (brightness scale + sleep flag).
     pub power_state: watch::Receiver<OutputPowerState>,
-
-    /// Persisted global and per-device output settings.
-    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
     /// Frame-boundary scene changes consumed by the render thread.
     pub scene_transactions: SceneTransactionQueue,
@@ -315,7 +327,7 @@ pub struct RenderThreadState {
     /// Ceiling derived from user configuration before runtime admission.
     pub configured_max_fps_tier: ConfiguredFpsTier,
 
-    /// Effective `display.face_fps_cap` for group-direct HTML faces.
+    /// Effective `display.face_fps_cap` for zone-direct HTML faces.
     pub face_fps_cap: u32,
 }
 
@@ -355,17 +367,26 @@ impl RenderThread {
     where
         F: FnOnce() -> Result<tokio::runtime::Runtime> + Send + 'static,
     {
-        let input_publication_demands = InputPublicationDemandHandle::new();
+        let input_publication_demands =
+            InputPublicationDemandHandle::new(state.input_manager.screen_native_execution_policy());
         let pump_demands = input_publication_demands.clone();
         let pipeline_demands = input_publication_demands.clone();
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<InputPublicationMonitor>>(1);
+        #[cfg(feature = "wgpu")]
+        let (screen_parity_diagnostics, screen_parity_mailbox) =
+            screen_parity_diagnostics::screen_parity_diagnostic_channel();
+        #[cfg(all(
+            feature = "wgpu",
+            not(all(target_os = "macos", feature = "screen-capture"))
+        ))]
+        let _ = screen_parity_diagnostics;
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || -> Result<()> {
                 let _scene_transaction_consumer = state.scene_transactions.consumer();
-                configure_render_thread_priority();
+                crate::process::configure_render_thread_priority();
                 let runtime = match build_runtime() {
                     Ok(runtime) => runtime,
                     Err(error) => {
@@ -374,7 +395,7 @@ impl RenderThread {
                     }
                 };
                 let mut input_pump = match runtime.block_on(InputPublicationPump::start(
-                    Arc::clone(&state.input_manager),
+                    state.input_manager.clone(),
                     pump_demands,
                 )) {
                     Ok(pump) => pump,
@@ -383,11 +404,30 @@ impl RenderThread {
                         return Ok(());
                     }
                 };
-                let pipeline = runtime.block_on(pipeline_runtime::PipelineRuntime::from_state(
+                #[cfg(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                ))]
+                let pipeline = pipeline_runtime::PipelineRuntime::from_state(
                     &state,
                     input_pump.reader(),
                     pipeline_demands,
-                ));
+                    #[cfg(feature = "wgpu")]
+                    screen_parity_mailbox,
+                );
+                #[cfg(not(all(
+                    target_os = "macos",
+                    feature = "wgpu",
+                    feature = "screen-capture"
+                )))]
+                let pipeline = pipeline_runtime::PipelineRuntime::from_state(
+                    &state,
+                    input_pump.reader(),
+                    pipeline_demands,
+                    #[cfg(feature = "wgpu")]
+                    screen_parity_mailbox,
+                );
                 match pipeline {
                     Ok(runtime_state) => {
                         let monitor = input_pump.monitor();
@@ -437,6 +477,8 @@ impl RenderThread {
             cancel,
             input_publication_demands,
             input_publication_monitor,
+            #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+            screen_parity_diagnostics,
         })
     }
 
@@ -448,6 +490,11 @@ impl RenderThread {
     /// Read the input-publication worker lifecycle state without blocking.
     pub fn input_publication_status(&self) -> InputPublicationStatus {
         self.input_publication_monitor.status()
+    }
+
+    #[cfg(all(target_os = "macos", feature = "wgpu", feature = "screen-capture"))]
+    pub(crate) fn screen_parity_diagnostics(&self) -> ScreenParityDiagnosticHandle {
+        self.screen_parity_diagnostics.clone()
     }
 
     /// Wait for the render thread to exit.
@@ -499,23 +546,6 @@ fn build_render_runtime() -> Result<tokio::runtime::Runtime> {
         .context("failed to initialize render thread runtime")
 }
 
-#[cfg(target_os = "windows")]
-fn configure_render_thread_priority() {
-    use thread_priority::{ThreadPriority, WinAPIThreadPriority, set_current_thread_priority};
-
-    let priority = ThreadPriority::Os(WinAPIThreadPriority::AboveNormal.into());
-    match set_current_thread_priority(priority) {
-        Ok(()) => tracing::debug!("configured Windows render thread priority"),
-        Err(error) => tracing::warn!(
-            error = %error,
-            "failed to configure Windows render thread priority"
-        ),
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn configure_render_thread_priority() {}
-
 // ── Pipeline ────────────────────────────────────────────────────────────────
 
 /// Saturating conversion from `Duration` microseconds to `u32`.
@@ -561,14 +591,8 @@ mod tests {
     use std::time::Duration;
 
     use hypercolor_core::engine::FpsTier;
-    use hypercolor_core::input::ScreenData;
-    use hypercolor_core::types::canvas::{
-        Canvas, PublishedSurface, RenderSurfacePool, Rgba, SurfaceDescriptor, SurfaceResourceError,
-    };
-    use hypercolor_core::types::event::ZoneColors;
 
     use super::frame_policy::SkipDecision;
-    use super::screen_canvas::screen_data_to_surface;
     use super::{micros_u32, millis_u64};
 
     fn frame_stats(
@@ -621,195 +645,5 @@ mod tests {
         let elapsed = Duration::from_millis(u64::from(u32::MAX) + 1);
 
         assert_eq!(millis_u64(elapsed), u64::from(u32::MAX) + 1);
-    }
-
-    #[test]
-    fn screen_data_to_surface_maps_declared_row_major_colors() {
-        let screen_data = ScreenData::from_zones(
-            vec![
-                ZoneColors {
-                    zone_id: "arbitrary-a".to_owned(),
-                    colors: vec![[255, 0, 0]],
-                },
-                ZoneColors {
-                    zone_id: "arbitrary-b".to_owned(),
-                    colors: vec![[0, 255, 0]],
-                },
-                ZoneColors {
-                    zone_id: "arbitrary-c".to_owned(),
-                    colors: vec![[0, 0, 255]],
-                },
-                ZoneColors {
-                    zone_id: "arbitrary-d".to_owned(),
-                    colors: vec![[255, 255, 255]],
-                },
-            ],
-            2,
-            2,
-        );
-
-        let mut sector_grid = Vec::new();
-        let mut surface_pool =
-            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
-        let surface =
-            screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
-                .expect("screen surface conversion should succeed")
-                .expect("surface should build");
-        assert_eq!(surface.get_pixel(0, 0), Rgba::new(255, 0, 0, 255));
-        assert_eq!(surface.get_pixel(3, 0), Rgba::new(0, 255, 0, 255));
-        assert_eq!(surface.get_pixel(0, 3), Rgba::new(0, 0, 255, 255));
-        assert_eq!(surface.get_pixel(3, 3), Rgba::new(255, 255, 255, 255));
-    }
-
-    #[test]
-    fn screen_data_to_surface_preserves_downscale_geometry() {
-        let mut screen_data = ScreenData::from_zones(
-            vec![ZoneColors {
-                zone_id: "screen".to_owned(),
-                colors: vec![[255, 0, 0]],
-            }],
-            1,
-            1,
-        );
-        screen_data.canvas_downscale = Some(PublishedSurface::from_owned_canvas(
-            Canvas::new(16, 9),
-            1,
-            16,
-        ));
-
-        let mut sector_grid = Vec::new();
-        let mut surface_pool =
-            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
-        let surface =
-            screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
-                .expect("screen surface conversion should succeed")
-                .expect("downscale should pass through");
-
-        assert_eq!(surface.width(), 16);
-        assert_eq!(surface.height(), 9);
-        assert!(sector_grid.is_empty());
-    }
-
-    #[test]
-    fn screen_data_to_surface_accepts_addressable_wide_extent() {
-        let screen_data = ScreenData::from_zones(
-            vec![ZoneColors {
-                zone_id: "screen".to_owned(),
-                colors: vec![[12, 34, 56]],
-            }],
-            1,
-            1,
-        );
-        let mut sector_grid = Vec::new();
-        let mut surface_pool =
-            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(1, 1), 2);
-
-        let surface =
-            screen_data_to_surface(&screen_data, 7_681, 1, &mut sector_grid, &mut surface_pool)
-                .expect("addressable wide surface conversion should succeed")
-                .expect("wide surface should build");
-
-        assert_eq!(surface.width(), 7_681);
-        assert_eq!(surface.height(), 1);
-        assert_eq!(surface.get_pixel(7_680, 0), Rgba::new(12, 34, 56, 255));
-    }
-
-    #[test]
-    fn screen_data_to_surface_reserves_scratch_before_grid_growth() {
-        let screen_data = ScreenData::from_zones(
-            (0_u8..12)
-                .map(|value| ZoneColors {
-                    zone_id: format!("screen:{value}"),
-                    colors: vec![[value, 0, 0]],
-                })
-                .collect(),
-            4,
-            3,
-        );
-        let mut sector_grid = Vec::with_capacity(8);
-        assert!(sector_grid.capacity() < 12);
-        let mut surface_pool =
-            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 3), 2);
-
-        let surface =
-            screen_data_to_surface(&screen_data, 4, 3, &mut sector_grid, &mut surface_pool)
-                .expect("growing screen grid conversion should succeed")
-                .expect("screen surface should build");
-
-        assert_eq!(sector_grid.len(), 12);
-        assert!(sector_grid.capacity() >= 12);
-        assert_eq!(surface.get_pixel(0, 0), Rgba::new(0, 0, 0, 255));
-        assert_eq!(surface.get_pixel(3, 2), Rgba::new(11, 0, 0, 255));
-    }
-
-    #[test]
-    fn screen_data_to_surface_preserves_pool_after_geometry_overflow() {
-        let screen_data = ScreenData::from_zones(
-            vec![ZoneColors {
-                zone_id: "screen".to_owned(),
-                colors: vec![[12, 34, 56]],
-            }],
-            1,
-            1,
-        );
-        let mut sector_grid = Vec::new();
-        let mut surface_pool =
-            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
-
-        let error = screen_data_to_surface(
-            &screen_data,
-            u32::MAX,
-            u32::MAX,
-            &mut sector_grid,
-            &mut surface_pool,
-        )
-        .expect_err("overflowing geometry should be rejected");
-
-        assert!(matches!(
-            error.downcast_ref::<SurfaceResourceError>(),
-            Some(SurfaceResourceError::ByteLengthOverflow {
-                width: u32::MAX,
-                height: u32::MAX,
-            })
-        ));
-        assert_eq!(surface_pool.descriptor(), SurfaceDescriptor::rgba8888(4, 4));
-    }
-
-    #[test]
-    fn screen_data_to_surface_reuses_pool_after_warmup() {
-        let screen_data = ScreenData::from_zones(
-            vec![ZoneColors {
-                zone_id: "screen:sector_0_0".to_owned(),
-                colors: vec![[255, 0, 0]],
-            }],
-            1,
-            1,
-        );
-        let mut sector_grid = Vec::new();
-        let mut surface_pool =
-            RenderSurfacePool::with_slot_count(SurfaceDescriptor::rgba8888(4, 4), 2);
-
-        let first = screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
-            .expect("screen surface conversion should succeed")
-            .expect("first surface should build")
-            .rgba_bytes()
-            .as_ptr()
-            .addr();
-        let second =
-            screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
-                .expect("screen surface conversion should succeed")
-                .expect("second surface should build")
-                .rgba_bytes()
-                .as_ptr()
-                .addr();
-        let third = screen_data_to_surface(&screen_data, 4, 4, &mut sector_grid, &mut surface_pool)
-            .expect("screen surface conversion should succeed")
-            .expect("third surface should build")
-            .rgba_bytes()
-            .as_ptr()
-            .addr();
-
-        assert_ne!(first, second);
-        assert_eq!(first, third);
     }
 }

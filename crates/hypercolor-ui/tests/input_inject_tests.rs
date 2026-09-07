@@ -1,26 +1,29 @@
+use hypercolor_types::api::effects::EffectSourceKind;
+use hypercolor_types::effect::EffectCategory;
 use hypercolor_ui::api::{EffectCapabilitySet, EffectSummary};
 use hypercolor_ui::components::canvas_preview::{
     canonical_injection_key, effect_wants_interaction, normalized_canvas_position,
-    wheel_delta_hi_res,
+    wheel_scroll_edge,
 };
 use hypercolor_ui::ws::interactive_preview::{
     InteractivePreviewLifecycle, InteractivePreviewLifecycleTracker,
-    InteractivePreviewServerUpdate, close_message, input_inject_message, open_message,
-    server_update,
+    InteractivePreviewServerUpdate, close_message, closed_previews, input_inject_message,
+    open_message, server_updates,
 };
 use hypercolor_ui::ws::messages::interactive_preview_supported;
 use hypercolor_ui::ws::{
-    InputEdgeButton, InputEdgeState, InputInjectEdge, InteractivePreviewRequest,
+    InputEdgeButton, InputEdgeScrollPhase, InputEdgeScrollUnit, InputEdgeState, InputInjectEdge,
+    InteractivePreviewRequest,
 };
 
-fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary {
+fn summary(input_reactive: bool, category: EffectCategory, tags: &[&str]) -> EffectSummary {
     EffectSummary {
         id: "fx".to_owned(),
         name: "Fx".to_owned(),
         description: String::new(),
         author: String::new(),
-        category: category.to_owned(),
-        source: "html".to_owned(),
+        category,
+        source: EffectSourceKind::Html,
         runnable: true,
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: "1.0.0".to_owned(),
@@ -31,6 +34,8 @@ fn summary(input_reactive: bool, category: &str, tags: &[&str]) -> EffectSummary
             ..EffectCapabilitySet::default()
         },
         cover_image_url: None,
+        controls: None,
+        presets: None,
     }
 }
 
@@ -46,7 +51,13 @@ fn edges_serialize_to_daemon_wire_shape() {
             state: InputEdgeState::Released,
         },
         InputInjectEdge::Move { nx: 0.25, ny: 1.0 },
-        InputInjectEdge::Wheel { delta_hi_res: -120 },
+        InputInjectEdge::Scroll {
+            delta_x_q16_16: 98_304,
+            delta_y_q16_16: -131_072,
+            unit: InputEdgeScrollUnit::Pixels,
+            phase: InputEdgeScrollPhase::Changed,
+            momentum_phase: InputEdgeScrollPhase::Began,
+        },
     ];
     let message = input_inject_message("main", &edges);
     assert_eq!(
@@ -58,7 +69,14 @@ fn edges_serialize_to_daemon_wire_shape() {
                 { "kind": "key", "key": "a", "state": "pressed" },
                 { "kind": "button", "button": "left", "state": "released" },
                 { "kind": "move", "nx": 0.25, "ny": 1.0 },
-                { "kind": "wheel", "delta_hi_res": -120 },
+                {
+                    "kind": "scroll",
+                    "delta_x_q16_16": 98304,
+                    "delta_y_q16_16": -131072,
+                    "unit": "pixels",
+                    "phase": "changed",
+                    "momentum_phase": "began"
+                },
             ],
         })
     );
@@ -75,21 +93,67 @@ fn interactive_preview_control_messages_are_addressed() {
     assert_eq!(
         open_message(&request),
         serde_json::json!({
-            "type": "interactive_preview_open",
-            "preview_id": "main",
-            "target": "active_scene",
-            "fps": 30,
-            "width": 640,
-            "height": 480,
-            "format": "jpeg",
+            "type": "subscribe",
+            "topics": [{
+                "topic": "interactive_preview",
+                "key": "main",
+                "config": {
+                    "target": "active_scene",
+                    "fps": 30,
+                    "width": 640,
+                    "height": 480,
+                    "format": "jpeg",
+                }
+            }]
         })
     );
     assert_eq!(
         close_message("main"),
         serde_json::json!({
-            "type": "interactive_preview_close",
-            "preview_id": "main",
+            "type": "unsubscribe",
+            "topics": [{ "topic": "interactive_preview", "key": "main" }]
         })
+    );
+}
+
+#[test]
+fn an_acknowledgment_reports_open_and_closed_previews_together() {
+    let ack = serde_json::json!({
+        "type": "subscribed",
+        "topics": [
+            { "topic": "events" },
+            {
+                "topic": "interactive_preview",
+                "key": "main",
+                "config": { "fps": 30 },
+                "publication_id": 11
+            }
+        ]
+    });
+
+    assert_eq!(
+        server_updates(&ack),
+        vec![InteractivePreviewServerUpdate::Opened {
+            preview_id: "main".to_owned(),
+            publication_id: 11,
+        }]
+    );
+    // "inspector" is absent from the live set, so it has closed.
+    assert_eq!(
+        closed_previews(&ack, &["main".to_owned(), "inspector".to_owned()]),
+        vec![InteractivePreviewServerUpdate::Closed {
+            preview_id: "inspector".to_owned(),
+        }]
+    );
+    assert!(closed_previews(&ack, &["main".to_owned()]).is_empty());
+
+    // A publication id of zero is not an open preview.
+    assert!(
+        server_updates(&serde_json::json!({
+            "type": "subscribed",
+            "topics": [{ "topic": "interactive_preview", "key": "main", "publication_id": 0 }]
+        }))
+        .is_empty()
     );
 }
 
@@ -146,25 +210,25 @@ fn interactive_preview_lifecycle_fences_rapid_reopen_until_latest_ack() {
 
 #[test]
 fn interactive_preview_rejection_is_addressed_and_terminal() {
-    let update = server_update(&serde_json::json!({
+    let updates = server_updates(&serde_json::json!({
         "type": "error",
         "code": "unavailable",
         "details": { "preview_id": "main" },
-    }))
-    .expect("addressed error should parse");
+    }));
+    assert_eq!(updates.len(), 1, "an addressed error should parse");
     let mut tracker = InteractivePreviewLifecycleTracker::default();
     tracker.request_open("main");
-    tracker.apply(update);
+    tracker.apply(updates.into_iter().next().expect("one update"));
     assert_eq!(
         tracker.lifecycles().get("main"),
         Some(&InteractivePreviewLifecycle::Rejected)
     );
     assert!(
-        server_update(&serde_json::json!({
+        server_updates(&serde_json::json!({
             "type": "error",
             "details": { "preview_id": "" },
         }))
-        .is_none()
+        .is_empty()
     );
 }
 
@@ -231,15 +295,39 @@ fn injection_keys_match_daemon_canonical_names() {
 }
 
 #[test]
-fn wheel_deltas_scale_to_hi_res_notches() {
-    // One standard pixel-mode notch (100px down) = -120 hi-res units.
-    assert_eq!(wheel_delta_hi_res(100.0, 0), -120);
-    assert_eq!(wheel_delta_hi_res(-100.0, 0), 120);
-    // Firefox line mode: 3 lines per notch.
-    assert_eq!(wheel_delta_hi_res(3.0, 1), -144);
-    // Page mode scales through the page-height equivalent.
-    assert_eq!(wheel_delta_hi_res(1.0, 2), -480);
-    assert_eq!(wheel_delta_hi_res(0.0, 0), 0);
+fn wheel_deltas_preserve_axes_and_dom_units() {
+    assert_eq!(
+        wheel_scroll_edge(12.5, 100.0, 0),
+        Some(InputInjectEdge::Scroll {
+            delta_x_q16_16: -819_200,
+            delta_y_q16_16: -6_553_600,
+            unit: InputEdgeScrollUnit::Pixels,
+            phase: InputEdgeScrollPhase::None,
+            momentum_phase: InputEdgeScrollPhase::None,
+        })
+    );
+    assert_eq!(
+        wheel_scroll_edge(0.0, 3.0, 1),
+        Some(InputInjectEdge::Scroll {
+            delta_x_q16_16: 0,
+            delta_y_q16_16: -9_437_184,
+            unit: InputEdgeScrollUnit::Line120,
+            phase: InputEdgeScrollPhase::None,
+            momentum_phase: InputEdgeScrollPhase::None,
+        })
+    );
+    assert_eq!(
+        wheel_scroll_edge(1.0, -0.5, 2),
+        Some(InputInjectEdge::Scroll {
+            delta_x_q16_16: -26_214_400,
+            delta_y_q16_16: 13_107_200,
+            unit: InputEdgeScrollUnit::Pixels,
+            phase: InputEdgeScrollPhase::None,
+            momentum_phase: InputEdgeScrollPhase::None,
+        })
+    );
+    assert_eq!(wheel_scroll_edge(0.0, 0.0, 0), None);
+    assert_eq!(wheel_scroll_edge(f64::NAN, 1.0, 0), None);
 }
 
 #[test]
@@ -267,10 +355,14 @@ fn normalized_positions_clamp_to_unit_square() {
 
 #[test]
 fn interaction_gate_uses_authoritative_capability() {
-    assert!(effect_wants_interaction(&summary(true, "ambient", &[])));
+    assert!(effect_wants_interaction(&summary(
+        true,
+        EffectCategory::Ambient,
+        &[]
+    )));
     assert!(!effect_wants_interaction(&summary(
         false,
-        "interactive",
+        EffectCategory::Interactive,
         &["input", "mouse", "keyboard"]
     )));
 }

@@ -9,9 +9,10 @@ use turbojpeg::{
     compressed_buf_len as turbojpeg_compressed_buf_len,
 };
 
+use hypercolor_color::Rgb;
 use hypercolor_core::bus::{CanvasFrame, DisplayYuv420Frame};
 use hypercolor_types::device::DisplayFrameFormat;
-use hypercolor_types::scene::DisplayFaceBlendMode;
+use hypercolor_types::layer::BlendMode;
 
 use crate::render_thread::sparkleflinger::SparkleFlinger;
 
@@ -22,6 +23,9 @@ use super::render::{
 use super::{DisplayGeometry, DisplayViewport};
 
 const JPEG_QUALITY: u8 = 85;
+/// Qualities tried, in order, when a frame overruns a device's wire cap at
+/// the base quality. A frame still over the cap at the last rung is dropped.
+const JPEG_QUALITY_LADDER: [u8; 3] = [70, 55, 40];
 const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 
 pub(super) struct EncodedDisplayFrame {
@@ -38,6 +42,8 @@ pub(super) struct DisplayEncodeState {
     pub jpeg_compressor: TurboJpegCompressor,
     pub fast_resizer: fr::Resizer,
     pub axis_plan: Option<PreparedDisplayPlan>,
+    /// The device's encoded-frame wire cap, when it has one.
+    pub max_frame_len: Option<usize>,
     brightness_factor: u16,
     brightness_lut: [u8; 256],
 }
@@ -61,6 +67,7 @@ impl DisplayEncodeState {
             jpeg_compressor,
             fast_resizer: fr::Resizer::new(),
             axis_plan: None,
+            max_frame_len: None,
             brightness_factor: u16::from(u8::MAX),
             brightness_lut: identity_brightness_lut(),
         })
@@ -155,7 +162,7 @@ pub(super) fn encode_face_scene_blend(
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
     brightness: f32,
-    face_blend_mode: DisplayFaceBlendMode,
+    face_blend_mode: BlendMode,
     face_opacity: f32,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
@@ -167,7 +174,7 @@ pub(super) fn encode_face_scene_blend(
         prepare_black_rgba_frame(geometry, &mut encode_state.rgba_buffer);
     }
 
-    render_direct_canvas_frame_rgba(face_source, geometry, encode_state, true)?;
+    render_direct_canvas_frame_rgba(face_source, geometry, viewport.rotation, encode_state, true)?;
     SparkleFlinger::blend_face_overlay_rgba(
         &mut encode_state.rgba_buffer,
         &encode_state.scratch_rgba_buffer,
@@ -186,11 +193,12 @@ pub(super) fn encode_face_scene_blend(
 pub(super) fn encode_finalized_canvas_frame(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
+    rotation: f32,
     frame_format: DisplayFrameFormat,
     include_preview_jpeg: bool,
     encode_state: &mut DisplayEncodeState,
 ) -> Result<EncodedDisplayFrame> {
-    render_direct_canvas_frame_rgba(source, geometry, encode_state, false)?;
+    render_direct_canvas_frame_rgba(source, geometry, rotation, encode_state, false)?;
     finish_rgba_frame(geometry, frame_format, include_preview_jpeg, encode_state)
 }
 
@@ -260,12 +268,17 @@ fn render_canvas_frame_rgba(
     Ok(())
 }
 
+/// Draw a frame composed for this display at full size, turned by the
+/// layout's `rotation` so a screen mounted upside down or on its side reads
+/// correctly. Unrotated frames of the right size are copied as they are.
 fn render_direct_canvas_frame_rgba(
     source: &CanvasFrame,
     geometry: &DisplayGeometry,
+    rotation: f32,
     encode_state: &mut DisplayEncodeState,
     use_scratch: bool,
 ) -> Result<()> {
+    let rotated = rotation.abs() > f32::EPSILON;
     if geometry.width == 0 || geometry.height == 0 {
         if use_scratch {
             encode_state.scratch_rgba_buffer.clear();
@@ -275,7 +288,7 @@ fn render_direct_canvas_frame_rgba(
         return Ok(());
     }
 
-    if source.width == geometry.width && source.height == geometry.height {
+    if !rotated && source.width == geometry.width && source.height == geometry.height {
         let Some(render_len) = rgba_buffer_len(geometry.width, geometry.height) else {
             if use_scratch {
                 encode_state.scratch_rgba_buffer.clear();
@@ -301,7 +314,7 @@ fn render_direct_canvas_frame_rgba(
         &DisplayViewport {
             position: hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5),
             size: hypercolor_types::spatial::NormalizedPosition::new(1.0, 1.0),
-            rotation: 0.0,
+            rotation,
             scale: 1.0,
             edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
         },
@@ -450,10 +463,12 @@ fn encode_rgb_to_jpeg(
         height,
         format: TurboJpegPixelFormat::RGB,
     };
-    let jpeg_len = match encode_state
-        .jpeg_compressor
-        .compress_to_slice(image, jpeg_buffer.as_mut_slice())
-    {
+    let jpeg_len = match compress_within_budget(
+        &mut encode_state.jpeg_compressor,
+        encode_state.max_frame_len,
+        jpeg_buffer.as_mut_slice(),
+        |compressor, buffer| compressor.compress_to_slice(image, buffer),
+    ) {
         Ok(len) => len,
         Err(error) => {
             encode_state.jpeg_buffer = jpeg_buffer;
@@ -463,6 +478,65 @@ fn encode_rgb_to_jpeg(
 
     jpeg_buffer.truncate(jpeg_len);
     Ok(jpeg_buffer)
+}
+
+/// Compress at the base quality, then down the ladder until the frame fits
+/// `budget`. The compressor is left at the base quality either way.
+///
+/// # Errors
+///
+/// Returns the compressor's error, or a budget error when the frame still
+/// overruns the cap at the lowest rung; the caller drops that frame rather
+/// than sending bytes the device would truncate.
+fn compress_within_budget(
+    compressor: &mut TurboJpegCompressor,
+    budget: Option<usize>,
+    jpeg_buffer: &mut [u8],
+    mut compress: impl FnMut(&mut TurboJpegCompressor, &mut [u8]) -> turbojpeg::Result<usize>,
+) -> Result<usize> {
+    let mut len = compress(compressor, jpeg_buffer)?;
+    let Some(budget) = budget.filter(|budget| len > *budget) else {
+        return Ok(len);
+    };
+
+    let mut fitted = None;
+    for quality in JPEG_QUALITY_LADDER {
+        compressor
+            .set_quality(i32::from(quality))
+            .context("failed to step TurboJPEG quality down")?;
+        match compress(compressor, jpeg_buffer) {
+            Ok(stepped) => len = stepped,
+            Err(error) => {
+                restore_base_quality(compressor)?;
+                return Err(error).context("failed to TurboJPEG-encode at reduced quality");
+            }
+        }
+        if len <= budget {
+            fitted = Some(quality);
+            break;
+        }
+    }
+    restore_base_quality(compressor)?;
+
+    match fitted {
+        Some(quality) => {
+            debug!(
+                bytes = len,
+                budget, quality, "display frame stepped down to fit the device's wire cap"
+            );
+            Ok(len)
+        }
+        None => Err(anyhow::anyhow!(
+            "display frame is {len} bytes at quality {} and the device's wire cap is {budget} bytes",
+            JPEG_QUALITY_LADDER[JPEG_QUALITY_LADDER.len() - 1]
+        )),
+    }
+}
+
+fn restore_base_quality(compressor: &mut TurboJpegCompressor) -> Result<()> {
+    compressor
+        .set_quality(i32::from(JPEG_QUALITY))
+        .context("failed to restore TurboJPEG base quality")
 }
 
 fn encode_rgba_to_jpeg(
@@ -491,10 +565,12 @@ fn encode_rgba_to_jpeg(
         height,
         format: TurboJpegPixelFormat::RGBA,
     };
-    let jpeg_len = match encode_state
-        .jpeg_compressor
-        .compress_to_slice(image, jpeg_buffer.as_mut_slice())
-    {
+    let jpeg_len = match compress_within_budget(
+        &mut encode_state.jpeg_compressor,
+        encode_state.max_frame_len,
+        jpeg_buffer.as_mut_slice(),
+        |compressor, buffer| compressor.compress_to_slice(image, buffer),
+    ) {
         Ok(len) => len,
         Err(error) => {
             encode_state.jpeg_buffer = jpeg_buffer;
@@ -537,10 +613,12 @@ fn encode_yuv420_to_jpeg(
         v_stride: uv_stride,
         subsamp: JPEG_SUBSAMP,
     };
-    let jpeg_len = match encode_state
-        .jpeg_compressor
-        .compress_yuv_planes_to_slice(&image, jpeg_buffer.as_mut_slice())
-    {
+    let jpeg_len = match compress_within_budget(
+        &mut encode_state.jpeg_compressor,
+        encode_state.max_frame_len,
+        jpeg_buffer.as_mut_slice(),
+        |compressor, buffer| compressor.compress_yuv_planes_to_slice(&image, buffer),
+    ) {
         Ok(len) => len,
         Err(error) => {
             encode_state.jpeg_buffer = jpeg_buffer;
@@ -654,20 +732,14 @@ fn prepare_black_rgba_frame(geometry: &DisplayGeometry, rgba_buffer: &mut Vec<u8
     }
 }
 
-fn scale_channel(channel: u8, factor: u16) -> u8 {
-    let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
-    u8::try_from(scaled).expect("display brightness scaling should remain within byte range")
-}
-
 fn refresh_display_brightness_lut(encode_state: &mut DisplayEncodeState, brightness_factor: u16) {
     if encode_state.brightness_factor != brightness_factor {
         encode_state.brightness_factor = brightness_factor;
+        let scale = f32::from(brightness_factor) / f32::from(u8::MAX);
         encode_state.brightness_lut = std::array::from_fn(|channel| {
-            scale_channel(
-                u8::try_from(channel)
-                    .expect("brightness lookup indices should remain within byte range"),
-                brightness_factor,
-            )
+            let channel = u8::try_from(channel)
+                .expect("brightness lookup indices should remain within byte range");
+            Rgb::new(channel, channel, channel).scale(scale).r
         });
     }
 }
@@ -744,7 +816,7 @@ mod tests {
             &default_viewport(),
             &test_geometry(),
             1.0,
-            DisplayFaceBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
             DisplayFrameFormat::Rgb,
             false,
@@ -756,6 +828,54 @@ mod tests {
         assert_eq!(
             rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
             [RED_RGB, GREEN_RGB, BLUE_RGB, YELLOW_RGB],
+        );
+    }
+
+    /// A screen mounted upside down carries a half-turn in its layout zone;
+    /// the face must turn with it, not just the scene underlay.
+    #[test]
+    fn display_face_encode_turns_with_the_layout_rotation() {
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        let frame =
+            CanvasFrame::from_owned_canvas(orientation_canvas(TEST_WIDTH, TEST_HEIGHT), 1, 16);
+        let viewport = DisplayViewport {
+            rotation: std::f32::consts::PI,
+            ..default_viewport()
+        };
+
+        let encoded = encode_face_scene_blend(
+            None,
+            &frame,
+            &viewport,
+            &test_geometry(),
+            1.0,
+            BlendMode::Replace,
+            1.0,
+            DisplayFrameFormat::Rgb,
+            false,
+            &mut state,
+        )
+        .expect("face encode should succeed");
+
+        assert_rgb_corners_close(
+            rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
+            [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
+            8,
+        );
+
+        let encoded = encode_finalized_canvas_frame(
+            &frame,
+            &test_geometry(),
+            std::f32::consts::PI,
+            DisplayFrameFormat::Rgb,
+            false,
+            &mut state,
+        )
+        .expect("canvas encode should succeed");
+        assert_rgb_corners_close(
+            rgb_corner_pixels(&encoded.data, TEST_WIDTH, TEST_HEIGHT),
+            [YELLOW_RGB, BLUE_RGB, GREEN_RGB, RED_RGB],
+            8,
         );
     }
 
@@ -771,7 +891,7 @@ mod tests {
             &default_viewport(),
             &test_geometry(),
             1.0,
-            DisplayFaceBlendMode::Replace,
+            BlendMode::Replace,
             1.0,
             DisplayFrameFormat::Jpeg,
             false,
@@ -839,11 +959,13 @@ mod tests {
 
     #[test]
     fn display_brightness_scales_srgb_bytes_not_linear_light() {
-        let half_brightness = display_brightness_factor(0.5);
+        let mut state = DisplayEncodeState::new().expect("display encoder should initialize");
+        refresh_display_brightness_lut(&mut state, display_brightness_factor(0.5));
 
-        assert_eq!(scale_channel(0, half_brightness), 0);
-        assert_eq!(scale_channel(128, half_brightness), 64);
-        assert_eq!(scale_channel(255, half_brightness), 128);
+        // Halving in linear light would leave full white near 188, not 128.
+        assert_eq!(state.brightness_lut[0], 0);
+        assert_eq!(state.brightness_lut[128], 64);
+        assert_eq!(state.brightness_lut[255], 128);
     }
 
     #[test]
@@ -959,5 +1081,83 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Pseudo-random pixels: the worst case for a JPEG size budget.
+    fn noise_rgb(width: u32, height: u32) -> Vec<u8> {
+        let mut state = 0x9E37_79B9_u32;
+        (0..width * height * 3)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect()
+    }
+
+    fn noise_geometry() -> DisplayGeometry {
+        DisplayGeometry {
+            width: 160,
+            height: 160,
+            circular: false,
+        }
+    }
+
+    #[test]
+    fn a_frame_over_the_wire_cap_steps_quality_down_until_it_fits() {
+        let geometry = noise_geometry();
+        let mut state = DisplayEncodeState::new().expect("encoder");
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+
+        let base = encode_rgb_to_jpeg(&geometry, &mut state).expect("base encode");
+        state.max_frame_len = Some(base.len() - 1);
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let fitted = encode_rgb_to_jpeg(&geometry, &mut state).expect("stepped encode");
+        assert!(
+            fitted.len() < base.len(),
+            "a lower quality rung must shrink the frame: {} vs {}",
+            fitted.len(),
+            base.len()
+        );
+
+        // The compressor is back at the base quality for the next frame.
+        state.max_frame_len = None;
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let again = encode_rgb_to_jpeg(&geometry, &mut state).expect("base encode again");
+        assert_eq!(
+            again.len(),
+            base.len(),
+            "quality restored after a step-down"
+        );
+    }
+
+    #[test]
+    fn a_frame_the_lowest_rung_cannot_fit_is_an_error_not_a_truncated_jpeg() {
+        let geometry = noise_geometry();
+        let mut state = DisplayEncodeState::new().expect("encoder");
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        state.max_frame_len = Some(200);
+
+        let error = encode_rgb_to_jpeg(&geometry, &mut state).expect_err("cannot fit 200 bytes");
+        assert!(
+            format!("{error:#}").contains("wire cap is 200 bytes"),
+            "unexpected error: {error:#}"
+        );
+
+        state.max_frame_len = None;
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        encode_rgb_to_jpeg(&geometry, &mut state).expect("the encoder recovers");
+    }
+
+    #[test]
+    fn a_frame_under_the_wire_cap_is_untouched() {
+        let geometry = noise_geometry();
+        let mut state = DisplayEncodeState::new().expect("encoder");
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let base = encode_rgb_to_jpeg(&geometry, &mut state).expect("base encode");
+
+        state.max_frame_len = Some(base.len());
+        state.rgb_buffer = noise_rgb(geometry.width, geometry.height);
+        let within = encode_rgb_to_jpeg(&geometry, &mut state).expect("fits exactly");
+        assert_eq!(within.len(), base.len());
     }
 }

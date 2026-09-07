@@ -4,7 +4,7 @@ use hypercolor_hal::{ProtocolRuntimeConfig, runtime_config_for_attachment_profil
 use hypercolor_types::attachment::{ComponentBinding, ComponentSlot, DeviceComponentProfile};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceOrigin, DeviceTopologyHint, ZoneInfo,
+    DeviceOrigin, DeviceTopologyHint, SegmentInfo,
 };
 
 fn prism_s_info() -> DeviceInfo {
@@ -17,7 +17,7 @@ fn prism_s_info() -> DeviceInfo {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("prismrgb", "usb", ConnectionType::Usb)
             .with_protocol_id("prismrgb/prism-s"),
-        zones: Vec::new(),
+        segments: Vec::new(),
         firmware_version: None,
         capabilities: DeviceCapabilities::default(),
     }
@@ -33,7 +33,7 @@ fn nollie32_info() -> DeviceInfo {
         connection_type: ConnectionType::Usb,
         origin: DeviceOrigin::native("nollie", "usb", ConnectionType::Usb)
             .with_protocol_id("nollie/nollie-32"),
-        zones: vec![ZoneInfo {
+        segments: vec![SegmentInfo {
             name: "Channel 1".to_owned(),
             led_count: 256,
             topology: DeviceTopologyHint::Strip,

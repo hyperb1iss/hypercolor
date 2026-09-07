@@ -1,5 +1,5 @@
 import type { DrawFn } from 'hypercolor'
-import { canvas, combo, normalizeSpeed, num, scaleContext } from 'hypercolor'
+import { canvas, combo, hexToRgb, normalizeSpeed, num, type Rgb, scaleContext } from 'hypercolor'
 
 const NYAN_DESIGN_BASIS = { height: 200, width: 320 } as const
 
@@ -249,28 +249,22 @@ function hsla(hue: number, saturation: number, lightness: number, alpha: number)
     return `hsla(${wrappedHue}, ${clamp(saturation, 0, 100)}%, ${clamp(lightness, 0, 100)}%, ${clamp(alpha, 0, 1)})`
 }
 
+// Identity-compared, so a rejected parse is distinguishable from a color that
+// happens to be black.
+const UNPARSED: Rgb = { b: 0, g: 0, r: 0 }
+
 function colorWithAlpha(color: string, alpha: number): string {
     const normalized = color.trim()
     if (!normalized.startsWith('#')) {
         return normalized
     }
 
-    let hex = normalized.slice(1)
-    if (hex.length === 3) {
-        hex = hex
-            .split('')
-            .map((part) => `${part}${part}`)
-            .join('')
-    }
-
-    if (hex.length !== 6) {
+    const rgb = hexToRgb(normalized, UNPARSED)
+    if (rgb === UNPARSED) {
         return normalized
     }
 
-    const red = Number.parseInt(hex.slice(0, 2), 16)
-    const green = Number.parseInt(hex.slice(2, 4), 16)
-    const blue = Number.parseInt(hex.slice(4, 6), 16)
-    return `rgba(${red}, ${green}, ${blue}, ${clamp(alpha, 0, 1)})`
+    return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${clamp(alpha, 0, 1)})`
 }
 
 function parseNumberList(value: string): number[] {

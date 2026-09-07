@@ -6,7 +6,7 @@ weight = 110
 
 Hypercolor discovers USB devices automatically the moment the daemon starts. Network devices (WLED, Philips Hue, Nanoleaf, Govee) are found over the local network, and the ones that require credentials need one additional `devices pair` step. This page covers all three paths plus the udev permission fix that solves the most common "device missing" problem on Linux.
 
-{{ img(path="img/ui/ui-devices.webp", alt="Device discovery in the Hypercolor web UI") }}
+{{< img path="img/ui/ui-devices.webp" alt="Device discovery in the Hypercolor web UI" />}}
 
 ## Check what Hypercolor already found
 
@@ -63,7 +63,7 @@ just udev-install
 
 This copies both rules files (`udev/99-hypercolor.rules` for USB and hidraw access, `udev/70-hypercolor-input.rules` for input capture) to `/etc/udev/rules.d/`, reloads the udev database, and retriggers existing device events. After installation you must either re-plug the device or log out and back in for the session ACLs to take effect.
 
-If you installed from a release (via `scripts/install-release.sh`, the `.deb`, or the AUR package), the rules are already handled: the installer prompts before applying them, and the packages install them automatically. Release payloads from 0.3.0 onward carry both files under `lib/udev/rules.d/` inside the release directory. An install made from an older payload lacks the input rules; copy them manually from a repo checkout, or upgrade:
+The `.deb` and the AUR package install both rules files for you. The `scripts/install-release.sh` one-liner does not: it never asks for `sudo`, so it leaves the rules unapplied even though release payloads from 0.3.0 onward carry them under `lib/udev/rules.d/` inside the release directory. Copy them from that directory or from a repo checkout:
 
 ```bash
 sudo cp /path/to/hypercolor/udev/99-hypercolor.rules /etc/udev/rules.d/
@@ -74,9 +74,9 @@ sudo udevadm trigger
 
 Then re-plug or reboot.
 
-{% callout(type="warning") %}
+{% <callout type="warning"> %}
 If another RGB manager (OpenRGB, openrazer daemon, Aura Sync, iCUE) is running and holding the same HID device, Hypercolor cannot connect to it even with correct udev rules. Stop the other tool before starting Hypercolor, or check whether the other tool's kernel module grabbed the device at boot.
-{% end %}
+{% </callout> %}
 
 ## Network devices
 
@@ -91,7 +91,7 @@ WLED strips, Philips Hue bridges, Nanoleaf panels, and Govee lights are discover
 
 If auto-discovery does not find your device, the vendor-specific pages cover each protocol's pairing requirements in detail: [Hue](@/hardware/hue.md), [Nanoleaf](@/hardware/nanoleaf.md), [WLED](@/hardware/wled.md), [Govee](@/hardware/govee.md).
 
-**WLED and Govee addresses are remembered.** Once discovery has found one of those devices, the daemon records its address in `driver-inventory.json` under the data directory (`~/.local/share/hypercolor/` on Linux) and probes it directly at startup and on every later scan. A strip stays reachable through a quiet mDNS responder or a multicast-filtering router, and an unreadable inventory file is set aside rather than blocking startup. Deleting a device drops its entry, so a device you removed on purpose is not learned back on the next scan.
+**WLED and Govee addresses are remembered.** Once discovery has found one of those devices, the daemon records its address in `driver-inventory.json` under the machine-local state directory (`~/.local/state/hypercolor/` on Linux) and probes it directly at startup and on every later scan. A strip stays reachable through a quiet mDNS responder or a multicast-filtering router, and an unreadable inventory file is set aside rather than blocking startup. Deleting a device drops its entry, so a device you removed on purpose is not learned back on the next scan.
 
 ## Pairing network devices that require credentials
 
@@ -117,9 +117,9 @@ hypercolor devices pair "Hue Bridge" --no-activate
 
 On success you will see a `paired` or `already_paired` status message. The credentials are persisted; you do not need to pair again unless you factory-reset the device.
 
-{% callout(type="info") %}
+{% <callout type="info"> %}
 `devices pair` is the only supported way to store network credentials. The command POSTs to `/devices/{id}/pair` on the daemon and saves tokens through the device registry. There is no config-file credential field to fill in manually.
-{% end %}
+{% </callout> %}
 
 ## Inspect a device
 
@@ -145,16 +145,16 @@ The device will flash for 5 seconds by default. Use `--duration` to adjust:
 hypercolor devices identify "Corsair LL120" --duration 10
 ```
 
-## Set a device to a solid color
+## Test solid-color output
 
-Useful for testing that a device is receiving output:
+Lighting output belongs to the active scene, not to a device mutation. Activate
+the built-in solid-color effect to test the current scene's output path:
 
 ```bash
-hypercolor devices set-color <device-name-or-id> "#ff00ff"
-hypercolor devices set-color "Razer Huntsman" cyan
+hypercolor effects activate "Solid Color" --param color=#ff00ff
 ```
 
-Accepts hex (`#rrggbb`) or named colors.
+Use zones when only part of the rig should receive the effect.
 
 ## Still not finding your device?
 

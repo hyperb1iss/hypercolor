@@ -19,28 +19,25 @@ impl BackendManager {
     /// and enqueues one payload per device. Errors are
     /// collected but do not halt processing — every mapped device gets
     /// its data.
-    #[allow(clippy::unused_async)]
     #[allow(
         clippy::too_many_lines,
         reason = "frame routing keeps mapping, remap, segmented writes, and queue dispatch together so the hot-path ordering stays readable"
     )]
-    pub async fn write_frame(
+    pub fn write_frame(
         &mut self,
         zone_colors: &[ZoneColors],
         layout: &SpatialLayout,
     ) -> FrameWriteStats {
         self.write_frame_with_brightness(zone_colors, layout, 1.0, None)
-            .await
     }
 
     /// Push frame color data to all mapped devices with optional per-device
     /// output brightness scalars.
-    #[allow(clippy::unused_async)]
     #[allow(
         clippy::too_many_lines,
         reason = "frame routing keeps mapping, remap, segmented writes, queue dispatch together so the hot-path ordering stays readable"
     )]
-    pub async fn write_frame_with_brightness(
+    pub fn write_frame_with_brightness(
         &mut self,
         zone_colors: &[ZoneColors],
         layout: &SpatialLayout,

@@ -15,21 +15,31 @@ screen-capture-fixtures = [
   "screen-capture",
   "hypercolor-windows-capture/capture-fixtures",
 ]
+# Hidden-window CPU readback context plus the neutral Servo platform seam.
+servo-window = [
+  "dep:anyhow",
+  "dep:dpi",
+  "dep:raw-window-handle",
+  "dep:servo",
+  "dep:tao",
+  "hypercolor-gpu-frame/servo-context",
+]
 servo-context = [
+  "servo-window",
   "dep:dpi",
   "dep:euclid",
   "dep:gleam",
   "dep:glow",
   "dep:image",
-  "dep:paint_api",
   "dep:surfman",
   "dep:tracing",
-  "dep:webrender_api",
   "dep:winapi",
   "dep:wio",
 ]
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
+hypercolor-gpu-frame = { workspace = true }
 hypercolor-windows-capture = { path = "../hypercolor-windows-capture", optional = true }
 pollster = { workspace = true }
 thiserror = { workspace = true }
@@ -60,10 +70,11 @@ euclid = { version = "0.22", optional = true }
 gleam = { version = "0.15", optional = true }
 glow = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
-paint_api = { workspace = true, optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+servo = { workspace = true, features = ["no-wgl"], optional = true }
 surfman = { workspace = true, features = ["sm-angle-builtin", "sm-angle-default"], optional = true }
+tao = { version = "0.34", default-features = false, features = ["rwh_06"], optional = true }
 tracing = { workspace = true, optional = true }
-webrender_api = { workspace = true, optional = true }
 winapi = { version = "0.3", features = ["d3d11", "dxgi", "winerror"], optional = true }
 wio = { version = "0.2", optional = true }
 

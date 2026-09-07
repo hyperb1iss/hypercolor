@@ -2,7 +2,34 @@
 
 > The nervous system. Every signal between daemon, TUI, CLI, and web UI flows through here.
 
-_Synthesized from: [ARCHITECTURE.md](../../ARCHITECTURE.md) (Event Bus, Render Loop), [05-api-design.md](../design/05-api-design.md) (Sections 3, 6, 8), [10-tui-cli.md](../design/10-tui-cli.md) (IPC Appendix B, TUI Performance)._
+**Status:** Historical draft. Do not implement sections 2.1, 5.2, or 7.1 from this document.
+**Crate:** `hypercolor-types` for the event enum; `hypercolor-core` for the bus
+**Module path:** `hypercolor_types::event`, `hypercolor_core::bus`
+
+> **Note (2026-08-25):** this file carried no status line at all until today, and three
+> parts of it are wrong.
+>
+> **The profile events are gone.** `ProfileLoaded`, `ProfileSaved`, and `ProfileDeleted`
+> are routed in the section 2.3 category table and the section 2.4 priority table, but
+> `crates/hypercolor-types/src/event.rs` contains no `Profile` anything. Profiles folded
+> into scenes; snapshot semantics now live on scenes at `POST /api/v1/scenes/snapshot`.
+> The enum has also grown sixteen variants this spec never mentions, among them
+> `ActiveSceneChanged`, `ExtensionStateChanged`, `LayerHealthChanged`, `SessionChanged`,
+> `Paused`, and `Resumed`.
+>
+> **Section 5.2's binary frame layout is a hand-roll.** It specifies a 9-byte header with
+> a `u8` zone count. The real tag `0x01` header is 11 bytes with a `u16_le` zone count
+> (`crates/hypercolor-daemon/src/api/ws/cache.rs`), and `FrameData` carries no codec of
+> its own. Per CLAUDE.md, `hypercolor-leptos-ext::ws` is the single definition of the
+> binary wire format and those layouts must never be hand-rolled. Read
+> `crates/hypercolor-leptos-ext/src/ws/` instead.
+>
+> **The bus type is named `HypercolorBus`**, not `EventBus`
+> (`crates/hypercolor-core/src/bus/mod.rs`). `EventBus`, `ActiveEffectInfo`, and
+> `FpsSnapshot` have no definitions anywhere. The broadcast-versus-watch design the spec
+> describes is still exactly right; only these names and layouts are stale.
+
+_Synthesized from: [ARCHITECTURE.md](../ARCHITECTURE.md) (Event Bus, Render Loop), [05-api-design.md](../design/05-api-design.md) (Sections 3, 6, 8), [10-tui-cli.md](../design/10-tui-cli.md) (IPC Appendix B, TUI Performance)._
 
 ---
 
@@ -193,23 +220,6 @@ pub enum HypercolorEvent {
         trigger: ChangeTrigger,
     },
 
-    /// A compositing layer was added to the effect stack.
-    /// (Phase 2+ -- multi-layer effect composition.)
-    EffectLayerAdded {
-        layer_id: String,
-        effect: EffectRef,
-        /// Stack index (0 = bottom).
-        index: u32,
-        blend_mode: String,
-        opacity: f32,
-    },
-
-    /// A compositing layer was removed from the effect stack.
-    EffectLayerRemoved {
-        layer_id: String,
-        effect_id: String,
-    },
-
     /// An effect failed to load, render, or initialize.
     EffectError {
         effect_id: String,
@@ -247,6 +257,22 @@ pub enum HypercolorEvent {
     SceneEnabled {
         scene_id: String,
         enabled: bool,
+    },
+
+    /// A zone in a scene changed.
+    ZoneChanged {
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        role: ZoneRole,
+        kind: ZoneChangeKind,
+    },
+
+    /// An authored layer stack in a zone changed.
+    LayerStackChanged {
+        scene_id: SceneId,
+        zone_id: ZoneId,
+        revision: u64,
+        kind: LayerStackChangeKind,
     },
 
     // ── Audio Events ──────────────────────────────────────────────
@@ -344,11 +370,17 @@ pub enum HypercolorEvent {
         profile_id: String,
     },
 
-    /// A configuration value changed (daemon config, not effect controls).
-    /// Covers any change to the TOML configuration: audio settings, network
-    /// bindings, canvas resolution, etc.
+    /// A persisted configuration value changed (daemon config, not effect
+    /// controls). Covers any change to the TOML configuration: audio
+    /// settings, network bindings, canvas resolution, etc. The config
+    /// manager publishes exactly one per persisted document, whichever
+    /// path wrote it. One changed key carries its masked before and after;
+    /// several changed keys collapse to their deepest shared prefix (the
+    /// empty string for a whole-document change) with a null payload, so
+    /// consumers re-read that subtree.
     ConfigChanged {
-        /// Dotted path to the changed key (e.g., "daemon.fps", "audio.gain").
+        /// Dotted path to the changed key (e.g., "daemon.fps", "audio.gain"),
+        /// or the shared prefix of several changed keys.
         key: String,
         old_value: Option<serde_json::Value>,
         new_value: serde_json::Value,
@@ -435,9 +467,19 @@ pub enum HypercolorEvent {
 
     // ── Layout Events ─────────────────────────────────────────────
 
-    /// The active spatial layout changed (different layout selected).
+    /// A stored spatial layout changed, or the active layout switched.
+    /// Published once per persisted mutation (create, update, delete,
+    /// apply, config-driven canvas resize, simulator prune, auto-layout
+    /// repair, device-binding migration). Consumers re-read the catalog
+    /// and the active layout: a `current` id missing from the catalog was
+    /// deleted, or names the synthesized default that becomes active when
+    /// the last stored layout is removed (the list route omits it too).
     LayoutChanged {
+        /// The previously active layout, present only when the active
+        /// selection moved (apply, or deleting the active layout).
         previous: Option<String>,
+        /// The layout the change touched: created, updated, deleted, or
+        /// newly active.
         current: String,
     },
 
@@ -618,8 +660,8 @@ Events are grouped into categories for filtering. Every event belongs to exactly
 | Category      | Events                                                                                                                                                                                                       | Use Cases                              |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------- |
 | `device`      | `DeviceDiscovered`, `DeviceConnected`, `DeviceDisconnected`, `DeviceError`, `DeviceFirmwareInfo`, `DeviceStateChanged`, `DeviceDiscoveryStarted`, `DeviceDiscoveryCompleted`                                 | Device manager, health monitoring      |
-| `effect`      | `EffectStarted`, `EffectStopped`, `EffectControlChanged`, `EffectLayerAdded`, `EffectLayerRemoved`, `EffectError`                                                                                            | UI state sync, effect browser          |
-| `scene`       | `SceneActivated`, `SceneTransitionStarted`, `SceneTransitionComplete`, `SceneEnabled`                                                                                                                        | Automation UI, transition coordination |
+| `effect`      | `EffectStarted`, `EffectStopped`, `EffectControlChanged`, `EffectError`                                                                                                                                        | UI state sync, effect browser          |
+| `scene`       | `SceneActivated`, `SceneTransitionStarted`, `SceneTransitionComplete`, `SceneEnabled`, `ZoneChanged`, `LayerStackChanged`                                                                                     | Automation UI, transition coordination |
 | `audio`       | `AudioSourceChanged`, `BeatDetected`, `AudioLevelUpdate`, `AudioStarted`, `AudioStopped`                                                                                                                     | Audio UI, reactive effect tuning       |
 | `system`      | `FrameRendered`, `FpsChanged`, `ProfileLoaded`, `ProfileSaved`, `ProfileDeleted`, `ConfigChanged`, `ShutdownRequested`, `DaemonStarted`, `DaemonShutdown`, `BrightnessChanged`, `Paused`, `Resumed`, `Error` | System health, monitoring, debug view  |
 | `automation`  | `TriggerFired`, `ScheduleActivated`, `ContextChanged`                                                                                                                                                        | Scene scheduler, context engine        |
@@ -646,14 +688,14 @@ impl HypercolorEvent {
             Self::EffectStarted { .. }
             | Self::EffectStopped { .. }
             | Self::EffectControlChanged { .. }
-            | Self::EffectLayerAdded { .. }
-            | Self::EffectLayerRemoved { .. }
             | Self::EffectError { .. } => EventCategory::Effect,
 
             Self::SceneActivated { .. }
             | Self::SceneTransitionStarted { .. }
             | Self::SceneTransitionComplete { .. }
-            | Self::SceneEnabled { .. } => EventCategory::Scene,
+            | Self::SceneEnabled { .. }
+            | Self::ZoneChanged { .. }
+            | Self::LayerStackChanged { .. } => EventCategory::Scene,
 
             Self::AudioSourceChanged { .. }
             | Self::BeatDetected { .. }
@@ -2168,6 +2210,13 @@ impl IpcListener {
 
 ## 9. WebSocket Bridge
 
+> **Superseded on the message shapes.** Spec 76 wave 3.2c replaced the
+> `channels` + `config` subscribe with an array of `{topic, key?, config?}`
+> selectors, keyed `display_preview` and `interactive_preview`, and renamed the
+> `group`-spelled event fields to `zone`. The JSON shapes below record what this
+> spec's own wave shipped; `docs/content/api/websocket.md` and
+> `protocol/websocket-v1.json` are the live contract.
+
 The WebSocket at `ws://127.0.0.1:9420/api/v1/ws` is the primary real-time channel for the Leptos web frontend. It carries JSON messages for commands and events, plus binary messages for frame and spectrum data.
 
 ### 9.1 Connection & Handshake
@@ -2727,6 +2776,10 @@ let shared_bus: Arc<HypercolorBus> = Arc::new(bus);
 // Pass to trait objects
 let plugin: Box<dyn DevicePlugin> = Box::new(WledPlugin::new(shared_bus.clone()));
 ```
+
+> **Removed (Spec 76, Phase 0):** `DevicePlugin` is deleted. The `Arc<HypercolorBus>`
+> sharing pattern above still applies to any trait object; only the plugin type in
+> the example is gone. See `docs/specs/76-internal-api-unification.md` §7.4.
 
 ### 12.3 No Blocking in Event Handlers
 

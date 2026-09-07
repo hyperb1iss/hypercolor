@@ -16,15 +16,21 @@ use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderName, HeaderValue, Method, Request, header};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use if_addrs::IfAddr;
 use serde_json::json;
+use subtle::ConstantTimeEq;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::api::envelope::ApiError;
+use crate::domain::DomainError;
+use crate::macos_owner::MacosDaemonSessionAttestation;
 use hypercolor_types::config::{
     HypercolorConfig, NetworkAccessMode, NetworkClientScope, NetworkConfig,
+};
+use hypercolor_types::service::{
+    PROTECTED_CONTROL_CREDENTIAL_ENV, ProtectedControlCredential,
+    ProtectedControlCredentialParseError,
 };
 
 const RATE_WINDOW: Duration = Duration::from_mins(1);
@@ -32,6 +38,20 @@ const READ_LIMIT_PER_MIN: u32 = 120;
 const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
 const PAIRING_LIMIT_PER_MIN: u32 = 6;
+
+const TRUSTED_TAURI_ORIGINS: &[&str] = &[
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
+pub(crate) fn is_trusted_tauri_origin(origin: &HeaderValue) -> bool {
+    origin.to_str().is_ok_and(|origin| {
+        TRUSTED_TAURI_ORIGINS
+            .iter()
+            .any(|trusted| origin.eq_ignore_ascii_case(trusted))
+    })
+}
 
 const HEADER_RATE_LIMIT_LIMIT: HeaderName = HeaderName::from_static("x-ratelimit-limit");
 const HEADER_RATE_LIMIT_REMAINING: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
@@ -41,15 +61,77 @@ const HEADER_RETRY_AFTER: HeaderName = HeaderName::from_static("retry-after");
 #[derive(Clone)]
 pub struct SecurityState {
     auth: AuthConfig,
+    launcher_session_credential: Option<ProtectedControlCredential>,
+    attested_session_credential: Option<ProtectedControlCredential>,
     network: NetworkAccessPolicy,
     rate_limiter: Arc<Mutex<RateLimiter>>,
+    static_assets: StaticAssetSurface,
+}
+
+/// The paths the bundled web UI is served from.
+///
+/// The UI mounts as the router's fallback, so its surface is defined by
+/// subtraction: every path no dynamic mount claims. Naming the dynamic
+/// prefixes rather than the asset paths is what keeps this exemption
+/// from ever widening onto an API, MCP, or health route, whatever files
+/// the UI build happens to emit.
+#[derive(Clone, Debug, Default)]
+pub struct StaticAssetSurface {
+    mounted: bool,
+    dynamic_prefixes: Arc<[String]>,
+}
+
+/// The prefixes no static-asset surface may ever swallow.
+///
+/// Every dynamic route the daemon mounts lives under one of these or
+/// under the MCP base path, which callers add. Seeding the list here
+/// rather than trusting the caller means an incomplete argument narrows
+/// the exemption, never widens it: the failure mode is an asset that
+/// needs a key, not an API route that does not.
+const ALWAYS_DYNAMIC_PREFIXES: [&str; 2] = ["/api", "/health"];
+
+impl StaticAssetSurface {
+    /// Declare a mounted UI directory sitting behind the given dynamic
+    /// route prefixes.
+    ///
+    /// [`ALWAYS_DYNAMIC_PREFIXES`] is always included, so passing an
+    /// empty list exempts static assets only, never the API.
+    #[must_use]
+    pub fn mounted(dynamic_prefixes: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            mounted: true,
+            dynamic_prefixes: ALWAYS_DYNAMIC_PREFIXES
+                .iter()
+                .map(|prefix| (*prefix).to_owned())
+                .chain(dynamic_prefixes)
+                .collect(),
+        }
+    }
+
+    fn serves(&self, path: &str) -> bool {
+        self.mounted
+            && !self
+                .dynamic_prefixes
+                .iter()
+                .any(|prefix| path_within(path, prefix))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RequestAuthContext {
     security_enabled: bool,
     granted_tier: Option<AccessTier>,
+    protected_control: ProtectedControl,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectedControl {
+    Denied,
+    Granted,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TrustedLocalControl;
 
 impl RequestAuthContext {
     #[must_use]
@@ -57,14 +139,16 @@ impl RequestAuthContext {
         Self {
             security_enabled: false,
             granted_tier: None,
+            protected_control: ProtectedControl::Denied,
         }
     }
 
     #[must_use]
-    const fn preflight() -> Self {
+    pub(crate) const fn preflight() -> Self {
         Self {
             security_enabled: true,
             granted_tier: None,
+            protected_control: ProtectedControl::Denied,
         }
     }
 
@@ -73,6 +157,19 @@ impl RequestAuthContext {
         Self {
             security_enabled: true,
             granted_tier: Some(granted_tier),
+            protected_control: match granted_tier {
+                AccessTier::Read => ProtectedControl::Denied,
+                AccessTier::Control => ProtectedControl::Granted,
+            },
+        }
+    }
+
+    #[must_use]
+    const fn daemon_session(security_enabled: bool) -> Self {
+        Self {
+            security_enabled,
+            granted_tier: Some(AccessTier::Control),
+            protected_control: ProtectedControl::Granted,
         }
     }
 
@@ -99,20 +196,44 @@ impl RequestAuthContext {
     }
 
     #[must_use]
+    pub(crate) const fn can_protected_control(self) -> bool {
+        matches!(self.protected_control, ProtectedControl::Granted)
+    }
+
+    #[must_use]
+    pub(crate) const fn can_read_system_status(self) -> bool {
+        !self.security_enabled || self.granted_tier.is_some()
+    }
+
+    #[must_use]
     const fn granted_tier(self) -> Option<AccessTier> {
         self.granted_tier
     }
 }
 
 impl SecurityState {
+    /// The posture of an application state that serves no router.
+    ///
+    /// Workers and one-shot projections build an `AppState` to reach the
+    /// domain graph, never to answer a request. Handing them a state
+    /// with no keys and no network policy keeps every enforcement
+    /// decision with the one state a router was assembled from.
+    #[must_use]
+    pub(crate) fn unserved() -> Self {
+        Self {
+            auth: AuthConfig::default(),
+            launcher_session_credential: None,
+            attested_session_credential: None,
+            network: NetworkAccessPolicy::default(),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
+        }
+    }
+
     #[must_use]
     pub fn from_env() -> Self {
         if cfg!(test) {
-            return Self {
-                auth: AuthConfig::default(),
-                network: NetworkAccessPolicy::default(),
-                rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
-            };
+            return Self::unserved();
         }
 
         let control_key = api_key_from_env("HYPERCOLOR_API_KEY");
@@ -122,8 +243,11 @@ impl SecurityState {
                 control_key,
                 read_key,
             },
+            launcher_session_credential: protected_control_credential_from_env(),
+            attested_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
     }
 
@@ -134,8 +258,43 @@ impl SecurityState {
         state
     }
 
+    /// Declare the static-asset surface this router serves.
+    ///
+    /// Called once at router assembly, where the mounted UI directory
+    /// and every dynamic prefix are both known.
+    #[must_use]
+    pub fn with_static_assets(mut self, static_assets: StaticAssetSurface) -> Self {
+        self.static_assets = static_assets;
+        self
+    }
+
     pub(crate) fn security_enabled(&self) -> bool {
         self.auth.control_key.is_some() || self.auth.read_key.is_some()
+    }
+
+    pub(crate) fn install_macos_daemon_session(
+        &mut self,
+        attestation: &MacosDaemonSessionAttestation,
+    ) {
+        self.attested_session_credential = Some(attestation.protected_control_credential.clone());
+    }
+
+    fn is_session_credential(&self, token: &str) -> bool {
+        [
+            self.launcher_session_credential.as_ref(),
+            self.attested_session_credential.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|credential| secret_matches(Some(credential.expose_secret()), token))
+    }
+
+    fn resolve_loopback_token(&self, token: &str) -> Option<RequestAuthContext> {
+        if self.is_session_credential(token) {
+            Some(RequestAuthContext::daemon_session(self.security_enabled()))
+        } else {
+            resolve_token_tier(token, &self.auth).map(RequestAuthContext::authenticated)
+        }
     }
 }
 
@@ -159,6 +318,28 @@ fn normalize_api_key(value: Option<String>) -> Option<String> {
     value.filter(|key| !key.trim().is_empty())
 }
 
+fn protected_control_credential_from_env() -> Option<ProtectedControlCredential> {
+    if let Ok(credential) =
+        parse_protected_control_credential(std::env::var(PROTECTED_CONTROL_CREDENTIAL_ENV).ok())
+    {
+        credential
+    } else {
+        warn!(
+            environment = PROTECTED_CONTROL_CREDENTIAL_ENV,
+            "Ignoring invalid protected-control credential"
+        );
+        None
+    }
+}
+
+fn parse_protected_control_credential(
+    value: Option<String>,
+) -> Result<Option<ProtectedControlCredential>, ProtectedControlCredentialParseError> {
+    value
+        .map(|credential| ProtectedControlCredential::parse(&credential))
+        .transpose()
+}
+
 #[cfg(test)]
 impl SecurityState {
     pub(crate) fn with_keys(control_key: Option<&str>, read_key: Option<&str>) -> Self {
@@ -167,24 +348,39 @@ impl SecurityState {
                 control_key: control_key.map(ToOwned::to_owned),
                 read_key: read_key.map(ToOwned::to_owned),
             },
+            launcher_session_credential: None,
+            attested_session_credential: None,
             network: NetworkAccessPolicy::default(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
     }
 
     pub(crate) fn with_network_config(network: NetworkConfig) -> Self {
         Self {
             auth: AuthConfig::default(),
+            launcher_session_credential: None,
+            attested_session_credential: None,
             network: NetworkAccessPolicy::from_config(&network),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
+    }
+
+    fn with_session_credential(credential: ProtectedControlCredential) -> Self {
+        let mut state = Self::with_keys(None, None);
+        state.launcher_session_credential = Some(credential);
+        state
     }
 
     fn with_network_policy(network: NetworkAccessPolicy) -> Self {
         Self {
             auth: AuthConfig::default(),
+            launcher_session_credential: None,
+            attested_session_credential: None,
             network,
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            static_assets: StaticAssetSurface::default(),
         }
     }
 }
@@ -257,9 +453,10 @@ impl NetworkAccessPolicy {
         }
 
         let Some(client_ip) = client_ip(request) else {
-            return Some(ApiError::forbidden(
-                "Client IP is required by network.allowed_clients",
-            ));
+            return Some(
+                DomainError::forbidden("Client IP is required by network.allowed_clients")
+                    .into_response(),
+            );
         };
 
         if client_ip.is_loopback() {
@@ -267,17 +464,23 @@ impl NetworkAccessPolicy {
         }
 
         if !self.invalid_rules.is_empty() {
-            return Some(ApiError::forbidden_with_details(
-                "Invalid network.allowed_clients entries; remote clients are blocked",
-                json!({ "invalid_rules": &self.invalid_rules }),
-            ));
+            return Some(
+                DomainError::forbidden_details(
+                    "Invalid network.allowed_clients entries; remote clients are blocked",
+                    json!({ "invalid_rules": &self.invalid_rules }),
+                )
+                .into_response(),
+            );
         }
 
         if !self.scope_errors.is_empty() {
-            return Some(ApiError::forbidden_with_details(
-                "Network client scope is unavailable; remote clients are blocked",
-                json!({ "scope_errors": &self.scope_errors }),
-            ));
+            return Some(
+                DomainError::forbidden_details(
+                    "Network client scope is unavailable; remote clients are blocked",
+                    json!({ "scope_errors": &self.scope_errors }),
+                )
+                .into_response(),
+            );
         }
 
         if self
@@ -288,10 +491,13 @@ impl NetworkAccessPolicy {
             return None;
         }
 
-        Some(ApiError::forbidden_with_details(
-            "Client IP is not allowed by network.allowed_clients",
-            json!({ "client_ip": client_ip.to_string() }),
-        ))
+        Some(
+            DomainError::forbidden_details(
+                "Client IP is not allowed by network.allowed_clients",
+                json!({ "client_ip": client_ip.to_string() }),
+            )
+            .into_response(),
+        )
     }
 }
 
@@ -517,41 +723,71 @@ pub async fn enforce_security(
     next: Next,
 ) -> Response {
     let mut request = request;
+    if request
+        .extensions_mut()
+        .remove::<TrustedLocalControl>()
+        .is_some()
+    {
+        request
+            .extensions_mut()
+            .insert(RequestAuthContext::authenticated(AccessTier::Control));
+        return next.run(request).await;
+    }
 
     if let Some(response) = state.network.reject_request(&request) {
         return response;
     }
 
-    if is_exempt_path(request.uri().path()) {
+    if !request_is_loopback(&request)
+        && extract_token(&request).is_some_and(|token| state.is_session_credential(&token))
+    {
+        return DomainError::unauthorized("Invalid API key").into_response();
+    }
+
+    if is_bearer_exempt(request.uri().path(), &state.static_assets) {
         request
             .extensions_mut()
             .insert(RequestAuthContext::unsecured());
         return next.run(request).await;
     }
 
+    let optional_system_auth = is_optional_system_auth(request.method(), request.uri().path());
+
     if request_is_loopback(&request) {
-        if is_mutating_request(request.method()) && is_cross_site_request(&request) {
-            return ApiError::forbidden(
+        if is_mutating_request(request.method())
+            && is_cross_site_request(&request)
+            && !has_trusted_tauri_session(&state, &request)
+        {
+            return DomainError::forbidden(
                 "Cross-site mutating requests to the loopback API are blocked to prevent CSRF.",
-            );
+            )
+            .into_response();
         }
 
-        if !state.security_enabled() {
-            request
-                .extensions_mut()
-                .insert(RequestAuthContext::unsecured());
-            return next.run(request).await;
-        }
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::unsecured());
+        let auth_context = if let Some(token) = extract_token(&request) {
+            match state.resolve_loopback_token(&token) {
+                Some(context) => context,
+                None if optional_system_auth => {
+                    return DomainError::unauthorized("Invalid API key").into_response();
+                }
+                None => RequestAuthContext::unsecured(),
+            }
+        } else {
+            RequestAuthContext::unsecured()
+        };
+        request.extensions_mut().insert(auth_context);
         return next.run(request).await;
     }
 
     if !state.security_enabled() {
-        request
-            .extensions_mut()
-            .insert(RequestAuthContext::unsecured());
+        if optional_system_auth && extract_token(&request).is_some() {
+            return DomainError::unauthorized("Invalid API key").into_response();
+        }
+        if request.extensions().get::<RequestAuthContext>().is_none() {
+            request
+                .extensions_mut()
+                .insert(RequestAuthContext::unsecured());
+        }
         return next.run(request).await;
     }
 
@@ -567,29 +803,34 @@ pub async fn enforce_security(
     if method != Method::OPTIONS {
         let required_tier = required_tier_for_method(&method);
         let granted = if let Some(granted_tier) = granted_tier {
-            granted_tier
-        } else {
-            let Some(token) = extract_token(&request) else {
-                return ApiError::unauthorized(
-                    "Missing API key. Use Authorization: Bearer <token>.",
-                );
-            };
-
+            Some(granted_tier)
+        } else if let Some(token) = extract_token(&request) {
             let Some(granted_tier) = resolve_token_tier(&token, &state.auth) else {
-                return ApiError::unauthorized("Invalid API key");
+                return DomainError::unauthorized("Invalid API key").into_response();
             };
-            granted_tier
+            Some(granted_tier)
+        } else if optional_system_auth {
+            None
+        } else {
+            return DomainError::unauthorized(
+                "Missing API key. Use Authorization: Bearer <token>.",
+            )
+            .into_response();
         };
-        granted_tier = Some(granted);
 
-        if !tier_satisfies(granted, required_tier) {
-            return ApiError::forbidden_with_details(
-                "Read-only API key cannot perform write operations",
-                json!({
-                    "required_tier": "control",
-                    "current_tier": "read"
-                }),
-            );
+        if let Some(granted) = granted {
+            granted_tier = Some(granted);
+
+            if !tier_satisfies(granted, required_tier) {
+                return DomainError::forbidden_details(
+                    "Read-only API key cannot perform write operations",
+                    json!({
+                        "required_tier": "control",
+                        "current_tier": "read"
+                    }),
+                )
+                .into_response();
+            }
         }
     }
 
@@ -607,15 +848,13 @@ pub async fn enforce_security(
     };
 
     if !decision.allowed {
-        let message = rate_limit_message(operation, decision.retry_after_secs);
-        let mut response = ApiError::rate_limited_with_details(
-            message,
-            json!({
-                "limit": decision.limit,
-                "window_seconds": RATE_WINDOW.as_secs(),
-                "retry_after": decision.retry_after_secs
-            }),
-        );
+        let mut response = DomainError::RateLimited {
+            message: rate_limit_message(operation, decision.retry_after_secs),
+            limit: decision.limit,
+            window_seconds: RATE_WINDOW.as_secs(),
+            retry_after_secs: decision.retry_after_secs,
+        }
+        .into_response();
         apply_rate_headers(&mut response, &decision);
         return response;
     }
@@ -625,8 +864,48 @@ pub async fn enforce_security(
     response
 }
 
-fn is_exempt_path(path: &str) -> bool {
-    matches!(path, "/health" | "/api/v1/server")
+pub(crate) fn mark_trusted_local_control(request: &mut Request<Body>) {
+    request.extensions_mut().insert(TrustedLocalControl);
+}
+
+pub(crate) const fn trusted_local_control_context() -> RequestAuthContext {
+    RequestAuthContext::authenticated(AccessTier::Control)
+}
+
+/// Swagger UI's mount and the document it fetches.
+///
+/// The page loads its own bundle and then its OpenAPI document from a
+/// second request, and a browser attaches no `Authorization` header to
+/// either. Without this, a keyed daemon serves an API-docs page that
+/// cannot fetch the API docs.
+const SWAGGER_UI_PREFIX: &str = "/api/v1/docs";
+const OPENAPI_DOCUMENT_PATH: &str = "/api/v1/openapi.json";
+
+/// Whether bearer auth applies to a request path.
+///
+/// Exempt paths still pass through the network access policy above
+/// this check; the exemption is from presenting a key, not from being
+/// allowed to reach the daemon at all.
+fn is_bearer_exempt(path: &str, static_assets: &StaticAssetSurface) -> bool {
+    path == "/health"
+        || path == OPENAPI_DOCUMENT_PATH
+        || path_within(path, SWAGGER_UI_PREFIX)
+        || static_assets.serves(path)
+}
+
+fn is_optional_system_auth(method: &Method, path: &str) -> bool {
+    matches!(*method, Method::GET | Method::HEAD) && path == "/api/v1/system"
+}
+
+/// `true` when `path` is `prefix` itself or sits beneath it.
+///
+/// Segment-aware on purpose: `/api/v1/docsearch` is not inside
+/// `/api/v1/docs`, and a plain `starts_with` would say it is.
+fn path_within(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn required_tier_for_method(method: &Method) -> AccessTier {
@@ -642,9 +921,9 @@ fn is_mutating_request(method: &Method) -> bool {
 }
 
 /// Returns `true` only when the browser explicitly marks the request as
-/// cross-site. Same-origin/same-site requests (the bundled web UI) and
-/// non-browser clients (CLI, SDK) omit or set a non-`cross-site` value, so
-/// this blocks drive-by CSRF without rejecting legitimate local clients.
+/// cross-site. Ordinary same-origin/same-site requests and non-browser clients
+/// omit or set a non-`cross-site` value. The bundled Tauri UI is cross-site and
+/// passes only through the separate exact-origin plus session-credential gate.
 fn is_cross_site_request(request: &Request<Body>) -> bool {
     request
         .headers()
@@ -653,14 +932,45 @@ fn is_cross_site_request(request: &Request<Body>) -> bool {
         .is_some_and(|site| site == "cross-site")
 }
 
+/// Compare a presented token against a configured key without leaking
+/// how far the two agreed.
+///
+/// `str`'s `PartialEq` stops at the first differing byte, which lets a
+/// caller with a timer recover a key one byte at a time. Byte length is
+/// still observable (constant-time comparison of different-length inputs
+/// is not a thing), and that is the accepted residual.
+fn secret_matches(configured: Option<&str>, presented: &str) -> bool {
+    configured.is_some_and(|configured| {
+        configured
+            .as_bytes()
+            .ct_eq(presented.as_bytes())
+            .unwrap_u8()
+            == 1
+    })
+}
+
+fn has_trusted_tauri_session(state: &SecurityState, request: &Request<Body>) -> bool {
+    request
+        .headers()
+        .get(header::ORIGIN)
+        .is_some_and(is_trusted_tauri_origin)
+        && extract_token(request).is_some_and(|token| state.is_session_credential(&token))
+}
+
 fn resolve_token_tier(token: &str, auth: &AuthConfig) -> Option<AccessTier> {
-    if auth.control_key.as_deref() == Some(token) {
+    // Both comparisons run before either result is read, so the time a
+    // rejection takes does not report which key the caller came closest
+    // to matching.
+    let control_matches = secret_matches(auth.control_key.as_deref(), token);
+    let read_matches = secret_matches(auth.read_key.as_deref(), token);
+
+    if control_matches {
         if token.starts_with("hc_ak_r_") {
             Some(AccessTier::Read)
         } else {
             Some(AccessTier::Control)
         }
-    } else if auth.read_key.as_deref() == Some(token) {
+    } else if read_matches {
         Some(AccessTier::Read)
     } else {
         None
@@ -773,11 +1083,8 @@ fn request_is_loopback(request: &Request<Body>) -> bool {
 
 fn client_ip(request: &Request<Body>) -> Option<IpAddr> {
     if let Some(socket_addr) = peer_socket_addr(request) {
-        if socket_addr.ip().is_loopback()
-            && let Some(forwarded_client) = forwarded_client_ip(request)
-            && let Ok(forwarded_ip) = forwarded_client.parse::<IpAddr>()
-        {
-            return Some(forwarded_ip);
+        if socket_addr.ip().is_loopback() && forwarded_client_header_present(request) {
+            return forwarded_client_ip(request)?.parse::<IpAddr>().ok();
         }
         return Some(socket_addr.ip());
     }
@@ -793,26 +1100,24 @@ fn peer_socket_addr(request: &Request<Body>) -> Option<std::net::SocketAddr> {
 }
 
 fn forwarded_client_ip(request: &Request<Body>) -> Option<String> {
-    if let Some(forwarded) = request.headers().get("x-forwarded-for")
-        && let Ok(value) = forwarded.to_str()
-        && let Some(first) = value.split(',').next()
-    {
+    if let Some(forwarded) = request.headers().get("x-forwarded-for") {
+        let value = forwarded.to_str().ok()?;
+        let first = value.split(',').next()?;
         let trimmed = first.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
 
-    if let Some(real_ip) = request.headers().get("x-real-ip")
-        && let Ok(value) = real_ip.to_str()
-    {
+    if let Some(real_ip) = request.headers().get("x-real-ip") {
+        let value = real_ip.to_str().ok()?;
         let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_owned());
-        }
+        return (!trimmed.is_empty()).then(|| trimmed.to_owned());
     }
 
     None
+}
+
+fn forwarded_client_header_present(request: &Request<Body>) -> bool {
+    request.headers().contains_key("x-forwarded-for") || request.headers().contains_key("x-real-ip")
 }
 
 fn apply_rate_headers(response: &mut Response, decision: &RateDecision) {
@@ -890,7 +1195,7 @@ fn masked_v6(address: Ipv6Addr, prefix: u8) -> u128 {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    use axum::extract::ConnectInfo;
+    use axum::extract::{ConnectInfo, Extension};
     use axum::http::header::AUTHORIZATION;
     use axum::routing::{get, post};
     use axum::{Router, body::Body};
@@ -899,11 +1204,17 @@ mod tests {
     use tower::ServiceExt;
 
     use hypercolor_types::config::{NetworkAccessMode, NetworkClientScope, NetworkConfig};
+    use hypercolor_types::service::ProtectedControlCredential;
 
     use super::{
-        ClientAddressRule, NetworkAccessPolicy, SecurityState, enforce_security, normalize_api_key,
+        AccessTier, AuthConfig, ClientAddressRule, NetworkAccessPolicy, RequestAuthContext,
+        SecurityState, StaticAssetSurface, enforce_security, normalize_api_key,
+        parse_protected_control_credential, path_within, resolve_token_tier,
     };
-
+    use crate::macos_owner::{
+        MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION, MacosDaemonOwner,
+        MacosDaemonSessionAttestation, MacosOwnerIdentity, MacosServerSessionId,
+    };
     const CONTROL_KEY: &str = "hc_ak_control_test";
     const READ_KEY: &str = "hc_ak_r_read_test";
 
@@ -915,8 +1226,43 @@ mod tests {
     fn router_with_security_state(state: SecurityState) -> Router {
         Router::new()
             .route("/health", get(|| async { StatusCode::OK }))
-            .route("/api/v1/status", get(|| async { StatusCode::OK }))
-            .route("/api/v1/ws", get(|| async { StatusCode::OK }))
+            .route("/api/v1/devices", get(|| async { StatusCode::OK }))
+            .route(
+                "/api/v1/system",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        axum::Json(serde_json::json!({
+                            "identity": true,
+                            "status": context.can_read_system_status(),
+                            "protected_selection_ids": context.can_protected_control(),
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/ws",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        if context.can_protected_control() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::FORBIDDEN
+                        }
+                    },
+                ),
+            )
+            .route(
+                "/api/v1/protected-control",
+                get(
+                    |Extension(context): Extension<RequestAuthContext>| async move {
+                        if context.can_protected_control() {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::FORBIDDEN
+                        }
+                    },
+                ),
+            )
             .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
             .route(
                 "/api/v1/effects/install",
@@ -970,6 +1316,32 @@ mod tests {
         request
     }
 
+    async fn loopback_cross_site_mutation(
+        state: SecurityState,
+        origin: Option<&str>,
+        token: Option<&str>,
+    ) -> StatusCode {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/v1/scenes")
+            .header("sec-fetch-site", "cross-site");
+        if let Some(origin) = origin {
+            builder = builder.header(http::header::ORIGIN, origin);
+        }
+        if let Some(token) = token {
+            builder = with_bearer(builder, token);
+        }
+        router_with_security_state(state)
+            .oneshot(with_connect_info(
+                builder.body(Body::empty()).expect("request should build"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed")
+            .status()
+    }
+
     #[test]
     fn normalize_api_key_ignores_missing_or_blank_values() {
         assert_eq!(normalize_api_key(None), None);
@@ -983,6 +1355,46 @@ mod tests {
             normalize_api_key(Some(CONTROL_KEY.to_owned())),
             Some(CONTROL_KEY.to_owned())
         );
+    }
+
+    #[test]
+    fn protected_control_environment_value_requires_a_canonical_token() {
+        assert_eq!(
+            parse_protected_control_credential(None).expect("missing credential is valid"),
+            None
+        );
+        assert!(parse_protected_control_credential(Some("not-a-token".to_owned())).is_err());
+
+        let expected = ProtectedControlCredential::from_bytes([0x52; 32]);
+        let parsed = parse_protected_control_credential(Some(expected.expose_secret().to_owned()))
+            .expect("canonical credential parses");
+        assert_eq!(parsed, Some(expected));
+    }
+
+    #[test]
+    fn attested_session_preserves_launcher_session_authority() {
+        let launcher = ProtectedControlCredential::from_bytes([0x41; 32]);
+        let attested = ProtectedControlCredential::from_bytes([0x42; 32]);
+        let attestation = MacosDaemonSessionAttestation {
+            schema_version: MACOS_DAEMON_SESSION_ATTESTATION_SCHEMA_VERSION,
+            owner: MacosDaemonOwner::AppSidecar,
+            owner_epoch: 1,
+            owner_identity: MacosOwnerIdentity::new(
+                "audit-test",
+                "/Applications/Hypercolor.app/Contents/MacOS/hypercolor-daemon",
+                "requirement-test",
+                4242,
+            )
+            .expect("fixture identity should be valid"),
+            server_session_id: MacosServerSessionId::from_bytes([0x43; 16]),
+            protected_control_credential: attested.clone(),
+        };
+        let mut state = SecurityState::with_session_credential(launcher.clone());
+
+        state.install_macos_daemon_session(&attestation);
+
+        assert!(state.is_session_credential(launcher.expose_secret()));
+        assert!(state.is_session_credential(attested.expose_secret()));
     }
 
     #[tokio::test]
@@ -1002,13 +1414,162 @@ mod tests {
         assert!(response.headers().get("x-ratelimit-limit").is_none());
     }
 
+    /// The UI shell, its assets, and Swagger UI are reachable without a
+    /// key; every API route behind the same middleware still is not.
+    fn ui_serving_test_router() -> Router {
+        let state = SecurityState::with_keys(Some(CONTROL_KEY), Some(READ_KEY)).with_static_assets(
+            StaticAssetSurface::mounted([
+                "/api".to_owned(),
+                "/health".to_owned(),
+                "/mcp".to_owned(),
+            ]),
+        );
+        Router::new()
+            .route("/api/v1/devices", get(|| async { StatusCode::OK }))
+            .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
+            .route("/api/v1/docs", get(|| async { StatusCode::OK }))
+            .route("/api/v1/docs/{*rest}", get(|| async { StatusCode::OK }))
+            .route("/api/v1/openapi.json", get(|| async { StatusCode::OK }))
+            .route("/mcp", post(|| async { StatusCode::OK }))
+            .fallback(|| async { StatusCode::OK })
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                enforce_security,
+            ))
+    }
+
+    async fn status_for(app: &Router, method: &str, uri: &str) -> StatusCode {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn static_assets_and_swagger_ui_do_not_need_an_api_key() {
+        let app = ui_serving_test_router();
+
+        // A browser attaches no Authorization header to the document it
+        // was told to load, nor to any subresource that document pulls.
+        for path in [
+            "/",
+            "/index.html",
+            "/assets/index-a1b2c3.js",
+            "/assets/index-a1b2c3.css",
+            "/studio/zones",
+            "/api/v1/docs",
+            "/api/v1/docs/swagger-ui.css",
+            "/api/v1/openapi.json",
+        ] {
+            assert_eq!(
+                status_for(&app, "GET", path).await,
+                StatusCode::OK,
+                "{path} should be served without a key"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_asset_exemption_does_not_widen_onto_dynamic_routes() {
+        let app = ui_serving_test_router();
+
+        for (method, path) in [
+            ("GET", "/api/v1/devices"),
+            ("POST", "/api/v1/scenes"),
+            ("POST", "/mcp"),
+            // Segment-aware matching: a path that merely starts with the
+            // Swagger prefix is not inside it.
+            ("GET", "/api/v1/docsearch"),
+        ] {
+            assert_eq!(
+                status_for(&app, method, path).await,
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} must still require a key"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn assets_stay_keyed_when_no_ui_directory_is_mounted() {
+        // A headless daemon serves no shell, so nothing falls outside the
+        // API surface and the blanket exemption never applies.
+        let app = secured_test_router();
+
+        assert_eq!(
+            status_for(&app, "GET", "/index.html").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[test]
+    fn an_empty_prefix_list_still_protects_the_api() {
+        // The exemption is security-critical, so the type refuses to
+        // build a surface that swallows the API even when the caller
+        // supplies nothing.
+        let surface = StaticAssetSurface::mounted([]);
+
+        assert!(!surface.serves("/api/v1/devices"));
+        assert!(!surface.serves("/health"));
+        assert!(surface.serves("/index.html"));
+    }
+
+    #[test]
+    fn path_within_is_segment_aware() {
+        assert!(path_within("/api/v1/docs", "/api/v1/docs"));
+        assert!(path_within("/api/v1/docs/", "/api/v1/docs"));
+        assert!(path_within("/api/v1/docs/index.html", "/api/v1/docs"));
+        assert!(!path_within("/api/v1/docsearch", "/api/v1/docs"));
+        assert!(!path_within("/api/v1/doc", "/api/v1/docs"));
+    }
+
+    #[test]
+    fn token_comparison_still_resolves_the_right_tier() {
+        let auth = AuthConfig {
+            control_key: Some(CONTROL_KEY.to_owned()),
+            read_key: Some(READ_KEY.to_owned()),
+        };
+
+        assert_eq!(
+            resolve_token_tier(CONTROL_KEY, &auth),
+            Some(AccessTier::Control)
+        );
+        assert_eq!(resolve_token_tier(READ_KEY, &auth), Some(AccessTier::Read));
+        assert_eq!(resolve_token_tier("hc_ak_control_tes", &auth), None);
+        assert_eq!(resolve_token_tier("hc_ak_control_testx", &auth), None);
+        assert_eq!(resolve_token_tier("", &auth), None);
+        assert_eq!(
+            resolve_token_tier(CONTROL_KEY, &AuthConfig::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_read_prefixed_control_key_still_grants_only_read() {
+        let auth = AuthConfig {
+            control_key: Some("hc_ak_r_dual_purpose".to_owned()),
+            read_key: None,
+        };
+
+        assert_eq!(
+            resolve_token_tier("hc_ak_r_dual_purpose", &auth),
+            Some(AccessTier::Read)
+        );
+    }
+
     #[tokio::test]
     async fn rejects_missing_token_when_security_enabled() {
         let app = secured_test_router();
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -1021,12 +1582,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn anonymous_system_request_gets_public_identity_at_the_read_limit() {
+        let response = secured_test_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/system")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["x-ratelimit-limit"], "120");
+        let json = response_json(response).await;
+        assert_eq!(json["identity"], true);
+        assert_eq!(json["status"], false);
+        assert_eq!(json["protected_selection_ids"], false);
+    }
+
+    #[tokio::test]
+    async fn system_rejects_invalid_supplied_credentials() {
+        let response = secured_test_router()
+            .oneshot(
+                with_bearer(Request::builder().uri("/api/v1/system"), "invalid")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let json = response_json(response).await;
+        assert_eq!(json["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn system_read_and_control_keys_receive_their_status_projection() {
+        let app = secured_test_router();
+        let read = app
+            .clone()
+            .oneshot(
+                with_bearer(Request::builder().uri("/api/v1/system"), READ_KEY)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+        let control = app
+            .oneshot(
+                with_bearer(Request::builder().uri("/api/v1/system"), CONTROL_KEY)
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(read.status(), StatusCode::OK);
+        assert_eq!(control.status(), StatusCode::OK);
+        let read = response_json(read).await;
+        let control = response_json(control).await;
+        assert_eq!(read["status"], true);
+        assert_eq!(read["protected_selection_ids"], false);
+        assert_eq!(control["status"], true);
+        assert_eq!(control["protected_selection_ids"], true);
+    }
+
+    #[tokio::test]
+    async fn loopback_system_is_full_but_rejects_an_invalid_bearer() {
+        let app = secured_test_router();
+        let local = app
+            .clone()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/system")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+        let invalid = app
+            .oneshot(with_connect_info(
+                with_bearer(Request::builder().uri("/api/v1/system"), "invalid")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(local.status(), StatusCode::OK);
+        assert_eq!(response_json(local).await["status"], true);
+        assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn loopback_clients_do_not_need_api_key() {
         let app = secured_test_router();
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -1037,6 +1696,111 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.headers().get("x-ratelimit-limit").is_none());
+    }
+
+    #[tokio::test]
+    async fn loopback_locality_does_not_grant_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri("/api/v1/protected-control")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn loopback_read_key_does_not_grant_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    READ_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn loopback_control_key_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    CONTROL_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn loopback_session_credential_grants_control_without_enabling_public_auth() {
+        let credential = ProtectedControlCredential::from_bytes([0x42; 32]);
+        let state = SecurityState::with_session_credential(credential.clone());
+        assert!(!state.security_enabled());
+        let context = state
+            .resolve_loopback_token(credential.expose_secret())
+            .expect("session credential should resolve");
+        assert!(context.can_control());
+        assert!(context.can_protected_control());
+        assert!(!context.security_enabled());
+
+        let response = router_with_security_state(state)
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    credential.expose_secret(),
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn nonloopback_session_credential_is_rejected_when_public_auth_is_disabled() {
+        let credential = ProtectedControlCredential::from_bytes([0x24; 32]);
+        let state = SecurityState::with_session_credential(credential.clone());
+        let response = router_with_security_state(state)
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().uri("/api/v1/protected-control"),
+                    credential.expose_secret(),
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1065,7 +1829,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .header("x-forwarded-for", "127.0.0.1")
                     .body(Body::empty())
                     .expect("failed to build request"),
@@ -1123,6 +1887,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tauri_cross_site_bypass_requires_exact_origin_and_current_session() {
+        let credential = ProtectedControlCredential::from_bytes([0x63; 32]);
+        let session = credential.expose_secret();
+        let session_state = || SecurityState::with_session_credential(credential.clone());
+
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("tauri://localhost"),
+                Some(session),
+            )
+            .await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(session_state(), Some("tauri://localhost"), None).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("tauri://attacker.example"),
+                Some(session),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            loopback_cross_site_mutation(
+                session_state(),
+                Some("https://tauri.localhost.evil"),
+                Some(session),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+
+        let response = router_with_security_state(session_state())
+            .oneshot(with_connect_info(
+                with_bearer(
+                    Request::builder().method("POST").uri("/api/v1/scenes"),
+                    session,
+                )
+                .body(Body::empty())
+                .expect("native request should build"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("native request failed");
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let mut public_key_state = SecurityState::with_keys(Some(CONTROL_KEY), None);
+        public_key_state.launcher_session_credential = Some(credential);
+        assert_eq!(
+            loopback_cross_site_mutation(
+                public_key_state,
+                Some("tauri://localhost"),
+                Some(CONTROL_KEY),
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
     async fn loopback_same_site_mutating_requests_are_allowed() {
         let app = secured_test_router();
         let response = app
@@ -1147,7 +1977,7 @@ mod tests {
         let app = secured_test_router();
         let response = app
             .oneshot(
-                with_bearer(Request::builder().uri("/api/v1/status"), READ_KEY)
+                with_bearer(Request::builder().uri("/api/v1/devices"), READ_KEY)
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -1206,7 +2036,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/status?token={READ_KEY}"))
+                    .uri(format!("/api/v1/devices?token={READ_KEY}"))
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -1217,7 +2047,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_upgrade_allows_query_token_authentication() {
+    async fn websocket_upgrade_read_query_lacks_protected_control() {
         let app = secured_test_router();
         let response = app
             .oneshot(
@@ -1230,7 +2060,65 @@ mod tests {
             .await
             .expect("request failed");
 
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().contains_key("x-ratelimit-limit"));
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_control_query_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/ws?token={CONTROL_KEY}"))
+                    .header("upgrade", "websocket")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key("x-ratelimit-limit"));
+    }
+
+    #[tokio::test]
+    async fn loopback_websocket_control_query_grants_protected_control() {
+        let response = secured_test_router()
+            .oneshot(with_connect_info(
+                Request::builder()
+                    .uri(format!("/api/v1/ws?token={CONTROL_KEY}"))
+                    .header("upgrade", "websocket")
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                1042,
+            ))
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-ratelimit-limit").is_none());
+    }
+
+    #[tokio::test]
+    async fn loopback_websocket_session_query_grants_protected_control() {
+        let credential = ProtectedControlCredential::from_bytes([0x81; 32]);
+        let response =
+            router_with_security_state(SecurityState::with_session_credential(credential.clone()))
+                .oneshot(with_connect_info(
+                    Request::builder()
+                        .uri(format!("/api/v1/ws?token={}", credential.expose_secret()))
+                        .header("upgrade", "websocket")
+                        .body(Body::empty())
+                        .expect("failed to build request"),
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    1042,
+                ))
+                .await
+                .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-ratelimit-limit").is_none());
     }
 
     #[tokio::test]
@@ -1239,7 +2127,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42)),
@@ -1257,7 +2145,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 2, 42)),
@@ -1277,7 +2165,7 @@ mod tests {
         let response = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .header("x-forwarded-for", "203.0.113.5")
                     .body(Body::empty())
                     .expect("failed to build request"),
@@ -1311,7 +2199,7 @@ mod tests {
             .clone()
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42)),
@@ -1322,7 +2210,7 @@ mod tests {
         let rejected = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 2, 42)),
@@ -1348,7 +2236,7 @@ mod tests {
             .clone()
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)),
@@ -1359,7 +2247,7 @@ mod tests {
         let rejected = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
@@ -1385,7 +2273,7 @@ mod tests {
         let rejected = app
             .oneshot(with_connect_info(
                 Request::builder()
-                    .uri("/api/v1/status")
+                    .uri("/api/v1/devices")
                     .body(Body::empty())
                     .expect("failed to build request"),
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)),
@@ -1552,7 +2440,7 @@ mod tests {
     #[test]
     fn forwarded_headers_are_ignored_for_non_loopback_peers() {
         let request = Request::builder()
-            .uri("/api/v1/status")
+            .uri("/api/v1/devices")
             .header("x-forwarded-for", "203.0.113.50")
             .body(Body::empty())
             .expect("failed to build request");
@@ -1564,7 +2452,7 @@ mod tests {
     #[test]
     fn forwarded_headers_are_honored_for_loopback_proxy_peers() {
         let request = Request::builder()
-            .uri("/api/v1/status")
+            .uri("/api/v1/devices")
             .header("x-forwarded-for", "203.0.113.50")
             .body(Body::empty())
             .expect("failed to build request");

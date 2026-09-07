@@ -1,18 +1,213 @@
 //! Input source abstraction — trait and data types for audio, screen, and future inputs.
 //!
-//! [`InputSource`] is the polymorphic entry point for anything that feeds data
+//! [`ManagedSource`] is the polymorphic entry point for anything that feeds data
 //! into the effect pipeline. Each source produces [`InputData`] snapshots that
 //! the render loop consumes per frame.
 
-use super::graph::InteractionSourceOrigin;
-use super::status::{SourceStatusError, SourceStatusHandle, SourceStatusReporter};
-use crate::input::audio::{AudioRuntimeRetirement, PreparedAudioReconfiguration};
-use crate::types::audio::{AudioData, AudioPipelineConfig};
-use crate::types::canvas::{PublishedSurface, SurfaceResourceOwner};
-use crate::types::event::{TimedInputEvent, ZoneColors};
+use super::status::{SourceKind, SourceStatusError, SourceStatusHandle, SourceStatusReporter};
+use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::{PublishedSurface, SurfaceResourceOwner};
+use hypercolor_types::event::{PointerScrollUnit, TimedInputEvent, ZoneColors};
 use hypercolor_types::sensor::SystemSnapshot;
+use std::any::Any;
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::Arc;
+
+/// Whether a detached capability action can execute in the current process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapabilityActionDisposition {
+    Local,
+    RequiresUi,
+}
+
+/// Opaque backend identity attached to one detached capability action.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityActionIdentity {
+    owner: Arc<str>,
+    disposition: CapabilityActionDisposition,
+}
+
+impl CapabilityActionIdentity {
+    #[must_use]
+    pub fn new(owner: impl Into<Arc<str>>, disposition: CapabilityActionDisposition) -> Self {
+        Self {
+            owner: owner.into(),
+            disposition,
+        }
+    }
+
+    #[must_use]
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    #[must_use]
+    pub const fn disposition(&self) -> CapabilityActionDisposition {
+        self.disposition
+    }
+}
+
+/// Neutral process context forwarded to platform capability sources.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceCapabilityContext {
+    pub owner: Arc<str>,
+    pub conflict: Option<SourceCapabilityConflict>,
+    pub identity_hash: Option<Arc<str>>,
+    pub features: BTreeMap<Arc<str>, bool>,
+}
+
+/// Opaque ownership conflict reported by the platform composition root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceCapabilityConflict {
+    pub active: Arc<str>,
+    pub contender: Arc<str>,
+    pub observed_at_ms: u64,
+}
+
+/// Whether a detached protected-source action can execute in this process.
+pub enum ResolvedProtectedSourceAction<A> {
+    /// The callback is locally executable after the input-manager lock drops.
+    Local {
+        /// Detached callback owned by the resolved executor.
+        action: A,
+        /// Backend-authored identity of the resulting grant or selection.
+        identity: CapabilityActionIdentity,
+    },
+    /// The active topology requires a UI-capable process.
+    RequiresUi { identity: CapabilityActionIdentity },
+}
+
+/// Explicit local authorization request detached from input-graph locks.
+#[derive(Clone)]
+pub struct ProtectedSourceAuthorizationAction {
+    callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
+    identity: CapabilityActionIdentity,
+}
+
+impl ProtectedSourceAuthorizationAction {
+    pub(crate) fn new(
+        callback: Arc<dyn Fn() -> anyhow::Result<bool> + Send + Sync>,
+        identity: CapabilityActionIdentity,
+    ) -> Self {
+        Self { callback, identity }
+    }
+
+    /// Return the backend-authored action identity.
+    #[must_use]
+    pub const fn identity(&self) -> &CapabilityActionIdentity {
+        &self.identity
+    }
+
+    /// Execute the detached authorization request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native authorization API rejects the request.
+    pub fn execute(&self) -> anyhow::Result<bool> {
+        (self.callback)()
+    }
+}
+
+/// Explicit native source-picker presentation detached from input-graph locks.
+#[derive(Clone)]
+pub struct ScreenSourcePickerAction {
+    callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+    identity: CapabilityActionIdentity,
+}
+
+impl ScreenSourcePickerAction {
+    pub(crate) fn new(
+        callback: Arc<dyn Fn() -> anyhow::Result<()> + Send + Sync>,
+        identity: CapabilityActionIdentity,
+    ) -> Self {
+        Self { callback, identity }
+    }
+
+    /// Return the backend-authored action identity.
+    #[must_use]
+    pub const fn identity(&self) -> &CapabilityActionIdentity {
+        &self.identity
+    }
+
+    /// Execute the detached picker request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the native picker cannot be presented.
+    pub fn execute(&self) -> anyhow::Result<()> {
+        (self.callback)()
+    }
+}
+
+pub type SourceDiagnosticArtifact = Box<dyn Any + Send>;
+pub type SourceDiagnosticArtifactAction =
+    Arc<dyn Fn() -> anyhow::Result<SourceDiagnosticArtifact> + Send + Sync>;
+
+mod source_role {
+    pub trait Sealed {}
+}
+
+/// Closed marker vocabulary for mutually exclusive input-source roles.
+pub trait SourceRole: source_role::Sealed + Send + Sync + 'static {}
+
+/// Marker for sources that publish audio samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioSourceRole;
+
+/// Marker for sources that publish screen samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScreenSourceRole;
+
+/// Marker for sources that publish interaction samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InteractionSourceRole;
+
+/// Marker for sources that publish general data samples.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DataSourceRole;
+
+impl source_role::Sealed for AudioSourceRole {}
+impl source_role::Sealed for ScreenSourceRole {}
+impl source_role::Sealed for InteractionSourceRole {}
+impl source_role::Sealed for DataSourceRole {}
+
+impl SourceRole for AudioSourceRole {}
+impl SourceRole for ScreenSourceRole {}
+impl SourceRole for InteractionSourceRole {}
+impl SourceRole for DataSourceRole {}
+
+/// Bind one concrete source type to exactly one managed role.
+pub trait SourceRoleBinding {
+    type Role: SourceRole;
+}
+
+/// Exhaustive general-data source categories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DataSourceKind {
+    Media,
+    Network,
+    Sensors,
+}
+
+impl From<DataSourceKind> for SourceKind {
+    fn from(kind: DataSourceKind) -> Self {
+        match kind {
+            DataSourceKind::Media => Self::Media,
+            DataSourceKind::Network => Self::Network,
+            DataSourceKind::Sensors => Self::Sensors,
+        }
+    }
+}
+
+/// Stable identity used to find or replace one managed source role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedSourceKey {
+    Audio,
+    Screen,
+    Interaction,
+    Data(DataSourceKind),
+}
 
 // ── InputData ──────────────────────────────────────────────────────────────
 
@@ -72,21 +267,16 @@ impl InteractionData {
 
     /// Fold another source's snapshot into this one.
     ///
-    /// Multiple interaction sources (host capture plus browser injection)
-    /// each produce a full snapshot per frame; the pipeline merges them so
-    /// no source's held state clobbers another's. Held keys and buttons
-    /// union, recent keys concatenate, motion sums, and generations add so
-    /// the combined counter advances whenever any source changes.
+    /// Every interaction source selected for one consumer contributes a full
+    /// snapshot. Held keys and buttons union, recent keys concatenate, motion
+    /// sums, and generations add so the combined counter advances whenever any
+    /// selected source changes.
     ///
     /// Pointer position takes an injected pointer over a host one, then falls
     /// back to the first source that actually has one (`mode != None`), so an
-    /// idle source never blanks an active pointer. The injected preference
-    /// exists because host capture registers before the browser source, and
-    /// first-wins alone would make previewing an interactive effect in the UI
-    /// track the desktop cursor instead of the canvas. Fixing that by
-    /// reordering registration would be worse: `recent_keys` concatenates in
-    /// source order right above, so permuting sources would reorder the key
-    /// stream an effect sees.
+    /// idle source never blanks an active pointer. The injected preference keeps
+    /// an explicitly merged preview route bound to its canvas pointer instead of
+    /// the host desktop cursor.
     pub fn merge_from(&mut self, other: InteractionData) {
         for key in other.keyboard.pressed_keys {
             if !self.keyboard.pressed_keys.contains(&key) {
@@ -110,10 +300,7 @@ impl InteractionData {
             self.mouse.mode = other.mouse.mode;
             self.mouse.injected = other.mouse.injected;
         }
-        self.batch.wheel_hi_res = self
-            .batch
-            .wheel_hi_res
-            .saturating_add(other.batch.wheel_hi_res);
+        self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
         self.batch.motion.distance += other.batch.motion.distance;
@@ -153,10 +340,7 @@ impl InteractionData {
             self.mouse.mode = other.mouse.mode;
             self.mouse.injected = other.mouse.injected;
         }
-        self.batch.wheel_hi_res = self
-            .batch
-            .wheel_hi_res
-            .saturating_add(other.batch.wheel_hi_res);
+        self.batch.scroll.absorb(other.batch.scroll);
         self.batch.motion.dx += other.batch.motion.dx;
         self.batch.motion.dy += other.batch.motion.dy;
         self.batch.motion.distance += other.batch.motion.distance;
@@ -171,7 +355,7 @@ impl InteractionData {
 /// Health snapshot for one interaction source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractionDiagnostics {
-    /// Backend identifier: `"evdev"`, `"device_query"`, or `"browser"`.
+    /// Backend identifier such as `"evdev"`, `"cg_event_tap"`, or `"browser"`.
     pub backend: &'static str,
     /// Whether this source captures from host hardware (vs injected input).
     pub host_capture: bool,
@@ -199,6 +383,10 @@ pub enum InteractionDegradation {
     /// scheduled task running without an interactive desktop. Raw Input
     /// registers happily in that state and simply never delivers a message.
     NoInteractiveSession,
+    /// The signed process lacks macOS Input Monitoring permission.
+    InputMonitoringPermissionDenied,
+    /// macOS revoked Input Monitoring during an active source session.
+    InputMonitoringPermissionRevoked,
     /// Device nodes present but unreadable — Linux udev rules missing.
     AccessDenied,
     /// The backend could not initialize, or its worker died.
@@ -211,6 +399,8 @@ impl InteractionDegradation {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NoInteractiveSession => "no_interactive_session",
+            Self::InputMonitoringPermissionDenied => "macos_input_permission_denied",
+            Self::InputMonitoringPermissionRevoked => "macos_input_permission_revoked",
             Self::AccessDenied => "access_denied",
             Self::Unavailable(_) => "unavailable",
         }
@@ -258,9 +448,8 @@ pub struct MouseData {
     /// Whether this pointer was injected by a preview surface rather than read
     /// from host hardware.
     ///
-    /// The producer declares its own priority here because the merge point has
-    /// no source identity to key on: the render pipeline merges bare
-    /// [`InteractionData`] values pulled from `sample_and_drain_with_delta_secs`.
+    /// The producer declares its pointer priority here because the
+    /// selected-source fold merges bare [`InteractionData`] values.
     pub injected: bool,
 }
 
@@ -285,10 +474,10 @@ fn takes_pointer_from(current: &MouseData, incoming: &MouseData) -> bool {
 /// per hardware event.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InteractionBatch {
-    /// Ordered key/button/wheel edges, capture-timestamped and sequenced.
+    /// Ordered key, button, and scroll edges, capture-timestamped and sequenced.
     pub events: Vec<TimedInputEvent>,
-    /// Accumulated wheel travel since last frame, in 1/120-notch units.
-    pub wheel_hi_res: i32,
+    /// Exact two-axis scroll totals since the previous frame.
+    pub scroll: ScrollAggregate,
     /// Aggregate pointer motion since last frame.
     pub motion: MotionAggregate,
     /// Wall-clock span the motion aggregate covers, in seconds.
@@ -309,7 +498,7 @@ impl InteractionBatch {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
-            && self.wheel_hi_res == 0
+            && self.scroll == ScrollAggregate::default()
             && self.motion == MotionAggregate::default()
             && self.dropped_events == 0
     }
@@ -335,11 +524,45 @@ impl InteractionBatch {
                 .saturating_add(u32::try_from(overflow).unwrap_or(u32::MAX));
         }
 
-        self.wheel_hi_res = self.wheel_hi_res.saturating_add(prior.wheel_hi_res);
+        self.scroll.absorb(prior.scroll);
         self.motion.dx += prior.motion.dx;
         self.motion.dy += prior.motion.dy;
         self.motion.distance += prior.motion.distance;
         self.dropped_events = self.dropped_events.saturating_add(prior.dropped_events);
+    }
+}
+
+/// Exact two-axis scroll accumulated independently by coordinate unit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScrollAggregate {
+    pub line120_x_q16_16: i64,
+    pub line120_y_q16_16: i64,
+    pub pixel_x_q16_16: i64,
+    pub pixel_y_q16_16: i64,
+}
+
+impl ScrollAggregate {
+    /// Add one exact scroll delta with saturating overflow behavior.
+    pub fn accumulate(
+        &mut self,
+        unit: PointerScrollUnit,
+        delta_x_q16_16: i64,
+        delta_y_q16_16: i64,
+    ) {
+        let (x, y) = match unit {
+            PointerScrollUnit::Line120 => (&mut self.line120_x_q16_16, &mut self.line120_y_q16_16),
+            PointerScrollUnit::Pixels => (&mut self.pixel_x_q16_16, &mut self.pixel_y_q16_16),
+        };
+        *x = x.saturating_add(delta_x_q16_16);
+        *y = y.saturating_add(delta_y_q16_16);
+    }
+
+    /// Fold another aggregate into this one with saturating arithmetic.
+    pub fn absorb(&mut self, other: Self) {
+        self.line120_x_q16_16 = self.line120_x_q16_16.saturating_add(other.line120_x_q16_16);
+        self.line120_y_q16_16 = self.line120_y_q16_16.saturating_add(other.line120_y_q16_16);
+        self.pixel_x_q16_16 = self.pixel_x_q16_16.saturating_add(other.pixel_x_q16_16);
+        self.pixel_y_q16_16 = self.pixel_y_q16_16.saturating_add(other.pixel_y_q16_16);
     }
 }
 
@@ -414,10 +637,12 @@ impl<'a> IntoIterator for &'a ScreenZoneColors {
     }
 }
 
-/// Captured screen region colors, one entry per monitored zone.
+/// Reference CPU analysis of one captured frame.
 ///
-/// Screen capture sources produce this when grabbing display regions
-/// for ambient lighting or screen-reactive effects.
+/// No production backend publishes this type: consumers lease exact
+/// publications from the screen publication hub. It survives as the
+/// output of the reference analyzer that macOS parity fixtures and the
+/// analysis unit tests compare against.
 #[derive(Debug, Clone)]
 pub struct ScreenData {
     /// Per-zone color data extracted from screen regions.
@@ -467,7 +692,7 @@ impl ScreenData {
 /// 4. Call [`stop`] to release hardware resources
 ///
 /// Sources must be [`Send`] so the engine can own them across thread boundaries.
-pub trait InputSource: Send {
+pub trait ManagedSource: Send {
     /// Human-readable name for logging and UI display (e.g., `"PipeWire Monitor"`).
     fn name(&self) -> &str;
 
@@ -492,6 +717,16 @@ pub trait InputSource: Send {
         if let Some(status) = self.source_status_reporter() {
             status.set_source_graph_generation(source_graph_generation);
         }
+    }
+
+    /// Publish the number of consumers in the committed source domain.
+    fn set_active_consumer_count(
+        &mut self,
+        active_consumer_count: usize,
+    ) -> Result<(), SourceStatusError> {
+        self.source_status_reporter().map_or(Ok(()), |status| {
+            status.set_active_consumer_count(active_consumer_count)
+        })
     }
 
     /// Permanently retire this source's status at its removal generation.
@@ -580,96 +815,19 @@ pub trait InputSource: Send {
             sample => Ok(Some(Arc::new(sample))),
         }
     }
+}
 
-    /// Whether this source supports runtime audio reconfiguration.
-    fn is_audio_source(&self) -> bool {
-        false
-    }
+pub use ManagedSource as InputSource;
 
-    /// Whether this source supports runtime screen capture demand control.
-    fn is_screen_source(&self) -> bool {
-        false
-    }
-
-    /// Whether this source captures host keyboard/mouse interaction.
-    fn is_interaction_source(&self) -> bool {
-        false
-    }
-
-    /// Typed routing origin for an interaction source.
-    ///
-    /// The manager ignores this value unless [`Self::is_interaction_source`]
-    /// returns `true`. Third-party interaction sources capture host input unless
-    /// they explicitly declare a different aggregate origin.
-    fn interaction_source_origin(&self) -> InteractionSourceOrigin {
-        InteractionSourceOrigin::Host
-    }
-
-    /// Health snapshot for interaction sources, for status and remediation UX.
-    ///
-    /// Non-interaction sources return `None`. Interaction sources report
-    /// their backend and, for host hardware, how many device nodes opened
-    /// versus were denied — so the UI can tell "input is off" apart from
-    /// "input is on but the udev rules are missing".
-    fn interaction_diagnostics(&self) -> Option<InteractionDiagnostics> {
-        None
-    }
-
-    /// Whether this source captures from host input hardware (evdev, OS
-    /// event tap) rather than an injected feed like the browser preview.
-    ///
-    /// Consent config only governs host capture; the browser source is
-    /// always registered and is not a host source, so live enable/disable
-    /// of host input must not add or remove it.
-    fn is_host_capture_source(&self) -> bool {
-        false
-    }
-
-    /// Toggle whether an interaction source should actively capture host input.
-    ///
-    /// Interaction sources close their device handles and clear all held
-    /// state when capture goes inactive, so no keys or buttons stay stuck.
+/// Audio-specific source contract.
+pub trait AudioSource: ManagedSource + SourceRoleBinding<Role = AudioSourceRole> {
+    /// Confirm that a fully prepared replacement remains ready for commit.
     ///
     /// # Errors
     ///
-    /// Returns an error if the source cannot update its capture state.
-    fn set_interaction_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
+    /// Returns a stable failure description when the staged runtime terminated.
+    fn ensure_prepared_source_ready(&mut self) -> Result<(), Arc<str>> {
         Ok(())
-    }
-
-    /// Reconfigure a running audio source without rebuilding the full input manager.
-    ///
-    /// Non-audio sources can ignore this by keeping the default implementation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the source cannot apply the new audio configuration.
-    fn reconfigure_audio(
-        &mut self,
-        _config: &AudioPipelineConfig,
-        _name: &str,
-        _capture_active: bool,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    /// Whether the source can commit a native runtime prepared without holding
-    /// the input manager lock.
-    fn supports_prepared_audio_reconfiguration(&self) -> bool {
-        false
-    }
-
-    /// Commit a previously staged native audio runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the source does not support transactional audio
-    /// reconfiguration or the staged state cannot be committed.
-    fn commit_prepared_audio_reconfiguration(
-        &mut self,
-        _prepared: &mut PreparedAudioReconfiguration,
-    ) -> anyhow::Result<AudioRuntimeRetirement> {
-        anyhow::bail!("input source does not support prepared audio reconfiguration")
     }
 
     /// Toggle whether an audio source should actively capture from hardware.
@@ -683,61 +841,62 @@ pub trait InputSource: Send {
     fn set_audio_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
         Ok(())
     }
+}
 
+/// Screen-specific source contract.
+pub trait ScreenSource: ManagedSource + SourceRoleBinding<Role = ScreenSourceRole> {
     /// Current screen publication demand retained by this source.
-    fn screen_capture_demand(&self) -> crate::input::screen::ScreenCaptureDemand {
-        crate::input::screen::ScreenCaptureDemand::Inactive
-    }
-
-    /// Quote the analysis resources needed by one screen-capture demand.
-    ///
-    /// Sources without manager-coupled screen admission return `None`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the requested analysis geometry or compute work
-    /// cannot be represented by this source.
-    fn screen_analysis_resource_plan(
-        &self,
-        _demand: crate::input::screen::ScreenCaptureDemand,
-    ) -> anyhow::Result<Option<crate::input::screen::ScreenAnalysisResourcePlan>> {
-        Ok(None)
-    }
-
-    /// Quote the compatibility-analysis work for one screen-capture demand.
-    fn screen_analysis_work_plan(
-        &self,
-        _demand: crate::input::screen::ScreenCaptureDemand,
-    ) -> anyhow::Result<Option<crate::input::screen::ScreenAnalysisWorkPlan>> {
-        Ok(None)
-    }
-
-    /// Return caller-calibrated compatibility-analysis capacity, when installed.
-    fn screen_analysis_compute_capacity(
-        &self,
-    ) -> Option<crate::input::screen::ScreenAnalysisComputeCapacity> {
-        None
+    fn screen_capture_demand(&self) -> crate::input::screen::consumer::ScreenCaptureDemand {
+        crate::input::screen::consumer::ScreenCaptureDemand::Inactive
     }
 
     /// Apply typed screen publication demand.
     ///
-    /// Active demand carries the analyzed publication extent independently of
-    /// the backend's native capture geometry.
+    /// Active demand starts the capture worker and carries the acquisition
+    /// cadence and cursor policy; every output geometry lives on an exact
+    /// branch resolved through the publication hub.
     ///
     /// # Errors
     ///
     /// Returns an error if the source cannot update its capture state.
     fn set_screen_capture_demand(
         &mut self,
-        _demand: crate::input::screen::ScreenCaptureDemand,
+        _demand: crate::input::screen::consumer::ScreenCaptureDemand,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// How long a freshly started source may take to become usable.
+    ///
+    /// A reconfiguration gate waits this long for the replacement source to
+    /// report live status before rejecting it. In-process rebuilds settle in
+    /// tens of milliseconds, so the default covers them with room to spare.
+    /// Sources that negotiate with an external broker before their first
+    /// frame override this with the budget their transport actually needs.
+    #[must_use]
+    fn startup_usability_budget(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(500)
+    }
+
+    /// How renderer-bound screen publications from this source must execute.
+    #[must_use]
+    fn native_execution_policy(
+        &self,
+    ) -> crate::input::screen::planner::ScreenNativeExecutionPolicy {
+        crate::input::screen::planner::ScreenNativeExecutionPolicy::Preferred
+    }
+
+    /// Apply the hardware renderer's authoritative screen execution state.
+    fn set_screen_renderer_execution_state(
+        &mut self,
+        _state: crate::input::screen::planner::ScreenRendererExecutionState,
+    ) {
     }
 
     /// Bind this source to the process-wide exact publication authority.
     fn set_screen_publication_hub(
         &mut self,
-        _hub: std::sync::Arc<crate::input::screen::ScreenPublicationHub>,
+        _hub: Arc<crate::input::screen::planner::ScreenPublicationHub>,
     ) {
     }
 
@@ -760,8 +919,8 @@ pub trait InputSource: Send {
     /// current geometry, color, execution, or storage metadata.
     fn resolve_screen_publication_branch(
         &self,
-        _demand: &crate::input::screen::RegisteredScreenBranchDemand,
-    ) -> anyhow::Result<Option<crate::input::screen::ResolvedScreenBranchDemand>> {
+        _demand: &crate::input::screen::planner::RegisteredScreenBranchDemand,
+    ) -> anyhow::Result<Option<crate::input::screen::planner::ResolvedScreenBranchDemand>> {
         Ok(None)
     }
 
@@ -771,7 +930,7 @@ pub trait InputSource: Send {
     /// if the current logical demand no longer selects that source.
     fn owns_screen_publication_source(
         &self,
-        _source_id: &crate::input::screen::CaptureSourceId,
+        _source_id: &crate::input::screen::consumer::CaptureSourceId,
     ) -> bool {
         false
     }
@@ -788,9 +947,9 @@ pub trait InputSource: Send {
     /// changing its active runtime.
     fn begin_screen_publication_preparation(
         &mut self,
-        _ticket: crate::input::screen::ScreenWorkerPreparationTicket,
-    ) -> anyhow::Result<crate::input::screen::ScreenWorkerPreparation> {
-        anyhow::bail!("input source does not support exact screen publication preparation")
+        _ticket: crate::input::screen::planner::ScreenWorkerPreparationTicket,
+    ) -> anyhow::Result<crate::input::screen::planner::ScreenWorkerPreparation> {
+        anyhow::bail!("screen source does not support exact publication preparation")
     }
 
     /// Start source-owned cleanup after committed authority retires bindings.
@@ -801,7 +960,7 @@ pub trait InputSource: Send {
     /// retirement handle.
     fn begin_screen_publication_retirement(
         &mut self,
-    ) -> Option<crate::input::screen::ScreenWorkerRetirement> {
+    ) -> Option<crate::input::screen::planner::ScreenWorkerRetirement> {
         None
     }
 
@@ -814,8 +973,24 @@ pub trait InputSource: Send {
     /// Returns an error if the source cannot apply the new capture settings.
     fn reconfigure_screen_capture(
         &mut self,
-        _config: &crate::input::screen::CaptureConfig,
+        _config: &crate::input::screen::consumer::CaptureConfig,
     ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Update screen processing without replacing the native capture session.
+    ///
+    /// Sources without a split processing contract retain the full
+    /// reconfiguration behavior.
+    fn reconfigure_screen_processing(
+        &mut self,
+        config: &crate::input::screen::consumer::CaptureConfig,
+    ) -> anyhow::Result<()> {
+        self.reconfigure_screen_capture(config)
+    }
+
+    /// Apply the active process capability context to this source.
+    fn set_capability_context(&mut self, _context: &SourceCapabilityContext) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -826,5 +1001,183 @@ pub trait InputSource: Send {
     /// Returns an error if the source cannot restart its capture session.
     fn reselect_screen_source(&mut self) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    /// Return the explicit Screen Recording request owned by this source.
+    fn screen_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        None
+    }
+
+    /// Return the system source-picker action owned by this source.
+    fn screen_source_picker_action(&self) -> Option<ScreenSourcePickerAction> {
+        None
+    }
+
+    fn diagnostic_artifact_action(&self) -> Option<SourceDiagnosticArtifactAction> {
+        None
+    }
+}
+
+/// Interaction-specific source contract.
+pub trait InteractionSource:
+    ManagedSource + SourceRoleBinding<Role = InteractionSourceRole>
+{
+    /// Health snapshot for interaction sources, for status and remediation UX.
+    ///
+    /// Interaction sources report their backend and, for host hardware, how many
+    /// device nodes opened versus were denied, so the UI can tell "input is off"
+    /// apart from "input is on but the udev rules are missing".
+    fn interaction_diagnostics(&self) -> Option<InteractionDiagnostics> {
+        None
+    }
+
+    /// Toggle whether an interaction source should actively capture host input.
+    ///
+    /// Interaction sources close their device handles and clear all held
+    /// state when capture goes inactive, so no keys or buttons stay stuck.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot update its capture state.
+    fn set_interaction_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Apply the active process capability context to this source.
+    fn set_capability_context(&mut self, _context: &SourceCapabilityContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Return the explicit Input Monitoring request owned by this source.
+    fn input_authorization_action(&self) -> Option<ProtectedSourceAuthorizationAction> {
+        None
+    }
+}
+
+/// General-data source contract.
+pub trait DataSource: ManagedSource + SourceRoleBinding<Role = DataSourceRole> {
+    fn data_source_kind(&self) -> DataSourceKind;
+}
+
+/// General-data source with immutable registration metadata.
+pub struct ManagedDataSource {
+    kind: DataSourceKind,
+    source: Box<dyn DataSource>,
+}
+
+/// Exclusive owned storage for every source role accepted by the manager.
+pub enum ManagedSourceRole {
+    Audio(Box<dyn AudioSource>),
+    Screen(Box<dyn ScreenSource>),
+    Interaction(Box<dyn InteractionSource>),
+    Data(ManagedDataSource),
+}
+
+impl ManagedSourceRole {
+    #[must_use]
+    pub fn audio(source: Box<dyn AudioSource>) -> Self {
+        Self::Audio(source)
+    }
+
+    #[must_use]
+    pub fn screen(source: Box<dyn ScreenSource>) -> Self {
+        Self::Screen(source)
+    }
+
+    #[must_use]
+    pub fn interaction(source: Box<dyn InteractionSource>) -> Self {
+        Self::Interaction(source)
+    }
+
+    #[must_use]
+    pub fn data(source: Box<dyn DataSource>) -> Self {
+        Self::Data(ManagedDataSource {
+            kind: source.data_source_kind(),
+            source,
+        })
+    }
+
+    #[must_use]
+    pub fn key(&self) -> ManagedSourceKey {
+        match self {
+            Self::Audio(_) => ManagedSourceKey::Audio,
+            Self::Screen(_) => ManagedSourceKey::Screen,
+            Self::Interaction(_) => ManagedSourceKey::Interaction,
+            Self::Data(source) => ManagedSourceKey::Data(source.kind),
+        }
+    }
+
+    #[must_use]
+    pub fn source_kind(&self) -> SourceKind {
+        match self.key() {
+            ManagedSourceKey::Audio => SourceKind::Audio,
+            ManagedSourceKey::Screen => SourceKind::Screen,
+            ManagedSourceKey::Interaction => SourceKind::Interaction,
+            ManagedSourceKey::Data(kind) => kind.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn source(&self) -> &(dyn ManagedSource + 'static) {
+        match self {
+            Self::Audio(source) => source.as_ref(),
+            Self::Screen(source) => source.as_ref(),
+            Self::Interaction(source) => source.as_ref(),
+            Self::Data(source) => source.source.as_ref(),
+        }
+    }
+
+    pub fn source_mut(&mut self) -> &mut (dyn ManagedSource + 'static) {
+        match self {
+            Self::Audio(source) => source.as_mut(),
+            Self::Screen(source) => source.as_mut(),
+            Self::Interaction(source) => source.as_mut(),
+            Self::Data(source) => source.source.as_mut(),
+        }
+    }
+
+    #[must_use]
+    pub fn as_audio(&self) -> Option<&(dyn AudioSource + 'static)> {
+        match self {
+            Self::Audio(source) => Some(source.as_ref()),
+            Self::Screen(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    pub fn as_audio_mut(&mut self) -> Option<&mut (dyn AudioSource + 'static)> {
+        match self {
+            Self::Audio(source) => Some(source.as_mut()),
+            Self::Screen(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_screen(&self) -> Option<&(dyn ScreenSource + 'static)> {
+        match self {
+            Self::Screen(source) => Some(source.as_ref()),
+            Self::Audio(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    pub fn as_screen_mut(&mut self) -> Option<&mut (dyn ScreenSource + 'static)> {
+        match self {
+            Self::Screen(source) => Some(source.as_mut()),
+            Self::Audio(_) | Self::Interaction(_) | Self::Data(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_interaction(&self) -> Option<&(dyn InteractionSource + 'static)> {
+        match self {
+            Self::Interaction(source) => Some(source.as_ref()),
+            Self::Audio(_) | Self::Screen(_) | Self::Data(_) => None,
+        }
+    }
+
+    pub fn as_interaction_mut(&mut self) -> Option<&mut (dyn InteractionSource + 'static)> {
+        match self {
+            Self::Interaction(source) => Some(source.as_mut()),
+            Self::Audio(_) | Self::Screen(_) | Self::Data(_) => None,
+        }
     }
 }

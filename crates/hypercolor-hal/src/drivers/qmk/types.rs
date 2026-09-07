@@ -99,62 +99,6 @@ impl ProtocolRevision {
     }
 }
 
-// ── QMK RGB mode IDs ─────────────────────────────────────────────────────
-
-/// Built-in QMK RGB lighting effect modes.
-///
-/// Mode 1 (`Direct`) is the one we use for per-LED control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-#[allow(dead_code)]
-pub enum QmkMode {
-    Direct = 1,
-    SolidColor = 2,
-    AlphaMod = 3,
-    GradientUpDown = 4,
-    GradientLeftRight = 5,
-    Breathing = 6,
-    BandSat = 7,
-    BandVal = 8,
-    BandPinwheelSat = 9,
-    BandPinwheelVal = 10,
-    BandSpiralSat = 11,
-    BandSpiralVal = 12,
-    CycleAll = 13,
-    CycleLeftRight = 14,
-    CycleUpDown = 15,
-    CycleOutIn = 16,
-    CycleOutInDual = 17,
-    RainbowMovingChevron = 18,
-    CyclePinwheel = 19,
-    CycleSpiral = 20,
-    DualBeacon = 21,
-    RainbowBeacon = 22,
-    RainbowPinwheels = 23,
-    Raindrops = 24,
-    JellybeanRaindrops = 25,
-    HueBreathing = 26,
-    HuePendulum = 27,
-    HueWave = 28,
-    TypingHeatmap = 29,
-    DigitalRain = 30,
-    SolidReactiveSimple = 31,
-    SolidReactive = 32,
-    SolidReactiveWide = 33,
-    SolidReactiveMultiwide = 34,
-    SolidReactiveCross = 35,
-    SolidReactiveMulticross = 36,
-    SolidReactiveNexus = 37,
-    SolidReactiveMultinexus = 38,
-    Splash = 39,
-    Multisplash = 40,
-    SolidSplash = 41,
-    SolidMultisplash = 42,
-    PixelRain = 43,
-    PixelFlow = 44,
-    PixelFractal = 45,
-}
-
 // ── Speed constants ──────────────────────────────────────────────────────
 
 /// Default speed value (midpoint).

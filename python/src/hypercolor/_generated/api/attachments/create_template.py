@@ -5,42 +5,83 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
+from ...models.api_error_body import ApiErrorBody
+from ...models.component_template import ComponentTemplate
+from ...models.create_template_response_201 import CreateTemplateResponse201
 from ...types import Response
 
 
-def _get_kwargs() -> dict[str, Any]:
+def _get_kwargs(
+    *,
+    body: ComponentTemplate,
+) -> dict[str, Any]:
+    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
         "url": "/api/v1/attachments/templates",
     }
 
+    _kwargs["json"] = body.to_dict()
+
+    headers["Content-Type"] = "application/json"
+
+    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | None:
-    if response.status_code == 200:
-        return None
+) -> ApiErrorBody | CreateTemplateResponse201 | None:
+    if response.status_code == 201:
+        response_201 = CreateTemplateResponse201.from_dict(response.json())
+
+        return response_201
 
     if response.status_code == 400:
-        return None
+        response_400 = ApiErrorBody.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 401:
+        response_401 = ApiErrorBody.from_dict(response.json())
+
+        return response_401
+
+    if response.status_code == 403:
+        response_403 = ApiErrorBody.from_dict(response.json())
+
+        return response_403
 
     if response.status_code == 404:
-        return None
+        response_404 = ApiErrorBody.from_dict(response.json())
+
+        return response_404
 
     if response.status_code == 409:
-        return None
+        response_409 = ApiErrorBody.from_dict(response.json())
+
+        return response_409
 
     if response.status_code == 412:
-        return None
+        response_412 = ApiErrorBody.from_dict(response.json())
+
+        return response_412
 
     if response.status_code == 422:
-        return None
+        response_422 = ApiErrorBody.from_dict(response.json())
+
+        return response_422
+
+    if response.status_code == 429:
+        response_429 = ApiErrorBody.from_dict(response.json())
+
+        return response_429
 
     if response.status_code == 500:
-        return None
+        response_500 = ApiErrorBody.from_dict(response.json())
+
+        return response_500
 
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
@@ -50,7 +91,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any]:
+) -> Response[ApiErrorBody | CreateTemplateResponse201]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,18 +103,24 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
+    body: ComponentTemplate,
+) -> Response[ApiErrorBody | CreateTemplateResponse201]:
     """Create attachment template
+
+    Args:
+        body (ComponentTemplate): Reusable attachment layout template.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        Response[ApiErrorBody | CreateTemplateResponse201]
     """
 
-    kwargs = _get_kwargs()
+    kwargs = _get_kwargs(
+        body=body,
+    )
 
     response = client.get_httpx_client().request(
         **kwargs,
@@ -82,22 +129,78 @@ def sync_detailed(
     return _build_response(client=client, response=response)
 
 
-async def asyncio_detailed(
+def sync(
     *,
     client: AuthenticatedClient | Client,
-) -> Response[Any]:
+    body: ComponentTemplate,
+) -> ApiErrorBody | CreateTemplateResponse201 | None:
     """Create attachment template
+
+    Args:
+        body (ComponentTemplate): Reusable attachment layout template.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any]
+        ApiErrorBody | CreateTemplateResponse201
     """
 
-    kwargs = _get_kwargs()
+    return sync_detailed(
+        client=client,
+        body=body,
+    ).parsed
+
+
+async def asyncio_detailed(
+    *,
+    client: AuthenticatedClient | Client,
+    body: ComponentTemplate,
+) -> Response[ApiErrorBody | CreateTemplateResponse201]:
+    """Create attachment template
+
+    Args:
+        body (ComponentTemplate): Reusable attachment layout template.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[ApiErrorBody | CreateTemplateResponse201]
+    """
+
+    kwargs = _get_kwargs(
+        body=body,
+    )
 
     response = await client.get_async_httpx_client().request(**kwargs)
 
     return _build_response(client=client, response=response)
+
+
+async def asyncio(
+    *,
+    client: AuthenticatedClient | Client,
+    body: ComponentTemplate,
+) -> ApiErrorBody | CreateTemplateResponse201 | None:
+    """Create attachment template
+
+    Args:
+        body (ComponentTemplate): Reusable attachment layout template.
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        ApiErrorBody | CreateTemplateResponse201
+    """
+
+    return (
+        await asyncio_detailed(
+            client=client,
+            body=body,
+        )
+    ).parsed

@@ -5,9 +5,10 @@ use std::{
 
 use hypercolor_app::support::{
     PawnIoHelperOptions, ServiceSupportStatus, build_pawnio_helper_command,
-    detect_pawnio_support_from_resource_dir, parse_sc_query_state,
-    windows_daemon_service_status_from_query,
+    daemon_launcher_status_from_query, detect_pawnio_support_from_resource_dir,
+    parse_sc_query_state,
 };
+use hypercolor_types::service::ServiceIdentity;
 
 #[test]
 fn detects_complete_bundled_pawnio_payload() {
@@ -139,31 +140,41 @@ SERVICE_NAME: HypercolorSmBus
 }
 
 #[test]
-fn windows_daemon_service_status_recommends_reuse_only_when_running_on_windows() {
-    let running =
-        windows_daemon_service_status_from_query(true, service_status(true, Some("RUNNING")));
-    assert_eq!(running.service_name, "Hypercolor");
-    assert!(running.running);
+fn daemon_launcher_status_recommends_reuse_only_when_running_on_windows() {
+    let running = daemon_launcher_status_from_query(true, service_status(true, Some("RUNNING")));
+    assert_eq!(running.identity, Some(ServiceIdentity::windows_scm()));
+    assert_eq!(running.state.as_deref(), Some("RUNNING"));
+    assert!(running.online);
     assert!(running.reuse_recommended);
 
-    let stopped =
-        windows_daemon_service_status_from_query(true, service_status(true, Some("STOPPED")));
-    assert!(!stopped.running);
+    let stopped = daemon_launcher_status_from_query(true, service_status(true, Some("STOPPED")));
+    assert_eq!(stopped.identity, Some(ServiceIdentity::windows_scm()));
+    assert!(!stopped.online);
     assert!(!stopped.reuse_recommended);
 
     let non_windows =
-        windows_daemon_service_status_from_query(false, service_status(true, Some("RUNNING")));
-    assert!(!non_windows.running);
+        daemon_launcher_status_from_query(false, service_status(true, Some("RUNNING")));
+    assert_eq!(non_windows.identity, None);
+    assert!(!non_windows.online);
     assert!(!non_windows.reuse_recommended);
 }
 
 #[test]
-fn windows_daemon_service_status_handles_missing_service() {
-    let status = windows_daemon_service_status_from_query(true, service_status(false, None));
+fn daemon_launcher_status_handles_missing_service() {
+    let status = daemon_launcher_status_from_query(true, service_status(false, None));
 
-    assert!(!status.service.installed);
-    assert!(!status.running);
+    assert_eq!(status.identity, None);
+    assert!(!status.online);
     assert!(!status.reuse_recommended);
+    assert_eq!(
+        serde_json::to_value(&status).expect("status serializes"),
+        serde_json::json!({
+            "identity": null,
+            "online": false,
+            "reuseRecommended": false,
+            "state": null
+        })
+    );
 }
 
 fn create_bundled_payload(resource_dir: &Path) {

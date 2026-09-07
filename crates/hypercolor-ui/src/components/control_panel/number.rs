@@ -5,7 +5,8 @@ use leptos_icons::Icon;
 use serde_json::json;
 
 use hypercolor_leptos_ext::events::Input;
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::control::ControlValue;
+use hypercolor_types::effect::ControlDefinition;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_slider(
@@ -19,7 +20,7 @@ pub(super) fn render_slider(
     value: Signal<ControlValue>,
     on_change: Callback<(String, serde_json::Value)>,
 ) -> impl IntoView {
-    let initial = value.get_untracked().as_f32().unwrap_or(0.5);
+    let initial = value.get_untracked().as_effect_f32().unwrap_or(0.5);
     let min = def.min.unwrap_or(0.0);
     let max = def.max.unwrap_or(1.0);
     // Effects routinely ship sliders with no `step`; a flat 0.01 default
@@ -31,7 +32,7 @@ pub(super) fn render_slider(
     let control_name = control_id.clone();
 
     Effect::new(move |_| {
-        let next = value.get().as_f32().unwrap_or(0.5);
+        let next = value.get().as_effect_f32().unwrap_or(0.5);
         if (slider_value.get_untracked() - next).abs() > f32::EPSILON {
             set_slider_value.set(next);
         }
