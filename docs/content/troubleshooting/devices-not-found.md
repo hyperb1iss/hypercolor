@@ -117,7 +117,9 @@ transport considered and why each was rejected.
 Common offenders:
 
 - **openrazer daemon**: grabs Razer USB HID interfaces on boot
-- **OpenRGB**: can hold HID interfaces for any vendor it supports
+- **OpenRGB started by hand**: detects and holds every vendor it supports. The server
+  Hypercolor manages (`hypercolor openrgb start`) skips natively owned hardware and is
+  not a conflict; see [OpenRGB fallback](@/hardware/openrgb-fallback.md)
 - **ASUS Aura Sync / Armoury Crate** (via Wine or native): holds ENE SMBus and
   ASUS USB devices
 - **iCUE** (via a Wine layer): claims Corsair interfaces
@@ -135,7 +137,7 @@ Stop any conflicting daemon, then trigger a new discovery scan:
 # openrazer
 sudo systemctl stop openrazer-daemon.service
 
-# OpenRGB (if running as a service)
+# OpenRGB you started yourself (the managed server stops with `hypercolor openrgb stop`)
 pkill openrgb
 
 # Trigger a USB rescan
@@ -218,9 +220,19 @@ Look for lines containing your device's vendor or product ID. A miss looks like:
 hidraw node not found for XXXX:YYYY interface 0 (serial=<none>, usb_path=<unknown>, ...)
 ```
 
-Check the [compatibility matrix](@/hardware/compatibility.md) for your device. If it
-is listed as "Researched" or "In progress" rather than "Supported", driver support has
-not shipped yet. Open an issue with your `lsusb -v` output.
+The daemon keeps the same answer in a structured form:
+
+```bash
+hypercolor devices unclaimed
+```
+
+Every USB device the scanner saw and no driver matched is listed with its VID:PID,
+strings, serial, bus path, and `claimable_by`. A `claimable_by` value names a native driver
+that knows the device but is disabled; enable it and rescan. An empty `claimable_by` means
+no native protocol exists. Check the [compatibility matrix](@/hardware/compatibility.md)
+for the device's status, then follow [My device isn't supported](@/hardware/unsupported-devices.md):
+it covers driving the device through the OpenRGB bridge today and filing a device-support
+request with the unclaimed row's facts prefilled.
 
 ## SMBus / motherboard RGB not found
 
@@ -241,6 +253,38 @@ ls /dev/i2c-*
 
 See [SMBus and I2C setup](@/hardware/smbus-i2c.md) for the full setup flow.
 
+If SMBus devices are found but report wrong LED counts, or the DIMMs flicker, another
+process probed the same bus during discovery. The usual culprit is a hand-run `openrgb`
+(the GUI or `--list-devices`) while the daemon's native SMBus drivers were enabled. Close
+it, rescan, and use `hypercolor openrgb start` for the bridge instead: the managed server
+never probes buses a native driver owns.
+
+## OpenRGB is installed but Hypercolor cannot reach it
+
+The bridge talks to an OpenRGB SDK server on `127.0.0.1:6742`. Having OpenRGB installed,
+or its GUI open, does not start that server. Ask the daemon what it sees:
+
+```bash
+hypercolor diagnose --check openrgb
+hypercolor openrgb status
+```
+
+The `openrgb` check reports whether each configured endpoint answered, the negotiated
+protocol version, the controller count, and every output-disabled route with its reason.
+`openrgb status` adds the detected binary and the coverage rows the bridge is involved in.
+Work through the outcomes:
+
+| What you see | What it means | Fix |
+|---|---|---|
+| Endpoint unreachable, no binary detected | OpenRGB is not installed where Hypercolor looks | `hypercolor openrgb hints` prints the install command for your platform |
+| Endpoint unreachable, binary detected | No server is running | `hypercolor openrgb start`, or run `openrgb --server --server-host 127.0.0.1 --noautoconnect --config ~/.local/share/hypercolor/openrgb` yourself |
+| Reachable, zero controllers | OpenRGB detected nothing, usually a permissions gap | Linux: install `60-openrgb.rules` and load `i2c-dev`; Windows: SMBus needs Administrator or the OpenRGB service |
+| Reachable, controllers listed, none in Hypercolor | The bridge is disabled or its ownership mode is `disabled` | `hypercolor config set drivers.openrgb.enabled true`, set `ownership.mode`, then `hypercolor devices discover --target openrgb` |
+| Reachable, controllers output-disabled | Read `disabled_reason` | `native driver owns this device` is the conflict guard doing its job; the fallback page's [troubleshooting table](@/hardware/openrgb-fallback.md) covers the rest |
+
+A server started without `--server-host 127.0.0.1` binds every interface with no
+authentication. The managed server always binds loopback.
+
 ## Network devices (Hue, Nanoleaf, WLED, Govee)
 
 Network devices use mDNS discovery, pairing credentials, and LAN transport, not
@@ -257,7 +301,9 @@ Windows, check two things:
 
 - **Conflicting vendor software.** iCUE, Armoury Crate, SignalRGB, Razer
   Synapse, MSI Center, and similar tools hold HID devices exclusively, exactly
-  like their Linux counterparts. Close them and rescan.
+  like their Linux counterparts. A hand-run OpenRGB does the same; the desktop
+  app's conflict view names it. Close them and rescan. OpenRGB run through
+  `hypercolor openrgb start` is not a conflict.
 - **SMBus hardware support (motherboard and DRAM RGB).** SMBus devices need the
   PawnIO modules and the `HypercolorSmBus` broker service that the installer
   sets up. Confirm the broker is running with `Get-Service HypercolorSmBus`,
@@ -270,12 +316,15 @@ Windows, check two things:
 USB HID devices work out of the box on macOS: there is no udev equivalent and
 no permission step for HID lighting. Network devices (Hue, Nanoleaf, WLED,
 Govee) work the same as on other platforms. macOS has no SMBus transport, so
-motherboard and DRAM RGB never appear there.
+motherboard and DRAM RGB never appear there, natively or through the OpenRGB
+bridge, which lists HID controllers only on macOS.
 
 ## Related pages
 
 - [USB devices](@/hardware/usb-devices.md): full udev setup, transport variants, replug behavior
 - [Hardware compatibility](@/hardware/compatibility.md): the full supported-device matrix
-- [Conflicting software](@/hardware/conflicting-software.md): stopping openrazer, OpenRGB, and other daemons
+- [Conflicting software](@/hardware/conflicting-software.md): stopping openrazer, a hand-run OpenRGB, and other daemons
+- [OpenRGB fallback](@/hardware/openrgb-fallback.md): the managed server, coverage view, and bridge troubleshooting
+- [My device isn't supported](@/hardware/unsupported-devices.md): unclaimed hardware, the bridge, and device-support requests
 - [Common issues](@/troubleshooting/common-issues.md): port conflicts, systemd service failures
 - [Debugging and diagnostics](@/contributing/debugging.md): `RUST_LOG` targets, `hypercolor diagnose`, USB packet traces
