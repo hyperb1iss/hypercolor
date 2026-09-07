@@ -1459,6 +1459,17 @@ fn record_tag(out: &mut Vec<DeclaredTag>, name: &str, value: &str, source: &std:
     });
 }
 
+#[test]
+fn generated_manifest_matches_committed_bytes() {
+    let generated =
+        hypercolor_daemon::api::ws::manifest::build_json().expect("WebSocket manifest builds");
+    let committed = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../protocol/websocket-v1.json"
+    ));
+    assert_eq!(generated, committed);
+}
+
 fn protocol_manifest_tags() -> BTreeMap<u8, String> {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
