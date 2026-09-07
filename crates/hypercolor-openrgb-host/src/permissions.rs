@@ -182,7 +182,7 @@ fn hidraw_nodes_check(root: &Path, udev_remedy: &str) -> PermissionCheck {
                 } else {
                     failures.push(format!(
                         "{} ({vendor}:{product})",
-                        display_from_root(root, node)
+                        device_node_display(node)
                     ));
                 }
             }
@@ -225,15 +225,14 @@ pub fn udev_rules_remedy() -> String {
 }
 
 fn udev_rules_check(root: &Path, remedy: &str) -> PermissionCheck {
-    let found: Option<PathBuf> = UDEV_RULES_PATHS
+    let found = UDEV_RULES_PATHS
         .iter()
-        .map(|relative| root.join(relative))
-        .find(|path| path.is_file());
+        .find(|relative| root.join(relative).is_file());
     match found {
-        Some(path) => PermissionCheck {
+        Some(relative) => PermissionCheck {
             id: CHECK_UDEV_RULES.to_owned(),
             ok: true,
-            detail: format!("found {}", display_from_root(root, &path)),
+            detail: format!("found /{relative}"),
             remedy: None,
         },
         None => PermissionCheck {
@@ -299,7 +298,7 @@ fn device_nodes_check(
     let unwritable: Vec<String> = nodes
         .iter()
         .filter(|node| !is_writable(node))
-        .map(|node| display_from_root(root, node))
+        .map(|node| device_node_display(node))
         .collect();
     if unwritable.is_empty() {
         PermissionCheck {
@@ -345,8 +344,11 @@ fn is_writable(path: &Path) -> bool {
     OpenOptions::new().write(true).open(path).is_ok()
 }
 
-fn display_from_root(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .map(|relative| format!("/{}", relative.display()))
-        .unwrap_or_else(|_| path.display().to_string())
+/// Render a device node as `/dev/<name>` regardless of the inspected root or
+/// the host's path separator, so detail strings are stable everywhere.
+fn device_node_display(node: &Path) -> String {
+    match node.file_name().and_then(|name| name.to_str()) {
+        Some(name) => format!("/dev/{name}"),
+        None => node.display().to_string(),
+    }
 }
