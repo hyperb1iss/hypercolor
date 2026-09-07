@@ -162,32 +162,85 @@ pub fn appimage_search_dirs() -> Vec<PathBuf> {
 }
 
 /// Find an `OpenRGB*.AppImage` in one directory.
+///
+/// When several match, the newest wins: by the version parsed from the file
+/// name (`OpenRGB_1.0rc3_x86_64.AppImage` beats `openrgb_0.9_x86_64.appimage`
+/// regardless of case), then by modification time, then by name.
 #[must_use]
 pub fn find_appimage_in(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
-    let mut matches: Vec<PathBuf> = entries
+    let mut matches: Vec<AppImageCandidate> = entries
         .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| {
-            let name = path
-                .file_name()
-                .and_then(OsStr::to_str)
-                .map(str::to_ascii_lowercase);
-            name.is_some_and(|name| name.starts_with("openrgb") && name.ends_with(".appimage"))
-                && is_executable_file(path)
+        .filter_map(|path| {
+            let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+            (name.starts_with("openrgb")
+                && name.ends_with(".appimage")
+                && is_executable_file(&path))
+            .then(|| AppImageCandidate {
+                version: appimage_version_key(&name),
+                modified: std::fs::metadata(&path).and_then(|m| m.modified()).ok(),
+                name,
+                path,
+            })
         })
         .collect();
     matches.sort();
-    matches.pop()
+    matches.pop().map(|candidate| candidate.path)
+}
+
+/// Sort key for AppImage candidates: field order is the precedence order.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AppImageCandidate {
+    version: Option<Vec<u64>>,
+    modified: Option<std::time::SystemTime>,
+    name: String,
+    path: PathBuf,
+}
+
+/// Numeric version components parsed from an AppImage file name.
+///
+/// `openrgb_1.0rc3_x86_64.appimage` yields `[1, 0, 3]`; a name without a
+/// dotted version segment (`openrgb_x86_64.appimage`) yields `None`.
+#[must_use]
+pub fn appimage_version_key(lowercase_name: &str) -> Option<Vec<u64>> {
+    let stem = lowercase_name.strip_suffix(".appimage")?;
+    let segment = stem.split(['_', '-']).skip(1).find(|segment| {
+        segment.starts_with(|c: char| c.is_ascii_digit()) && segment.contains('.')
+    })?;
+    let numbers: Vec<u64> = segment
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|run| !run.is_empty())
+        .filter_map(|run| run.parse().ok())
+        .collect();
+    (!numbers.is_empty()).then_some(numbers)
 }
 
 /// Detect an OpenRGB installation, preferring native binaries over Flatpak.
 ///
 /// Order: `PATH`, platform install locations, portable AppImages, then the
-/// Flathub build when `flatpak` is available. The version is read with
-/// [`SUBPROCESS_TIMEOUT`] and left `None` when OpenRGB does not answer.
+/// Flathub build when `flatpak` is available. The filesystem walk runs on
+/// tokio's blocking pool so it never stalls the async runtime; the version
+/// is read with [`SUBPROCESS_TIMEOUT`] and left `None` when OpenRGB does not
+/// answer.
 pub async fn detect_binary() -> Option<OpenRgbBinary> {
-    if let Some(path) = find_native_binary() {
+    let (native, flatpak) = match tokio::task::spawn_blocking(|| {
+        let path = std::env::var_os("PATH");
+        (
+            find_native_binary(),
+            find_in_path(&["flatpak"], path.as_deref()),
+        )
+    })
+    .await
+    {
+        Ok(found) => found,
+        Err(error) => {
+            debug!(%error, "openrgb detection task failed to join");
+            return None;
+        }
+    };
+
+    if let Some(path) = native {
         let kind = classify_binary(&path);
         let version = read_version(&path).await;
         debug!(path = %path.display(), ?kind, ?version, "detected OpenRGB binary");
@@ -198,7 +251,7 @@ pub async fn detect_binary() -> Option<OpenRgbBinary> {
         });
     }
 
-    let flatpak = find_in_path(&["flatpak"], std::env::var_os("PATH").as_deref())?;
+    let flatpak = flatpak?;
     let version = flatpak_app_version(&flatpak).await?;
     debug!(?version, "detected OpenRGB Flatpak");
     Some(OpenRgbBinary {
@@ -209,6 +262,9 @@ pub async fn detect_binary() -> Option<OpenRgbBinary> {
 }
 
 /// Locate a native or AppImage OpenRGB executable without spawning anything.
+///
+/// This walks the filesystem synchronously; call it from a blocking context
+/// or through `spawn_blocking` (as [`detect_binary`] does).
 #[must_use]
 pub fn find_native_binary() -> Option<PathBuf> {
     if let Some(path) = find_in_path(executable_names(), std::env::var_os("PATH").as_deref()) {
