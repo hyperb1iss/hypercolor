@@ -1,5 +1,7 @@
 //! Device-related API types and fetch functions.
 
+use hypercolor_types::scene::DisplayRotation;
+
 use super::{ApiResult, client};
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -42,6 +44,17 @@ pub async fn discover_devices() -> ApiResult<()> {
 /// Update a device (name, enabled, brightness).
 pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> ApiResult<DeviceSummary> {
     client::put_json(&format!("/api/v1/devices/{id}"), req).await
+}
+
+/// `PUT /api/v1/devices/{id}` carrying only how the panel is mounted.
+pub async fn set_display_rotation(id: &str, rotation: DisplayRotation) -> ApiResult<DeviceSummary> {
+    let req = UpdateDeviceRequest {
+        name: None,
+        enabled: None,
+        brightness: None,
+        display_rotation: Some(rotation),
+    };
+    update_device(id, &req).await
 }
 
 /// The identify blink the UI asks for: two seconds in the given hex color.

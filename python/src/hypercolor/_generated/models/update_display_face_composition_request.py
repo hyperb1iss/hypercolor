@@ -7,7 +7,6 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.blend_mode import BlendMode
-from ..models.display_rotation import DisplayRotation
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="UpdateDisplayFaceCompositionRequest")
@@ -20,12 +19,10 @@ class UpdateDisplayFaceCompositionRequest:
     Attributes:
         blend_mode (BlendMode | None | Unset):
         opacity (float | None | Unset):
-        rotation (DisplayRotation | None | Unset):
     """
 
     blend_mode: BlendMode | None | Unset = UNSET
     opacity: float | None | Unset = UNSET
-    rotation: DisplayRotation | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -43,14 +40,6 @@ class UpdateDisplayFaceCompositionRequest:
         else:
             opacity = self.opacity
 
-        rotation: None | str | Unset
-        if isinstance(self.rotation, Unset):
-            rotation = UNSET
-        elif isinstance(self.rotation, DisplayRotation):
-            rotation = self.rotation.value
-        else:
-            rotation = self.rotation
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -58,8 +47,6 @@ class UpdateDisplayFaceCompositionRequest:
             field_dict["blend_mode"] = blend_mode
         if opacity is not UNSET:
             field_dict["opacity"] = opacity
-        if rotation is not UNSET:
-            field_dict["rotation"] = rotation
 
         return field_dict
 
@@ -93,27 +80,9 @@ class UpdateDisplayFaceCompositionRequest:
 
         opacity = _parse_opacity(d.pop("opacity", UNSET))
 
-        def _parse_rotation(data: object) -> DisplayRotation | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            try:
-                if not isinstance(data, str):
-                    raise TypeError()
-                rotation_type_1 = DisplayRotation(data)
-
-                return rotation_type_1
-            except (TypeError, ValueError, AttributeError, KeyError):
-                pass
-            return cast(DisplayRotation | None | Unset, data)
-
-        rotation = _parse_rotation(d.pop("rotation", UNSET))
-
         update_display_face_composition_request = cls(
             blend_mode=blend_mode,
             opacity=opacity,
-            rotation=rotation,
         )
 
         update_display_face_composition_request.additional_properties = d

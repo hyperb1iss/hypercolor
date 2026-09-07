@@ -26,6 +26,7 @@ pub mod control_value_json;
 pub mod device_event_logic;
 pub mod device_metrics;
 pub mod display_preview_state;
+pub mod display_rotation;
 pub mod display_utils;
 pub mod driver_settings;
 pub mod effect_search;

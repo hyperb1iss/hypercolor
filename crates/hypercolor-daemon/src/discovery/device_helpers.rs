@@ -51,6 +51,7 @@ fn stored_device_settings_to_user_settings(settings: StoredDeviceSettings) -> De
         name: settings.name,
         enabled: !settings.disabled,
         brightness: settings.brightness.clamp(0.0, 1.0),
+        display_rotation: settings.rotation,
     }
 }
 

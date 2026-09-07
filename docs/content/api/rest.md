@@ -432,7 +432,11 @@ configuration.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="PUT" path="/api/v1/devices/{id}"> %}
-Update device settings such as name and brightness.
+Update device settings: `name`, `enabled`, `brightness` (0 to 100), and, for
+display-capable devices, `display_rotation` (`deg0`, `deg90`, `deg180`,
+`deg270`), which is how the panel is mounted so everything drawn on it turns
+to read upright. Sending `display_rotation` for hardware without a panel
+answers 422.
 {% </api_endpoint> %}
 
 {% <api_endpoint method="DELETE" path="/api/v1/devices/{id}"> %}

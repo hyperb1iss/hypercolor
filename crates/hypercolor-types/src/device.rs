@@ -16,6 +16,7 @@ use hypercolor_color::DevicePixelLayout;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::scene::DisplayRotation;
 use crate::spatial::{LedTopology, NormalizedPosition, ZoneShape};
 
 // ── DeviceId ──────────────────────────────────────────────────────────────
@@ -201,6 +202,12 @@ pub struct DeviceUserSettings {
 
     /// User-selected device brightness scalar.
     pub brightness: f32,
+
+    /// How a display-capable device's panel is mounted. Everything drawn
+    /// on the panel turns to match, so a screen installed upside down or
+    /// on its side reads upright. Ignored for devices without a display.
+    #[serde(default, skip_serializing_if = "DisplayRotation::is_upright")]
+    pub display_rotation: DisplayRotation,
 }
 
 impl Default for DeviceUserSettings {
@@ -209,6 +216,7 @@ impl Default for DeviceUserSettings {
             name: None,
             enabled: true,
             brightness: 1.0,
+            display_rotation: DisplayRotation::default(),
         }
     }
 }

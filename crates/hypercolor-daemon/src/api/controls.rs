@@ -1338,6 +1338,7 @@ async fn apply_device_control_changes(
             changes.name.clone(),
             changes.enabled,
             changes.brightness,
+            None,
         )
         .await
     else {

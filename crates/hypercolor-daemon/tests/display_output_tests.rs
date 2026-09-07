@@ -865,7 +865,6 @@ fn publish_display_face_route(
             device_id: display_target.device_id,
             blend_mode: display_target.blend_mode,
             opacity: display_target.opacity,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -2842,7 +2841,6 @@ async fn display_preview_survives_display_face_worker_config_restart() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -2914,7 +2912,6 @@ async fn display_zone_alpha_blends_face_with_effect_canvas() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3004,7 +3001,6 @@ async fn display_zone_alpha_composes_against_black_before_effect_frame() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3113,7 +3109,6 @@ async fn display_output_uses_render_published_face_route_metadata() {
             device_id,
             blend_mode: BlendMode::Replace,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -3271,7 +3266,6 @@ async fn alpha_display_faces_keep_default_30_fps_cadence_on_60_fps_devices() {
             device_id,
             blend_mode: BlendMode::Alpha,
             opacity: 0.5,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3378,7 +3372,6 @@ async fn display_zone_screen_blends_face_color_with_effect_canvas() {
             device_id,
             blend_mode: BlendMode::Screen,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3468,7 +3461,6 @@ async fn display_zone_tint_turns_face_into_effect_tinted_material() {
             device_id,
             blend_mode: BlendMode::Tint,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -3558,7 +3550,6 @@ async fn display_zone_luma_reveal_lets_bright_face_regions_adopt_effect_color() 
             device_id,
             blend_mode: BlendMode::LumaReveal,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
         },
     );
 
@@ -4363,7 +4354,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     let red = solid_canvas(Rgba::new(255, 0, 0, 255));
 
     let _ = device_registry
-        .update_user_settings(&device_id, None, None, Some(0.0))
+        .update_user_settings(&device_id, None, None, Some(0.0), None)
         .await;
     event_bus
         .scene_canvas_lane()
@@ -4381,7 +4372,7 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     );
 
     let _ = device_registry
-        .update_user_settings(&device_id, None, None, Some(0.5))
+        .update_user_settings(&device_id, None, None, Some(0.5), None)
         .await;
     event_bus
         .scene_canvas_lane()
@@ -4396,6 +4387,90 @@ async fn automatic_display_output_applies_device_brightness_before_encoding() {
     assert!(
         (90..=170).contains(&dimmed_pixel[0]) && dimmed_pixel[1] <= 32 && dimmed_pixel[2] <= 32,
         "expected half-bright red display output, got {dimmed_pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_turns_with_the_device_mount_rotation() {
+    let _guard = display_output_test_guard().await;
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+    let logical_id = insert_default_logical_device(&logical_devices, device_id).await;
+
+    let spatial_engine = spatial_with_zones(vec![display_zone(
+        logical_id.as_str(),
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(1.0, 1.0),
+    )]);
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Arc::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+    // The panel is mounted upside down: a device-level fact, not a face
+    // or scene property, so it turns a plain scene sample with no face.
+    device_registry
+        .update_user_settings(
+            &device_id,
+            None,
+            None,
+            None,
+            Some(hypercolor_types::scene::DisplayRotation::Deg180),
+        )
+        .await
+        .expect("device settings should update");
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: spatial_engine.clone(),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+        preview_runtime: Arc::new(PreviewRuntime::new(Arc::clone(&event_bus))),
+        power_state: default_power_state_rx(),
+        static_hold_refresh_interval: TEST_STATIC_HOLD_REFRESH_INTERVAL,
+        face_fps_cap: 30,
+        display_frames: Arc::new(RwLock::new(DisplayFrameRuntime::new())),
+    });
+
+    wait_for_scene_canvas_receiver_count(event_bus.as_ref(), 1).await;
+
+    let canvas = split_color_canvas();
+    event_bus
+        .scene_canvas_lane()
+        .send_replace(CanvasFrame::from_canvas(&canvas, 1, 16));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
+    let left = image.get_pixel(image.width() / 4, image.height() / 2);
+    let right = image.get_pixel(image.width() * 3 / 4, image.height() / 2);
+    assert!(
+        left[2] > 200 && left[0] < 80,
+        "expected the red half to land on the right after a half turn, got left {left:?}"
+    );
+    assert!(
+        right[0] > 200 && right[2] < 80,
+        "expected the blue half to land on the left after a half turn, got right {right:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");
@@ -4454,7 +4529,7 @@ async fn automatic_display_output_skips_repeated_zero_brightness_frames() {
     let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
 
     let _ = device_registry
-        .update_user_settings(&device_id, None, None, Some(0.0))
+        .update_user_settings(&device_id, None, None, Some(0.0), None)
         .await;
     event_bus
         .scene_canvas_lane()

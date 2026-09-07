@@ -7,6 +7,7 @@ use crate::attachment::{ComponentBinding, ComponentSlot, ComponentSuggestedZone}
 use crate::device::{DeviceOrigin, DriverPresentation};
 use crate::event::DeviceRef;
 use crate::pairing::{DeviceAuthSummary, PairDeviceStatus};
+use crate::scene::DisplayRotation;
 
 /// Query parameters for `GET /api/v1/devices`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +46,9 @@ pub struct DeviceSummary {
     pub presentation: DriverPresentation,
     pub status: String,
     pub brightness: u8,
+    /// How the panel is mounted; present only for display-capable devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rotation: Option<DisplayRotation>,
     #[serde(default)]
     pub firmware_version: Option<String>,
     #[serde(default)]
@@ -118,6 +122,9 @@ pub struct UpdateDeviceRequest {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brightness: Option<u8>,
+    /// How the panel is mounted; accepted only for display-capable devices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rotation: Option<DisplayRotation>,
 }
 
 /// Response for `DELETE /api/v1/devices/{id}`.

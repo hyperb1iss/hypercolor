@@ -631,6 +631,7 @@ async fn registry_rebind_inherits_identity_and_settings_from_replaced_device() {
             Some("Bliss Shelf".to_owned()),
             Some(false),
             Some(0.4),
+            None,
         )
         .await
         .expect("predecessor exists");
@@ -1035,7 +1036,7 @@ async fn registry_generation_advances_on_mutation() {
     );
 
     registry
-        .update_user_settings(&id, None, None, Some(0.5))
+        .update_user_settings(&id, None, None, Some(0.5), None)
         .await
         .expect("device should exist");
     let after_settings = registry.generation();
@@ -1066,6 +1067,7 @@ async fn registry_identical_rediscovery_preserves_generation_and_device_revision
         name: Some("Desk Glow".to_owned()),
         enabled: true,
         brightness: 0.6,
+        display_rotation: hypercolor_types::scene::DisplayRotation::default(),
     };
     registry
         .replace_user_settings(&device_id, settings)
@@ -1305,7 +1307,13 @@ async fn registry_update_user_settings_tracks_name_enabled_and_brightness_withou
     registry.add(info).await;
 
     let updated = registry
-        .update_user_settings(&id, Some("Desk Glow".to_owned()), Some(false), Some(0.35))
+        .update_user_settings(
+            &id,
+            Some("Desk Glow".to_owned()),
+            Some(false),
+            Some(0.35),
+            None,
+        )
         .await
         .expect("device should update");
 
@@ -1330,6 +1338,7 @@ async fn registry_replace_user_settings_reapplies_name_override_on_metadata_refr
                 name: Some("Override Name".to_owned()),
                 enabled: true,
                 brightness: 0.6,
+                display_rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .await
@@ -1357,6 +1366,7 @@ async fn registry_identical_user_settings_preserve_generation_and_device_revisio
         name: Some("Override Name".to_owned()),
         enabled: true,
         brightness: 0.6,
+        display_rotation: hypercolor_types::scene::DisplayRotation::default(),
     };
     registry
         .replace_user_settings(&device_id, settings.clone())

@@ -6203,7 +6203,6 @@ async fn pausing_output_darkens_display_zones_without_an_active_effect() {
             device_id: DeviceId::new(),
             blend_mode: BlendMode::Alpha,
             opacity: 1.0,
-            rotation: hypercolor_types::scene::DisplayRotation::default(),
             finalized: false,
         },
     );
@@ -10771,7 +10770,7 @@ async fn update_device_enable_activates_layout_targeted_deferred_device() {
         .await;
     state
         .device_registry
-        .update_user_settings(&device_id, None, Some(false), None)
+        .update_user_settings(&device_id, None, Some(false), None, None)
         .await
         .expect("device settings should update");
     state
@@ -11148,7 +11147,13 @@ async fn patch_device_control_surface_revision_is_device_local() {
 
     state
         .device_registry
-        .update_user_settings(&unrelated_id, Some("Shelf Renamed".to_owned()), None, None)
+        .update_user_settings(
+            &unrelated_id,
+            Some("Shelf Renamed".to_owned()),
+            None,
+            None,
+            None,
+        )
         .await
         .expect("unrelated device should update");
 
@@ -11527,7 +11532,7 @@ async fn list_displays_tells_identical_panels_apart_by_port_and_honours_user_nam
     let renamed = insert_test_display_device_at_port(&state, "Fan LCD", "1-1.4").await;
     state
         .device_registry
-        .update_user_settings(&renamed, Some("Top Left Fan".to_owned()), None, None)
+        .update_user_settings(&renamed, Some("Top Left Fan".to_owned()), None, None, None)
         .await
         .expect("device exists");
     let lone = insert_test_display_device(&state, "Pump LCD").await;

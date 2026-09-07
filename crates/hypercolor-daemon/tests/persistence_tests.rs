@@ -640,7 +640,6 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
                 controls: HashMap::new(),
                 blend_mode: hypercolor_types::layer::BlendMode::Alpha,
                 opacity: 1.0,
-                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect("seed display preference");
@@ -654,7 +653,6 @@ fn display_preference_rolls_back_when_serialization_fails_before_admission() {
                 controls: HashMap::new(),
                 blend_mode: hypercolor_types::layer::BlendMode::Replace,
                 opacity: 1.0,
-                rotation: hypercolor_types::scene::DisplayRotation::default(),
             },
         )
         .expect_err("serialization failure should reject mutation");

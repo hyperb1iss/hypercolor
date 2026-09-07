@@ -175,13 +175,11 @@ pub struct DisplayFaceTarget {
         skip_serializing_if = "is_default_display_face_opacity"
     )]
     pub opacity: f32,
-    /// How the screen is mounted: the face is turned by this much so it
-    /// reads upright on a display installed upside down or on its side.
-    #[serde(default, skip_serializing_if = "DisplayRotation::is_upright")]
-    pub rotation: DisplayRotation,
 }
 
-/// Quarter turns applied to everything drawn on a display.
+/// Quarter turns applied to everything drawn on a display. A mounting
+/// fact about the panel, stored with the device's user settings so it
+/// holds across scenes, faces, and media layers alike.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
@@ -226,7 +224,6 @@ impl DisplayFaceTarget {
             device_id,
             blend_mode: BlendMode::default(),
             opacity: default_display_face_opacity(),
-            rotation: DisplayRotation::default(),
         }
     }
 

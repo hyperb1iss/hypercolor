@@ -17,6 +17,7 @@ use hypercolor_types::device::{
     FingerprintNamespace,
 };
 use hypercolor_types::portable::{PortableDeviceKey, PortableIdentityClaim};
+use hypercolor_types::scene::DisplayRotation;
 
 // ── TrackedDevice ────────────────────────────────────────────────────────
 
@@ -439,6 +440,8 @@ impl DeviceRegistry {
     /// - `enabled`: persisted user preference for whether the device should
     ///   participate in rendering
     /// - `brightness`: per-device output scale (`0.0..=1.0`)
+    /// - `display_rotation`: how a display-capable device's panel is
+    ///   mounted; everything drawn on it turns to match
     ///
     /// Returns the updated device snapshot, or `None` if the device ID is
     /// unknown.
@@ -448,6 +451,7 @@ impl DeviceRegistry {
         name: Option<String>,
         enabled: Option<bool>,
         brightness: Option<f32>,
+        display_rotation: Option<DisplayRotation>,
     ) -> Option<TrackedDevice> {
         let mut inner = self.inner.write().await;
         let entry = inner.devices.get_mut(id)?;
@@ -463,6 +467,10 @@ impl DeviceRegistry {
 
         if let Some(brightness) = brightness {
             entry.user_settings.brightness = brightness.clamp(0.0, 1.0);
+        }
+
+        if let Some(display_rotation) = display_rotation {
+            entry.user_settings.display_rotation = display_rotation;
         }
 
         bump_device_revision(entry);

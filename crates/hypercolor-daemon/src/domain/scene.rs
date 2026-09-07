@@ -47,8 +47,8 @@ use hypercolor_types::event::{
 use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceTarget, DisplayRotation, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
 };
 use hypercolor_types::spatial::{EdgeBehavior, Output, SamplingMode, SpatialLayout};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
@@ -1560,12 +1560,7 @@ impl SceneMutation {
             .id;
         let zone = self
             .candidate
-            .patch_display_zone_target(
-                zone_id,
-                Some(target.blend_mode),
-                Some(target.opacity),
-                Some(target.rotation),
-            )
+            .patch_display_zone_target(zone_id, Some(target.blend_mode), Some(target.opacity))
             .ok_or_else(|| {
                 DomainError::Internal(anyhow::anyhow!("Failed to update display face composition"))
             })?
@@ -1685,12 +1680,11 @@ impl SceneMutation {
         zone_id: ZoneId,
         blend_mode: Option<BlendMode>,
         opacity: Option<f32>,
-        rotation: Option<DisplayRotation>,
     ) -> Option<Zone> {
         let scene_id = self.candidate.active_scene_id().copied()?;
         let zone = self
             .candidate
-            .patch_display_zone_target(zone_id, blend_mode, opacity, rotation)?
+            .patch_display_zone_target(zone_id, blend_mode, opacity)?
             .clone();
         self.persists_scene_content = true;
         self.record_zone_change(scene_id, &zone, ZoneChangeKind::Updated);

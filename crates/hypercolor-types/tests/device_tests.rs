@@ -196,6 +196,7 @@ fn user_settings_serde_round_trip() {
         name: Some("Desk Strip".into()),
         enabled: false,
         brightness: 0.42,
+        display_rotation: hypercolor_types::scene::DisplayRotation::Deg180,
     };
     let json = serde_json::to_string(&settings).expect("serialize");
     let back: DeviceUserSettings = serde_json::from_str(&json).expect("deserialize");

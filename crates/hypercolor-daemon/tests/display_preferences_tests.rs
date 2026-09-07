@@ -417,7 +417,6 @@ fn store_round_trips_preferences_to_disk() {
         controls: std::collections::HashMap::new(),
         blend_mode: hypercolor_types::layer::BlendMode::Alpha,
         opacity: 0.8,
-        rotation: hypercolor_types::scene::DisplayRotation::default(),
     };
 
     let mut store = DisplayPreferencesStore::new(path.clone()).expect("store should initialize");
@@ -442,7 +441,6 @@ fn store_moves_to_state_with_a_durable_legacy_backup() {
         controls: std::collections::HashMap::new(),
         blend_mode: hypercolor_types::layer::BlendMode::Alpha,
         opacity: 0.75,
-        rotation: hypercolor_types::scene::DisplayRotation::default(),
     };
     let mut legacy_store =
         DisplayPreferencesStore::new(legacy.clone()).expect("legacy store initializes");
