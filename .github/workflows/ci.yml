@@ -772,8 +772,10 @@ jobs:
     runs-on: windows-latest
     # Sized for a cold run. The steps below sweep five feature sets, so
     # almost all of the wall time is rustc, not tests, and a cache miss puts
-    # the whole sweep well past an hour.
-    timeout-minutes: 90
+    # the whole sweep well past an hour. Green runs sit at 55 to 90 minutes
+    # and the serial daemon integration step alone takes half an hour, so
+    # 90 left no headroom for a cold cache.
+    timeout-minutes: 120
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.cache/hypercolor/target/rust-windows
     steps:
