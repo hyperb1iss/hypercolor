@@ -1314,13 +1314,36 @@ async fn configure_controller_output(
     config: &OpenRgbConfig,
 ) -> Result<()> {
     client.set_custom_mode(route.controller_index).await?;
-    if let Some((mode_index, mode)) = route.writable_mode.clone() {
+    if let Some((mode_index, mode)) = &route.writable_mode {
+        let mode = output_mode_for_write(mode);
         client
-            .update_mode(route.controller_index, mode_index, &mode)
+            .update_mode(route.controller_index, *mode_index, &mode)
             .await?;
     }
     verify_controller_output_mode(client, route, mode_flag_policy(config)).await?;
     Ok(())
+}
+
+/// The mode block Hypercolor writes when activating realtime output.
+///
+/// A mode that advertises a brightness range is written at its maximum
+/// instead of echoing whatever the server last reported; a correct mode
+/// streaming correct frames into a controller left at low brightness is the
+/// failure this prevents.
+fn output_mode_for_write(mode: &ControllerMode) -> ControllerMode {
+    let mut mode = mode.clone();
+    if let Some(max) = mode_brightness_target(&mode) {
+        mode.brightness = Some(max);
+    }
+    mode
+}
+
+/// The brightness a mode with an advertised range must report once active.
+fn mode_brightness_target(mode: &ControllerMode) -> Option<u32> {
+    match (mode.brightness_min, mode.brightness_max) {
+        (Some(min), Some(max)) if min <= max => Some(max),
+        _ => None,
+    }
 }
 
 async fn verify_controller_output_mode(
@@ -1338,13 +1361,24 @@ async fn verify_controller_output_mode(
             route.info.id
         );
     };
-    if mode.is_realtime_writable(policy) {
-        return Ok(());
+    if !mode.is_realtime_writable(policy) {
+        bail!(
+            "OpenRGB controller {} active mode {mode_index} is not approved for realtime output",
+            route.info.id
+        );
     }
-    bail!(
-        "OpenRGB controller {} active mode {mode_index} is not approved for realtime output",
-        route.info.id
-    )
+    if let Some(expected) = mode_brightness_target(&mode)
+        && mode.brightness != Some(expected)
+    {
+        bail!(
+            "OpenRGB controller {} active mode {mode_index} reports brightness {} after \
+             output setup; expected the advertised maximum {expected}",
+            route.info.id,
+            mode.brightness
+                .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+        );
+    }
+    Ok(())
 }
 
 async fn teardown_connected_controller(controller: &mut ConnectedController) -> Result<()> {
@@ -2333,6 +2367,28 @@ mod tests {
             );
             assert!(!route.info.capabilities.supports_direct);
         }
+    }
+
+    #[test]
+    fn output_mode_is_written_at_advertised_brightness_maximum() {
+        let mut mode = sample_mode();
+        mode.brightness = Some(40);
+        let written = output_mode_for_write(&mode);
+        assert_eq!(written.brightness, Some(100));
+        assert_eq!(written.flags, mode.flags);
+
+        let mut without_range = sample_mode();
+        without_range.brightness_min = None;
+        without_range.brightness_max = None;
+        without_range.brightness = None;
+        assert_eq!(output_mode_for_write(&without_range).brightness, None);
+        assert_eq!(mode_brightness_target(&without_range), None);
+
+        let mut inverted = sample_mode();
+        inverted.brightness_min = Some(100);
+        inverted.brightness_max = Some(0);
+        inverted.brightness = Some(7);
+        assert_eq!(output_mode_for_write(&inverted).brightness, Some(7));
     }
 
     #[test]

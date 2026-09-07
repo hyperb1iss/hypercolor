@@ -874,6 +874,144 @@ async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
 }
 
 #[tokio::test]
+async fn connect_writes_brightness_max_and_verifies_readback() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_brightness_server(
+        listener,
+        controller_payload_v5_with_brightness(40),
+        controller_payload_v5_with_brightness(100),
+    ));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect once readback reports full brightness");
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
+
+    let update_mode = server
+        .await
+        .expect("server task should join")
+        .expect("connect should write the output mode");
+    assert_eq!(update_mode.header.packet_id, PacketId::UpdateMode);
+    assert_eq!(&update_mode.payload[4..8], &0_u32.to_le_bytes());
+    assert_eq!(
+        update_mode_brightness(&update_mode.payload),
+        100,
+        "mode with a brightness range is written at brightness_max"
+    );
+}
+
+#[tokio::test]
+async fn connect_rejects_readback_below_brightness_max() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_brightness_server(
+        listener,
+        controller_payload_v5_with_brightness(40),
+        controller_payload_v5_with_brightness(40),
+    ));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+
+    let error = backend
+        .connect(&device_id)
+        .await
+        .expect_err("dark readback should fail output setup");
+    assert!(
+        error.to_string().contains("brightness 40"),
+        "unexpected error: {error}"
+    );
+    assert!(server.await.expect("server task should join").is_some());
+}
+
+async fn run_brightness_server(
+    listener: TcpListener,
+    initial_payload: Vec<u8>,
+    readback_payload: Vec<u8>,
+) -> Option<Packet> {
+    let mut update_mode = None;
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        let mut decoder = PacketDecoder::new();
+        let mut saw_output_mode_setup = false;
+        while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+            match packet.header.packet_id {
+                PacketId::UpdateMode => {
+                    assert_eq!(packet.header.device_index, 0);
+                    saw_output_mode_setup = true;
+                    update_mode = Some(packet);
+                }
+                other => {
+                    let payload = if saw_output_mode_setup {
+                        &readback_payload
+                    } else {
+                        &initial_payload
+                    };
+                    answer_standard_client_packet(&mut stream, other, &packet, payload).await;
+                }
+            }
+        }
+        if saw_output_mode_setup {
+            return update_mode;
+        }
+    }
+}
+
+#[tokio::test]
 async fn write_path_pads_and_truncates_frames_to_controller_shape() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -1969,6 +2107,10 @@ fn controller_payload_v5_with_active_mode(
     controller_payload_v5_full(name, serial, location, include_restore_mode, active_mode, 2)
 }
 
+fn controller_payload_v5_with_brightness(brightness: u32) -> Vec<u8> {
+    controller_payload_v5_shaped("Board", "SER123", "hidraw0", false, 0, 2, brightness)
+}
+
 fn controller_payload_v5_full(
     name: &str,
     serial: &str,
@@ -1976,6 +2118,26 @@ fn controller_payload_v5_full(
     include_restore_mode: bool,
     active_mode: i32,
     led_count: u32,
+) -> Vec<u8> {
+    controller_payload_v5_shaped(
+        name,
+        serial,
+        location,
+        include_restore_mode,
+        active_mode,
+        led_count,
+        100,
+    )
+}
+
+fn controller_payload_v5_shaped(
+    name: &str,
+    serial: &str,
+    location: &str,
+    include_restore_mode: bool,
+    active_mode: i32,
+    led_count: u32,
+    brightness: u32,
 ) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
@@ -1988,7 +2150,7 @@ fn controller_payload_v5_full(
     push_str(&mut body, location);
     push_u16(&mut body, if include_restore_mode { 2 } else { 1 });
     push_i32(&mut body, active_mode);
-    push_mode(&mut body);
+    push_mode_with_brightness(&mut body, brightness);
     if include_restore_mode {
         push_restore_mode(&mut body);
     }
@@ -2012,7 +2174,7 @@ fn controller_payload_v5_full(
     body
 }
 
-fn push_mode(body: &mut Vec<u8>) {
+fn push_mode_with_brightness(body: &mut Vec<u8>, brightness: u32) {
     push_str(body, "Direct");
     push_i32(body, 0);
     push_u32(body, ModeFlag::PerLedColor.mask());
@@ -2023,10 +2185,24 @@ fn push_mode(body: &mut Vec<u8>) {
     push_u32(body, 0);
     push_u32(body, 0);
     push_u32(body, 0);
-    push_u32(body, 100);
+    push_u32(body, brightness);
     push_u32(body, 0);
     push_u32(body, ColorMode::PerLed.raw());
     push_u16(body, 0);
+}
+
+/// Read the brightness field out of an UPDATEMODE payload for the "Direct"
+/// fixture mode: size, mode index, name (u16 length + bytes), then nine
+/// u32 fields before brightness.
+fn update_mode_brightness(payload: &[u8]) -> u32 {
+    let name_len = usize::from(u16::from_le_bytes([payload[8], payload[9]]));
+    let offset = 10 + name_len + 4 * 9;
+    u32::from_le_bytes([
+        payload[offset],
+        payload[offset + 1],
+        payload[offset + 2],
+        payload[offset + 3],
+    ])
 }
 
 fn push_restore_mode(body: &mut Vec<u8>) {
