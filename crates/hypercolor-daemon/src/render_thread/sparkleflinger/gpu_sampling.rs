@@ -1445,7 +1445,9 @@ fn finish_zone_color_readback(
     zones: &mut Vec<ZoneColors>,
 ) {
     let slice = pending_readback.buffer.slice(..pending_readback.used_bytes);
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("zone readback range should be mapped after the map callback");
     rebuild_zone_colors_from_mapped_bytes(&pending_readback.zones, &mapped, zones);
     drop(mapped);
     pending_readback.buffer.unmap();

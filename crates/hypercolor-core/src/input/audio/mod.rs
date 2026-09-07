@@ -1628,7 +1628,6 @@ fn find_named_input_device(host: &cpal::Host, name: &str) -> anyhow::Result<Opti
                 .is_some_and(|driver| driver == wanted)
             || description
                 .extended()
-                .iter()
                 .any(|line| line.trim().eq_ignore_ascii_case(name));
         if exact_match {
             return Ok(Some(device));
@@ -1639,7 +1638,6 @@ fn find_named_input_device(host: &cpal::Host, name: &str) -> anyhow::Result<Opti
                 .is_some_and(|driver| driver.contains(&wanted))
             || description
                 .extended()
-                .iter()
                 .any(|line| line.to_ascii_lowercase().contains(&wanted));
         if partial_match.is_none() && partial_match_found {
             partial_match = Some(device);
@@ -2331,18 +2329,23 @@ where
     let callback_failure = Arc::clone(&failure);
     let stream = device
         .build_input_stream(
-            config,
+            *config,
             move |data: &[T], _| {
                 let _ = push_interleaved_frames(data, &callback_ring, f32::from_sample);
             },
-            move |error| {
-                let failure = match error {
-                    cpal::StreamError::DeviceNotAvailable
-                    | cpal::StreamError::StreamInvalidated => AudioFailureKind::DeviceLost,
-                    cpal::StreamError::BackendSpecific { .. } => {
-                        AudioFailureKind::BackendUnavailable
+            move |error: cpal::Error| {
+                // cpal 0.18 folds every stream error into one kind enum. A
+                // reroute keeps delivering, an xrun or a refused realtime
+                // priority is a hiccup, a vanished device or invalidated
+                // stream needs a rebuild, and anything else is the backend.
+                let failure = match error.kind() {
+                    cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated => {
+                        AudioFailureKind::DeviceLost
                     }
-                    cpal::StreamError::BufferUnderrun => AudioFailureKind::None,
+                    cpal::ErrorKind::DeviceChanged
+                    | cpal::ErrorKind::Xrun
+                    | cpal::ErrorKind::RealtimeDenied => AudioFailureKind::None,
+                    _ => AudioFailureKind::BackendUnavailable,
                 };
                 if failure != AudioFailureKind::None {
                     callback_failure.store(failure as u8, Ordering::Release);

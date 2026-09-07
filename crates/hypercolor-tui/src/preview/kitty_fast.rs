@@ -11,7 +11,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, CellDiffOption};
 use ratatui::layout::Rect;
 use ratatui_image::picker::cap_parser::Parser;
 
@@ -175,7 +175,7 @@ fn transmit_direct(
 ) -> Result<String, String> {
     with_compressed_pixels(pixels, |compressed| {
         with_base64_encoded(compressed, |encoded| {
-            let (start, escape, end) = Parser::escape_tmux(is_tmux);
+            let (start, escape, end) = Parser::tmux_start_escape_end(is_tmux);
 
             const CHARS_PER_CHUNK: usize = 4096;
             let chunk_count = encoded.len().div_ceil(CHARS_PER_CHUNK);
@@ -228,7 +228,7 @@ fn transmit_temp_file(
         let compressed_len = compressed.len();
         let encoded_path_source = path.to_string_lossy().into_owned();
         with_base64_encoded(encoded_path_source.as_bytes(), |encoded_path| {
-            let (start, escape, end) = Parser::escape_tmux(is_tmux);
+            let (start, escape, end) = Parser::tmux_start_escape_end(is_tmux);
             let mut data =
                 String::with_capacity(encoded_path.len() + 128 + escape.len() * 2 + end.len());
             let (source_x, source_y, source_width, source_height) = source_rect;
@@ -410,7 +410,7 @@ fn render_cached(area: Rect, buf: &mut Buffer, row_symbols: &[String], transmit:
 
         for x in 1..full_width {
             if let Some(cell) = buf.cell_mut((area.left() + x, area.top() + y)) {
-                cell.set_skip(true);
+                cell.set_diff_option(CellDiffOption::Skip);
             }
         }
 
@@ -463,7 +463,7 @@ fn render_dynamic(
 
         for x in 1..full_width {
             if let Some(cell) = buf.cell_mut((area.left() + x, area.top() + y)) {
-                cell.set_skip(true);
+                cell.set_diff_option(CellDiffOption::Skip);
             }
         }
 
@@ -785,7 +785,7 @@ static DIACRITICS: [char; 297] = [
 #[cfg(test)]
 mod tests {
     use super::{KittyFrame, KittyMedium, preferred_medium_for};
-    use ratatui::buffer::Buffer;
+    use ratatui::buffer::{Buffer, CellDiffOption};
     use ratatui::layout::Rect;
     use std::path::PathBuf;
 
@@ -835,8 +835,8 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 2, 2));
         kitty.render(Rect::new(0, 0, 2, 2), &mut buf);
 
-        assert!(buf[(1, 0)].skip);
-        assert!(buf[(1, 1)].skip);
+        assert_eq!(buf[(1, 0)].diff_option, CellDiffOption::Skip);
+        assert_eq!(buf[(1, 1)].diff_option, CellDiffOption::Skip);
         assert!(!buf[(0, 0)].symbol().is_empty());
     }
 

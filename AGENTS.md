@@ -367,8 +367,8 @@ Response envelope: `{ data: T, meta: { api_version, request_id, timestamp } }`.
   to regenerate.
 - **Watch vs broadcast.** Don't use broadcast for high-frequency data (frame colors, spectrum).
   Watch gives latest-value semantics; broadcast queues every event.
-- **Cargo deny exceptions.** Three transitive Servo/Tauri vulns are allow-listed in `deny.toml`
-  (gtk3-rs unmaintained, ml-dsa timing, rsa Marvin). No upgrade path. Don't try to fix these.
+- **Cargo deny exceptions.** Two transitive Servo/Tauri vulns are allow-listed in `deny.toml`
+  (gtk3-rs unmaintained, rsa Marvin). No upgrade path. Don't try to fix these.
 - **Device fingerprinting.** Scanners provide stable fingerprints so re-discovered devices
   keep their `DeviceId` even if transport details (IP, USB path) change.
 - **FPS adaptation.** The render loop auto-shifts between 5 tiers. Downshift is aggressive

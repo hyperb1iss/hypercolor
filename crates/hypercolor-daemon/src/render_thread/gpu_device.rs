@@ -90,6 +90,7 @@ impl GpuRenderDevice {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            ..Default::default()
         }))
         .with_context(|| format!("no compatible wgpu adapter was available for {label}"))?;
 

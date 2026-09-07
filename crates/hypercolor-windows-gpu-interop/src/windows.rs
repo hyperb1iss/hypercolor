@@ -586,7 +586,11 @@ impl WindowsD3d11SharedTextureImporter {
         // SAFETY: hal_texture was created from this wgpu device's Vulkan HAL
         // and matches wgpu_desc.
         let texture = unsafe {
-            device.create_texture_from_hal::<wgpu_hal::api::Vulkan>(hal_texture, &wgpu_desc)
+            device.create_texture_from_hal::<wgpu_hal::api::Vulkan>(
+                hal_texture,
+                &wgpu_desc,
+                wgpu::TextureUses::UNINITIALIZED,
+            )
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let wrap_us = elapsed_micros(wrap_start);

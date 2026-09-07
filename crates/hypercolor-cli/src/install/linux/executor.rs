@@ -387,7 +387,7 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         let mut hasher = Sha256::new();
         let copied = std::io::copy(
             &mut std::io::Read::by_ref(&mut executable).take(max_bytes + 1),
-            &mut hasher,
+            &mut super::model::Sha256Writer(&mut hasher),
         )
         .map_err(io_error)?;
         if copied != max_bytes {
@@ -395,7 +395,7 @@ impl LinuxInstallExecutor for LinuxNativeExecutor {
         }
         Ok(LinuxProcessExecutable {
             path,
-            sha256: format!("{:x}", hasher.finalize()),
+            sha256: hex::encode(hasher.finalize()),
             device: metadata.dev(),
             inode: metadata.ino(),
         })
@@ -522,7 +522,7 @@ pub(super) fn read_exact_entry(
     let bytes = read_opened_public_bytes(&mut opened, initial_size, max_bytes)?;
     let exact = LinuxExactEntry::RegularFile {
         mode: opened.metadata().mode(),
-        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        sha256: hex::encode(Sha256::digest(&bytes)),
         snapshot_unit: None,
         snapshot_path: None,
     };

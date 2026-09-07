@@ -5,8 +5,6 @@ yanked = "warn"
 ignore = [
     # gtk3-rs unmaintained — transitive dep from tray-icon/tauri, no upgrade path
     "RUSTSEC-2024-0415",
-    # ml-dsa timing side-channel — transitive dep from Servo, no safe upgrade
-    "RUSTSEC-2025-0144",
     # rsa Marvin Attack — transitive dep from Servo/script, no safe upgrade
     "RUSTSEC-2023-0071",
 ]

@@ -27,7 +27,9 @@ pub(super) fn copy_mapped_readback_buffer_into_surface(
         *last_readback_bytes = used_bytes;
     }
     let slice = buffer.slice(..used_bytes);
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("readback range should be mapped after the map callback");
     let unpadded_bytes_per_row = width * BYTES_PER_PIXEL as u32;
     let Some(mut lease) = surfaces.dequeue() else {
         drop(mapped);

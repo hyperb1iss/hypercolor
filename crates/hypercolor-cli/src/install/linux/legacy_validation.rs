@@ -65,10 +65,10 @@ pub(super) fn validate_legacy_snapshot_binding(
         }
     }
     let identity = format!(
-        "legacy-{:x}",
-        Sha256::digest(
+        "legacy-{}",
+        hex::encode(Sha256::digest(
             serde_json::to_vec(&manifest.files).map_err(|source| error(source.to_string()))?
-        )
+        ))
     );
     if expected_unit.as_str() != identity {
         return Err(error("legacy snapshot manifest does not bind its unit ID"));
@@ -84,7 +84,7 @@ pub(super) fn validate_legacy_snapshot_binding(
     let mut expected_files = manifest.files;
     expected_files.insert(
         "manifest.json".to_owned(),
-        (0o644, format!("{:x}", Sha256::digest(&manifest_bytes))),
+        (0o644, hex::encode(Sha256::digest(&manifest_bytes))),
     );
     let expected_directories = expected_files
         .keys()
@@ -114,7 +114,7 @@ pub(super) fn validate_legacy_unit_with_budget(
         .map(|file| {
             (
                 file.path.clone(),
-                (file.mode, format!("{:x}", Sha256::digest(&file.contents))),
+                (file.mode, hex::encode(Sha256::digest(&file.contents))),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -199,7 +199,7 @@ fn scan_directory(
                         path,
                         (
                             metadata.mode() & 0o7777,
-                            format!("{:x}", Sha256::digest(&contents)),
+                            hex::encode(Sha256::digest(&contents)),
                         ),
                     )
                     .is_some()

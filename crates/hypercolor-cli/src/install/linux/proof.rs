@@ -541,12 +541,15 @@ fn hash_opened(
         .seek(SeekFrom::Start(0))
         .map_err(|source| error(source.to_string()))?;
     let mut hasher = Sha256::new();
-    let copied = std::io::copy(&mut opened.file_mut().take(size + 1), &mut hasher)
-        .map_err(|source| error(source.to_string()))?;
+    let copied = std::io::copy(
+        &mut opened.file_mut().take(size + 1),
+        &mut super::model::Sha256Writer(&mut hasher),
+    )
+    .map_err(|source| error(source.to_string()))?;
     if copied != size {
         return Err(error("retained daemon size changed while hashing"));
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[cfg(test)]

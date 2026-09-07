@@ -2115,7 +2115,7 @@ fn first_install_effects() -> Vec<String> {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn exact_entries_match(left: &LinuxExactEntry, right: &LinuxExactEntry) -> bool {

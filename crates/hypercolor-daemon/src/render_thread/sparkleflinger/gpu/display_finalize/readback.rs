@@ -108,7 +108,9 @@ pub(super) fn finish_yuv420_display_readback(
     pending: &PendingGpuDisplayFinalize,
 ) -> DisplayYuv420Frame {
     let slice = pending.buffer.slice(..pending.mapped_bytes);
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("display readback range should be mapped after the map callback");
     let used_len = usize::try_from(pending.used_bytes).expect("YUV readback should fit usize");
     let mut data = Vec::with_capacity(used_len);
     data.extend_from_slice(&mapped[..used_len]);

@@ -424,7 +424,7 @@ impl LinuxSystemdObservation {
 }
 
 pub(super) fn hex_digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 pub(super) fn entries_match(left: &LinuxExactEntry, right: &LinuxExactEntry) -> bool {
@@ -480,4 +480,19 @@ pub(super) fn require_absolute(path: &str, description: &str) -> Result<(), Inst
 
 pub(super) fn error(detail: impl Into<String>) -> InstallPlatformError {
     InstallPlatformError::new(detail)
+}
+
+/// `std::io::Write` adapter over a SHA-256 hasher, so bounded readers can be
+/// hashed with `std::io::copy` now that `digest` no longer implements `Write`.
+pub(crate) struct Sha256Writer<'a>(pub(crate) &'a mut Sha256);
+
+impl std::io::Write for Sha256Writer<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        sha2::Digest::update(self.0, buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

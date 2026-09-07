@@ -1,3 +1,7 @@
+// wgpu 30 deepens the auto-trait tree behind the daemon state enough that the
+// default recursion limit overflows while proving this router `Sync`.
+#![recursion_limit = "256"]
+
 use std::io::Cursor;
 use std::sync::{Arc, LazyLock, Mutex};
 

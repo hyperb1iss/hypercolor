@@ -334,12 +334,17 @@ impl MacosNativeReducer {
                 1,
                 1,
                 copy_size,
+                None,
             )
         };
         // SAFETY: the HAL texture belongs to this device and exactly matches
         // the supplied wgpu descriptor.
         let texture = unsafe {
-            device.create_texture_from_hal::<wgpu_hal::api::Metal>(hal_texture, &wgpu_descriptor)
+            device.create_texture_from_hal::<wgpu_hal::api::Metal>(
+                hal_texture,
+                &wgpu_descriptor,
+                wgpu::TextureUses::UNINITIALIZED,
+            )
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Ok(MacosNativeReductionTarget {
