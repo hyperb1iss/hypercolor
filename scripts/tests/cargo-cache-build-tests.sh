@@ -34,6 +34,7 @@ cat >"$SANDBOX/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$@" >"$FAKE_CARGO_LOG.args"
+printf '%s\n' "${CARGO_INCREMENTAL:-unset}" "${RUSTC_WRAPPER:-unset}" >"$FAKE_CARGO_LOG.mode"
 if [ -v CARGO_TARGET_DIR ]; then
   printf '%s\n' "$CARGO_TARGET_DIR" >"$FAKE_CARGO_LOG.target-env"
 else
@@ -147,6 +148,37 @@ assert_args() {
   printf '%s\n' "$@" >"$SANDBOX/expected"
   diff -u "$SANDBOX/expected" "$SANDBOX/$log_name.args"
 }
+
+# Exercise the policy through the real wrapper, including inherited CI state
+# and explicit overrides. A build command must not discard local incrementals.
+assert_mode() {
+  local name="$1" incremental="$2" wrapper="$3"
+  shift 3
+  env -u CI -u CARGO_INCREMENTAL -u RUSTC_WRAPPER \
+    -u HYPERCOLOR_FORCE_SCCACHE -u HYPERCOLOR_NO_SCCACHE -u HYPERCOLOR_ITERATE \
+    FAKE_CARGO_LOG="$SANDBOX/$name" \
+    FAKE_SCCACHE_LOG="$SANDBOX/mode.sccache.log" \
+    HYPERCOLOR_CACHE_DIR="$SANDBOX/mode-cache" \
+    CARGO_TARGET_DIR="$SANDBOX/mode-target" \
+    PATH="$SANDBOX/bin:$PATH" \
+    "$@" >/dev/null
+  printf '%s\n' "$incremental" "$wrapper" >"$SANDBOX/expected-mode"
+  diff -u "$SANDBOX/expected-mode" "$SANDBOX/$name.mode"
+}
+
+for subcommand in build test run check clippy; do
+  assert_mode "local-$subcommand" 1 unset "$WRAPPER" cargo "$subcommand"
+done
+assert_mode local-nextest 1 unset "$WRAPPER" cargo nextest run
+assert_mode ci-build 0 "$SANDBOX/bin/sccache" env CI=true "$WRAPPER" cargo build
+assert_mode ci-test 0 "$SANDBOX/bin/sccache" env CI=1 "$WRAPPER" cargo test
+assert_mode ci-nextest 0 "$SANDBOX/bin/sccache" env CARGO_INCREMENTAL=0 "$WRAPPER" cargo nextest run
+assert_mode ci-check 0 unset env CARGO_INCREMENTAL=0 "$WRAPPER" cargo check
+assert_mode forced-build 0 "$SANDBOX/bin/sccache" env HYPERCOLOR_FORCE_SCCACHE=1 "$WRAPPER" cargo build
+assert_mode release-build 0 "$SANDBOX/bin/sccache" "$WRAPPER" cargo build --release
+assert_mode override-ci 1 unset env CI=true HYPERCOLOR_ITERATE=1 "$WRAPPER" cargo build
+assert_mode override-force 1 unset env CARGO_INCREMENTAL=1 HYPERCOLOR_FORCE_SCCACHE=1 "$WRAPPER" cargo test
+assert_mode ambient-wrapper 1 unset env RUSTC_WRAPPER="$SANDBOX/bin/sccache" "$WRAPPER" cargo build
 
 relative_target="$SANDBOX/caller/relative-target"
 (
