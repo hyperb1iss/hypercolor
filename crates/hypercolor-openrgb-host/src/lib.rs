@@ -16,6 +16,7 @@
 
 mod detect;
 mod error;
+mod hints;
 mod probe;
 mod types;
 pub use detect::{
@@ -25,6 +26,7 @@ pub use detect::{
     read_version,
 };
 pub use error::{HostError, Result};
+pub use hints::{RELEASES_URL, detect_package_managers, install_hints, install_hints_for};
 pub use probe::{DEFAULT_SERVER_PORT, PROBE_CLIENT_NAME, probe_server};
 pub use types::{
     BinaryKind, InstallHint, InstallMethod, ManagedConfigDir, OpenRgbBinary, PermissionCheck,
