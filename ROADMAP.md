@@ -84,7 +84,7 @@ A community effect gallery: browse, install, and share effects without leaving t
 
 Things we want but haven't committed to a shape for yet.
 
-- **ROLI Blocks**: expressive pressure/tilt MIDI instruments with LED output. Support is a `DeviceBackend` that bridges to a separate `blocksd` daemon over a Unix socket, not a HAL protocol encoder, and no ROLI device appears in the compatibility database. End-to-end device support is unproven.
+- **ROLI Blocks**: the `DeviceBackend` bridges to `blocksd` over a Unix socket. Capability-aware discovery exposes Lightpad 15×15 grids and LUMI 24-key strips, with separate binary and key-frame transports. ROLI devices are not counted in the HAL compatibility database. Full scene-compositor and musical-input acceptance remain separate hardware checks.
 - **X11 screen capture**: Linux capture is Wayland-portal-only today; an XShm path would cover legacy sessions.
 - **SMBus / I2C on more silicon**: motherboard and DRAM RGB beyond ASUS Aura (MSI Mystic Light and friends). The Windows PawnIO path and the Linux i2c-dev path both exist; each new controller family needs a hardened probe model.
 - **Wired / wireless headset RGB**: most headset protocols are closed; community reverse-engineering is the prerequisite.

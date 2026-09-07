@@ -110,7 +110,7 @@ The full device list lives in the [compatibility matrix](@/hardware/compatibilit
 | **WLED** | Network / UDP | DDP and E1.31/sACN; RGB and RGBW; no authentication | Supported |
 | **Govee** | Network / UDP + Cloud | LAN UDP control; optional cloud API fallback | Supported |
 | **OpenRGB bridge** | Network / TCP | Fallback for any hardware OpenRGB supports | Supported (opt-in) |
-| **ROLI Blocks bridge** | Unix socket / blocksd | Lightpad, LUMI Keys, and Seaboard Blocks as pixel-addressable surfaces | Supported (Unix only) |
+| **[ROLI Blocks bridge](@/hardware/roli-blocks.md)** | Unix socket / blocksd | Lightpad grids and 24 LUMI key colors | Supported with matching blocksd capabilities (Unix only) |
 | **Dygma Defy** | USB Serial | Driver ready; lighting gated by firmware, not yet enabled | Blocked |
 
 Neither bridge is counted among the 12 driver families with shipping device support. The OpenRGB bridge ships compiled in but its config entry is minted disabled, so enable it per [OpenRGB fallback](@/hardware/openrgb-fallback.md). The ROLI Blocks bridge scans by default (`discovery.blocks_scan = true`) and finds devices only when a `blocksd` socket is present; set `discovery.blocks_socket_path` if yours is not in the default location. Dygma is the thirteenth family implemented in the tree; it is excluded from the twelve because no Dygma device lights up yet.
