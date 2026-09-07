@@ -948,6 +948,7 @@ files = {
     "share/hypercolor/ui/index.html": (0o644, b"ui"),
     "share/hypercolor/effects/bundled/effect.html": (0o644, b"effect"),
     "share/hypercolor/agents/skills/skill.md": (0o644, b"skill"),
+    "share/hypercolor/skills/probe/SKILL.md": (0o644, b"user skill"),
     "share/hypercolor/agents/agents/agent.md": (0o644, b"agent"),
     "lib/systemd/user/hypercolor.service": (0o644, b"service"),
     "lib/udev/rules.d/99-hypercolor.rules": (0o644, b"udev"),
@@ -990,6 +991,7 @@ manifest = json.dumps(
             "bundled_effect_files": 1,
             "docs_files": 0,
             "skill_files": 1,
+            "user_skill_files": 1,
             "agent_files": 1,
             "site_files": 0,
         },
@@ -1327,6 +1329,7 @@ files = {
     "share/hypercolor/ui/index.html": (0o644, b"ui"),
     "share/hypercolor/effects/bundled/effect.html": (0o644, b"effect"),
     "share/hypercolor/agents/skills/skill.md": (0o644, b"skill"),
+    "share/hypercolor/skills/probe/SKILL.md": (0o644, b"user skill"),
     "share/hypercolor/agents/agents/agent.md": (0o644, b"agent"),
 }
 if case == "nested-manifest":
@@ -1379,6 +1382,7 @@ manifest = {
         "bundled_effect_files": 1,
         "docs_files": 0,
         "skill_files": 1,
+        "user_skill_files": 1,
         "agent_files": 1,
         "site_files": 0,
     },

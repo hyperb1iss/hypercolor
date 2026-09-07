@@ -26,7 +26,7 @@ use hypercolor_core::input::screen::planner::{
     ScreenUpscalePolicy,
 };
 
-#[path = "support/native_target.rs"]
+#[path = "../support/native_target.rs"]
 mod native_target_support;
 
 fn extent(width: u32, height: u32) -> PixelExtent {

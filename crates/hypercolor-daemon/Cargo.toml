@@ -93,7 +93,7 @@ hypercolor-driver-builtin = { workspace = true, default-features = false, option
 hypercolor-network = { workspace = true }
 hypercolor-leptos-ext = { path = "../hypercolor-leptos-ext", default-features = false, features = ["ws-core", "axum"] }
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
 jsonschema = { workspace = true }
 strum = { workspace = true }
 subtle = { workspace = true }

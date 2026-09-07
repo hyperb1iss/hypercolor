@@ -33,9 +33,8 @@ alias py := python-verify
 verify: oss-boundary-check-strict api-doc-route-check macos-gpu-only-check build-wrapper-test cargo-gc-test fmt-check lint test alloc-contracts
     @echo '✅ All checks passed'
 
-# Verify target isolation and Cargo argument normalization
-# The fixture needs flock, /proc, and bash 4.2, so it runs on Linux hosts
-# and in the Linux CI lane only.
+# Verify target isolation and Cargo argument normalization on Linux, and
+# compiler-cache mode selection on Windows.
 [linux]
 build-wrapper-test:
     ./scripts/tests/cargo-cache-build-tests.sh
@@ -46,7 +45,7 @@ build-wrapper-test:
 
 [windows]
 build-wrapper-test:
-    @echo 'Build wrapper contract is covered by the Rust packaging tests on Windows'
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/tests/cargo-cache-mode-tests.ps1
 
 # Prove stale, recent, locked, and dirty target profiles are handled safely
 [linux]
@@ -159,11 +158,11 @@ python-generate-check:
 
 # Regenerate the WebSocket protocol manifest from the topic registry
 ws-manifest:
-    ./scripts/cargo-cache-build.sh cargo run -q -p hypercolor-daemon --bin hypercolor-ws-manifest
+    ./scripts/cargo-cache-build.sh cargo run --locked -q -p hypercolor-daemon --no-default-features --bin hypercolor-ws-manifest
 
 # Verify the WebSocket protocol manifest matches the topic registry
 ws-manifest-check:
-    ./scripts/cargo-cache-build.sh cargo run -q -p hypercolor-daemon --bin hypercolor-ws-manifest -- --check
+    ./scripts/cargo-cache-build.sh cargo run --locked -q -p hypercolor-daemon --no-default-features --bin hypercolor-ws-manifest -- --check
 
 # Generate Python WebSocket protocol constants
 python-ws-protocol-generate:

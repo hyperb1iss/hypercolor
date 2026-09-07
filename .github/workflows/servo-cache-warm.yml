@@ -16,15 +16,9 @@ env:
   LINUX_RUST_DEPS: >-
     libudev-dev libdbus-1-dev libasound2-dev libpulse0
     libpipewire-0.3-dev
-    ccache cmake jq nasm pkg-config lld
+    ccache clang cmake jq nasm pkg-config lld
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libxdo-dev libfontconfig1-dev libegl1 libssl-dev
-  # rust-cache hashes every RUST* variable into the restore key, so this must
-  # match the canonical CI workflow even though the warmer does not invoke it.
-  RUST_SHARED_WORKSPACE_ARGS: >-
-    --workspace
-    --exclude hypercolor-daemon
-    --exclude hypercolor-app
   HYPERCOLOR_CACHE_DIR: ${{ github.workspace }}/.cache/hypercolor
   MOZBUILD_STATE_PATH: ${{ github.workspace }}/.cache/hypercolor/mozbuild
   CARGO_INCREMENTAL: "0"
@@ -64,7 +58,6 @@ jobs:
         with:
           shared-key: servo
           workspaces: . -> .cache/hypercolor/target/servo
-          cache-workspace-crates: "true"
           cache-directories: |
             .cache/hypercolor/mozbuild
             .cache/hypercolor/toolchain
@@ -80,6 +73,7 @@ jobs:
         run: |
           ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test effect_factory_tests
           ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test builtin_effect_tests
+          ./scripts/cargo-cache-build.sh cargo test --locked --no-run -p hypercolor-core --features servo --test html_loader_tests
 
       - name: Warm core Servo clippy artifacts
         run: >-
@@ -97,3 +91,9 @@ jobs:
           ./scripts/cargo-cache-build.sh
           cargo clippy --locked -p hypercolor-daemon --lib --bin hypercolor-daemon --tests
           -- -D warnings
+
+      - name: Save Rust build caches
+        if: always()
+        uses: ./.github/actions/rust-build-cache
+        with:
+          phase: save

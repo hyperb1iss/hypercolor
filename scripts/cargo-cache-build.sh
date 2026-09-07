@@ -399,12 +399,16 @@ fi
 
 FORCE_SCCACHE="${HYPERCOLOR_FORCE_SCCACHE:-0}"
 ITERATE="${HYPERCOLOR_ITERATE:-0}"
-# `run` stays incremental: it is the edit-run iteration loop, and a measured
-# edit-rebuild of hypercolor-core is ~45s non-incremental vs ~11s
-# incremental. Whole-tree ops win with sccache instead.
+# Local builds and tests share the incremental edit-run loop. CI and explicit
+# non-incremental builds use sccache to reuse compiles across fresh checkouts.
 WANTS_SCCACHE=0
 case "$CARGO_SUBCOMMAND" in
-  build | test | bench | nextest) WANTS_SCCACHE=1 ;;
+  build | test | bench | nextest)
+    if [ "${CI:-}" = "true" ] || [ "${CI:-}" = "1" ] \
+      || [ "${CARGO_INCREMENTAL:-}" = "0" ]; then
+      WANTS_SCCACHE=1
+    fi
+    ;;
 esac
 if [ "$RELEASE_LIKE_PROFILE" -eq 1 ] || [ "$FORCE_SCCACHE" = "1" ] || [ "$FORCE_SCCACHE" = "true" ]; then
   WANTS_SCCACHE=1
