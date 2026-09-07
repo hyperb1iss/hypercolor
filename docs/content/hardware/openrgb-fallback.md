@@ -50,9 +50,9 @@ Confirm it is listening:
 ss -tlnp | grep 6742
 ```
 
-The server binds to `127.0.0.1:6742` by default. Hypercolor connects on demand during
-discovery and reconnects automatically with exponential backoff (1 s initial, doubling to a
-60 s cap with 10% jitter, up to 6 attempts) if the connection drops.
+The server binds to `127.0.0.1:6742` by default. Hypercolor keeps one SDK connection per
+endpoint, shared by every controller on it, and reconnects automatically with exponential
+backoff (1 s initial, doubling to a 60 s cap with 10% jitter) if the connection drops.
 
 ---
 
@@ -187,8 +187,13 @@ per-LED color mode.
 
 ## Frame rate
 
-The default output rate for all OpenRGB controllers is 30 FPS. Override it globally with
-`default_target_fps`, or per-controller using `controller_fps`. The `controller_fps`
+The default output rate for OpenRGB controllers is 30 FPS, with one class exception:
+controllers in the `smbus` detector class (motherboard, DRAM, GPU) default to 62 FPS, the
+same cadence Hypercolor's native SMBus backend derives from its 16 ms frame interval, so
+a DRAM stick behind OpenRGB is never driven faster than the same stick behind the native
+driver. Each controller's writer paces to its rate and drops superseded frames locally,
+so a slow controller never holds back a fast one on the same endpoint. Override the rate
+globally with `default_target_fps`, or per-controller using `controller_fps`. The `controller_fps`
 key is a map from fingerprint string or detector class name to FPS:
 
 ```toml
@@ -276,6 +281,30 @@ controller is shown in device metadata as `protocol_version`.
 
 ---
 
+## Zone sizes
+
+Some OpenRGB controllers expose resizable zones, typically ARGB headers whose LED count
+OpenRGB cannot detect. OpenRGB profiles do not persist a resize made over the SDK, so the
+durable place for those counts is Hypercolor config. `zone_sizes` maps a controller
+fingerprint (as shown in `hypercolor devices info <id>` metadata, matched
+case-insensitively) to zone names exactly as OpenRGB reports them and the LED count you
+want:
+
+```toml
+[drivers.openrgb.zone_sizes."bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43"]
+"Channel ATX 1" = 24
+"Channel ATX 2" = 12
+```
+
+On connect, any configured zone whose reported count differs is resized, Hypercolor
+waits for OpenRGB to re-announce the device, re-enumerates, and republishes the new
+shape. Requests outside the zone's advertised range are clamped to it, single-LED
+zones are refused, and the `SAVEMODE` opcode is never sent: nothing here writes device
+NVRAM. Sizes are honored only for controllers identified by serial or location; a
+shape-based fingerprint changes with the LED count and would orphan its own entry.
+
+---
+
 ## Full configuration reference
 
 ```toml
@@ -296,7 +325,11 @@ teardown_policy = "restore_previous_or_leave"
 
 [drivers.openrgb.controller_fps]
 # "hid" = 60
+# "smbus" = 30                          # overrides the 62 FPS smbus class default
 # "bridge:openrgb:127.0.0.1:6742:serial:SER123" = 45
+
+[drivers.openrgb.zone_sizes]
+# "bridge:openrgb:127.0.0.1:6742:serial:SER123" = { "Channel ATX 1" = 24 }
 
 [drivers.openrgb.ownership]
 mode = "disabled"                        # disabled | detector_partitioned | open_rgb_owned

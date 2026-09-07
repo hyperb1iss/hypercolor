@@ -5,6 +5,14 @@
 Driver slice implemented. The active milestone is the clean SDK crate and Bridge
 driver against a user-installed or externally managed OpenRGB server.
 
+Amended 2026-09-07 by Spec 81 Layer 1 (bridge driver hardening): write-path
+shape guard, brightness written and verified at the advertised maximum,
+detector-class cadence defaults with paced writers, one shared SDK connection
+per endpoint with a re-enumerating and reconnecting endpoint task, `serial`
+and `location` discovery metadata, temporary identify, and user-approved zone
+sizes over a gated `RESIZEZONE`. The SDK Protocol Scope and Tests sections
+below reflect that amendment.
+
 Bundled OpenRGB supervision, post-install download/install flows, Steam lanes,
 and release distribution compliance artifacts are deferred to later milestones.
 They must not block the driver slice and must not be quietly folded into it.
@@ -140,12 +148,19 @@ The SDK crate implements only non-persistent realtime control:
 - `UPDATELEDS`
 - `UPDATEZONELEDS`
 
-Forbidden opcodes:
+Forbidden opcode:
 
-- `SAVEMODE`
-- `RESIZEZONE`
+- `SAVEMODE`. Writes device NVRAM. Refused under every client policy with no
+  flag to enable it.
 
-Those opcodes require a future spec update before any implementation.
+Gated opcode:
+
+- `RESIZEZONE`. Refused by default; `OpenRgbClientConfig::allow_zone_resize`
+  (set by the driver only when `zone_sizes` is non-empty) permits it.
+  `OpenRgbClient::resize_zone` rejects `ZoneType::Single`, clamps the request
+  to the zone's advertised `leds_min..=leds_max`, and callers wait for the
+  server's `DEVICE_LIST_UPDATED` before re-enumerating. Sizes are
+  user-approved data entered through config, never inferred (Spec 81 §1.7).
 
 Supported protocol versions must be pinned before implementation. Negotiation is
 `min(client_max, server_max)`. Servers below the minimum supported protocol
@@ -297,7 +312,10 @@ SDK tests:
 - below-minimum protocol rejection
 - writable mode selection by flags
 - persistent mode rejection
-- `SAVEMODE` and `RESIZEZONE` never emitted
+- `SAVEMODE` never emitted under any policy
+- `RESIZEZONE` refused by default, permitted only behind `allow_zone_resize`,
+  clamped to the zone range, single-LED zones rejected
+- clean close: pending notifications drained and the write half shut down
 - `UPDATELEDS` and `UPDATEZONELEDS` payloads
 - synthesized golden controller-data corpus for supported protocol versions
 - fake SDK server integration coverage for client request/response flow
@@ -316,11 +334,20 @@ Driver tests:
 - output-disabled reasons
 - detector ownership partition filtering
 - low-confidence native-overlap suppression
-- `DEVICE_LIST_UPDATED` index remap
-- reconnect sequence
-- health state
-- per-controller `target_fps`
-- slow-controller isolation
+- `DEVICE_LIST_UPDATED` index remap through the endpoint task
+- reconnect sequence with bounded backoff (renegotiate, re-enumerate, restore
+  the output mode, resume frames)
+- per-controller `target_fps` including the `smbus` detector-class default
+- slow-controller isolation (paced writers, latest-value drop)
+- `configure_controller_output` sequence and active-mode readback rejection
+- brightness written at `brightness_max` and verified on readback
+- all four teardown policies
+- write-path shape guard: pad, truncate, zero-LED disable, controller-side
+  shape change disables with a rescan reason
+- zone resize gate, clamp, and connect-time `zone_sizes` application
+- discovery over a fake server, reusing an open endpoint link
+- `serial` and `location` discovery metadata
+- temporary identify offered; output-disabled routes refuse with their reason
 
 Deferred supervisor and distribution tests:
 
