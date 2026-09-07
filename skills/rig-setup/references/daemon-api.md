@@ -41,15 +41,18 @@ its segments as a raw zone.
 |---|---|
 | `GET /devices/coverage` | one row per physical device: `identity`, `native: {device_id, driver_id, state} \| null`, `bridge: {device_id, output_enabled, disabled_reason} \| null`, `unclaimed: bool`, `active: native \| bridge \| none \| conflict`. Rows join native devices, bridge routes, and the unclaimed store by serial, then SMBus bus plus address, then USB path |
 | `GET /devices/unclaimed` | `ListResponse` of `UnclaimedDevice { vendor_id, product_id, manufacturer, product, serial, bus_path, interface_classes, claimable_by }`; `claimable_by` names a native driver that knows the device but is disabled. USB only; SMBus has no enumerate-then-filter step |
-| `GET /devices` (bridged rows) | `origin.transport == "bridge"` with `origin.driver_id == "openrgb"`, layout id `openrgb:<host>:<port>:<fingerprint>`, and `bridge: { endpoint, controller_index, identity_confidence, detector_class, output_enabled, disabled_reason, protocol_version }` |
+| `GET /devices` (bridged rows) | `origin.driver_id == "openrgb"` (transport `bridge`, which other drivers such as ROLI also report, so key on the driver), layout id `openrgb:<host>:<port>:<identity>` (`openrgb:127-0-0-1:6742:serial:0994fa72ab3cae43`), and `bridge: { endpoint, controller_index, identity_confidence, detector_class, output_enabled, disabled_reason, protocol_version, fingerprint }`; `bridge.fingerprint` (`bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43`) is the key `zone_sizes` and `controller_fps` use, also printed by `hypercolor devices info <id>` |
 | `GET /drivers` | every driver with `enabled`, `config_key`, and its `protocols[]` (`vendor_id`, `product_id` as integers); the coverage script diffs the host's USB list against this on daemons without the two routes above |
 | `GET /config/keys/drivers.openrgb.zone_sizes` | fingerprint → zone name → LED count, the only place hub zone sizes survive an OpenRGB restart |
 
 Facts that bite:
 
-- On a daemon that predates Spec 81, `/devices/coverage` and `/devices/unclaimed` answer
-  404 with `code: device_not_found` (the path matched `/devices/{id}`), not
+- On a daemon older than the coverage routes, `/devices/coverage` and `/devices/unclaimed`
+  answer 404 with `code: device_not_found` (the path matched `/devices/{id}`), not
   `route_not_found`. Treat both codes as "route missing".
+- List routes page: `ListResponse { items, total, page: { offset, limit, has_more } }`
+  with `limit` capped at 200 (the daemon rejects larger values). Follow `has_more` with
+  `offset` rather than assuming one page; the scripts do.
 - Bridged devices sit at `status: known` until the active layout targets them and connect
   then. Identify works on them anyway through a temporary connect.
 - The conflict guard output-disables a bridge route whenever a renderable native device

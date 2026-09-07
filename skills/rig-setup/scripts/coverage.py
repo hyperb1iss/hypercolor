@@ -31,15 +31,37 @@ DEFAULT_BASE = "http://localhost:9420/api/v1"
 BRIDGE_PREFIX = "openrgb:"
 USB_HUB_CLASS = 9
 ROOT_HUB_VENDORS = {0x1D6B}  # Linux Foundation root hubs
-# Interface classes that are never RGB controllers; a device made only of these is hidden
-# unless --all asks for it (HID 0x03 and vendor-specific 0xff stay visible).
-NOISE_CLASSES = {0x01, 0x02, 0x06, 0x07, 0x08, 0x0A, 0x0E, 0x10, 0xE0}
+# Interface classes that are never RGB controllers: audio, CDC, imaging, printer, mass
+# storage, CDC data, video, audio/video, application-specific (DFU, test), wireless.
+# A device whose interfaces beyond HID and "per interface" are all of these is hidden
+# unless --all asks for it. Pure HID (0x03) and vendor-specific (0xff) stay visible,
+# since RGB controllers live there; a HID interface riding along an audio interface is a
+# headset's or DAC's control surface, not lighting.
+NOISE_CLASSES = {0x01, 0x02, 0x06, 0x07, 0x08, 0x0A, 0x0E, 0x10, 0xEF, 0xFE, 0xE0}
 
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 class Daemon:
     def __init__(self, base: str):
         self.base = base.rstrip("/")
+
+    def list_all(self, path: str, page_size: int = 200) -> list | None:
+        """Every item of a paged list route, following `page.has_more`; None when the route is missing."""
+        items: list = []
+        offset = 0
+        sep = "&" if "?" in path else "?"
+        while True:
+            doc = self.get(f"{path}{sep}limit={page_size}&offset={offset}")
+            if doc is None:
+                return None if not items else items
+            data = doc.get("data", doc)
+            if isinstance(data, list):
+                return items + data
+            items += data.get("items", [])
+            page = data.get("page") or {}
+            if not page.get("has_more") or not data.get("items"):
+                return items
+            offset += page.get("limit") or page_size
 
     def get(self, path: str):
         """GET that returns the parsed envelope, or None for a missing route (404)."""
@@ -161,8 +183,9 @@ def scan_windows() -> list[dict]:
 
 
 def is_noise(dev: dict) -> bool:
-    """Class 0 means "defined per interface" and says nothing, so it is ignored."""
-    classes = set(dev.get("interface_classes", [])) - {0}
+    """Class 0 (per interface) says nothing and HID may ride along a headset, so both are set aside;
+    what remains has to be non-empty and made only of classes that rule out lighting."""
+    classes = set(dev.get("interface_classes", [])) - {0x00, 0x03}
     return bool(classes) and classes <= NOISE_CLASSES
 
 
@@ -212,7 +235,7 @@ def is_openrgb_device(dev: dict) -> bool:
 
 
 def fallback_rows(daemon: Daemon, host_scan: bool, show_all: bool = False) -> tuple[list[dict], str]:
-    devices = items_of(daemon.get("/devices?limit=200") or {"items": []})
+    devices = daemon.list_all("/devices") or []
     drivers = items_of(daemon.get("/drivers") or {"items": []})
     protocols: dict[tuple[int, int], tuple[str, bool]] = {}
     for drv in drivers:
@@ -266,7 +289,14 @@ def fallback_rows(daemon: Daemon, host_scan: bool, show_all: bool = False) -> tu
                 continue
             driver, enabled = protocols.get(key, (None, True))
             if driver and enabled:
-                continue  # a native driver knows it and is on; discovery simply has not adopted it yet
+                # a native driver knows this VID:PID and is on, yet the daemon never adopted
+                # the device: almost always permissions (udev, hidraw) or a claim by another app
+                rows.append({"identity": f"{key[0]:04x}:{key[1]:04x}" + (f":{usb['serial']}" if usb.get("serial") else ""),
+                             "name": " ".join(x for x in (usb.get("manufacturer"), usb.get("product")) if x),
+                             "native": None, "bridge": None, "unclaimed": False, "active": "none",
+                             "not_adopted_by": driver, "bus_path": usb.get("bus_path"),
+                             "interface_classes": usb.get("interface_classes", [])})
+                continue
             usb["claimable_by"] = driver if driver and not enabled else None
             unclaimed.append(usb)
         source = f"daemon devices + host USB scan ({host_platform()})"
@@ -312,18 +342,27 @@ def describe(row: dict) -> str:
     if row.get("unclaimed"):
         hint = f"driver '{row['claimable_by']}' knows it but is disabled" if row.get("claimable_by") else "no native protocol"
         bits.append(f"unclaimed ({hint})")
+    if row.get("not_adopted_by"):
+        bits.append(f"known to driver '{row['not_adopted_by']}', not adopted (check permissions/udev, other software holding it)")
     return "; ".join(bits) or "no owner"
 
 
 def print_report(rows: list[dict], source: str) -> None:
-    groups = {"native": [], "bridge": [], "conflict": [], "unclaimed": [], "none": []}
+    groups = {"native": [], "bridge": [], "conflict": [], "unclaimed": [], "not_adopted": [], "none": []}
     for row in rows:
         owned = row.get("native") or row.get("bridge")
-        key = "unclaimed" if row.get("unclaimed") and not owned else row.get("active", "none")
+        if row.get("not_adopted_by"):
+            key = "not_adopted"
+        elif row.get("unclaimed") and not owned:
+            key = "unclaimed"
+        else:
+            key = row.get("active", "none")
         groups.setdefault(key, []).append(row)
     titles = [("native", "Native (Hypercolor drives these)"), ("bridge", "OpenRGB bridge"),
               ("conflict", "Conflict (both stacks see the device; native wins, bridge output is off)"),
-              ("unclaimed", "Unclaimed (nothing drives these yet)"), ("none", "Known but not driving")]
+              ("unclaimed", "Unclaimed (nothing drives these yet)"),
+              ("not_adopted", "Known to a native driver, not adopted (permissions, udev, or another app holds it)"),
+              ("none", "Known but not driving")]
     print(f"coverage source: {source}")
     for key, title in titles:
         group = groups.get(key) or []
