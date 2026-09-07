@@ -4833,6 +4833,7 @@ dependencies = [
  "hypercolor-macos-owner",
  "hypercolor-macos-session",
  "hypercolor-network",
+ "hypercolor-openrgb-sdk",
  "hypercolor-platform-fs",
  "hypercolor-types",
  "hypercolor-windows-capture",

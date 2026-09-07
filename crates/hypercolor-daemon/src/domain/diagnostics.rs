@@ -25,7 +25,9 @@ use crate::performance::{LatestFrameMetrics, PerformanceSnapshot};
 
 const RENDER_FRAME_STALE_WARNING_MS: f64 = 2_000.0;
 const RENDER_FRAME_STALE_FAIL_MS: f64 = 10_000.0;
-const DEFAULT_SAFE_CHECKS: [&str; 6] = ["daemon", "render", "devices", "config", "input", "memory"];
+const DEFAULT_SAFE_CHECKS: [&str; 7] = [
+    "daemon", "render", "devices", "config", "input", "memory", "openrgb",
+];
 
 /// The macOS screen-parity probe, armed only while a Metal render thread runs.
 ///
@@ -214,6 +216,7 @@ impl DiagnosticsContext {
                 "config" => checks.push(config_check(&inputs)),
                 "input" => checks.extend(input_checks(&snapshot.input)),
                 "memory" => checks.push(servo_memory_check().await),
+                "openrgb" => checks.push(self.openrgb_check().await),
                 "macos_screen_parity" => {
                     checks.push(self.authorities.parity.run(&mut snapshot).await);
                 }
@@ -258,6 +261,36 @@ impl DiagnosticsContext {
             },
             snapshot,
         }
+    }
+
+    /// Probe the OpenRGB bridge: reachability and protocol handshake per
+    /// configured endpoint, plus the routes the daemon holds output-disabled.
+    async fn openrgb_check(&self) -> DiagnoseCheck {
+        use super::openrgb_diagnostics::{OpenRgbCheckState, OpenRgbProbeConfig};
+
+        let devices = &self.authorities.devices;
+        let registry = devices.driver_registry();
+        let Some(driver) = registry.get(super::openrgb_diagnostics::OPENRGB_DRIVER_ID) else {
+            return super::openrgb_diagnostics::openrgb_check(&OpenRgbCheckState::Unavailable);
+        };
+        let config = devices
+            .config_snapshot()
+            .unwrap_or_else(|| Arc::new(hypercolor_types::config::HypercolorConfig::default()));
+        if !crate::network::module_enabled(&config, &driver.module_descriptor()) {
+            return super::openrgb_diagnostics::openrgb_check(&OpenRgbCheckState::Disabled);
+        }
+        let entry = crate::network::driver_config_entry(
+            &config,
+            super::openrgb_diagnostics::OPENRGB_DRIVER_ID,
+        );
+        let probe_config = OpenRgbProbeConfig::from_driver_entry(&entry);
+        let probes = super::openrgb_diagnostics::probe_openrgb_endpoints(&probe_config).await;
+        let disabled_routes =
+            super::openrgb_diagnostics::output_disabled_routes(&devices.discovery_runtime()).await;
+        super::openrgb_diagnostics::openrgb_check(&OpenRgbCheckState::Probed {
+            probes,
+            disabled_routes,
+        })
     }
 
     async fn read_inputs(&self) -> DiagnosticsInputs {
