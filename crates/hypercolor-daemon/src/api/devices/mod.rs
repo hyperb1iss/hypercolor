@@ -5,6 +5,7 @@
 
 mod attachments;
 mod discovery;
+mod inventory;
 mod pairing;
 
 use std::collections::HashMap;
@@ -39,6 +40,7 @@ pub use attachments::{
     update_attachments,
 };
 pub use discovery::{DiscoverRequest, discover_devices};
+pub use inventory::{get_device_coverage, list_unclaimed_devices};
 pub use pairing::{DeletePairingResponse, PairDeviceResponse, delete_pairing, pair_device};
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -294,6 +296,18 @@ pub async fn update_device(
         }
         None => None,
     };
+
+    if body.enabled == Some(true)
+        && let Some(lock) = super::discovery_runtime(&state)
+            .bridge_output_locks
+            .get(&device_id)
+    {
+        return DomainError::conflict(format!(
+            "Bridge route is output-disabled: {}. Disable the native device first.",
+            lock.reason
+        ))
+        .into_response();
+    }
 
     let enabled_handled_by_lifecycle = if let Some(enabled) = body.enabled {
         let runtime = super::discovery_runtime(&state);
@@ -884,6 +898,7 @@ pub(super) async fn summarize_device_for_response(
             })
             .collect(),
         attachments: None,
+        bridge: inventory::bridge_device_summary(state, info, metadata),
     })
 }
 
@@ -917,8 +932,11 @@ fn device_connection_summary(
     let ip = metadata_value(metadata, "ip").map(str::to_owned);
     let hostname = metadata_value(metadata, "hostname").map(str::to_owned);
     let label = device_connection_label(&info.origin.transport, metadata);
-    let endpoint = hostname
-        .clone()
+    let bridge_endpoint = (info.origin.transport == DriverTransportKind::Bridge)
+        .then(|| metadata_value(metadata, "endpoint").map(str::to_owned))
+        .flatten();
+    let endpoint = bridge_endpoint
+        .or_else(|| hostname.clone())
         .or_else(|| ip.clone())
         .or_else(|| label.clone());
 
@@ -947,6 +965,17 @@ fn device_connection_label(
             (None, Some(address)) => Some(format!("SMBus {address}")),
             (Some(bus_path), None) => Some(bus_path.to_owned()),
             (None, None) => metadata_value(metadata, "serial").map(str::to_owned),
+        },
+        // Bridge routes are reached through a server, so the endpoint is
+        // what tells the user where the device lives; the controller index
+        // separates several routes on one server.
+        DriverTransportKind::Bridge => match (
+            metadata_value(metadata, "endpoint"),
+            metadata_value(metadata, "controller_index"),
+        ) {
+            (Some(endpoint), Some(index)) => Some(format!("{endpoint} controller {index}")),
+            (Some(endpoint), None) => Some(endpoint.to_owned()),
+            (None, _) => metadata_value(metadata, "serial").map(str::to_owned),
         },
         _ => metadata_value(metadata, "serial").map(str::to_owned),
     }
@@ -1327,6 +1356,15 @@ async fn prepare_identify_backend(
     device_state: DeviceState,
     backend_id: &str,
 ) -> Result<(BackendIo, bool, DirectControlGuard), DomainError> {
+    if !device_state.is_renderable()
+        && let Some(reason) = inventory::bridge_output_disabled_reason(state, device_id, info).await
+    {
+        return Err(DomainError::conflict(format!(
+            "Device output is disabled for {}: {reason}",
+            info.name
+        )));
+    }
+
     let manager = Arc::clone(&state.backend_manager);
     let direct_backend = {
         let manager = manager.lock().await;

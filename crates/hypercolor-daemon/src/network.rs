@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use hypercolor_core::device::BackendManager;
 #[cfg(not(feature = "builtin-drivers"))]
-use hypercolor_core::device::UsbProtocolConfigStore;
+use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
 use hypercolor_driver_api::{DriverConfigView, DriverHost};
 #[cfg(not(feature = "builtin-drivers"))]
 use hypercolor_driver_support::CredentialStore;
@@ -31,6 +31,7 @@ pub fn build_builtin_driver_module_registry(
     _config: &HypercolorConfig,
     _credential_store: Arc<CredentialStore>,
     _usb_protocol_configs: UsbProtocolConfigStore,
+    _unclaimed_devices: UnclaimedDeviceStore,
 ) -> Result<DriverModuleRegistry> {
     Ok(DriverModuleRegistry::new())
 }

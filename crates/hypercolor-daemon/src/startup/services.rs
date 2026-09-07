@@ -22,7 +22,8 @@ use hypercolor_core::config::{
 };
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, UnclaimedDeviceStore,
+    UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, register_html_effects};
@@ -64,6 +65,7 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::attachment_profiles::ComponentProfileStore;
 use crate::device_metrics::{DeviceMetricsSnapshot, DeviceMetricsSnapshotStore};
 use crate::device_settings::DeviceSettingsStore;
+use crate::discovery::BridgeOutputLocks;
 use crate::display_frames::DisplayFrameRuntime;
 use crate::display_preferences::DisplayPreferencesStore;
 use crate::domain::context::{
@@ -673,11 +675,14 @@ impl DaemonState {
             }
         };
         let discovery_in_progress = Arc::new(AtomicBool::new(false));
+        let unclaimed_devices = UnclaimedDeviceStore::new().with_event_bus(Arc::clone(&event_bus));
+        let bridge_output_locks = BridgeOutputLocks::default();
         let driver_registry = Arc::new(
             network::build_builtin_driver_module_registry(
                 config,
                 Arc::clone(&credential_store),
                 usb_protocol_configs.clone(),
+                unclaimed_devices.clone(),
             )
             .context("failed to build driver module registry")?,
         );
@@ -750,6 +755,9 @@ impl DaemonState {
                     runtime_state_path: runtime_state_path.clone(),
                     device_aliases_path: device_aliases_path.clone(),
                     usb_protocol_configs: usb_protocol_configs.clone(),
+                    unclaimed_devices: unclaimed_devices.clone(),
+                    bridge_output_locks: bridge_output_locks.clone(),
+                    probe_serializer: Arc::default(),
                     credential_store: Arc::clone(&credential_store),
                     in_progress: Arc::clone(&discovery_in_progress),
                     pending_scans: Arc::default(),

@@ -172,6 +172,9 @@ fn test_discovery_runtime(
         runtime_state_path: state_dir.join("runtime-state.json"),
         device_aliases_path: state_dir.join("device-aliases.json"),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
+        unclaimed_devices: hypercolor_core::device::UnclaimedDeviceStore::new(),
+        bridge_output_locks: hypercolor_daemon::discovery::BridgeOutputLocks::default(),
+        probe_serializer: Arc::default(),
         credential_store: Arc::new(
             CredentialStore::open_blocking(&state_dir).expect("test credential store"),
         ),

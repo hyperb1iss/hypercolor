@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 #[cfg(feature = "hal")]
-use hypercolor_core::device::UsbProtocolConfigStore;
+use hypercolor_core::device::{UnclaimedDeviceStore, UsbProtocolConfigStore};
 use hypercolor_driver_builtin::build_driver_module_registry;
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -24,6 +24,8 @@ fn build_driver_module_registry_registers_compiled_in_drivers() {
         credentials,
         #[cfg(feature = "hal")]
         UsbProtocolConfigStore::new(),
+        #[cfg(feature = "hal")]
+        UnclaimedDeviceStore::new(),
     )
     .expect("registry should build");
     let ids = registry.ids();
@@ -120,6 +122,8 @@ fn register_driver_modules_appends_to_existing_registry() {
         credentials,
         #[cfg(feature = "hal")]
         UsbProtocolConfigStore::new(),
+        #[cfg(feature = "hal")]
+        UnclaimedDeviceStore::new(),
     )
     .expect("drivers should register");
 

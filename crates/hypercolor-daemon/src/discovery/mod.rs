@@ -1,5 +1,7 @@
 //! Shared device discovery runtime for daemon startup and API-triggered scans.
 
+mod conflict_guard;
+mod coverage;
 mod device_helpers;
 mod lifecycle;
 mod scan;
@@ -14,7 +16,8 @@ use std::time::Duration;
 use hypercolor_core::attachment::ComponentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, UnclaimedDeviceStore,
+    UsbProtocolConfigStore,
 };
 use hypercolor_driver_support::CredentialStore;
 use hypercolor_network::DriverModuleRegistry;
@@ -30,6 +33,18 @@ use crate::domain::device_binding::DeviceBindingMigrationContext;
 use crate::domain::layout::LayoutContext;
 use crate::logical_devices::LogicalDevice;
 
+pub use conflict_guard::GuardDecision;
+pub use conflict_guard::{
+    BridgeOutputLock, BridgeOutputLocks, ConflictGuardReport, NATIVE_OWNER_REASON_PREFIX,
+    enforce_native_ownership, enforce_native_ownership_for_device, native_owner_reason,
+    plan_conflict_guard,
+};
+pub use coverage::{
+    CoverageBridgeSide, CoverageNativeSide, CoverageSource, CoverageUnclaimedSide,
+    JoinedCoverageRow, OPENRGB_DRIVER_ID, ParsedOpenRgbLocation, collect_coverage_sources,
+    collect_device_coverage, is_openrgb_bridge_device, join_coverage_sources,
+    parse_openrgb_location,
+};
 pub(crate) use device_helpers::{
     adopt_discovered_device, apply_persisted_device_settings, desired_connect_behavior,
     sync_registry_state,
@@ -96,6 +111,16 @@ pub struct DiscoveryRuntime {
 
     /// Shared per-device USB protocol configuration store.
     pub usb_protocol_configs: UsbProtocolConfigStore,
+
+    /// USB devices the host sees that no enabled native driver claims.
+    pub unclaimed_devices: UnclaimedDeviceStore,
+
+    /// Bridge routes the conflict guard has output-disabled, with reasons.
+    pub bridge_output_locks: BridgeOutputLocks,
+
+    /// Serializes native SMBus probing against bridge discovery: both sides
+    /// open the same I2C adapters, and concurrent probes corrupt LED counts.
+    pub probe_serializer: Arc<Mutex<()>>,
 
     /// Shared encrypted credential store for driver device auth.
     pub credential_store: Arc<CredentialStore>,
