@@ -329,7 +329,7 @@
   ],
   "bridge": {
     "zone_sizes": {
-      "serial:0994fa72ab3cae43": {
+      "bridge:openrgb:127.0.0.1:6742:serial:0994FA72AB3CAE43": {
         "Channel 1": 20,
         "Channel 2": 60,
         "Channel 3": 60,
