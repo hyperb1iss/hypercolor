@@ -36,7 +36,7 @@ use serde_json::json;
 use tokio::sync::{Mutex, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// OpenRGB driver descriptor.
 pub static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
@@ -456,6 +456,7 @@ impl DeviceBackend for OpenRgbBackend {
             client,
             config: self.config.clone(),
             accepting_frames: true,
+            shape_warning_logged: false,
         }));
         self.connected
             .write()
@@ -985,14 +986,89 @@ async fn write_controller_colors(
         bail!("OpenRGB controller is disconnected");
     }
     prepare_controller_for_write(&mut controller).await?;
+    ensure_route_output_enabled(&controller.route)?;
 
-    let colors = colors
-        .iter()
-        .map(|[red, green, blue]| RgbColor::new(*red, *green, *blue))
-        .collect::<Vec<_>>();
+    let colors = shape_frame_colors(&mut controller, colors)?;
     write_prepared_controller_colors(&mut controller, &colors)
         .await
         .map_err(|error| Error::new(error).context("OpenRGB update_leds failed"))
+}
+
+/// Fit a frame to the controller's LED count.
+///
+/// OpenRGB silently discards an `UPDATELEDS` whose color count differs from
+/// the controller's LED count, so a mismatched frame is padded with black or
+/// truncated rather than sent as-is. The mismatch is logged once per route.
+fn shape_frame_colors(
+    controller: &mut ConnectedController,
+    colors: &[[u8; 3]],
+) -> Result<Vec<RgbColor>> {
+    let led_count = usize::try_from(controller.route.info.capabilities.led_count)
+        .context("OpenRGB LED count does not fit usize")?;
+    if led_count == 0 {
+        bail!(
+            "OpenRGB controller {} reports zero LEDs; output is disabled",
+            controller.route.info.id
+        );
+    }
+    if colors.len() != led_count && !controller.shape_warning_logged {
+        controller.shape_warning_logged = true;
+        warn!(
+            device_id = %controller.route.info.id,
+            controller_led_count = led_count,
+            frame_led_count = colors.len(),
+            "OpenRGB frame length does not match controller LED count; \
+             padding or truncating so the server does not drop the frame"
+        );
+    }
+    Ok(fit_frame_to_led_count(colors, led_count))
+}
+
+/// Pad a frame with black or truncate it to exactly `led_count` colors.
+fn fit_frame_to_led_count(colors: &[[u8; 3]], led_count: usize) -> Vec<RgbColor> {
+    let mut shaped = colors
+        .iter()
+        .take(led_count)
+        .map(|[red, green, blue]| RgbColor::new(*red, *green, *blue))
+        .collect::<Vec<_>>();
+    shaped.resize(led_count, RgbColor::new(0, 0, 0));
+    shaped
+}
+
+/// Describe a controller-side shape change for `disabled_reason`.
+fn shape_changed_reason(previous_led_count: u32, current_led_count: u32) -> String {
+    format!("zone shape changed (was {previous_led_count}, now {current_led_count}); rescan")
+}
+
+/// Whether two routes describe different LED shapes.
+fn route_shape_differs(previous: &ControllerRoute, current: &ControllerRoute) -> bool {
+    previous.info.capabilities.led_count != current.info.capabilities.led_count
+        || previous.info.segments.len() != current.info.segments.len()
+        || previous
+            .info
+            .segments
+            .iter()
+            .zip(&current.info.segments)
+            .any(|(before, after)| {
+                before.name != after.name
+                    || before.led_count != after.led_count
+                    || before.topology != after.topology
+            })
+}
+
+/// Carry a controller-side shape change into the refreshed route.
+///
+/// The refreshed route keeps its new shape so the daemon sees the current
+/// LED count, but output is disabled until the layout is rescanned.
+fn apply_shape_change(previous: &ControllerRoute, current: &mut ControllerRoute) {
+    if current.disabled_reason.is_some() || !route_shape_differs(previous, current) {
+        return;
+    }
+    current.disabled_reason = Some(shape_changed_reason(
+        previous.info.capabilities.led_count,
+        current.info.capabilities.led_count,
+    ));
+    current.info.capabilities.supports_direct = false;
 }
 
 async fn prepare_controller_for_write(controller: &mut ConnectedController) -> Result<()> {
@@ -1021,17 +1097,32 @@ async fn write_prepared_controller_colors(
 }
 
 async fn refresh_connected_route(controller: &mut ConnectedController) -> Result<()> {
-    let route = find_current_route(
+    let mut route = match find_current_route(
         &mut controller.client,
         controller.route.endpoint,
         &controller.route.fingerprint,
         &controller.config,
     )
-    .await?;
-    ensure_route_output_enabled(&route)?;
-    configure_controller_output(&mut controller.client, &route, &controller.config).await?;
+    .await
+    {
+        Ok(route) => route,
+        Err(error) => {
+            controller.route.disabled_reason = Some(
+                "OpenRGB controller disappeared after a device list update; rescan".to_owned(),
+            );
+            controller.route.info.capabilities.supports_direct = false;
+            return Err(error);
+        }
+    };
+    apply_shape_change(&controller.route, &mut route);
     controller.route = route;
-    Ok(())
+    ensure_route_output_enabled(&controller.route)?;
+    configure_controller_output(
+        &mut controller.client,
+        &controller.route,
+        &controller.config,
+    )
+    .await
 }
 
 struct ConnectedController {
@@ -1040,6 +1131,7 @@ struct ConnectedController {
     client: OpenRgbClient,
     config: OpenRgbConfig,
     accepting_frames: bool,
+    shape_warning_logged: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1522,6 +1614,9 @@ fn topology_disabled_reason(controller: &ControllerData) -> Option<String> {
     let Some(reported_controller_led_count) = controller_led_count(controller) else {
         return Some("OpenRGB controller LED list count overflowed".to_owned());
     };
+    if reported_controller_led_count == 0 {
+        return Some("OpenRGB controller reports zero LEDs".to_owned());
+    }
     if reported_zone_led_count != reported_controller_led_count {
         return Some(format!(
             "OpenRGB zone LED count {reported_zone_led_count} does not match controller LED list {reported_controller_led_count}"
@@ -2238,6 +2333,92 @@ mod tests {
             );
             assert!(!route.info.capabilities.supports_direct);
         }
+    }
+
+    #[test]
+    fn frame_is_padded_or_truncated_to_controller_led_count() {
+        let frame = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
+
+        let truncated = fit_frame_to_led_count(&frame, 2);
+        assert_eq!(
+            truncated,
+            vec![RgbColor::new(1, 2, 3), RgbColor::new(4, 5, 6)]
+        );
+
+        let padded = fit_frame_to_led_count(&frame[..1], 3);
+        assert_eq!(
+            padded,
+            vec![
+                RgbColor::new(1, 2, 3),
+                RgbColor::new(0, 0, 0),
+                RgbColor::new(0, 0, 0)
+            ]
+        );
+
+        assert_eq!(fit_frame_to_led_count(&frame, 3).len(), 3);
+    }
+
+    #[test]
+    fn zero_led_controller_is_output_disabled() {
+        let mut controller = sample_controller();
+        controller.leds.clear();
+        controller.colors.clear();
+        controller.zones[0].leds_count = 0;
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+
+        let route = build_route(default_endpoints()[0], 0, 5, controller, &config);
+
+        assert_eq!(route.info.capabilities.led_count, 0);
+        assert!(!route.info.capabilities.supports_direct);
+        assert!(
+            route
+                .disabled_reason
+                .expect("zero-LED controller should be disabled")
+                .contains("zero LEDs")
+        );
+    }
+
+    #[test]
+    fn controller_side_shape_change_disables_output_with_rescan_reason() {
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+        let endpoint = default_endpoints()[0];
+        let previous = build_route(endpoint, 0, 5, sample_controller(), &config);
+
+        let mut same = build_route(endpoint, 1, 5, sample_controller(), &config);
+        apply_shape_change(&previous, &mut same);
+        assert!(
+            same.disabled_reason.is_none(),
+            "index remap alone is not a shape change"
+        );
+
+        let mut grown = sample_controller();
+        grown.zones[0].leds_count = 6;
+        grown.leds.extend((4..6).map(|index| LedData {
+            name: index.to_string(),
+            value: index,
+        }));
+        grown.colors.resize(6, RgbColor::new(0, 0, 0));
+        let mut current = build_route(endpoint, 0, 5, grown, &config);
+        apply_shape_change(&previous, &mut current);
+
+        assert_eq!(current.info.capabilities.led_count, 6);
+        assert!(!current.info.capabilities.supports_direct);
+        assert_eq!(
+            current.disabled_reason.as_deref(),
+            Some("zone shape changed (was 4, now 6); rescan")
+        );
     }
 
     #[test]

@@ -873,6 +873,261 @@ async fn disconnect_leave_last_frame_sends_no_teardown_packet() {
     };
 }
 
+#[tokio::test]
+async fn write_path_pads_and_truncates_frames_to_controller_shape() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_collect_updates_server(listener, 2));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+    assert_eq!(devices[0].info.capabilities.led_count, 2);
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    let frame_sink = backend
+        .frame_sink(&device_id)
+        .expect("connected controller should expose frame sink");
+
+    let oversized = frame_sink.deliver_colors_shared(
+        DeviceDeliveryId {
+            queue_generation: 1,
+            sequence: 1,
+        },
+        Arc::new(vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]]),
+    );
+    let ack = tokio::time::timeout(Duration::from_secs(1), oversized)
+        .await
+        .expect("oversized frame should be acknowledged");
+    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+
+    let undersized = frame_sink.deliver_colors_shared(
+        DeviceDeliveryId {
+            queue_generation: 1,
+            sequence: 2,
+        },
+        Arc::new(vec![[9, 9, 9]]),
+    );
+    let ack = tokio::time::timeout(Duration::from_secs(1), undersized)
+        .await
+        .expect("undersized frame should be acknowledged");
+    assert_eq!(ack.status, DeviceDeliveryStatus::Completed);
+
+    let updates = server.await.expect("server task should join");
+    assert_eq!(updates.len(), 2);
+    for update in &updates {
+        assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
+        assert_eq!(update.payload.len(), 14, "every frame is shaped to 2 LEDs");
+        assert_eq!(&update.payload[4..6], &2_u16.to_le_bytes());
+    }
+    assert_eq!(&updates[0].payload[6..14], &[1, 2, 3, 0, 4, 5, 6, 0]);
+    assert_eq!(&updates[1].payload[6..14], &[9, 9, 9, 0, 0, 0, 0, 0]);
+}
+
+#[tokio::test]
+async fn device_list_update_with_new_shape_disables_output_until_rescan() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_shape_change_server(listener));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    let frame_sink = backend
+        .frame_sink(&device_id)
+        .expect("connected controller should expose frame sink");
+    let ack = tokio::time::timeout(
+        Duration::from_secs(2),
+        frame_sink.deliver_colors_shared(
+            DeviceDeliveryId {
+                queue_generation: 2,
+                sequence: 1,
+            },
+            Arc::new(vec![[1, 2, 3], [4, 5, 6]]),
+        ),
+    )
+    .await
+    .expect("frame after shape change should be acknowledged");
+
+    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
+    let error = ack
+        .error
+        .expect("failed ack should carry the shape-change error");
+    assert!(
+        error
+            .to_string()
+            .contains("zone shape changed (was 2, now 3); rescan"),
+        "unexpected error: {error}"
+    );
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect the disabled controller");
+    assert!(server.await.expect("server task should join"));
+}
+
+async fn run_collect_updates_server(listener: TcpListener, expected: usize) -> Vec<Packet> {
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        let mut updates = Vec::new();
+        let mut decoder = PacketDecoder::new();
+        while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+            match packet.header.packet_id {
+                PacketId::UpdateLeds => {
+                    updates.push(packet);
+                    if updates.len() == expected {
+                        return updates;
+                    }
+                }
+                other => {
+                    answer_standard_client_packet(
+                        &mut stream,
+                        other,
+                        &packet,
+                        &controller_payload_v5("Board", "SER123", "hidraw0"),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+}
+
+async fn run_shape_change_server(listener: TcpListener) -> bool {
+    let mut saw_output_mode_setup = false;
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        let mut decoder = PacketDecoder::new();
+        let mut notified = false;
+        while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+            match packet.header.packet_id {
+                PacketId::UpdateMode => {
+                    saw_output_mode_setup = true;
+                    if !notified {
+                        notified = true;
+                        send_packet(&mut stream, PacketId::DeviceListUpdated, 0, Vec::new()).await;
+                    }
+                }
+                PacketId::UpdateLeds => {
+                    panic!("frame must not reach the server after a shape change")
+                }
+                other => {
+                    let payload = if saw_output_mode_setup {
+                        controller_payload_v5_with_led_count("Board", "SER123", "hidraw0", 3)
+                    } else {
+                        controller_payload_v5("Board", "SER123", "hidraw0")
+                    };
+                    answer_standard_client_packet(&mut stream, other, &packet, &payload).await;
+                }
+            }
+        }
+        if saw_output_mode_setup {
+            return true;
+        }
+    }
+}
+
+async fn answer_standard_client_packet(
+    stream: &mut TcpStream,
+    packet_id: PacketId,
+    packet: &Packet,
+    controller_payload: &[u8],
+) {
+    match packet_id {
+        PacketId::RequestProtocolVersion => {
+            send_packet(
+                stream,
+                PacketId::RequestProtocolVersion,
+                0,
+                CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+            )
+            .await;
+        }
+        PacketId::SetClientName => {
+            assert_eq!(packet.payload, b"Hypercolor\0");
+        }
+        PacketId::RequestControllerCount => {
+            send_packet(
+                stream,
+                PacketId::RequestControllerCount,
+                0,
+                1_u32.to_le_bytes().to_vec(),
+            )
+            .await;
+        }
+        PacketId::RequestControllerData => {
+            assert_eq!(packet.header.device_index, 0);
+            send_packet(
+                stream,
+                PacketId::RequestControllerData,
+                0,
+                controller_payload.to_vec(),
+            )
+            .await;
+        }
+        PacketId::SetCustomMode | PacketId::UpdateMode => {
+            assert_eq!(packet.header.device_index, 0);
+        }
+        other => panic!("unexpected OpenRGB client packet: {other:?}"),
+    }
+}
+
 fn assert_blackout_packet(packet: &Packet) {
     assert_eq!(packet.header.device_index, 0);
     assert_eq!(packet.header.packet_id, PacketId::UpdateLeds);
@@ -1695,12 +1950,32 @@ fn controller_payload_v5_inner(
     )
 }
 
+fn controller_payload_v5_with_led_count(
+    name: &str,
+    serial: &str,
+    location: &str,
+    led_count: u32,
+) -> Vec<u8> {
+    controller_payload_v5_full(name, serial, location, false, 0, led_count)
+}
+
 fn controller_payload_v5_with_active_mode(
     name: &str,
     serial: &str,
     location: &str,
     include_restore_mode: bool,
     active_mode: i32,
+) -> Vec<u8> {
+    controller_payload_v5_full(name, serial, location, include_restore_mode, active_mode, 2)
+}
+
+fn controller_payload_v5_full(
+    name: &str,
+    serial: &str,
+    location: &str,
+    include_restore_mode: bool,
+    active_mode: i32,
+    led_count: u32,
 ) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
@@ -1718,15 +1993,18 @@ fn controller_payload_v5_with_active_mode(
         push_restore_mode(&mut body);
     }
     push_u16(&mut body, 1);
-    push_zone(&mut body);
-    push_u16(&mut body, 2);
-    push_str(&mut body, "LED 0");
-    push_u32(&mut body, 0);
-    push_str(&mut body, "LED 1");
-    push_u32(&mut body, 1);
-    push_u16(&mut body, 2);
-    body.extend_from_slice(&RgbColor::new(1, 2, 3).to_wire_bytes());
-    body.extend_from_slice(&RgbColor::new(4, 5, 6).to_wire_bytes());
+    push_zone_with_led_count(&mut body, led_count);
+    let led_count_u16 = u16::try_from(led_count).expect("fixture LED count should fit u16");
+    push_u16(&mut body, led_count_u16);
+    for index in 0..led_count {
+        push_str(&mut body, &format!("LED {index}"));
+        push_u32(&mut body, index);
+    }
+    push_u16(&mut body, led_count_u16);
+    for index in 0..led_count {
+        let channel = u8::try_from(index % 250).expect("fixture color should fit u8");
+        body.extend_from_slice(&RgbColor::new(channel, channel + 1, channel + 2).to_wire_bytes());
+    }
     push_u16(&mut body, 0);
     push_u32(&mut body, 0);
     let size = u32::try_from(body.len()).expect("fixture should fit u32");
@@ -1769,18 +2047,18 @@ fn push_restore_mode(body: &mut Vec<u8>) {
     body.extend_from_slice(&RgbColor::new(8, 9, 10).to_wire_bytes());
 }
 
-fn push_zone(body: &mut Vec<u8>) {
+fn push_zone_with_led_count(body: &mut Vec<u8>, led_count: u32) {
     push_str(body, "Main");
     push_i32(body, 1);
-    push_u32(body, 2);
-    push_u32(body, 2);
-    push_u32(body, 2);
+    push_u32(body, led_count);
+    push_u32(body, led_count);
+    push_u32(body, led_count);
     push_u16(body, 0);
     push_u16(body, 1);
     push_str(body, "Half");
     push_i32(body, 1);
     push_u32(body, 0);
-    push_u32(body, 2);
+    push_u32(body, led_count);
     push_u32(body, 0);
 }
 
