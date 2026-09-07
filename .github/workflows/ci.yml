@@ -135,6 +135,8 @@ jobs:
               - 'scripts/dist.sh'
               - 'scripts/verify-release-artifact.sh'
               - 'scripts/tests/release-artifact-tests.sh'
+              - 'scripts/homebrew-formula.mjs'
+              - 'scripts/tests/homebrew-formula.test.mjs'
               - 'packaging/**'
               - 'udev/**'
               - 'scripts/sign-macos-artifacts.sh'
@@ -200,6 +202,9 @@ jobs:
             workflow:
               - '.github/workflows/**'
               - '.github/actions/**'
+              - 'scripts/homebrew-formula.mjs'
+              - 'scripts/tests/homebrew-formula.test.mjs'
+              - 'packaging/homebrew/hypercolor.rb'
 
   # ── Workflow Lint ─────────────────────────────────────────────
   workflow-lint:
@@ -216,6 +221,8 @@ jobs:
           disable_annotations: "true"
       - name: Test build cache contracts
         run: node --test .github/actions/rust-build-cache/*.test.mjs
+      - name: Test Homebrew formula rendering
+        run: node --test scripts/tests/homebrew-formula.test.mjs
 
       - name: Actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/*.yml
@@ -2221,4 +2228,111 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .SRCINFO PKGBUILD hypercolor.install
           git commit -m "hypercolor-bin: update to ${VERSION}" || exit 0
+          git push
+
+  update-homebrew:
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      startsWith(github.ref, 'refs/tags/') &&
+      !contains(github.ref_name, '-')
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Test Homebrew formula rendering
+        run: node --test scripts/tests/homebrew-formula.test.mjs
+
+      - name: Download release tarballs and compute checksums
+        id: checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+          for platform in linux-amd64 linux-arm64; do
+            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
+            gh release download "v${VERSION}" \
+              --repo "${{ github.repository }}" \
+              --pattern "${tarball}" \
+              --dir release-artifacts
+            sha=$(sha256sum "release-artifacts/${tarball}" | cut -d' ' -f1)
+            echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
+            echo "  ${platform}: ${sha}"
+          done
+
+      - name: Verify Homebrew tap token
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not configured; the tap was not updated."
+            exit 1
+          fi
+          if ! can_push="$(gh api repos/hyperb1iss/homebrew-tap --jq '.permissions.push // false')"; then
+            echo "::error::HOMEBREW_TAP_TOKEN cannot authenticate; the tap was not updated."
+            exit 1
+          fi
+          if [[ "$can_push" != "true" ]]; then
+            echo "::error::HOMEBREW_TAP_TOKEN cannot push to hyperb1iss/homebrew-tap; the tap was not updated."
+            exit 1
+          fi
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: hyperb1iss/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          persist-credentials: true
+
+      - name: Render formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256_LINUX_AMD64: ${{ steps.checksums.outputs.sha256_linux_amd64 }}
+          SHA256_LINUX_ARM64: ${{ steps.checksums.outputs.sha256_linux_arm64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p homebrew-tap/Formula
+          node scripts/homebrew-formula.mjs \
+            --version "$VERSION" \
+            --linux-amd64 "$SHA256_LINUX_AMD64" \
+            --linux-arm64 "$SHA256_LINUX_ARM64" \
+            --template packaging/homebrew/hypercolor.rb \
+            --current homebrew-tap/Formula/hypercolor.rb \
+            --output homebrew-tap/Formula/hypercolor.rb
+          echo "Rendered formula:"
+          cat homebrew-tap/Formula/hypercolor.rb
+
+      - name: Upload Homebrew formula
+        uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-hypercolor-${{ steps.version.outputs.version }}
+          path: homebrew-tap/Formula/hypercolor.rb
+          if-no-files-found: error
+
+      - name: Push to homebrew-tap
+        working-directory: homebrew-tap
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/hypercolor.rb
+          if git diff --cached --quiet -- Formula/hypercolor.rb; then
+            echo "Formula/hypercolor.rb already matches v${VERSION}"
+            exit 0
+          fi
+          git commit \
+            -m "hypercolor: update to ${VERSION}" \
+            -m "Linux stanzas come from the v${VERSION} release tarballs; macOS stanzas are carried forward until the signed lane promotes a newer build."
           git push

@@ -44,11 +44,17 @@ GitHub Release with the committed notes, publishes `hypercolor` +
 dist-tag), publishes the Python client to PyPI (stable only), and updates
 the AUR metadata (stable only).
 
-Public CI ships no macOS artifacts and does not update the Homebrew tap:
-macOS binaries require Developer ID signing that repository runners cannot
-perform, so signed macOS artifacts are produced and attached through the
-signed acceptance checkpoint below, and tap updates are manual until a
-signing-capable release lane exists.
+The tag lane also updates the Homebrew tap: `update-homebrew` renders
+`packaging/homebrew/hypercolor.rb` with `scripts/homebrew-formula.mjs`,
+filling the Linux stanzas from the tarballs it just published and carrying
+the macOS stanzas forward from the formula already in
+`hyperb1iss/homebrew-tap`, so Linux users track every stable tag while macOS
+users keep the last accepted build until the signed lane promotes a newer one.
+
+Public CI ships no macOS artifacts: macOS binaries require Developer ID
+signing that repository runners cannot perform, so signed macOS tarballs and
+the `hypercolor-app` cask are produced, attached, and promoted into the tap
+through the signed acceptance checkpoint below.
 
 ## Signed macOS acceptance checkpoint
 
@@ -84,7 +90,8 @@ and both artifact lanes succeed.
 | `ANTHROPIC_API_KEY` | repo secret | git-iris release notes + changelog (required) |
 | npm trusted publishers | npmjs.com package settings | `publish-npm` uses OIDC (no token, automatic provenance); register repo `hyperb1iss/hypercolor`, workflow `ci.yml` on **both** `hypercolor` and `create-hypercolor` |
 | PyPI trusted publisher | pypi.org project settings | `publish-pypi` uses OIDC; register repo `hyperb1iss/hypercolor`, workflow `ci.yml` |
-| `HOMEBREW_TAP_TOKEN` | repo secret | currently unused; retained for the future signing-capable tap lane |
+| `HOMEBREW_TAP_TOKEN` | repo secret | `update-homebrew` pushes the rendered formula to `hyperb1iss/homebrew-tap`; a fine-grained PAT scoped to that repository with Contents read/write; the job fails loudly when it is missing or cannot push |
+| `AUR_SSH_PRIVATE_KEY` | repo secret | `update-aur` pushes `hypercolor-bin` to the AUR over SSH; the matching public key must be registered on the AUR account (1Password: "SSH Key: hypercolor AUR CI") |
 | `GIT_IRIS_MODEL` | repo variable, optional | override git-iris's default Anthropic model |
 
 ## Version alignment
