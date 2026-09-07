@@ -46,7 +46,11 @@ Facts that bite:
   old row count.
 - `POST /devices/{id}/attachments/{slot}/identify` with `{"color": "#0000FF",
   "duration_ms": 6000}` flashes one slot through the device path and bypasses the layout
-  entirely. Blue coming out blue clears channel order and routing in one shot.
+  entirely. Blue coming out blue clears channel order and routing in one shot. Two
+  optional selectors narrow the flash: `binding_index` (zero-based position in the slot's
+  binding list, default 0, so set it whenever a slot carries several bindings such as two
+  strips on one channel) and `instance` (zero-based template instance within that binding,
+  default all instances).
 
 ## Layouts
 

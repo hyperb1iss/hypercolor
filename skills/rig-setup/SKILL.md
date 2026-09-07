@@ -179,6 +179,9 @@ When the owner says it looks right:
 
 ## Why the loop is shaped this way
 
+This skill is the setup experience Spec 70 (`docs/specs/70-agent-rig-setup.md`) describes,
+delivered as data and a script ahead of the daemon-side rig template registry.
+
 Geometry is knowable from a spec sheet; wiring is not. Fan chain order, ring winding,
 which strip of a strimer is row 0, and which LCD receiver is which fan can only be read
 off lit hardware. Separating the case spec (knowable, reusable) from the rig spec
