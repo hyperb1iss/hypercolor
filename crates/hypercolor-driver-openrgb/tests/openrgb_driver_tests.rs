@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -136,23 +137,29 @@ async fn driver_discovers_connects_and_writes_through_sdk_bridge() {
     assert_eq!(&update.payload[4..6], &2_u16.to_le_bytes());
     assert_eq!(&update.payload[6..10], &[10, 20, 30, 0]);
     assert_eq!(&update.payload[10..14], &[40, 50, 60, 0]);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
 }
 
 #[tokio::test]
-async fn backend_surfaces_socket_close_without_private_reconnect() {
+async fn endpoint_reconnects_with_bounded_backoff_after_socket_close() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("fake OpenRGB server should bind");
     let endpoint = listener
         .local_addr()
         .expect("fake OpenRGB server should expose local addr");
-    let server = tokio::spawn(run_no_private_reconnect_server(listener));
+    let server = tokio::spawn(run_reconnect_backoff_server(listener));
     let config = OpenRgbConfig {
         endpoints: vec![endpoint],
         ownership: OpenRgbOwnership {
             mode: OpenRgbOwnershipMode::OpenRgbOwned,
             ..OpenRgbOwnership::default()
         },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
         ..OpenRgbConfig::default()
     };
     let entry = config_entry(&config);
@@ -186,12 +193,49 @@ async fn backend_surfaces_socket_close_without_private_reconnect() {
         )
         .await;
 
-    assert_eq!(ack.status, DeviceDeliveryStatus::Failed);
-    assert!(
-        server
-            .await
-            .expect("server task should confirm no reconnect")
+    assert_eq!(
+        ack.status,
+        DeviceDeliveryStatus::Failed,
+        "the dropped socket surfaces on the next frame"
     );
+
+    let mut recovered = false;
+    for _ in 0..40 {
+        let ack = tokio::time::timeout(
+            Duration::from_secs(1),
+            sink.deliver_colors_shared(
+                DeviceDeliveryId {
+                    queue_generation: 3,
+                    sequence: 2,
+                },
+                Arc::new(vec![[11, 22, 33], [44, 55, 66]]),
+            ),
+        )
+        .await
+        .expect("frames during backoff must fail fast, not hang");
+        if ack.status == DeviceDeliveryStatus::Completed {
+            recovered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        recovered,
+        "writer should recover once the endpoint reconnects"
+    );
+
+    let (reaccept_delay, update) = server.await.expect("server task should join");
+    assert!(
+        reaccept_delay >= Duration::from_millis(850)
+            && reaccept_delay <= Duration::from_millis(1600),
+        "first reconnect should land after the 1 s (+-10%) backoff, got {reaccept_delay:?}"
+    );
+    assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
+    assert_eq!(&update.payload[6..10], &[11, 22, 33, 0]);
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect after recovery");
 }
 
 #[tokio::test]
@@ -252,6 +296,11 @@ async fn connect_re_resolves_controller_index_before_mode_setup() {
     assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
     assert_eq!(&update.payload[6..10], &[9, 8, 7, 0]);
     assert_eq!(&update.payload[10..14], &[6, 5, 4, 0]);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
 }
 
 #[tokio::test]
@@ -478,6 +527,11 @@ async fn frame_sink_collapses_burst_to_latest_openrgb_frame() {
     assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
     assert_eq!(&update.payload[6..10], &[13, 14, 15, 0]);
     assert_eq!(&update.payload[10..14], &[16, 17, 18, 0]);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
 }
 
 #[tokio::test]
@@ -529,6 +583,11 @@ async fn write_colors_does_not_wait_for_slow_openrgb_socket() {
     assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
     assert_eq!(&update.payload[6..10], &[21, 22, 23, 0]);
     assert_eq!(&update.payload[10..14], &[24, 25, 26, 0]);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
 }
 
 #[tokio::test]
@@ -586,6 +645,11 @@ async fn frame_sink_acknowledges_completed_openrgb_transport() {
     let update = server.await.expect("server task should join");
     assert_eq!(update.header.device_index, 0);
     assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1102,6 +1166,11 @@ async fn writer_paces_to_target_fps_and_drops_superseded_frames() {
     assert_eq!(updates.len(), 2);
     assert_eq!(&updates[0].payload[6..10], &[1, 1, 1, 0]);
     assert_eq!(&updates[1].payload[6..10], &[3, 3, 3, 0]);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
 }
 
 #[tokio::test]
@@ -1116,7 +1185,7 @@ async fn slow_controller_cadence_does_not_throttle_fast_controller() {
         controller_payload_v5_typed(5, "Board", "SER123", "hidraw0", false, 0, 2, 100),
         controller_payload_v5_typed(1, "Stick", "SER999", "i2c-0", false, 0, 2, 100),
     ];
-    let server = tokio::spawn(run_counting_server(listener, payloads, 2));
+    let server = tokio::spawn(run_counting_server(listener, payloads, 1));
     let config = OpenRgbConfig {
         endpoints: vec![endpoint],
         ownership: OpenRgbOwnership {
@@ -1284,6 +1353,103 @@ async fn handle_counting_connection(
 }
 
 #[tokio::test]
+async fn discovery_reuses_the_open_endpoint_link() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let server = tokio::spawn(run_accept_counting_server(listener, Arc::clone(&accepted)));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+    assert_eq!(accepted.load(Ordering::Acquire), 1, "discovery probes once");
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    assert_eq!(
+        accepted.load(Ordering::Acquire),
+        2,
+        "connect opens the endpoint link"
+    );
+
+    let rediscovered = discover_and_adopt(&module, &backend, &host, view).await;
+    assert_eq!(rediscovered.len(), 1);
+    assert_eq!(rediscovered[0].info.id, device_id);
+    assert_eq!(
+        accepted.load(Ordering::Acquire),
+        2,
+        "discovery must reuse the open link instead of opening a third connection"
+    );
+    backend
+        .write_colors(&device_id, &[[1, 2, 3], [4, 5, 6]])
+        .await
+        .expect("link stays usable for output after a discovery pass");
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let probed = discover_and_adopt(&module, &backend, &host, view).await;
+    assert_eq!(probed.len(), 1);
+    assert_eq!(
+        accepted.load(Ordering::Acquire),
+        3,
+        "with no controller connected the link is closed and discovery probes again"
+    );
+    server.abort();
+}
+
+async fn run_accept_counting_server(listener: TcpListener, accepted: Arc<AtomicUsize>) {
+    loop {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        accepted.fetch_add(1, Ordering::AcqRel);
+        tokio::spawn(async move {
+            let mut stream = stream;
+            let mut decoder = PacketDecoder::new();
+            while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+                if packet.header.packet_id == PacketId::UpdateLeds {
+                    continue;
+                }
+                answer_standard_client_packet(
+                    &mut stream,
+                    packet.header.packet_id,
+                    &packet,
+                    &controller_payload_v5("Board", "SER123", "hidraw0"),
+                )
+                .await;
+            }
+        });
+    }
+}
+
+#[tokio::test]
 async fn write_path_pads_and_truncates_frames_to_controller_shape() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -1356,6 +1522,11 @@ async fn write_path_pads_and_truncates_frames_to_controller_shape() {
     }
     assert_eq!(&updates[0].payload[6..14], &[1, 2, 3, 0, 4, 5, 6, 0]);
     assert_eq!(&updates[1].payload[6..14], &[9, 9, 9, 0, 0, 0, 0, 0]);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
 }
 
 #[tokio::test]
@@ -2061,18 +2232,32 @@ async fn handle_setup_readback_connection(
     false
 }
 
-async fn run_no_private_reconnect_server(listener: TcpListener) -> bool {
-    for connection_index in 0..2 {
-        let (stream, _) = listener
-            .accept()
-            .await
-            .expect("fake OpenRGB server should accept client");
-        let close_after_mode_setup = connection_index == 1;
-        let _ = handle_output_connection(stream, close_after_mode_setup).await;
-    }
-    tokio::time::timeout(Duration::from_millis(250), listener.accept())
+/// Discovery probe, then an endpoint link the server drops right after the
+/// output-mode readback, then the reconnected link. Returns how long the
+/// driver waited before reconnecting and the first frame on the new link.
+async fn run_reconnect_backoff_server(listener: TcpListener) -> (Duration, Packet) {
+    let (stream, _) = listener
+        .accept()
         .await
-        .is_err()
+        .expect("fake OpenRGB server should accept discovery probe");
+    assert!(handle_output_connection(stream, false).await.is_none());
+
+    let (stream, _) = listener
+        .accept()
+        .await
+        .expect("fake OpenRGB server should accept endpoint link");
+    assert!(handle_output_connection(stream, true).await.is_none());
+    let closed_at = tokio::time::Instant::now();
+
+    let (stream, _) = listener
+        .accept()
+        .await
+        .expect("fake OpenRGB server should accept reconnect");
+    let reaccept_delay = closed_at.elapsed();
+    let update = handle_output_connection(stream, false).await.expect(
+        "reconnected link should renegotiate, re-enumerate, set the mode, and carry a frame",
+    );
+    (reaccept_delay, update)
 }
 
 async fn run_latest_value_server(listener: TcpListener) -> Packet {
