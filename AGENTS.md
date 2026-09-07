@@ -79,6 +79,7 @@ crates/
   hypercolor-driver-govee/         # Govee smart-lighting driver (LAN UDP + Govee Cloud API)
   hypercolor-openrgb-sdk/          # Clean OpenRGB SDK protocol client
   hypercolor-driver-openrgb/       # OpenRGB fallback bridge driver (opt-in)
+  hypercolor-openrgb-host/         # OpenRGB host integration: binary detection, server probe, install hints, permissions, managed config dir, headless server launch
   hypercolor-network/              # Network driver registry and orchestration
   hypercolor-daemon/               # Daemon binary: render-loop host + REST/WebSocket/MCP server on :9420
   hypercolor-cli/                  # The `hypercolor` CLI binary
@@ -132,6 +133,8 @@ graph TD
     DAPI & DS --> WLED[hypercolor-driver-wled]
     DAPI & DS --> GV[hypercolor-driver-govee]
     ORS[hypercolor-openrgb-sdk] & DAPI --> ORD[hypercolor-driver-openrgb]
+    ORS & PER --> OH[hypercolor-openrgb-host]
+    OH --> APP & CLI
     DAPI --> NET[hypercolor-network]
     CORE & DAPI & HAL & HUE & NL & WLED & GV & ORD & DS --> DB[hypercolor-driver-builtin]
     CORE & DAPI & DB & DS & NET & PFS[hypercolor-platform-fs] --> D[hypercolor-daemon]
