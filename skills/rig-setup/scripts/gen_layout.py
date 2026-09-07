@@ -7,8 +7,18 @@
 `plan` validates the bindings against the daemon (creating any custom templates the
 rig needs, which is additive), writes layout.json plus preview.svg into --out, and
 touches nothing else. `apply` also PUTs the bindings, creates or updates the layout
-and the scene named in the rig, and re-applies the layout when it is the active one.
+and the scene named in the rig, re-applies the layout when it is the active one, and
+pushes any `bridge.zone_sizes` the rig declares into `drivers.openrgb.zone_sizes`.
 Both modes are idempotent: rerun after every rig-spec edit.
+
+`plan --offline` needs no daemon: it validates the specs, resolves geometry, and
+renders the preview with template topology approximated from a saved catalog
+(`--templates FILE`, the body of GET /attachments/templates?limit=200). Zone LED
+windows are relative in that mode, so use it to check placement, not to apply.
+
+Bridged hubs (OpenRGB) expose one zone per channel and no multi-zone slot groups,
+so a strimer through the bridge is a `bridge_rows` block: one raw strip row per
+zone, stacked at a pitch from a board anchor. See references/rig-spec.md.
 
 Coordinate model (see references/case-spec.md):
   case frame   d = mm from the front outer face, h = mm above the bottom outer face
@@ -22,6 +32,7 @@ import argparse
 import copy
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -50,6 +61,70 @@ class Api:
             raise SystemExit(f"{method} {path} -> {err.code}: {err.read().decode()[:800]}") from err
         except urllib.error.URLError as err:
             raise SystemExit(f"{method} {path}: daemon unreachable at {self.base} ({err.reason})") from err
+
+    def try_get(self, path: str):
+        """Read-only GET that answers None instead of exiting when the route or daemon is missing."""
+        try:
+            return self("GET", path)
+        except SystemExit:
+            return None
+
+
+# ── offline template catalog ─────────────────────────────────────────────────
+BRIDGE_PREFIX = "openrgb:"
+
+
+def load_catalog(path: Path | None, api: Api | None) -> dict[str, dict]:
+    """Template summaries by id, from a saved GET /attachments/templates body or the daemon.
+
+    The list route only carries summaries (id, name, category, led_count, description),
+    which is enough to approximate a topology for an offline preview."""
+    if path is not None:
+        doc = json.loads(path.read_text())
+        items = doc.get("data", doc).get("items", doc) if isinstance(doc, dict) else doc
+        return {t["id"]: t for t in items}
+    if api is not None:
+        doc = api.try_get("/attachments/templates?limit=200")
+        if doc is not None:
+            return {t["id"]: t for t in doc["data"]["items"]}
+    raise SystemExit("offline mode needs a template catalog: save GET /attachments/templates?limit=200 "
+                     "to a file and pass --templates FILE (or leave the daemon reachable for that one read)")
+
+
+def approximate_topology(summary: dict) -> dict:
+    """Best-effort topology for a template the daemon would normally describe.
+
+    Fans become rings, strimers a matrix when the description says `W×H`, everything
+    else a strip. Only the offline preview uses this; a daemon-backed plan replaces it."""
+    n = int(summary.get("led_count", 1))
+    category = summary.get("category", "strip")
+    if category == "fan":
+        return {"type": "ring", "count": n, "start_angle": -PI / 2, "direction": "clockwise"}
+    if category == "strimer":
+        m = re.search(r"(\d+)\s*[x×]\s*(\d+)", summary.get("description", ""))
+        if m:
+            return {"type": "matrix", "width": int(m.group(1)), "height": int(m.group(2)),
+                    "serpentine": False, "start_corner": "top_left"}
+    return {"type": "strip", "count": n, "direction": "left_to_right"}
+
+
+def offline_suggested_zones(ctrl: dict, catalog: dict[str, dict], local: dict[str, dict]) -> list[dict]:
+    """Stand in for PUT /devices/{id}/attachments with validate_only when no daemon is around.
+
+    LED windows are relative to each slot (slot led_start unknown offline)."""
+    out = []
+    for binding in ctrl["bindings"]:
+        tid = binding["template"]
+        tpl = local.get(tid) or catalog.get(tid)
+        if tpl is None:
+            raise SystemExit(f"template '{tid}' is neither in the catalog nor declared by the rig or case")
+        topo = copy.deepcopy(tpl["topology"]) if "topology" in tpl else approximate_topology(tpl)
+        count = led_total(topo) or int(tpl.get("led_count", 0))
+        for inst in range(binding.get("instances", 1)):
+            out.append({"slot_id": binding["slot"], "template_id": tid, "template_name": tpl.get("name", tid),
+                        "instance": inst, "led_start": binding.get("led_offset", 0) + inst * count,
+                        "led_count": count, "topology": copy.deepcopy(topo), "led_mapping": None})
+    return out
 
 
 # ── geometry ─────────────────────────────────────────────────────────────────
@@ -333,9 +408,57 @@ def attachment_zones(geo: Geometry, ctrl_key: str, ctrl: dict, suggested: list[d
     return out
 
 
+def expand_bridge_rows(rig: dict) -> list[dict]:
+    """Turn each `bridge_rows` block into one raw strip zone per bridged zone.
+
+    A strimer through the OpenRGB bridge is N separate zones ("Channel ATX 1..6"), and
+    a 120-LED strimer template cannot bind to a 20-LED zone, so the rows are placed as
+    raw strips stacked at `pitch_mm` from the block's anchor or board rectangle. Row i
+    gets `segments[i]`; the stack axis defaults to the row's cross axis (dv for a
+    horizontal row, du for a vertical one) and `stack` overrides it."""
+    rows = []
+    for block in rig.get("bridge_rows", []):
+        segments = block["segments"]
+        kind = block.get("kind", "hstrip")
+        if kind not in ("hstrip", "vstrip"):
+            raise SystemExit(f"bridge_rows '{block.get('name', '?')}': kind must be hstrip or vstrip, not '{kind}'")
+        rot = float(block.get("rot", 0.0))
+        vertical = abs(math.sin(rot)) > 0.5
+        stack = block.get("stack", "du" if vertical else "dv")
+        if stack not in ("du", "dv"):
+            raise SystemExit(f"bridge_rows '{block.get('name', '?')}': stack must be du or dv")
+        pitch = float(block.get("pitch_mm", 0.0))
+        counts = block["count"] if isinstance(block["count"], list) else [block["count"]] * len(segments)
+        if len(counts) != len(segments):
+            raise SystemExit(f"bridge_rows '{block.get('name', '?')}': count list must match segments")
+        names = block.get("names") or [f"{block.get('name', 'row')} {i + 1}" for i in range(len(segments))]
+        for i, (segment, count) in enumerate(zip(segments, counts)):
+            row = {"layout_device_id": block["layout_device_id"], "segment": segment, "name": names[i],
+                   "kind": kind, "count": count, "size_mm": block["size_mm"], "rot": rot}
+            for key in ("direction", "mirror", "mirror_y"):
+                if key in block:
+                    row[key] = block[key]
+            shift = {stack: round(i * pitch, 6)}
+            if "anchor" in block:
+                off = dict(block.get("offset", {}))
+                off[stack] = off.get(stack, 0) + shift[stack]
+                row["anchor"], row["offset"] = block["anchor"], off
+            elif "board" in block:
+                b = dict(block["board"])
+                axis = "u" if stack == "du" else "v"
+                b[axis] = b.get(axis, 0) + shift[stack]
+                b.setdefault("w", block["size_mm"][0])
+                b.setdefault("hgt", block["size_mm"][1])
+                row["board"] = b
+            else:
+                raise SystemExit(f"bridge_rows '{block.get('name', '?')}': needs an anchor or a board rectangle")
+            rows.append(row)
+    return rows
+
+
 def raw_zones(geo: Geometry, rig: dict) -> list[dict]:
     out = []
-    for raw in rig.get("raw_zones", []):
+    for raw in list(rig.get("raw_zones", [])) + expand_bridge_rows(rig):
         d, h, _, _, _ = geo.place(raw, instance=raw.get("index", 0) or 0)
         w, hgt = raw["size_mm"]
         kind = raw["kind"]
@@ -455,6 +578,59 @@ def write_preview(geo: Geometry, rig: dict, zones: list[dict], path: Path) -> No
         subprocess.run(["rsvg-convert", "-o", str(path.with_suffix(".png")), str(path)], check=False)
 
 
+def warn_unsized_bridge_zones(api: Api, rig: dict, zones: list[dict]) -> None:
+    """A bridged zone with 0 LEDs accepts frames and stays dark; say so before apply.
+
+    Only controllers with a daemon uuid can be checked (raw zones name devices by
+    layout id alone), and a daemon that cannot answer is skipped, not failed."""
+    devices = api.try_get("/devices?limit=200")
+    if devices is None:
+        return
+    by_layout_id = {d["layout_device_id"]: d for d in devices["data"]["items"]}
+    seen: set[tuple[str, str]] = set()
+    missing: set[str] = set()
+    for z in zones:
+        did = z["device_id"]
+        if not did.startswith(BRIDGE_PREFIX) or (did, z["zone_name"]) in seen or did in missing:
+            continue
+        seen.add((did, z["zone_name"]))
+        dev = by_layout_id.get(did)
+        if dev is None:
+            missing.add(did)
+            print(f"  ! {did}: not on the daemon yet (run `hypercolor devices discover --target openrgb`)")
+            continue
+        seg = next((s for s in dev.get("segments", []) if s["name"] == z["zone_name"]
+                    or sanitize(s["name"]).replace("_", "-") == z["zone_name"]), None)
+        if seg is None:
+            print(f"  ! {dev['name']}: no segment matches zone '{z['zone_name']}' ({', '.join(s['name'] for s in dev.get('segments', []))})")
+        elif seg["led_count"] == 0:
+            print(f"  ! {dev['name']} '{seg['name']}' has 0 LEDs: frames will land dark until it is sized "
+                  f"(hypercolor openrgb resize, or bridge.zone_sizes in this rig)")
+
+
+def push_zone_sizes(api: Api, sizes: dict[str, dict[str, int]]) -> None:
+    """Write drivers.openrgb.zone_sizes through the config API (bare value body).
+
+    The current value is merged when the daemon lets us read it; driver sections often
+    read back redacted, in which case the rig's map is written as declared, so keep
+    every bridged hub's sizes in the rig rather than half of them."""
+    current = api.try_get("/config/keys/drivers.openrgb.zone_sizes")
+    merged: dict = {}
+    value = (current or {}).get("data", {}).get("value")
+    if isinstance(value, dict) and "redacted" not in value:
+        merged = copy.deepcopy(value)
+    for fingerprint, per_zone in sizes.items():
+        merged.setdefault(fingerprint, {}).update({k: int(v) for k, v in per_zone.items()})
+    try:
+        resp = api("PUT", "/config/keys/drivers.openrgb.zone_sizes", merged)["data"]
+    except SystemExit as err:
+        print(f"  ! zone sizes not pushed ({str(err).splitlines()[0][:160]}); "
+              f"daemon predates drivers.openrgb.zone_sizes, use `openrgb -d N -z Z -sz S` per zone")
+        return
+    live = "live" if resp.get("live") else "on disk, restart pending" if resp.get("requires_restart") else "written"
+    print(f"  zone sizes: {sum(len(v) for v in sizes.values())} zones on {len(sizes)} bridged devices ({live})")
+
+
 def resolve_by_name(api: Api, collection: str, name: str, receipt_id: str | None) -> str | None:
     """Find the layout or scene this rig owns.
 
@@ -480,7 +656,15 @@ def main() -> None:
     ap.add_argument("--rig", required=True, type=Path)
     ap.add_argument("--out", type=Path, default=None, help="output dir (default: the rig file's directory)")
     ap.add_argument("--base", default=DEFAULT_BASE)
+    ap.add_argument("--offline", action="store_true",
+                    help="plan without a daemon: validate specs and geometry, render the preview")
+    ap.add_argument("--templates", type=Path, default=None,
+                    help="saved GET /attachments/templates?limit=200 body for --offline")
+    ap.add_argument("--skip-zone-sizes", action="store_true",
+                    help="apply without pushing the rig's bridge.zone_sizes into drivers.openrgb.zone_sizes")
     args = ap.parse_args()
+    if args.offline and args.mode == "apply":
+        raise SystemExit("--offline only works with plan; apply needs the daemon")
 
     case = json.loads(args.case.read_text())
     rig = json.loads(args.rig.read_text())
@@ -492,25 +676,37 @@ def main() -> None:
     geo = Geometry(case, rig)
 
     # 1. custom templates (additive, needed even for a plan so bindings validate)
-    templates = {t["id"]: t for t in api("GET", "/attachments/templates?limit=200")["data"]["items"]}
     wanted = [l_strip_template(case, name, geo) for name, m in case["mounts"].items() if m.get("kind") == "l_strip"]
     wanted += [strip_template(t) for t in rig.get("custom_templates", [])]
-    for tpl in wanted:
-        if tpl["id"] not in templates:
-            created = api("POST", "/attachments/templates", tpl)["data"]
-            templates[created["id"]] = created
-            print(f"  + template {created['id']} ({created['led_count']} LEDs)")
+    local = {t["id"]: t for t in wanted}
+    if args.offline:
+        catalog = load_catalog(args.templates, api)
+        print(f"  offline: {len(catalog)} catalog templates, {len(local)} rig/case templates, geometry only")
+    else:
+        templates = {t["id"]: t for t in api("GET", "/attachments/templates?limit=200")["data"]["items"]}
+        for tpl in wanted:
+            if tpl["id"] not in templates:
+                created = api("POST", "/attachments/templates", tpl)["data"]
+                templates[created["id"]] = created
+                print(f"  + template {created['id']} ({created['led_count']} LEDs)")
 
     # 2. bindings -> suggested zones (validate_only on plan)
     zones: list[dict] = []
     for key, ctrl in rig["controllers"].items():
-        bindings = [{"slot_id": b["slot"], "template_id": b["template"], "instances": b.get("instances", 1),
-                     "led_offset": b.get("led_offset", 0), "enabled": True} for b in ctrl["bindings"]]
-        resp = api("PUT", f"/devices/{ctrl['device']}/attachments",
-                   {"bindings": bindings, "validate_only": args.mode != "apply"})["data"]
-        print(f"  {key}: {len(resp['bindings'])} bindings, {len(resp['suggested_zones'])} suggested zones")
-        zones += attachment_zones(geo, key, ctrl, resp["suggested_zones"])
+        if args.offline:
+            suggested = offline_suggested_zones(ctrl, catalog, local)
+            print(f"  {key}: {len(ctrl['bindings'])} bindings, {len(suggested)} approximated zones")
+        else:
+            bindings = [{"slot_id": b["slot"], "template_id": b["template"], "instances": b.get("instances", 1),
+                         "led_offset": b.get("led_offset", 0), "enabled": True} for b in ctrl["bindings"]]
+            resp = api("PUT", f"/devices/{ctrl['device']}/attachments",
+                       {"bindings": bindings, "validate_only": args.mode != "apply"})["data"]
+            suggested = resp["suggested_zones"]
+            print(f"  {key}: {len(resp['bindings'])} bindings, {len(suggested)} suggested zones")
+        zones += attachment_zones(geo, key, ctrl, suggested)
     zones += raw_zones(geo, rig)
+    if not args.offline:
+        warn_unsized_bridge_zones(api, rig, zones)
 
     description = rig.get("description") or f"{case['name']} in {rig.get('view', 'standard')} view, generated from case spec {case['id']}."
     layout_body = {"name": rig["name"], "description": description,
@@ -556,6 +752,10 @@ def main() -> None:
     saved = api("PUT", f"/scenes/{scene_id}", replace)["data"]
     print(f"  scene {saved['id']} '{saved['name']}' layout_id={saved.get('layout_id')} members={len(saved['zones'][0]['members'])}")
     (out / "receipt.json").write_text(json.dumps({"layout_id": layout_id, "scene_id": saved["id"]}, indent=1))
+
+    # 5. bridge zone sizes, so a daemon reinstall or OpenRGB restart keeps the hub's LED counts
+    if rig.get("bridge", {}).get("zone_sizes") and not args.skip_zone_sizes:
+        push_zone_sizes(api, rig["bridge"]["zone_sizes"])
     print("  activate with: POST /api/v1/scenes/{scene_id}/activate (or the activate_scene MCP tool)")
 
 
