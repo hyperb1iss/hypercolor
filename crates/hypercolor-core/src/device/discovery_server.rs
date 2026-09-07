@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent};
 use reqwest::Client;
 use tokio::time::Instant;
 use tracing::{debug, warn};
@@ -78,7 +78,7 @@ pub async fn discover_servers(timeout: Duration) -> Result<Vec<DiscoveredServer>
     Ok(servers)
 }
 
-async fn resolve_server(http: &Client, info: &ServiceInfo) -> Option<DiscoveredServer> {
+async fn resolve_server(http: &Client, info: &ResolvedService) -> Option<DiscoveredServer> {
     let host = preferred_host(info)?;
     let port = info.get_port();
     let api_base = info.get_property_val_str("api").unwrap_or(DEFAULT_API_BASE);
@@ -108,8 +108,12 @@ async fn resolve_server(http: &Client, info: &ServiceInfo) -> Option<DiscoveredS
     })
 }
 
-fn preferred_host(info: &ServiceInfo) -> Option<IpAddr> {
-    let mut addresses: Vec<_> = info.get_addresses().iter().copied().collect();
+fn preferred_host(info: &ResolvedService) -> Option<IpAddr> {
+    let mut addresses: Vec<_> = info
+        .get_addresses()
+        .iter()
+        .map(ScopedIp::to_ip_addr)
+        .collect();
     addresses.sort_by(|left, right| {
         left.is_ipv6()
             .cmp(&right.is_ipv6())
@@ -118,7 +122,7 @@ fn preferred_host(info: &ServiceInfo) -> Option<IpAddr> {
     addresses.into_iter().next()
 }
 
-fn txt_identity(info: &ServiceInfo) -> Option<ServerIdentity> {
+fn txt_identity(info: &ResolvedService) -> Option<ServerIdentity> {
     let instance_id = info.get_property_val_str("id")?.trim();
     let instance_name = info.get_property_val_str("name")?.trim();
     let version = info.get_property_val_str("version")?.trim();

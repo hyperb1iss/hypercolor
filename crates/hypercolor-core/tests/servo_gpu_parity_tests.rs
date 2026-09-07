@@ -313,6 +313,7 @@ impl WgpuFixture {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                ..Default::default()
             })) {
                 Ok(adapter) => adapter,
                 Err(error) => return Err(format!("could not create wgpu adapter: {error}")),
@@ -407,7 +408,9 @@ fn read_texture_pixels(
         .expect("parity readback channel should receive map result")
         .expect("parity readback buffer should map");
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("parity readback range should be mapped");
     let mut pixels = vec![0; (height * unpadded_bytes_per_row) as usize];
     for (target, source) in pixels
         .chunks_exact_mut(unpadded_bytes_per_row as usize)

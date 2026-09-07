@@ -747,12 +747,17 @@ impl MacosIosurfaceImporter {
                 1,
                 1,
                 copy_size,
+                None,
             )
         };
         // SAFETY: hal_texture was created from this wgpu device's Metal HAL
         // and matches wgpu_desc.
         let texture = unsafe {
-            device.create_texture_from_hal::<wgpu_hal::api::Metal>(hal_texture, &wgpu_desc)
+            device.create_texture_from_hal::<wgpu_hal::api::Metal>(
+                hal_texture,
+                &wgpu_desc,
+                wgpu::TextureUses::UNINITIALIZED,
+            )
         };
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -1269,12 +1274,18 @@ fn wrap_metal_texture(
             1,
             1,
             copy_size,
+            None,
         )
     };
     // SAFETY: the HAL texture was created from this wgpu device and matches
     // the supplied descriptor.
-    let texture =
-        unsafe { device.create_texture_from_hal::<wgpu_hal::api::Metal>(hal_texture, &wgpu_desc) };
+    let texture = unsafe {
+        device.create_texture_from_hal::<wgpu_hal::api::Metal>(
+            hal_texture,
+            &wgpu_desc,
+            wgpu::TextureUses::UNINITIALIZED,
+        )
+    };
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     let texture = Arc::new(texture);
     ImportedEffectFrame {

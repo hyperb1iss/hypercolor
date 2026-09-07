@@ -18,7 +18,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::{Resize, ResizeEncodeRender};
+use ratatui_image::{FontSize, Resize, ResizeEncodeRender};
 
 use crate::state::CanvasFrame;
 
@@ -49,7 +49,7 @@ impl PreviewPolicy {
         self,
         fullscreen: bool,
         primary_protocol: ProtocolType,
-        font_size: (u16, u16),
+        font_size: FontSize,
         frame: Option<&CanvasFrame>,
         area: Option<Rect>,
     ) -> PreviewTransport {
@@ -77,8 +77,8 @@ impl PreviewPolicy {
             return PreviewTransport::Halfblocks;
         }
 
-        let desired_width = frame.width.div_ceil(u32::from(font_size.0.max(1)));
-        let desired_height = frame.height.div_ceil(u32::from(font_size.1.max(1)));
+        let desired_width = frame.width.div_ceil(u32::from(font_size.width.max(1)));
+        let desired_height = frame.height.div_ceil(u32::from(font_size.height.max(1)));
 
         if u32::from(area.width) * 10 > desired_width * u32::from(self.max_primary_scale_tenths)
             || u32::from(area.height) * 10
@@ -94,7 +94,7 @@ impl PreviewPolicy {
         self,
         transport: PreviewTransport,
         primary_protocol: ProtocolType,
-        font_size: (u16, u16),
+        font_size: FontSize,
         area: Option<Rect>,
     ) -> Duration {
         if transport != PreviewTransport::Primary {
@@ -119,9 +119,9 @@ impl PreviewPolicy {
         }
     }
 
-    fn target_rgba_bytes(font_size: (u16, u16), area: Rect) -> usize {
-        let char_width = usize::from(font_size.0.max(1));
-        let char_height = usize::from(font_size.1.max(1));
+    fn target_rgba_bytes(font_size: FontSize, area: Rect) -> usize {
+        let char_width = usize::from(font_size.width.max(1));
+        let char_height = usize::from(font_size.height.max(1));
         usize::from(area.width) * usize::from(area.height) * char_width * char_height * 4
     }
 }
@@ -242,7 +242,7 @@ impl StatefulSurface {
 
     fn matches_area(&self, resize_area: Rect) -> bool {
         self.protocol
-            .needs_resize(&self.resize_mode.resize(), resize_area)
+            .needs_resize(&self.resize_mode.resize(), resize_area.as_size())
             .is_none()
     }
 }
@@ -690,8 +690,10 @@ impl PreviewManager {
                     let mut protocol = picker.new_resize_protocol(img);
                     let resize = resize_mode.resize();
 
-                    if let Some(target_rect) = protocol.needs_resize(&resize, request.area) {
-                        protocol.resize_encode(&resize, target_rect);
+                    if let Some(target_size) =
+                        protocol.needs_resize(&resize, request.area.as_size())
+                    {
+                        protocol.resize_encode(&resize, target_size);
                         if let Some(Err(error)) = protocol.last_encoding_result() {
                             if build_results_tx
                                 .send(PreviewBuildResult::Failed {
@@ -1160,7 +1162,7 @@ fn primary_resize_mode(
 fn build_preview_image(
     frame: &CanvasFrame,
     area: Rect,
-    font_size: (u16, u16),
+    font_size: FontSize,
     resize_mode: StatefulResizeMode,
     fullscreen: bool,
 ) -> Result<DynamicImage, String> {
@@ -1174,8 +1176,8 @@ fn build_preview_image(
         return Ok(DynamicImage::ImageRgb8(img));
     }
 
-    let target_width = u32::from(area.width) * u32::from(font_size.0.max(1));
-    let target_height = u32::from(area.height) * u32::from(font_size.1.max(1));
+    let target_width = u32::from(area.width) * u32::from(font_size.width.max(1));
+    let target_height = u32::from(area.height) * u32::from(font_size.height.max(1));
     if target_width == 0 || target_height == 0 {
         let Some(img) = image::RgbImage::from_raw(frame.width, frame.height, frame.pixels.to_vec())
         else {
@@ -1258,10 +1260,10 @@ fn cover_source_rect(
     image_width: u32,
     image_height: u32,
     area: Rect,
-    font_size: (u16, u16),
+    font_size: FontSize,
 ) -> (u32, u32, u32, u32) {
-    let target_width = u64::from(area.width) * u64::from(font_size.0.max(1));
-    let target_height = u64::from(area.height) * u64::from(font_size.1.max(1));
+    let target_width = u64::from(area.width) * u64::from(font_size.width.max(1));
+    let target_height = u64::from(area.height) * u64::from(font_size.height.max(1));
     if target_width == 0 || target_height == 0 || image_width == 0 || image_height == 0 {
         return (0, 0, image_width, image_height);
     }
@@ -1300,6 +1302,8 @@ fn cover_source_rect(
 
 #[cfg(test)]
 mod tests {
+    use ratatui_image::FontSize;
+
     use super::{
         BuildBackpressure, DrawBackpressure, PreviewBuildRequest, PreviewPolicy, PreviewTransport,
         StatefulResizeMode, build_preview_image, cover_source_rect, primary_resize_mode,
@@ -1355,7 +1359,7 @@ mod tests {
         use ratatui::buffer::Buffer;
         use ratatui_image::picker::Picker;
 
-        let mut picker = Picker::from_fontsize((9, 18));
+        let mut picker = Picker::from_fontsize(FontSize::new(9, 18));
         picker.set_protocol_type(ProtocolType::Kitty);
         let mut manager = super::PreviewManager::new(picker);
 
@@ -1404,7 +1408,7 @@ mod tests {
             policy.transport_for(
                 false,
                 ProtocolType::Halfblocks,
-                (9, 18),
+                FontSize::new(9, 18),
                 Some(&frame),
                 Some(Rect::new(0, 0, 30, 12)),
             ),
@@ -1414,7 +1418,7 @@ mod tests {
             policy.transport_for(
                 true,
                 ProtocolType::Halfblocks,
-                (9, 18),
+                FontSize::new(9, 18),
                 Some(&frame),
                 Some(Rect::new(0, 0, 30, 12)),
             ),
@@ -1437,7 +1441,7 @@ mod tests {
             policy.transport_for(
                 false,
                 ProtocolType::Halfblocks,
-                (9, 18),
+                FontSize::new(9, 18),
                 Some(&frame),
                 Some(Rect::new(0, 0, 52, 24)),
             ),
@@ -1460,7 +1464,7 @@ mod tests {
             policy.transport_for(
                 false,
                 ProtocolType::Halfblocks,
-                (9, 18),
+                FontSize::new(9, 18),
                 Some(&frame),
                 Some(Rect::new(0, 0, 55, 16)),
             ),
@@ -1476,7 +1480,7 @@ mod tests {
             policy.frame_interval_for(
                 PreviewTransport::Primary,
                 ProtocolType::Kitty,
-                (14, 34),
+                FontSize::new(14, 34),
                 Some(Rect::new(0, 0, 37, 14)),
             ),
             Duration::from_millis(16)
@@ -1548,7 +1552,7 @@ mod tests {
         let image = build_preview_image(
             &frame,
             Rect::new(0, 0, 2, 2),
-            (2, 2),
+            FontSize::new(2, 2),
             StatefulResizeMode::Cover,
             false,
         )
@@ -1561,7 +1565,7 @@ mod tests {
     #[test]
     fn cover_source_rect_crops_width_for_wide_source() {
         assert_eq!(
-            cover_source_rect(320, 200, Rect::new(0, 0, 40, 40), (10, 20)),
+            cover_source_rect(320, 200, Rect::new(0, 0, 40, 40), FontSize::new(10, 20)),
             (110, 0, 100, 200)
         );
     }
@@ -1569,7 +1573,7 @@ mod tests {
     #[test]
     fn cover_source_rect_crops_height_for_tall_target() {
         assert_eq!(
-            cover_source_rect(320, 200, Rect::new(0, 0, 80, 10), (10, 40)),
+            cover_source_rect(320, 200, Rect::new(0, 0, 80, 10), FontSize::new(10, 40)),
             (0, 20, 320, 160)
         );
     }

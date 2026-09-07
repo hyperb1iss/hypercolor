@@ -26,11 +26,11 @@ use rmcp::transport::streamable_http_server::{
 use rmcp::{
     ErrorData, ServerHandler,
     model::{
-        AnnotateAble, CallToolRequestParams, CallToolResult, GetPromptRequestParams,
-        GetPromptResult, Implementation, JsonObject, ListPromptsResult,
-        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-        Prompt, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole,
-        RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents, Role,
+        Annotations, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        GetPromptRequestParams, GetPromptResponse, GetPromptResult, Implementation, JsonObject,
+        ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+        PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, ReadResourceRequestParams,
+        ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role,
         ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
     },
     service::{RequestContext, RoleServer},
@@ -64,7 +64,9 @@ fn http_config(config: &McpConfig) -> StreamableHttpServerConfig {
     let mut http = StreamableHttpServerConfig::default();
     http.sse_keep_alive =
         (config.sse_keep_alive_secs > 0).then_some(Duration::from_secs(config.sse_keep_alive_secs));
-    http.stateful_mode = config.stateful_mode;
+    // rmcp 3 serves the 2026-07-28 protocol statelessly regardless; the
+    // flag now only governs sessions for clients on older protocol versions.
+    http.legacy_session_mode = config.stateful_mode;
     http.json_response = config.json_response;
     http.cancellation_token = CancellationToken::new();
     http
@@ -155,14 +157,16 @@ impl ServerHandler for HypercolorMcpServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
+    ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + Send + '_ {
         async move {
             let arguments = Value::Object(request.arguments.unwrap_or_default());
             match tools::execute_tool_with_state(request.name.as_ref(), &arguments, &self.state)
                 .await
             {
-                Ok(payload) => Ok(CallToolResult::structured(payload)),
-                Err(error) => Ok(CallToolResult::structured_error(tool_error_payload(&error))),
+                Ok(payload) => Ok(CallToolResult::structured(payload).into()),
+                Err(error) => {
+                    Ok(CallToolResult::structured_error(tool_error_payload(&error)).into())
+                }
             }
         }
     }
@@ -193,7 +197,7 @@ impl ServerHandler for HypercolorMcpServer {
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ReadResourceResult, ErrorData>> + Send + '_ {
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + Send + '_ {
         async move {
             let uri = request.uri;
             let Some(definition) = self.resources.iter().find(|resource| resource.uri == uri)
@@ -223,7 +227,8 @@ impl ServerHandler for HypercolorMcpServer {
 
             Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(text, uri).with_mime_type(definition.mime_type.clone()),
-            ]))
+            ])
+            .into())
         }
     }
 
@@ -241,8 +246,8 @@ impl ServerHandler for HypercolorMcpServer {
         &self,
         request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<GetPromptResult, ErrorData>> + Send + '_ {
-        ready(build_prompt_result(request))
+    ) -> impl Future<Output = Result<GetPromptResponse, ErrorData>> + Send + '_ {
+        ready(build_prompt_result(request).map(GetPromptResponse::from))
     }
 }
 
@@ -274,13 +279,17 @@ fn tool_to_mcp(tool: &tools::ToolDefinition) -> Tool {
     )
 }
 
-fn resource_to_mcp(resource: &resources::ResourceDefinition) -> rmcp::model::Resource {
-    RawResource::new(resource.uri.clone(), resource.name.clone())
+fn resource_to_mcp(resource: &resources::ResourceDefinition) -> Resource {
+    let mut mcp_resource = Resource::new(resource.uri.clone(), resource.name.clone())
         .with_title(resource.name.clone())
         .with_description(resource.description.clone())
-        .with_mime_type(resource.mime_type.clone())
-        .with_audience(vec![Role::Assistant])
-        .with_priority(resource.priority)
+        .with_mime_type(resource.mime_type.clone());
+    mcp_resource.annotations = Some(
+        Annotations::default()
+            .with_audience(vec![Role::Assistant])
+            .with_priority(resource.priority),
+    );
+    mcp_resource
 }
 
 fn prompt_to_mcp(prompt: &prompts::PromptDefinition) -> Prompt {
@@ -346,8 +355,8 @@ fn prompt_message_from_value(value: &Value) -> Result<PromptMessage, ErrorData> 
     };
 
     let role = match message.get("role").and_then(Value::as_str) {
-        Some("user") => PromptMessageRole::User,
-        Some("assistant") => PromptMessageRole::Assistant,
+        Some("user") => Role::User,
+        Some("assistant") => Role::Assistant,
         Some(other) => {
             return Err(ErrorData::internal_error(
                 "Prompt message used an unsupported role",
@@ -393,15 +402,12 @@ fn prompt_message_from_value(value: &Value) -> Result<PromptMessage, ErrorData> 
                 ));
             };
 
-            let mut link = RawResource::new(uri.to_owned(), uri.to_owned()).with_title(uri);
+            let mut link = Resource::new(uri.to_owned(), uri.to_owned()).with_title(uri);
             if let Some(mime_type) = resource.get("mimeType").and_then(Value::as_str) {
                 link = link.with_mime_type(mime_type);
             }
 
-            Ok(PromptMessage::new(
-                role,
-                PromptMessageContent::resource_link(link.no_annotation()),
-            ))
+            Ok(PromptMessage::new(role, ContentBlock::resource_link(link)))
         }
         Some(other) => Err(ErrorData::internal_error(
             "Prompt message used an unsupported content type",

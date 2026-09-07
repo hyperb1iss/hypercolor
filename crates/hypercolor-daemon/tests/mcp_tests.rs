@@ -718,9 +718,11 @@ async fn mcp_http_initialize_returns_json_in_stateless_mode() {
     );
 
     let result = payload.get("result").expect("initialize result");
-    let latest_protocol = serde_json::to_value(rmcp::model::ProtocolVersion::LATEST)
+    // rmcp 3 negotiates: a supported version the client asks for is echoed
+    // back rather than upgraded to the server's latest.
+    let requested_protocol = serde_json::to_value(rmcp::model::ProtocolVersion::V_2025_03_26)
         .expect("serialize protocol version");
-    assert_eq!(result["protocolVersion"], latest_protocol);
+    assert_eq!(result["protocolVersion"], requested_protocol);
     assert!(result["capabilities"]["tools"].is_object());
     assert!(result["capabilities"]["resources"].is_object());
     assert!(result["capabilities"]["prompts"].is_object());

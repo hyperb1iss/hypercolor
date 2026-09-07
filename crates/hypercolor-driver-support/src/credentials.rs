@@ -244,9 +244,14 @@ fn decrypt_cache(
         bail!("credential store {} is truncated", store_path.display());
     }
 
-    let nonce = Nonce::from_slice(&payload[..NONCE_BYTES]);
+    let nonce = Nonce::try_from(&payload[..NONCE_BYTES]).map_err(|_| {
+        anyhow!(
+            "credential store {} has a malformed nonce",
+            store_path.display()
+        )
+    })?;
     let plaintext = cipher
-        .decrypt(nonce, &payload[NONCE_BYTES..])
+        .decrypt(&nonce, &payload[NONCE_BYTES..])
         .map_err(|error| anyhow!("failed to decrypt credential store: {error}"))?;
 
     deserialize_cache(&plaintext, store_path)
@@ -265,9 +270,9 @@ fn encrypt_snapshot(cipher: &Aes256Gcm, snapshot: &HashMap<String, Value>) -> Re
     let plaintext =
         serde_json::to_vec_pretty(snapshot).context("failed to serialize credentials")?;
     let nonce_bytes = rand::random::<[u8; NONCE_BYTES]>();
-    let nonce = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
+        .encrypt(&nonce, plaintext.as_ref())
         .map_err(|error| anyhow!("failed to encrypt credential store: {error}"))?;
 
     let mut payload = Vec::with_capacity(NONCE_BYTES + ciphertext.len());

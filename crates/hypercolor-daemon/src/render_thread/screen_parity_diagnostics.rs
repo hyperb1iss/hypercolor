@@ -233,7 +233,9 @@ fn read_rgba8(render_device: &GpuRenderDevice, frame: &GpuTextureFrame) -> Resul
         .recv()
         .context("live parity map callback was dropped")?
         .map_err(|error| anyhow!("live parity buffer map failed: {error}"))?;
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("parity readback range should be mapped after the map callback");
     let output_bytes = usize::try_from(row_bytes)
         .ok()
         .and_then(|row| row.checked_mul(usize::try_from(frame.height).ok()?))

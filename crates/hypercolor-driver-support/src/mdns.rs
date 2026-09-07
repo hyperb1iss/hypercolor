@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent};
+use mdns_sd::{IfKind, ScopedIp, ServiceDaemon, ServiceEvent};
 use tracing::debug;
 
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(250);
@@ -71,7 +71,9 @@ impl MdnsBrowser {
             .await
             {
                 Ok(Ok(ServiceEvent::ServiceResolved(info))) => {
-                    let Some(host) = preferred_host(info.get_addresses().iter().copied()) else {
+                    let Some(host) =
+                        preferred_host(info.get_addresses().iter().map(ScopedIp::to_ip_addr))
+                    else {
                         debug!(
                             service = info.get_fullname(),
                             "resolved mDNS service without addresses; skipping"

@@ -100,7 +100,7 @@ pub(super) fn legacy_identity_digest<'a>(
     match launcher {
         LinuxExactEntry::Absent => {}
         LinuxExactEntry::RegularFile { mode, sha256, .. } => {
-            if *sha256 != format!("{:x}", Sha256::digest(launcher_bytes)) {
+            if *sha256 != hex::encode(Sha256::digest(launcher_bytes)) {
                 return Err(error("legacy launcher identity changed"));
             }
             descriptors.insert(
@@ -133,11 +133,11 @@ pub(super) fn legacy_identity_digest<'a>(
             &mut descriptors,
             file.path.clone(),
             file.mode,
-            format!("{:x}", Sha256::digest(&file.contents)),
+            hex::encode(Sha256::digest(&file.contents)),
         )?;
     }
     serde_json::to_vec(&descriptors)
-        .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+        .map(|bytes| hex::encode(Sha256::digest(bytes)))
         .map_err(|source| error(source.to_string()))
 }
 
@@ -398,7 +398,7 @@ pub(super) fn prepare_legacy_files(
         }
         let observed = LinuxExactEntry::RegularFile {
             mode: metadata.mode() & 0o7777,
-            sha256: format!("{:x}", Sha256::digest(&contents)),
+            sha256: hex::encode(Sha256::digest(&contents)),
             snapshot_unit: None,
             snapshot_path: None,
         };
@@ -428,15 +428,15 @@ pub(super) fn prepare_legacy_files(
         .map(|file| {
             (
                 file.path.clone(),
-                (file.mode, format!("{:x}", Sha256::digest(&file.contents))),
+                (file.mode, hex::encode(Sha256::digest(&file.contents))),
             )
         })
         .collect::<LegacyDescriptors>();
     let identity = format!(
-        "legacy-{:x}",
-        Sha256::digest(
+        "legacy-{}",
+        hex::encode(Sha256::digest(
             serde_json::to_vec(&descriptors).map_err(|source| error(source.to_string()))?
-        )
+        ))
     );
     if snapshot.unit.as_str() != identity {
         return Err(error(

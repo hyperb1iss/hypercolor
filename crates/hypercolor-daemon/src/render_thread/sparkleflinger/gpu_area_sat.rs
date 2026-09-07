@@ -271,6 +271,7 @@ impl GpuAreaResources {
         params
             .slice(..)
             .get_mapped_range_mut()
+            .expect("mapped-at-creation params buffer should map")
             .copy_from_slice(&encode_params(
                 geometry.width,
                 geometry.height,
@@ -355,6 +356,7 @@ impl GpuAreaHierarchy {
                 params
                     .slice(..)
                     .get_mapped_range_mut()
+                    .expect("mapped-at-creation params buffer should map")
                     .copy_from_slice(&encode_hierarchy_params(level));
                 params.unmap();
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

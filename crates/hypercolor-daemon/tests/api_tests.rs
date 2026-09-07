@@ -6397,10 +6397,16 @@ async fn output_patch_rejects_brightness_outside_the_unit_interval() {
     let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
 
-    // `1e40` overflows the f32 cast to infinity, which fails the range
-    // check the same way NaN would: every comparison against a non-finite
-    // value is false, so `contains` says no.
-    for rejected in ["1.5", "-0.1", "1e40", "-1e40"] {
+    // Finite values outside the unit interval fail the range check. A
+    // magnitude that overflows f32 (`1e40`) never reaches it: serde_json
+    // 1.0.151 refuses the literal while decoding, so the body is rejected
+    // as malformed JSON instead of an out-of-range field.
+    for (rejected, expected) in [
+        ("1.5", StatusCode::UNPROCESSABLE_ENTITY),
+        ("-0.1", StatusCode::UNPROCESSABLE_ENTITY),
+        ("1e40", StatusCode::BAD_REQUEST),
+        ("-1e40", StatusCode::BAD_REQUEST),
+    ] {
         let response = app
             .clone()
             .oneshot(output_patch_request(&format!(
@@ -6410,12 +6416,16 @@ async fn output_patch_rejects_brightness_outside_the_unit_interval() {
             .expect("failed to execute request");
         assert_eq!(
             response.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
+            expected,
             "brightness {rejected} must be refused"
         );
-        let json = body_json(response).await;
-        assert_eq!(json["error"]["code"], "validation_error");
-        assert_eq!(json["error"]["details"]["field"], "brightness");
+        // Only the range check answers with the API envelope; the decoder's
+        // rejection is axum's plain-text body.
+        if expected == StatusCode::UNPROCESSABLE_ENTITY {
+            let json = body_json(response).await;
+            assert_eq!(json["error"]["code"], "validation_error");
+            assert_eq!(json["error"]["details"]["field"], "brightness");
+        }
     }
 
     assert_eq!(state.output_power.global_brightness(), 1.0);

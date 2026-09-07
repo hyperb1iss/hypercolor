@@ -196,7 +196,7 @@ fn fixed_icons_are_snapshotted_once_alongside_historical_extras() {
             item,
             LinuxExactEntry::RegularFile {
                 mode,
-                sha256: format!("{:x}", Sha256::digest(contents)),
+                sha256: hex::encode(Sha256::digest(contents)),
                 snapshot_unit: None,
                 snapshot_path: None,
             },

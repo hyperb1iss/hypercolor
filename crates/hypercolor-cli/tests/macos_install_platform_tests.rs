@@ -651,7 +651,7 @@ fn launcher_snapshot_id(mode: u32, contents: &[u8]) -> String {
     digest.update(b"hypercolor-macos-launcher-v1\0");
     digest.update(mode.to_be_bytes());
     digest.update(contents);
-    format!("{:x}", digest.finalize())
+    hex::encode(digest.finalize())
 }
 
 #[test]
