@@ -32,9 +32,8 @@ use hypercolor_types::effect::{ControlBinding, EffectId, EffectMetadata};
 use hypercolor_types::layer::{BlendMode, LayerSource, SceneLayer, SceneLayerId};
 use hypercolor_types::library::PresetId;
 use hypercolor_types::scene::{
-    ColorInterpolation, DisplayFaceTarget, DisplayRotation, EasingFunction, Scene, SceneId,
-    SceneKind, SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId,
-    ZoneRole,
+    ColorInterpolation, DisplayFaceTarget, EasingFunction, Scene, SceneId, SceneKind,
+    SceneMutationMode, ScenePriority, TransitionSpec, UnassignedBehavior, Zone, ZoneId, ZoneRole,
 };
 use hypercolor_types::spatial::{NormalizedPosition, Output, SpatialLayout};
 
@@ -1130,7 +1129,6 @@ impl SceneManager {
         zone_id: ZoneId,
         blend_mode: Option<BlendMode>,
         opacity: Option<f32>,
-        rotation: Option<DisplayRotation>,
     ) -> Option<&Zone> {
         let scene = self.active_scene_mut()?;
         let zone = scene.zones.iter_mut().find(|zone| zone.id == zone_id)?;
@@ -1139,7 +1137,6 @@ impl SceneManager {
             blend_mode: blend_mode.unwrap_or(current_target.blend_mode),
             device_id: current_target.device_id,
             opacity: opacity.unwrap_or(current_target.opacity),
-            rotation: rotation.unwrap_or(current_target.rotation),
         }
         .normalized();
         if !next_target.clone().blends_with_effect() {

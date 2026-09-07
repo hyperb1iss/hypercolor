@@ -11,9 +11,7 @@ use hypercolor_types::layer::{
     BlendMode, LayerAdjust, LayerSource, LayerTransform, MediaPlayback, SceneLayer, SceneLayerId,
 };
 use hypercolor_types::library::PresetId;
-use hypercolor_types::scene::{
-    DisplayFaceTarget, DisplayRotation, SceneId, SceneKind, Zone, ZoneId, ZoneRole,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, SceneKind, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{
     EdgeBehavior, LedTopology, NormalizedPosition, Output, SamplingMode, SpatialLayout,
     StripDirection,
@@ -620,7 +618,7 @@ fn patch_display_zone_target_preserves_opacity_for_effect_blends_and_normalizes_
         .id;
 
     let screen_zone = manager
-        .patch_display_zone_target(zone_id, Some(BlendMode::Screen), Some(0.42), None)
+        .patch_display_zone_target(zone_id, Some(BlendMode::Screen), Some(0.42))
         .expect("screen patch should update the display target");
     let screen_target = screen_zone
         .display_target
@@ -631,7 +629,7 @@ fn patch_display_zone_target_preserves_opacity_for_effect_blends_and_normalizes_
     assert!((screen_target.opacity - 0.42).abs() < f32::EPSILON);
 
     let replace_zone = manager
-        .patch_display_zone_target(zone_id, Some(BlendMode::Replace), Some(0.08), None)
+        .patch_display_zone_target(zone_id, Some(BlendMode::Replace), Some(0.08))
         .expect("replace patch should update the display target");
     let replace_target = replace_zone
         .display_target
@@ -640,26 +638,6 @@ fn patch_display_zone_target_preserves_opacity_for_effect_blends_and_normalizes_
     assert_eq!(replace_target.device_id, device_id);
     assert_eq!(replace_target.blend_mode, BlendMode::Replace);
     assert!((replace_target.opacity - 1.0).abs() < f32::EPSILON);
-    // A mounting rotation survives later composition patches that omit it.
-    let turned_zone = manager
-        .patch_display_zone_target(zone_id, None, None, Some(DisplayRotation::Deg180))
-        .expect("rotation patch should update the display target");
-    let turned_target = turned_zone
-        .display_target
-        .clone()
-        .expect("display target should remain present");
-    assert_eq!(turned_target.rotation, DisplayRotation::Deg180);
-    assert_eq!(turned_target.blend_mode, BlendMode::Replace);
-    let kept_zone = manager
-        .patch_display_zone_target(zone_id, Some(BlendMode::Alpha), None, None)
-        .expect("blend patch should update the display target");
-    assert_eq!(
-        kept_zone
-            .display_target
-            .as_ref()
-            .map(|target| target.rotation),
-        Some(DisplayRotation::Deg180)
-    );
 }
 
 #[test]

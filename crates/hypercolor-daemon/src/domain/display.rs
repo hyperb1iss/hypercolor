@@ -21,9 +21,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use hypercolor_types::event::{HypercolorEvent, ZoneChangeKind};
 use hypercolor_types::layer::{BlendMode, SceneLayer, SceneLayerId};
-use hypercolor_types::scene::{
-    DisplayFaceTarget, DisplayRotation, SceneId, Zone, ZoneId, ZoneRole,
-};
+use hypercolor_types::scene::{DisplayFaceTarget, SceneId, Zone, ZoneId, ZoneRole};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tokio::sync::RwLock;
 
@@ -114,8 +112,6 @@ pub struct PatchDisplayComposition {
     pub blend_mode: Option<BlendMode>,
     /// The new opacity, when the caller named one.
     pub opacity: Option<f32>,
-    /// The new mounting rotation, when the caller named one.
-    pub rotation: Option<DisplayRotation>,
 }
 
 /// Merge control overrides into a display's face zone.
@@ -291,12 +287,9 @@ pub async fn patch_display_composition(
     let mut mutation = ctx.begin_mutation().await;
     let scene_id =
         mutation.active_scene_for_runtime_mutation("updating display face composition")?;
-    let Some(zone) = mutation.patch_display_target(
-        command.zone_id,
-        command.blend_mode,
-        command.opacity,
-        command.rotation,
-    ) else {
+    let Some(zone) =
+        mutation.patch_display_target(command.zone_id, command.blend_mode, command.opacity)
+    else {
         return Ok(None);
     };
 
@@ -675,17 +668,6 @@ impl DisplayContext {
     }
 
     /// Whether a display carries a stored default face.
-    /// The mounting rotation stored with the display's default face, upright
-    /// when it has none.
-    pub async fn default_face_rotation(&self, device_id: DeviceId) -> DisplayRotation {
-        self.authorities
-            .preferences
-            .read()
-            .await
-            .get(device_id)
-            .map_or(DisplayRotation::default(), |preference| preference.rotation)
-    }
-
     pub async fn has_default_face(&self, device_id: DeviceId) -> bool {
         self.authorities
             .preferences
@@ -749,7 +731,6 @@ impl DisplayContext {
                         controls,
                         effect_id: effect.id,
                         opacity: target.opacity,
-                        rotation: target.rotation,
                     },
                 )
                 .map_err(|error| {
@@ -836,7 +817,6 @@ impl DisplayContext {
         device_id: DeviceId,
         blend_mode: Option<BlendMode>,
         opacity: Option<f32>,
-        rotation: Option<DisplayRotation>,
     ) -> Result<(), DomainError> {
         let mut store = self.authorities.preferences.write().await;
         let Some(mut updated) = store.get(device_id).cloned() else {
@@ -849,11 +829,9 @@ impl DisplayContext {
             blend_mode: blend_mode.unwrap_or(updated.blend_mode),
             device_id,
             opacity: opacity.unwrap_or(updated.opacity),
-            rotation: rotation.unwrap_or(updated.rotation),
         });
         updated.blend_mode = target.blend_mode;
         updated.opacity = target.opacity;
-        updated.rotation = target.rotation;
         store.set(device_id, updated).map_err(|error| {
             DomainError::Internal(anyhow::anyhow!(
                 "Failed to prepare display preference persistence: {error}"
@@ -1083,7 +1061,6 @@ fn build_default_display_zone(
                 blend_mode: preference.blend_mode,
                 device_id,
                 opacity: preference.opacity,
-                rotation: preference.rotation,
             }
             .normalized(),
         ),
