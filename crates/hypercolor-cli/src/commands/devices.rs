@@ -6,8 +6,9 @@ use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 use hypercolor_types::api::controls::{ControlSurfaceListResponse, InvokeControlActionRequest};
 use hypercolor_types::api::devices::{
-    DeviceListResponse, DeviceSummary, DiscoverRequest, DiscoverResponse, IdentifyDeviceResponse,
-    IdentifyRequest, PairDeviceResponse,
+    CoverageActive, DeviceCoverageListResponse, DeviceListResponse, DeviceSummary, DiscoverRequest,
+    DiscoverResponse, IdentifyDeviceResponse, IdentifyRequest, PairDeviceResponse,
+    UnclaimedDeviceListResponse,
 };
 use hypercolor_types::api::scene::PatchControlsRequest;
 use hypercolor_types::controls::{
@@ -46,6 +47,10 @@ pub enum DeviceCommand {
     SetControl(DeviceSetControlArgs),
     /// Invoke one device-level control action.
     Action(DeviceActionArgs),
+    /// List USB devices the host sees that no enabled native driver claims.
+    Unclaimed,
+    /// Show which stack (native, bridge, neither) owns each physical device.
+    Coverage,
 }
 
 /// Arguments for `devices list`.
@@ -167,7 +172,170 @@ pub async fn execute(args: &DevicesArgs, client: &DaemonClient, ctx: &OutputCont
             execute_set_control(control_args, client, ctx).await
         }
         DeviceCommand::Action(action_args) => execute_action(action_args, client, ctx).await,
+        DeviceCommand::Unclaimed => execute_unclaimed(client, ctx).await,
+        DeviceCommand::Coverage => execute_coverage(client, ctx).await,
     }
+}
+
+async fn execute_unclaimed(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response: UnclaimedDeviceListResponse = client.get_list("/devices/unclaimed").await?;
+    let devices = &response.items;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain => {
+            for device in devices {
+                println!(
+                    "{:04x}:{:04x} {}",
+                    device.vendor_id,
+                    device.product_id,
+                    device.product.as_deref().unwrap_or("-")
+                );
+            }
+        }
+        OutputFormat::Table => {
+            if devices.is_empty() {
+                ctx.info("every visible USB device is claimed by an enabled driver");
+                return Ok(());
+            }
+            let headers = [
+                "VID:PID",
+                "Manufacturer",
+                "Product",
+                "Serial",
+                "Bus Path",
+                "Classes",
+                "Claimable By",
+            ];
+            let rows: Vec<Vec<String>> = devices
+                .iter()
+                .map(|device| {
+                    let classes = device
+                        .interface_classes
+                        .iter()
+                        .map(|class| format!("{class:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    vec![
+                        ctx.painter.number(&format!(
+                            "{:04x}:{:04x}",
+                            device.vendor_id, device.product_id
+                        )),
+                        ctx.painter
+                            .muted(device.manufacturer.as_deref().unwrap_or("-")),
+                        ctx.painter.name(device.product.as_deref().unwrap_or("-")),
+                        ctx.painter.muted(device.serial.as_deref().unwrap_or("-")),
+                        ctx.painter.muted(device.bus_path.as_deref().unwrap_or("-")),
+                        ctx.painter
+                            .muted(if classes.is_empty() { "-" } else { &classes }),
+                        device.claimable_by.as_deref().map_or_else(
+                            || ctx.painter.muted("no native protocol"),
+                            |driver| ctx.painter.name(&format!("{driver} (disabled)")),
+                        ),
+                    ]
+                })
+                .collect();
+            ctx.print_table(&headers, &rows);
+            println!();
+            ctx.info(&format!(
+                "{} unclaimed device(s)",
+                ctx.painter.number(&devices.len().to_string())
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_coverage(client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
+    let response: DeviceCoverageListResponse = client.get_list("/devices/coverage").await?;
+    let rows = &response.items;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain => {
+            for row in rows {
+                println!(
+                    "{} {}",
+                    row.identity.label,
+                    crate::output::wire_label(&row.active)
+                );
+            }
+        }
+        OutputFormat::Table => {
+            if rows.is_empty() {
+                ctx.info("no devices known to any stack");
+                return Ok(());
+            }
+            let headers = [
+                "Device",
+                "Identity",
+                "Native",
+                "Bridge",
+                "Unclaimed",
+                "Active",
+            ];
+            let table: Vec<Vec<String>> = rows
+                .iter()
+                .map(|row| {
+                    let native = row.native.as_ref().map_or_else(
+                        || ctx.painter.muted("-"),
+                        |native| format!("{} ({})", native.driver_id, native.state),
+                    );
+                    let bridge = row.bridge.as_ref().map_or_else(
+                        || ctx.painter.muted("-"),
+                        |bridge| {
+                            if bridge.output_enabled {
+                                format!("output on ({})", bridge.state)
+                            } else {
+                                format!(
+                                    "output off: {}",
+                                    bridge.disabled_reason.as_deref().unwrap_or("no reason")
+                                )
+                            }
+                        },
+                    );
+                    let active = crate::output::wire_label(&row.active);
+                    let active = match row.active {
+                        CoverageActive::Conflict => ctx.painter.error(&active),
+                        CoverageActive::Native | CoverageActive::Bridge => {
+                            ctx.painter.success(&active)
+                        }
+                        CoverageActive::None => ctx.painter.muted(&active),
+                    };
+                    vec![
+                        ctx.painter.name(&row.identity.label),
+                        ctx.painter.muted(&format!(
+                            "{} {}",
+                            crate::output::wire_label(&row.identity.kind),
+                            row.identity.value
+                        )),
+                        native,
+                        bridge,
+                        if row.unclaimed {
+                            "yes".to_owned()
+                        } else {
+                            ctx.painter.muted("-")
+                        },
+                        active,
+                    ]
+                })
+                .collect();
+            ctx.print_table(&headers, &table);
+            println!();
+            let conflicts = rows
+                .iter()
+                .filter(|row| row.active == CoverageActive::Conflict)
+                .count();
+            ctx.info(&format!(
+                "{} device(s) \u{00b7} {} conflict(s)",
+                ctx.painter.number(&rows.len().to_string()),
+                ctx.painter.number(&conflicts.to_string()),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 async fn execute_list(
@@ -306,6 +474,39 @@ async fn execute_info(
             ctx.info(&format!("Status       {}", response.status));
             if let Some(fw) = &response.firmware_version {
                 ctx.info(&format!("Firmware     {fw}"));
+            }
+            if let Some(bridge) = &response.bridge {
+                println!();
+                ctx.info("Bridge route");
+                if let Some(fingerprint) = &bridge.fingerprint {
+                    ctx.info(&format!("  Fingerprint    {fingerprint}"));
+                }
+                if let Some(endpoint) = &bridge.endpoint {
+                    ctx.info(&format!("  Endpoint       {endpoint}"));
+                }
+                if let Some(index) = bridge.controller_index {
+                    ctx.info(&format!("  Controller     {index}"));
+                }
+                if let Some(confidence) = &bridge.identity_confidence {
+                    ctx.info(&format!("  Identity       {confidence}"));
+                }
+                if let Some(detector) = &bridge.detector_class {
+                    ctx.info(&format!("  Detector       {detector}"));
+                }
+                if let Some(version) = bridge.protocol_version {
+                    ctx.info(&format!("  Protocol       v{version}"));
+                }
+                ctx.info(&format!(
+                    "  Output         {}",
+                    if bridge.output_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
+                if let Some(reason) = &bridge.disabled_reason {
+                    ctx.info(&format!("  Reason         {reason}"));
+                }
             }
             println!();
         }
