@@ -318,7 +318,12 @@ else
 fi
 
 if [[ -d .agents/skills ]]; then
-  cp -R .agents/skills "${DIST_DIR}/share/hypercolor/agents/"
+  # -L dereferences the symlinks that point contributor skills at skills/,
+  # so the bundle carries real directories on hosts without symlink support.
+  cp -RL .agents/skills "${DIST_DIR}/share/hypercolor/agents/"
+fi
+if [[ -d skills ]]; then
+  cp -RL skills "${DIST_DIR}/share/hypercolor/skills"
 fi
 if [[ -d .agents/agents ]]; then
   cp -R .agents/agents "${DIST_DIR}/share/hypercolor/agents/"
@@ -424,6 +429,7 @@ manifest = {
         "bundled_effect_files": count_files("share/hypercolor/effects/bundled"),
         "docs_files": count_files("share/hypercolor/docs"),
         "skill_files": count_files("share/hypercolor/agents/skills"),
+        "user_skill_files": count_files("share/hypercolor/skills"),
         "agent_files": count_files("share/hypercolor/agents/agents"),
         "site_files": count_files("share/hypercolor/site"),
     },
