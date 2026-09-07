@@ -172,7 +172,7 @@ fn load_full_toml_with_overrides() {
 
         [drivers.openrgb]
         enabled = false
-        socket = "/run/openrgb.sock"
+        endpoints = ["127.0.0.1:6742"]
     "#;
 
     let tmp = tempfile::NamedTempFile::new().expect("failed to create temp file");
@@ -191,8 +191,8 @@ fn load_full_toml_with_overrides() {
     assert_eq!(config.audio.fft_size, 2048);
     assert!(!config.drivers["openrgb"].enabled);
     assert_eq!(
-        config.drivers["openrgb"].settings["socket"],
-        "/run/openrgb.sock"
+        config.drivers["openrgb"].settings["endpoints"],
+        serde_json::json!(["127.0.0.1:6742"])
     );
     assert!(
         config.extensions.contains_key("include"),
