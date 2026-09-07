@@ -170,6 +170,7 @@ hypercolor-driver-wled = { path = "crates/hypercolor-driver-wled" }
 hypercolor-driver-govee = { path = "crates/hypercolor-driver-govee" }
 hypercolor-network = { path = "crates/hypercolor-network" }
 hypercolor-openrgb-sdk = { path = "crates/hypercolor-openrgb-sdk" }
+hypercolor-openrgb-host = { path = "crates/hypercolor-openrgb-host" }
 hypercolor-tui = { path = "crates/hypercolor-tui" }
 
 # Audio + input capture

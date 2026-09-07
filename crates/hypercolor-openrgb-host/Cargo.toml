@@ -1,0 +1,25 @@
+[package]
+name = "hypercolor-openrgb-host"
+description = "OpenRGB host integration: binary detection, server probe, install hints, permissions, managed config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-openrgb-sdk = { workspace = true }
+hypercolor-persistence = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
