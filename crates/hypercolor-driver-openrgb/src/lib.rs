@@ -74,6 +74,15 @@ const METADATA_PROTOCOL_VERSION: &str = "protocol_version";
 const DEFAULT_OPENRGB_PORT: u16 = 6742;
 const DEFAULT_TIMEOUT_MS: u64 = 750;
 const DEFAULT_TARGET_FPS: u32 = 30;
+/// Frame interval of the native SMBus protocols (`hypercolor-hal` ASUS Aura /
+/// ENE at 16 ms). The bridge's `smbus` detector class paces to the same
+/// cadence the native backend derives from it, so a DRAM stick behind
+/// OpenRGB is never driven faster than the same stick behind the native
+/// driver.
+const NATIVE_SMBUS_FRAME_INTERVAL_MS: u32 = 16;
+/// Detector-class default cadence for `smbus`, matching the native backend's
+/// `fps_from_frame_interval(16 ms)`.
+pub const SMBUS_DETECTOR_TARGET_FPS: u32 = 1_000 / NATIVE_SMBUS_FRAME_INTERVAL_MS;
 const MAX_TIMEOUT_MS: u64 = 10_000;
 const MAX_CONTROLLERS_PER_ENDPOINT: u32 = 1024;
 const OUTPUT_WORKER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -450,6 +459,7 @@ impl DeviceBackend for OpenRgbBackend {
                 map_openrgb_device_error(*id, &error, OpenRgbDeviceOperation::Connect)
             })?;
 
+        let target_fps = route.target_fps;
         let controller = Arc::new(Mutex::new(ConnectedController {
             previous_mode: route.previous_mode.clone(),
             route,
@@ -461,7 +471,10 @@ impl DeviceBackend for OpenRgbBackend {
         self.connected
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(*id, Arc::new(ConnectedOutput::spawn(*id, controller)));
+            .insert(
+                *id,
+                Arc::new(ConnectedOutput::spawn(*id, controller, target_fps)),
+            );
         Ok(())
     }
 
@@ -546,7 +559,11 @@ struct ConnectedOutput {
 }
 
 impl ConnectedOutput {
-    fn spawn(device_id: DeviceId, controller: Arc<Mutex<ConnectedController>>) -> Self {
+    fn spawn(
+        device_id: DeviceId,
+        controller: Arc<Mutex<ConnectedController>>,
+        target_fps: u32,
+    ) -> Self {
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<OpenRgbFramePayload>>);
         let active = Arc::new(AtomicBool::new(true));
         let lifecycle_gate = Arc::new(StdMutex::new(()));
@@ -557,6 +574,7 @@ impl ConnectedOutput {
             frame_rx,
             Arc::clone(&active),
             Arc::clone(&last_async_error),
+            frame_interval_for_fps(target_fps),
         ));
 
         Self {
@@ -866,13 +884,27 @@ fn lock_lifecycle_gate(gate: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
     }
 }
 
+/// Interval between writes for a paced controller.
+fn frame_interval_for_fps(target_fps: u32) -> Duration {
+    Duration::from_secs(1) / target_fps.max(1)
+}
+
+/// Per-controller writer: latest-value frames, paced to the controller's
+/// `target_fps`.
+///
+/// Frames that arrive while the writer waits for its next slot replace the
+/// pending one (the superseded delivery is rejected by the enqueue path), so
+/// a slow controller never accumulates a backlog and never runs its bus
+/// faster than its class allows.
 async fn run_openrgb_output_worker(
     device_id: DeviceId,
     controller: Arc<Mutex<ConnectedController>>,
     mut frame_rx: watch::Receiver<Option<Arc<OpenRgbFramePayload>>>,
     active: Arc<AtomicBool>,
     last_async_error: Arc<StdMutex<Option<DeviceError>>>,
+    frame_interval: Duration,
 ) {
+    let mut next_slot: Option<Instant> = None;
     loop {
         if frame_rx.changed().await.is_err() {
             break;
@@ -896,10 +928,30 @@ async fn run_openrgb_output_worker(
             frame = latest;
         }
 
+        if let Some(slot) = next_slot {
+            let pace = sleep(slot.saturating_duration_since(Instant::now()));
+            tokio::pin!(pace);
+            loop {
+                tokio::select! {
+                    () = &mut pace => break,
+                    changed = frame_rx.changed() => {
+                        if changed.is_err() || !active.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let Some(latest) = frame_rx.borrow_and_update().clone() else {
+                            return;
+                        };
+                        frame = latest;
+                    }
+                }
+            }
+        }
+
         if !frame.mark_transport_started() {
             continue;
         }
         let transport_started_at = Instant::now();
+        next_slot = Some(transport_started_at + frame_interval);
         match write_controller_colors(&controller, frame.colors.as_slice()).await {
             Ok(()) => {
                 if let Some(id) = frame.delivery_id {
@@ -1760,14 +1812,34 @@ fn segment_info(zone: &ControllerZone) -> SegmentInfo {
     }
 }
 
+/// Resolve a controller's cadence.
+///
+/// Precedence: a `controller_fps` entry for the fingerprint, then one for
+/// the detector class, then the detector-class default table, then
+/// `default_target_fps`.
 fn target_fps(config: &OpenRgbConfig, fingerprint: &str, detector_class: &str) -> u32 {
-    config
-        .controller_fps
-        .get(fingerprint)
-        .or_else(|| config.controller_fps.get(detector_class))
-        .copied()
+    lookup_case_insensitive(&config.controller_fps, fingerprint)
+        .or_else(|| lookup_case_insensitive(&config.controller_fps, detector_class))
+        .or_else(|| detector_class_default_fps(detector_class))
         .unwrap_or(config.default_target_fps)
         .max(1)
+}
+
+/// Detector-class cadence defaults. `smbus` matches the native SMBus backend;
+/// `hid` and every other class fall through to `default_target_fps`.
+fn detector_class_default_fps(detector_class: &str) -> Option<u32> {
+    match detector_class {
+        "smbus" => Some(SMBUS_DETECTOR_TARGET_FPS),
+        _ => None,
+    }
+}
+
+fn lookup_case_insensitive<V: Copy>(map: &BTreeMap<String, V>, key: &str) -> Option<V> {
+    map.get(key).copied().or_else(|| {
+        map.iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+            .map(|(_, value)| *value)
+    })
 }
 
 fn detector_class(device_type: &DeviceType) -> &'static str {
@@ -2367,6 +2439,39 @@ mod tests {
             );
             assert!(!route.info.capabilities.supports_direct);
         }
+    }
+
+    #[test]
+    fn target_fps_prefers_overrides_then_detector_class_defaults() {
+        let mut config = OpenRgbConfig::default();
+        assert_eq!(SMBUS_DETECTOR_TARGET_FPS, 62);
+        assert_eq!(
+            target_fps(&config, "fp", "smbus"),
+            SMBUS_DETECTOR_TARGET_FPS
+        );
+        assert_eq!(target_fps(&config, "fp", "hid"), DEFAULT_TARGET_FPS);
+        assert_eq!(target_fps(&config, "fp", "virtual"), DEFAULT_TARGET_FPS);
+
+        config.default_target_fps = 20;
+        assert_eq!(target_fps(&config, "fp", "hid"), 20);
+        assert_eq!(
+            target_fps(&config, "fp", "smbus"),
+            SMBUS_DETECTOR_TARGET_FPS,
+            "class table outranks the global default"
+        );
+
+        config.controller_fps.insert("smbus".to_owned(), 15);
+        assert_eq!(target_fps(&config, "fp", "smbus"), 15);
+        config
+            .controller_fps
+            .insert("BRIDGE:OPENRGB:FP".to_owned(), 45);
+        assert_eq!(
+            target_fps(&config, "bridge:openrgb:fp", "smbus"),
+            45,
+            "fingerprint override wins and matches case-insensitively"
+        );
+        assert_eq!(frame_interval_for_fps(0), Duration::from_secs(1));
+        assert_eq!(frame_interval_for_fps(20), Duration::from_millis(50));
     }
 
     #[test]

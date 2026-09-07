@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1009,6 +1009,278 @@ async fn run_brightness_server(
             return update_mode;
         }
     }
+}
+
+#[tokio::test]
+async fn writer_paces_to_target_fps_and_drops_superseded_frames() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_collect_updates_server(listener, 2));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        default_target_fps: 20,
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    let device_id = devices[0].info.id;
+    assert_eq!(devices[0].info.capabilities.max_fps, 20);
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("backend should connect selected controller");
+    assert_eq!(backend.target_fps(&device_id), Some(20));
+    let frame_sink = backend
+        .frame_sink(&device_id)
+        .expect("connected controller should expose frame sink");
+
+    let first = tokio::time::timeout(
+        Duration::from_secs(1),
+        frame_sink.deliver_colors_shared(
+            DeviceDeliveryId {
+                queue_generation: 5,
+                sequence: 1,
+            },
+            Arc::new(vec![[1, 1, 1], [1, 1, 1]]),
+        ),
+    )
+    .await
+    .expect("first frame should be written immediately");
+    assert_eq!(first.status, DeviceDeliveryStatus::Completed);
+    let first_done = tokio::time::Instant::now();
+
+    let (superseded, latest) = tokio::join!(
+        frame_sink.deliver_colors_shared(
+            DeviceDeliveryId {
+                queue_generation: 5,
+                sequence: 2,
+            },
+            Arc::new(vec![[2, 2, 2], [2, 2, 2]]),
+        ),
+        frame_sink.deliver_colors_shared(
+            DeviceDeliveryId {
+                queue_generation: 5,
+                sequence: 3,
+            },
+            Arc::new(vec![[3, 3, 3], [3, 3, 3]]),
+        ),
+    );
+    let latest_done = tokio::time::Instant::now();
+
+    assert_eq!(superseded.status, DeviceDeliveryStatus::Failed);
+    assert!(
+        !superseded.transport_started,
+        "the superseded frame must never reach the socket"
+    );
+    assert_eq!(latest.status, DeviceDeliveryStatus::Completed);
+    assert!(
+        latest_done.duration_since(first_done) >= Duration::from_millis(40),
+        "second write must wait for the 50 ms slot, got {:?}",
+        latest_done.duration_since(first_done)
+    );
+
+    let updates = server.await.expect("server task should join");
+    assert_eq!(updates.len(), 2);
+    assert_eq!(&updates[0].payload[6..10], &[1, 1, 1, 0]);
+    assert_eq!(&updates[1].payload[6..10], &[3, 3, 3, 0]);
+}
+
+#[tokio::test]
+async fn slow_controller_cadence_does_not_throttle_fast_controller() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let payloads = vec![
+        controller_payload_v5_typed(5, "Board", "SER123", "hidraw0", false, 0, 2, 100),
+        controller_payload_v5_typed(1, "Stick", "SER999", "i2c-0", false, 0, 2, 100),
+    ];
+    let server = tokio::spawn(run_counting_server(listener, payloads, 2));
+    let config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        controller_fps: BTreeMap::from([("hid".to_owned(), 100), ("smbus".to_owned(), 5)]),
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let entry = config_entry(&config);
+    let view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &entry,
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+    let backend = module
+        .build(&host, view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &backend, &host, view).await;
+    assert_eq!(devices.len(), 2);
+    let fast = devices
+        .iter()
+        .find(|device| device.metadata["detector_class"] == "hid")
+        .expect("keyboard should be discovered");
+    let slow = devices
+        .iter()
+        .find(|device| device.metadata["detector_class"] == "smbus")
+        .expect("DRAM should be discovered");
+    assert_eq!(fast.info.capabilities.max_fps, 100);
+    assert_eq!(slow.info.capabilities.max_fps, 5);
+
+    for device in [fast, slow] {
+        backend
+            .connect(&device.info.id)
+            .await
+            .expect("backend should connect controller");
+    }
+    let fast_sink = backend
+        .frame_sink(&fast.info.id)
+        .expect("fast controller should expose a frame sink");
+    let slow_sink = backend
+        .frame_sink(&slow.info.id)
+        .expect("slow controller should expose a frame sink");
+
+    let started = tokio::time::Instant::now();
+    let mut tick = 0_u8;
+    while started.elapsed() < Duration::from_millis(300) {
+        tick = tick.wrapping_add(1);
+        let _ = fast_sink
+            .write_colors_shared(Arc::new(vec![[tick, 0, 0], [tick, 0, 0]]))
+            .await;
+        let _ = slow_sink
+            .write_colors_shared(Arc::new(vec![[0, tick, 0], [0, tick, 0]]))
+            .await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    for device in [fast, slow] {
+        backend
+            .disconnect(&device.info.id)
+            .await
+            .expect("backend should disconnect controller");
+    }
+
+    let counts = server.await.expect("server task should join");
+    let fast_frames = counts.get(&0).copied().unwrap_or_default();
+    let slow_frames = counts.get(&1).copied().unwrap_or_default();
+    assert!(
+        fast_frames >= 15,
+        "fast controller should keep its cadence, got {fast_frames} frames"
+    );
+    assert!(
+        slow_frames <= 3,
+        "slow controller must stay at its 5 FPS ceiling, got {slow_frames} frames"
+    );
+}
+
+async fn run_counting_server(
+    listener: TcpListener,
+    payloads: Vec<Vec<u8>>,
+    output_connections: usize,
+) -> HashMap<u32, usize> {
+    let payloads = Arc::new(payloads);
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+    let accept = {
+        let payloads = Arc::clone(&payloads);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener
+                    .accept()
+                    .await
+                    .expect("fake OpenRGB server should accept client");
+                let payloads = Arc::clone(&payloads);
+                let done_tx = done_tx.clone();
+                tokio::spawn(async move {
+                    let result = handle_counting_connection(stream, &payloads).await;
+                    let _ = done_tx.send(result);
+                });
+            }
+        })
+    };
+    let mut totals = HashMap::new();
+    let mut finished = 0;
+    while finished < output_connections {
+        let (saw_setup, counts) = done_rx
+            .recv()
+            .await
+            .expect("connection handler should report");
+        for (index, count) in counts {
+            *totals.entry(index).or_insert(0) += count;
+        }
+        if saw_setup {
+            finished += 1;
+        }
+    }
+    accept.abort();
+    totals
+}
+
+async fn handle_counting_connection(
+    mut stream: TcpStream,
+    payloads: &[Vec<u8>],
+) -> (bool, HashMap<u32, usize>) {
+    let mut decoder = PacketDecoder::new();
+    let mut counts = HashMap::new();
+    let mut saw_setup = false;
+    while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+        match packet.header.packet_id {
+            PacketId::RequestProtocolVersion => {
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestProtocolVersion,
+                    0,
+                    CLIENT_MAX_PROTOCOL_VERSION.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::SetClientName => {}
+            PacketId::RequestControllerCount => {
+                let count = u32::try_from(payloads.len()).expect("fixture count fits u32");
+                send_packet(
+                    &mut stream,
+                    PacketId::RequestControllerCount,
+                    0,
+                    count.to_le_bytes().to_vec(),
+                )
+                .await;
+            }
+            PacketId::RequestControllerData => {
+                let index = packet.header.device_index;
+                let payload = payloads[usize::try_from(index).expect("index fits usize")].clone();
+                send_packet(&mut stream, PacketId::RequestControllerData, index, payload).await;
+            }
+            PacketId::SetCustomMode => {}
+            PacketId::UpdateMode => saw_setup = true,
+            PacketId::UpdateLeds => {
+                *counts.entry(packet.header.device_index).or_insert(0) += 1;
+            }
+            other => panic!("unexpected OpenRGB client packet: {other:?}"),
+        }
+    }
+    (saw_setup, counts)
 }
 
 #[tokio::test]
@@ -2139,9 +2411,31 @@ fn controller_payload_v5_shaped(
     led_count: u32,
     brightness: u32,
 ) -> Vec<u8> {
+    controller_payload_v5_typed(
+        5,
+        name,
+        serial,
+        location,
+        include_restore_mode,
+        active_mode,
+        led_count,
+        brightness,
+    )
+}
+
+fn controller_payload_v5_typed(
+    device_type: i32,
+    name: &str,
+    serial: &str,
+    location: &str,
+    include_restore_mode: bool,
+    active_mode: i32,
+    led_count: u32,
+    brightness: u32,
+) -> Vec<u8> {
     let mut body = Vec::new();
     push_u32(&mut body, 0);
-    push_i32(&mut body, 5);
+    push_i32(&mut body, device_type);
     push_str(&mut body, name);
     push_str(&mut body, "Acme");
     push_str(&mut body, "Keyboard controller");
