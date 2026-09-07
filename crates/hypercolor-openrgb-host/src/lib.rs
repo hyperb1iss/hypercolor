@@ -17,6 +17,7 @@
 mod detect;
 mod error;
 mod hints;
+mod permissions;
 mod probe;
 mod types;
 pub use detect::{
@@ -27,6 +28,10 @@ pub use detect::{
 };
 pub use error::{HostError, Result};
 pub use hints::{RELEASES_URL, detect_package_managers, install_hints, install_hints_for};
+pub use permissions::{
+    CHECK_HIDRAW_NODES, CHECK_I2C_DEV_MODULE, CHECK_I2C_NODES, CHECK_UDEV_RULES, UDEV_RULES_PATHS,
+    linux_permission_checks_at, permission_checks, udev_rules_remedy,
+};
 pub use probe::{DEFAULT_SERVER_PORT, PROBE_CLIENT_NAME, probe_server};
 pub use types::{
     BinaryKind, InstallHint, InstallMethod, ManagedConfigDir, OpenRgbBinary, PermissionCheck,
