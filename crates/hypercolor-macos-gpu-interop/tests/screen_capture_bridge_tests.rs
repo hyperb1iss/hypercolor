@@ -629,6 +629,7 @@ impl WgpuFixture {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            ..Default::default()
         }))
         .map_err(|error| format!("could not create wgpu adapter: {error}"))?;
         if adapter.get_info().backend != wgpu::Backend::Metal {
@@ -715,7 +716,9 @@ fn read_texture_pixels(
         .recv()
         .map_err(|error| format!("screen bridge readback callback failed: {error}"))?
         .map_err(|error| format!("screen bridge readback mapping failed: {error}"))?;
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("readback range should be mapped after the map callback");
     let mut pixels = Vec::with_capacity((unpadded_bytes_per_row * height) as usize);
     for row in mapped.chunks_exact(padded_bytes_per_row as usize) {
         pixels.extend_from_slice(&row[..unpadded_bytes_per_row as usize]);

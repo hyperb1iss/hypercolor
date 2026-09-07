@@ -43,6 +43,7 @@ impl WgpuFixture {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            ..Default::default()
         }))
         .map_err(|error| format!("could not create wgpu adapter: {error}"))?;
         let adapter_info = adapter.get_info();
@@ -150,7 +151,9 @@ pub fn read_texture_pixels(
         .map_err(|error| format!("fixture readback channel failed: {error}"))?
         .map_err(|error| format!("fixture readback buffer map failed: {error:?}"))?;
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("readback range should be mapped after the map callback");
     let mut pixels = vec![0; (height * unpadded_bytes_per_row) as usize];
     for (target, source) in pixels
         .chunks_exact_mut(unpadded_bytes_per_row as usize)

@@ -1610,7 +1610,9 @@ mod macos {
             .recv()
             .map_err(|error| format!("readback callback failed: {error}"))?
             .map_err(|error| format!("readback mapping failed: {error}"))?;
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .expect("readback range should be mapped after the map callback");
         let mut pixels = allocate_bytes(extent.byte_len()?, "readback output")?;
         for (source, target) in mapped
             .chunks_exact(padded as usize)
@@ -1716,6 +1718,7 @@ mod macos {
                     power_preference: wgpu::PowerPreference::HighPerformance,
                     force_fallback_adapter: false,
                     compatible_surface: None,
+                    ..Default::default()
                 }))
                 .map_err(|error| format!("could not create wgpu adapter: {error}"))?;
             let adapter_info = adapter.get_info();
