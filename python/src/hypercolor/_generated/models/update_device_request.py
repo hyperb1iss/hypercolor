@@ -6,6 +6,7 @@ from typing import Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.display_rotation import DisplayRotation
 from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="UpdateDeviceRequest")
@@ -17,11 +18,13 @@ class UpdateDeviceRequest:
 
     Attributes:
         brightness (int | None | Unset):
+        display_rotation (DisplayRotation | None | Unset):
         enabled (bool | None | Unset):
         name (None | str | Unset):
     """
 
     brightness: int | None | Unset = UNSET
+    display_rotation: DisplayRotation | None | Unset = UNSET
     enabled: bool | None | Unset = UNSET
     name: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -32,6 +35,14 @@ class UpdateDeviceRequest:
             brightness = UNSET
         else:
             brightness = self.brightness
+
+        display_rotation: None | str | Unset
+        if isinstance(self.display_rotation, Unset):
+            display_rotation = UNSET
+        elif isinstance(self.display_rotation, DisplayRotation):
+            display_rotation = self.display_rotation.value
+        else:
+            display_rotation = self.display_rotation
 
         enabled: bool | None | Unset
         if isinstance(self.enabled, Unset):
@@ -50,6 +61,8 @@ class UpdateDeviceRequest:
         field_dict.update({})
         if brightness is not UNSET:
             field_dict["brightness"] = brightness
+        if display_rotation is not UNSET:
+            field_dict["display_rotation"] = display_rotation
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
         if name is not UNSET:
@@ -69,6 +82,23 @@ class UpdateDeviceRequest:
             return cast(int | None | Unset, data)
 
         brightness = _parse_brightness(d.pop("brightness", UNSET))
+
+        def _parse_display_rotation(data: object) -> DisplayRotation | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                display_rotation_type_1 = DisplayRotation(data)
+
+                return display_rotation_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(DisplayRotation | None | Unset, data)
+
+        display_rotation = _parse_display_rotation(d.pop("display_rotation", UNSET))
 
         def _parse_enabled(data: object) -> bool | None | Unset:
             if data is None:
@@ -90,6 +120,7 @@ class UpdateDeviceRequest:
 
         update_device_request = cls(
             brightness=brightness,
+            display_rotation=display_rotation,
             enabled=enabled,
             name=name,
         )
