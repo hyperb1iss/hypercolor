@@ -126,6 +126,12 @@ pub fn SceneSelector() -> impl IntoView {
     });
 
     let commit_rename = Callback::new(move |()| {
+        // Enter closes the field, and the unmount blur calls this again
+        // before the active name has refreshed; the closed check keeps
+        // that second call from sending a duplicate rename.
+        if !renaming.get_untracked() {
+            return;
+        }
         let name = rename_value.get_untracked().trim().to_owned();
         set_renaming.set(false);
         let Some(id) = active_id.get_untracked() else {
