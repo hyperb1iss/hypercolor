@@ -75,8 +75,10 @@ sudo udevadm trigger
 Then re-plug or reboot.
 
 {% <callout type="warning"> %}
-If another RGB manager (OpenRGB, openrazer daemon, Aura Sync, iCUE) is running and holding the same HID device, Hypercolor cannot connect to it even with correct udev rules. Stop the other tool before starting Hypercolor, or check whether the other tool's kernel module grabbed the device at boot.
+If another RGB manager (openrazer daemon, Aura Sync, iCUE, or an OpenRGB you started yourself) is running and holding the same HID device, Hypercolor cannot connect to it even with correct udev rules. Stop the other tool before starting Hypercolor, or check whether the other tool's kernel module grabbed the device at boot. OpenRGB run through `hypercolor openrgb start` is not a conflict: it uses a Hypercolor-written configuration that skips natively owned devices, and it drives only what no native driver covers. See [OpenRGB fallback](@/hardware/openrgb-fallback.md).
 {% </callout> %}
+
+If the device is visible to the OS but nothing claims it, `hypercolor devices unclaimed` lists it with its VID:PID, and [My device isn't supported](@/hardware/unsupported-devices.md) covers the OpenRGB bridge and the device-support request from there.
 
 ## Network devices
 
