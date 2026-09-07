@@ -213,10 +213,8 @@ pub fn LayoutCanvas() -> impl IntoView {
         }
     });
 
-    // The box under the pointer on the canvas itself. Lifts only the
-    // stacking order, never the focus dimming, so sweeping across a dense
-    // canvas reads each box without the rest flickering. Lives in the
-    // editor context so the host rail can mirror the hover.
+    // The host rail mirrors the box under the pointer without changing
+    // canvas stacking or focus dimming.
     let pointer_zone_id = editor.pointer_zone_id;
 
     // Per-id zone lookup memo — lets every per-zone style closure resolve
@@ -536,21 +534,13 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 }))
                             };
 
-                            let is_under_pointer = {
-                                let zid = zid.clone();
-                                Memo::new(move |_| pointer_zone_id.with(|under| {
-                                    under.as_deref() == Some(&zid)
-                                }))
-                            };
-
                             let stacking_z = {
                                 let zid = zid.clone();
                                 Memo::new(move |_| {
                                     let rank = stacking_rank.with(|ranks| ranks.get(&zid).copied().unwrap_or(0));
                                     stacking::z_index(stacking::Tier {
                                         primary: is_primary.get(),
-                                        under_pointer: is_under_pointer.get(),
-                                        lifted: is_selected.get() || is_hovered.get(),
+                                        lifted: is_selected.get(),
                                     }, rank)
                                 })
                             };
@@ -584,8 +574,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         }).unwrap_or(zd.position_style);
                                         let hidden = is_hidden.get();
                                         let selected = is_selected.get();
-                                        // Hover only lifts a box that is not already selected, so
-                                        // the persistent selection always reads stronger.
+                                        // Selection reads stronger than the rail hover highlight.
                                         let hovered = is_hovered.get() && !selected;
                                         let border = if selected {
                                             format!("border: 2px solid rgba({}, 0.85)", zd.primary_rgb)

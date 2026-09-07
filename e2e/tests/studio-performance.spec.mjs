@@ -220,6 +220,33 @@ test("Studio output boxes do not create individual backdrop filters", async ({ p
   expect(filtered).toEqual([]);
 });
 
+test("Studio hover keeps smaller overlapping outputs reachable", async ({ page }) => {
+  const scene = studioScene();
+  const placements = scene.zones[0].layout.placements;
+  placements[0].position = { x: 0.15, y: 0.15 };
+  placements[0].size = { x: 0.2, y: 0.2 };
+  placements[1].position = { x: 0.15, y: 0.15 };
+  placements[1].size = { x: 0.05, y: 0.05 };
+  await openStudio(page, scene);
+  const background = page.locator('[data-zone-id="studio-output-0"]');
+  const foreground = page.locator('[data-zone-id="studio-output-1"]');
+  const originalRank = await background.evaluate((element) => element.style.zIndex);
+  const foregroundRank = await foreground.evaluate((element) => Number(element.style.zIndex));
+  await background.hover({ position: { x: 4, y: 4 } });
+  await nextPaint(page);
+  expect(await background.evaluate((element) => element.style.zIndex)).toBe(originalRank);
+  const bounds = await foreground.boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  expect(await foreground.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    return document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+      ?.closest("[data-zone-id]") === element;
+  })).toBe(true);
+  await foreground.click();
+  expect(await foreground.evaluate((element) => Number(element.style.zIndex)))
+    .toBeGreaterThan(foregroundRank);
+});
+
 test("Studio switches light zones without fetching the scene again", async ({ page }) => {
   const fixture = await openStudio(page);
   const before = fixture.sceneRequests();
