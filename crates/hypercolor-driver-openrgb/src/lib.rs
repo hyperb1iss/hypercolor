@@ -61,6 +61,7 @@ const FIELD_CONTROLLER_FPS: &str = "controller_fps";
 const FIELD_MODE_PER_LED_MASK: &str = "mode_per_led_mask";
 const FIELD_MODE_PERSISTENT_MASK: &str = "mode_persistent_mask";
 const FIELD_TEARDOWN_POLICY: &str = "teardown_policy";
+const FIELD_ZONE_SIZES: &str = "zone_sizes";
 
 const METADATA_ENDPOINT: &str = "endpoint";
 const METADATA_CONTROLLER_INDEX: &str = "controller_index";
@@ -96,6 +97,11 @@ const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_STARTED: u8 = 1;
 const DELIVERY_REJECTED: u8 = 2;
 
+/// User-approved zone sizes: controller fingerprint string (as shown in
+/// device metadata, matched case-insensitively) to zone name (exactly as
+/// OpenRGB reports it) to LED count.
+pub type ZoneSizeMap = BTreeMap<String, BTreeMap<String, u32>>;
+
 /// Driver configuration for the OpenRGB fallback bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenRgbConfig {
@@ -127,6 +133,10 @@ pub struct OpenRgbConfig {
     pub mode_persistent_mask: u32,
     #[serde(default)]
     pub teardown_policy: OpenRgbTeardownPolicy,
+    /// Zone sizes to apply with `RESIZEZONE` on connect. Non-empty enables
+    /// the SDK client's zone-resize gate; `SAVEMODE` stays forbidden.
+    #[serde(default)]
+    pub zone_sizes: ZoneSizeMap,
 }
 
 impl Default for OpenRgbConfig {
@@ -146,6 +156,7 @@ impl Default for OpenRgbConfig {
             mode_per_led_mask: default_per_led_mask(),
             mode_persistent_mask: 0,
             teardown_policy: OpenRgbTeardownPolicy::default(),
+            zone_sizes: ZoneSizeMap::new(),
         }
     }
 }
@@ -1703,6 +1714,18 @@ async fn connect_controller(
     let Some(client) = link.client.as_mut() else {
         bail!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint);
     };
+    let route = match apply_configured_zone_sizes(client, endpoint.endpoint, route, config).await {
+        Ok(route) => route,
+        Err(error) => {
+            if is_transport_error(&error) {
+                endpoint.fail_link(&mut link, &error).await;
+            }
+            return Err(error);
+        }
+    };
+    let Some(client) = link.client.as_mut() else {
+        bail!("OpenRGB endpoint {} is reconnecting", endpoint.endpoint);
+    };
     if let Err(error) = configure_controller_output(client, &route, config).await {
         if is_transport_error(&error) {
             endpoint.fail_link(&mut link, &error).await;
@@ -1715,6 +1738,119 @@ async fn connect_controller(
         accepting_frames: true,
         shape_warning_logged: false,
     })
+}
+
+/// How long to wait for OpenRGB to re-announce the device list after a
+/// `RESIZEZONE`.
+const ZONE_RESIZE_WAIT: Duration = Duration::from_secs(2);
+
+/// The user-approved zone sizes for a route, if any.
+///
+/// Sizes are keyed by fingerprint, so they are only honored for controllers
+/// whose fingerprint survives a resize: a shape-based (medium confidence)
+/// fingerprint changes with the LED count and would orphan the entry.
+fn configured_zone_sizes<'a>(
+    config: &'a OpenRgbConfig,
+    route: &ControllerRoute,
+) -> Result<Option<&'a BTreeMap<String, u32>>> {
+    let fingerprint = route.fingerprint.as_str();
+    let sizes = config.zone_sizes.get(fingerprint).or_else(|| {
+        config
+            .zone_sizes
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(fingerprint))
+            .map(|(_, sizes)| sizes)
+    });
+    let Some(sizes) = sizes else {
+        return Ok(None);
+    };
+    if route.confidence != IdentityConfidence::High {
+        bail!(
+            "OpenRGB zone_sizes for '{fingerprint}' need a serial or location identity; \
+             a shape-based fingerprint changes when a zone is resized"
+        );
+    }
+    Ok(Some(sizes))
+}
+
+/// Resize every configured zone whose reported LED count differs, wait for
+/// the server's re-announce, and return the re-enumerated route.
+async fn apply_configured_zone_sizes(
+    client: &mut OpenRgbClient,
+    endpoint: SocketAddr,
+    route: ControllerRoute,
+    config: &OpenRgbConfig,
+) -> Result<ControllerRoute> {
+    let Some(sizes) = configured_zone_sizes(config, &route)? else {
+        return Ok(route);
+    };
+    let mut resized = false;
+    for (zone_index, segment) in route.info.segments.iter().enumerate() {
+        let Some(target) = sizes.get(&segment.name) else {
+            continue;
+        };
+        if segment.led_count == *target {
+            continue;
+        }
+        let zone_index = u32::try_from(zone_index).context("OpenRGB zone index overflow")?;
+        let requested = client
+            .resize_zone(route.controller_index, zone_index, *target)
+            .await
+            .with_context(|| {
+                format!(
+                    "OpenRGB zone '{}' resize to {target} LEDs failed on controller {}",
+                    segment.name, route.info.id
+                )
+            })?;
+        if requested != *target {
+            warn!(
+                device_id = %route.info.id,
+                zone = %segment.name,
+                configured = target,
+                requested,
+                "OpenRGB clamped the configured zone size to the zone's advertised range"
+            );
+        }
+        debug!(
+            device_id = %route.info.id,
+            zone = %segment.name,
+            from = segment.led_count,
+            to = requested,
+            "OpenRGB zone resized"
+        );
+        resized = true;
+        if !client.wait_for_device_list_update(ZONE_RESIZE_WAIT).await? {
+            warn!(
+                device_id = %route.info.id,
+                zone = %segment.name,
+                "OpenRGB did not announce a device list update after the zone resize"
+            );
+        }
+    }
+    if !resized {
+        return Ok(route);
+    }
+    let refreshed = find_current_route(client, endpoint, &route.fingerprint, config)
+        .await
+        .context("OpenRGB re-enumeration after zone resize failed")?;
+    ensure_route_output_enabled(&refreshed)?;
+    for (segment, target) in refreshed
+        .info
+        .segments
+        .iter()
+        .filter_map(|segment| sizes.get(&segment.name).map(|target| (segment, *target)))
+    {
+        if segment.led_count != target {
+            warn!(
+                device_id = %refreshed.info.id,
+                zone = %segment.name,
+                configured = target,
+                reported = segment.led_count,
+                "OpenRGB zone size differs from the configured size after resize"
+            );
+        }
+    }
+    Ok(refreshed)
 }
 
 fn is_transport_error(error: &Error) -> bool {
@@ -2463,6 +2599,7 @@ fn client_config(config: &OpenRgbConfig) -> OpenRgbClientConfig {
         connect_timeout: Duration::from_millis(config.connect_timeout_ms),
         read_timeout: Duration::from_millis(config.read_timeout_ms),
         write_timeout: Duration::from_millis(config.write_timeout_ms),
+        allow_zone_resize: !config.zone_sizes.is_empty(),
         ..OpenRgbClientConfig::default()
     }
 }
@@ -2492,6 +2629,14 @@ fn validate_openrgb_config(config: &OpenRgbConfig) -> Result<()> {
     }
     if config.default_target_fps == 0 {
         bail!("OpenRGB default_target_fps must be at least 1");
+    }
+    for (fingerprint, zones) in &config.zone_sizes {
+        if fingerprint.trim().is_empty() {
+            bail!("OpenRGB zone_sizes keys must be controller fingerprints, not empty");
+        }
+        if zones.keys().any(|zone| zone.trim().is_empty()) {
+            bail!("OpenRGB zone_sizes for '{fingerprint}' contains an empty zone name");
+        }
     }
     if openrgb_detector_partition_needs_confirmation(config) && !config.detector_partition_confirmed
     {
@@ -2560,6 +2705,7 @@ fn openrgb_config_settings(config: &OpenRgbConfig) -> BTreeMap<String, serde_jso
             FIELD_TEARDOWN_POLICY.to_owned(),
             json!(config.teardown_policy),
         ),
+        (FIELD_ZONE_SIZES.to_owned(), json!(config.zone_sizes)),
     ])
 }
 
@@ -3040,6 +3186,80 @@ mod tests {
             }),
             "an unadopted, non-direct device is not offered"
         );
+    }
+
+    #[test]
+    fn zone_sizes_parse_validate_and_gate_the_resize_opcode() {
+        let module = OpenRgbDriverModule;
+        let entry = module.default_config();
+        assert_eq!(entry.settings["zone_sizes"], json!({}));
+
+        let mut config = OpenRgbConfig::default();
+        assert!(!client_config(&config).allow_zone_resize);
+        config.zone_sizes.insert(
+            "bridge:openrgb:127.0.0.1:6742:serial:SER123".to_owned(),
+            BTreeMap::from([("Channel ATX 1".to_owned(), 24)]),
+        );
+        assert!(client_config(&config).allow_zone_resize);
+        validate_openrgb_config(&config).expect("zone sizes should validate");
+
+        let settings = openrgb_config_settings(&config);
+        let entry = DriverConfigEntry::enabled(settings);
+        let parsed = DriverConfigView {
+            driver_id: DESCRIPTOR.id,
+            entry: &entry,
+        }
+        .parse_settings::<OpenRgbConfig>()
+        .expect("zone sizes should round-trip through settings");
+        assert_eq!(parsed.zone_sizes, config.zone_sizes);
+
+        config.zone_sizes.insert(
+            "bridge:openrgb:127.0.0.1:6742:serial:OTHER".to_owned(),
+            BTreeMap::from([(String::new(), 4)]),
+        );
+        assert!(validate_openrgb_config(&config).is_err());
+    }
+
+    #[test]
+    fn configured_zone_sizes_match_fingerprints_case_insensitively_for_stable_identities() {
+        let ownership = OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        };
+        let mut config = OpenRgbConfig {
+            ownership,
+            ..OpenRgbConfig::default()
+        };
+        let endpoint = default_endpoints()[0];
+        let route = build_route(endpoint, 0, 5, sample_controller(), &config);
+        assert_eq!(route.confidence, IdentityConfidence::High);
+        assert!(
+            configured_zone_sizes(&config, &route)
+                .expect("no entry is fine")
+                .is_none()
+        );
+
+        config.zone_sizes.insert(
+            route.fingerprint.as_str().to_ascii_uppercase(),
+            BTreeMap::from([("Main".to_owned(), 8)]),
+        );
+        let sizes = configured_zone_sizes(&config, &route)
+            .expect("stable identity should be honored")
+            .expect("upper-cased key should still match");
+        assert_eq!(sizes.get("Main"), Some(&8));
+
+        let mut shape_only = sample_controller();
+        shape_only.serial.clear();
+        shape_only.location.clear();
+        let medium = build_route(endpoint, 1, 5, shape_only, &config);
+        assert_eq!(medium.confidence, IdentityConfidence::Medium);
+        config.zone_sizes.insert(
+            medium.fingerprint.as_str().to_owned(),
+            BTreeMap::from([("Main".to_owned(), 8)]),
+        );
+        let error = configured_zone_sizes(&config, &medium)
+            .expect_err("shape-based fingerprints must be refused");
+        assert!(error.to_string().contains("serial or location"));
     }
 
     #[test]

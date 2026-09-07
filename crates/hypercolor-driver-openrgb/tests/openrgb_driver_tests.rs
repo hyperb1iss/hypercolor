@@ -1355,6 +1355,137 @@ async fn handle_counting_connection(
 }
 
 #[tokio::test]
+async fn connect_applies_configured_zone_sizes_and_republishes_shape() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("fake OpenRGB server should bind");
+    let endpoint = listener
+        .local_addr()
+        .expect("fake OpenRGB server should expose local addr");
+    let server = tokio::spawn(run_zone_resize_server(listener));
+    let base_config = OpenRgbConfig {
+        endpoints: vec![endpoint],
+        ownership: OpenRgbOwnership {
+            mode: OpenRgbOwnershipMode::OpenRgbOwned,
+            ..OpenRgbOwnership::default()
+        },
+        teardown_policy: OpenRgbTeardownPolicy::LeaveLastFrame,
+        ..OpenRgbConfig::default()
+    };
+    let host = NullHost;
+    let module = OpenRgbDriverModule;
+
+    let base_entry = config_entry(&base_config);
+    let base_view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &base_entry,
+    };
+    let probe = module
+        .build(&host, base_view)
+        .expect("backend construction should succeed");
+    let devices = discover_and_adopt(&module, &probe, &host, base_view).await;
+    let discovered = &devices[0];
+    assert_eq!(discovered.info.capabilities.led_count, 2);
+    let fingerprint = discovered.metadata["fingerprint"].clone();
+    assert!(fingerprint.starts_with("bridge:openrgb:"), "{fingerprint}");
+    drop(probe);
+
+    let sized_config = OpenRgbConfig {
+        zone_sizes: BTreeMap::from([(
+            fingerprint.to_ascii_uppercase(),
+            BTreeMap::from([("Main".to_owned(), 4)]),
+        )]),
+        ..base_config
+    };
+    let sized_entry = config_entry(&sized_config);
+    let sized_view = DriverConfigView {
+        driver_id: DESCRIPTOR.id,
+        entry: &sized_entry,
+    };
+    let backend = module
+        .build(&host, sized_view)
+        .expect("backend with zone sizes should build");
+    backend
+        .adopt_device(discovered)
+        .expect("backend should adopt the discovered controller");
+    let device_id = discovered.info.id;
+
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should resize the zone and re-enumerate");
+    let refreshed = backend
+        .connected_device_info(&device_id)
+        .await
+        .expect("connected info should be available")
+        .expect("connected controller should report refreshed info");
+    assert_eq!(refreshed.capabilities.led_count, 4);
+    assert_eq!(refreshed.segments.len(), 1);
+    assert_eq!(refreshed.segments[0].name, "Main");
+    assert_eq!(refreshed.segments[0].led_count, 4);
+    assert!(refreshed.capabilities.supports_direct);
+
+    backend
+        .write_colors(&device_id, &[[1, 1, 1], [2, 2, 2], [3, 3, 3], [4, 4, 4]])
+        .await
+        .expect("write should accept the new shape");
+    let (resize, update) = server.await.expect("server task should join");
+    assert_eq!(resize.header.device_index, 0);
+    assert_eq!(resize.header.packet_id, PacketId::ResizeZone);
+    assert_eq!(resize.payload, [0, 0, 0, 0, 4, 0, 0, 0]);
+    assert_eq!(update.header.packet_id, PacketId::UpdateLeds);
+    assert_eq!(&update.payload[4..6], &4_u16.to_le_bytes());
+    assert_eq!(update.payload.len(), 4 + 2 + 4 * 4);
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("backend should disconnect");
+}
+
+/// Serves one resizable controller. A RESIZEZONE changes the reported LED
+/// count and is answered with DEVICE_LIST_UPDATED, like OpenRGB does.
+async fn run_zone_resize_server(listener: TcpListener) -> (Packet, Packet) {
+    let mut led_count = 2_u32;
+    let mut resize = None;
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .expect("fake OpenRGB server should accept client");
+        let mut decoder = PacketDecoder::new();
+        while let Some(packet) = read_next_packet(&mut stream, &mut decoder).await {
+            match packet.header.packet_id {
+                PacketId::ResizeZone => {
+                    assert_eq!(packet.header.device_index, 0);
+                    assert_eq!(&packet.payload[0..4], &0_u32.to_le_bytes(), "zone index");
+                    led_count = u32::from_le_bytes([
+                        packet.payload[4],
+                        packet.payload[5],
+                        packet.payload[6],
+                        packet.payload[7],
+                    ]);
+                    resize = Some(packet);
+                    send_packet(&mut stream, PacketId::DeviceListUpdated, 0, Vec::new()).await;
+                }
+                PacketId::UpdateLeds => {
+                    return (resize.expect("resize must precede the first frame"), packet);
+                }
+                other => {
+                    answer_standard_client_packet(
+                        &mut stream,
+                        other,
+                        &packet,
+                        &controller_payload_v5_resizable(led_count),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn discovery_reuses_the_open_endpoint_link() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -2610,6 +2741,21 @@ fn controller_payload_v5_shaped(
     )
 }
 
+/// A "Board"/SER123 controller whose single zone advertises a 1..=8 LED
+/// range and currently reports `led_count` LEDs.
+fn controller_payload_v5_resizable(led_count: u32) -> Vec<u8> {
+    controller_payload_v5_bounded(
+        5,
+        "Board",
+        "SER123",
+        "hidraw0",
+        false,
+        0,
+        (1, 8, led_count),
+        100,
+    )
+}
+
 fn controller_payload_v5_typed(
     device_type: i32,
     name: &str,
@@ -2620,6 +2766,29 @@ fn controller_payload_v5_typed(
     led_count: u32,
     brightness: u32,
 ) -> Vec<u8> {
+    controller_payload_v5_bounded(
+        device_type,
+        name,
+        serial,
+        location,
+        include_restore_mode,
+        active_mode,
+        (led_count, led_count, led_count),
+        brightness,
+    )
+}
+
+fn controller_payload_v5_bounded(
+    device_type: i32,
+    name: &str,
+    serial: &str,
+    location: &str,
+    include_restore_mode: bool,
+    active_mode: i32,
+    zone: (u32, u32, u32),
+    brightness: u32,
+) -> Vec<u8> {
+    let (leds_min, leds_max, led_count) = zone;
     let mut body = Vec::new();
     push_u32(&mut body, 0);
     push_i32(&mut body, device_type);
@@ -2636,7 +2805,7 @@ fn controller_payload_v5_typed(
         push_restore_mode(&mut body);
     }
     push_u16(&mut body, 1);
-    push_zone_with_led_count(&mut body, led_count);
+    push_zone_bounded(&mut body, leds_min, leds_max, led_count);
     let led_count_u16 = u16::try_from(led_count).expect("fixture LED count should fit u16");
     push_u16(&mut body, led_count_u16);
     for index in 0..led_count {
@@ -2704,11 +2873,11 @@ fn push_restore_mode(body: &mut Vec<u8>) {
     body.extend_from_slice(&RgbColor::new(8, 9, 10).to_wire_bytes());
 }
 
-fn push_zone_with_led_count(body: &mut Vec<u8>, led_count: u32) {
+fn push_zone_bounded(body: &mut Vec<u8>, leds_min: u32, leds_max: u32, led_count: u32) {
     push_str(body, "Main");
     push_i32(body, 1);
-    push_u32(body, led_count);
-    push_u32(body, led_count);
+    push_u32(body, leds_min);
+    push_u32(body, leds_max);
     push_u32(body, led_count);
     push_u16(body, 0);
     push_u16(body, 1);
