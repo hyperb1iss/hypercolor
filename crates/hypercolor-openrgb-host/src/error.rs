@@ -48,6 +48,15 @@ pub enum HostError {
     #[error("failed to persist OpenRGB config: {0}")]
     Persist(#[from] hypercolor_persistence::PersistenceError),
 
+    /// The managed config directory cannot be passed to OpenRGB as given.
+    #[error("openrgb config path {path} is unusable: {reason}")]
+    UnsupportedConfigPath {
+        /// The offending directory.
+        path: PathBuf,
+        /// Why it cannot be passed through (non-UTF-8, or a `:` under Flatpak).
+        reason: &'static str,
+    },
+
     /// The embedded detector table did not parse. This is a build defect.
     #[error("embedded OpenRGB detector table is malformed: {0}")]
     DetectorTable(String),
