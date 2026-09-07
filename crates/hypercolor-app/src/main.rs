@@ -36,13 +36,13 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let daemon_url = std::env::var("HYPERCOLOR_URL")
-        .unwrap_or_else(|_| hypercolor_app::DEFAULT_DAEMON_URL.to_string());
+    let daemon_url = hypercolor_app::daemon_base_url();
 
     tracing::info!("launching Hypercolor app shell");
 
     tauri::Builder::default()
         .manage(hypercolor_app::supervisor::SupervisorState::default())
+        .manage(hypercolor_app::supervisor::openrgb::OpenRgbSupervisor::default())
         .manage(hypercolor_app::tray::TrayRuntime::default())
         .invoke_handler(tauri::generate_handler![
             hypercolor_app::first_run::is_first_run_pending,
@@ -54,6 +54,10 @@ fn main() -> anyhow::Result<()> {
             hypercolor_app::ownership::restart_macos_capture_owner,
             hypercolor_app::support::detect_pawnio_support,
             hypercolor_app::support::detect_daemon_launcher,
+            hypercolor_app::supervisor::openrgb::detect_openrgb,
+            hypercolor_app::supervisor::openrgb::start_openrgb,
+            hypercolor_app::supervisor::openrgb::stop_openrgb,
+            hypercolor_app::supervisor::openrgb::openrgb_install_hints,
             hypercolor_app::support::launch_pawnio_helper,
             hypercolor_app::support::repair_smbus_service,
             hypercolor_app::window::open_external_url,
@@ -137,6 +141,9 @@ fn main() -> anyhow::Result<()> {
                 app_handle
                     .state::<hypercolor_app::supervisor::SupervisorState>()
                     .terminate_managed_daemon_for_exit();
+                app_handle
+                    .state::<hypercolor_app::supervisor::openrgb::OpenRgbSupervisor>()
+                    .terminate_managed_for_exit();
             }
         });
 

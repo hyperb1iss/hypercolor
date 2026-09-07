@@ -31,6 +31,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use url::Url;
 
 mod child;
+pub mod openrgb;
 mod plan;
 
 pub(crate) use child::PlatformGuard;

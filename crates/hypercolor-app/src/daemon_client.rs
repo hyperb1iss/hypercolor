@@ -11,6 +11,8 @@ use futures_util::{SinkExt, StreamExt};
 use hypercolor_core::config::{paths, servers};
 use hypercolor_core::device::discover_servers;
 use hypercolor_types::api::ApiResponse;
+use hypercolor_types::api::devices::{DeviceListResponse, DeviceSummary};
+use hypercolor_types::api::drivers::{DriverListResponse, DriverSummary};
 use hypercolor_types::api::effects::{EffectListResponse, EffectSummary};
 use hypercolor_types::api::output::{OutputPowerMode, OutputResource};
 use hypercolor_types::api::scene::SceneDocument;
@@ -34,6 +36,65 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 const SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_HOST: &str = "localhost";
 const DEFAULT_PORT: u16 = 9420;
+
+/// Fetch the daemon's registered driver modules (`GET /api/v1/drivers`).
+///
+/// Loopback reads need no credential, so this is a plain request against
+/// `base_url`; the caller supplies the client so timeouts stay in one place.
+///
+/// # Errors
+///
+/// Returns an error when the daemon is unreachable, answers with a non-2xx
+/// status, or returns a body that does not match the drivers contract.
+pub async fn fetch_driver_summaries(
+    http: &reqwest::Client,
+    base_url: &str,
+) -> anyhow::Result<Vec<DriverSummary>> {
+    let url = format!("{}/api/v1/drivers", base_url.trim_end_matches('/'));
+    let response = http.get(&url).send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!("GET /api/v1/drivers answered {status}");
+    }
+    let body: ApiResponse<DriverListResponse> = response.json().await?;
+    Ok(body.data.items)
+}
+
+/// Largest page size `GET /api/v1/devices` accepts.
+const DEVICE_PAGE_LIMIT: u64 = 200;
+
+/// Fetch every device the daemon knows (`GET /api/v1/devices`), following
+/// the offset pages until `has_more` clears.
+///
+/// # Errors
+///
+/// Returns an error when the daemon is unreachable, answers with a non-2xx
+/// status, or returns a body that does not match the devices contract.
+pub async fn fetch_device_summaries(
+    http: &reqwest::Client,
+    base_url: &str,
+) -> anyhow::Result<Vec<DeviceSummary>> {
+    let base = base_url.trim_end_matches('/');
+    let mut devices = Vec::new();
+    let mut offset: u64 = 0;
+    loop {
+        let url = format!("{base}/api/v1/devices?offset={offset}&limit={DEVICE_PAGE_LIMIT}");
+        let response = http.get(&url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            anyhow::bail!("GET /api/v1/devices answered {status}");
+        }
+        let body: ApiResponse<DeviceListResponse> = response.json().await?;
+        let fetched = u64::try_from(body.data.items.len()).unwrap_or(u64::MAX);
+        devices.extend(body.data.items);
+        match body.data.page {
+            Some(page) if page.has_more && fetched > 0 => {
+                offset = page.offset.saturating_add(page.limit.max(fetched));
+            }
+            _ => return Ok(devices),
+        }
+    }
+}
 
 /// Manages communication with the Hypercolor daemon.
 pub struct DaemonClient {
