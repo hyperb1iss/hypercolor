@@ -617,6 +617,23 @@ impl DeviceBackend for OpenRgbBackend {
             .get(id)
             .map(|output| output.frame_sink() as Arc<dyn DeviceFrameSink>)
     }
+
+    /// Identify on a known, idle bridge device adopts, connects, flashes, and
+    /// tears down like any direct-control backend.
+    ///
+    /// An output-disabled route also answers `true` so the daemon calls
+    /// [`Self::connect`], which refuses with the route's `disabled_reason`;
+    /// otherwise the daemon would only ever report "not connected" for a
+    /// device whose real problem is spelled out in its metadata.
+    fn supports_temporary_direct_control(&self, info: &DeviceInfo) -> bool {
+        if info.total_led_count() == 0 {
+            return false;
+        }
+        info.capabilities.supports_direct
+            || self
+                .discovered_route(&info.id)
+                .is_some_and(|route| route.disabled_reason.is_some())
+    }
 }
 
 struct ConnectedOutput {
@@ -2945,6 +2962,83 @@ mod tests {
                 .disabled_reason
                 .expect("mismatched topology should disable output")
                 .contains("does not match controller LED list")
+        );
+    }
+
+    #[tokio::test]
+    async fn temporary_identify_is_offered_and_disabled_routes_answer_their_reason() {
+        let config = OpenRgbConfig {
+            ownership: OpenRgbOwnership {
+                mode: OpenRgbOwnershipMode::OpenRgbOwned,
+                ..OpenRgbOwnership::default()
+            },
+            ..OpenRgbConfig::default()
+        };
+        let backend = OpenRgbBackend::new(config).expect("config should validate");
+        let endpoint = default_endpoints()[0];
+
+        let enabled = build_route(endpoint, 0, 5, sample_controller(), &backend.config);
+        assert!(enabled.disabled_reason.is_none());
+        let enabled_info = enabled.info.clone();
+        backend
+            .adopt_device(&DiscoveredDevice::from(enabled))
+            .expect("enabled route should adopt");
+        assert!(backend.supports_temporary_direct_control(&enabled_info));
+
+        let mut unwritable = sample_controller();
+        unwritable.serial = "OTHER".to_owned();
+        unwritable.modes[0].flags = 0;
+        let disabled = build_route(endpoint, 1, 5, unwritable, &backend.config);
+        let reason = disabled
+            .disabled_reason
+            .clone()
+            .expect("unwritable controller should be disabled");
+        let disabled_info = disabled.info.clone();
+        assert!(!disabled_info.capabilities.supports_direct);
+        backend
+            .adopt_device(&DiscoveredDevice::from(disabled))
+            .expect("disabled route should adopt");
+        assert!(
+            backend.supports_temporary_direct_control(&disabled_info),
+            "disabled routes opt in so connect() can surface the reason"
+        );
+        let error = backend
+            .connect(&disabled_info.id)
+            .await
+            .expect_err("output-disabled route must refuse to connect");
+        assert_eq!(
+            error,
+            DeviceError::connection(disabled_info.id, &reason),
+            "the refusal carries the disabled_reason verbatim"
+        );
+
+        let mut empty = sample_controller();
+        empty.serial = "EMPTY".to_owned();
+        empty.leds.clear();
+        empty.colors.clear();
+        empty.zones[0].leds_count = 0;
+        let zero = build_route(endpoint, 2, 5, empty, &backend.config);
+        let zero_info = zero.info.clone();
+        backend
+            .adopt_device(&DiscoveredDevice::from(zero))
+            .expect("zero-LED route should adopt");
+        assert!(
+            !backend.supports_temporary_direct_control(&zero_info),
+            "nothing to flash on a zero-LED controller"
+        );
+        let unknown = DeviceInfo {
+            id: DeviceId::new(),
+            ..enabled_info
+        };
+        assert!(
+            !backend.supports_temporary_direct_control(&DeviceInfo {
+                capabilities: DeviceCapabilities {
+                    supports_direct: false,
+                    ..unknown.capabilities
+                },
+                ..unknown
+            }),
+            "an unadopted, non-direct device is not offered"
         );
     }
 
