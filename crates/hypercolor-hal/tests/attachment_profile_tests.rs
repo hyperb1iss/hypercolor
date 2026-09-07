@@ -2,7 +2,7 @@ use hypercolor_hal::attachment_profile::effective_attachment_slots;
 use hypercolor_types::attachment::ComponentBinding;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceOrigin, DeviceTopologyHint, SegmentInfo,
+    DeviceOrigin, DeviceTopologyHint, DriverTransportKind, SegmentInfo,
 };
 
 fn prism_s_info() -> DeviceInfo {
@@ -154,4 +154,68 @@ fn nollie32_nos2_attachment_slots_append_strimer_cables() {
         .expect("GPU slot should exist");
 
     assert_eq!(gpu.led_start, 5240);
+}
+
+fn bridged_hub_info() -> DeviceInfo {
+    let strip = |name: &str, led_count: u32| SegmentInfo {
+        name: name.to_owned(),
+        led_count,
+        topology: DeviceTopologyHint::Strip,
+        color_format: DeviceColorFormat::Rgb,
+        layout_hint: None,
+    };
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: "Nollie 32CH".to_owned(),
+        vendor: "Nollie".to_owned(),
+        family: DeviceFamily::new_static("openrgb-strip", "OpenRGB Strip"),
+        model: None,
+        connection_type: ConnectionType::Network,
+        origin: DeviceOrigin::new("openrgb", "openrgb", DriverTransportKind::Bridge)
+            .with_protocol_id("openrgb-sdk"),
+        segments: vec![strip("Channel 1", 60), strip("Zone A", 30)],
+        capabilities: DeviceCapabilities::default(),
+        firmware_version: None,
+    }
+}
+
+#[test]
+fn bridged_strip_slots_allow_fan_attachments() {
+    use hypercolor_types::attachment::ComponentCategory;
+
+    let slots = effective_attachment_slots(&bridged_hub_info(), &[]);
+    assert_eq!(slots.len(), 2, "one slot per bridged segment");
+
+    for slot in &slots {
+        for category in [
+            ComponentCategory::Strip,
+            ComponentCategory::Fan,
+            ComponentCategory::Aio,
+            ComponentCategory::Ring,
+        ] {
+            assert!(
+                slot.suggested_categories.contains(&category),
+                "bridged slot {} should offer {category:?}",
+                slot.id
+            );
+        }
+    }
+}
+
+#[test]
+fn native_non_generic_strip_slots_stay_strip_only() {
+    use hypercolor_types::attachment::ComponentCategory;
+
+    let mut info = bridged_hub_info();
+    info.origin =
+        DeviceOrigin::native("wled", "wled", ConnectionType::Network).with_protocol_id("wled/ddp");
+
+    let slots = effective_attachment_slots(&info, &[]);
+    for slot in &slots {
+        assert!(
+            !slot.suggested_categories.contains(&ComponentCategory::Fan),
+            "native strip slot {} should not gain fan categories",
+            slot.id
+        );
+    }
 }
