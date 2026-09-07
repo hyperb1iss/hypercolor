@@ -14,6 +14,8 @@ use hypercolor_types::device::{
 use hypercolor_types::portable::ReviewedSerial;
 use hypercolor_types::portable::{PortableIdentityClaim, SerialNormalizerRegistry};
 
+use super::unclaimed::{UnclaimedDeviceStore, UsbObservation};
+
 /// The serial normalizations reviewed for cross-OS stability.
 ///
 /// Empty is the correct starting state, not a stub: registering a
@@ -54,6 +56,7 @@ pub fn reviewed_serial_normalizers() -> SerialNormalizerRegistry {
 pub struct UsbScanner {
     enabled_driver_ids: Option<BTreeSet<String>>,
     serial_normalizers: SerialNormalizerRegistry,
+    unclaimed: Option<UnclaimedDeviceStore>,
 }
 
 impl UsbScanner {
@@ -63,6 +66,7 @@ impl UsbScanner {
         Self {
             enabled_driver_ids: None,
             serial_normalizers: reviewed_serial_normalizers(),
+            unclaimed: None,
         }
     }
 
@@ -72,7 +76,16 @@ impl UsbScanner {
         Self {
             enabled_driver_ids: Some(enabled_driver_ids),
             serial_normalizers: reviewed_serial_normalizers(),
+            unclaimed: None,
         }
+    }
+
+    /// Report every enumerated device to `store` so the ones no enabled
+    /// driver claims stop vanishing silently.
+    #[must_use]
+    pub fn with_unclaimed_store(mut self, store: UnclaimedDeviceStore) -> Self {
+        self.unclaimed = Some(store);
+        self
     }
 
     fn build_device_info(
@@ -146,17 +159,22 @@ impl UsbScanner {
             .context("failed to enumerate USB devices")?;
 
         let mut discovered = Vec::new();
+        let mut observations = Vec::new();
         for usb in devices {
             let vendor_id = usb.vendor_id();
             let product_id = usb.product_id();
             let firmware_hint = usb.product_string();
 
-            let Some(descriptor) = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
+            let descriptor = ProtocolDatabase::lookup_with_firmware_for_driver_ids(
                 vendor_id,
                 product_id,
                 firmware_hint,
                 self.enabled_driver_ids.as_ref(),
-            ) else {
+            );
+            if self.unclaimed.is_some() {
+                observations.push(usb_observation(&usb, descriptor));
+            }
+            let Some(descriptor) = descriptor else {
                 continue;
             };
 
@@ -222,7 +240,36 @@ impl UsbScanner {
             });
         }
 
+        if let Some(store) = &self.unclaimed {
+            store.replace_snapshot(observations);
+        }
+
         Ok(discovered)
+    }
+}
+
+/// Everything the unclaimed inventory wants to know about one USB device.
+///
+/// Shared with the hotplug watcher so a device arriving mid-session is
+/// recorded with the same shape a full scan would give it.
+pub(crate) fn usb_observation(
+    usb: &nusb::DeviceInfo,
+    descriptor: Option<&'static DeviceDescriptor>,
+) -> UsbObservation {
+    let path = usb_path(usb);
+    UsbObservation {
+        vendor_id: usb.vendor_id(),
+        product_id: usb.product_id(),
+        manufacturer: usb.manufacturer_string().map(ToOwned::to_owned),
+        product: usb.product_string().map(ToOwned::to_owned),
+        serial: usb
+            .serial_number()
+            .map(str::trim)
+            .filter(|serial| !serial.is_empty())
+            .map(ToOwned::to_owned),
+        bus_path: (!path.is_empty()).then_some(path),
+        interface_classes: usb.interfaces().map(nusb::InterfaceInfo::class).collect(),
+        descriptor_driver_id: descriptor.map(|descriptor| descriptor.driver_id().into_owned()),
     }
 }
 
@@ -235,7 +282,7 @@ fn descriptor_model_id(descriptor: &DeviceDescriptor) -> Option<String> {
     Some(raw_model.replace('-', "_"))
 }
 
-fn usb_path(usb: &nusb::DeviceInfo) -> String {
+pub(crate) fn usb_path(usb: &nusb::DeviceInfo) -> String {
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
         let ports = usb

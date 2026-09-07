@@ -30,6 +30,19 @@ impl BackendManager {
         self.backends.insert(backend_id, backend);
     }
 
+    /// Remove a device backend and every output lane bound to it.
+    ///
+    /// Callers disconnect the backend's devices first; this only forgets
+    /// the route. Returns the backend so the caller can finish shutting it
+    /// down, or `None` when nothing was registered under that ID.
+    pub fn unregister_backend(&mut self, backend_id: &str) -> Option<Arc<dyn DeviceBackend>> {
+        let backend = self.backends.remove(backend_id)?;
+        self.backend_generations.remove(backend_id);
+        self.output.remove_backend_state(backend_id);
+        debug!(backend_id = %backend_id, "unregistered device backend");
+        Some(backend)
+    }
+
     /// Clone a backend I/O handle without holding the manager across awaits.
     #[must_use]
     pub fn backend_io(&self, backend_id: &str) -> Option<BackendIo> {

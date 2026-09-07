@@ -10,6 +10,9 @@ use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use nusb::hotplug::HotplugEvent;
 use tracing::{debug, warn};
 
+use super::unclaimed::UnclaimedDeviceStore;
+use super::usb_scanner::usb_observation;
+
 /// USB hotplug event emitted by the monitor.
 #[derive(Debug, Clone)]
 pub enum UsbHotplugEvent {
@@ -57,6 +60,7 @@ impl Drop for UsbHotplugTask {
 /// Uses `nusb::watch_devices()` and emits HAL-filtered arrival/removal events.
 pub struct UsbHotplugMonitor {
     event_tx: tokio::sync::broadcast::Sender<UsbHotplugEvent>,
+    unclaimed: Option<UnclaimedDeviceStore>,
 }
 
 impl UsbHotplugMonitor {
@@ -64,7 +68,17 @@ impl UsbHotplugMonitor {
     #[must_use]
     pub fn new(buffer: usize) -> Self {
         let (event_tx, _event_rx) = tokio::sync::broadcast::channel(buffer.max(1));
-        Self { event_tx }
+        Self {
+            event_tx,
+            unclaimed: None,
+        }
+    }
+
+    /// Patch `store` on every arrival and removal, claimed or not.
+    #[must_use]
+    pub fn with_unclaimed_store(mut self, store: UnclaimedDeviceStore) -> Self {
+        self.unclaimed = Some(store);
+        self
     }
 
     /// Subscribe to hotplug events.
@@ -81,8 +95,9 @@ impl UsbHotplugMonitor {
     pub fn start(&self) -> Result<UsbHotplugTask> {
         let watch = nusb::watch_devices().context("failed to start USB hotplug watcher")?;
         let event_tx = self.event_tx.clone();
+        let unclaimed = self.unclaimed.clone();
         let handle = tokio::spawn(async move {
-            run_hotplug_loop(event_tx, watch).await;
+            run_hotplug_loop(event_tx, unclaimed, watch).await;
         });
         Ok(UsbHotplugTask { handle })
     }
@@ -110,8 +125,19 @@ impl UsbHotplugMonitor {
     }
 }
 
+/// What the watcher remembers about one attached device, so a removal
+/// (which only carries the platform id) can still name what left.
+struct SeenDevice {
+    vendor_id: u16,
+    product_id: u16,
+    /// [`UsbObservation::key`](super::unclaimed::UsbObservation::key) for
+    /// the unclaimed inventory patch on removal.
+    observation_key: String,
+}
+
 async fn run_hotplug_loop(
     event_tx: tokio::sync::broadcast::Sender<UsbHotplugEvent>,
+    unclaimed: Option<UnclaimedDeviceStore>,
     mut watch: nusb::hotplug::HotplugWatch,
 ) {
     let mut known_devices = enumerate_known_devices().await;
@@ -121,10 +147,22 @@ async fn run_hotplug_loop(
             HotplugEvent::Connected(device) => {
                 let vendor_id = device.vendor_id();
                 let product_id = device.product_id();
+                let descriptor = ProtocolDatabase::lookup(vendor_id, product_id);
+                let observation = usb_observation(&device, descriptor);
 
-                known_devices.insert(device.id(), (vendor_id, product_id));
+                known_devices.insert(
+                    device.id(),
+                    SeenDevice {
+                        vendor_id,
+                        product_id,
+                        observation_key: observation.key(),
+                    },
+                );
+                if let Some(store) = &unclaimed {
+                    store.upsert(observation);
+                }
 
-                if let Some(descriptor) = ProtocolDatabase::lookup(vendor_id, product_id) {
+                if let Some(descriptor) = descriptor {
                     let _ = event_tx.send(UsbHotplugEvent::Arrived {
                         vendor_id,
                         product_id,
@@ -133,14 +171,17 @@ async fn run_hotplug_loop(
                 }
             }
             HotplugEvent::Disconnected(device_id) => {
-                let Some((vendor_id, product_id)) = known_devices.remove(&device_id) else {
+                let Some(seen) = known_devices.remove(&device_id) else {
                     continue;
                 };
+                if let Some(store) = &unclaimed {
+                    store.remove(&seen.observation_key);
+                }
 
-                if ProtocolDatabase::lookup(vendor_id, product_id).is_some() {
+                if ProtocolDatabase::lookup(seen.vendor_id, seen.product_id).is_some() {
                     let _ = event_tx.send(UsbHotplugEvent::Removed {
-                        vendor_id,
-                        product_id,
+                        vendor_id: seen.vendor_id,
+                        product_id: seen.product_id,
                     });
                 }
             }
@@ -150,16 +191,24 @@ async fn run_hotplug_loop(
     debug!("USB hotplug watcher exited");
 }
 
-async fn enumerate_known_devices() -> HashMap<nusb::DeviceId, (u16, u16)> {
+/// Every attached device at watcher start, claimed or not, so a later
+/// removal of an unclaimed device can still patch the inventory.
+async fn enumerate_known_devices() -> HashMap<nusb::DeviceId, SeenDevice> {
     let mut known_devices = HashMap::new();
     match nusb::list_devices().await {
         Ok(devices) => {
             for device in devices {
                 let vendor_id = device.vendor_id();
                 let product_id = device.product_id();
-                if ProtocolDatabase::lookup(vendor_id, product_id).is_some() {
-                    known_devices.insert(device.id(), (vendor_id, product_id));
-                }
+                let descriptor = ProtocolDatabase::lookup(vendor_id, product_id);
+                known_devices.insert(
+                    device.id(),
+                    SeenDevice {
+                        vendor_id,
+                        product_id,
+                        observation_key: usb_observation(&device, descriptor).key(),
+                    },
+                );
             }
         }
         Err(error) => {
