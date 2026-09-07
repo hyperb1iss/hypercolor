@@ -175,7 +175,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
-                .http_get("/api/v1/server", MAX_HTTP_RESPONSE_BYTES)?,
+                .http_get("/api/v1/system", MAX_HTTP_RESPONSE_BYTES)?,
             &binding.version,
         )?;
         let after = parse_systemd_show(&self.executor.systemd_show(MAX_SYSTEMD_SHOW_BYTES)?)?;
@@ -260,7 +260,7 @@ impl<E: LinuxInstallExecutor> LinuxInstallPlatform<E> {
         verify_http(
             self.executor.http_get("/health", MAX_HTTP_RESPONSE_BYTES)?,
             self.executor
-                .http_get("/api/v1/server", MAX_HTTP_RESPONSE_BYTES)?,
+                .http_get("/api/v1/system", MAX_HTTP_RESPONSE_BYTES)?,
             &binding.version,
         )?;
         let after = parse_systemd_show(&self.executor.systemd_show(MAX_SYSTEMD_SHOW_BYTES)?)?;
@@ -424,32 +424,32 @@ pub(super) fn require_running_observation(
 
 pub(super) fn verify_http(
     health: LinuxHttpResponse,
-    server: LinuxHttpResponse,
+    system: LinuxHttpResponse,
     version: &str,
 ) -> Result<(), InstallPlatformError> {
     if health.status != 200
-        || server.status != 200
+        || system.status != 200
         || health.body.len() > super::model::MAX_HTTP_RESPONSE_BYTES
-        || server.body.len() > super::model::MAX_HTTP_RESPONSE_BYTES
+        || system.body.len() > super::model::MAX_HTTP_RESPONSE_BYTES
     {
         return Err(error("bounded daemon HTTP proof failed"));
     }
     let health: serde_json::Value = serde_json::from_slice(&health.body)
         .map_err(|_| error("invalid /health identity response"))?;
-    let server: serde_json::Value = serde_json::from_slice(&server.body)
-        .map_err(|_| error("invalid /api/v1/server identity response"))?;
+    let system: serde_json::Value = serde_json::from_slice(&system.body)
+        .map_err(|_| error("invalid /api/v1/system identity response"))?;
     if health.get("status").and_then(serde_json::Value::as_str) != Some("healthy")
         || health.get("version").and_then(serde_json::Value::as_str) != Some(version)
-        || server
-            .pointer("/data/version")
+        || system
+            .pointer("/data/identity/version")
             .and_then(serde_json::Value::as_str)
             != Some(version)
-        || server
-            .pointer("/data/instance_id")
+        || system
+            .pointer("/data/identity/instance_id")
             .and_then(serde_json::Value::as_str)
             .is_none_or(str::is_empty)
-        || server
-            .pointer("/data/instance_name")
+        || system
+            .pointer("/data/identity/instance_name")
             .and_then(serde_json::Value::as_str)
             .is_none_or(str::is_empty)
     {
@@ -547,4 +547,47 @@ fn hash_opened(
         return Err(error("retained daemon size changed while hashing"));
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::{LinuxHttpResponse, verify_http};
+    use serde_json::json;
+
+    fn response(value: serde_json::Value) -> LinuxHttpResponse {
+        LinuxHttpResponse {
+            status: 200,
+            body: serde_json::to_vec(&value).expect("serialize identity response fixture"),
+        }
+    }
+
+    #[test]
+    fn owner_proof_uses_the_system_resources_nested_public_identity() {
+        let health = response(json!({"status":"healthy", "version":"0.4.0"}));
+        let system = response(json!({"data":{"identity":{
+            "version":"0.4.0", "instance_id":"daemon-id", "instance_name":"lights"
+        },"status":null}}));
+        verify_http(health, system, "0.4.0")
+            .expect("public system identity without privileged status");
+    }
+
+    #[test]
+    fn owner_proof_rejects_retired_flat_missing_and_mismatched_system_identity() {
+        for system in [
+            json!({"data":{"version":"0.4.0", "instance_id":"id", "instance_name":"name"}}),
+            json!({"data":{"status":{}}}),
+            json!({"data":{"identity":{"version":"0.3.0", "instance_id":"id", "instance_name":"name"}}}),
+            json!({"data":{"identity":{"version":"0.4.0", "instance_id":"", "instance_name":"name"}}}),
+            json!({"data":{"identity":{"version":"0.4.0", "instance_id":"id", "instance_name":""}}}),
+        ] {
+            assert!(
+                verify_http(
+                    response(json!({"status":"healthy", "version":"0.4.0"})),
+                    response(system),
+                    "0.4.0"
+                )
+                .is_err()
+            );
+        }
+    }
 }

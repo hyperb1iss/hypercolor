@@ -79,7 +79,7 @@ pub fn SidebarZoneRows() -> impl IntoView {
                         .collect_view()}
                     {(overflow > 0).then(|| view! {
                         <A
-                            href="/studio"
+                            href=crate::route_ui::route_href("/studio")
                             attr:class="flex items-center gap-1.5 px-1.5 py-1 rounded-md \
                                         text-[10px] text-fg-tertiary hover:text-fg-primary \
                                         hover:bg-surface-hover/30 transition-colors duration-200"

@@ -469,6 +469,7 @@ impl EffectsContext {
 /// app unchanged.
 pub fn app_view(ext: UiExtensions) -> impl IntoView {
     let UiExtensions {
+        mount,
         routes: extension_routes,
         nav_items: extension_nav,
         settings_sections: extension_settings,
@@ -476,6 +477,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         on_setup,
     } = ext;
     provide_meta_context();
+    provide_context(mount.clone());
     leptoaster::provide_toaster();
     crate::toasts::install_root_context();
     provide_context(NavExtensionItems(extension_nav));
@@ -948,7 +950,7 @@ pub fn app_view(ext: UiExtensions) -> impl IntoView {
         <Meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <Title text="Hypercolor" />
 
-        <Router>
+        <Router base=mount.route_base().to_owned()>
             {app_routes(extension_routes)}
         </Router>
 
@@ -1087,7 +1089,7 @@ fn NotFoundPage() -> impl IntoView {
             <div class="text-5xl font-bold tracking-tight text-accent/60">"404"</div>
             <div class="text-sm text-fg-secondary">"This page doesn't exist."</div>
             <a
-                href="/"
+                href=crate::route_ui::route_href("/")
                 class="mt-2 rounded-lg border border-edge-subtle bg-surface-raised px-4 py-2 text-sm font-medium text-fg-primary transition hover:border-accent/40 hover:bg-surface-hover btn-press"
             >
                 "Back to the dashboard"
