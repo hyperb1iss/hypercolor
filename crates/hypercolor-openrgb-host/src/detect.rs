@@ -242,22 +242,32 @@ pub async fn flatpak_app_version(flatpak: &Path) -> Option<Option<String>> {
 
 /// Extract the version from OpenRGB's `--version` output.
 ///
-/// OpenRGB prints a banner such as `OpenRGB 1.0rc3, for controlling RGB
-/// lighting.` followed by a `Version: 1.0rc3 (...)` line. The `Version:`
-/// line wins; the banner token is the fallback.
+/// OpenRGB 1.0rc3 prints `OpenRGB 0.9+ (1.0rc3), for controlling RGB
+/// lighting.` followed by `Version:\t\t 0.9+ (1.0rc3)`. The parenthesised
+/// release tag is the version users recognise, so it wins when present; the
+/// first numeric token (`0.9`, `0.9+`) is the fallback for older builds.
 #[must_use]
 pub fn parse_version_output(output: &str) -> Option<String> {
-    for line in output.lines() {
-        if let Some(rest) = line.trim().strip_prefix("Version:") {
-            let token = rest.split_whitespace().next()?;
-            let token = token.trim_matches(|c: char| c == ',' || c == '(' || c == ')');
-            if !token.is_empty() {
-                return Some(token.to_owned());
-            }
-        }
+    let version_line = output
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("Version:"))
+        .or_else(|| output.lines().find(|line| line.contains("OpenRGB")))
+        .or_else(|| output.lines().next())?;
+    parse_version_line(version_line)
+}
+
+fn parse_version_line(line: &str) -> Option<String> {
+    let release_tag = line
+        .split('(')
+        .skip(1)
+        .filter_map(|rest| rest.split(')').next())
+        .map(str::trim)
+        .find(|tag| tag.starts_with(|c: char| c.is_ascii_digit()));
+    if let Some(tag) = release_tag {
+        return Some(tag.to_owned());
     }
-    output
-        .split_whitespace()
+    line.split_whitespace()
         .map(|token| token.trim_matches(|c: char| c == ',' || c == '(' || c == ')'))
         .find(|token| token.starts_with(|c: char| c.is_ascii_digit()) && token.contains('.'))
         .map(str::to_owned)

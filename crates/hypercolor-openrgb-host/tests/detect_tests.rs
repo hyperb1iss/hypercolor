@@ -105,13 +105,25 @@ fn find_appimage_in_picks_the_newest_named_openrgb_appimage() {
     assert_eq!(find_appimage_in(&dir.path().join("missing")), None);
 }
 
+const RC3_BANNER: &str = "OpenRGB 0.9+ (1.0rc3), for controlling RGB lighting.\n  Version:\t\t 0.9+ (1.0rc3)\n  Build Date\t\t Thu, 13 Aug 2026 11:06:45 +0000\n  Git Commit ID\t\t \n  Git Commit Date\t \n";
+
 #[test]
-fn version_parsing_prefers_the_version_line() {
-    let output = "OpenRGB 1.0rc3, for controlling RGB lighting.\n  Version: 1.0rc3 (git 7a1b2c3d)\n  Build Date: 2026-08-01\n";
-    assert_eq!(parse_version_output(output).as_deref(), Some("1.0rc3"));
+fn version_parsing_reads_the_release_tag_from_the_real_banner() {
+    assert_eq!(parse_version_output(RC3_BANNER).as_deref(), Some("1.0rc3"));
+    let banner_only = "OpenRGB 0.9+ (1.0rc3), for controlling RGB lighting.\n";
+    assert_eq!(parse_version_output(banner_only).as_deref(), Some("1.0rc3"));
+}
+
+#[test]
+fn version_parsing_falls_back_to_the_first_numeric_token() {
     assert_eq!(
-        parse_version_output("OpenRGB 0.9, for controlling RGB lighting.").as_deref(),
+        parse_version_output("OpenRGB 0.9, for controlling RGB lighting.\n  Version:\t\t 0.9\n")
+            .as_deref(),
         Some("0.9")
+    );
+    assert_eq!(
+        parse_version_output("OpenRGB 0.9+, for controlling RGB lighting.").as_deref(),
+        Some("0.9+")
     );
     assert_eq!(parse_version_output("no numbers here"), None);
     assert_eq!(parse_version_output(""), None);
@@ -134,12 +146,15 @@ async fn read_version_runs_the_binary_and_tolerates_failures() {
     let good = dir.path().join("openrgb-good");
     write_executable(
         &good,
-        "#!/bin/sh\necho 'OpenRGB 1.0rc3, for controlling RGB lighting.'\necho '  Version: 1.0rc3 (git abc)'\n",
+        "#!/bin/sh\nprintf 'OpenRGB 0.9+ (1.0rc3), for controlling RGB lighting.\\n  Version:\\t\\t 0.9+ (1.0rc3)\\n'\n",
     );
     assert_eq!(read_version(&good).await.as_deref(), Some("1.0rc3"));
 
     let failing = dir.path().join("openrgb-fail");
-    write_executable(&failing, "#!/bin/sh\necho 'Version: 9.9' >&2\nexit 3\n");
+    write_executable(
+        &failing,
+        "#!/bin/sh\necho 'Version: 9.9 (9.9rc1)' >&2\nexit 3\n",
+    );
     assert_eq!(
         read_version(&failing).await,
         None,
